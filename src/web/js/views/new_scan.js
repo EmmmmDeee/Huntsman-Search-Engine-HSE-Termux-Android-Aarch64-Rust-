@@ -479,7 +479,25 @@ export async function uploadDossier(){
     st.textContent = format ? `Importing as ${format}…` : 'Importing…';
     const r = await API.importDossier(text, format);
     st.textContent = `Imported ${r.entity_count} entities` + (r.correlation_count ? `, ${r.correlation_count} correlations.` : '.');
-    toast(`Imported ${r.entity_count} entities`);
+    // `status: "aborted"` — a cancel reached the import while it was being
+    // enriched: every entity is stored, but its relations and correlations
+    // stopped where the cancel landed. Reported as the cancelled import it is,
+    // never as a success (REQ-SCANSTATUS-012).
+    // `status: "partial"` — every entity is stored, but the store refused some
+    // of the derived relations/correlations, the derivation's time budget cut
+    // it short, the correlator's time budget cut it short, the correlation
+    // pass failed, or both were skipped for size. Say so here, where the
+    // counts above would otherwise read as the whole graph.
+    if (r.status === 'aborted'){
+      st.textContent = `Import cancelled: ${r.entity_count} entities kept, but relations and correlations were not finished.`;
+      if (r.finalise_error) st.textContent += ` Stored incompletely: ${r.finalise_error}`;
+      toast(`Import cancelled — ${r.entity_count} entities kept, enrichment incomplete`, 'warn');
+    } else if (r.finalise_error){
+      st.textContent += ` Stored incompletely: ${r.finalise_error}`;
+      toast(`Imported ${r.entity_count} entities — stored incompletely`, 'warn');
+    } else {
+      toast(`Imported ${r.entity_count} entities`);
+    }
     nav(`#/scaninfo?id=${encodeURIComponent(r.scan_id)}`);
   } catch(e){
     st.textContent = 'Import failed: ' + e.message;

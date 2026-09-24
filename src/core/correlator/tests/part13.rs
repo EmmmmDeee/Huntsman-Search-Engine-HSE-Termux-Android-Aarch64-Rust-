@@ -376,6 +376,38 @@ fn au114_does_not_fire_for_an_unflagged_or_low_confidence_entity() {
     );
 }
 
+#[test]
+fn au114_reports_an_unresolved_namesake_flag_as_a_low_lead_not_a_determination() {
+    // REQ-NAMESAKE-003: `mark_ambiguous` moves a namesake's `pep` off the entity
+    // and onto its evidence. Without the key-gated `opensanctions`, nothing read
+    // it, so a subject who really holds office lost the scan's only PEP signal.
+    // The lead reports the flag without asserting it about the subject.
+    let mut e = Entity::new(EntityKind::Person, "John Howard", 0.72, "s");
+    e.add_evidence(Evidence::new("name_intel", "seed"));
+    let mut wd = Entity::new(EntityKind::Person, "John Howard", 0.60, "s");
+    wd.tag(crate::core::tags::PEP);
+    wd.tag("politically-exposed");
+    wd.add_evidence(Evidence::new("wikidata", "Wikidata Q1 — position held"));
+    crate::util::namesake::mark_ambiguous(&mut wd);
+    e.merge(wd);
+    assert!(!e.has_tag(crate::core::tags::PEP), "never a determination");
+    let r = rule_au_114_sanctions_exposure(&RuleContext::new(std::slice::from_ref(&e)), "s", 0);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0].rule_id, "AU-114");
+    assert_eq!(r[0].severity, super::Severity::Low);
+    assert!(r[0].description.contains("pep, politically-exposed"), "{}", r[0].description);
+    assert!(r[0].description.contains("source: wikidata"), "{}", r[0].description);
+    assert!(r[0].description.contains("attribution unresolved"));
+    assert!(!r[0].description.contains("is flagged as a politically-exposed person"));
+    // A resolved determination on the same entity is the determination finding
+    // alone — the lead never doubles it.
+    let mut resolved = e.clone();
+    resolved.tag(crate::core::tags::PEP);
+    let r = rule_au_114_sanctions_exposure(&RuleContext::new(&[resolved]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::Medium);
+}
+
 // ─── AU-115 tests (personal Wi-Fi geolocated) ─────────────────────────────────
 
 #[test]

@@ -258,6 +258,8 @@ pub(super) fn mine_recycled_results(
                     c.tag("geoint");
                     c.tag(crate::core::tags::SEARCH_DISCOVERED);
                     c.tag("recycled");
+                    // A gazetteer centroid, never a street point (REQ-GEO-007).
+                    c.tag(crate::core::tags::COARSE);
                     c.add_evidence(recycled_evidence(r, "Coordinates", &coord_val, &combined));
                     out.push(c);
                 }
@@ -668,6 +670,17 @@ pub(super) fn extract_username_pivots(results: &[SearchResult], target: &Target)
 /// - The captured name must contain a lowercase letter (rejects ALL-CAPS
 ///   banners and gamertag-only display names like `ZMKCR (@ZMKCR)`).
 /// - Duplicates are deduplicated by lowercase key within one call.
+/// - On a `FullName` scan with a given/surname structure, the captured name must
+///   BE the subject: the seed-term check above is satisfied by the surname alone,
+///   so it cannot tell "Ian Thorpe (@IanThorpe)" from "Carla Thorpe
+///   (@carlathorpe)" or "Ian Thorpe Aquatic Centre (@ianthorpe_aquatic)". The
+///   name is read through the identity gate's own parser
+///   ([`crate::core::scan::person_names_compatible`]): a compatible name keeps
+///   the HIGH claim; a different given name on the subject's surname is a
+///   relative lead, tagged `family-member` and demoted to candidate exactly like
+///   `build_entities`' shared-surname lead (the two copies merge into one
+///   candidate); any other surname (a facility parses as surname "centre") or a
+///   mononym is not the subject and is not minted (REQ-SEARCH-009).
 ///
 /// Confidence: confidence::HIGH — social title is a near-certain identity disclosure, but
 /// display names are not always real names (gamertags, aliases).
@@ -677,6 +690,14 @@ pub(super) fn extract_display_names_from_titles(
     scan_id: &str,
 ) -> Vec<Entity> {
     let terms = target_terms(target);
+    // The subject's surname when the seed is a structured person name — the
+    // precondition for the identity decision below. A mononym `FullName` has no
+    // given/surname structure to compare, so it keeps the seed-term check alone.
+    let subject_surname = if target.kind == TargetKind::FullName {
+        crate::core::scan::person_surname(&target.value)
+    } else {
+        None
+    };
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<Entity> = Vec::new();
 
@@ -701,12 +722,39 @@ pub(super) fn extract_display_names_from_titles(
         if !raw_name.chars().any(char::is_lowercase) {
             continue;
         }
+        // Identity decision on a structured `FullName` seed (see the guard list
+        // above): the subject keeps HIGH, a same-surname different person is a
+        // candidate relative lead, anything else is not minted.
+        let relative_lead = match subject_surname.as_deref() {
+            None => false,
+            Some(surname) => {
+                match crate::core::scan::person_names_compatible(&target.value, &raw_name) {
+                    Some(true) => false,
+                    Some(false)
+                        if crate::core::scan::person_surname(&raw_name).as_deref()
+                            == Some(surname) =>
+                    {
+                        true
+                    }
+                    _ => continue,
+                }
+            }
+        };
         let key = raw_name.to_lowercase();
         if seen.insert(key) {
             let mut e = Entity::new(EntityKind::Person, &raw_name, confidence::HIGH, scan_id);
             e.tag("derived");
             e.tag("social-name");
             e.tag(crate::core::tags::SEARCH_DISCOVERED);
+            if relative_lead {
+                // Mirrors `build_entities`' shared-surname lead so the two
+                // copies of one relative merge as candidates: `Entity::merge`
+                // keeps the higher confidence and drops `candidate` when either
+                // side lacks it, so a HIGH copy here silently undid that
+                // demotion and exported the namesake as PROBABLE.
+                e.tag("family-member");
+                e.demote_to_candidate();
+            }
             let ev = Evidence::new(
                 SRC,
                 format!("[search] display name `{raw_name}` from social SERP title"),

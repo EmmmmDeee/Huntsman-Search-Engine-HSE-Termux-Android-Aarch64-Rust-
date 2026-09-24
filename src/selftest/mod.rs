@@ -432,13 +432,26 @@ fn check_core_math() -> Check {
 }
 
 /// The key store loads without error; report the configured-key count.
+///
+/// "Configured" is [`crate::util::keys::is_configured_value`] — the test every
+/// module applies — not "the name is in the file": `hse provision` writes a
+/// template of `insert_..._here` slots, and counting those reported a freshly
+/// provisioned device as holding dozens of keys that every module then skipped
+/// for want of.
 fn check_keys() -> Check {
     let keys = crate::util::keys::load();
     let path = crate::util::keys::env_path();
+    let configured = keys
+        .iter()
+        .filter(|(k, v)| k.starts_with("HUNTSMAN_") && crate::util::keys::is_configured_value(v))
+        .count();
     check(
         "keys.load",
         Status::Pass,
-        format!("{} HUNTSMAN_* key(s) loaded from {path}", keys.len()),
+        format!(
+            "{configured} configured HUNTSMAN_* key(s) of {} slot(s) loaded from {path}",
+            keys.len()
+        ),
     )
 }
 

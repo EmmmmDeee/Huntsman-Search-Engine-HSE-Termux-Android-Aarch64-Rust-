@@ -102,7 +102,7 @@ between the two.
   previous commit, the only differences are the three new tests. Doctests: 86
   twice, identical.
 
-### Change 4: [DEFECT] No console view decides a scan's state from its status alone, and the flag is true across processes (REQ-SCANSTATUS-002)
+### Change 4: [DEFECT] No console view decides a scan's state from its status alone, and the flag is true across processes (REQ-SCANSTATUS-038)
 
 - **What.** Every view that shows or acts on a scan's state now asks one
   rule, `wasm-ui/src/scan_state.rs`: the scan table, Scan Info, its Log
@@ -206,6 +206,31 @@ state file now also carries `competitors`, `capability_gaps`, `clusters` and
 - **Fresh worktree.** Passed. The gate passed (doc coverage held at 1001).
   The full suite ran twice with identical results: 8559 tests, 8532 passed,
   27 ignored, 0 failed. Doctests: 85 passed, 3 ignored, twice.
+
+### Merge: main (#649) into the branch
+
+- **Why.** PR #649 reached main while this branch was open, touching the
+  same scan lifecycle, scan handlers and console views; PR #650 could not
+  merge (27 conflicting hunks in 18 files).
+- **Resolution.** One status pill (wasm-ui `scan_state::status_pill`) now
+  carries both sides' rules, `interrupted` from this branch and `partial`
+  from #649; the scan list's search matches what the pill shows; `Scan`
+  keeps both new fields (`runner`, `origin`). #649 had given
+  REQ-SCANSTATUS-002 to another defect, so this branch's REQ-SCANSTATUS-002
+  is now REQ-SCANSTATUS-038 everywhere but the pushed commit message.
+- **Found by the gate and fixed.** A broken intra-doc link and two stale
+  comments naming a function this branch removed; three #649 status reads
+  the branch's lock flagged, none of a stored row (an event's and an import
+  reply's final status), now exempted by file and exact read.
+- **Evidence.** The gate passed (17 checks; doc coverage 998, three fewer than the
+  ceiling). The suite: 8844 tests, 8817 passed, 27 ignored, 0 failed;
+  doctests 88 passed, 3 ignored. `wasm-ui/pkg` matches a fresh
+  regeneration. In a browser, on the merged build: a SIGKILLed scan in
+  every view 17 of 17; scan names 23 of 23, and 12 of 12 after a server
+  restart. No server panicked.
+- **Fresh worktree.** Passed. The gate passed. The full suite ran twice with
+  identical results: 8844 tests, 8817 passed, 27 ignored, 0 failed.
+  Doctests: 88 passed, 3 ignored, twice.
 
 ## Next
 

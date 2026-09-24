@@ -572,9 +572,8 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
             fn corr_label(e: &Entity) -> &str {
                 e.evidence
                     .iter()
-                    .map(|ev| ev.source.as_str())
-                    .find(|s| !crate::core::entity::is_non_corroborating_source(s))
-                    .unwrap_or("unknown")
+                    .find(|ev| !ev.is_non_corroborating())
+                    .map_or("unknown", |ev| ev.source.as_str())
             }
             let src1_label = corr_label(e1);
             let src2_label = corr_label(e2);

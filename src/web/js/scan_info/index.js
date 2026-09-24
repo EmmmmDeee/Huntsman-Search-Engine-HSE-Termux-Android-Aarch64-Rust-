@@ -64,7 +64,7 @@ export async function renderScanInfo(v){
   // either way.
 
   // The scan's state as the console shows it: `interrupted` when the API says
-  // no live process holds a `running` scan (REQ-SCANSTATUS-002). Only an
+  // no live process holds a `running` scan (REQ-SCANSTATUS-038). Only an
   // active scan gets an Abort button, a climbing clock and the refresh timer.
   const state = scanState(scan);
   const active = scanIsActive(scan);
@@ -76,7 +76,7 @@ export async function renderScanInfo(v){
   v.innerHTML = `
     <div class="crumbs"><a href="#/scans">Scans</a> &raquo; ${esc(title)}</div>
     <h2>${esc(title)}
-        <small class="text-muted" style="margin-left:6px">${kindPill(scan.target?.kind)}${target ? ` ${esc(target)}` : ''} ${statusPill(state)}</small>
+        <small class="text-muted" style="margin-left:6px">${kindPill(scan.target?.kind)}${target ? ` ${esc(target)}` : ''} ${statusPill(state, scan.finalise_incomplete)}</small>
         <div class="pull-right">
           <button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button>
           ${active

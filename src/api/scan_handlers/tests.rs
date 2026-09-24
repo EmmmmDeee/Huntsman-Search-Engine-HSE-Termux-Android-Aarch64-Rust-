@@ -70,6 +70,378 @@ Victims:
         let json: serde_json::Value = serde_json::from_slice(&bytes).expect("should succeed");
         assert_eq!(json["stealer_rows_parsed"], 1);
         assert_eq!(json["stealer_rows_stored"], 1);
+        assert_eq!(json["status"], "complete");
+    }
+
+    /// REQ-SCANSTATUS-005: the web import commits its row through the shared
+    /// `ImportScanRow` lifecycle — `Complete` on success, the response reports
+    /// the committed status, and the import leaves this process's in-flight
+    /// registry once it has returned.
+    #[tokio::test]
+    async fn scan_import_commits_its_row_and_leaves_the_in_flight_registry() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+        let state = crate::api::test_state();
+        let app = axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(Arc::clone(&state));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import?format=stealerlogs")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(
+                "Module: Stealerlogs\nVictims:\n  [1]\n    Log Id:\n      abc123\n    Credentials:\n      [1]\n        Username:\n          alice\n        Password:\n          hunter2\n    Domains:\n      [1]\n        example.com\n    Credential Count:\n      1\n",
+            ))
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert_eq!(resp.status(), 200);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let sid = json["scan_id"].as_str().expect("scan id").to_string();
+        let row = state.store.get_scan(&sid).unwrap().expect("row");
+        assert_eq!(row.status, crate::core::scan::ScanStatus::Complete);
+        assert_eq!(json["status"], row.status.as_str());
+        assert!(
+            !state.cancellations.lock().contains_key(&sid),
+            "the import is no longer in flight once it has returned"
+        );
+    }
+
+    /// REQ-SCANSTATUS-031: an import ends with the announcement a live scan
+    /// ends with. Its row reads `running` while it works, so the web scan log
+    /// tails it as live and waits for a `scan_complete` — which no import
+    /// sent, so the log read `live` until the stream's idle timeout and then
+    /// `disconnected`. The event is broadcast on the app's bus AFTER the
+    /// terminal row write (a subscriber re-reads the row on it) and recorded
+    /// in the scan's event log, as a live scan's is.
+    #[tokio::test]
+    async fn a_web_import_announces_its_completion_to_the_scan_log() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+        let state = crate::api::test_state();
+        let mut rx = state.bus.subscribe();
+        let app = axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(Arc::clone(&state));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import?format=stealerlogs")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(
+                "Module: Stealerlogs\nVictims:\n  [1]\n    Log Id:\n      abc123\n    Credentials:\n      [1]\n        Username:\n          alice\n        Password:\n          hunter2\n    Domains:\n      [1]\n        example.com\n    Credential Count:\n      1\n",
+            ))
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert_eq!(resp.status(), 200);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let sid = json["scan_id"].as_str().expect("scan id").to_string();
+        let row = state.store.get_scan(&sid).unwrap().expect("row");
+
+        let heard = rx.try_recv().expect("the import announced its completion");
+        assert_eq!(heard.scan_id, sid);
+        match &heard.kind {
+            crate::core::event::EventKind::ScanComplete {
+                scan_id,
+                entity_count,
+                status,
+                finalise_incomplete,
+            } => {
+                assert_eq!(scan_id, &sid);
+                assert_eq!(*status, row.status, "the event says what the row says");
+                assert_eq!(*entity_count, row.entity_count);
+                assert_eq!(*finalise_incomplete, row.finalise_incomplete());
+            }
+            other => panic!("expected scan_complete, got {other:?}"),
+        }
+        let logged = state.store.events_for_scan(&sid).unwrap();
+        assert!(
+            logged.iter().any(|e| matches!(
+                e.kind,
+                crate::core::event::EventKind::ScanComplete { .. }
+            )),
+            "the completion is in the scan's event log: {logged:?}"
+        );
+    }
+
+    /// REQ-SCANSTATUS-006: an import stays in flight for as long as its
+    /// blocking work runs, not for as long as its HTTP request does. The
+    /// registry guard and the semaphore permit lived in the handler's future,
+    /// but the import runs under `spawn_blocking`, which keeps going when that
+    /// future is dropped — as hyper drops it when the client goes away. The
+    /// guard then left the registry mid-import: the `Running` row read as
+    /// interrupted, `DELETE` passed its in-flight check (and the import's
+    /// commit resurrected the deleted row), and cancel answered 404.
+    #[tokio::test]
+    async fn an_import_whose_client_went_away_stays_in_flight_until_it_commits() {
+        use crate::core::test_support::RefusingStore;
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        let inner: Arc<dyn crate::core::StoragePort> =
+            Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+        let (gated, pause) = RefusingStore::new(Arc::clone(&inner)).pausing_entity_batch();
+        let state = crate::api::test_state_with_store(Arc::new(gated));
+        let permits = state.scan_semaphore.available_permits();
+        let app = axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(Arc::clone(&state));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(
+                "Entry #1:\n   \u{2022} email: ops@acme-corp.io\n   \u{2022} name: Ops Lead\n",
+            ))
+            .expect("should succeed");
+        let request = tokio::spawn(app.oneshot(req));
+        // The import has written its `Running` row and is inside its entity
+        // write when the client goes away.
+        let entered = pause.entered;
+        let entered = tokio::task::spawn_blocking(move || {
+            entered
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .map(|()| entered)
+        })
+        .await
+        .expect("should succeed")
+        .expect("the import reached its entity write");
+        request.abort();
+        assert!(request.await.is_err(), "the request future was dropped");
+
+        let sid = {
+            let registry = state.cancellations.lock();
+            let ids: Vec<&String> = registry.keys().collect();
+            assert_eq!(ids.len(), 1, "the import is still in flight: {ids:?}");
+            ids[0].clone()
+        };
+        let row = inner.get_scan(&sid).expect("should succeed").expect("row");
+        assert_eq!(row.status, crate::core::scan::ScanStatus::Running);
+        assert_eq!(
+            state.scan_semaphore.available_permits(),
+            permits - 1,
+            "the import still holds its permit"
+        );
+
+        // Let it finish: it commits, then leaves the registry and frees the
+        // permit.
+        pause.release.send(()).expect("the import is waiting");
+        drop(entered);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while state.cancellations.lock().contains_key(&sid) {
+            assert!(std::time::Instant::now() < deadline, "the import never ended");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let row = inner.get_scan(&sid).expect("should succeed").expect("row");
+        assert_eq!(row.status, crate::core::scan::ScanStatus::Complete);
+        assert_eq!(state.scan_semaphore.available_permits(), permits);
+    }
+
+    /// Copilot review of #649: the web upload counted relation / correlation
+    /// writes with `.is_ok()`, dropped the errors, wrote the scan `Complete`
+    /// with `error: None`, and answered with a hardcoded `"status":
+    /// "complete"`. A store that refuses the graph must leave the scan
+    /// `Complete` (every entity was imported) with the shortfall recorded, and
+    /// the response must say `partial` and name it.
+    #[tokio::test]
+    async fn scan_import_reports_a_refused_graph_as_partial() {
+        use crate::core::test_support::{REFUSED_RELATION, RefusingStore};
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        // A URL and its host domain: `derive_all` links them.
+        const DOSSIER: &str = "Entry #1:\n   \u{2022} email: ops@acme-corp.io\n   \u{2022} name: Ops Lead\n   \u{2022} domain: acme-corp.io\nhttp://acme-corp.io/login\n";
+        let import = |store: Arc<dyn crate::core::StoragePort>| async move {
+            let app = axum::Router::new()
+                .route("/api/v1/scans/import", axum::routing::post(scan_import))
+                .with_state(crate::api::test_state_with_store(store));
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/scans/import")
+                .header("x-hse-csrf", "1")
+                .body(Body::from(DOSSIER))
+                .expect("should succeed");
+            let resp = app.oneshot(req).await.expect("should succeed");
+            assert_eq!(resp.status(), 200);
+            let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+                .await
+                .expect("should succeed");
+            serde_json::from_slice::<serde_json::Value>(&bytes).expect("should succeed")
+        };
+        let open = || -> Arc<dyn crate::core::StoragePort> {
+            Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"))
+        };
+
+        // Control: a store that keeps everything answers `complete`.
+        let whole = import(open()).await;
+        assert_eq!(whole["status"], "complete", "{whole}");
+        assert!(whole["finalise_error"].is_null(), "{whole}");
+        let edges = whole["relation_count"].as_u64().expect("relation_count");
+        assert!(edges > 0, "the fixture must derive relations: {whole}");
+
+        let inner = open();
+        let json = import(Arc::new(
+            RefusingStore::new(Arc::clone(&inner)).refusing_relations(),
+        ))
+        .await;
+        assert_eq!(json["status"], "partial", "{json}");
+        assert_eq!(json["relation_count"], 0, "{json}");
+        let err = json["finalise_error"].as_str().expect("finalise_error named");
+        assert_eq!(
+            err,
+            format!("{edges}/{edges} relations failed to persist: {REFUSED_RELATION}")
+        );
+
+        // The stored row — what every export classifies — says the same.
+        let sid = json["scan_id"].as_str().expect("scan_id");
+        let scan = inner
+            .get_scan(sid)
+            .expect("should succeed")
+            .expect("the scan row exists");
+        assert_eq!(scan.status, crate::core::scan::ScanStatus::Complete);
+        assert_eq!(scan.error.as_deref(), Some(err));
+    }
+
+    /// Review of #649, second round: a correlator pass that failed outright on
+    /// the web upload (a refused read of the graph it evaluates) answered
+    /// `"status": "complete"` over a scan with no correlations and no error.
+    #[tokio::test]
+    async fn scan_import_reports_a_failed_correlation_pass_as_partial() {
+        use crate::core::test_support::{REFUSED_RELATION_READ, RefusingStore};
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        const DOSSIER: &str = "Entry #1:\n   \u{2022} email: ops@acme-corp.io\n   \u{2022} name: Ops Lead\n";
+        let inner: Arc<dyn crate::core::StoragePort> =
+            Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+        let app = axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(crate::api::test_state_with_store(Arc::new(
+                RefusingStore::new(Arc::clone(&inner)).refusing_relation_reads(),
+            )));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(DOSSIER))
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert_eq!(resp.status(), 200);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("should succeed");
+        assert_eq!(json["status"], "partial", "{json}");
+        let expected = format!("correlation pass failed: {REFUSED_RELATION_READ}");
+        assert_eq!(json["finalise_error"], expected.as_str(), "{json}");
+        let sid = json["scan_id"].as_str().expect("scan_id");
+        let scan = inner
+            .get_scan(sid)
+            .expect("should succeed")
+            .expect("the scan row exists");
+        assert_eq!(scan.error.as_deref(), Some(expected.as_str()));
+    }
+
+    /// REQ-GEOLABEL-033: the web upload prepares its entities exactly as
+    /// `hse import` does (`app::persist::prepare_import_batch`): the offline
+    /// geo enrichment turns a resolvable Address into a Coordinates fix. It
+    /// used to store the parsed set as-is, so the same file imported through
+    /// the browser had no address fixes, no geo tags and no grain stamps, and
+    /// every relation, correlation and place label downstream differed from
+    /// the CLI import of the identical bytes. The response's and the row's
+    /// entity count include the derived fix.
+    #[tokio::test]
+    async fn scan_import_enriches_like_the_cli_import() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        const CSV: &str = "id,email,name,database_name,address\n\
+            1,jordanavery@gmail.com,Jordan Avery,ExampleBreach2019,\"10 Smith St, Sydney NSW 2000\"\n";
+        let inner: Arc<dyn crate::core::StoragePort> =
+            Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+        let app = axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(crate::api::test_state_with_store(Arc::clone(&inner)));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(CSV))
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert_eq!(resp.status(), 200);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("should succeed");
+        let sid = json["scan_id"].as_str().expect("scan_id");
+        let stored = inner.entities_for_scan(sid).expect("should succeed");
+
+        // The CLI's preparation over the same parse, for comparison.
+        let (mut parsed, _) = crate::app::import::entities_from_upload(CSV, sid, None)
+            .await
+            .expect("should succeed");
+        crate::app::persist::prepare_import_batch(&mut parsed, sid);
+        let kinds = |es: &[crate::core::entity::Entity]| {
+            let mut v: Vec<(String, String)> = es
+                .iter()
+                .map(|e| (format!("{:?}", e.kind), e.value.clone()))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(kinds(&stored), kinds(&parsed), "{json}");
+        assert!(
+            stored
+                .iter()
+                .any(|e| e.kind == crate::core::entity::EntityKind::Coordinates),
+            "the Sydney address must become a Coordinates fix: {stored:?}"
+        );
+        assert_eq!(json["entity_count"], stored.len(), "{json}");
+        let row = inner.get_scan(sid).expect("should succeed").expect("row");
+        assert_eq!(row.entity_count, stored.len());
+    }
+
+    /// REQ-SCANSTATUS-009: a web import whose entity batch the store refuses
+    /// records `Failed` claiming no entities. The row's count was set before
+    /// the batch, so the `Failed` row claimed every parsed entity while
+    /// `entities_for_scan` returned none, and `/stats` summed them.
+    #[tokio::test]
+    async fn a_web_import_whose_entities_were_refused_claims_none() {
+        use crate::core::test_support::{InMemoryStore, RefusingStore};
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        const DOSSIER: &str = "Entry #1:\n   \u{2022} email: ops@acme-corp.io\n   \u{2022} name: Ops Lead\n";
+        let inner = Arc::new(InMemoryStore::new());
+        let app = axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(crate::api::test_state_with_store(Arc::new(
+                RefusingStore::new(inner.clone()).refusing_entity_writes(),
+            )));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(DOSSIER))
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert!(!resp.status().is_success(), "{:?}", resp.status());
+        let rows = crate::core::StoragePort::list_scans(inner.as_ref(), 10).expect("should succeed");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].status, crate::core::scan::ScanStatus::Failed);
+        assert_eq!(rows[0].entity_count, 0, "{:?}", rows[0]);
     }
 
     #[test]
@@ -275,6 +647,59 @@ Victims:
         let (again, _) = radar_scan_spec();
         assert_eq!(again.kind, target.kind);
         assert_eq!(again.value, target.value);
+    }
+
+    /// REQ-SCANSTATUS-030: a radar sweep goes out of `GET /radar/history` as
+    /// every other scan row does (`handlers::scan_json`), with the derived
+    /// `finalise_incomplete` and `interrupted` the sweep list's status pill
+    /// reads. Listed as raw rows, a sweep whose finalise fell short read as a
+    /// green `complete`, and one a dead process left `running` read as still
+    /// running.
+    #[tokio::test]
+    async fn radar_history_rows_carry_what_the_sweep_pill_reads() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+        let state = crate::api::test_state();
+        let (target, _) = radar_scan_spec();
+        let mut short = crate::core::scan::Scan::new("sweep-short".to_string(), target.clone());
+        short.status = crate::core::scan::ScanStatus::Complete;
+        short.error = Some("3/3 relations failed to persist: disk full".into());
+        short.started_at = 100;
+        let mut dead = crate::core::scan::Scan::new("sweep-dead".to_string(), target.clone());
+        dead.status = crate::core::scan::ScanStatus::Running;
+        dead.started_at = 200;
+        let mut clean = crate::core::scan::Scan::new("sweep-clean".to_string(), target);
+        clean.status = crate::core::scan::ScanStatus::Complete;
+        clean.started_at = 300;
+        for sc in [&short, &dead, &clean] {
+            state.store.upsert_scan(sc).unwrap();
+        }
+        let app = axum::Router::new()
+            .route("/api/v1/radar/history", axum::routing::get(radar_history))
+            .with_state(Arc::clone(&state));
+        let req = Request::builder()
+            .uri("/api/v1/radar/history")
+            .body(Body::empty())
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert_eq!(resp.status(), 200);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let sweeps = json["sweeps"].as_array().expect("sweeps");
+        let row = |id: &str| {
+            sweeps
+                .iter()
+                .find(|r| r["id"] == id)
+                .unwrap_or_else(|| panic!("{id} listed: {json}"))
+        };
+        assert_eq!(row("sweep-short")["finalise_incomplete"], true);
+        assert_eq!(row("sweep-short")["interrupted"], false);
+        assert_eq!(row("sweep-dead")["interrupted"], true);
+        assert_eq!(row("sweep-clean")["finalise_incomplete"], false);
+        assert_eq!(row("sweep-clean")["interrupted"], false);
     }
 
     /// Every sensor gates on `Coordinates | MacAddress` and ignores the VALUE,
@@ -735,7 +1160,7 @@ Victims:
     /// SQLite store behind `Arc<dyn StoragePort>`, so a reader left off the port,
     /// or a `Store` override forgotten, fails here rather than answering empty in
     /// production.
-    /// REQ-SCANSTATUS-002: the Radar view's sweep history reads a scan's
+    /// REQ-SCANSTATUS-038: the Radar view's sweep history reads a scan's
     /// state from `/radar/history`, which sent the raw rows: no `interrupted`
     /// flag, so a sweep whose process died read as running for good there
     /// while its own Scan Info page said interrupted.

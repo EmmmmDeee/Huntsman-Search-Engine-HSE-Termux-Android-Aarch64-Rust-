@@ -449,3 +449,134 @@ fn a_bare_country_name_never_resolves_but_the_address_it_belongs_to_does() {
         );
     }
 }
+
+    /// REQ-GEO-017: every value `city_coords` can return — a tabulated name, a
+    /// tabulated postcode, a leading-digit region — is recognised at the
+    /// 4-decimal grain callers format it with; a point off the tables is not.
+    #[test]
+    fn every_city_coords_answer_is_a_gazetteer_centroid() {
+        for addr in [
+            "Sydney NSW",
+            "Brisbane, QLD",
+            "Auckland",
+            "4552",
+            "4999",
+            "12 Smith St, Maleny QLD 4552",
+        ] {
+            let (lat, lon) = city_coords(addr).expect(addr);
+            let shown: Vec<f64> = format!("{lat:.4},{lon:.4}")
+                .split(',')
+                .map(|p| p.parse().unwrap())
+                .collect();
+            assert!(tabulated_centroid_at(shown[0], shown[1]).is_some(), "{addr}");
+        }
+        assert!(tabulated_centroid_at(-27.4801, 152.9912).is_none());
+        assert!(tabulated_centroid_at(-33.869844, 151.208285).is_none());
+    }
+
+    /// REQ-GEOLABEL-001: the one centroid authority says WHICH place a value
+    /// stands for. The operator's example `-27.4698,153.0251` is both the
+    /// `brisbane` row and postcode 4000's centroid; the coarser reading, the
+    /// city, is kept, in the AU anchor's spelling.
+    #[test]
+    fn tabulated_centroid_at_names_what_a_centroid_stands_for() {
+        assert_eq!(
+            tabulated_centroid_at(-27.4698, 153.0251),
+            Some(TabulatedCentroid::City {
+                name: "Brisbane".to_string(),
+                state: Some("QLD"),
+            })
+        );
+        // A CITIES row with no anchor is title-cased, its state from the box.
+        assert_eq!(
+            tabulated_centroid_at(-27.4833, 152.9833),
+            Some(TabulatedCentroid::City {
+                name: "Toowong".to_string(),
+                state: Some("QLD"),
+            })
+        );
+        // A postcode centroid that is no city row or anchor (Mansfield).
+        let (lat, lon) = postcode_coords("4122").expect("Mansfield is tabulated");
+        assert!(matches!(
+            tabulated_centroid_at(lat, lon),
+            Some(TabulatedCentroid::Postcode { ref code, state: Some("QLD") }) if code == "4122"
+        ));
+        // Maleny's postcode centroid is also its anchor: the city reading wins.
+        let (lat, lon) = postcode_coords("4552").expect("Maleny is tabulated");
+        assert!(matches!(
+            tabulated_centroid_at(lat, lon),
+            Some(TabulatedCentroid::City { ref name, .. }) if name == "Maleny"
+        ));
+        // A leading-digit region centroid.
+        let (lat, lon) = au_postcode_region("4820").expect("the 48 region");
+        assert_eq!(
+            tabulated_centroid_at(lat, lon),
+            Some(TabulatedCentroid::PostcodeRegion {
+                prefix: "48",
+                state: Some("QLD"),
+            })
+        );
+        // Off every table.
+        assert_eq!(tabulated_centroid_at(-27.4801, 152.9912), None);
+        assert!(TabulatedCentroid::PostcodeRegion { prefix: "40", state: None }.rank()
+            > TabulatedCentroid::City { name: String::new(), state: None }.rank());
+    }
+
+    /// The curated AU locality anchors are centroids too, alongside the city,
+    /// postcode and region rows.
+    #[test]
+    fn the_curated_au_anchors_are_centroids() {
+        // Lismore's anchor value is in no CITIES or postcode row: only the
+        // anchor table makes it a centroid.
+        assert_eq!(
+            tabulated_centroid_at(-28.8136, 153.2773),
+            Some(TabulatedCentroid::City {
+                name: "Lismore".to_string(),
+                state: Some("NSW"),
+            })
+        );
+    }
+
+    /// REQ-GEO-018: an address resolves on the LOCALITY it names, never on a
+    /// place name inside its street's name. "45 Sydney Road, Brunswick VIC"
+    /// is in Melbourne and resolved to the Sydney centroid (~700 km off);
+    /// "Hobart Rd, Kings Meadows TAS" is in Launceston and resolved to Hobart;
+    /// "Geelong Rd, Footscray" to Geelong instead of Footscray.
+    #[test]
+    fn a_place_named_in_the_street_is_not_the_address_locality() {
+        let sydney = city_coords("Sydney").expect("tabulated");
+        assert_ne!(city_coords("45 Sydney Road, Brunswick VIC"), Some(sydney));
+        assert_ne!(city_coords("45 Sydney Road Brunswick VIC"), Some(sydney));
+        let hobart = city_coords("Hobart").expect("tabulated");
+        assert_ne!(city_coords("Hobart Rd, Kings Meadows TAS"), Some(hobart));
+        let geelong = city_coords("Geelong").expect("tabulated");
+        assert_ne!(city_coords("120 Geelong Rd, Footscray VIC"), Some(geelong));
+        // The locality itself still resolves, street or no street, and a
+        // street's postcode still resolves when its suburb is untabulated.
+        assert_eq!(city_coords("12 Smith St, Sydney NSW"), Some(sydney));
+        assert_eq!(city_coords("Martin Place, Sydney"), Some(sydney));
+        assert!(city_coords("12 Smith St, Maleny QLD 4552").is_some());
+        // REQ-GEO-019: a suburb after the street type in the street's own
+        // segment is the locality, comma or no comma after it.
+        let toowong = city_coords("Toowong").expect("tabulated");
+        assert_eq!(city_coords("12 Smith St Toowong, QLD"), Some(toowong));
+        assert_eq!(city_coords("12 Smith St Toowong QLD"), Some(toowong));
+    }
+
+    /// The street recogniser never reads a gazetteer name as a street: every
+    /// tabulated city and every curated AU and VN anchor is its own locality
+    /// part, so no row can be dropped by [`city_coords`]'s street stripping.
+    #[test]
+    fn no_tabulated_locality_name_reads_as_a_street() {
+        let names = CITIES
+            .iter()
+            .map(|&(name, _, _)| name)
+            .chain(crate::util::geo::au_locality_anchors().map(|(name, _, _, _)| name));
+        for name in names {
+            assert_eq!(
+                crate::util::place_grain::locality_part(name).to_lowercase(),
+                name.to_lowercase(),
+                "{name} would be dropped as a street"
+            );
+        }
+    }

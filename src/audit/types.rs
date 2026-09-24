@@ -10,6 +10,14 @@ pub struct AuditEntity {
     pub c_effective: f64,
     pub corroboration: u32,
     pub sources: Vec<String>,
+    /// The distinct sources that CORROBORATE the entity, when the input
+    /// carries them — exactly [`Entity::corroborating_sources`] for a stored
+    /// entity, or the export CSV's `corroborating_sources` column. `None` for
+    /// an input that has only source NAMES (an older CSV, a fixture); see
+    /// [`AuditEntity::corroborating_source_count`] for what is read then.
+    ///
+    /// [`Entity::corroborating_sources`]: crate::core::entity::Entity::corroborating_sources
+    pub corroborating_sources: Option<Vec<String>>,
     pub tags: Vec<String>,
 }
 
@@ -27,14 +35,56 @@ impl AuditEntity {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
+        let mut corroborating: Vec<String> = e
+            .corroborating_sources()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        corroborating.sort_unstable();
         Self {
             kind: e.kind.to_string(),
             value: e.value.clone(),
             c_effective: e.c_effective(),
             corroboration: e.corroboration,
             sources,
+            corroborating_sources: Some(corroborating),
             tags: e.tags.clone(),
         }
+    }
+
+    /// How many distinct sources corroborate this entity — the number the
+    /// weak-corroboration finding grades, which must agree with
+    /// `Entity::source_count`.
+    ///
+    /// Whether a source corroborates is decided per RECORD
+    /// (`Evidence::is_non_corroborating`: an annotation of the value or a
+    /// name-only match does not), so when the input carries the entity's own
+    /// [`Self::corroborating_sources`] that set is read. An input that carries
+    /// only source names has no records to judge; there the source-level half
+    /// of the rule (`is_non_corroborating_source`) is the whole of what can be
+    /// known, and it is applied.
+    #[must_use]
+    pub fn corroborating_source_count(&self) -> usize {
+        self.corroborating_source_names().len()
+    }
+
+    /// The distinct source names that corroborate this entity, by the rule
+    /// [`Self::corroborating_source_count`] documents: the entity's own
+    /// per-record set when the input carries it, else its source names minus
+    /// the non-corroborating passes. The one reading both the weak-corroboration
+    /// grade and the geo-consensus person-anchor gate use.
+    #[must_use]
+    pub fn corroborating_source_names(&self) -> Vec<&str> {
+        self.corroborating_sources.as_ref().map_or_else(
+            || {
+                self.sources
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|s| !crate::core::entity::is_non_corroborating_source(s))
+                    .collect()
+            },
+            |c| c.iter().map(String::as_str).collect(),
+        )
     }
 }
 

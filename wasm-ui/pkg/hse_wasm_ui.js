@@ -983,20 +983,22 @@ export function scanState(scan_js) {
 }
 
 /**
- * [`status_pill`] for the JS views: `statusPillHtml(state)`. `helpers.js`'s
- * `statusPill` is this, so the markup exists once. `undefined`, `null` and
- * `""` draw as `pending`.
+ * [`status_pill`] for the JS views: `statusPillHtml(state, partial)`.
+ * `helpers.js`'s `statusPill` is this, so the markup exists once.
+ * `undefined`, `null` and `""` draw as `pending`; a `partial` that is not
+ * `true` is not partial.
  * @param {string | null} [state]
+ * @param {boolean | null} [partial]
  * @returns {string}
  */
-export function statusPillHtml(state) {
+export function statusPillHtml(state, partial) {
     let deferred2_0;
     let deferred2_1;
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         var ptr0 = isLikeNone(state) ? 0 : passStringToWasm0(state, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         var len0 = WASM_VECTOR_LEN;
-        wasm.statusPillHtml(retptr, ptr0, len0);
+        wasm.statusPillHtml(retptr, ptr0, len0, isLikeNone(partial) ? 0xFFFFFF : partial ? 1 : 0);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         deferred2_0 = r0;
@@ -1303,7 +1305,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 16, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_325);
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_328);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -1335,8 +1337,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_325(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_325(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_328(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_328(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

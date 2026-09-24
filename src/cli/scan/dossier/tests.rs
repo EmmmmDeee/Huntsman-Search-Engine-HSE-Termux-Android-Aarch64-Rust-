@@ -517,3 +517,45 @@ fn the_uid_tie_break_never_outranks_confidence() {
 
     assert_eq!(ranked[0].value, "zzz@b.com");
 }
+
+// ─── The nearest-place label (REQ-GEOLABEL-002) ────────────────────────────
+
+/// A coordinate finding prints its place line under the value — the tabulated
+/// Brisbane centroid as the city it stands for, never a street — and any other
+/// kind prints none.
+#[test]
+fn a_coordinate_finding_prints_its_place_line() {
+    use crate::core::entity::Evidence;
+    let mut centroid = Entity::new(EntityKind::Coordinates, "-27.469800,153.025100", 0.7, "s");
+    centroid.add_evidence(
+        Evidence::new("search_engines", "Geocoded from search address: Brisbane")
+            .with_attr("method", "known-city-lookup"),
+    );
+    let ctx = crate::core::place::PlaceContext::for_scan(std::slice::from_ref(&centroid), "s");
+    assert_eq!(
+        super::findings::place_line(&centroid, &ctx).as_deref(),
+        Some(
+            "    place: Brisbane, QLD (city centroid — not a street location)  [label=locality, fix=locality ±8 km; centroid]"
+        )
+    );
+    let email = Entity::new(EntityKind::Email, "a@b.com", 0.9, "s");
+    assert!(super::findings::place_line(&email, &ctx).is_none());
+}
+
+/// The best-location estimate prints its place: offline, a locality at best,
+/// marked fused for the synergy branch and single-signal for the ladder's
+/// single-signal rung — the kind its own basis line names (REQ-GEOLABEL-017).
+#[test]
+fn a_best_location_estimate_prints_its_fused_place() {
+    use crate::core::place::FixKind;
+    assert_eq!(
+        super::appendix::fused_place_line(-33.8774, 151.1989, 1.3, FixKind::Synergy).as_deref(),
+        Some("    place: Sydney, NSW (fused fix ±2 km)")
+    );
+    assert_eq!(
+        super::appendix::fused_place_line(-33.8774, 151.1989, 1.3, FixKind::SingleSignal)
+            .as_deref(),
+        Some("    place: Sydney, NSW (single-signal fix ±2 km)")
+    );
+    assert!(super::appendix::fused_place_line(0.0, -140.0, 1.0, FixKind::Synergy).is_none());
+}

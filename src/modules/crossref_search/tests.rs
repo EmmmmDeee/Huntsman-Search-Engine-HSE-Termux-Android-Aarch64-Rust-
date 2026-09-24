@@ -177,7 +177,10 @@ fn a_work_that_merely_mentions_the_name_is_not_the_subjects_work() {
         vec!["https://doi.org/10.1093/owc/9780199554652.003.0008".to_string()]
     );
     let ev = &out[0].evidence[0];
-    assert_eq!(ev.summary, "Crossref work by 'Ada Lovelace'");
+    assert_eq!(
+        ev.summary,
+        "Crossref work by 'Ada Lovelace': doi 10.1093/owc/9780199554652.003.0008"
+    );
     assert_eq!(
         ev.attributes.get("matched_author").map(String::as_str),
         Some("Ada Lovelace")
@@ -260,4 +263,30 @@ fn query_is_scoped_to_the_author_or_affiliation_field() {
         "{org}"
     );
     assert!(build_query(TargetKind::Domain, "example.com").is_none());
+}
+
+#[test]
+fn distinct_works_carry_distinct_records() {
+    // Scan 7258fc07: one summary per author made every work by that author a
+    // single shared evidence record, and the GEXF drew 18 false co-occurrence
+    // edges between distinct DOIs. The summary names the work — its DOI, else
+    // its URL.
+    let out = build(&resp(vec![
+        item(Some("10.1/a"), None),
+        item(None, Some("https://example.org/b")),
+    ]));
+    assert_eq!(out.len(), 2);
+    assert_eq!(
+        out[0].evidence[0].summary,
+        "Crossref work by 'Jordan Avery': doi 10.1/a"
+    );
+    assert_eq!(
+        out[1].evidence[0].summary,
+        "Crossref work by 'Jordan Avery': https://example.org/b"
+    );
+    let xml = crate::core::gexf::entities_to_gexf(&out, &[], SCAN);
+    assert!(
+        !xml.contains("<edge "),
+        "distinct works are not a joint record: {xml}"
+    );
 }

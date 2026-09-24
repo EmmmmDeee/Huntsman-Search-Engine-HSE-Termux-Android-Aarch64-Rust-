@@ -20,7 +20,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::html::{escape_html, fmt_date, kind_pill};
 use crate::scan_label::{ScanLabel, scan_label};
-use crate::scan_state::{is_active, scan_state, status_pill};
+use crate::scan_state::{is_active, pill_words, scan_state, status_pill};
 use crate::to_js_error;
 
 /// One provider's session quota snapshot — `src/api/handlers/mod.rs`'s
@@ -197,6 +197,10 @@ struct ScanRow {
     started_at: Option<u64>,
     finished_at: Option<u64>,
     entity_count: Option<u64>,
+    /// `scan_json`'s derived `Scan::finalise_incomplete`: the scan finished
+    /// with a finalise shortfall, so it is partial.
+    #[serde(default)]
+    finalise_incomplete: bool,
     /// A scan's `options`; a live session sends the same object as
     /// `scan_options`, so the Live page labels its sessions by the same rule.
     #[serde(alias = "scan_options")]
@@ -242,20 +246,25 @@ pub fn scan_label_js(scan_js: JsValue) -> Result<JsValue, JsValue> {
 }
 
 /// Whether a row matches the scan list's search box: the query, trimmed and
-/// case-folded, appears in the scan's name, target, target kind, state (as
-/// the row shows it, `interrupted` included) or id. A blank query matches
-/// every row.
+/// case-folded, appears in the scan's name, target, target kind, the words
+/// its pill shows (`interrupted` and `partial` included) or id. A partial
+/// row also matches the state it reached, `complete` or `aborted`, short of
+/// some results (REQ-SCANSTATUS-032); an interrupted one does not match
+/// `running`, because it is not. A blank query matches every row.
 fn scan_matches(row: &ScanRow, query: &str) -> bool {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return true;
     }
     let target = row.target.as_ref();
+    let state = scan_state(row.status.as_deref(), row.interrupted);
+    let shown = pill_words(state, row.finalise_incomplete);
     [
         row.options.as_ref().and_then(|o| o.name.as_deref()),
         target.and_then(|t| t.value.as_deref()),
         target.and_then(|t| t.kind.as_deref()),
-        Some(scan_state(row.status.as_deref(), row.interrupted)),
+        Some(shown),
+        (shown != state).then_some(state),
         Some(row.id.as_str()),
     ]
     .into_iter()
@@ -363,7 +372,7 @@ fn scan_row_html(row: &ScanRow) -> String {
         kind_pill = kind_pill(kind),
         started = escape_html(&fmt_date(row.started_at.unwrap_or(0))),
         dur = escape_html(&fmt_duration(dur_secs)),
-        status = status_pill(state),
+        status = status_pill(state, row.finalise_incomplete),
         entities = row.entity_count.unwrap_or(0),
         raw_id = row.id,
     )
@@ -414,6 +423,7 @@ mod tests {
             finished_at: None,
             entity_count: Some(3),
             options: None,
+            finalise_incomplete: false,
         }
     }
 
@@ -511,5 +521,56 @@ mod tests {
         assert_eq!(fmt_duration(Some(45)), "45s");
         assert_eq!(fmt_duration(Some(125)), "2m 5s");
         assert_eq!(fmt_duration(Some(3725)), "1h 2m");
+    }
+
+    /// REQ-SCANSTATUS-030: a scan row whose finalise was cut short reads
+    /// partial in the scan list (and the dashboard's Recent Scans), not the
+    /// green `complete` its bare status would earn.
+    #[test]
+    fn a_partial_scan_row_reads_partial() {
+        let partial_row = |finalise_incomplete: bool| ScanRow {
+            finalise_incomplete,
+            ..row("complete", false)
+        };
+        let partial = scan_row_html(&partial_row(true));
+        assert!(
+            partial.contains("<span class=\"status-pill s-partial\">partial</span>"),
+            "{partial}"
+        );
+        assert!(!partial.contains("s-complete"), "{partial}");
+        let whole = scan_row_html(&partial_row(false));
+        assert!(
+            whole.contains("<span class=\"status-pill s-complete\">complete</span>"),
+            "{whole}"
+        );
+    }
+
+    /// REQ-SCANSTATUS-032: the search box finds a partial row by the
+    /// `partial` its pill says, and by the state it reached; an interrupted
+    /// row is still not found by the `running` it no longer is.
+    #[test]
+    fn the_search_box_finds_a_partial_row_by_its_pill_and_its_state() {
+        let partial = ScanRow {
+            finalise_incomplete: true,
+            ..row("complete", false)
+        };
+        for q in ["partial", "PART", "complete"] {
+            assert!(scan_matches(&partial, q), "{q:?}");
+        }
+        let aborted_partial = ScanRow {
+            finalise_incomplete: true,
+            ..row("aborted", false)
+        };
+        for q in ["partial", "aborted"] {
+            assert!(scan_matches(&aborted_partial, q), "{q:?}");
+        }
+        // A whole scan is not partial, and a failure is never partial.
+        assert!(!scan_matches(&row("complete", false), "partial"));
+        let failed = ScanRow {
+            finalise_incomplete: true,
+            ..row("failed", false)
+        };
+        assert!(!scan_matches(&failed, "partial"));
+        assert!(!scan_matches(&row("running", true), "running"));
     }
 }

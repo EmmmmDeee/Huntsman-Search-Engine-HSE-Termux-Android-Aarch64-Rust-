@@ -618,7 +618,10 @@ use super::*;
         // exactly what the class radius already describes, and the guard must
         // never SHARPEN a source beyond it: inventing precision is the one
         // direction this change must not move in.
-        let house = geocoded_coord("-33.8688,151.2093", Some("house"));
+        // Off every gazetteer table: at the tabulated Sydney centroid the same
+        // record is that centroid, a city (REQ-GEOLABEL-007), which is the
+        // precision authority's call, not this table's.
+        let house = geocoded_coord("-33.8702,151.2071", Some("house"));
         let radius = best_precision_radius_m(&house).expect("an anchoring source");
         assert!(
             (radius - precision_radius_m(GeoSourceClass::Geocode)).abs() < f64::EPSILON,
@@ -632,7 +635,8 @@ use super::*;
         // table does not know, must behave exactly as before rather than being
         // guessed at in either direction.
         for pt in [None, Some("some_new_osm_type"), Some("")] {
-            let e = geocoded_coord("-33.8688,151.2093", pt);
+            // Off the gazetteer tables, as above.
+            let e = geocoded_coord("-33.8702,151.2071", pt);
             let radius = best_precision_radius_m(&e).expect("an anchoring source");
             assert!(
                 (radius - precision_radius_m(GeoSourceClass::Geocode)).abs() < f64::EPSILON,
@@ -687,6 +691,10 @@ use super::*;
             "neighbourhood",
             "hamlet",
             "locality",
+            // A street's representative point is a street, not a rooftop
+            // (REQ-GEOLABEL-007): coarser than the class default too.
+            "street",
+            "road",
         ] {
             let r = geocode_grain_radius_m(pt)
                 .unwrap_or_else(|| panic!("{pt} must be recognised by the grain table"));
@@ -701,7 +709,7 @@ use super::*;
 
         // Grains at least as precise as the class default are deliberately not
         // in the table at all: there is nothing to correct.
-        for pt in ["house", "building", "street", "road", "amenity", ""] {
+        for pt in ["house", "building", "amenity", ""] {
             assert!(
                 geocode_grain_radius_m(pt).is_none(),
                 "{pt} is not coarser than the class default and must not be listed"
@@ -736,4 +744,194 @@ use super::*;
             radius >= geocode_grain_radius_m("state").expect("recognised"),
             "the coarsest geocoder answer must set the geocode leg; got {radius} m"
         );
+    }
+
+    /// REQ-GEO-009: one search-snippet mention of "Sydney, Australia",
+    /// geocoded twice — `search_engines`' inline city lookup and the geocode
+    /// module's pivot on the same Address — is one mention, one class. Scan
+    /// 7258fc07's headline 0.97 fix rested on exactly this {Geocode, Search}.
+    #[test]
+    fn a_geocoder_leg_inherits_the_class_of_the_address_it_geocoded() {
+        let mut addr = Entity::new(EntityKind::Address, "Sydney, Australia", 0.65, "s");
+        addr.tag("country:AU");
+        addr.add_evidence(Evidence::new("search_engines", "Address near example.com"));
+
+        let mut a = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.72, "s");
+        a.tag("country:AU");
+        a.tag("au-state:NSW");
+        a.add_evidence(
+            Evidence::new(
+                "search_engines",
+                "Geocoded from search address: Sydney, Australia",
+            )
+            .with_attr("source_address", "Sydney, Australia"),
+        );
+
+        let mut b = Entity::new(EntityKind::Coordinates, "-33.8698,151.2083", 0.55, "s");
+        b.tag("country:AU");
+        b.tag("au-state:NSW");
+        b.add_evidence(
+            Evidence::new("geocode", "Geocoded \"Sydney, Australia\"")
+                .with_attr("input_address", "Sydney, Australia")
+                .with_attr("place_type", "city"),
+        );
+
+        let ents = vec![addr.clone(), a.clone(), b.clone()];
+        assert!(
+            au059_synergy_fix(&ents).is_none(),
+            "a geocode of a search-snippet address is the snippet's datum, not an orthogonal class"
+        );
+        assert!(
+            rule_au_059_cross_seed_geo_synergy(&RuleContext::new(&ents), "s", 0).is_empty()
+        );
+        assert_eq!(
+            au_location_corroboration(&ents).map(|c| c.independent_classes),
+            Some(1),
+            "best_geo_class must read the geocoder leg's lineage too"
+        );
+
+        // Control 1: the geocoded Address came from a registry, so the leg is
+        // Registry — a genuinely independent method beside the snippet.
+        let mut reg = addr.clone();
+        reg.evidence.clear();
+        reg.add_evidence(Evidence::new("abn_lookup", "ABR registered address"));
+        let fix = au059_synergy_fix(&[reg, a.clone(), b.clone()])
+            .expect("a registry address geocoded + a search sighting are two classes");
+        assert_eq!(fix.class_names.len(), 2);
+        assert!(
+            !fix.class_names
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case("geocode")),
+            "{:?}",
+            fix.class_names
+        );
+
+        // Control 2: no resolvable Address in the slice (an operator seed): the
+        // leg keeps its own Geocode class.
+        assert!(
+            au059_synergy_fix(&[a, b]).is_some(),
+            "an untraceable geocoder input stays an independent Geocode leg"
+        );
+    }
+
+    /// REQ-GEOLABEL-031: a best-location fix's `locality` names the anchor
+    /// its `place_label` names (`core::place::fused_au_locality`). An
+    /// inner-west Melbourne fix redacted to `-37.8,144.9` sits exactly on the
+    /// Footscray anchor; graded ±5–6 km it printed "near Footscray" on the
+    /// dossier's headline and wrote `"locality":"Footscray"` to report.json
+    /// beside a `place_label` naming Melbourne — the suburb the redaction
+    /// withheld.
+    #[test]
+    fn a_best_locations_locality_names_what_its_place_label_names() {
+        let label_of = |est: &AuLocationEstimate| {
+            crate::core::place::describe_fused(
+                est.lat,
+                est.lon,
+                est.radius_km,
+                crate::core::place::FixKind::SingleSignal,
+            )
+            .expect("place label")
+            .text
+        };
+        let redacted = best_au_location_estimate(&[coord_at("-37.8,144.9", 0.85, "exif_geo")])
+            .expect("rung-2 estimate");
+        assert!(redacted.radius_km > 5.0, "{redacted:?}");
+        assert_eq!(redacted.locality.as_deref(), Some("Melbourne"), "{redacted:?}");
+        let text = label_of(&redacted);
+        assert!(text.contains("Melbourne") && !text.contains("Footscray"), "{text}");
+
+        // A fix good to metres on the same anchor: its label names Melbourne
+        // (a fused label is never finer than a locality), and so does its
+        // `locality` — one fix, one name.
+        let point = best_au_location_estimate(&[coord_at(
+            "-37.800123,144.900456",
+            0.85,
+            "exif_geo",
+        )])
+        .expect("rung-2 estimate");
+        assert!(point.radius_km < 0.1, "{point:?}");
+        assert_eq!(point.locality.as_deref(), Some("Melbourne"), "{point:?}");
+        assert!(label_of(&point).contains("Melbourne"), "{}", label_of(&point));
+
+        // The corroboration's radius is never under 8 km: never a suburb.
+        let ents = vec![
+            au_coord("-37.8000,144.9000", 0.80, "abn_lookup", "VIC"),
+            au_coord("-37.8010,144.9010", 0.70, "exif_geo", "VIC"),
+        ];
+        let c = au_location_corroboration(&ents).expect("two agreeing classes");
+        assert!(c.radius_km >= 8.0, "{:?}", c.radius_km);
+        assert_eq!(c.locality.as_deref(), Some("Melbourne"));
+
+        // Control: a fix away from any capital's suburb keeps its own town.
+        let geelong = best_au_location_estimate(&[coord_at("-38.1499,144.3617", 0.85, "exif_geo")])
+            .expect("rung-2 estimate");
+        assert_eq!(geelong.locality.as_deref(), Some("Geelong"), "{geelong:?}");
+    }
+
+    /// REQ-GEOLABEL-034: a fix graded coarser than a locality names no town.
+    /// `fused_au_locality` returned the nearest town at any radius, so a
+    /// Sydney landline's ±650 km area-code fix — labelled "Australia" — still
+    /// printed "near Sydney", and a mobile login IP's ±50 km fix — labelled
+    /// "Victoria, Australia" — "near Melbourne": a name finer than the fix,
+    /// beside a label that did not name it.
+    #[test]
+    fn a_coarse_best_location_names_no_town() {
+        let label_of = |est: &AuLocationEstimate| {
+            crate::core::place::describe_fused(
+                est.lat,
+                est.lon,
+                est.radius_km,
+                crate::core::place::FixKind::SingleSignal,
+            )
+            .expect("place label")
+            .text
+        };
+        // Rung 6: a Sydney geographic landline, ±650 km.
+        let phone = Entity::new(EntityKind::Phone, "+61 2 9374 4000", 0.7, "s");
+        let landline = best_au_location_estimate(&[phone]).expect("rung-6 estimate");
+        assert_eq!(landline.basis, "landline area-code region", "{landline:?}");
+        assert!(landline.radius_km > 150.0, "{landline:?}");
+        let text = label_of(&landline);
+        assert!(text.starts_with("Australia"), "{text}");
+        assert_eq!(landline.locality, None, "{landline:?} beside {text}");
+
+        // Rung 5: a mobile login IP geolocated to Melbourne, ±50 km.
+        let mut ip = Entity::new(EntityKind::IpAddress, "1.132.97.84", 0.6, "s");
+        ip.tag("geolocation-lead");
+        let mut coord = Entity::new(EntityKind::Coordinates, "-37.8136,144.9631", 0.6, "s");
+        coord.tag("mobile");
+        coord.add_evidence(Evidence::new("ip_geo", "g").with_attr("ip", "1.132.97.84"));
+        let mobile = best_au_location_estimate(&[ip, coord]).expect("rung-5 estimate");
+        assert_eq!(mobile.basis, "breach login-IP city", "{mobile:?}");
+        assert!((mobile.radius_km - 50.0).abs() < 1e-9, "{mobile:?}");
+        let text = label_of(&mobile);
+        assert!(text.starts_with("Victoria, Australia"), "{text}");
+        assert_eq!(mobile.locality, None, "{mobile:?} beside {text}");
+
+        // Every AU rung radius: `locality` is named exactly when the label
+        // names that centre.
+        for radius_km in [0.05, 5.0, 25.0, 30.0, 30.1, 50.0, 150.0, 650.0, 1700.0] {
+            for (lat, lon) in [(-33.8688, 151.2093), (-37.8136, 144.9631), (-23.7, 133.88)] {
+                let text = crate::core::place::describe_fused(
+                    lat,
+                    lon,
+                    radius_km,
+                    crate::core::place::FixKind::SingleSignal,
+                )
+                .expect("label")
+                .text;
+                match crate::core::place::fused_au_locality(lat, lon, radius_km) {
+                    Some(town) => assert!(
+                        text.contains(town) && !text.starts_with("remote"),
+                        "({lat},{lon}) ±{radius_km} km: {town} vs {text}"
+                    ),
+                    None => assert!(
+                        crate::core::place::fused_name_grain(radius_km)
+                            > crate::core::place::FixGrain::Locality
+                            || text.starts_with("remote"),
+                        "({lat},{lon}) ±{radius_km} km names a centre: {text}"
+                    ),
+                }
+            }
+        }
     }

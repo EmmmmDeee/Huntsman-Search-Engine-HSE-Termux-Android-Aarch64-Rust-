@@ -15,6 +15,60 @@ pub(super) fn curl_present() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// The debug bundle's key inventory, split by whether each slot holds a usable
+/// credential — the SAME test ([`crate::util::keys::is_configured_value`]) the
+/// modules apply when they resolve their key.
+///
+/// It used to split on the key's NAME alone: every loaded `HUNTSMAN_*` slot was
+/// "present" and only a name missing from the env file was "absent". But
+/// `hse provision` writes a full template of `insert_..._here` slots, and
+/// modules reject those via [`crate::util::keys::resolve_key`] — so the
+/// scan-7258fc07 bundle listed SEEKNOW, DEHASHED, INTELX, EXA, OATHNET and a
+/// dozen more under `keys_present` with `keys_absent : 0`, while its own SCAN
+/// SEQUENCE held 247 "needs API key" skips for exactly those keys. The section
+/// exists to answer "why did module X find nothing?", and it answered it
+/// wrongly. This is the name-versus-credential confusion `is_configured_value`
+/// documents, already fixed for `hse doctor`, provision and the key pool.
+///
+/// Pure over the loaded map (no `$HOME`, no env), so it is testable and
+/// deterministic: both lists are sorted.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct KeyInventory<'a> {
+    /// `HUNTSMAN_*` slots holding a configured value, sorted.
+    pub(super) present: Vec<&'a str>,
+    /// Known keys with no configured value — missing, blank, or an unedited
+    /// template placeholder — sorted (`KNOWN_KEYS` order is not relied on).
+    pub(super) absent: Vec<&'static str>,
+    /// How many of `absent` are present by NAME but hold a blank value or a
+    /// template placeholder, so the operator can tell "never provisioned" from
+    /// "provisioned, never filled in".
+    pub(super) unfilled: usize,
+}
+
+pub(super) fn key_inventory(
+    loaded: &std::collections::HashMap<String, String>,
+) -> KeyInventory<'_> {
+    use crate::util::keys::{KNOWN_KEYS, is_configured_value};
+    let mut present: Vec<&str> = loaded
+        .iter()
+        .filter(|(k, v)| k.starts_with("HUNTSMAN_") && is_configured_value(v))
+        .map(|(k, _)| k.as_str())
+        .collect();
+    present.sort_unstable();
+    let mut absent: Vec<&'static str> = KNOWN_KEYS
+        .iter()
+        .copied()
+        .filter(|k| !loaded.get(*k).is_some_and(|v| is_configured_value(v)))
+        .collect();
+    absent.sort_unstable();
+    let unfilled = absent.iter().filter(|k| loaded.contains_key(**k)).count();
+    KeyInventory {
+        present,
+        absent,
+        unfilled,
+    }
+}
+
 /// Environment fingerprint for the debug bundle: the build, host, module set,
 /// and key-PRESENCE (names only — never values) under which a scan ran. This is
 /// what makes "why did module X find nothing?" answerable from the artifact
@@ -22,23 +76,22 @@ pub(super) fn curl_present() -> bool {
 /// configuration/environment drift between two bundles be diffed (Determinism
 /// Requirement names config/env drift as a thing to detect and report).
 ///
-/// Deliberately secret-free: only the NAMES of present `HUNTSMAN_*` keys are
-/// listed, never their values. Per-process-stable (version, target, registry,
+/// A key is "present" only when its slot holds a configured value — see
+/// [`key_inventory`]; a template placeholder is reported absent, because that
+/// is how every module treats it.
+///
+/// Deliberately secret-free: only the NAMES of `HUNTSMAN_*` keys are listed,
+/// never their values. Per-process-stable (version, target, registry,
 /// key presence don't change mid-process), so it does not break the bundle's
 /// byte-determinism for a fixed host.
 pub(super) fn render_environment(curl: bool) -> String {
     use std::fmt::Write as _;
     let loaded = crate::util::keys::load();
-    let mut present: Vec<&str> = loaded
-        .keys()
-        .filter(|k| k.starts_with("HUNTSMAN_"))
-        .map(String::as_str)
-        .collect();
-    present.sort_unstable();
-    let absent: Vec<&&str> = crate::util::keys::KNOWN_KEYS
-        .iter()
-        .filter(|k| !loaded.contains_key(**k))
-        .collect();
+    let KeyInventory {
+        present,
+        absent,
+        unfilled,
+    } = key_inventory(&loaded);
 
     let mods = crate::modules::registry();
     let mut by_cost: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
@@ -120,25 +173,17 @@ pub(super) fn render_environment(curl: bool) -> String {
     );
     let _ = writeln!(
         s,
-        "  keys_absent : {} (modules needing these skip cleanly, not errors){}",
+        "  keys_absent : {} (modules needing these skip cleanly, not errors){}{}",
         absent.len(),
+        if unfilled == 0 {
+            String::new()
+        } else {
+            format!(" — {unfilled} provisioned but unfilled (blank or template placeholder)")
+        },
         if absent.is_empty() {
             String::new()
         } else {
-            format!(
-                ": {}",
-                absent
-                    .iter()
-                    .map(|k| **k)
-                    .enumerate()
-                    .fold(String::new(), |mut acc, (i, s)| {
-                        if i > 0 {
-                            acc.push_str(", ");
-                        }
-                        acc.push_str(s);
-                        acc
-                    })
-            )
+            format!(": {}", absent.join(", "))
         }
     );
     s

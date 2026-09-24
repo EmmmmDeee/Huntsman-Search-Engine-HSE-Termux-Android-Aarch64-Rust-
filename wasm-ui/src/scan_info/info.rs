@@ -174,6 +174,9 @@ struct ScanView {
     entity_count: Option<u64>,
     error: Option<String>,
     options: Option<ScanOptionsView>,
+    /// `scan_json`'s derived `Scan::finalise_incomplete`.
+    #[serde(default)]
+    finalise_incomplete: bool,
 }
 
 const ALL_DEFAULT: &str = "<span class=\"text-muted\">all (default)</span>";
@@ -235,7 +238,10 @@ fn scan_settings_html(scan: ScanView) -> String {
         ),
         (
             "Status",
-            status_pill(scan_state(scan.status.as_deref(), scan.interrupted)),
+            status_pill(
+                scan_state(scan.status.as_deref(), scan.interrupted),
+                scan.finalise_incomplete,
+            ),
         ),
         ("Started", fmt_date(scan.started_at.unwrap_or(0))),
         ("Finished", fmt_date(scan.finished_at.unwrap_or(0))),
@@ -368,7 +374,7 @@ mod tests {
     #[test]
     fn an_interrupted_scans_status_row_says_interrupted() {
         // The API keeps a dead server's scan at `running` and marks it
-        // interrupted (REQ-SCANSTATUS-002).
+        // interrupted (REQ-SCANSTATUS-038).
         let html = scan_settings_html(ScanView {
             status: Some("running".into()),
             interrupted: true,

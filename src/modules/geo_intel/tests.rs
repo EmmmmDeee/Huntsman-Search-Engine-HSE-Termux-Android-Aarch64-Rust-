@@ -119,6 +119,46 @@ async fn national_number_without_marker_yields_no_coordinate() {
     assert!(out.entities[0].has_tag("country:EG"));
 }
 
+/// REQ-GEOLABEL-036: a shared dialling prefix tags every country it covers,
+/// so a copy of the point that kept only its tags (a CSV re-import) still
+/// names them. `+1` tagged only `country:US`, and a Toronto number's copy read
+/// "United States".
+#[tokio::test]
+async fn a_shared_prefix_tags_every_country_it_covers() {
+    let ctx = offline_ctx();
+    for (number, want, never) in [
+        (
+            "+1 416 555 0100",
+            &["country:US", "country:CA"][..],
+            "country:MX",
+        ),
+        (
+            "+7 495 000 0000",
+            &["country:RU", "country:KZ"][..],
+            "country:UA",
+        ),
+        ("+64 4 000 0000", &["country:NZ"][..], "country:AU"),
+    ] {
+        let t = Target::new(TargetKind::Phone, number);
+        let out = process_phone_prefix_only(&t, &ctx)
+            .await
+            .expect("should succeed");
+        assert_eq!(out.entities.len(), 1, "{number}");
+        let e = &out.entities[0];
+        let tagged: Vec<&str> = e
+            .tags
+            .iter()
+            .map(String::as_str)
+            .filter(|t| t.starts_with("country:"))
+            .collect();
+        assert_eq!(tagged.len(), want.len(), "{number}: {tagged:?}");
+        for w in want {
+            assert!(e.has_tag(w), "{number}: {tagged:?}");
+        }
+        assert!(!e.has_tag(never), "{number}");
+    }
+}
+
 #[test]
 fn ip_geo_rejects_the_null_island_band_not_just_exact_zero() {
     // geo_intel now gates both coarse free-tier IP sources on the null-island
@@ -303,4 +343,37 @@ fn freeipapi_coordinates_carry_the_originating_ip_for_login_ip_recognition() {
         "Coordinates evidence must carry the originating IP so \
          person_login_ip_coords can recognise this as a login-IP fix"
     );
+}
+
+/// REQ-GEOLABEL-025: a phone-prefix point is labelled with the country the
+/// prefix names, which for a shared prefix is more than one. `+1` is minted at
+/// the US centroid with `country_code` US, so a Toronto number's point read
+/// "United States (country-level signal …)"; `+7` named only Russia, so a
+/// Kazakhstan number's read "Russia".
+#[tokio::test]
+async fn a_shared_prefix_is_labelled_with_every_country_it_names() {
+    let ctx = offline_ctx();
+    for (number, named, never) in [
+        ("+1 416 555 0100", "United States/Canada", "United States ("),
+        ("+7 701 555 0100", "Russia/Kazakhstan", "Russia ("),
+        ("+64 4 499 0000", "New Zealand", "Wellington"),
+    ] {
+        let t = Target::new(TargetKind::Phone, number);
+        let out = process_phone_prefix_only(&t, &ctx)
+            .await
+            .expect("should succeed");
+        assert_eq!(out.entities.len(), 1, "{number}: {:?}", out.entities);
+        let label = crate::core::place::describe(
+            &out.entities[0],
+            &crate::core::place::PlaceContext::default(),
+        )
+        .expect("labelled");
+        assert_eq!(
+            label.fix_grain,
+            crate::core::place::FixGrain::Country,
+            "{number}: {label:?}"
+        );
+        assert!(label.text.starts_with(named), "{number}: {label:?}");
+        assert!(!label.text.contains(never), "{number}: {label:?}");
+    }
 }

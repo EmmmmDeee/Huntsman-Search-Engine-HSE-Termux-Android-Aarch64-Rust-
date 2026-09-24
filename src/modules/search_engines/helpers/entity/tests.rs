@@ -281,8 +281,8 @@ use super::*;
         // "smith" without an independent signal. The bare surname anchor is too weak
         // for common names — "smith_engineering" for "John Smith" is a business name
         // that happens to contain a popular surname, not a personal handle for John.
-        // Without independent corroboration (people-search host or site: query),
-        // Signal 1 alone must not clear the PROBABLE gate.
+        // Without independent corroboration (a people-search host), Signal 1
+        // alone must not clear the PROBABLE gate.
         let terms = vec!["john".to_string(), "smith".to_string()];
         let r = sr(
             "Smith Engineering",
@@ -297,7 +297,9 @@ use super::*;
         );
         assert_eq!(conf, 0.30);
 
-        // With a site: query targeting the platform, the surname anchor clears the gate
+        // A site: query targeting the platform is HSE's own query construction,
+        // not independent evidence (REQ-SEARCH-011): the business slug stays
+        // CANDIDATE under it.
         let r_with_site = sr(
             "Smith Engineering",
             "business profile",
@@ -306,10 +308,10 @@ use super::*;
         );
         let (score_site, conf_site) = score_username("smith_engineering", "github.com", &terms, &r_with_site);
         assert!(
-            score_site >= 3,
-            "surname anchor + platform-targeted query must reach PROBABLE: {score_site}"
+            score_site < 3,
+            "HSE's own site: dork must not lift a business slug to PROBABLE: {score_site}"
         );
-        assert_eq!(conf_site, confidence::MEDIUM_HIGH);
+        assert_eq!(conf_site, 0.30);
 
         // With people-search provenance, the surname anchor clears the gate
         let r_people_search = sr(
@@ -324,6 +326,133 @@ use super::*;
             "surname anchor + people-search host must reach PROBABLE: {score_ps}"
         );
         assert_eq!(conf_ps, confidence::MEDIUM_HIGH);
+    }
+
+    #[test]
+    fn score_username_site_query_does_not_lift_business_slug_gate() {
+        // REQ-SEARCH-011, live scan 7258fc07 ("Ian Thorpe"): the facility handle
+        // `ianthorpe_aquatic` reached PROBABLE and was pivoted into a follow-up
+        // handle search only because HSE's own `site:instagram.com` dork
+        // returned it.
+        let terms = vec!["ian".to_string(), "thorpe".to_string()];
+        let r = sr(
+            "Ian Thorpe Aquatic Centre (@ianthorpe_aquatic)",
+            "Instagram instagram.com › ianthorpe_aquatic Ian Thorpe Aquatic Centre (@ianthorpe_aquatic)",
+            "https://www.instagram.com/ianthorpe_aquatic/?hl=en",
+            "Ian Thorpe site:instagram.com OR site:github.com OR site:reddit.com",
+        );
+        let (score, conf) = score_username("ianthorpe_aquatic", "www.instagram.com", &terms, &r);
+        assert!(
+            score < 3,
+            "a facility slug must not reach PROBABLE via HSE's own site: dork: {score}"
+        );
+        assert_eq!(conf, 0.30);
+
+        // A genuine handle under the same query is unaffected.
+        let r2 = sr(
+            "Ian Thorpe (@ian_thorpe)",
+            "",
+            "https://www.instagram.com/ian_thorpe/",
+            "Ian Thorpe site:instagram.com",
+        );
+        let (s2, c2) = score_username("ian_thorpe", "www.instagram.com", &terms, &r2);
+        assert!(s2 >= 3, "a real firstname_lastname handle stays PROBABLE: {s2}");
+        assert_eq!(c2, confidence::MEDIUM_HIGH);
+    }
+
+    #[test]
+    fn an_org_title_span_yields_one_bounded_org_without_the_person_or_boilerplate() {
+        // REQ-SEARCH-010, live scan 7258fc07 ("Ian Thorpe"): one LinkedIn title
+        // minted 'Ian Thorpe - Thorpedo Inc' AND 'Ian Thorpe - Thorpedo Inc.',
+        // and namesakes' employers were admitted because the person's name,
+        // glued onto the company, carried the subject term.
+        let terms = vec!["ian".to_string(), "thorpe".to_string()];
+        assert_eq!(
+            extract_organisations_from_text("Ian Thorpe - Thorpedo Inc. | LinkedIn", &terms),
+            vec!["Thorpedo Inc.".to_string()],
+            "one org, no person prefix, no suffix-variant duplicate"
+        );
+        // A namesake's employer carries no subject term once the person prefix
+        // is cut off.
+        for title in [
+            "Ian Thorpe - Commercial Portfolio Management Pty Ltd | LinkedIn",
+            "Megan Thorpe Email & Phone Number | Covalent Lithium Pty Ltd",
+            "Ian Thorpe – SEL UK Ltd",
+            "Carol Thorpe — Perspective Financial Group Ltd",
+            "Ian Thorpe › Some Other Co.",
+        ] {
+            assert!(
+                extract_organisations_from_text(title, &terms).is_empty(),
+                "{title:?} -> {:?}",
+                extract_organisations_from_text(title, &terms)
+            );
+        }
+        // Every dotted/undotted and nested pair collapses to one org.
+        let t = vec!["acme".to_string()];
+        assert_eq!(
+            extract_organisations_from_text("Acme Corp. - Home", &t),
+            vec!["Acme Corp.".to_string()]
+        );
+        assert_eq!(
+            extract_organisations_from_text("Acme Holdings Pty Ltd", &t),
+            vec!["Acme Holdings Pty Ltd".to_string()]
+        );
+        assert_eq!(
+            extract_organisations_from_text("Acme Holdings Pty. Ltd. | Acme Pty Limited", &t),
+            vec!["Acme Holdings Pty. Ltd.".to_string(), "Acme Pty Limited".to_string()]
+        );
+        // Two companies in one run of prose are two spans, never one glued org.
+        let two = extract_organisations_from_text("Beta Ltd and Acme Pty Ltd", &t);
+        assert!(!two.iter().any(|o| o.starts_with("Beta")), "{two:?}");
+        assert_eq!(
+            extract_organisations_from_text("Beta Ltd, Acme Pty Ltd", &t),
+            vec!["Acme Pty Ltd".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_org_in_snippet_prose_is_its_capitalised_name_run_matched_at_word_starts() {
+        // REQ-SEARCH-013: prose carries no title separator, so the separator
+        // bound alone let the person's name — and the title/snippet join — glue
+        // onto the company, and the person's name then passed the term filter.
+        let terms = vec!["ian".to_string(), "thorpe".to_string()];
+        let glued = "Ian Thorpe | LinkedIn Ian Thorpe is the managing director of \
+                     Harbour Holdings Pty Ltd";
+        assert!(
+            extract_organisations_from_text(glued, &terms).is_empty(),
+            "{:?}",
+            extract_organisations_from_text(glued, &terms)
+        );
+        // A given name inside another word is not the subject's term.
+        let australian = "Australian Unity Limited - Ian Thorpe";
+        assert!(
+            extract_organisations_from_text(australian, &terms).is_empty(),
+            "{:?}",
+            extract_organisations_from_text(australian, &terms)
+        );
+        // The company's own name still carries the term, in prose too.
+        assert_eq!(
+            extract_organisations_from_text(
+                "Ian Thorpe is a director of Thorpe Family Holdings Pty Ltd since 2001",
+                &terms
+            ),
+            vec!["Thorpe Family Holdings Pty Ltd".to_string()]
+        );
+        // Connectors between capitalised words stay inside the name.
+        assert_eq!(
+            extract_organisations_from_text(
+                "she banks with Bank of Queensland Limited",
+                &["queensland".to_string()]
+            ),
+            vec!["Bank of Queensland Limited".to_string()]
+        );
+        // An all-caps run has no lowercase end: the 60-byte floor still bounds
+        // it, and a word the floor cuts through is not taken.
+        let caps = "IAN THORPE IS THE MANAGING DIRECTOR OF THE HARBOUR THORPE HOLDINGS PTY LTD";
+        for org in extract_organisations_from_text(caps, &terms) {
+            assert!(org.len() <= 60 + " PTY LTD".len(), "{org:?}");
+            assert!(caps.contains(&format!(" {org}")), "{org:?} starts mid-word");
+        }
     }
 
     // ── normalise_address_key ────────────────────────────────────────────────
@@ -419,7 +548,7 @@ use super::*;
 
     /// REQ-SEARCH-ADDR-001: a people-search listing title "Name, State" is not a
     /// locality. The extractor itself stays text-only; the name-scan caller
-    /// drops these with `is_person_listing_locality`.
+    /// drops these with `surname_bearer_locality`.
     #[test]
     fn a_people_search_listing_title_is_not_a_locality() {
         let listed = extract_addresses_from_text(
@@ -427,7 +556,7 @@ use super::*;
         );
         assert!(listed.iter().any(|a| a == "Ian Thorpe, North Carolina"), "{listed:?}");
         for person in ["Ian Thorpe, North Carolina", "Bill Thorpe, Florida"] {
-            assert!(is_person_listing_locality(person, "Thorpe"), "{person}");
+            assert!(surname_bearer_locality(person, "Ian Thorpe").is_none(), "{person}");
         }
         // Real places survive: a suburb that IS the surname, a place-prefixed
         // name, an unrelated city, and a comma-free string.
@@ -438,8 +567,124 @@ use super::*;
             "Houston, Texas",
             "Thorpe",
         ] {
-            assert!(!is_person_listing_locality(place, "Thorpe"), "{place}");
+            assert!(surname_bearer_locality(place, "Ian Thorpe").is_some_and(|a| a == place), "{place}");
         }
-        assert!(!is_person_listing_locality("Lawnton, QLD", "Lawnton"));
+        assert!(surname_bearer_locality("Lawnton, QLD", "Ian Lawnton").is_some_and(|a| a == "Lawnton, QLD"));
+        // `person_surname` reads a diacritic-folded surname
+        // (REQ-IDENTITY-GATE-003); the listing prints the accented one.
+        assert!(surname_bearer_locality("Bich Nguyễn, Hà Nội", "Lan Nguyen").is_none());
+    }
+
+    /// REQ-SEARCH-ADDR-003: the REQ-SEARCH-ADDR-002 rule dropped every
+    /// multi-word city with the surname after its first word, losing a suburb
+    /// that carries the surname mid-name and a statement locating the bearer.
+    /// A place suffix after the surname is a place; `in <Place>` after it is
+    /// the place; anything else (a facility, a trade) is a thing named after
+    /// a surname-bearer.
+    #[test]
+    fn a_suburb_carrying_the_surname_and_a_located_bearer_are_localities() {
+        let found = extract_addresses_from_text("Our offices in Box Hill North, Victoria");
+        assert!(
+            found.iter().any(|a| a == "Box Hill North, Victoria"),
+            "input pinned: {found:?}"
+        );
+        for place in ["Box Hill North, Victoria", "Box Hill South, VIC"] {
+            assert_eq!(surname_bearer_locality(place, "Ian Hill").as_deref(), Some(place));
+        }
+        // REQ-SEARCH-ADDR-002's stated loss, closed: a lake named for a park.
+        assert_eq!(
+            surname_bearer_locality("Albert Park Lake, VIC", "Ian Park").as_deref(),
+            Some("Albert Park Lake, VIC")
+        );
+        let found = extract_addresses_from_text(
+            "Swim coach, Ian Thorpe in Ultimo, New South Wales, Australia",
+        );
+        let located = "Ian Thorpe in Ultimo, New South Wales";
+        assert!(found.iter().any(|a| a == located), "input pinned: {found:?}");
+        assert_eq!(
+            surname_bearer_locality(located, "Ian Thorpe").as_deref(),
+            Some("Ultimo, New South Wales")
+        );
+        // Still dropped: a listing title, a venue, a business, and a bare
+        // "in" with no place after it.
+        for bearer in [
+            "Ian Thorpe, North Carolina",
+            "Ian Thorpe Aquatic Centre in Ultimo, New South Wales",
+            "Jamie Thorpe Plumbing, QLD",
+            "Ian Thorpe in, NSW",
+        ] {
+            assert_eq!(surname_bearer_locality(bearer, "Ian Thorpe"), None, "{bearer}");
+        }
+    }
+
+    /// REQ-SEARCH-ADDR-004: `"<Given> <Surname> in <Place>"` locates the
+    /// subject only when `<Given> <Surname>` names the subject. A people-search
+    /// snippet that names "Ian Thorpe" passes the per-result gate and can list
+    /// his relatives; REQ-SEARCH-ADDR-003 read the surname alone, so "Carol
+    /// Thorpe in Mosman" became the Address "Mosman, NSW" on Ian's scan.
+    #[test]
+    fn a_relative_located_in_a_place_does_not_locate_the_subject() {
+        let found = extract_addresses_from_text(
+            "Ian Thorpe, age 45 - relatives, Carol Thorpe in Mosman, NSW",
+        );
+        let relative = "Carol Thorpe in Mosman, NSW";
+        assert!(found.iter().any(|a| a == relative), "input pinned: {found:?}");
+        for bearer in [
+            relative,
+            "Relatives: Bill Thorpe; Carol Thorpe in Mosman, NSW",
+            // The subject named earlier in the segment is not this bearer.
+            "Ian Thorpe's sister Carol Thorpe in Mosman, NSW",
+            "Ian and Carol Thorpe in Mosman, NSW",
+            // A bare title names nobody in particular.
+            "Mr Thorpe in Mosman, NSW",
+        ] {
+            assert_eq!(surname_bearer_locality(bearer, "Ian Thorpe"), None, "{bearer}");
+        }
+        // The subject himself, however the name before the surname is written.
+        for (located, subject) in [
+            ("Ian Thorpe in Mosman, NSW", "Ian Thorpe"),
+            ("Contact Ian Thorpe in Mosman, NSW", "Ian Thorpe"),
+            ("I. Thorpe in Mosman, NSW", "Ian Thorpe"),
+            ("Ian James Thorpe in Mosman, NSW", "Ian James Thorpe"),
+            ("Carol Thorpe in Mosman, NSW", "Carol Thorpe"),
+        ] {
+            assert_eq!(
+                surname_bearer_locality(located, subject).as_deref(),
+                Some("Mosman, NSW"),
+                "{located} for {subject}"
+            );
+        }
+        // A mononym subject has no surname to read: every address is kept.
+        assert_eq!(
+            surname_bearer_locality("Carol Thorpe in Mosman, NSW", "Thorpe").as_deref(),
+            Some("Carol Thorpe in Mosman, NSW")
+        );
+    }
+
+    /// REQ-SEARCH-ADDR-002: a venue named after a surname-bearer is not a
+    /// locality. The verbatim LinkedIn job title from scan 7258fc07 yielded the
+    /// Address "Ian Thorpe Aquatic Centre in Ultimo, New South Wales"; the
+    /// surname sits mid-segment, so the old last-word test kept it and Photon's
+    /// (correct) geocode of the pool became the headline location fix.
+    #[test]
+    fn a_venue_named_after_a_surname_bearer_is_not_a_locality() {
+        let found = extract_addresses_from_text(
+            "Workforce Australia for Individuals hiring Exercise Physiologist NSW, \
+             Ian Thorpe Aquatic Centre in Ultimo, New South Wales, Australia | LinkedIn",
+        );
+        let venue = "Ian Thorpe Aquatic Centre in Ultimo, New South Wales";
+        assert!(found.iter().any(|a| a == venue), "input pinned: {found:?}");
+        assert!(surname_bearer_locality(venue, "Ian Thorpe").is_none());
+        // Places survive: a one-word suburb that is the surname, a place-word
+        // prefix, a place that STARTS with the surname, an unrelated city.
+        for place in [
+            "Lawnton, QLD",
+            "Port Thorpe, Tasmania",
+            "Mount Thorpe, QLD",
+            "Thorpe Bay, Essex",
+            "Houston, Texas",
+        ] {
+            assert!(surname_bearer_locality(place, "Ian Thorpe").is_some_and(|a| a == place), "{place}");
+        }
     }
 

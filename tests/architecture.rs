@@ -948,6 +948,27 @@ fn core_does_not_import_util_directly() {
                 // anchor set; no I/O), same leaf category as `au_state_for_coords`.
                 // AU-099 uses it to label a bare coordinate with a human locality.
                 && !line.contains("util::geo::nearest_au_locality")
+                // The Vietnamese counterpart of `nearest_au_locality`: nearest
+                // centrally-run city by haversine over a six-row compiled-in
+                // table, bounded to 50 km (no I/O, no deps); `au_locality_anchors`
+                // is the read-only iterator over the AU anchor table the same
+                // function scans. `core::place::label` words an offline place
+                // label from them (REQ-GEOLABEL-002).
+                && !line.contains("util::geo::nearest_vn_locality")
+                && !line.contains("util::geo::au_locality_anchors")
+                // `nearest_au_locality` over the same table with the capitals'
+                // suburb anchors skipped (a fix coarser than a suburb is never
+                // named after one); pure, no I/O (REQ-GEOLABEL-030).
+                && !line.contains("util::geo::nearest_au_town")
+                // Pure dependency-free validity predicate on a lat/lon pair (range
+                // and NaN checks only), the same leaf category as
+                // `is_in_australia`; `core::place::label` rejects an invalid
+                // fused point with it.
+                && !line.contains("util::geo::is_valid_coords")
+                // Pure lookup of an AU state code's full name in the same
+                // compiled-in table `address_au::state_code` reads (no I/O);
+                // `core::place::label` names a region-grain point's state.
+                && !line.contains("util::address_au::state_name")
                 // Pure, dependency-free great-circle distance (haversine; no I/O,
                 // no deps), same leaf category as `nearest_au_locality`. The
                 // multi-source location-corroboration scorer
@@ -966,10 +987,33 @@ fn core_does_not_import_util_directly() {
                 // the target auto-detector to strip separators from a candidate
                 // phone/registry number. No state, no I/O, no upward deps.
                 && !line.contains("util::str_util::ascii_digits")
+                // Pure, dependency-free Latin/Vietnamese diacritic fold (one
+                // `match` per char; no state, no I/O, no upward deps) — the
+                // same leaf category as `ascii_digits` immediately above.
+                // `core::scan::classify::fold_name_text` reads every person
+                // name and handle through it, so the identity gates compare
+                // `"Nguyễn Văn An"` and the handle `nguyenvanan` in one
+                // alphabet — the SAME fold `name_intel` permutes names with, so
+                // the handles it derives and the gates judging them can never
+                // disagree on what a name spells (REQ-IDENTITY-GATE-003).
+                // Scoped to the single function.
+                && !line.contains("util::str_util::fold_ascii_lower")
+                // The one evidence-attribute KEY (a `&str` const; no code
+                // runs) under which `util::namesake::mark_ambiguous` records a
+                // party flag it moved off an ambiguous entity. AU-114 reads it
+                // to surface that flag as an unresolved lead; naming the writer's
+                // own constant keeps writer and reader from drifting onto two
+                // spellings of the key (REQ-NAMESAKE-003). Scoped to the const.
+                && !line.contains("util::namesake::UNRESOLVED_FLAGS_ATTR")
                 // Pure, dependency-free offline city→coordinate lookup table
                 // (no I/O, no network). The engine's address_to_coords_pass uses
                 // it to convert Address entities into Coordinates for geo correlation.
                 && !line.contains("util::city_coords::city_coords")
+                // The same lookup, also returning the grain of what matched
+                // (`city` / `postcode` / `region`) — pure, same table, no I/O.
+                // address_to_coords_pass records it as the derived centroid's
+                // `place_type` so the correlator weighs it at its real grain.
+                && !line.contains("util::city_coords::city_coords_with_grain")
                 // Pure, dependency-free offline AU-locality exact-match lookup
                 // (no I/O, no network), same leaf category as `city_coords`
                 // immediately above — it reuses the identical `CITIES` table,
@@ -980,6 +1024,34 @@ fn core_does_not_import_util_directly() {
                 // hyphen-splitting alone can't tell an elastic agent-name
                 // prefix from a multi-word suburb.
                 && !line.contains("util::city_coords::is_tabulated_au_city")
+                // Pure, offline lookups over the SAME gazetteer tables as
+                // `city_coords` above: which tabulated centroid a 4-decimal
+                // value is, and the enum naming it. `core::place::grain` grades
+                // a coordinate at the grain of the place a centroid stands for
+                // and names that place — the one centroid authority the
+                // engine's admission stamp and pivot gate reach through
+                // `core::place::assess` (REQ-GEOLABEL-001). No I/O, no state
+                // beyond the lazily built table.
+                && !line.contains("util::city_coords::tabulated_centroid_at")
+                // Nearest tabulated city within a bound, by haversine over the
+                // same compiled-in `CITIES` table `tabulated_centroid_at` reads
+                // (pure, no I/O); `core::place::label` words a non-AU/VN point
+                // as "near" it (REQ-GEOLABEL-002).
+                && !line.contains("util::city_coords::nearest_tabulated_city")
+                && !line.contains("util::city_coords::TabulatedCentroid")
+                // Pure string predicates (no I/O, no network, no state) over
+                // place names: `is_bare_country`, what grain a place string
+                // names (`place_naming` and its `AdminGrain`/`StreetGrain`
+                // vocabulary, the one street recogniser), the locality part of
+                // an address (`locality_part`), and whether a matched name is
+                // the queried place (`is_name_of_queried_place`). They call
+                // only other pure leaves already allowed here (`city_coords`,
+                // `address_au::single_state_code`, `str_util::fold_ascii_lower`).
+                // `core::place::grain` caps a forward geocode at the grain its
+                // input names (REQ-GEOLABEL-001, REQ-GEOLABEL-010), and
+                // `core::geo_family` reaches `locality_part` through
+                // `city_coords` (REQ-GEO-018).
+                && !line.contains("util::place_grain")
                 // Pure, dependency-free offline surname-distinctiveness heuristic
                 // (a small embedded common-surname set; no state, no I/O), same leaf
                 // category as `address_au::locality_key`. `core::leads` uses it to

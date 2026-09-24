@@ -186,14 +186,57 @@ const NAME_AFFIXES: &[&str] = &[
     "phd", "esq",
 ];
 
-/// A person name as `(given, surname)` — the first and last name tokens after
-/// honorifics, post-nominals and a parenthesised note (`"(swimmer)"`) are removed
-/// and a `"Surname, Given"` register reversal is reordered. Lowercase alphabetic
-/// tokens (an internal `-`/`'` is kept, so `O'Neill` and `Symes-Thorpe` survive
-/// as one token). `None` when fewer than two tokens remain: a mononym carries no
-/// given/surname structure to compare, so the caller must not treat it as proof
-/// of a different person.
-fn person_name_parts(name: &str) -> Option<(String, String)> {
+/// Fold a name-bearing string to the one reading every person-name comparison
+/// in this file uses: Latin and Vietnamese diacritics to their base ASCII letter
+/// through the shared fold ([`crate::util::str_util::fold_ascii_lower`], the
+/// same one `name_intel` permutes names with), combining marks (NFD input)
+/// dropped, and everything the fold has no ASCII answer for — a separator, a
+/// Cyrillic or CJK letter — kept, lowercased, rather than deleted.
+///
+/// Without it a handle and a name were read in two alphabets: a handle is ASCII
+/// (`nguyenvanan`, `jose.garcia`) while the name kept `"nguyễn"`/`"josé"`, so
+/// [`handle_names_person`] judged every ASCII handle of an accented name "does
+/// not spell it" and [`person_names_compatible`] judged `"Nguyễn Văn An"` and
+/// `"Nguyen Van An"` two different people — vetoing ownership and co-reference
+/// for exactly the names of HSE's primary jurisdiction (REQ-IDENTITY-GATE-003).
+/// The fold is applied per character, never to the whole string, because
+/// `fold_ascii_lower` deletes what it cannot fold: a Cyrillic name must stay a
+/// Cyrillic name, not become an empty mononym. Pure; deterministic; idempotent.
+pub(crate) fn fold_name_text(s: &str) -> String {
+    let combining = |c: &char| ('\u{300}'..='\u{36F}').contains(c);
+    let mut out = String::with_capacity(s.len());
+    let mut buf = [0u8; 4];
+    for c in s.chars().filter(|c| !combining(c)) {
+        let folded = crate::util::str_util::fold_ascii_lower(c.encode_utf8(&mut buf));
+        if folded.is_empty() {
+            out.extend(c.to_lowercase().filter(|l| !combining(l)));
+        } else {
+            out.push_str(&folded);
+        }
+    }
+    out
+}
+
+/// A person name read into its positions by [`person_name_parts`].
+struct NameParts {
+    /// The first name token (`"mary-jane"` keeps its internal `-`).
+    given: String,
+    /// The tokens between the given name and the surname, in order — the
+    /// subject's own middle names, which a slug or a handle may spell out.
+    middles: Vec<String>,
+    /// The last name token (`"symes-thorpe"`, `"o'neill"`).
+    surname: String,
+}
+
+/// A person name as [`NameParts`] — the first and last name tokens (and the
+/// middle tokens between them) after honorifics, post-nominals and a
+/// parenthesised note (`"(swimmer)"`) are removed and a `"Surname, Given"`
+/// register reversal is reordered. Tokens are read through [`fold_name_text`]
+/// (so `"Nguyễn"` is `"nguyen"`) and kept alphabetic (an internal `-`/`'` is
+/// kept, so `O'Neill` and `Symes-Thorpe` survive as one token). `None` when
+/// fewer than two tokens remain: a mononym carries no given/surname structure to
+/// compare, so the caller must not treat it as proof of a different person.
+fn person_name_parts(name: &str) -> Option<NameParts> {
     let mut depth = 0u32;
     let unparenthesised: String = name
         .chars()
@@ -215,13 +258,12 @@ fn person_name_parts(name: &str) -> Option<(String, String)> {
         }
         _ => unparenthesised,
     };
-    let mut tokens: Vec<String> = reordered
+    let mut tokens: Vec<String> = fold_name_text(&reordered)
         .split(|c: char| c.is_whitespace() || c == ',')
         .map(|t| {
             t.trim_matches(|c: char| !c.is_alphabetic())
                 .chars()
                 .filter(|c| c.is_alphabetic() || matches!(c, '-' | '\''))
-                .flat_map(char::to_lowercase)
                 .collect::<String>()
         })
         .filter(|t| !t.is_empty())
@@ -243,16 +285,23 @@ fn person_name_parts(name: &str) -> Option<(String, String)> {
         return None;
     }
     let surname = tokens.pop()?;
-    Some((tokens.swap_remove(0), surname))
+    let middles = tokens.split_off(1);
+    Some(NameParts {
+        given: tokens.pop()?,
+        middles,
+        surname,
+    })
 }
 
 /// The surname of a person name as [`person_name_parts`] reads it — honorifics,
 /// post-nominals and a `(note)` removed, a `"Surname, Given"` reversal reordered —
-/// lowercased. `None` for a mononym. The one surname reading for every caller
+/// lowercased and diacritic-folded ([`fold_name_text`]: `"Nguyễn"` is
+/// `"nguyen"`). `None` for a mononym. The one surname reading for every caller
 /// that holds a scan's `FullName`, so `"Dr Ian Thorpe OAM"` is a Thorpe, not an
-/// "OAM" (the last whitespace token).
+/// "OAM" (the last whitespace token); a caller comparing it against raw text
+/// folds that text through [`fold_name_text`] too.
 pub(crate) fn person_surname(name: &str) -> Option<String> {
-    person_name_parts(name).map(|(_, surname)| surname)
+    person_name_parts(name).map(|parts| parts.surname)
 }
 
 /// Two given names that can denote one person: equal, or one is a bare initial
@@ -270,15 +319,280 @@ fn given_names_compatible(a: &str, b: &str) -> bool {
 /// True when two person names can denote the same individual: the same surname
 /// and compatible given names (see [`given_names_compatible`]), read in either
 /// token order so a surname-first register row (`"THORPE IAN"`) still matches.
-/// `None` when either name lacks a given/surname structure (a mononym) — unknown,
-/// never "different".
+/// Both names are read diacritic-folded ([`fold_name_text`]), so an accented
+/// record and its unaccented spelling (`"Nguyễn Văn An"` ↔ `"Nguyen Van An"`)
+/// are one person, not two. `None` when either name lacks a given/surname
+/// structure (a mononym) — unknown, never "different".
 pub(crate) fn person_names_compatible(a: &str, b: &str) -> Option<bool> {
-    let (ga, sa) = person_name_parts(a)?;
-    let (gb, sb) = person_name_parts(b)?;
+    let (a, b) = (person_name_parts(a)?, person_name_parts(b)?);
+    let (ga, sa, gb, sb) = (a.given, a.surname, b.given, b.surname);
     Some(
         (sa == sb && given_names_compatible(&ga, &gb))
             || (ga == sb && given_names_compatible(&sa, &gb)),
     )
+}
+
+/// Whether an Email local part or a Username `handle` spells the person `name` —
+/// the identifier-side sibling of [`person_names_compatible`], sharing its name
+/// parser so a handle and a name record are judged by one reading of the name.
+///
+/// [`identity_overlaps`] cannot make this call for a person: any ≥4-character
+/// run satisfies it, and the surname alone always is one. A real "Ian Thorpe"
+/// scan bound `carolthorpe70`, `megthorpeart`, `aidan_thorpe` (`"anthorpe"`)
+/// and `tharleschorpe` (`"horpe"`) to the subject as his own identifiers, and
+/// co-reference scored `damianthorpe` a 0.62 name-token match because
+/// `"ian"` and `"thorpe"` are both substrings of it (REQ-IDENTITY-GATE-002).
+///
+/// The handle (an email's local part only) is read as its lowercase
+/// alphabetic runs — digits and every separator split — and the runs are then
+/// concatenated from a run START, so a match can never begin inside a word
+/// (`dam|ianthorpe` is not `ian thorpe`) while `ian.thorpe`, `ian_thorpe` and
+/// `ianthorpe` read alike. Name and handle are both read diacritic-folded
+/// ([`fold_name_text`]), so the ASCII handles of an accented name
+/// (`nguyenvanan` for `"Nguyễn Văn An"`, `jose.garcia` for `"José García"`) are
+/// read in the name's own alphabet (REQ-IDENTITY-GATE-003). With `g` the given
+/// name, `s` the surname (an internal `-`/`'` dropped, so `o.neill` matches
+/// `O'Neill`) and `gi`/`si` their initials, `Some(true)` iff the text read from
+/// some run start is:
+///   * `g s…` — the full given name then the surname, anything after it
+///     (`ianthorpe`, `ian.thorpe`, `ianthorpeofficial`, `ianthorpe26`);
+///   * `g x s…` — the same across one middle initial (`ianjthorpe`,
+///     `ian_j_thorpe`);
+///   * `g m s…` — the same across the subject's OWN middle name(s), written
+///     together or singly, with or without separators (`ianjamesthorpe` and
+///     `ian.james.thorpe` for "Ian James Thorpe");
+///   * `g M s…` — across one foreign middle name that is a whole run of its
+///     own, `g` a whole run before it and no `-` between it and the surname
+///     (`ian.james.thorpe` for "Ian Thorpe"): the handle's separators stand
+///     where a name's spaces do, the same whitespace rule
+///     [`text_names_person`] applies, and a `-` there reads as the
+///     double-barrelled `james-thorpe` instead (REQ-IDENTITY-GATE-003);
+///   * `gi s`, `s g`, `s gi` or `g si` — each ENDING at a run boundary, since
+///     a bare initial is too short to trust inside a longer word (`ithorpe`,
+///     `kdiegmann`, `thorpe_ian`, `thorpe_i` and `haigenb` match;
+///     `thorpe_ivan` does not).
+///
+/// `Some(false)` otherwise — the surname alone or beside another given name
+/// (`thorpe`, `jack_thorpe`, `thorpedo_m`), however many characters it
+/// shares. `None` when `name` is a mononym, which has no given/surname
+/// structure to test; the caller keeps its own check. Known conservative
+/// losses, matching this codebase's default of a missed link over a false one:
+/// a handle built from a nickname (`bobsmith` for Robert Smith), with a prefix
+/// (`realianthorpe`), or with a foreign middle name run into its neighbours
+/// (`ianjamesthorpe` when the subject's name does not carry "James") is not
+/// recognised. Pure; deterministic; no dictionary.
+pub(crate) fn handle_names_person(name: &str, handle: &str) -> Option<bool> {
+    let parts = person_name_parts(name)?;
+    // `person_name_parts` has already folded and lowercased every token.
+    let letters = |s: &str| -> String { s.chars().filter(|c| c.is_alphabetic()).collect() };
+    let (g, s) = (letters(&parts.given), letters(&parts.surname));
+    let (Some(gi), Some(si)) = (g.chars().next(), s.chars().next()) else {
+        return None;
+    };
+    let (gi, si) = (gi.to_string(), si.to_string());
+    // The subject's own middle names as a handle writes them: all of them run
+    // together (`johnpaulgeorge`), then each one alone. Insertion-ordered.
+    let mut own_middles: Vec<String> = Vec::new();
+    let all_middles: String = parts.middles.iter().map(|m| letters(m)).collect();
+    for m in std::iter::once(all_middles).chain(parts.middles.iter().map(|m| letters(m))) {
+        if !m.is_empty() && !own_middles.contains(&m) {
+            own_middles.push(m);
+        }
+    }
+    // Alphabetic runs of the folded local part, each with the separator text
+    // (digits included) that precedes it.
+    let mut runs: Vec<(String, String)> = Vec::new();
+    let (mut run, mut sep) = (String::new(), String::new());
+    for c in fold_name_text(crate::core::validation::email_local(handle)).chars() {
+        if c.is_alphabetic() {
+            run.push(c);
+        } else {
+            if !run.is_empty() {
+                runs.push((std::mem::take(&mut run), std::mem::take(&mut sep)));
+            }
+            sep.push(c);
+        }
+    }
+    if !run.is_empty() {
+        runs.push((run, sep));
+    }
+    let named = (0..runs.len()).any(|start| {
+        // The runs from `start` joined, and the byte offsets where a run ends.
+        let mut joined = String::new();
+        let mut ends = Vec::new();
+        for (r, _) in &runs[start..] {
+            joined.push_str(r);
+            ends.push(joined.len());
+        }
+        let open_ended = |form: &str| joined.starts_with(form);
+        let bounded = |form: &str| joined.starts_with(form) && ends.contains(&form.len());
+        let across_initial = joined.strip_prefix(g.as_str()).is_some_and(|rest| {
+            let mut cs = rest.chars();
+            cs.next().is_some() && cs.as_str().starts_with(s.as_str())
+        });
+        let across_own_middle = own_middles
+            .iter()
+            .any(|m| open_ended(&format!("{g}{m}{s}")));
+        let across_foreign_middle_run = runs[start].0 == g
+            && runs
+                .get(start + 1)
+                .is_some_and(|(m, _)| m.chars().count() >= 2)
+            && runs
+                .get(start + 2)
+                .is_some_and(|(_, sep)| !sep.contains('-'))
+            && ends
+                .get(1)
+                .is_some_and(|&at| joined[at..].starts_with(s.as_str()));
+        open_ended(&format!("{g}{s}"))
+            || across_initial
+            || across_own_middle
+            || across_foreign_middle_run
+            || bounded(&format!("{gi}{s}"))
+            || bounded(&format!("{s}{g}"))
+            || bounded(&format!("{s}{gi}"))
+            || bounded(&format!("{g}{si}"))
+    });
+    Some(named)
+}
+
+/// Whether free `text` (a search result's title + snippet + URL, or a bare URL
+/// path) NAMES the person `subject` — the search-admission sibling of
+/// [`person_names_compatible`], sharing its name parser so a result and a
+/// discovered `Person` are judged by one reading of the subject's name.
+///
+/// `Some(true)` iff the subject's surname occurs as a whole token run with a
+/// compatible given name (see [`given_names_compatible`]) beside it:
+///   * directly before it — `"ian thorpe"`, `"j thorpe"` for "John Thorpe",
+///     the slug `ian-thorpe-4b080523`. The initials `a` and `i` are also the
+///     English article and pronoun, so they count only when a `.` follows
+///     (`"I. Thorpe"`) or, in a slug, when they open a `-`-joined run with no
+///     whitespace around them (`/i-thorpe`): `"find a baker"` does not name
+///     "Andrew Baker" (REQ-SEARCH-014);
+///   * two before it across one middle name or initial — `"ian j thorpe"`,
+///     `"Ian James Thorpe"`. A FOREIGN middle name must be space-separated from
+///     the surname: `"Ian Symes-Thorpe"` is a double-barrelled surname, a
+///     different person to [`person_names_compatible`] as well;
+///   * the subject's OWN name run before it, whatever separates its tokens —
+///     the full given name and the middle name(s) the subject's name carries
+///     (`/in/ian-james-thorpe-1234` for "Ian James Thorpe"), or every part of a
+///     multi-part given name (`/in/mary-jane-smith` for "Mary-Jane Smith"). A
+///     URL path has only `-` separators, so without this the subject's own
+///     slug failed the whitespace rule above and was not minted
+///     (REQ-SEARCH-012). Tokens the subject's name does not carry still need
+///     the whitespace, so `ian-symes-thorpe` stays a Symes-Thorpe;
+///   * directly after it in surname-first order — `"THORPE IAN"`, `"Thorpe,
+///     Ian"` — and there only the FULL given name, since a bare initial after a
+///     surname is as often the pronoun (`"Mark Thorpe I think"`).
+///
+/// `Some(false)` otherwise: the surname alone, or only beside an incompatible
+/// given name (`"bill thorpe"`, `"JAMIE THORPE PLUMBING"`), does not name "Ian
+/// Thorpe" — a surname is shared by every relative and namesake, and a live "Ian
+/// Thorpe" scan minted a Spokeo `Bill-Thorpe` page, a plumbing company and their
+/// contact details as the subject's own on exactly that reading
+/// (REQ-SEARCH-008). `None` when `subject` is a mononym, which carries no
+/// given/surname structure to test — the caller keeps its own single-term check.
+///
+/// Tokens are the lowercase alphanumeric runs of `text` read diacritic-folded
+/// ([`fold_name_text`], so `nguyen-van-an` names "Nguyễn Văn An"), so `-`, `_`,
+/// `/`, `.`, `,` and whitespace all separate and a URL slug tokenises like prose; a
+/// hyphenated or apostrophised name part (`Symes-Thorpe`, `O'Neill`) is matched
+/// as its run of sub-tokens. Pure; deterministic.
+pub(crate) fn text_names_person(text: &str, subject: &str) -> Option<bool> {
+    let parts = person_name_parts(subject)?;
+    // Lowercase alphanumeric runs, each with the separator text before it.
+    let tokenise = |s: &str| -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut sep = String::new();
+        let mut tok = String::new();
+        for c in s.chars() {
+            if c.is_alphanumeric() {
+                // `char::to_lowercase` per char, as `person_name_parts` does.
+                tok.extend(c.to_lowercase());
+            } else {
+                if !tok.is_empty() {
+                    out.push((std::mem::take(&mut tok), std::mem::take(&mut sep)));
+                }
+                sep.push(c);
+            }
+        }
+        if !tok.is_empty() {
+            out.push((tok, sep));
+        }
+        out
+    };
+    let words = |s: &str| -> Vec<String> { tokenise(s).into_iter().map(|(t, _)| t).collect() };
+    let surname_toks = words(&parts.surname);
+    let given_toks = words(&parts.given);
+    let middle_toks: Vec<String> = parts.middles.iter().flat_map(|m| words(m)).collect();
+    // A multi-part given name (`Mary-Jane`) is compared on its first part — the
+    // part a register, a slug or an initial preserves.
+    let given = given_toks.first()?.clone();
+    if surname_toks.is_empty() {
+        return None;
+    }
+    // The subject's own name as it can stand before the surname, separators
+    // aside: every given-name part then every middle name, every given-name
+    // part alone, the first given-name part then every middle name. Only runs
+    // of two or more tokens — one token is `direct_before`'s case.
+    // Insertion-ordered, so the result never depends on iteration order.
+    let mut own_runs: Vec<Vec<String>> = Vec::new();
+    for run in [
+        [given_toks.as_slice(), middle_toks.as_slice()].concat(),
+        given_toks.clone(),
+        [std::slice::from_ref(&given), middle_toks.as_slice()].concat(),
+    ] {
+        if run.len() >= 2 && !own_runs.contains(&run) {
+            own_runs.push(run);
+        }
+    }
+    let toks = tokenise(&fold_name_text(text));
+    let k = surname_toks.len();
+    let tok = |j: usize| toks[j].0.as_str();
+    // Whether token `j` may stand as a given name (or its initial) at all. The
+    // one-letter tokens `a` and `i` are also English WORDS — the article and the
+    // pronoun — so in prose they are read as an initial only when a `.` marks
+    // them as one (`"A. Baker"`, `"Dr. I. Thorpe"`); otherwise `"Find a Baker
+    // near you"` named every Andrew Baker and `"He was a Thorpe by birth"` every
+    // Alice Thorpe on the surname alone — the REQ-SEARCH-008 bypass for every
+    // subject whose given name starts with A or I (REQ-SEARCH-014). In a URL
+    // slug (`/i-thorpe`) the letter carries no whitespace on either side and
+    // opens its `-`-joined run, which is where a slug writes an initial; an
+    // article inside a slug (`find-a-baker`) is joined to the word before it by
+    // `-`/`_` and stays a word. Every other letter is not a word, so `j thorpe`
+    // keeps reading as an initial wherever it stands.
+    let may_be_given = |j: usize| {
+        let (t, before) = (&toks[j].0, toks[j].1.as_str());
+        if t != "a" && t != "i" {
+            return true;
+        }
+        let after = toks.get(j + 1).map_or("", |(_, s)| s.as_str());
+        let spaced = |s: &str| s.chars().any(char::is_whitespace);
+        after.starts_with('.')
+            || (!spaced(after) && !spaced(before) && !before.ends_with(['-', '_']))
+    };
+    let compatible = |j: usize| may_be_given(j) && given_names_compatible(tok(j), &given);
+    let named = (0..toks.len().saturating_sub(k - 1))
+        .filter(|&i| {
+            toks[i..i + k]
+                .iter()
+                .map(|(t, _)| t)
+                .eq(surname_toks.iter())
+        })
+        .any(|i| {
+            let direct_before = i >= 1 && compatible(i - 1);
+            let across_middle = i >= 2 && compatible(i - 2) && {
+                let middle = tok(i - 1);
+                let initial = middle.chars().count() == 1;
+                middle.chars().all(char::is_alphabetic)
+                    && (initial || toks[i].1.chars().any(char::is_whitespace))
+            };
+            let own_name_before = own_runs.iter().any(|run| {
+                i >= run.len() && toks[i - run.len()..i].iter().map(|(t, _)| t).eq(run.iter())
+            });
+            let surname_first = toks.get(i + k).is_some_and(|(t, _)| *t == given);
+            direct_before || across_middle || own_name_before || surname_first
+        });
+    Some(named)
 }
 
 /// Decide whether a discovered `Person` is a *different, named individual* from

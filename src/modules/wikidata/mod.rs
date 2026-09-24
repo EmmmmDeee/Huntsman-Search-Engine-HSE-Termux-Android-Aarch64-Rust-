@@ -184,8 +184,7 @@ impl Module for Wikidata {
             })
             .collect();
         let total_name_matches = name_matched.len();
-        let eligible: Vec<&self::types::SearchHit> =
-            name_matched.into_iter().take(MAX_CANDIDATES).collect();
+        let eligible = &name_matched[..total_name_matches.min(MAX_CANDIDATES)];
 
         let mut out = ModuleResult::new();
         let Some((primary, rest)) = eligible.split_first() else {
@@ -232,23 +231,62 @@ impl Module for Wikidata {
                 .map(|hit| candidate_entity(hit, target.kind, &ctx.scan_id)),
         );
 
-        // A label this same answer holds more than once does not identify one
-        // item; see `mark_shared_labels` for what the engine's merge does with
-        // that if nothing intervenes (REQ-WIKIDATA-001).
-        let labels: Vec<&str> = eligible.iter().filter_map(|h| h.label.as_deref()).collect();
-        mark_shared_labels(&mut out.entities, target.kind, &labels);
-
-        // More name-matching items existed than MAX_CANDIDATES surfaced — the
-        // head entity (always out.entities[0]: both branches above push it
-        // first, before rest is appended) carries the signal so an operator
-        // knows the candidate list isn't exhaustive.
-        if let Some(head) = out.entities.first_mut() {
-            mark_candidate_truncation(head, total_name_matches);
-        }
-        declare_search_truncation(&mut out, search.search.len(), total_name_matches);
-
+        finish_answer(
+            &mut out,
+            target.kind,
+            query,
+            &name_matched,
+            search.search.len(),
+        );
         Ok(out)
     }
+}
+
+/// Everything `process` does to its answer once the primary (always
+/// `out.entities[0]`: both of `process`'s branches push it first) and the
+/// surfaced candidates are built. **Pure**, so the order below is testable
+/// without the network round trip `process` hardcodes. `name_matched` is every
+/// search hit whose label passed the name gate, in rank order — more than
+/// [`MAX_CANDIDATES`] when the cap cut the answer; `returned` is the size of
+/// the search page.
+///
+/// 1. The truncation note goes on the head FIRST. `mark_ambiguous` (inside
+///    [`mark_shared_labels`]) stamps every record the entity carries at the
+///    time it runs `Unverified`, and its contract is to be called after the
+///    evidence is attached. Appending the note afterwards left it the one
+///    countable record on an ambiguous head, and the head fuses onto the
+///    subject's same-named anchor: scan 7258fc07 ("Ian Thorpe", more than six
+///    matches, the NZ-soldier head) counted `wikidata` as a corroborating
+///    source of the swimmer. The note is also an annotation in its own right
+///    (see [`mark_candidate_truncation`]), so it cannot corroborate in either
+///    order — the ordering keeps `mark_ambiguous`'s contract whole anyway.
+/// 2. Shared labels are judged over EVERY name-matched hit, not only the
+///    surfaced ones: a label the primary shares with an item ranked 7th–10th
+///    still means the name does not identify one item, and judging only the
+///    first [`MAX_CANDIDATES`] left that primary's office, dates and handles
+///    reaching the subject unmarked (REQ-WIKIDATA-001's rule, applied to the
+///    whole page).
+/// 3. The coverage layer is told what was cut ([`declare_search_truncation`]).
+fn finish_answer(
+    out: &mut ModuleResult,
+    seed: TargetKind,
+    query: &str,
+    name_matched: &[&self::types::SearchHit],
+    returned: usize,
+) {
+    let total_name_matches = name_matched.len();
+    if let Some(head) = out.entities.first_mut() {
+        mark_candidate_truncation(head, query, total_name_matches);
+    }
+    // A label this same answer holds more than once does not identify one
+    // item; see `mark_shared_labels` for what the engine's merge does with
+    // that if nothing intervenes (REQ-WIKIDATA-001).
+    let labels: Vec<&str> = name_matched
+        .iter()
+        .filter_map(|h| h.label.as_deref())
+        .collect();
+    mark_shared_labels(&mut out.entities, seed, &labels);
+    declare_search_truncation(out, returned, total_name_matches);
 }
 
 /// Declare the answer incomplete to the coverage layer when it was cut short.
@@ -282,7 +320,22 @@ fn declare_search_truncation(out: &mut ModuleResult, returned: usize, total_name
 /// Signal on the primary/head entity when more items matched the seed name
 /// than [`MAX_CANDIDATES`] surfaced. **Pure**. No-op when the match count is
 /// within the cap.
-fn mark_candidate_truncation(head: &mut Entity, total_name_matches: usize) {
+///
+/// The note names the SEARCH it describes (`query`): an evidence record's
+/// identity is `(source, summary)`, and the GEXF co-occurrence edge keys on
+/// it. Without the query, the note for "Ian Thorpe" and the note for "John
+/// Thorpe" were the same text whenever the counts agreed, so the two
+/// namesakes' head entities read as named together by one Wikidata record
+/// (scan 7258fc07).
+///
+/// The note is an ANNOTATION ([`Evidence::as_annotation`]): it is a fact about
+/// the search, not an observation of the party the head names, so it never
+/// corroborates the entity it sits on — whatever order it is attached in
+/// relative to `mark_ambiguous`. As a countable record it made `wikidata` a
+/// corroborating source of the subject once the head fused onto the seed
+/// anchor, though the only records that spoke about the party were
+/// `Unverified` (see [`finish_answer`]).
+fn mark_candidate_truncation(head: &mut Entity, query: &str, total_name_matches: usize) {
     if total_name_matches <= MAX_CANDIDATES {
         return;
     }
@@ -291,10 +344,11 @@ fn mark_candidate_truncation(head: &mut Entity, total_name_matches: usize) {
         Evidence::new(
             SRC,
             format!(
-                "Wikidata name search matched {total_name_matches} item(s); only {MAX_CANDIDATES} surfaced"
+                "Wikidata name search for '{query}' matched {total_name_matches} item(s); only {MAX_CANDIDATES} surfaced"
             ),
         )
         .with_attr("total_name_matches", total_name_matches.to_string())
-        .with_attr("candidates_capped", "true"),
+        .with_attr("candidates_capped", "true")
+        .as_annotation(),
     );
 }

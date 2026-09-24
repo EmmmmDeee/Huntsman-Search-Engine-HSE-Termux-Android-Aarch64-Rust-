@@ -1081,6 +1081,20 @@ pub(in crate::core::correlator) fn rule_au_107_breach_employer_affiliation(
 /// programme / source datasets from the entity's own evidence — consistent with
 /// the producers' "an OSINT signal, never a legal determination" doctrine.
 /// One finding per entity, so `entity_uids` is a single already-sorted uid.
+///
+/// **Unresolved flags.** A flag a source raised for one holder of a name the
+/// source proved shared (`util::namesake::mark_ambiguous`) is not a tag: it is
+/// recorded on the evidence under `unresolved_flags`, because an entity-level
+/// tag survives the merge onto the subject's same-named anchor and would assert
+/// a namesake's office as the subject's (REQ-NAMESAKE-002). But nothing read
+/// that record, so on an install without the key-gated `opensanctions` — the
+/// one source that resolves the party — a subject who really does hold office
+/// lost the only PEP signal the scan had (REQ-NAMESAKE-003). An entity carrying
+/// no determination tag but evidence with unresolved flags is therefore
+/// reported as a LOW lead that says exactly that: a same-named record holds the
+/// flag, attribution unresolved, never asserted about the subject. The flags
+/// and the sources that raised them are listed sorted, so the finding is
+/// deterministic.
 pub(in crate::core::correlator) fn rule_au_114_sanctions_exposure(
     context: &RuleContext,
     scan_id: &str,
@@ -1098,7 +1112,7 @@ pub(in crate::core::correlator) fn rule_au_114_sanctions_exposure(
             let sanctions_linked = e.has_tag(tags::SANCTIONS_LINKED);
             let pep = e.has_tag(tags::PEP);
             if !(sanctioned || debarred || sanctions_linked || pep) {
-                return None;
+                return unresolved_flags_lead(e, scan_id, ts);
             }
             // Strongest flag sets the severity and the headline; all present
             // flags are enumerated in the description. `sanctions-linked` is an
@@ -1170,4 +1184,56 @@ pub(in crate::core::correlator) fn rule_au_114_sanctions_exposure(
             ))
         })
         .collect()
+}
+
+/// AU-114's lead for a party flag no source attributed — see "Unresolved
+/// flags" on [`rule_au_114_sanctions_exposure`]. `None` when no evidence record
+/// carries one. **Pure.**
+fn unresolved_flags_lead(e: &Entity, scan_id: &str, ts: u64) -> Option<Correlation> {
+    use std::collections::BTreeSet;
+    let mut flags: BTreeSet<&str> = BTreeSet::new();
+    let mut sources: BTreeSet<&str> = BTreeSet::new();
+    for ev in &e.evidence {
+        let Some(raised) = ev
+            .attributes
+            .get(crate::util::namesake::UNRESOLVED_FLAGS_ATTR)
+        else {
+            continue;
+        };
+        let raised: Vec<&str> = raised
+            .split(',')
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .collect();
+        if !raised.is_empty() {
+            flags.extend(raised);
+            sources.insert(ev.source.as_str());
+        }
+    }
+    if flags.is_empty() {
+        return None;
+    }
+    let kind_label = if e.kind == EntityKind::Person {
+        "Person"
+    } else {
+        "Organisation"
+    };
+    Some(Correlation::new(
+        "AU-114",
+        "Sanctions / debarment / PEP exposure",
+        Severity::Low,
+        format!(
+            "A record sharing the name of {kind_label} '{value}' is flagged ({flags}; \
+             source: {sources}), but the source found several holders of the name \
+             and did not resolve which one — attribution unresolved, NOT asserted \
+             about the subject; verify with a source that resolves the party \
+             (e.g. OpenSanctions)",
+            value = e.value,
+            flags = flags.into_iter().collect::<Vec<_>>().join(", "),
+            sources = sources.into_iter().collect::<Vec<_>>().join(", "),
+        ),
+        vec![e.uid.clone()],
+        scan_id,
+        ts,
+    ))
 }

@@ -75,7 +75,7 @@ same code compiles into the `wasm32` browser UI. `#![forbid(unsafe_code)]`.
 `crate::core::tags` so existing call sites are unchanged. Everything above
 depends on it; it depends on nothing in-repo.
 
-### Layer 1 — `src/util/` (216 files, stateless shared mechanism)
+### Layer 1 — `src/util/` (217 files, stateless shared mechanism)
 The reusable primitives every module leans on. Key sub-areas:
 - `util/http/` — the shared client, `send_tagged`, `read_body_capped_or_fail`
   (fail-closed body reads), `http_status_error` (typed 404/429/BotChallenge/…),
@@ -158,7 +158,7 @@ authority per canonicaliser — `to_e164_au`, `canonical_email_mailbox`,
 `TargetMatch`, `split_identity_secret` are each single-sourced and shared, never
 re-implemented per module.
 
-### Layer 2 — `src/core/` (207 files, the engine and its contracts)
+### Layer 2 — `src/core/` (213 files, the engine and its contracts)
 - `core/module/` — the **`Module` trait** (the capability contract: `accepts`,
   `process`, `produces`, `category`, `priority`, `attack_techniques`,
   `max_timeout_ms`) and `provider.rs` (`ProviderDescriptor`: cost/economics,
@@ -181,6 +181,33 @@ re-implemented per module.
   asserts conduct; `threat-intel` is an unadjudicated sighting; `vulnerable`
   marks a VICTIM, usually the target's own asset), and a rule that flattens them
   headlines an exposure as an accusation (REQ-CLOUDSTORAGE-001).
+- `core/place/` — the **precision authority** for coordinates.
+  `grain::assess` grades a `Coordinates` value from the records that produced
+  it (point / street / suburb / locality / region / country, the coarsest
+  originating account), and says what a gazetteer centroid stands for. The
+  engine's admission `coarse` / `fix-grain:` stamp, its pivot gate
+  (`is_coarse_geo`) and the correlator's fusion radius
+  (`best_precision_radius_m`) all read it. A new module that accepts a
+  `Coordinates` target must be given a role in `COORDINATE_TARGET_MODULES`,
+  and a registry test enforces that (REQ-GEOLABEL-001). It reads the gazetteer
+  through `util::city_coords::tabulated_centroid_at` and a place string's
+  grain through `util::place_grain::place_naming` — the one street
+  recogniser, which `util::city_coords` also uses to resolve an address on
+  its locality and never on a place its street is named after
+  (REQ-GEOLABEL-010, REQ-GEO-018). On top of it sits the one
+  nearest-place LABEL (`label::describe` for a stored coordinate,
+  `label::describe_fused` for a best-location fix, worded fused or
+  single-signal by its `FixKind`): never finer than `assess` grades
+  the point, computed at render time from the scan's own records
+  (`PlaceContext`, incl. this scan's reverse geocodes) and compiled-in
+  gazetteers (the AU and VN anchors in `util::geo`, `CITIES`) — no network.
+  Every output surface reads it: `app::export::augment_entity_json` (JSON,
+  report.json, the API listings), the CSV and GEXF writers, the full dossier /
+  debug bundle, `extract_au_location_fix`, the CLI dossier and the wasm-ui
+  Browse / Location panes (REQ-GEOLABEL-002..004; the served `wasm-ui/pkg`
+  bundle carries them, regenerated with the pinned toolchain).
+  The CSV's `fix_radius_m` column carries the grade across a re-import as a
+  radius floor, so a round trip never sharpens a point (REQ-GEOLABEL-014).
 - `core/exposure/` — the subject's exposure index. It reads evidence through
   ONE gate, `attributable`: a record whose ownership is `Unverified` (a
   name-matched genealogy profile, an ambiguous-name row) is shown but never

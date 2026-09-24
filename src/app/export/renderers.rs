@@ -39,14 +39,32 @@ fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entit
 /// still queued. Taking the whole [`Scan`] closes that hole — see
 /// [`StopReason`](crate::core::scan::StopReason).
 ///
+/// A `Complete` scan with [`Scan::error`] set is the other such case
+/// (`"finalise-incomplete"`). Every path that finalises a scan records there
+/// what its finalise did not complete
+/// ([`FinaliseTally`](crate::core::scan::FinaliseTally)): writes the store
+/// refused (entities, relations, correlations, an address-fold detach, a
+/// corroboration boost) and passes that failed outright (the correlator, the
+/// cross-scan route learning, the boost pass). The scan did run to the end, so
+/// its status stays `Complete`, but its exports are not what it produced —
+/// records missing, or a folded address repeated. Classifying on status and
+/// stop reason alone branded such a scan "complete". It is checked before the
+/// budget test because it is the stronger statement: results the scan did
+/// produce are wrong or absent, not merely ones it never reached.
+/// [`Scan::completeness_caveat`] uses the same order. The reason was first
+/// named `persist-incomplete`; it became `finalise-incomplete` once a pass
+/// that never produced its result — nothing refused, nothing to persist — was
+/// recorded under it too.
+///
 /// Determinism: every input here is immutable once the scan is terminal
-/// (`status` and `stop_reason` are both written once, at finalise), so this
-/// keeps the debug bundle's byte-identical-across-exports contract. An
-/// interrupted scan never becomes terminal, but its runner stays gone, so its
-/// reason does not change either.
+/// (`status`, `stop_reason` and `error` are all written once, at finalise,
+/// and `error`'s text is deterministic), so this keeps the debug bundle's
+/// byte-identical-across-exports contract. An interrupted scan never becomes
+/// terminal, but its runner stays gone, so its reason does not change either.
 fn partial_export_reason(scan: &Scan) -> Option<&'static str> {
     use crate::core::scan::ScanStatus;
     match scan.status {
+        ScanStatus::Complete if scan.error.is_some() => Some("finalise-incomplete"),
         ScanStatus::Complete => scan
             .stop_reason
             .is_some_and(|r| r.truncated())
@@ -55,7 +73,7 @@ fn partial_export_reason(scan: &Scan) -> Option<&'static str> {
         ScanStatus::Failed => Some("failed"),
         // A snapshot taken mid-flight is partial by construction: more findings
         // may still land after this byte was written. One whose process died
-        // is partial for good: nothing will add to it (REQ-SCANSTATUS-002).
+        // is partial for good: nothing will add to it (REQ-SCANSTATUS-038).
         ScanStatus::Pending | ScanStatus::Running => Some(if scan.is_interrupted(None) {
             "interrupted"
         } else {
@@ -64,11 +82,42 @@ fn partial_export_reason(scan: &Scan) -> Option<&'static str> {
     }
 }
 
+/// One entity as JSON, plus — for a `Coordinates` — its `place_label`
+/// (`core::place::describe`'s structured label, `null` when no tier can name
+/// the point). THE one place a JSON surface attaches the label, shared by
+/// [`render_json`], [`build_scan_report`] (`report.json`) and the API's
+/// `/entities` listings, so the field cannot be spelled, clipped or omitted
+/// differently on one of them (REQ-GEOLABEL-002).
+///
+/// Everything else in the object is the entity's own serde shape, untouched —
+/// the web client deserialises these objects straight into `hse_core::Entity`
+/// (whose `kind` must keep its raw wire shape), and `place_label` is an extra
+/// field serde ignores there and on every import, so the label can never be
+/// read back in as data. `ctx` is the scan's own stored records
+/// ([`PlaceContext::for_scan`](crate::core::place::PlaceContext::for_scan)).
+pub(crate) fn augment_entity_json(
+    e: &crate::core::entity::Entity,
+    ctx: &crate::core::place::PlaceContext,
+) -> Result<serde_json::Value> {
+    let mut v =
+        serde_json::to_value(e).map_err(|err| Error::Other(format!("entity serialise: {err}")))?;
+    if e.kind == crate::core::entity::EntityKind::Coordinates
+        && let serde_json::Value::Object(ref mut m) = v
+    {
+        m.insert(
+            "place_label".into(),
+            crate::core::place::place_label_json(e, ctx).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    Ok(v)
+}
+
 pub(super) fn render_json(store: &Store, sid: &str, redact: bool) -> Result<String> {
     let mut entities = confirmed_entities(store, sid)?;
     if redact {
         crate::util::redact::redact_entities(&mut entities);
     }
+    let ctx = crate::core::place::PlaceContext::for_scan(&entities, sid);
     // Augment each entity object with its derived metrics so JSON consumers
     // don't have to re-implement the noisy-OR c_effective / source_count /
     // classification formulas themselves. The raw `confidence` and
@@ -76,8 +125,7 @@ pub(super) fn render_json(store: &Store, sid: &str, redact: bool) -> Result<Stri
     let augmented: Vec<serde_json::Value> = entities
         .iter()
         .map(|e| {
-            let mut v = serde_json::to_value(e)
-                .map_err(|err| Error::Other(format!("entity serialise: {err}")))?;
+            let mut v = augment_entity_json(e, &ctx)?;
             if let serde_json::Value::Object(ref mut m) = v {
                 // Normalise `kind` to a plain string. serde's default
                 // externally-tagged representation renders EntityKind's unit
@@ -108,7 +156,7 @@ pub(super) fn render_csv(store: &Store, sid: &str, redact: bool) -> Result<Strin
     if redact {
         crate::util::redact::redact_entities(&mut entities);
     }
-    Ok(entities_to_csv(&entities))
+    Ok(entities_to_csv(&entities, sid))
 }
 
 /// Canonical CSV rendering for a scan's entities. Shared by the HTTP
@@ -116,8 +164,25 @@ pub(super) fn render_csv(store: &Store, sid: &str, redact: bool) -> Result<Strin
 /// --format csv` CLI subcommand so both produce byte-identical
 /// output — operators piping the two interchangeably can rely on
 /// the column shape staying in sync.
-pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> String {
+///
+/// `place_label` and `place_grain` are APPENDED after `generation` for the same
+/// reason `uid` and `generation` were: the sniffed prefix and every by-name
+/// lookup keep working, and HSE's own CSV importer resolves columns by name,
+/// so it ignores both — a label is never read back in as data. They carry the
+/// `core::place::describe` label of a `Coordinates` row (its text and the grain
+/// it names) and are empty on every other kind. `scan_id` names the scan whose
+/// own stored records the label may read (`PlaceContext::for_scan`).
+///
+/// `fix_radius_m`, appended after them, is NOT a label: it is the radius the
+/// precision authority graded the point at (`core::place::fix_radius_ceil_m`,
+/// rounded up to a whole metre). The CSV keeps each record's source and summary but not its
+/// attributes, so a re-imported point could otherwise be graded only by its
+/// source class — a ±1.5 km Wi-Fi fix came back as a 75 m one. The importer
+/// reads this column back as a radius floor (`grain::FIX_RADIUS_TAG_PREFIX`),
+/// so a round trip can lose precision but never gain it.
+pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity], scan_id: &str) -> String {
     use std::fmt::Write as _;
+    let ctx = crate::core::place::PlaceContext::for_scan(entities, scan_id);
     let mut body = String::with_capacity(192 + entities.len() * 192);
     // `evidence_urls` + `evidence` make every row self-verifiable: the operator
     // can follow the source links and read each module's finding without
@@ -138,7 +203,7 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
     // artifacts by string-matching kind+value. `generation` (hops from the seed)
     // travels with it for the same reason it was added to the bundle — it
     // separates a seed-adjacent finding from one three pivots out.
-    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation\n");
+    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation,place_label,place_grain,fix_radius_m\n");
     for e in entities {
         let eff = e.c_effective();
         let source_count = e.source_count();
@@ -191,9 +256,16 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
             .collect::<Vec<_>>()
             .join(" || ");
 
+        let place = crate::core::place::describe(e, &ctx);
+        let (place_label, place_grain) = place
+            .as_ref()
+            .map_or(("", ""), |p| (p.text.as_str(), p.label_grain.as_str()));
+        let fix_radius =
+            crate::core::place::fix_radius_ceil_m(e).map_or_else(String::new, |r| r.to_string());
+
         let _ = writeln!(
             body,
-            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             csv_escape(&e.kind.to_string()),
             csv_escape(&e.value),
             csv_escape(&e.raw_value),
@@ -210,6 +282,9 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
             csv_escape(&tags),
             csv_escape(&e.uid),
             e.generation,
+            csv_escape(place_label),
+            place_grain,
+            fix_radius,
         );
     }
     body
@@ -369,6 +444,13 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     if let Some(r) = scan.stop_reason {
         let _ = writeln!(s, "stopped    : {}", r.label());
     }
+    // WHAT a partial scan is missing, when the finalise recorded it — the
+    // "finalise-incomplete" header above names the class, this the detail
+    // (e.g. "2/40 relations failed to persist: …"). Written once, at finalise,
+    // with deterministic text, so the bundle stays byte-identical.
+    if let Some(err) = scan.error.as_deref() {
+        let _ = writeln!(s, "error      : {err}");
+    }
     let _ = writeln!(s, "entities   : {}", entities.len());
     let _ = writeln!(s, "relations  : {}", relations.len());
     // Full module accounting — including the timed-out/skipped/cached counts the
@@ -461,8 +543,22 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     }
 
     let _ = writeln!(s, "\n── ENTITIES (every field, fully unredacted) ──");
+    // The nearest-place label of every coordinate, from this scan's own stored
+    // records (REQ-GEOLABEL-002). The legend is printed once, and only when a
+    // place line follows, so a scan without coordinates reads as before.
+    let place_ctx = crate::core::place::PlaceContext::for_scan(&entities, sid);
+    let places: Vec<Option<crate::core::place::PlaceLabel>> = entities
+        .iter()
+        .map(|e| crate::core::place::describe(e, &place_ctx))
+        .collect();
+    if places.iter().any(Option::is_some) {
+        let _ = writeln!(s, "  ({})", crate::core::place::PLACE_LEGEND);
+    }
     for (i, e) in entities.iter().enumerate() {
         let _ = writeln!(s, "\n[{}] {} = {}", i + 1, e.kind, e.value);
+        if let Some(place) = &places[i] {
+            let _ = writeln!(s, "    place: {}  {}", place.text, place.detail());
+        }
         // "Nothing omitted" (see the module doc): the entity's own top-level
         // fields — the SHA-256 uid, the pre-normalisation raw_value, and the
         // decay timestamp — that `render_json`/CSV already carry but a human
@@ -532,8 +628,11 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             let _ = writeln!(s, "    MITRE ATT&CK: {}", mitre.join("; "));
         }
         for ev in &e.evidence {
-            let marker = if crate::core::entity::is_non_corroborating_source(&ev.source) {
-                "  (non-corroborating: enrichment/recall/cross-scan — doesn't count toward source_count)"
+            // Per record (`Evidence::is_non_corroborating`), exactly as
+            // `source_count` decides it — an annotation or a name-only match is
+            // marked like an enrichment pass, since it is excluded like one.
+            let marker = if ev.is_non_corroborating() {
+                "  (non-corroborating: enrichment/recall/cross-scan/annotation/name-only match — doesn't count toward source_count)"
             } else {
                 ""
             };
@@ -839,8 +938,9 @@ pub(crate) fn render_debug_bundle(
 
     // Best AU geolocation fix, if one fired. `extract_au_location_fix` returns
     // one of two shapes: a true AU-059 cross-seed synergy fix (has
-    // `synergy_confidence`) or a coarser single-signal fallback (has `confidence`
-    // / `basis` instead) — see `dossier.rs`'s matching dual-branch render for the
+    // `synergy_confidence`) or the estimate-ladder fallback (has `confidence`
+    // / `basis` instead, and a `source` saying whether it is the synergy
+    // recomputed without a persisted AU-059 or a coarser single signal) — see `dossier.rs`'s matching dual-branch render for the
     // reference pattern this mirrors. Branching on which shape actually fired
     // (rather than unconditionally labelling every fix "(AU-059)") matters
     // because the fallback can be a single hardcoded landline-area-code anchor,
@@ -853,22 +953,33 @@ pub(crate) fn render_debug_bundle(
     if fix != serde_json::Value::Null {
         let lat = fix["lat"].as_f64().unwrap_or(0.0);
         let lon = fix["lon"].as_f64().unwrap_or(0.0);
-        let radius = fix["radius_km"].as_f64().unwrap_or(0.0);
+        let radius = crate::core::place::fix_radius_km_text(fix["radius_km"].as_f64());
         let gh = fix["geohash"].as_str().unwrap_or("");
         let state = fix["state"].as_str().unwrap_or("");
         if let Some(sc) = fix["synergy_confidence"].as_f64() {
             let sev = fix["severity"].as_str().unwrap_or("");
             let _ = writeln!(
                 s,
-                "\n── BEST AU LOCATION FIX (AU-059) ──\n  {lat:.4},{lon:.4} ± {radius:.1} km · geohash={gh} · state={state} · synergy_conf={sc:.2} · severity={sev}"
+                "\n── BEST AU LOCATION FIX (AU-059) ──\n  {lat:.4},{lon:.4} {radius} · geohash={gh} · state={state} · synergy_conf={sc:.2} · severity={sev}"
             );
+            write_fix_place(&mut s, &fix);
         } else {
             let confidence = fix["confidence"].as_f64().unwrap_or(0.0);
             let basis = fix["basis"].as_str().unwrap_or("");
+            // The fallback shape covers two different things: the synergy fix
+            // recomputed without a persisted AU-059 correlation, and a genuine
+            // single-signal rung. The header follows the fix's own `source`, so
+            // the strongest fix is never printed under the weakest label.
+            let header = if fix["source"] == "synergy-recomputed" {
+                "multi-source synergy, recomputed — AU-059 not persisted"
+            } else {
+                "single-signal"
+            };
             let _ = writeln!(
                 s,
-                "\n── BEST AU LOCATION FIX (single-signal) ──\n  {lat:.4},{lon:.4} ± {radius:.1} km · geohash={gh} · state={state} · basis={basis} · confidence={confidence:.2}"
+                "\n── BEST AU LOCATION FIX ({header}) ──\n  {lat:.4},{lon:.4} {radius} · geohash={gh} · state={state} · basis={basis} · confidence={confidence:.2}"
             );
+            write_fix_place(&mut s, &fix);
         }
     }
 
@@ -980,6 +1091,20 @@ pub(crate) fn render_debug_bundle(
     Ok(s)
 }
 
+/// The `place:` line under a BEST AU LOCATION FIX header — the fix's own
+/// `place_label` ([`extract_au_location_fix`] attaches it, so the bundle, the
+/// report and the `/location` API print one label). The label says "fused
+/// fix" for a multi-signal fix and "single-signal fix" for a single-signal
+/// rung, the same kind the header names (REQ-GEOLABEL-017); either way it names
+/// a locality at best, never a street and never a point of interest
+/// (REQ-GEOLABEL-002, P8).
+fn write_fix_place(s: &mut String, fix: &serde_json::Value) {
+    use std::fmt::Write as _;
+    if let Some(text) = fix["place_label"]["text"].as_str() {
+        let _ = writeln!(s, "  place: {text}");
+    }
+}
+
 pub(super) fn render_report(store: &Store, sid: &str, include_infra: bool) -> Result<String> {
     // Default dossier hides quarantined `candidate` entities (non-target
     // breach-dump rows) — the confirmed-footprint view. They remain available
@@ -1016,6 +1141,11 @@ pub(crate) fn build_scan_report(
     // before the report (and the HTTP `report.json`) is built. Subject findings
     // are untouched.
     crate::util::redact::redact_operator_secrets(&mut entities);
+    // The place labels read the WHOLE scan's stored records, before any
+    // candidate / infrastructure filtering below, so a label never depends on
+    // which view of the scan is being exported (`PlaceContext` ignores
+    // quarantined rows itself).
+    let place_ctx = crate::core::place::PlaceContext::for_scan(&entities, scan_id);
     // Quarantine in the dossier too: speculative `candidate` entities (the
     // non-target breach-dump rows) are hidden by default so the report reads
     // as the target's confirmed footprint. `include_candidates=true` returns
@@ -1105,9 +1235,15 @@ pub(crate) fn build_scan_report(
             "providers": coverage,
         })
     };
+    // Each entity through the one JSON augmentation, so a `Coordinates` in
+    // report.json carries the same `place_label` as the JSON export and the API.
+    let entity_values: Vec<serde_json::Value> = entities
+        .iter()
+        .map(|e| augment_entity_json(e, &place_ctx))
+        .collect::<Result<_>>()?;
     Ok(Some(serde_json::json!({
         "scan": scan,
-        "entities": entities,
+        "entities": entity_values,
         "entity_count": entities.len(),
         "correlations": correlations,
         "correlation_count": correlations.len(),
@@ -1133,22 +1269,25 @@ pub(crate) fn build_scan_report(
     })))
 }
 
-/// Parse the structured geo-fix fields that AU-059 embeds in its description.
+/// The `best_location` for the export, read **structurally** from the scan
+/// entities rather than by parsing the finding prose. One of two shapes:
 ///
-/// AU-059 description format:
-/// `"N AU coordinate(s) from M orthogonal source class(es) [C1, C2] converge on
-///  LAT,LON (geohash=GH, state=STATE); synergy confidence SC — MITRE T1591.001"`
+/// - **AU-059** (`rule_id: "AU-059"`, `synergy_confidence`, `severity`, `rank`)
+///   — present iff AU-059 actually fired this scan (the gated, ranked finding).
+///   The geo fields come from the one canonical
+///   [`crate::core::correlator::au059_synergy_fix`] computation the rule itself
+///   uses, so the structured export and the finding can never drift (they did,
+///   by construction, when this re-parsed the prose). Severity and the
+///   post-hoc `rank` are taken from the emitted correlation.
+/// - **Estimate ladder** (`confidence`, `basis`, `source`) — no AU-059
+///   correlation is stored, so the best rung of
+///   [`crate::core::correlator::best_au_location_estimate`] is reported.
+///   `source` is `"synergy-recomputed"` when that rung is the multi-source
+///   synergy itself (the synergy exists but no correlation was persisted) and
+///   `"single-signal"` for every coarser rung. It never carries
+///   `severity`/`rank`: no correlation was emitted to take them from.
 ///
-/// Returns a JSON object `{lat, lon, geohash, state, synergy_confidence,
-/// source_count, class_count, severity}` from the highest-rank AU-059 firing,
-/// or `serde_json::Value::Null` when no AU-059 correlation exists for the scan.
-/// The AU-059 `best_location` for the export, read **structurally** from the
-/// scan entities rather than by parsing the finding prose. It is present iff
-/// AU-059 actually fired this scan (the gated, ranked finding); the geo fields
-/// come from the one canonical [`crate::core::correlator::au059_synergy_fix`]
-/// computation the rule itself uses, so the structured export and the finding
-/// can never drift (they did, by construction, when this re-parsed the prose).
-/// Severity and the post-hoc `rank` are taken from the emitted correlation.
+/// `serde_json::Value::Null` when the scan has no AU location signal at all.
 pub(crate) fn extract_au_location_fix(
     correlations: &[crate::core::correlator::Correlation],
     entities: &[crate::core::entity::Entity],
@@ -1168,6 +1307,17 @@ pub(crate) fn extract_au_location_fix(
             "signal_count": c.signal_count,
             "classes": c.class_names,
             "confidence": c.confidence,
+            // Every fix object carries its own place label: offline, never
+            // finer than a locality, never a street or a point of interest
+            // (REQ-GEOLABEL-002, P8) — and worded "fused" only when two or
+            // more signals were fused into it: this object exists for a lone
+            // signal too (REQ-GEOLABEL-023).
+            "place_label": crate::core::place::fused_label_json(
+                c.lat,
+                c.lon,
+                c.radius_km,
+                crate::core::place::FixKind::of_corroboration(c.signal_count),
+            ),
         })
     });
 
@@ -1202,13 +1352,32 @@ pub(crate) fn extract_au_location_fix(
             // assert about the subject's own position.
             "locates_subject_directly": synergy.locates_subject_directly,
             "rule_id": "AU-059",
+            "place_label": crate::core::place::fused_label_json(
+                synergy.lat,
+                synergy.lon,
+                synergy.radius_km,
+                crate::core::place::FixKind::Synergy,
+            ),
         })
     } else {
-        // Fallback: the single-signal best-location estimate, so the web/JSON
-        // surface carries a headline fix whenever ANY AU location signal exists —
-        // not only the ≥2-class synergy case. Carries the precision radius, nearest
-        // locality, and the basis it was derived from. `Null` only when there is no
-        // AU location at all.
+        // Fallback: the best-location estimate ladder, so the web/JSON surface
+        // carries a headline fix whenever ANY AU location signal exists — not
+        // only when an AU-059 correlation was persisted. Carries the precision
+        // radius, nearest locality, and the basis it was derived from. `Null`
+        // only when there is no AU location at all.
+        //
+        // `source` names what the fix IS, read from the rung that produced it —
+        // never a constant. Rung 1 of the ladder is the very same multi-source
+        // synergy computation AU-059 runs, and it is reached here whenever the
+        // synergy exists but no AU-059 correlation is stored (the correlator
+        // never ran, ran out of its budget, or this is a snapshot taken before
+        // finalise persisted correlations). Stamping that "single-signal"
+        // labelled the strongest, multi-class fix as the weakest kind — the
+        // scan-7258fc07 bundle printed "(single-signal)" directly above
+        // "basis=multi-source cross-class synergy". It stays in THIS shape (no
+        // `severity`/`rank`, no `rule_id`): no correlation was emitted, so
+        // inventing the AU-059 shape would assert a finding that does not
+        // exist; "synergy-recomputed" says exactly that.
         match crate::core::correlator::best_au_location_estimate(entities) {
             Some(est) => serde_json::json!({
                 "lat": est.lat,
@@ -1222,7 +1391,18 @@ pub(crate) fn extract_au_location_fix(
                 // As above: whether this pin observed the SUBJECT or a place
                 // merely associated with them.
                 "locates_subject_directly": est.locates_subject_directly,
-                "source": "single-signal",
+                "source": match crate::core::place::FixKind::of_estimate_basis(est.basis) {
+                    crate::core::place::FixKind::SingleSignal => "single-signal",
+                    _ => "synergy-recomputed",
+                },
+                // The label names the same kind of fix `source` does
+                // (a single sighting is not "fused").
+                "place_label": crate::core::place::fused_label_json(
+                    est.lat,
+                    est.lon,
+                    est.radius_km,
+                    crate::core::place::FixKind::of_estimate_basis(est.basis),
+                ),
             }),
             None => serde_json::Value::Null,
         }
@@ -1316,6 +1496,98 @@ mod tests {
         }
     }
 
+    /// A `Complete` scan whose finalise recorded a persistence shortfall in
+    /// `error` is a partial export (Copilot review of #649). The classifier
+    /// read only `status` and `stop_reason`, so a scan whose relations or
+    /// correlations the store had refused exported as "complete" — the dossier
+    /// header "complete, unredacted", the debug bundle "complete scan
+    /// snapshot", and no `export_snapshot` marker in the events log.
+    #[test]
+    fn a_complete_scan_with_a_finalise_shortfall_is_a_partial_export() {
+        use crate::core::scan::{Scan, ScanStatus, StopReason, Target, TargetKind};
+
+        let mk = |error: Option<&str>, stop: Option<StopReason>| {
+            let mut sc = Scan::new(
+                "s1",
+                Target {
+                    kind: TargetKind::Email,
+                    value: "a@b.test".into(),
+                },
+            );
+            sc.status = ScanStatus::Complete;
+            sc.error = error.map(str::to_string);
+            sc.stop_reason = stop;
+            sc
+        };
+        let short = Some("2/40 relations failed to persist: disk full");
+
+        assert_eq!(
+            partial_export_reason(&mk(short, None)),
+            Some("finalise-incomplete")
+        );
+        // Checked before the budget test: records the scan produced are gone,
+        // which is the stronger statement.
+        assert_eq!(
+            partial_export_reason(&mk(short, Some(StopReason::MaxEntities(500)))),
+            Some("finalise-incomplete")
+        );
+        // A pass that never produced its result is the same class: nothing
+        // was refused, but the export still is not what the scan produced.
+        assert_eq!(
+            partial_export_reason(&mk(Some("correlation pass failed: panicked"), None)),
+            Some("finalise-incomplete")
+        );
+        // The converse keeps "complete" meaningful: no shortfall, no brand.
+        assert_eq!(
+            partial_export_reason(&mk(None, Some(StopReason::NoMoreCandidates))),
+            None
+        );
+        assert_eq!(
+            partial_export_reason(&mk(None, Some(StopReason::MaxEntities(500)))),
+            Some("budget-truncated")
+        );
+    }
+
+    /// The same classification reaches every artefact header that reads it:
+    /// the full dossier, the debug bundle and the events-log snapshot marker,
+    /// each also naming the loss where it prints the scan header.
+    #[test]
+    fn every_export_header_brands_a_finalise_shortfall_partial() {
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+
+        let store = crate::storage::Store::open(":memory:").expect("in-memory store");
+        let mut sc = Scan::new(
+            "persist-short-export",
+            Target {
+                kind: TargetKind::Email,
+                value: "a@b.test".into(),
+            },
+        );
+        sc.status = ScanStatus::Complete;
+        sc.error = Some("2/40 relations failed to persist: disk full".into());
+        store.upsert_scan(&sc).expect("scan row");
+
+        let dossier = super::render_full(&store, &sc.id).expect("dossier");
+        assert!(
+            dossier.contains("HUNTSMAN FULL DOSSIER — partial, finalise-incomplete, unredacted"),
+            "{dossier}"
+        );
+        assert!(
+            dossier.contains("error      : 2/40 relations failed to persist: disk full"),
+            "the header names what is missing: {dossier}"
+        );
+        let bundle = super::render_debug_bundle(&store, &sc.id).expect("bundle");
+        assert!(
+            bundle.contains("DEBUG BUNDLE — partial finalise-incomplete scan snapshot"),
+            "{bundle}"
+        );
+        let log = super::render_event_log_export(&store, &sc.id).expect("events");
+        assert!(
+            log.contains("\"state\":\"finalise-incomplete\""),
+            "the events export marks the snapshot: {log}"
+        );
+    }
+
     /// The pre-existing classifications must survive unchanged — this function
     /// is the single source both artifact headers share.
     #[test]
@@ -1340,7 +1612,7 @@ mod tests {
         }
     }
 
-    /// REQ-SCANSTATUS-002: a `running` row whose process is gone is not a
+    /// REQ-SCANSTATUS-038: a `running` row whose process is gone is not a
     /// live snapshot. It will never gain another finding, and the artifact
     /// said "live" (the log's last line, the dossier and bundle headers).
     #[test]

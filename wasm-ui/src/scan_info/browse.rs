@@ -46,6 +46,38 @@ struct BrowseTableMeta {
     loaded_count: Option<usize>,
 }
 
+/// The one piece of a row the API adds beside the entity's own fields: a
+/// coordinate's `place_label` (`crate::app::export::augment_entity_json`
+/// server-side, `core::place::describe`). Read in a SECOND pass over the same
+/// rows rather than by `#[serde(flatten)]`-ing it next to
+/// [`hse_core::Entity`]: flatten buffers every field through serde's
+/// content type, which changes how `EntityKind`'s raw wire shape (a bare
+/// string, or `{"other":"…"}`) deserialises — and `Entity` itself ignores the
+/// unknown field, so the first pass is untouched.
+#[derive(Deserialize)]
+struct PlaceOnly {
+    place_label: Option<PlaceLabelView>,
+}
+
+/// The fields of a `place_label` this view prints.
+#[derive(Deserialize)]
+struct PlaceLabelView {
+    text: Option<String>,
+}
+
+/// The muted second line under a coordinate's value — its nearest-place label,
+/// escaped — or `""` for a row without one (every other kind, the global
+/// search's rows, an older server).
+fn place_line(place: Option<&str>) -> String {
+    match place.filter(|p| !p.is_empty()) {
+        Some(p) => format!(
+            "<div class=\"text-muted\" style=\"font-size:11px;margin-top:2px\" title=\"Nearest place at the fix's own precision \u{2014} describes the point, not an address attributed to the subject\">{}</div>",
+            escape_html(p)
+        ),
+        None => String::new(),
+    }
+}
+
 /// One evidence entry's detail block: source, the non-corroborating marker,
 /// recorded date, summary, and any attributes. `Evidence::attributes` is a
 /// `BTreeMap<String, String>` (already sorted, and always a plain string —
@@ -64,8 +96,9 @@ fn evidence_detail(ev: &hse_core::Evidence) -> String {
             )
         })
         .collect();
-    let marker = if hse_core::is_non_corroborating_source(&ev.source) {
-        " <span class=\"text-muted\" style=\"font-size:10px\">(non-corroborating: enrichment/recall/cross-scan)</span>"
+    // Per record, exactly as `Entity::source_count` decides it.
+    let marker = if ev.is_non_corroborating() {
+        " <span class=\"text-muted\" style=\"font-size:10px\">(non-corroborating: enrichment/recall/cross-scan/annotation/name-only match)</span>"
     } else {
         ""
     };
@@ -88,7 +121,7 @@ fn evidence_detail(ev: &hse_core::Evidence) -> String {
 /// `Entity`: every one of those fields is required and always present
 /// (`corroboration`'s own doc comment guarantees `>= 1`), so this reads them
 /// directly.
-fn browse_row(e: &hse_core::Entity, idx: usize) -> String {
+fn browse_row(e: &hse_core::Entity, place: Option<&str>, idx: usize) -> String {
     let eff = e.c_effective();
     let tier = hse_core::Classification::from_c_eff(eff).as_str();
     let src_n = e.source_count();
@@ -120,7 +153,7 @@ fn browse_row(e: &hse_core::Entity, idx: usize) -> String {
     format!(
         "<tr onclick=\"toggleDetail(this)\" data-idx=\"{idx}\">\n      \
          <td>{kind_pill}</td>\n      \
-         <td style=\"word-break:break-word\"><code>{value_link}</code></td>\n      \
+         <td style=\"word-break:break-word\"><code>{value_link}</code>{place_line}</td>\n      \
          <td class=\"text-right\"><code>{eff:.3}</code></td>\n      \
          <td class=\"text-right\"><code>{confidence:.3}</code></td>\n      \
          <td class=\"text-right\">{corroboration}</td>\n      \
@@ -141,6 +174,7 @@ fn browse_row(e: &hse_core::Entity, idx: usize) -> String {
          </div></td></tr>",
         kind_pill = kind_pill(&e.kind.to_string()),
         value_link = ext_link(value, None),
+        place_line = place_line(place),
         confidence = e.confidence,
         corroboration = e.corroboration,
         uid = escape_html(&e.uid),
@@ -156,6 +190,8 @@ fn browse_row(e: &hse_core::Entity, idx: usize) -> String {
 /// "server truncated the fetch" note's inputs.
 #[wasm_bindgen(js_name = renderBrowseTableHtml)]
 pub fn render_browse_table_html(rows_js: JsValue, meta_js: JsValue) -> Result<String, JsValue> {
+    let places: Vec<PlaceOnly> =
+        serde_wasm_bindgen::from_value(rows_js.clone()).map_err(to_js_error)?;
     let rows: Vec<hse_core::Entity> =
         serde_wasm_bindgen::from_value(rows_js).map_err(to_js_error)?;
     let meta: BrowseTableMeta = serde_wasm_bindgen::from_value(meta_js).map_err(to_js_error)?;
@@ -185,8 +221,12 @@ pub fn render_browse_table_html(rows_js: JsValue, meta_js: JsValue) -> Result<St
 
     let body: String = rows
         .iter()
+        .zip(&places)
         .enumerate()
-        .map(|(idx, e)| browse_row(e, idx))
+        .map(|(idx, (e, p))| {
+            let place = p.place_label.as_ref().and_then(|l| l.text.as_deref());
+            browse_row(e, place, idx)
+        })
         .collect();
 
     Ok(format!(
@@ -197,4 +237,26 @@ pub fn render_browse_table_html(rows_js: JsValue, meta_js: JsValue) -> Result<St
          <th class=\"sorter-false\">Tags</th><th class=\"sorter-false\">Sources</th><th>Observed</th>\n    \
          </tr></thead><tbody>{body}</tbody></table></div>"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REQ-GEOLABEL-002: a coordinate row carries its server-computed place
+    /// label as an escaped muted line; a row without one renders exactly as
+    /// before (no empty element).
+    #[test]
+    fn place_line_is_escaped_and_absent_without_a_label() {
+        let line = place_line(Some(
+            "Brisbane, QLD (city centroid — not a street location) <b>",
+        ));
+        assert!(line.contains("Brisbane, QLD (city centroid"), "{line}");
+        assert!(
+            line.contains("&lt;b&gt;") && !line.contains("<b>"),
+            "{line}"
+        );
+        assert_eq!(place_line(None), "");
+        assert_eq!(place_line(Some("")), "");
+    }
 }

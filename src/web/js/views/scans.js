@@ -24,7 +24,7 @@ export async function renderScans(v){
     <div class="row">
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Total</div><div class="val">${stats.total}</div></div></div>
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Running</div><div class="val" style="color:${stats.running?'#31708f':'#888'}">${stats.running}</div></div></div>
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Complete</div><div class="val" style="color:${stats.complete?'#3c763d':'#888'}">${stats.complete}</div>${(stats.aborted||stats.failed||stats.interrupted)?`<div class="text-muted" style="font-size:10px">${[stats.aborted&&`${stats.aborted} aborted`, stats.failed&&`${stats.failed} failed`, stats.interrupted&&`${stats.interrupted} interrupted`].filter(Boolean).join(' · ')}</div>`:''}</div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Complete</div><div class="val" style="color:${stats.complete?'#3c763d':'#888'}">${stats.complete}</div>${stats.partial||stats.aborted||stats.failed||stats.interrupted?`<div class="text-muted" style="font-size:10px">${[stats.partial?`${stats.partial} partial`:'',stats.aborted?`${stats.aborted} aborted`:'',stats.failed?`${stats.failed} failed`:'',stats.interrupted?`${stats.interrupted} interrupted`:''].filter(Boolean).join(' · ')}</div>`:''}</div></div>
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Entities found</div><div class="val">${stats.entities}</div></div></div>
     </div>
 
@@ -47,12 +47,16 @@ export async function renderScans(v){
   });
 }
 export function scanStats(scans){
-  let running=0,complete=0,aborted=0,failed=0,interrupted=0,entities=0;
+  let running=0,complete=0,partial=0,aborted=0,failed=0,interrupted=0,entities=0;
   for(const s of scans){
     // The display state, not the persisted status: a scan whose server died
-    // reads `running` in the store and is not running (REQ-SCANSTATUS-002).
+    // reads `running` in the store and is not running (REQ-SCANSTATUS-038).
     const st = scanState(s);
     if (scanIsActive(s)) running++;
+    // A `complete` row whose finalise fell short (`finalise_incomplete`,
+    // REQ-SCANSTATUS-030) is the `partial` its row pill says, not a green
+    // complete one; an aborted one stays with the aborted (REQ-SCANSTATUS-032).
+    else if (st==='complete' && s.finalise_incomplete===true) partial++;
     else if (st==='complete') complete++;
     // `aborted` is a distinct terminal state (operator-stopped, data kept) —
     // without its own bucket it matched no branch and vanished from the tallies
@@ -62,7 +66,7 @@ export function scanStats(scans){
     else if (st==='interrupted') interrupted++;
     entities += s.entity_count||0;
   }
-  return {total:scans.length,running,complete,aborted,failed,interrupted,entities};
+  return {total:scans.length,running,complete,partial,aborted,failed,interrupted,entities};
 }
 export function wireScansTable(){
   if (window.jQuery && jQuery.fn.tablesorter) {

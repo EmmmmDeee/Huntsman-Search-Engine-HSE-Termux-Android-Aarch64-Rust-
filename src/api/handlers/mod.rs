@@ -226,7 +226,7 @@ pub(crate) fn ok_paginated_list<T: Serialize>(
 /// registry entry mean what [`crate::core::scan::Scan::is_interrupted`] takes
 /// it to mean: the process that queued it died. The other order left a moment
 /// in which a reader saw a healthy queued scan as interrupted
-/// (REQ-SCANSTATUS-002).
+/// (REQ-SCANSTATUS-038).
 ///
 /// Wires up everything the background run needs: a [`crate::core::cancel::CancelHandle`]
 /// registered so `POST /scans/{id}/cancel` can stop it, a per-scan HTTP client
@@ -333,14 +333,22 @@ pub(crate) fn in_flight_scan_ids(
 
 // REQ-SCANSTATUS-001 derived `interrupted` here, from this process's
 // registry alone, for `running` rows only. `Scan::is_interrupted` is now the
-// one rule (REQ-SCANSTATUS-002): it also asks whether another `hse` process
+// one rule (REQ-SCANSTATUS-038): it also asks whether another `hse` process
 // on the same database is running the scan, and it covers a `pending` row,
 // since every create path registers a scan before writing its row
 // (`queue_scan`). The row is still never rewritten.
 
 /// The one way a `Scan` becomes API JSON: its serialised fields plus the
-/// derived, non-persisted `interrupted` flag. `GET /scans`, `GET /scans/{id}`
-/// and `GET /radar/history` all route through here so they cannot disagree.
+/// derived, non-persisted `interrupted` and `finalise_incomplete` flags.
+/// `GET /scans`, `GET /scans/{id}` and `GET /radar/history` all route through
+/// here so they cannot disagree.
+///
+/// `finalise_incomplete` is [`crate::core::scan::Scan::finalise_incomplete`]:
+/// a `complete` or `aborted` row whose finalise recorded a shortfall is
+/// partial, as every export of it reads it and as its `scan_complete` event
+/// says. The web scan list, the scan-info Status row and the radar sweep
+/// list read it for their status pill, which otherwise showed such a scan as
+/// a green `complete` (REQ-SCANSTATUS-030).
 pub(crate) fn scan_json(
     scan: &crate::core::scan::Scan,
     in_flight: &std::collections::HashSet<String>,
@@ -354,6 +362,10 @@ pub(crate) fn scan_json(
             "interrupted".to_string(),
             Value::Bool(scan.is_interrupted(Some(in_flight))),
         );
+        map.insert(
+            "finalise_incomplete".to_string(),
+            Value::Bool(scan.finalise_incomplete()),
+        );
     }
     v
 }
@@ -361,6 +373,17 @@ pub(crate) fn scan_json(
 /// Pure aggregation of dashboard scan statistics — the per-status histogram and
 /// the entity/dedup totals — over a scan list. Split out of [`stats`] so the
 /// summation logic is unit-testable without a live store + async handler.
+///
+/// The histogram's keys are what each row's status pill reads, never the
+/// stored status alone: a `running` row nobody is running is `interrupted`
+/// ([`Scan::is_interrupted`](crate::core::scan::Scan::is_interrupted)), and a
+/// finished row whose finalise fell short
+/// ([`Scan::finalise_incomplete`](crate::core::scan::Scan::finalise_incomplete))
+/// is `partial` (a `Complete` one) or `aborted_partial` (an `Aborted` one) —
+/// the `partial` / `aborted · partial` its scan-list row, its exports and the
+/// dashboard's own Recent Scans table call it. Counted under its stored
+/// status, it raised the dashboard's green `complete` tally beside the Recent
+/// Scans row that read it `partial` (REQ-SCANSTATUS-034).
 #[derive(Default, PartialEq, Eq, Debug)]
 pub(crate) struct ScanStatsAgg {
     pub by_status: std::collections::BTreeMap<&'static str, u64>,
@@ -379,6 +402,11 @@ pub(crate) fn aggregate_scan_stats(
         // a dead scan as in progress forever (REQ-SCANSTATUS-001, -002).
         let bucket = if scan.is_interrupted(Some(in_flight)) {
             "interrupted"
+        } else if scan.finalise_incomplete() {
+            match scan.status {
+                crate::core::scan::ScanStatus::Aborted => "aborted_partial",
+                _ => "partial",
+            }
         } else {
             scan.status.as_str()
         };

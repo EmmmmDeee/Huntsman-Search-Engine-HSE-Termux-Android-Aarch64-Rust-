@@ -39,6 +39,26 @@
 /// assert!(city_coords("Brisbane, Australia").is_some());
 /// ```
 pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
+    city_coords_with_grain(addr).map(|(coord, _)| coord)
+}
+
+/// [`city_coords`], plus the GRAIN of what matched, in the geocoders'
+/// `place_type` vocabulary: `"city"` for a tabulated place name, `"postcode"`
+/// for a tabulated postcode centroid, `"region"` for the leading-digits region
+/// fallback ([`au_postcode_region`]).
+///
+/// A centroid is only as precise as the thing it is the centre of, and a
+/// consumer that weighs points by precision must be told which it got. The
+/// engine's address→coordinate pass carries the Address's own sources onto the
+/// centroid; when one of them is `geocode`/`photon` the correlator weighed that
+/// leg at its class default, 40 m — a Brisbane-CBD centroid for a Bardon
+/// street address pulled on the fusion 5x as hard as a 1 km fix, and floored
+/// the fix's radius at 40 m (REQ-GEO-011). The grain lets it read the truth.
+///
+/// A tabulated name is declared `"city"` whether the row is a capital or a
+/// suburb: [`CITIES`] does not record which, and the coarser grain is the
+/// direction that cannot manufacture precision.
+pub fn city_coords_with_grain(addr: &str) -> Option<((f64, f64), &'static str)> {
     let trimmed = addr.trim();
     let lower = trimmed.to_lowercase();
     // A REGION label must not earn the centroid of the city inside it. The
@@ -53,14 +73,31 @@ pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
     if crate::util::place_grain::negates_city_grain(trimmed) {
         return None;
     }
-    if let Some(hit) = match_tabulated_city(&lower) {
-        return Some(hit);
+    // Only the LOCALITY the address names is looked up, never a word of its
+    // street: streets are named after places, and `"45 Sydney Road, Brunswick
+    // VIC"` contains the whole-token run `sydney` — the Sydney centroid, 700 km
+    // from a Melbourne address, which every register, directory and WHOIS
+    // leg that passes its full address here then emitted as the subject's
+    // city, and `geo_family` anchored the subject on. The street part is
+    // dropped by the one street recogniser (`place_grain::locality_part`), so
+    // what counts as a street cannot differ between the grain a geocode is
+    // capped at and the city an address resolves to.
+    if let Some(hit) =
+        match_tabulated_city(&crate::util::place_grain::locality_part(trimmed).to_lowercase())
+    {
+        return Some((hit, "city"));
     }
-    // Last-resort: treat a bare 4-digit string as a postcode — the exact suburb
-    // centroid when tabulated, else the region centroid by leading digits so the
-    // whole AU postcode space resolves offline.
+    // A postcode: the exact suburb centroid when tabulated, else the region
+    // centroid by leading digits so the whole AU postcode space resolves
+    // offline — each labelled with the grain it actually is.
+    let postcode_fix = |pc: &str| {
+        postcode_coords(pc)
+            .map(|c| (c, "postcode"))
+            .or_else(|| au_postcode_region(pc).map(|c| (c, "region")))
+    };
+    // Last-resort: treat a bare 4-digit string as a postcode.
     if crate::util::postcode_au::is_shaped(trimmed) {
-        return postcode_coords(trimmed).or_else(|| au_postcode_region(trimmed));
+        return postcode_fix(trimmed);
     }
     // Full address string with no tabulated suburb: pull the embedded AU
     // postcode (`"12 Smith St, Maleny QLD 4552"`) and resolve it offline. This
@@ -77,7 +114,7 @@ pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
     if !mentions_non_au_country(&lower)
         && let Some(pc) = au_postcode_in(trimmed)
     {
-        return postcode_coords(pc).or_else(|| au_postcode_region(pc));
+        return postcode_fix(pc);
     }
     None
 }
@@ -341,6 +378,193 @@ pub(crate) fn is_tabulated_au_city(name: &str) -> bool {
         .any(|&(city, lat, lon)| city == name && crate::util::geo::is_in_australia(lat, lon))
 }
 
+/// What a tabulated centroid STANDS FOR — the place a gazetteer value is the
+/// centre of, returned by [`tabulated_centroid_at`].
+///
+/// Ranked finest → coarsest (`Postcode` < `City` < `PostcodeRegion`) by the
+/// area each names ([`TabulatedCentroid::rank`]), so when one 4-decimal value is
+/// several rows at once — `-27.4698,153.0251` is both the `brisbane` city row and
+/// postcode `4000`'s offline centroid — the coarsest reading is the one kept: it
+/// is the direction that cannot manufacture precision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TabulatedCentroid {
+    /// A tabulated postcode's principal-locality centroid
+    /// (`util::postcode_au`'s offline gazetteer).
+    Postcode {
+        /// The 4-digit postcode (the lowest one, when several share the point).
+        code: String,
+        /// Its state code, from the postcode's allocation range.
+        state: Option<&'static str>,
+    },
+    /// A tabulated city / suburb / regional centre — a [`CITIES`] row or one of
+    /// `util::geo`'s curated AU locality anchors.
+    City {
+        /// Display name: the anchor's own spelling when the value is an AU
+        /// anchor, else the [`CITIES`] key title-cased word by word.
+        name: String,
+        /// The AU state code, when the point is in Australia.
+        state: Option<&'static str>,
+    },
+    /// A leading-two-digit postcode REGION centroid ([`au_postcode_region`]).
+    PostcodeRegion {
+        /// The two leading postcode digits the region row is keyed by.
+        prefix: &'static str,
+        /// Its state code, from the region's postcode allocation range.
+        state: Option<&'static str>,
+    },
+}
+
+impl TabulatedCentroid {
+    /// The size of the area this reading names: `0` postcode, `1` city,
+    /// `2` postcode region. Only the variant counts — two readings of one kind
+    /// tie, and the first row in table order is kept.
+    #[must_use]
+    pub fn rank(&self) -> u8 {
+        match self {
+            Self::Postcode { .. } => 0,
+            Self::City { .. } => 1,
+            Self::PostcodeRegion { .. } => 2,
+        }
+    }
+}
+
+/// The tabulated centroid `(lat, lon)` IS, compared at the 4-decimal grain every
+/// caller formats a centroid's `Coordinates` value with (`{lat:.4},{lon:.4}`) —
+/// or `None` for a point off every table.
+///
+/// The tables are the ones [`city_coords`] answers from (the [`CITIES`] rows,
+/// the offline postcode centroids, the leading-digit [`REGIONS`] and their
+/// capital fallback), plus `util::geo`'s curated AU locality anchors: a value
+/// equal to any of them is a centre standing in for an area, whichever module
+/// minted it.
+///
+/// The one authority on "this point is a gazetteer centroid, not a place",
+/// and the one that says
+/// WHICH place, so `core::place::grain` can grade the point at the grain of what
+/// it stands for and a reader can name that place instead of the street, parcel
+/// or shop that happens to contain the centroid (REQ-GEOLABEL-001).
+///
+/// A precise fix that happens to fall in the same ~11 m cell as a centroid is
+/// read as the centroid — the direction that withholds a pivot rather than
+/// manufacturing precision; a caller holding a MEASURED fix on the same point
+/// decides for itself whether that measurement outranks the coincidence.
+/// Pure; deterministic (the map is built once, in a fixed table order, keeping
+/// the coarsest reading of a shared cell and the first row on a tie); no I/O.
+#[must_use]
+pub fn tabulated_centroid_at(lat: f64, lon: f64) -> Option<TabulatedCentroid> {
+    type Map = std::collections::HashMap<(i64, i64), TabulatedCentroid>;
+    static CENTROIDS: std::sync::LazyLock<Map> = std::sync::LazyLock::new(|| {
+        let mut map: Map = std::collections::HashMap::new();
+        // Coarsest reading wins; on an equal reading the first row inserted is
+        // kept, and the insertion order below is fixed, so the answer never
+        // depends on anything but the tables.
+        let mut put = |key: (i64, i64), c: TabulatedCentroid| match map.get(&key) {
+            Some(held) if held.rank() >= c.rank() => {}
+            _ => {
+                map.insert(key, c);
+            }
+        };
+        for &(city, lat, lon) in CITIES {
+            let key = grain_key(lat, lon);
+            let (name, state) = match crate::util::geo::au_locality_anchor_at(lat, lon) {
+                Some((anchor, state)) => (anchor.to_string(), Some(state)),
+                None => (
+                    title_case(city),
+                    crate::util::geo::au_state_for_coords(lat, lon),
+                ),
+            };
+            put(key, TabulatedCentroid::City { name, state });
+        }
+        for (name, state, lat, lon) in crate::util::geo::au_locality_anchors() {
+            put(
+                grain_key(lat, lon),
+                TabulatedCentroid::City {
+                    name: name.to_string(),
+                    state: Some(state),
+                },
+            );
+        }
+        for pc in 0..10_000u32 {
+            let pc = format!("{pc:04}");
+            let state = crate::util::address_au::state_for_postcode(&pc);
+            if let Some((a, o)) = postcode_coords(&pc) {
+                put(
+                    grain_key(a, o),
+                    TabulatedCentroid::Postcode {
+                        code: pc.clone(),
+                        state,
+                    },
+                );
+            }
+            if let Some((a, o)) = au_postcode_region(&pc) {
+                // Name the region by the REGIONS row with this value; the
+                // capital fallback's values are all REGIONS rows too.
+                let key = grain_key(a, o);
+                if let Some(&(prefix, _, _)) = REGIONS
+                    .iter()
+                    .find(|&&(_, ra, ro)| grain_key(ra, ro) == key)
+                {
+                    let state = crate::util::address_au::state_for_postcode(&format!("{prefix}00"));
+                    put(key, TabulatedCentroid::PostcodeRegion { prefix, state });
+                }
+            }
+        }
+        map
+    });
+    CENTROIDS.get(&grain_key(lat, lon)).cloned()
+}
+
+/// The nearest [`CITIES`] row to `(lat, lon)` within `max_km`, as its display
+/// name (title-cased key), its centre and the distance in km — or `None` when
+/// no tabulated city is that close. The offline "near which city" answer for a point outside
+/// the regions `util::geo` curates its own anchors for (Australia, Vietnam);
+/// `core::place::describe` bounds it so a mid-ocean point is never "near" a
+/// city across the sea. Pure; ties break on table order, so an alias row
+/// (`"colo springs"`) never displaces the canonical row before it.
+#[must_use]
+pub fn nearest_tabulated_city(
+    lat: f64,
+    lon: f64,
+    max_km: f64,
+) -> Option<(String, (f64, f64), f64)> {
+    if !crate::util::geo::is_valid_coords(lat, lon) {
+        return None;
+    }
+    CITIES
+        .iter()
+        .map(|&(key, clat, clon)| {
+            (
+                key,
+                (clat, clon),
+                crate::util::geo::haversine_km(lat, lon, clat, clon),
+            )
+        })
+        .filter(|&(_, _, km)| km <= max_km)
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+        .map(|(key, centre, km)| (title_case(key), centre, km))
+}
+
+/// `"gold coast"` → `"Gold Coast"`: the display spelling of a [`CITIES`] key,
+/// whose rows are stored lowercase for matching.
+fn title_case(key: &str) -> String {
+    key.split(' ')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect::<String>()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A point keyed at the 4-decimal grain [`tabulated_centroid_at`] compares at.
+#[allow(clippy::cast_possible_truncation)] // |lat|,|lon| ≤ 180 → ≤ 1.8e6.
+fn grain_key(lat: f64, lon: f64) -> (i64, i64) {
+    ((lat * 1e4).round() as i64, (lon * 1e4).round() as i64)
+}
+
 /// Resolve a bare 4-digit AU postcode to an approximate `(lat, lon)`.
 ///
 /// Delegates to the single source of truth — the ground-truth offline gazetteer
@@ -371,66 +595,6 @@ pub fn au_postcode_region(postcode: &str) -> Option<(f64, f64)> {
     if !crate::util::postcode_au::is_shaped(pc) {
         return None;
     }
-    // (leading two digits) -> approximate region centroid.
-    const REGIONS: &[(&str, f64, f64)] = &[
-        // QLD (4xxx) — finest grain: the AU family-finding use case.
-        ("40", -27.47, 153.03), // Brisbane
-        ("41", -27.70, 153.15), // Logan / Redland / GC hinterland
-        ("42", -28.01, 153.40), // Gold Coast
-        ("43", -27.60, 152.55), // Ipswich / Lockyer / eastern Downs
-        ("44", -26.30, 152.70), // Sunshine Coast north / Gympie
-        ("45", -26.45, 152.80), // Sunshine Coast / Moreton north / Wide Bay
-        ("46", -27.55, 151.90), // Toowoomba / Darling Downs
-        ("47", -22.50, 148.50), // Central QLD (Rockhampton / Mackay)
-        ("48", -18.50, 146.00), // North QLD (Townsville / Cairns)
-        ("49", -17.00, 144.50), // Far North / Gulf
-        // NSW + ACT (2xxx).
-        ("20", -33.87, 151.21),
-        ("21", -33.80, 151.00),
-        ("22", -34.00, 151.10),
-        ("23", -34.43, 150.89),
-        ("24", -32.50, 152.00),
-        ("25", -34.50, 149.50),
-        ("26", -35.28, 149.13), // ACT / south coast
-        ("27", -35.10, 147.37), // Riverina
-        ("28", -31.00, 150.90), // north-west
-        ("29", -29.00, 152.50), // northern rivers
-        // VIC (3xxx).
-        ("30", -37.81, 144.96),
-        ("31", -37.80, 145.10),
-        ("32", -38.15, 144.36),
-        ("33", -36.76, 144.28),
-        ("34", -38.10, 146.40),
-        ("35", -36.40, 145.40),
-        ("36", -36.40, 142.20),
-        ("38", -34.18, 142.16),
-        ("39", -37.50, 144.50),
-        // SA (5xxx).
-        ("50", -34.93, 138.60),
-        ("51", -34.90, 138.60),
-        ("52", -35.20, 138.60),
-        ("53", -34.20, 140.34),
-        ("54", -33.00, 137.50),
-        ("55", -32.49, 137.77),
-        ("56", -37.83, 140.78),
-        ("57", -34.70, 135.86),
-        // WA (6xxx).
-        ("60", -31.95, 115.86),
-        ("61", -31.90, 115.90),
-        ("62", -32.05, 115.74),
-        ("63", -33.33, 115.64),
-        ("64", -33.65, 115.34),
-        ("65", -28.77, 114.62),
-        ("66", -30.75, 121.47),
-        ("67", -17.96, 122.24),
-        // TAS (7xxx).
-        ("70", -42.88, 147.33),
-        ("72", -41.18, 146.35),
-        ("73", -41.44, 147.14),
-        // NT (08xx / 09xx).
-        ("08", -12.46, 130.84),
-        ("09", -19.65, 134.19),
-    ];
     let prefix = &pc[..2];
     if let Some(&(_, lat, lon)) = REGIONS.iter().find(|(pre, _, _)| *pre == prefix) {
         return Some((lat, lon));
@@ -456,6 +620,69 @@ pub fn au_postcode_region(postcode: &str) -> Option<(f64, f64)> {
     };
     Some(capital)
 }
+
+/// `(leading two digits) -> approximate region centroid` for [`au_postcode_region`],
+/// at module scope so [`tabulated_centroid_at`] can name the region a value is
+/// the centroid of, from the same rows the lookup answers with.
+const REGIONS: &[(&str, f64, f64)] = &[
+    // QLD (4xxx) — finest grain: the AU family-finding use case.
+    ("40", -27.47, 153.03), // Brisbane
+    ("41", -27.70, 153.15), // Logan / Redland / GC hinterland
+    ("42", -28.01, 153.40), // Gold Coast
+    ("43", -27.60, 152.55), // Ipswich / Lockyer / eastern Downs
+    ("44", -26.30, 152.70), // Sunshine Coast north / Gympie
+    ("45", -26.45, 152.80), // Sunshine Coast / Moreton north / Wide Bay
+    ("46", -27.55, 151.90), // Toowoomba / Darling Downs
+    ("47", -22.50, 148.50), // Central QLD (Rockhampton / Mackay)
+    ("48", -18.50, 146.00), // North QLD (Townsville / Cairns)
+    ("49", -17.00, 144.50), // Far North / Gulf
+    // NSW + ACT (2xxx).
+    ("20", -33.87, 151.21),
+    ("21", -33.80, 151.00),
+    ("22", -34.00, 151.10),
+    ("23", -34.43, 150.89),
+    ("24", -32.50, 152.00),
+    ("25", -34.50, 149.50),
+    ("26", -35.28, 149.13), // ACT / south coast
+    ("27", -35.10, 147.37), // Riverina
+    ("28", -31.00, 150.90), // north-west
+    ("29", -29.00, 152.50), // northern rivers
+    // VIC (3xxx).
+    ("30", -37.81, 144.96),
+    ("31", -37.80, 145.10),
+    ("32", -38.15, 144.36),
+    ("33", -36.76, 144.28),
+    ("34", -38.10, 146.40),
+    ("35", -36.40, 145.40),
+    ("36", -36.40, 142.20),
+    ("38", -34.18, 142.16),
+    ("39", -37.50, 144.50),
+    // SA (5xxx).
+    ("50", -34.93, 138.60),
+    ("51", -34.90, 138.60),
+    ("52", -35.20, 138.60),
+    ("53", -34.20, 140.34),
+    ("54", -33.00, 137.50),
+    ("55", -32.49, 137.77),
+    ("56", -37.83, 140.78),
+    ("57", -34.70, 135.86),
+    // WA (6xxx).
+    ("60", -31.95, 115.86),
+    ("61", -31.90, 115.90),
+    ("62", -32.05, 115.74),
+    ("63", -33.33, 115.64),
+    ("64", -33.65, 115.34),
+    ("65", -28.77, 114.62),
+    ("66", -30.75, 121.47),
+    ("67", -17.96, 122.24),
+    // TAS (7xxx).
+    ("70", -42.88, 147.33),
+    ("72", -41.18, 146.35),
+    ("73", -41.44, 147.14),
+    // NT (08xx / 09xx).
+    ("08", -12.46, 130.84),
+    ("09", -19.65, 134.19),
+];
 
 /// Extract the AU postcode embedded in a free-text address string.
 ///

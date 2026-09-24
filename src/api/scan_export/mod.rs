@@ -49,7 +49,7 @@ pub async fn scan_entities_csv(
     // enforced by `download_response`).
     crate::util::redact::redact_operator_secrets(&mut entities);
     download_response(
-        crate::app::export::entities_to_csv(&entities),
+        crate::app::export::entities_to_csv(&entities, &id),
         "text/csv; charset=utf-8",
         &id,
         "csv",

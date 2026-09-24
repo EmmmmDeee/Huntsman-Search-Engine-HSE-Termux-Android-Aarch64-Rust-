@@ -76,7 +76,7 @@ use super::*;
         let e = build_solar_entity("-33.8,151.2", -33.8, 151.2, "2024-06-16", &res, "s");
         assert_eq!(e.kind, EntityKind::Coordinates);
         assert!(e.has_tag("sunrise-sunset") && e.has_tag("chronolocation") && e.has_tag("geoint"));
-        assert!((e.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
+        assert!((e.confidence - confidence::DERIVED_FLOOR).abs() < 1e-9);
         assert_eq!(attr(&e, "date"), Some("2024-06-16"));
         assert_eq!(attr(&e, "latitude"), Some("-33.800000"));
         assert_eq!(attr(&e, "longitude"), Some("151.200000"));
@@ -149,3 +149,12 @@ use super::*;
             .expect("a genuine OK answer parses");
         assert_eq!(ok.sunrise.as_deref(), Some("2026-09-15T20:07:21+00:00"));
     }
+
+#[test]
+fn the_solar_record_annotates_the_point() {
+    // REQ-GEO-008: when the sun rises at a point is a fact about the point.
+    let res: SsResults = serde_json::from_str(r#"{"sunrise":"2024-06-15T20:00:00+00:00"}"#)
+        .expect("should succeed");
+    let e = build_solar_entity("-33.868800,151.209300", -33.8688, 151.2093, "2024-06-16", &res, "s");
+    crate::core::test_support::assert_point_annotation(&e);
+}

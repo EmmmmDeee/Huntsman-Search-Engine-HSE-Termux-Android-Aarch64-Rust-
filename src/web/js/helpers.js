@@ -21,10 +21,12 @@ export function fmtDuration(secs){
 }
 export function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
 /* The status pill for a state (`complete`, `running`, `interrupted`, …).
-   Its markup is wasm-ui's `status_pill`, the one copy every view draws with;
-   for a scan, pass `scanState(scan)` so a scan whose server died shows as
-   interrupted, not running (REQ-SCANSTATUS-002). */
-export function statusPill(s){ return statusPillHtml(s == null ? undefined : String(s)); }
+   Its markup is wasm-ui's `status_pill`, the one copy every view draws with.
+   For a scan, pass `scanState(scan)`, so a scan whose server died shows as
+   interrupted, not running (REQ-SCANSTATUS-038), and the row's
+   `finalise_incomplete` as `partial`, so a complete or aborted scan whose
+   finalise fell short reads partial, as its exports do (REQ-SCANSTATUS-030). */
+export function statusPill(s, partial){ return statusPillHtml(s == null ? undefined : String(s), partial===true); }
 export function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
 // Render a per-service pool's mean health for a table cell, honestly. The
 // backend sends `avg_health: null` when a service has NO tested key yet (every

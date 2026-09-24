@@ -19,7 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::entity::Entity;
+use crate::core::entity::{Entity, Evidence, VerificationMethod};
 
 /// The semantic class of a reconstructed event. Drives ordering ties,
 /// display grouping, and downstream attribution reasoning.
@@ -155,6 +155,29 @@ fn classify(attr_key: &str) -> Option<TimelineEventKind> {
     Some(kind)
 }
 
+/// Whether a record's dates describe the SUBJECT — the one per-record gate
+/// [`reconstruct`] applies. **Pure.** A record does not when:
+///
+/// * its ownership is [`VerificationMethod::Unverified`] — a name-only match,
+///   possibly a namesake's (REQ-NAMESAKE-002);
+/// * it is an annotation of the value ([`Evidence::is_annotation`]) — facts a
+///   module looked up BY a queried point, not a sighting of anyone.
+///   `sunrise_sunset` stamps `date = <the day the scan ran>` on the point it
+///   was asked about; the key classifies as a generic event, so the scan's
+///   run date became the subject's LATEST activity: `online_tenure` ended
+///   "today", `footprint_recency` read "Active", and both changed with the day
+///   the scan ran (review of #649);
+/// * it is inferred ([`Evidence::is_inferred`]) — its own doc: "a derivation
+///   or inference rather than a direct observation".
+///
+/// Deliberately narrower than [`Evidence::is_non_corroborating`], which also
+/// excludes whole SOURCES (the recall pass, the cross-scan bridge) whose
+/// records restate an earlier genuine observation: those do not add a second
+/// source to a count, but their dates are still the subject's.
+fn records_subject_activity(ev: &Evidence) -> bool {
+    ev.verification != Some(VerificationMethod::Unverified) && !ev.is_annotation && !ev.is_inferred
+}
+
 /// Reconstruct the chronological timeline implied by `entities`.
 ///
 /// Pure: walks evidence attributes, parses recognised date keys, and returns
@@ -167,13 +190,26 @@ fn classify(attr_key: &str) -> Option<TimelineEventKind> {
 /// address / email must never appear as if it were the subject's life event. This
 /// mirrors the candidate exclusion the correlator and exposure index already
 /// apply.
+///
+/// For the same reason an evidence record marked
+/// [`VerificationMethod::Unverified`] is skipped — the one gate
+/// `core::exposure` already applies. Its source matched the entity by name and
+/// did not establish whose record it is (`util::namesake::mark_ambiguous`,
+/// `wikitree`), and entities merge by value, so it sits on the subject's own
+/// anchor: scan 7258fc07 put a New Zealand soldier's 1930 birth date and 2019
+/// death date on "Ian Thorpe" the swimmer (REQ-NAMESAKE-002). Skipping the
+/// record, not the entity, keeps every attributable event on that anchor.
+///
+/// Two more kinds of record are not the subject's activity either, and are
+/// skipped by the same per-record gate ([`records_subject_activity`]): an
+/// annotation of the value and an inferred record.
 pub fn reconstruct(entities: &[Entity]) -> Vec<TimelineEvent> {
     let mut events: Vec<TimelineEvent> = Vec::new();
     for e in entities {
         if e.has_tag(crate::core::tags::CANDIDATE) {
             continue;
         }
-        for ev in &e.evidence {
+        for ev in e.evidence.iter().filter(|ev| records_subject_activity(ev)) {
             for (key, raw) in &ev.attributes {
                 let Some(kind) = classify(key) else { continue };
                 let Some((ts, iso)) = parse_date(raw) else {

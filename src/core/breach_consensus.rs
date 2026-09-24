@@ -262,16 +262,14 @@ pub fn run_consensus_pass(entities: &mut [Entity], scan_id: &str) -> BreachConse
 /// corpora rather than one — the same canonical corpus unit the contradiction
 /// detector and AU-105 use. Reads only records whose source already counts
 /// toward corroboration, so one the entity model discounts (recall replay,
-/// cross-scan history, this pass's own summary) can never be mistaken for an
-/// attesting corpus.
+/// cross-scan history, this pass's own summary, a password-list annotation, a
+/// name-only match — [`crate::core::entity::Evidence::is_non_corroborating`])
+/// can never be mistaken for an attesting corpus.
 fn breach_sources_of(entity: &Entity) -> Vec<String> {
     let corpora: BTreeSet<String> = entity
         .evidence
         .iter()
-        .filter(|ev| {
-            is_breach_source(&ev.source)
-                && !crate::core::entity::is_non_corroborating_source(&ev.source)
-        })
+        .filter(|ev| is_breach_source(&ev.source) && !ev.is_non_corroborating())
         .map(breach_corpus_key)
         .collect();
     corpora.into_iter().collect()
@@ -468,6 +466,32 @@ mod tests {
         assert_eq!(report.entities_examined, 0);
         assert!(report.results.is_empty());
         // Nothing attached, so the chain is untouched.
+        assert!(
+            !ents[0]
+                .evidence
+                .iter()
+                .any(|ev| ev.source == CONSENSUS_SOURCE)
+        );
+    }
+
+    #[test]
+    fn a_password_list_hit_is_not_a_breach_corpus_attestation() {
+        // REQ-CORE-018 (scan 7258fc07): four handles carrying only a
+        // `pwned_passwords` hit beside real account sightings were each graded
+        // "attested by 1 breach corpus" and flagged single_source_elevated — the
+        // scan's whole PASS_WITH_CONCERNS verdict.
+        let mut e = Entity::new(EntityKind::Username, "ianthorpe", 0.95, "scan-1");
+        e.add_evidence(Evidence::new("username_search", "found on X"));
+        e.add_evidence(Evidence::new("gaming_profile", "found on Y"));
+        e.add_evidence(
+            Evidence::new("pwned_passwords", "appears 2247 time(s) as a PASSWORD")
+                .with_attr("password_occurrences", "2247"),
+        );
+        let mut ents = vec![e];
+        let report = run_consensus_pass(&mut ents, "scan-1");
+        assert_eq!(report.entities_examined, 0);
+        assert_eq!(report.flags().count(), 0);
+        assert_eq!(report.verdict, AuditVerdict::Pass);
         assert!(
             !ents[0]
                 .evidence

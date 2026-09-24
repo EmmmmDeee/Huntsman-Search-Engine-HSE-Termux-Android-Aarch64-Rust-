@@ -254,3 +254,66 @@ fn results_survive_even_alongside_a_remark() {
     let els = infrastructure_or_error(resp).expect("elements present is not an error");
     assert_eq!(els.len(), 1);
 }
+
+#[test]
+fn the_summary_annotates_the_point_while_nodes_stay_observations() {
+    // REQ-GEO-008: the summary is a fact about the queried point, not a
+    // sighting of the subject there; the located nodes are OSM observations.
+    let els = elements(
+        r#"[{"type":"node","id":1,"lat":-33.8690,"lon":151.2095,
+             "tags":{"man_made":"surveillance"}}]"#,
+    );
+    let out = build_entities("-33.868800,151.209300", &els, "s");
+    crate::core::test_support::assert_point_annotation(&out[0]);
+    assert!(out[1..].iter().all(|n| n.evidence.iter().all(|ev| !ev.is_non_corroborating())));
+}
+
+#[test]
+fn distinct_nodes_of_one_category_carry_distinct_records() {
+    // Scan 7258fc07: "OSM {category} near {centre}" was one summary for every
+    // node of that category around the centre, so the GEXF read them as one
+    // shared record and wired distinct OSM nodes into a false clique. The
+    // summary must name the node.
+    let els = elements(
+        r#"[{"type":"node","id":1,"lat":-33.8690,"lon":151.2095,"tags":{"amenity":"cafe"}},
+            {"type":"node","id":2,"lat":-33.8700,"lon":151.2105,"tags":{"amenity":"cafe"}}]"#,
+    );
+    let out = build_entities("-33.868800,151.209300", &els, "s");
+    let nodes = &out[1..];
+    assert_eq!(nodes.len(), 2);
+    assert_ne!(nodes[0].evidence[0].summary, nodes[1].evidence[0].summary);
+    let xml = crate::core::gexf::entities_to_gexf(nodes, &[], "s");
+    assert!(!xml.contains("<edge "), "distinct nodes are not a joint record: {xml}");
+}
+
+#[test]
+fn a_node_record_is_named_by_its_osm_identity_never_its_position() {
+    // REQ-EXPORT-005: the shareable redaction pass coarsens a Coordinates
+    // value and its coordinate attributes but not summaries, so a summary that
+    // spelled the node's own 6-decimal coordinate leaked the precise fix into
+    // a redacted export. Distinct nodes must still carry distinct records.
+    let els = elements(
+        r#"[{"type":"node","id":1,"lat":-27.470123,"lon":153.021456,"tags":{"amenity":"cafe"}},
+            {"type":"way","id":2,"center":{"lat":-27.471,"lon":153.022},"tags":{"amenity":"cafe"}},
+            {"type":"node","lat":-27.472,"lon":153.023,"tags":{"amenity":"cafe"}}]"#,
+    );
+    let out = build_entities("-27.470000,153.020000", &els, "s");
+    let nodes = &out[1..];
+    assert_eq!(nodes.len(), 3);
+    let summaries: Vec<&str> = nodes.iter().map(|n| n.evidence[0].summary.as_str()).collect();
+    assert_eq!(summaries[0], "OSM infrastructure node/1 near -27.470000,153.020000");
+    assert_eq!(summaries[1], "OSM infrastructure way/2 near -27.470000,153.020000");
+    assert_eq!(summaries[2], "OSM infrastructure element #2 near -27.470000,153.020000");
+    for (n, s) in nodes.iter().zip(&summaries) {
+        assert!(!s.contains(&n.value), "{s:?} spells the node's own coordinate");
+    }
+    // Shared as a redacted export, no node's precise position survives.
+    let mut shared = nodes.to_vec();
+    crate::util::redact::redact_entities(&mut shared);
+    for n in &shared {
+        for ev in &n.evidence {
+            assert!(!ev.summary.contains("-27.470123"), "{}", ev.summary);
+            assert!(!ev.summary.contains("153.021456"), "{}", ev.summary);
+        }
+    }
+}

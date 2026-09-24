@@ -76,12 +76,71 @@ use crate::app::export::csv_escape;
         assert_eq!(empty, super::ScanStatsAgg::default());
     }
 
+    /// REQ-SCANSTATUS-030: a scan row carries its derived
+    /// `finalise_incomplete`, so the web views that read rows (the scan list,
+    /// the scan-info Status row, the radar sweep list) can call a `Complete`
+    /// scan with a finalise shortfall partial, as its exports do. Pre-fix
+    /// only `interrupted` was derived, and every row view showed it green.
+    #[test]
+    fn a_scan_row_says_whether_its_finalise_was_cut_short() {
+        use super::scan_json;
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+
+        let mk = |status: ScanStatus, error: Option<&str>| {
+            let mut s = Scan::new("s", Target::new(TargetKind::Domain, "cloudflare.com"));
+            s.status = status;
+            s.error = error.map(str::to_string);
+            s
+        };
+        let in_flight = std::collections::HashSet::new();
+        let flag = |scan: &Scan| scan_json(scan, &in_flight)["finalise_incomplete"].clone();
+        let cut = "1/20 entities failed to persist: disk full";
+        assert_eq!(flag(&mk(ScanStatus::Complete, Some(cut))), serde_json::json!(true));
+        assert_eq!(flag(&mk(ScanStatus::Aborted, Some(cut))), serde_json::json!(true));
+        // Controls: a clean finish, and a failure (never "partial").
+        assert_eq!(flag(&mk(ScanStatus::Complete, None)), serde_json::json!(false));
+        assert_eq!(flag(&mk(ScanStatus::Failed, Some(cut))), serde_json::json!(false));
+    }
+
+    /// REQ-SCANSTATUS-034: a finished scan whose finalise fell short is
+    /// histogrammed as the `partial` its row pill reads — the dashboard's
+    /// Scan Status panel counted it under its stored `complete`, a green
+    /// tally beside the Recent Scans row that called it `partial`.
+    #[test]
+    fn a_partial_scan_is_histogrammed_apart_from_complete() {
+        use super::aggregate_scan_stats;
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+
+        let mk = |id: &str, status: ScanStatus, error: Option<&str>| {
+            let mut s = Scan::new(id, Target::new(TargetKind::Domain, "cloudflare.com"));
+            s.status = status;
+            s.error = error.map(str::to_string);
+            s
+        };
+        let cut = "3/3 relations failed to persist: disk full";
+        let scans = [
+            mk("short", ScanStatus::Complete, Some(cut)),
+            mk("whole", ScanStatus::Complete, None),
+            mk("stopped-short", ScanStatus::Aborted, Some(cut)),
+            mk("stopped", ScanStatus::Aborted, None),
+            // Control: a failure's error is its failure, never "partial".
+            mk("failed", ScanStatus::Failed, Some(cut)),
+        ];
+        let agg = aggregate_scan_stats(&scans, &std::collections::HashSet::new());
+        assert_eq!(agg.by_status.get("partial"), Some(&1), "{agg:?}");
+        assert_eq!(agg.by_status.get("complete"), Some(&1), "{agg:?}");
+        assert_eq!(agg.by_status.get("aborted_partial"), Some(&1), "{agg:?}");
+        assert_eq!(agg.by_status.get("aborted"), Some(&1), "{agg:?}");
+        assert_eq!(agg.by_status.get("failed"), Some(&1), "{agg:?}");
+        assert_eq!(agg.by_status.values().sum::<u64>(), 5, "{agg:?}");
+    }
+
     /// REQ-SCANSTATUS-001: the same `running` row with NO handle in this
     /// process is a scan nobody is running. Pre-fix it was histogrammed as
     /// `running`, so `/stats` reported a hard-killed scan as in progress
     /// forever — observed on `ff4d63c` after `kill -9` + restart.
     ///
-    /// REQ-SCANSTATUS-002: a `pending` row with no handle is one too. Every
+    /// REQ-SCANSTATUS-038: a `pending` row with no handle is one too. Every
     /// create path now registers a scan before writing its row (`queue_scan`),
     /// so the window in which a healthy queued scan had no handle is gone, and
     /// a server killed with scans still queued left them `pending` for good.
@@ -123,7 +182,7 @@ use crate::app::export::csv_escape;
         assert_eq!(agg.by_status.get("pending"), Some(&1));
     }
 
-    /// REQ-SCANSTATUS-002: `hse scan`, `hse radar` and `hse live` run the
+    /// REQ-SCANSTATUS-038: `hse scan`, `hse radar` and `hse live` run the
     /// engine in their own process against the server's database. The
     /// server's registry does not know their scans, and read alone it called
     /// every one of them interrupted, and the console said nothing would
@@ -182,7 +241,7 @@ use crate::app::export::csv_escape;
         assert!(!legacy.is_interrupted(Some(&held)), "a registry vouches for it");
     }
 
-    /// REQ-SCANSTATUS-002: `queue_scan` registers a scan before its row
+    /// REQ-SCANSTATUS-038: `queue_scan` registers a scan before its row
     /// exists, so a `pending` row with no registry entry can only mean the
     /// process that queued it died. The write is held back here by another
     /// connection's write lock on the same database file: while it waits, the

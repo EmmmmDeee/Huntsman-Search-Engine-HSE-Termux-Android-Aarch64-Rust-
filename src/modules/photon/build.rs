@@ -117,19 +117,50 @@ pub(super) fn build_forward(
     Some(e)
 }
 
-/// Reverse geocode (`Coordinates` → `Address`). The resolved place **name** is
-/// the most-specific component of the display (deduped against city). Returns
-/// `None` when fewer than two address components resolve.
+/// Reverse geocode (`Coordinates` → `Address`): the NEAREST ADDRESS to the
+/// point, built from the feature's address components — `"{housenumber}
+/// {street}"` (or the street alone), city, state, postcode, country, deduped
+/// case-insensitively. Returns `None` when fewer than two components resolve.
+///
+/// The feature's `name` is part of the value only when the feature IS an
+/// address component: a road (`osm_key = highway`, as the street when Photon
+/// gave none) or a place (`osm_key = place`, as the locality ahead of the
+/// city). Any other name is the business or landmark occupying the point —
+/// "Nina Armando" (a clothes shop), "Sydney Opera House" — and it used to lead
+/// the value, so `util::geohash::parse_address` (which reads a leading part
+/// without a digit as the city) recorded `addr_city = "Nina Armando"`
+/// (REQ-GEO-010). It goes to evidence as `place_name` / `nearest_feature`.
 ///
 /// Confidence and off-region gating follow the same country-code-first,
 /// box-as-fallback order as [`build_forward`] — see its doc comment.
-pub(super) fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) -> Option<Entity> {
+///
+/// `matched` is where the returned feature itself lies (its GeoJSON point),
+/// recorded as `matched_lat` / `matched_lon` so a reader can measure how far
+/// the "nearest address" is from the point asked about; the house number and
+/// the street are recorded separately (`house_number`, `road`) for the same
+/// reader — the place label names a road or a house number only when that
+/// offset is small against the fix's error bar (REQ-GEOLABEL-002).
+pub(super) fn build_reverse(
+    lat: f64,
+    lon: f64,
+    props: &Props,
+    matched: Option<(f64, f64)>,
+    scan_id: &str,
+) -> Option<Entity> {
+    let name = nonempty(&props.name);
+    let osm_key = nonempty(&props.osm_key);
+    let street_name = nonempty(&props.street).or(name.filter(|_| osm_key == Some("highway")));
+    let street = street_name.map(|st| match nonempty(&props.housenumber) {
+        Some(n) => format!("{n} {st}"),
+        None => st.to_string(),
+    });
+    let locality = name.filter(|_| osm_key == Some("place"));
     let parts = join_unique(&[
-        nonempty(&props.name),
-        nonempty(&props.housenumber),
-        nonempty(&props.street),
+        street.as_deref(),
+        locality,
         nonempty(&props.city),
         nonempty(&props.state),
+        nonempty(&props.postcode),
         nonempty(&props.country),
     ]);
     if parts.len() < 2 {
@@ -151,12 +182,33 @@ pub(super) fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) ->
     let mut ae = Entity::new(EntityKind::Address, &display, confidence, scan_id);
     ae.tag("photon");
     ae.tag("reverse-geocoded");
+    ae.tag("nearest-address");
     ae.tag("geoint");
+    // Inferred, not observed — the nearest address to a point, exactly as
+    // `geocode`'s reverse leg marks its record (REQ-GEOLABEL-006).
     let mut ev = Evidence::new(SRC, format!("Photon reverse geocode for {lat:.6},{lon:.6}"))
         .with_attr("latitude", format!("{lat:.6}"))
-        .with_attr("longitude", format!("{lon:.6}"));
-    if let Some(name) = nonempty(&props.name) {
+        .with_attr("longitude", format!("{lon:.6}"))
+        .with_inferred(true);
+    if let Some(name) = name {
         ev = ev.with_attr("place_name", name);
+        if !matches!(osm_key, Some("highway" | "place")) {
+            ev = ev.with_attr("nearest_feature", name);
+        }
+    }
+    if let Some(st) = &street {
+        ev = ev.with_attr("street", st);
+    }
+    if let Some(road) = street_name {
+        ev = ev.with_attr("road", road);
+        if let Some(n) = nonempty(&props.housenumber) {
+            ev = ev.with_attr("house_number", n);
+        }
+    }
+    if let Some((mlat, mlon)) = matched.filter(|&(a, o)| crate::util::geo::is_valid_coords(a, o)) {
+        ev = ev
+            .with_attr("matched_lat", format!("{mlat:.6}"))
+            .with_attr("matched_lon", format!("{mlon:.6}"));
     }
     if let Some(c) = nonempty(&props.city) {
         ev = ev.with_attr("city", c);

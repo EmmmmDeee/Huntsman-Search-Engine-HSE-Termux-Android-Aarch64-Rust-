@@ -449,6 +449,76 @@ use super::*;
     }
 
     #[test]
+    fn reconstruct_skips_a_record_whose_ownership_was_never_established() {
+        // REQ-NAMESAKE-002 (scan 7258fc07): an ambiguous Wikidata namesake's
+        // record fused into the subject's anchor carrying birth_date 1930 and
+        // death_date 2019 — the subject's timeline showed a stranger's death.
+        // The record is Unverified; the anchor's own record is not, and must
+        // still produce its event.
+        let mut subject = entity_with_attrs(
+            EntityKind::Person,
+            "Ian Thorpe",
+            "name_intel",
+            &[("date_of_birth", "1982-10-13")],
+        );
+        subject.add_evidence(
+            Evidence::new("wikidata", "a namesake's item")
+                .with_attr("birth_date", "1930-05-28")
+                .with_attr("death_date", "2019-03-03")
+                .with_verification(crate::core::entity::VerificationMethod::Unverified),
+        );
+        let events = reconstruct(&[subject]);
+        assert_eq!(
+            events.iter().map(|e| e.iso.as_str()).collect::<Vec<_>>(),
+            vec!["1982-10-13"],
+            "only the attributable record's event survives"
+        );
+    }
+
+    /// An annotation's date is a fact about the lookup, not the subject's
+    /// activity. `sunrise_sunset` stamps `date = <the day the scan ran>` on
+    /// the point it was asked about (`as_annotation()`); `date` classifies as
+    /// a generic event, so the scan's run date became the subject's latest
+    /// activity — `online_tenure` ended on the run day and
+    /// `footprint_recency` read "Active", output that changed with the day the
+    /// scan ran (review of #649). An inferred record is not an observation
+    /// either.
+    #[test]
+    fn annotation_and_inferred_dates_are_not_subject_activity() {
+        let mut point = entity_with_attrs(
+            EntityKind::Coordinates,
+            "-27.469800,153.025100",
+            "exif_geo",
+            &[("shot_time", "2019-06-01T10:00:00Z")],
+        );
+        point.add_evidence(
+            Evidence::new("sunrise_sunset", "Solar phases on 2026-09-23")
+                .with_attr("date", "2026-09-23")
+                .as_annotation(),
+        );
+        point.add_evidence(
+            Evidence::new("geo_normalize", "derived")
+                .with_attr("last_seen", "2026-09-22")
+                .with_inferred(true),
+        );
+        let events = reconstruct(&[point]);
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| (e.kind, e.source.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(TimelineEventKind::LocationVisited, "exif_geo:shot_time")],
+            "only the photo's capture instant is the subject's: {events:?}"
+        );
+        let tenure = online_tenure(&events).expect("the shot_time is presence");
+        assert!(
+            !tenure.latest_iso.starts_with("2026-09-2"),
+            "the run day is not the subject's latest activity: {tenure:?}"
+        );
+        assert!(tenure.latest_iso.starts_with("2019-06-01"), "{tenure:?}");
+    }
+
+    #[test]
     fn online_tenure_spans_the_breach_history() {
         // Two breach exposures 2008 → 2025 reconstruct a 17-year online footprint.
         let a = entity_with_attrs(

@@ -22,7 +22,7 @@
       "fresh_worktree": "Passed. The gate (scripts/gate.sh --quick) passed in a fresh worktree of the commit, and the suite ran twice there: 8537 tests (8510 passed, 27 ignored, 0 failed) in both runs, identical test by test. Against the previous commit only the three new route tests differ. Doctests: 86 (83 passed, 3 ignored) twice, identical."
     },
     {
-      "contract": "No console view decides a scan's state from its status alone, and the interrupted flag it reads is true across processes (REQ-SCANSTATUS-002)",
+      "contract": "No console view decides a scan's state from its status alone, and the interrupted flag it reads is true across processes (REQ-SCANSTATUS-038)",
       "category": "DEFECT",
       "evidence": "Runtime, on sandboxed hse serve builds. 17 browser checks on a scan SIGKILLed mid-run: 3 of 17 before the change, 17 of 17 after (before: Stop and Abort offered, Scan Info re-fetching 18 times in 20 s, a live stream opened, the Running tally counting it). An independent review of the first draft found four should-fix defects and six nits, none blocking; all are fixed. The most serious was a regression: a scan another hse process runs (hse scan in a terminal) read as interrupted. API scenarios (a CLI-run scan, then the CLI SIGKILLed; 10 queued scans, then the server SIGKILLed and restarted; /stats; the log export): first draft 2 of 6, final 6 of 6. An open Log tab across a server SIGKILL and restart: first draft reads live again, final reads interrupted and stops. A positive control on a scan that really runs passes 10 of 10 on every build. Mutations: W1-W6 (wasm-ui) killed by the wasm-ui tests; J1-J5 (JS) killed by the route locks, which name each line; J6-J7 killed by the runtime check only; R1-R9 (server) each killed by a new Rust test. The Phase 1 shell check passes 51 of 51, the all-routes sweep's findings match the pre-fix build's, and no server panicked.",
       "fresh_worktree": "Passed. The gate (scripts/gate.sh --quick) passed in a fresh worktree of the commit, and the suite ran twice there: 8550 tests (8523 passed, 27 ignored, 0 failed) in both runs, identical test by test. Against the previous commit, 13 tests are new and one is renamed (a_running_row_with_no_handle_is_histogrammed_as_interrupted is now a_row_this_process_does_not_hold_is_histogrammed_as_interrupted); no other test differs. Doctests: 86 (83 passed, 3 ignored) twice, identical."
@@ -70,7 +70,7 @@
       "evidence": "src/util/key_pool/persistence.rs:50-54 (let _ = std::fs::rename); reachable when the .json.bak path exists as a directory"
     },
     {
-      "description": "Stop or Abort on a scan another hse process runs (hse scan, hse radar or hse live in a terminal) answers 404: a server can cancel only the scans it runs. REQ-SCANSTATUS-002 made such a scan read as running, correctly, so the console offers the button.",
+      "description": "Stop or Abort on a scan another hse process runs (hse scan, hse radar or hse live in a terminal) answers 404: a server can cancel only the scans it runs. REQ-SCANSTATUS-038 made such a scan read as running, correctly, so the console offers the button.",
       "evidence": "src/api/scan_handlers/core.rs scan_cancel looks the id up in AppState.cancellations only; ss3.sh scenario A shows the scan running with interrupted=false while the CLI runs it"
     },
     {

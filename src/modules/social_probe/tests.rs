@@ -666,3 +666,231 @@ fn an_indiscriminate_platform_is_never_a_profile_and_the_summary_names_it() {
         Some("1")
     );
 }
+
+/// REQ-SOCIAL-002 (scan 7258fc07 [380]/[381]): a confirmed behance / myspace
+/// profile filed `behance.net` and `myspace.com` as the subject's Domains —
+/// `derived_from` the username, queued for DNS/cert expansion — because the
+/// host passed a mega/infra denylist. Every probed host comes from this
+/// module's own table, so none is ever the subject's.
+#[test]
+fn a_confirmed_profile_never_files_the_platforms_own_host_as_a_domain() {
+    let found = |p: &'static Platform, handle: &str| -> ((&'static Platform, u16), ProbeResult) {
+        (
+            (p, 200),
+            ProbeResult::Found {
+                url: p.url_pattern.replace("{}", handle),
+                confidence: 0.74,
+                verified: false,
+                controlled: true,
+            },
+        )
+    };
+    let judged: Vec<_> = USERNAME_PLATFORMS
+        .iter()
+        .chain(NAME_PLATFORMS.iter())
+        .map(|p| found(p, "ianthorpe"))
+        .collect();
+    let named = |n: &str| judged.iter().any(|((p, _), _)| p.name == n);
+    assert!(
+        named("behance") && named("myspace"),
+        "the scan's two platforms are in the sweep"
+    );
+    let (result, tally) = emit_judged(&judged, "scan-t");
+    let domains: Vec<&str> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        domains.is_empty(),
+        "a platform's host is its estate, never the subject's Domain: {domains:?}"
+    );
+    assert_eq!(tally.found as usize, judged.len(), "every profile is kept");
+    for u in [
+        "https://www.behance.net/ianthorpe",
+        "https://myspace.com/ianthorpe",
+    ] {
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Url && e.value == u),
+            "{u} is still the profile"
+        );
+    }
+    assert!(
+        !SocialProbe.produces().contains(&EntityKind::Domain),
+        "produces() must not claim a kind the module never emits"
+    );
+}
+
+/// REQ-SOCIAL-003 / REQ-SOCIAL-005 (scan 7258fc07): the two-entry
+/// people-directory table is inconclusive by construction (facebook-public
+/// indiscriminate, peekyou walled). Reported as a module error it tripped the
+/// module-wide breaker and benched the handle sweep; reported as an in-band
+/// skip it told `core::coverage` the queried directories were "not attempted".
+/// Through `finish_sweep` — the step `process` returns through — the name
+/// verdict is an incomplete answer that coverage reads as `Truncated`; the
+/// handle verdict, and a name sweep nothing answered, stay the module error
+/// the breaker should count.
+#[test]
+fn an_inconclusive_people_directory_sweep_is_an_incomplete_answer_not_a_skip_or_a_fault() {
+    use crate::core::coverage::{ProviderOutcome, provider_coverage_from_events};
+    use crate::core::event::{Event, EventKind};
+    // The 7258fc07 name-table shape: facebook-public indiscriminate, peekyou
+    // refused.
+    let shape = || SweepTally {
+        inconclusive: 1,
+        indiscriminate_platforms: vec!["facebook-public"],
+        ..SweepTally::default()
+    };
+    let result = finish_sweep(
+        TargetKind::FullName,
+        ModuleResult::new(),
+        &shape(),
+        2,
+        false,
+    )
+    .expect("a structural people-directory verdict is no module error");
+    let caveat = result.truncation.clone().expect("marked incomplete");
+    assert!(caveat.contains("not a confirmed absence"), "{caveat}");
+    assert!(result.entities.is_empty());
+
+    // What coverage makes of the dispatch the engine records for it.
+    let done = Event::new(
+        "s",
+        EventKind::ModuleDone {
+            module: "social_probe".into(),
+            found: 0,
+            truncated: result.truncation.clone(),
+        },
+    );
+    let rows = provider_coverage_from_events(&[done]);
+    assert!(
+        matches!(rows[0].outcome, ProviderOutcome::Truncated { .. }),
+        "queried and answered, never NotAttempted, never CleanNegative: {:?}",
+        rows[0].outcome
+    );
+    assert!(!rows[0].outcome.settles_absence(), "the M6 guarantee holds");
+
+    // A handle sweep in the same shape is the error that benches a blocked
+    // egress.
+    assert!(matches!(
+        finish_sweep(
+            TargetKind::Username,
+            ModuleResult::new(),
+            &shape(),
+            2,
+            false
+        ),
+        Err(Error::Module { .. })
+    ));
+    // A name sweep NOTHING answered is the blocked-egress shape too.
+    let silent = SweepTally {
+        inconclusive: 2,
+        ..SweepTally::default()
+    };
+    assert!(matches!(
+        finish_sweep(TargetKind::FullName, ModuleResult::new(), &silent, 2, false),
+        Err(Error::Module { .. })
+    ));
+    // A cancelled run asserts nothing, and a conclusive one is left alone.
+    let r = finish_sweep(TargetKind::Username, ModuleResult::new(), &silent, 2, true).unwrap();
+    assert!(r.truncation.is_none());
+    let answered = SweepTally::default();
+    let r = finish_sweep(
+        TargetKind::FullName,
+        ModuleResult::new(),
+        &answered,
+        2,
+        false,
+    )
+    .unwrap();
+    assert!(
+        r.truncation.is_none(),
+        "two definitive absences are a clean negative"
+    );
+}
+
+/// REQ-SOCIAL-004: on a phone a normal sweep takes 42–45 s (Termux scan
+/// 7258fc07); the engine's 45 s constrained-device cap timed out 3 of 8 and
+/// discarded their confirmed profiles. The module must be cap-exempt and its
+/// own constrained budget must clear that happy path with headroom — while
+/// staying finite.
+#[test]
+fn is_exempt_from_the_constrained_device_timeout_cap() {
+    // The engine's cap (`CONSTRAINED_MODULE_TIMEOUT_CAP_MS`, private to
+    // `core::engine`) is 45 s; the measured sweep reaches it, so the budget
+    // must clear it by a real margin, not by a millisecond.
+    const ON_DEVICE_SWEEP_WITH_HEADROOM_MS: u64 = 55_000;
+    assert!(
+        SocialProbe.constrained_timeout_cap_exempt(),
+        "social_probe's on-device happy path reaches the 45 s cap"
+    );
+    let budget = SocialProbe.constrained_timeout_ms();
+    assert!(
+        budget >= ON_DEVICE_SWEEP_WITH_HEADROOM_MS,
+        "constrained budget {budget} ms must clear the ~45 s on-device sweep"
+    );
+    assert!(
+        budget <= SocialProbe.max_timeout_ms(),
+        "still bounded by its own budget"
+    );
+}
+
+/// Scan 7258fc07: three sweeps each found a twitter profile
+/// (`/ianthorpe`, `/ianthorpe26`, `/ianthorpe91`) and each carried the one
+/// summary "Profile found on twitter" — one evidence record, to the GEXF, that
+/// named all three, so they were wired into a false clique. The summary must
+/// name the profile.
+#[test]
+fn distinct_profiles_on_one_platform_carry_distinct_records() {
+    let p = a_status_only_platform();
+    let found = |handle: &str| -> ((&'static Platform, u16), ProbeResult) {
+        (
+            (p, 200),
+            ProbeResult::Found {
+                url: p.url_pattern.replace("{}", handle),
+                confidence: 0.74,
+                verified: false,
+                controlled: true,
+            },
+        )
+    };
+    let (result, _) = emit_judged(&[found("ianthorpe26"), found("ianthorpe91")], "scan-t");
+    let urls: Vec<Entity> = result
+        .entities
+        .into_iter()
+        .filter(|e| e.kind == EntityKind::Url)
+        .collect();
+    assert_eq!(urls.len(), 2);
+    assert_ne!(urls[0].evidence[0].summary, urls[1].evidence[0].summary);
+    let xml = crate::core::gexf::entities_to_gexf(&urls, &[], "scan-t");
+    assert!(
+        !xml.contains("<edge "),
+        "distinct profiles are not a joint record: {xml}"
+    );
+}
+
+/// REQ-SOCIAL-005: `process` reaches the network, so no unit test drives it;
+/// this pins that it returns through `finish_sweep` — the tested verdict —
+/// and builds no verdict of its own beside it. Reverting the call site to an
+/// inline `Err(Error::module(..))` (the REQ-SOCIAL-003 regression the earlier
+/// helper-only test could not see) fails here.
+#[test]
+fn process_returns_its_sweep_verdict_through_finish_sweep() {
+    let src = include_str!("mod.rs");
+    let body = src
+        .split_once("async fn process(&self, target: &Target, ctx: &ModuleContext)")
+        .and_then(|(_, rest)| rest.split_once("\n    }\n}\n"))
+        .map(|(body, _)| body)
+        .expect("SocialProbe::process is present");
+    assert!(body.contains("finish_sweep("), "{body}");
+    for inline in ["inconclusive_sweep(", "Error::module(", "Error::skipped("] {
+        assert!(
+            !body.contains(inline),
+            "process must not decide the verdict itself ({inline})"
+        );
+    }
+}

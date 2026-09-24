@@ -1,5 +1,5 @@
 //! Which process runs a scan, so that another process can tell a scan still
-//! being run from one whose process died (REQ-SCANSTATUS-002).
+//! being run from one whose process died (REQ-SCANSTATUS-038).
 //!
 //! `hse serve`, `hse scan`, `hse radar` and `hse live` each run the engine in
 //! their own process against one database. A server's in-flight registry

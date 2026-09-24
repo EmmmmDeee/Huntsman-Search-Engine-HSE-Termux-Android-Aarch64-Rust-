@@ -89,10 +89,35 @@ pub const GEOLOCATION_LEAD: &str = "geolocation-lead";
 /// Three separate passes refuse to treat it as precise, and this is the tag's
 /// whole purpose. A coarse `Address` is not a cross-scan bridge
 /// (`engine::history`), never links a household (`relation::builders` —
-/// two people sharing a postcode are not co-residents), and is not pivoted for
-/// recursive expansion (`engine`, which records the skip as
-/// `coarse_geo_not_pivoted`). It is still admissible as evidence; only these
-/// three inferences are withheld.
+/// two people sharing a postcode are not co-residents), and neither a coarse
+/// `Address` nor a coarse `Coordinates` is pivoted for recursive expansion
+/// (`engine`, which records the skip as `coarse_geo_not_pivoted`) or seeds an
+/// autonomous scan (`engine::ranking`). It is still admissible as evidence;
+/// only these inferences are withheld.
+///
+/// Every offline gazetteer centroid (`util::city_coords` returns a city, suburb
+/// or postcode centroid, never a street point) carries it once the engine has
+/// seen it: the engine's geospatial enrichment tags every `Coordinates` the
+/// precision authority (`core::place::grain::assess`) grades an area on
+/// positive evidence — a value that IS such a centroid, whichever of the ~30
+/// modules minted it; a point a geocoder declared a city/suburb/postcode
+/// centroid (`place_type`, a GeoNames feature class); a forward geocode of an
+/// input that names no street — and stamps the grain beside it as
+/// `fix-grain:<grain>` (REQ-GEO-017, REQ-GEOLABEL-005). The one exception is a
+/// COUNTRY signal (a phone prefix's or an email ccTLD's stand-in point): it
+/// carries `coarse` but NO `fix-grain:` stamp, because a stamp is a floor
+/// that never yields and would pin a later real finding of the city its
+/// stand-in sits on at country grain; its grade is carried by its own
+/// records and its `phone-prefix` / `cctld-inferred` / `locale-inferred` tag
+/// instead (REQ-GEOLABEL-019). A reader keying a point's grade off
+/// `fix-grain:*` alone therefore misses every country signal. A few minting
+/// sites also tag it themselves (`search_engines`'
+/// known-city lookup and recycled-snippet leg, the engine's
+/// address-to-coordinates pass, and the modules that know their own grain),
+/// which the enrichment only repeats. A module's raw output, before the engine
+/// enriches it, may therefore still lack it. Untagged, a Sydney CBD centroid
+/// was reverse-geocoded into "Kazan Dining, 25 Martin Place" at VERIFIED and
+/// handed to cadastre lookups as if it were the subject's parcel (REQ-GEO-007).
 pub const COARSE: &str = "coarse";
 /// Datacenter / CDN / cloud-host location, not a residence. Carried by
 /// coordinates that geolocate a hosting IP (e.g. a Cloudflare edge), so the
@@ -216,6 +241,13 @@ pub const CANDIDATE: &str = "candidate";
 /// Found via a **search engine or web archive** result, rather than by querying
 /// a source that holds the data itself.
 pub const SEARCH_DISCOVERED: &str = "search-discovered";
+/// A `Coordinates` that `search_engines` resolved from a snippet address through
+/// the offline known-city table — a city/suburb centroid, always also
+/// [`COARSE`]. The engine's pivot and autonomous-seed gates also read it on its
+/// own, so a centroid recalled from a scan that predates the [`COARSE`] tag
+/// (its stored tag set has no `coarse`) is still recognised as one
+/// (REQ-GEO-007).
+pub const SEARCH_GEOCODED: &str = "search-geocoded";
 /// **Derived from** a breach record rather than published in one — a domain
 /// split out of a breached email address, for example.
 ///

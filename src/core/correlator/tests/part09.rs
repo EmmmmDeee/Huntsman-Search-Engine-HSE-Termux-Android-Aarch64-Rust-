@@ -368,6 +368,61 @@ fn au088_a_court_record_is_a_document_not_a_register() {
     assert!(!hits[0].description.contains("AustLII"));
 }
 
+/// A register that returned several same-name rows has proved only that the
+/// NAME is registered. `mark_ambiguous` stamps each such row `Unverified`,
+/// the rows merge by value onto the seed Person, and AU-088 counted them as
+/// the subject's confirmation: a FullName seed "David Smith" with two
+/// same-name AHPRA practitioners fired High "Subject corroborated by 1
+/// authoritative Australian public register(s)" — Critical beside one real
+/// ABN hit. A non-corroborating record (name-only, or an annotation) is not a
+/// register's answer about the subject.
+#[test]
+fn au088_a_name_only_register_row_is_not_a_confirmation() {
+    use crate::core::entity::VerificationMethod;
+    let name_only = |source: &str| {
+        let mut p = Entity::new(EntityKind::Person, "David Smith", 0.70, "s");
+        p.add_evidence(
+            Evidence::new(source, "register record: David Smith")
+                .with_verification(VerificationMethod::Unverified),
+        );
+        p
+    };
+    assert!(
+        super::rules::rule_au_088_authoritative_register_confirmation(
+            &RuleContext::new(&[name_only("ahpra")]),
+            "s",
+            0
+        )
+        .is_empty(),
+        "a same-name row is not the subject's register record"
+    );
+
+    // Beside one genuine register hit it must not be the second authority.
+    let real = ent_from_source(EntityKind::Person, "David Smith", "abn_lookup");
+    let hits = super::rules::rule_au_088_authoritative_register_confirmation(
+        &RuleContext::new(&[name_only("ahpra"), real]),
+        "s",
+        0,
+    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].severity, super::Severity::High, "{hits:?}");
+    assert!(!hits[0].description.contains("AHPRA"), "{hits:?}");
+
+    // Positive control: a verified AHPRA record still confirms.
+    let mut verified = Entity::new(EntityKind::Person, "David Smith", 0.70, "s");
+    verified.add_evidence(
+        Evidence::new("ahpra", "register record")
+            .with_verification(VerificationMethod::PlatformVerified),
+    );
+    let hits = super::rules::rule_au_088_authoritative_register_confirmation(
+        &RuleContext::new(&[verified]),
+        "s",
+        0,
+    );
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].description.contains("AHPRA"));
+}
+
 // ─── Australian corporate network (AU-089) ───────────────────────────────────
 
 #[test]

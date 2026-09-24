@@ -138,8 +138,9 @@ impl Photon {
         let body: PhotonResp = crate::util::http::json_decode(build::SRC, resp).await?;
 
         let mut result = ModuleResult::new();
-        if let Some(props) = body.features.first().and_then(|f| f.properties.as_ref())
-            && let Some(e) = build_reverse(lat, lon, props, &ctx.scan_id)
+        if let Some(feature) = body.features.first()
+            && let Some(props) = feature.properties.as_ref()
+            && let Some(e) = build_reverse(lat, lon, props, feature.position(), &ctx.scan_id)
         {
             result.push(e);
         }

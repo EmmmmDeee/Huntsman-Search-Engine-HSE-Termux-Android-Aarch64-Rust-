@@ -69,7 +69,7 @@ async fn injected_module_runtime_is_used_by_the_engine() {
     assert_eq!(resets.load(std::sync::atomic::Ordering::Relaxed), 1);
 }
 
-/// REQ-SCANSTATUS-002: the engine records the process running a scan when it
+/// REQ-SCANSTATUS-038: the engine records the process running a scan when it
 /// starts it, whoever wrote the row, so another process reading the row can
 /// tell a live run from one whose process died.
 #[tokio::test]
@@ -197,6 +197,64 @@ fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     assert!((murrum.confidence - 0.50).abs() < 1e-9);
     // The unrelated email is untouched.
     assert!(entities.iter().any(|e| e.kind == EntityKind::Email));
+}
+
+/// REQ-GEO-014: finalise correlates the STORED set after consolidation folded
+/// the geocoder's input spelling (`"Sydney, NSW"`) into its locality survivor
+/// (`"Sydney, New South Wales"`). The geocode leg must still resolve its input
+/// — or the finalised correlation and the exported headline re-create the
+/// {Geocode, Search} synergy REQ-GEO-009 removed from the live slice.
+#[test]
+fn a_geocode_leg_keeps_its_lineage_after_its_input_spelling_is_consolidated() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let address = |value: &str| {
+        let mut a = Entity::new(EntityKind::Address, value, 0.65, "s");
+        a.tag("country:AU");
+        a.add_evidence(Evidence::new(
+            "search_engines",
+            format!("Address in snippet: {value}"),
+        ));
+        a
+    };
+    let mut known_city = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.72, "s");
+    known_city.tag("country:AU");
+    known_city.tag("au-state:NSW");
+    known_city.add_evidence(
+        Evidence::new(
+            "search_engines",
+            "Geocoded from search address: Sydney, New South Wales",
+        )
+        .with_attr("source_address", "Sydney, New South Wales"),
+    );
+    let mut geocoded = Entity::new(EntityKind::Coordinates, "-33.8698,151.2083", 0.55, "s");
+    geocoded.tag("country:AU");
+    geocoded.tag("au-state:NSW");
+    geocoded.add_evidence(
+        Evidence::new("geocode", "Geocoded \"Sydney, NSW\"")
+            .with_attr("input_address", "Sydney, NSW")
+            .with_attr("place_type", "city"),
+    );
+    let mut entities = vec![
+        address("Sydney, NSW"),
+        address("Sydney, New South Wales"),
+        known_city,
+        geocoded,
+    ];
+    // Live slice: every Address present.
+    assert!(crate::core::correlator::au059_synergy_fix(&entities).is_none());
+    // Finalise slice: the input spelling is folded away.
+    let folded = consolidate_address_localities(&mut entities);
+    assert_eq!(folded.len(), 1, "{folded:?}");
+    assert!(!entities.iter().any(|e| e.value == "Sydney, NSW"));
+    assert!(
+        crate::core::correlator::au059_synergy_fix(&entities).is_none(),
+        "a geocode of a snippet address is still the snippet's datum after the fold"
+    );
+    assert_eq!(
+        crate::core::correlator::au_location_corroboration(&entities)
+            .map(|c| c.independent_classes),
+        Some(1)
+    );
 }
 
 #[test]
@@ -378,6 +436,55 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
         e
     }];
     assert_eq!(promote_breach_candidate_geo_corroborated(&mut lone), 0);
+}
+
+/// REQ-GEO-FAMILY-002 through the engine passes: a search snippet's city
+/// centroid is not the subject's confirmed location, so neither a register
+/// relative nor a same-name breach row near it is promoted. A device fix on
+/// the same point is, which proves only the anchor gate changed.
+#[test]
+fn promote_geo_corroborated_family_ignores_snippet_city_anchors() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    let mut seed = Entity::new(EntityKind::Person, "Ian Thorpe", 0.97, "s");
+    seed.tag("seed");
+    seed.tag("subject");
+    let mut city = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.72, "s");
+    city.tag("geoint");
+    city.tag(crate::core::tags::SEARCH_GEOCODED);
+    city.add_evidence(
+        Evidence::new(
+            "search_engines",
+            "Geocoded from search address: Sydney, New South Wales",
+        )
+        .with_attr("method", "known-city-lookup"),
+    );
+    let mut kin = Entity::new(EntityKind::Address, "NSW 2066, Australia", 0.32, "s");
+    kin.tag("family-candidate");
+    kin.add_evidence(
+        Evidence::new("qld_unclaimed", "QLD unclaimed money: SEAN THORPE")
+            .with_attr("owner", "SEAN THORPE")
+            .with_attr("postcode", "2066"),
+    );
+    let mut breach = Entity::new(EntityKind::Email, "ithorpe@example.com", 0.25, "s");
+    breach.tag(crate::core::tags::CANDIDATE);
+    breach.tag("breach");
+    breach.add_evidence(Evidence::new("oathnet_pro", "breach row").with_attr("postcode", "2000"));
+
+    let mut ents = vec![seed, city, kin, breach];
+    assert_eq!(promote_geo_corroborated_family(&mut ents), 0);
+    assert_eq!(promote_breach_candidate_geo_corroborated(&mut ents), 0);
+    let kin = ents
+        .iter()
+        .find(|e| e.value == "NSW 2066, Australia")
+        .expect("kin present");
+    assert!(!kin.has_tag("geo-corroborated"));
+    assert_eq!(kin.source_count(), 1);
+
+    let mut gps = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.9, "s");
+    gps.add_evidence(Evidence::new("signal_radar", "gps"));
+    ents.push(gps);
+    assert_eq!(promote_geo_corroborated_family(&mut ents), 1);
 }
 
 /// `TrackedEntityMap::version()` is the signal `should_reconsider` gates on —
@@ -964,18 +1071,34 @@ fn finalise_correlation_pass_survives_a_panicking_rule() {
     // abort `finalise_scan`. A rule panicking on adversarial persisted data (a
     // slice-index bug over a crafted entity) previously unwound the whole finalise
     // block — losing the terminal `ScanComplete` event and the API-key pool the
-    // scan harvested. The guard degrades a caught panic to `None` (no finalise
-    // correlations), exactly as the live incremental pass does, so the scan still
-    // finalises.
-    let panicked = guarded_correlation_pass("s", || panic!("kaboom in a correlation rule"));
-    assert!(
-        panicked.is_none(),
-        "a panicking finalise pass must be caught and degrade to no firings, not unwind"
+    // scan harvested. The guard degrades a caught panic to "no finalise
+    // correlations", exactly as the live incremental pass does, so the scan
+    // still finalises — and it now says WHY, so the finalise can record the
+    // failure on the scan (review of #649: a pass that never ran used to leave
+    // the scan reading whole).
+    //
+    // The reason for a panic is the fixed `CORRELATION_PASS_PANICKED`, never
+    // the payload: it is written into `scan.error`, which a debug bundle must
+    // reproduce byte for byte, and a payload can carry run-specific text such
+    // as an address.
+    let local = 0u8;
+    let panicked = guarded_correlation_pass::<Vec<Correlation>>("s", || {
+        panic!("kaboom in a correlation rule at {:p}", &local)
+    });
+    assert_eq!(
+        panicked.expect_err("a panicking finalise pass must be caught, not unwind"),
+        CORRELATION_PASS_PANICKED,
+        "the panic's reason is stable text, not its payload"
     );
 
-    // A returned error is likewise swallowed to `None` (unchanged behaviour).
-    let errored = guarded_correlation_pass("s", || Err(Error::module("correlator", "boom")));
-    assert!(errored.is_none(), "a returned error yields no firings");
+    // A returned error yields its own text as the reason.
+    let errored = guarded_correlation_pass::<Vec<Correlation>>("s", || {
+        Err(Error::module("correlator", "boom"))
+    });
+    assert_eq!(
+        errored.expect_err("a returned error yields no firings"),
+        Error::module("correlator", "boom").to_string()
+    );
 
     // The happy path passes the firings straight through for emission.
     let ok = guarded_correlation_pass("s", || {
@@ -989,7 +1112,7 @@ fn finalise_correlation_pass_survives_a_panicking_rule() {
             0,
         )])
     })
-    .expect("a successful pass returns Some(firings)");
+    .expect("a successful pass returns Ok(firings)");
     assert_eq!(ok.len(), 1);
     assert_eq!(ok[0].rule_id, "AU-000");
 }
@@ -1453,7 +1576,7 @@ async fn a_modules_sightings_are_persisted_beside_its_entities_and_a_replay_pers
         "test_radar_sightings_real",
         Ok(Ok(mr)),
         &mut state,
-        &[],
+        ModuleAdmission::default(),
         false,
     );
 
@@ -1481,7 +1604,7 @@ async fn a_modules_sightings_are_persisted_beside_its_entities_and_a_replay_pers
         "test_radar_sightings_replay",
         Ok(Ok(ModuleResult::new())),
         &mut state,
-        &[],
+        ModuleAdmission::default(),
         true,
     );
     assert_eq!(
@@ -1544,7 +1667,7 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
         replayed,
         Ok(Ok(ModuleResult::new())),
         &mut state,
-        &[],
+        ModuleAdmission::default(),
         true, // from_cache
     );
     super::circuit::record_soft_failure(replayed); // streak → 3 iff the replay left it
@@ -1562,13 +1685,195 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
         dispatched_name,
         Ok(Ok(ModuleResult::new())),
         &mut state,
-        &[],
+        ModuleAdmission::default(),
         false, // real dispatch → record_success clears the streak
     );
     super::circuit::record_soft_failure(dispatched_name); // streak → 1 after a clear
     assert!(
         !super::circuit::is_open(dispatched_name),
         "a real dispatch clears the streak, so a single later failure must not trip it"
+    );
+}
+
+#[tokio::test]
+async fn a_module_that_opts_out_in_band_is_skipped_not_run() {
+    use crate::core::error::Error;
+    use crate::core::event::SkipClass;
+    use crate::core::test_support::InMemoryStore;
+
+    // Scan 7258fc07 reported "1003 run, … 349 skipped" where 247 of the 1003
+    // were "needs API key" opt-outs: `finalise_module_result` bumped `run` for
+    // every non-cached dispatch before matching, and the `MissingKey` /
+    // `Error::Skipped` arms then bumped `skipped` too. `run` and `skipped`
+    // must partition the dispatches; `errored` stays a subset of `run`.
+    // Each case gets a fresh `ModuleStats` and a unique module name (the
+    // breaker/health state is process-global).
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store, bus);
+    let target = Target::new(TargetKind::Email, "optout@example.com");
+    let opts = ScanOptions::default();
+    let cx = DispatchCx {
+        scan_id: "optout-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed: &Target::new(TargetKind::Email, "optout@example.com"),
+        quarantined: no_quarantine(),
+    };
+    // (module, result, from_cache, want_run, want_skipped, want_errored)
+    type Case = (
+        &'static str,
+        dispatch::TimeoutResult,
+        bool,
+        usize,
+        usize,
+        usize,
+    );
+    let cases: Vec<Case> = vec![
+        (
+            "test_optout_missing_key",
+            Ok(Err(Error::MissingKey("HUNTSMAN_X_KEY".into()))),
+            false,
+            0,
+            1,
+            0,
+        ),
+        (
+            "test_optout_skipped",
+            Ok(Err(Error::skipped(
+                SkipClass::NotApplicable,
+                "not applicable to this target",
+            ))),
+            false,
+            0,
+            1,
+            0,
+        ),
+        (
+            "test_optout_contrast_error",
+            Ok(Err(Error::module("test_optout_contrast_error", "boom"))),
+            false,
+            1,
+            0,
+            1,
+        ),
+        (
+            "test_optout_contrast_done",
+            Ok(Ok(crate::core::module::ModuleResult::new())),
+            false,
+            1,
+            0,
+            0,
+        ),
+        (
+            "test_optout_contrast_cached",
+            Ok(Ok(crate::core::module::ModuleResult::new())),
+            true,
+            0,
+            0,
+            0,
+        ),
+    ];
+    for (name, result, from_cache, run, skipped, errored) in cases {
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+            newly_inserted: &mut newly_inserted,
+        };
+        engine.finalise_module_result(
+            &cx,
+            name,
+            result,
+            &mut state,
+            ModuleAdmission::default(),
+            from_cache,
+        );
+        assert_eq!(
+            (stats.run, stats.skipped, stats.errored),
+            (run, skipped, errored),
+            "{name}: (run, skipped, errored)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_typed_unavailable_skip_never_feeds_the_circuit_breaker() {
+    use crate::core::error::Error;
+    use crate::core::event::SkipClass;
+    use crate::core::test_support::InMemoryStore;
+
+    // REQ-SOCIAL-003: a module whose verdict on one kind of target is
+    // structurally inconclusive (social_probe's two-entry people-directory
+    // table) must be able to say so without benching itself for every other
+    // kind — the breaker is keyed by module name alone. Scan 7258fc07 tripped
+    // social_probe three times on name-sweep errors. The typed skip is what
+    // decides: three in a row leave the breaker closed; the same three as
+    // module errors open it. Unique names keep this independent of the
+    // process-global breaker state the other tests touch.
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store, bus);
+
+    let target = Target::new(TargetKind::FullName, "Ian Thorpe");
+    let opts = ScanOptions::default();
+    let cx = DispatchCx {
+        scan_id: "skip-breaker-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed: &Target::new(TargetKind::FullName, "seed"),
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+
+    let skipping = "test_unavailable_skip_breaker";
+    for _ in 0..4 {
+        engine.finalise_module_result(
+            &cx,
+            skipping,
+            Ok(Err(Error::skipped(
+                SkipClass::Unavailable,
+                "people-directory sweep not answered — not a confirmed absence",
+            ))),
+            &mut state,
+            ModuleAdmission::default(),
+            false,
+        );
+    }
+    assert!(
+        !super::circuit::is_open(skipping),
+        "a typed skip is a decision, not a fault — it must never bench the module"
+    );
+
+    let erroring = "test_unavailable_skip_breaker_contrast";
+    for _ in 0..3 {
+        engine.finalise_module_result(
+            &cx,
+            erroring,
+            Ok(Err(Error::module(erroring, "inconclusive"))),
+            &mut state,
+            ModuleAdmission::default(),
+            false,
+        );
+    }
+    assert!(
+        super::circuit::is_open(erroring),
+        "the same verdict as a module error trips after the soft streak"
     );
 }
 
@@ -1618,7 +1923,7 @@ async fn a_bot_challenge_error_benches_the_module_at_once_and_is_recorded_as_suc
                 .into(),
         ))),
         &mut state,
-        &[],
+        ModuleAdmission::default(),
         false,
     );
     assert!(
@@ -4934,6 +5239,57 @@ fn enrich_offline_geo_parses_addresses_and_derives_city_coordinates() {
     );
 }
 
+/// REQ-GEOLABEL-027: the import path's address pass merges a city address
+/// onto a country signal's stand-in, as the scan loop does. `.au` / `en-au`
+/// is minted at Sydney's row, so an imported Sydney address's centroid IS that
+/// point; the pass skipped every existing uid and this caller appended only
+/// new ones, so the address never reached the point and it kept reading
+/// "Australia (country-level signal)".
+#[test]
+fn enrich_offline_geo_merges_a_city_address_onto_a_country_signal() {
+    use crate::core::engine::enrich_offline_geo;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::place::{FixGrain, StandsFor, assess};
+
+    let mut signal = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.2, "s");
+    for t in ["geoint", "coarse", "cctld-inferred"] {
+        signal.tag(t);
+    }
+    signal.add_evidence(
+        Evidence::new("email_locale", "Email domain ccTLD .au indicates Australia")
+            .with_attr("cctld", "au")
+            .with_attr("locale", "en-au")
+            .with_attr("country", "Australia"),
+    );
+    assert_eq!(assess(&signal).grain, FixGrain::Country);
+    let mut addr = Entity::new(
+        EntityKind::Address,
+        "10 Smith St, Sydney NSW 2000",
+        0.70,
+        "s",
+    );
+    addr.add_evidence(Evidence::new("abn_lookup", "registered address"));
+    let mut ents = vec![signal, addr];
+    enrich_offline_geo(&mut ents, "s");
+
+    let coords: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .collect();
+    assert_eq!(coords.len(), 1, "one point, merged: {coords:?}");
+    let p = assess(coords[0]);
+    assert_eq!(p.grain, FixGrain::Locality, "{p:?}");
+    assert!(
+        matches!(p.stands_for, Some(StandsFor::Gazetteer { ref name, .. }) if name == "Sydney"),
+        "{p:?}"
+    );
+    assert!(
+        coords[0].has_tag("fix-grain:locality"),
+        "{:?}",
+        coords[0].tags
+    );
+}
+
 #[test]
 fn enrich_offline_geo_is_a_noop_without_geocodable_addresses() {
     use crate::core::engine::enrich_offline_geo;
@@ -5638,6 +5994,7 @@ async fn run_panic_safe_force_fails_a_scan_that_panics_outside_process() {
         target.clone(),
     );
     let scan_id = scan.id.clone();
+    let mut heard = bus.subscribe();
     let ctx = ModuleContext {
         scan_id: scan_id.clone(),
         bus,
@@ -5651,6 +6008,32 @@ async fn run_panic_safe_force_fails_a_scan_that_panics_outside_process() {
         result.is_err(),
         "a scan whose dispatch panics must surface as an Err, not silently vanish"
     );
+
+    // REQ-SCANSTATUS-019: the failure is announced, as every other is — the
+    // row alone was written, so `hse live`, the radar and the web scan log
+    // heard no `scan_complete` and kept waiting.
+    let failed = |kinds: Vec<EventKind>| {
+        kinds
+            .into_iter()
+            .filter(|k| {
+                matches!(
+                    k,
+                    EventKind::ScanComplete {
+                        status: ScanStatus::Failed,
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    assert_eq!(failed(drain_events(&mut heard)), 1, "the failure is heard");
+    let history = store
+        .events_for_scan(&scan_id)
+        .expect("should succeed")
+        .into_iter()
+        .map(|e| e.kind)
+        .collect();
+    assert_eq!(failed(history), 1, "and durable");
 
     let persisted = store
         .get_scan(&scan_id)
@@ -5931,6 +6314,809 @@ fn drain_events(rx: &mut tokio::sync::broadcast::Receiver<crate::core::Event>) -
     out
 }
 
+/// Lifecycle invariant at the engine/storage boundary: a scan's stored status
+/// turns terminal only once everything its exports read is durable —
+/// entities, relations, correlations and the `ScanComplete` event. Finalise
+/// used to write `Complete` BEFORE the relation/correlation passes and before
+/// the (asynchronously persisted) completion event, and scan 7258fc07's debug
+/// bundle shows the result: "status: Complete", "CORRELATIONS (0)", and no
+/// `scan_complete` among its 8190 events. The in-memory store snapshots what
+/// it held at the instant the row first turned terminal.
+#[tokio::test]
+async fn a_scan_is_marked_complete_only_after_its_exported_artefacts_are_durable() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, _rx) = tokio::sync::broadcast::channel(4096);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store_port,
+        bus.clone(),
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        expand_all_identities: true,
+        max_roi: false,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Email, "lifecycle@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "lifecycle@example.com"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let done = engine.run(scan, target, ctx).await.expect("should succeed");
+    assert_eq!(done.status, ScanStatus::Complete);
+
+    let witnesses: Vec<_> = store
+        .terminal_witnesses()
+        .into_iter()
+        .filter(|w| w.scan_id == scan_id)
+        .collect();
+    assert_eq!(witnesses.len(), 1, "the row turns terminal exactly once");
+    let w = &witnesses[0];
+    assert_eq!(w.status, ScanStatus::Complete);
+    assert!(
+        w.completion_event,
+        "the row read Complete before its scan_complete event was stored"
+    );
+    let final_relations = store
+        .relations_for_scan(&scan_id)
+        .expect("should succeed")
+        .len();
+    let final_correlations = store
+        .correlations_for_scan(&scan_id)
+        .expect("should succeed")
+        .len();
+    assert!(final_relations > 0, "fixture must persist relations");
+    assert_eq!(
+        (w.relations, w.correlations),
+        (final_relations, final_correlations),
+        "the row read Complete before its relations/correlations were all stored"
+    );
+}
+
+/// Run the one-module breach-corpus fixture the lifecycle test above uses
+/// against `store`, returning the finished scan.
+async fn run_breach_corpus_fixture(store: Arc<dyn StoragePort>, seed: &str) -> Scan {
+    let (bus, _rx) = tokio::sync::broadcast::channel(4096);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store,
+        bus.clone(),
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        expand_all_identities: true,
+        max_roi: false,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Email, seed);
+    let scan =
+        Scan::new(crate::core::entity::scan_id("email", seed), target.clone()).with_options(opts);
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed")
+}
+
+/// Copilot review of #649: a live scan whose store refused its relations (and
+/// correlations) was written `Complete` with `error: None` — the refusals were
+/// only `warn!`-logged in `derive_and_persist_relations`, and a refused
+/// correlation made `Correlator::run` bail so nothing was recorded at all —
+/// so every export read the scan as whole while its graph was missing. The
+/// finalise must keep the status (the scan did run) and record the shortfall,
+/// counted, where the completeness classifiers read it.
+#[tokio::test]
+async fn a_live_scan_whose_store_refuses_relations_records_the_shortfall() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_RELATION, RefusingStore};
+
+    // Control: the same fixture over a store that keeps everything is whole,
+    // and tells us how many edges the finalise writes.
+    let clean = Arc::new(InMemoryStore::new());
+    let whole = run_breach_corpus_fixture(clean.clone(), "shortfall@example.com").await;
+    assert_eq!(whole.status, ScanStatus::Complete);
+    assert_eq!(
+        whole.error, None,
+        "a store that keeps every write: no error"
+    );
+    let edges = clean
+        .relations_for_scan(&whole.id)
+        .expect("should succeed")
+        .len();
+    assert!(edges > 0, "the fixture must write relations");
+
+    let inner = Arc::new(InMemoryStore::new());
+    let refusing: Arc<dyn StoragePort> = Arc::new(
+        RefusingStore::new(inner.clone())
+            .refusing_relations()
+            .refusing_correlations(),
+    );
+    let done = run_breach_corpus_fixture(refusing, "shortfall@example.com").await;
+    assert_eq!(
+        done.status,
+        ScanStatus::Complete,
+        "the scan ran to the end; losing writes does not make it Failed"
+    );
+    let err = done
+        .error
+        .clone()
+        .expect("the refused relations must be recorded on the scan");
+    assert!(
+        err.starts_with(&format!("{edges}/{edges} relations")),
+        "every edge counted, none silently dropped: {err}"
+    );
+    assert!(
+        err.ends_with(&format!("failed to persist: {REFUSED_RELATION}")),
+        "the first refusal's error, deterministically: {err}"
+    );
+    // What the exports read is the stored row, and it says the same.
+    let stored = inner
+        .get_scan(&done.id)
+        .expect("should succeed")
+        .expect("the scan row exists");
+    assert_eq!(stored.status, ScanStatus::Complete);
+    assert_eq!(stored.error, done.error);
+    assert!(
+        stored.completeness_caveat("this scan").is_some(),
+        "a scan missing its graph is not a complete answer"
+    );
+}
+
+/// The correlation half of the same finding. `Correlator::run` persisted
+/// inside the pass and returned `Err` on the first refused write, which the
+/// panic guard turned into "no correlations": the firings after it were
+/// neither stored nor counted, and the finalise recorded nothing. The shared
+/// `correlate_and_persist` step every finalise path now runs attempts every
+/// firing and counts each refusal.
+#[test]
+fn correlate_and_persist_counts_every_refused_firing() {
+    use crate::core::entity::Evidence;
+    use crate::core::test_support::{InMemoryStore, REFUSED_CORRELATION, RefusingStore};
+
+    let sid = "corr-refused";
+    let inner = Arc::new(InMemoryStore::new());
+    // Three independent sources on one email: AU-003 fires.
+    let mut strong = Entity::new(EntityKind::Email, "a@b.com", 0.95, sid);
+    for src in ["hibp", "dehashed", "search_engines"] {
+        strong.add_evidence(Evidence::new(src, "seen"));
+    }
+    inner.upsert_entity(&strong).expect("should succeed");
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_correlations());
+
+    // What the old path did with this store: the pass errors out whole.
+    assert!(
+        guarded_correlation_pass(sid, || {
+            crate::core::correlator::Correlator::new(Arc::clone(&store)).run(sid)
+        })
+        .is_err(),
+        "fail-fast persistence discards the pass — the defect"
+    );
+
+    let mut tally = FinaliseTally::default();
+    let firings =
+        correlate_and_persist(&store, sid, &mut tally).expect("the pass itself ran cleanly");
+    assert!(!firings.is_empty(), "the fixture must fire");
+    assert_eq!(
+        (
+            tally.attempted(FinaliseWrite::Correlations),
+            tally.failed(FinaliseWrite::Correlations)
+        ),
+        (firings.len(), firings.len()),
+        "every firing attempted, every refusal counted"
+    );
+    let msg = tally.message().expect("a refused firing is a shortfall");
+    assert!(msg.ends_with(REFUSED_CORRELATION), "{msg}");
+    assert!(
+        inner
+            .correlations_for_scan(sid)
+            .expect("should succeed")
+            .is_empty(),
+        "nothing was stored — and the tally says so"
+    );
+
+    // Control: a store that keeps them stores every firing, and records none.
+    let keeping: Arc<dyn StoragePort> = inner.clone();
+    let mut clean = FinaliseTally::default();
+    let again = correlate_and_persist(&keeping, sid, &mut clean).expect("ran");
+    assert_eq!(clean.message(), None);
+    assert_eq!(clean.persisted(FinaliseWrite::Correlations), again.len());
+}
+
+/// An email every pass can read, seen by three independent sources so the
+/// correlator has something to fire on (AU-003).
+fn correlatable_email(sid: &str) -> Entity {
+    use crate::core::entity::Evidence;
+    let mut strong = Entity::new(EntityKind::Email, "a@b.com", 0.95, sid);
+    for src in ["hibp", "dehashed", "search_engines"] {
+        strong.add_evidence(Evidence::new(src, "seen"));
+    }
+    strong
+}
+
+/// Review of #649, second round: a correlator pass that failed OUTRIGHT — a
+/// store read error, or a panic — degraded to "no correlations" and nothing
+/// was recorded, so the scan read whole with its findings missing. The pass
+/// failure is now recorded in the one tally, and a panic's reason is fixed
+/// text: the payload (here carrying an address) never reaches the scan record.
+#[test]
+fn correlate_and_persist_records_a_pass_that_failed_outright() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_RELATION_READ, RefusingStore};
+
+    let sid = "corr-pass-failed";
+    let inner = Arc::new(InMemoryStore::new());
+    inner
+        .upsert_entity(&correlatable_email(sid))
+        .expect("should succeed");
+
+    // A read the pass needs is refused.
+    let refusing: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_relation_reads());
+    let mut tally = FinaliseTally::default();
+    assert!(correlate_and_persist(&refusing, sid, &mut tally).is_none());
+    assert_eq!(
+        tally.message().as_deref(),
+        Some(format!("correlation pass failed: {REFUSED_RELATION_READ}").as_str()),
+        "the pass failure is on the scan, with the read's error"
+    );
+
+    // The pass panics — the payload carries a run-specific address.
+    let panicking: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).panicking_on_relation_reads());
+    let mut tally = FinaliseTally::default();
+    assert!(correlate_and_persist(&panicking, sid, &mut tally).is_none());
+    let msg = tally.message().expect("a panicked pass is recorded");
+    assert_eq!(msg, "correlation pass failed: panicked");
+    assert!(!msg.contains("0x"), "no payload detail leaks: {msg}");
+
+    // Control: a readable store records nothing.
+    let keeping: Arc<dyn StoragePort> = inner.clone();
+    let mut clean = FinaliseTally::default();
+    assert!(correlate_and_persist(&keeping, sid, &mut clean).is_some());
+    assert_eq!(clean.message(), None);
+}
+
+/// REQ-SCANSTATUS-026: a correlator its time budget cut short is recorded on
+/// the scan by the one correlation step every finalise path runs (the live
+/// engine, `hse import` and the web upload). `evaluate` returned the partial
+/// firings as a plain `Ok`, so the scan was written `Complete` with `error:
+/// None` while the rules after the cut never ran — a result that depended on
+/// how busy the device was, read whole. The cut keeps its firings, and is not
+/// the panic clause, so a re-import is still offered as its remedy.
+#[test]
+fn a_correlator_the_budget_cut_short_is_recorded() {
+    use crate::core::test_support::InMemoryStore;
+
+    let sid = "corr-cut";
+    let inner = Arc::new(InMemoryStore::new());
+    inner
+        .upsert_entity(&correlatable_email(sid))
+        .expect("should succeed");
+    let store: Arc<dyn StoragePort> = inner.clone();
+
+    let mut cut = FinaliseTally::default();
+    let kept = correlate_and_persist_with(&store, sid, &mut cut, |c| {
+        c.evaluate_within(sid, std::time::Duration::ZERO)
+    })
+    .expect("a cut pass still ran");
+    assert!(kept.is_empty(), "no rule started after the deadline");
+    let total = crate::core::correlator::rule_counts().0;
+    let msg = cut.message().expect("a cut pass is a shortfall");
+    assert_eq!(
+        msg,
+        format!("correlation pass failed: stopped at its time budget after 0 of its {total} rules")
+    );
+    assert!(!FinaliseTally::records_correlation_panic(&msg));
+
+    // Control: the shipped budget runs every rule and records nothing.
+    let mut whole = FinaliseTally::default();
+    let all = correlate_and_persist(&store, sid, &mut whole).expect("ran");
+    assert!(!all.is_empty(), "the fixture fires");
+    assert_eq!(whole.message(), None);
+}
+
+/// The same, end to end on the live engine: a scan whose correlator could
+/// not read its graph is recorded as such, and stays `Complete`.
+#[tokio::test]
+async fn a_live_scan_whose_correlation_pass_fails_records_it() {
+    use crate::core::test_support::{InMemoryStore, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let refusing: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_relation_reads());
+    let done = run_breach_corpus_fixture(refusing, "passfail@example.com").await;
+    assert_eq!(done.status, ScanStatus::Complete);
+    let err = done.error.expect("a correlator that never ran is recorded");
+    assert!(err.contains("correlation pass failed: "), "{err}");
+    let stored = inner
+        .get_scan(&done.id)
+        .expect("should succeed")
+        .expect("the scan row exists");
+    assert_eq!(stored.error.as_deref(), Some(err.as_str()));
+}
+
+/// A refused detach of folded address observations used to be a warning only:
+/// the scan read whole while its exports repeated the address spellings the
+/// fold had removed. It is counted now — and the lineage remap is unchanged.
+#[test]
+fn a_refused_address_fold_detach_is_counted() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_DETACH, RefusingStore};
+
+    let sid = "fold-detach";
+    let victim = Entity::new(EntityKind::Address, "Sydney, NSW", 0.6, sid);
+    let survivor = Entity::new(EntityKind::Address, "Sydney, New South Wales", 0.7, sid);
+    let seed = Entity::new(EntityKind::Person, "Jane Citizen", 0.9, sid);
+    let lineage = vec![Relation::new(
+        seed.uid.as_str(),
+        victim.uid.as_str(),
+        RelationKind::DerivedFrom,
+        0.8,
+        sid,
+    )];
+    let folded = || vec![(victim.uid.clone(), survivor.uid.clone())];
+
+    let inner = Arc::new(InMemoryStore::new());
+    inner.upsert_entity(&victim).expect("should succeed");
+    let refusing = RefusingStore::new(inner.clone()).refusing_detach();
+    let mut tally = FinaliseTally::default();
+    let remapped = apply_address_folds(&refusing, sid, folded(), &lineage, &mut tally);
+    assert_eq!(
+        tally.message().as_deref(),
+        Some(format!("1/1 address folds failed to persist: {REFUSED_DETACH}").as_str())
+    );
+    assert_eq!(remapped.len(), 1);
+    assert_eq!(
+        remapped[0].to_uid, survivor.uid,
+        "the edge is re-pointed at the survivor"
+    );
+    assert_eq!(
+        inner.entities_for_scan(sid).expect("should succeed").len(),
+        1,
+        "the victim is still observed — which is what the tally now says"
+    );
+
+    // Control: the detach goes through and nothing is recorded.
+    let mut clean = FinaliseTally::default();
+    let _ = apply_address_folds(inner.as_ref(), sid, folded(), &lineage, &mut clean);
+    assert_eq!(clean.message(), None);
+    assert_eq!(clean.attempted(FinaliseWrite::AddressFolds), 1);
+    assert!(
+        inner
+            .entities_for_scan(sid)
+            .expect("should succeed")
+            .is_empty()
+    );
+}
+
+/// The corroboration-boost re-persist used to be a warning only: the stored
+/// entity kept no trace of the boost the scan computed, under a scan that read
+/// whole. A refused re-persist is counted, and a failed read of the relations
+/// the multipath boost needs is recorded as a failed pass.
+#[test]
+fn a_refused_boost_re_persist_and_an_unreadable_boost_pass_are_recorded() {
+    use crate::core::test_support::{
+        InMemoryStore, REFUSED_ENTITY, REFUSED_RELATION_READ, RefusingStore,
+    };
+
+    let sid = "boost-refused";
+    let fresh = || vec![Entity::new(EntityKind::Email, "x@y.com", 0.7, sid)];
+    let boost: HashMap<String, String> =
+        HashMap::from([(fresh()[0].uid.clone(), "a proven route".to_string())]);
+
+    let inner = Arc::new(InMemoryStore::new());
+    let refusing = RefusingStore::new(inner.clone()).refusing_entity_writes();
+    let mut entities = fresh();
+    let mut tally = FinaliseTally::default();
+    apply_corroboration_boosts(&refusing, sid, &mut entities, &boost, &mut tally);
+    assert!(
+        entities[0].has_tag("cross-scan-corroborated"),
+        "the boost fired"
+    );
+    assert_eq!(
+        tally.message().as_deref(),
+        Some(format!("1/1 corroboration boosts failed to persist: {REFUSED_ENTITY}").as_str())
+    );
+
+    let unreadable = RefusingStore::new(inner.clone()).refusing_relation_reads();
+    let mut entities = fresh();
+    let mut tally = FinaliseTally::default();
+    apply_corroboration_boosts(&unreadable, sid, &mut entities, &HashMap::new(), &mut tally);
+    assert_eq!(
+        tally.message().as_deref(),
+        Some(format!("corroboration boost pass failed: {REFUSED_RELATION_READ}").as_str())
+    );
+
+    // Control: a store that keeps the boost stores it and records nothing.
+    let mut entities = fresh();
+    let mut clean = FinaliseTally::default();
+    apply_corroboration_boosts(inner.as_ref(), sid, &mut entities, &boost, &mut clean);
+    assert_eq!(clean.message(), None);
+    assert_eq!(clean.persisted(FinaliseWrite::CorroborationBoosts), 1);
+    assert!(
+        inner
+            .entities_for_scan(sid)
+            .expect("should succeed")
+            .iter()
+            .any(|e| e.has_tag("cross-scan-corroborated"))
+    );
+}
+
+/// AU-065 / AU-066 are computed from the scan's own graph and each route's
+/// prior-scan count. A failed read of either skipped them silently (`if let
+/// (Ok, Ok)`, `unwrap_or(0)`), so a scan could lack those findings and read
+/// whole. Both are recorded as a failed cross-scan route pass.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_cross_scan_route_pass_is_recorded() {
+    use crate::core::test_support::{
+        InMemoryStore, REFUSED_RELATION_READ, REFUSED_TEMPLATE_COUNT, RefusingStore,
+    };
+
+    let sid = "route-pass";
+    // Person → Email → Username: one two-hop identity route, so the pass has
+    // a template whose prior count it must read.
+    let person = Entity::new(EntityKind::Person, "Jane Citizen", 0.9, sid);
+    let email = Entity::new(EntityKind::Email, "jane@citizen.example", 0.9, sid);
+    let user = Entity::new(EntityKind::Username, "janecitizen", 0.9, sid);
+    let inner = Arc::new(InMemoryStore::new());
+    for e in [&person, &email, &user] {
+        inner.upsert_entity(e).expect("should succeed");
+    }
+    for r in [
+        Relation::new(
+            person.uid.as_str(),
+            email.uid.as_str(),
+            RelationKind::IdentifiedBy,
+            0.9,
+            sid,
+        ),
+        Relation::new(
+            email.uid.as_str(),
+            user.uid.as_str(),
+            RelationKind::AliasOf,
+            0.9,
+            sid,
+        ),
+    ] {
+        inner.upsert_relation(&r).expect("should succeed");
+    }
+    let (ents, rels) = (
+        inner.entities_for_scan(sid).expect("should succeed"),
+        inner.relations_for_scan(sid).expect("should succeed"),
+    );
+    assert!(
+        !crate::core::relation::connection_templates(
+            &ents,
+            &rels,
+            4,
+            crate::core::relation::IDENTITY_LINK_MIN_CONF
+        )
+        .is_empty(),
+        "precondition: the fixture has a route to count"
+    );
+
+    let emitter = || {
+        let (bus, _rx) = tokio::sync::broadcast::channel(64);
+        let keeping: Arc<dyn StoragePort> = inner.clone();
+        EventEmitter::new(DbWriter::spawn(keeping), bus)
+    };
+    let run = |store: &dyn StoragePort| {
+        let mut tally = FinaliseTally::default();
+        let mut emitted = HashSet::new();
+        learn_cross_scan_pathway_templates(store, &emitter(), sid, &mut emitted, &mut tally);
+        tally.message()
+    };
+
+    let unreadable = RefusingStore::new(inner.clone()).refusing_relation_reads();
+    assert_eq!(
+        run(&unreadable).as_deref(),
+        Some(format!("cross-scan route pass failed: {REFUSED_RELATION_READ}").as_str())
+    );
+    let uncountable = RefusingStore::new(inner.clone()).refusing_template_counts();
+    assert_eq!(
+        run(&uncountable).as_deref(),
+        Some(format!("cross-scan route pass failed: {REFUSED_TEMPLATE_COUNT}").as_str())
+    );
+    // Control: a readable store records nothing.
+    assert_eq!(run(inner.as_ref()), None);
+}
+
+/// REQ-SCANSTATUS-004: SSE subscribers hear `scan_complete` only once the
+/// stored row is terminal. The event was broadcast inside the blocking
+/// finalise, before the commit wrote the status, so a client that re-fetched
+/// `/scans/{id}` on it (the radar view, on the documented promise that "the
+/// engine writes the row before it emits the event") read `running`.
+#[tokio::test]
+async fn scan_complete_reaches_live_subscribers_only_after_the_row_is_terminal() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, rx) = tokio::sync::broadcast::channel(8192);
+    store.watch_bus(rx);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store_port,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Email, "sse@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "sse@example.com"),
+        target.clone(),
+    )
+    .with_options(ScanOptions {
+        depth: 1,
+        max_roi: false,
+        ..Default::default()
+    });
+    let scan_id = scan.id.clone();
+    let mut late = bus.subscribe();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+    let w = store
+        .terminal_witnesses()
+        .into_iter()
+        .find(|w| w.scan_id == scan_id)
+        .expect("the row turned terminal");
+    assert!(w.completion_event, "the event is durable before the row");
+    assert!(
+        !w.completion_broadcast,
+        "subscribers were told the scan completed while its row still read running"
+    );
+    // ...and they are still told, once.
+    let heard = drain_events(&mut late)
+        .into_iter()
+        .filter(|k| matches!(k, EventKind::ScanComplete { .. }))
+        .count();
+    assert_eq!(heard, 1);
+}
+
+/// REQ-SCANSTATUS-008: a Failed scan is announced `failed` even when its
+/// best-effort terminal write is lost. When every entity write fails the scan
+/// is failed by `conclude_failed`, whose row write is best-effort. REQ-SCANSTATUS-007
+/// withheld `scan_complete` when that write failed too, and nothing was
+/// broadcast in its place — so `hse live` printed no "scan failed" line and
+/// the web scan log's pill stayed "live", then cycled through reconnects
+/// against the `Running` start row, in exactly the case (a store refusing
+/// writes) the operator most needs telling. The event's status is true
+/// whether or not the row landed.
+#[tokio::test]
+async fn a_failed_scan_whose_row_was_not_written_is_still_announced_failed() {
+    use crate::core::test_support::{InMemoryStore, RefusingStore};
+
+    let run = |refuse_row: bool| async move {
+        let inner = Arc::new(InMemoryStore::new());
+        let refusing = RefusingStore::new(inner.clone()).refusing_entity_writes();
+        let refusing = if refuse_row {
+            refusing.refusing_terminal_scan_writes()
+        } else {
+            refusing
+        };
+        let (bus, _rx) = tokio::sync::broadcast::channel(8192);
+        let engine = ScanEngine::new(
+            vec![Arc::new(StubBreachCorpus {
+                name: "stub_breach_corpus",
+            })],
+            Arc::new(refusing),
+            bus.clone(),
+        );
+        let target = Target::new(TargetKind::Email, "lost@example.com");
+        let scan = Scan::new(
+            crate::core::entity::scan_id("email", "lost@example.com"),
+            target.clone(),
+        )
+        .with_options(ScanOptions {
+            depth: 1,
+            max_roi: false,
+            ..Default::default()
+        });
+        let scan_id = scan.id.clone();
+        let mut late = bus.subscribe();
+        let ctx = ModuleContext {
+            scan_id: scan.id.clone(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let done = engine.run(scan, target, ctx).await.expect("should succeed");
+        assert_eq!(done.status, ScanStatus::Failed, "{done:?}");
+        let stored = inner
+            .get_scan(&scan_id)
+            .expect("should succeed")
+            .map(|s| s.status);
+        let heard: Vec<ScanStatus> = drain_events(&mut late)
+            .into_iter()
+            .filter_map(|k| match k {
+                EventKind::ScanComplete { status, .. } => Some(status),
+                _ => None,
+            })
+            .collect();
+        (stored, heard)
+    };
+
+    let (stored, heard) = run(true).await;
+    assert_ne!(
+        stored,
+        Some(ScanStatus::Failed),
+        "the row write was refused"
+    );
+    assert_eq!(
+        heard,
+        vec![ScanStatus::Failed],
+        "a status-only subscriber must still hear the scan failed"
+    );
+    // Control: the Failed row that was written is announced, once.
+    let (stored, heard) = run(false).await;
+    assert_eq!(stored, Some(ScanStatus::Failed));
+    assert_eq!(heard, vec![ScanStatus::Failed]);
+}
+
+/// REQ-SCANSTATUS-011: a store that refuses the scan-start row ends the scan
+/// before any module runs, and before the finalise that announces every other
+/// outcome. `run` returned the bare error and broadcast nothing, so the
+/// radar's "sweep #N running…" and the `hse live` renderer waited on a sweep
+/// that had already stopped — the gap REQ-SCANSTATUS-008 closed only for a
+/// store that accepted the start row.
+#[tokio::test]
+async fn a_scan_whose_start_row_is_refused_is_announced_failed() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_SCAN, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(8192);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        Arc::new(RefusingStore::new(inner.clone()).refusing_scan_writes()),
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Email, "refused@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "refused@example.com"),
+        target.clone(),
+    )
+    .with_options(ScanOptions {
+        depth: 1,
+        max_roi: false,
+        ..Default::default()
+    });
+    let scan_id = scan.id.clone();
+    let mut late = bus.subscribe();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let err = engine
+        .run(scan, target, ctx)
+        .await
+        .expect_err("a refused start row fails the scan");
+    assert!(err.to_string().contains(REFUSED_SCAN), "{err}");
+    assert!(inner.get_scan(&scan_id).expect("should succeed").is_none());
+    let heard: Vec<(String, ScanStatus)> = drain_events(&mut late)
+        .into_iter()
+        .filter_map(|k| match k {
+            EventKind::ScanComplete {
+                scan_id, status, ..
+            } => Some((scan_id, status)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        heard,
+        vec![(scan_id, ScanStatus::Failed)],
+        "a status-only subscriber must hear the scan failed"
+    );
+}
+
+/// Scan 7258fc07: `expansion_stop max_entities=2500 reached`, then
+/// `breach_sweep {probes: 64}`, then no sweep dispatch at all — the per-probe
+/// budget guard broke on probe 0, and the event (emitted before the loop)
+/// announced 64 probes that never went out. A sweep that cannot dispatch must
+/// say so: zero dispatched, and why.
+#[tokio::test]
+async fn a_budget_exhausted_breach_sweep_reports_zero_dispatched() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, mut rx) = tokio::sync::broadcast::channel(4096);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store_port,
+        bus.clone(),
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        expand_all_identities: true,
+        max_roi: false,
+        // The seed round alone fills this budget.
+        max_entities: Some(1),
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Email, "budget@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "budget@example.com"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    let events = drain_events(&mut rx);
+    let (probes, dispatched, stopped) = events
+        .iter()
+        .find_map(|k| match k {
+            EventKind::BreachSweep {
+                probes,
+                dispatched,
+                stopped,
+                ..
+            } => Some((*probes, *dispatched, stopped.clone())),
+            _ => None,
+        })
+        .expect("a budget-stopped sweep still records that it did not run");
+    assert_eq!(
+        dispatched,
+        Some(0),
+        "no probe can go out once the budget is spent"
+    );
+    assert_eq!(
+        probes, 0,
+        "no plan is compiled (or announced) when nothing can be dispatched"
+    );
+    assert!(
+        stopped
+            .as_deref()
+            .is_some_and(|s| s.contains("max_entities")),
+        "the event must name the budget that stopped the sweep; got {stopped:?}"
+    );
+    let swept = store
+        .entities_for_scan(&scan_id)
+        .expect("should succeed")
+        .into_iter()
+        .filter(|e| e.has_tag(crate::core::breach_consensus::SWEEP_TAG))
+        .count();
+    assert_eq!(swept, 0, "cross-check: no sweep entity exists");
+}
+
 /// End-to-end: the final bulk breach query is compiled and dispatched by the
 /// scan pipeline itself — not merely available to a CLI caller — and the
 /// autonomous audit runs after it.
@@ -5979,15 +7165,22 @@ async fn a_scan_runs_the_final_breach_sweep_and_then_audits_it() {
                 anchors,
                 probes,
                 dropped,
-            } => Some((*anchors, *probes, *dropped)),
+                dispatched,
+                stopped,
+            } => Some((*anchors, *probes, *dropped, *dispatched, stopped.clone())),
             _ => None,
         })
         .expect("the scan pipeline must run the final breach sweep, not just offer it to the CLI");
-    let (anchors, probes, _dropped) = sweep;
+    let (anchors, probes, _dropped, dispatched, stopped) = sweep;
     assert!(
         probes > 0 && anchors > 0,
         "a confident Email seed must yield at least one anchor and probe; got \
          {anchors} anchors / {probes} probes"
+    );
+    assert!(
+        dispatched == Some(probes) && stopped.is_none(),
+        "an unbudgeted sweep dispatches its whole plan; got {dispatched:?}/{probes}, \
+         stopped {stopped:?}"
     );
 
     let audit = events
@@ -6183,7 +7376,9 @@ fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
     // A genuine person-anchored fix carries an anchoring geo source (here an
     // EXIF GPS tag); without one `is_infrastructure_geo` treats a bare lat/lon as
     // an IP/WHOIS-derived infrastructure location, correctly NOT seedable.
-    let mut fix = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.90, "s");
+    // Off the gazetteer's tables: the Sydney CBD centroid itself is coarse by
+    // value (`util::city_coords::tabulated_centroid_at`, REQ-GEO-017).
+    let mut fix = Entity::new(EntityKind::Coordinates, "-33.8712,151.2069", 0.90, "s");
     fix.add_evidence(Evidence::new("exif_geo", "photo GPS"));
 
     // ── Refused: each geolocates nobody ─────────────────────────────────────
@@ -7256,5 +8451,1376 @@ async fn a_pivots_subject_claims_are_rescoped_to_the_scan_subject() {
     assert!(
         !get("QLD 2000, Australia").has_tag("exact-name-match"),
         "a company pivot's row must not anchor the subject's location"
+    );
+}
+
+/// Emits one Sydney-CBD `Coordinates` for the `seed` Username: with `legacy`
+/// set it has the shape of a `search_engines` known-city centroid recalled from
+/// a scan that predates the `COARSE` tag (`search-geocoded`, no `coarse`);
+/// without it, a plain precise fix.
+struct CentroidModule {
+    legacy: bool,
+}
+
+#[async_trait::async_trait]
+impl Module for CentroidModule {
+    fn name(&self) -> &'static str {
+        "centroid_source"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Coordinates];
+        K
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let mut r = crate::core::module::ModuleResult::new();
+        if target.value == "seed" {
+            // Off the gazetteer's tables, so only the legacy SIGNATURE can make
+            // it a centroid: the control (no signature) is a precise point,
+            // where the tabulated Sydney CBD value would be coarse by value
+            // alone (REQ-GEO-017).
+            let mut e = Entity::new(
+                EntityKind::Coordinates,
+                "-33.8712,151.2069",
+                0.9,
+                &ctx.scan_id,
+            );
+            let mut ev = crate::core::entity::Evidence::new("centroid_source", "synthetic fix");
+            if self.legacy {
+                e.tag(crate::core::tags::SEARCH_GEOCODED);
+                ev = ev.with_attr("method", "known-city-lookup");
+            }
+            e.add_evidence(ev);
+            r.push(e);
+        }
+        Ok(r)
+    }
+}
+
+/// Accepts any `Coordinates` and leaves a marker, so a test can tell whether the
+/// engine pivoted on a point.
+struct PointMinerModule;
+
+#[async_trait::async_trait]
+impl Module for PointMinerModule {
+    fn name(&self) -> &'static str {
+        "point_miner"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Coordinates)
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Username];
+        K
+    }
+    async fn process(
+        &self,
+        _target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let mut r = crate::core::module::ModuleResult::new();
+        let mut e = Entity::new(EntityKind::Username, "mined-from-point", 0.9, &ctx.scan_id);
+        e.add_evidence(crate::core::entity::Evidence::new(
+            "point_miner",
+            "synthetic name mined from the point",
+        ));
+        r.push(e);
+        Ok(r)
+    }
+}
+
+async fn run_centroid_scan(legacy: bool) -> (Vec<String>, Vec<String>) {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, mut rx) = tokio::sync::broadcast::channel(8192);
+    let engine = ScanEngine::new(
+        vec![
+            Arc::new(CentroidModule { legacy }),
+            Arc::new(PointMinerModule),
+        ],
+        store_port,
+        bus.clone(),
+    );
+    let opts = ScanOptions {
+        depth: 2,
+        expand_all_identities: true,
+        max_roi: false,
+        min_expand_confidence: 0.0,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Username, "seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "seed"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    let values = store
+        .entities_for_scan(&scan_id)
+        .expect("should succeed")
+        .into_iter()
+        .map(|e| e.value)
+        .collect();
+    let mut reasons = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if let EventKind::EntityExcluded { value, reason, .. } = ev.kind
+            && value.starts_with("-33.8712")
+        {
+            reasons.push(reason);
+        }
+    }
+    (values, reasons)
+}
+
+/// REQ-GEO-007: a gazetteer centroid recalled from a scan that predates the
+/// `COARSE` tag is still never pivoted — it went on being reverse-geocoded into
+/// a CBD restaurant and handed to cadastre lookups as a precise point.
+#[tokio::test]
+async fn a_legacy_untagged_centroid_is_never_pivoted() {
+    let (values, reasons) = run_centroid_scan(true).await;
+    assert!(
+        values.iter().any(|v| v.starts_with("-33.8712")),
+        "the centroid is still recorded as evidence: {values:?}"
+    );
+    assert!(
+        !values.iter().any(|v| v == "mined-from-point"),
+        "a legacy centroid must never be pivoted on: {values:?}"
+    );
+    assert!(
+        reasons.iter().any(|r| r == "coarse_geo_not_pivoted"),
+        "the skip is recorded under the grain reason, got {reasons:?}"
+    );
+
+    // Control: the identical point without the centroid signature IS pivoted.
+    let (values, reasons) = run_centroid_scan(false).await;
+    assert!(
+        values.iter().any(|v| v == "mined-from-point"),
+        "a precise fix with every gate open must be pivoted on: {values:?}"
+    );
+    assert!(
+        !reasons.iter().any(|r| r == "coarse_geo_not_pivoted"),
+        "{reasons:?}"
+    );
+}
+
+/// Re-emits its dispatch target as a floor-confidence annotation (the shape
+/// `au_geo`, `overpass`, `qld_cadastre`, `sunrise_sunset`, `wigle` and
+/// `pwned_passwords` now share) plus one unrelated low-confidence point.
+struct TargetAnnotator;
+
+#[async_trait::async_trait]
+impl Module for TargetAnnotator {
+    fn name(&self) -> &'static str {
+        "target_annotator"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut echo = Entity::new(
+            EntityKind::Coordinates,
+            &target.value,
+            crate::core::confidence::DERIVED_FLOOR,
+            &ctx.scan_id,
+        );
+        echo.add_evidence(Evidence::new("target_annotator", "ASGS region").as_annotation());
+        let mut other = Entity::new(
+            EntityKind::Coordinates,
+            "-27.100000,153.100000",
+            crate::core::confidence::DERIVED_FLOOR,
+            &ctx.scan_id,
+        );
+        other.add_evidence(Evidence::new("target_annotator", "a nearby node"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(echo);
+        r.push(other);
+        Ok(r)
+    }
+}
+
+/// REQ-GEO-008: a module's re-emission of its own dispatch target annotates an
+/// entity the scan already admitted, so the `--min-confidence` floor — a
+/// question about NEW findings — must not drop it (it carries the confidence
+/// floor precisely so the max-merge cannot raise the point). Any other
+/// below-floor entity is still refused.
+#[tokio::test]
+async fn a_target_annotation_is_exempt_from_the_min_confidence_floor() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(TargetAnnotator)];
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(modules, store, bus.clone());
+
+    let target = Target::new(TargetKind::Coordinates, "-33.868800,151.209300");
+    let opts = ScanOptions {
+        min_confidence: Some(0.3),
+        ..Default::default()
+    };
+    let mut ctx = ModuleContext {
+        scan_id: "annot-scan".to_string(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx = DispatchCx {
+        scan_id: "annot-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: true,
+        seed: &Target::new(TargetKind::FullName, "Ian Thorpe"),
+        quarantined: no_quarantine(),
+    };
+    let mut point = Entity::new(EntityKind::Coordinates, &target.value, 0.72, "annot-scan");
+    point.add_evidence(Evidence::new("search_engines", "known-city centroid"));
+    let point_uid = point.uid.clone();
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    entity_map.insert(point_uid.clone(), point);
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+    engine
+        .dispatch_target(&cx, &mut ctx, &mut state)
+        .await
+        .expect("dispatch runs");
+
+    let merged = entity_map
+        .get_mut(&point_uid)
+        .expect("target point present");
+    assert!(
+        merged.has_evidence_from("target_annotator"),
+        "the annotation merged onto the target despite the 0.3 floor"
+    );
+    assert!(
+        (merged.confidence - 0.72).abs() < 1e-9,
+        "{}",
+        merged.confidence
+    );
+    assert_eq!(
+        merged.source_count(),
+        1,
+        "an annotation does not corroborate"
+    );
+    let other_uid = crate::core::entity::uid_for(&EntityKind::Coordinates, "-27.100000,153.100000");
+    assert!(
+        entity_map.get_mut(&other_uid).is_none(),
+        "a non-target entity below the floor is still refused"
+    );
+}
+
+/// Re-emits its FullName dispatch target as a below-floor namesake row — a
+/// plain, name-only record (the shape of `wikidata`'s ambiguous primary,
+/// `openarch`'s register entry and `qld_unclaimed`'s owner row), not an
+/// annotation.
+struct NamesakeReEmitter;
+
+#[async_trait::async_trait]
+impl Module for NamesakeReEmitter {
+    fn name(&self) -> &'static str {
+        "namesake_re_emitter"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut row = Entity::new(EntityKind::Person, &target.value, 0.35, &ctx.scan_id);
+        row.tag("ambiguous-name");
+        row.add_evidence(Evidence::new(
+            "namesake_re_emitter",
+            "a same-named register row",
+        ));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(row);
+        Ok(r)
+    }
+}
+
+/// REQ-ENGINE-004: the `--min-confidence` exemption is for an ANNOTATION of an
+/// admitted target, not for every re-emission of the target's uid. A FullName
+/// seed has no pre-inserted anchor, so a below-floor namesake row re-emitting
+/// the name must still be refused — it would otherwise found the subject node.
+#[tokio::test]
+async fn a_below_floor_re_emission_of_the_target_that_is_no_annotation_is_refused() {
+    use crate::core::entity::EntityKind;
+    use crate::core::test_support::InMemoryStore;
+
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(NamesakeReEmitter)];
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(modules, store, bus.clone());
+
+    let target = Target::new(TargetKind::FullName, "Ian Thorpe");
+    let opts = ScanOptions {
+        min_confidence: Some(0.5),
+        ..Default::default()
+    };
+    let mut ctx = ModuleContext {
+        scan_id: "namesake-floor".to_string(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx = DispatchCx {
+        scan_id: "namesake-floor",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed: &target,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+    engine
+        .dispatch_target(&cx, &mut ctx, &mut state)
+        .await
+        .expect("dispatch runs");
+    let uid = crate::core::entity::uid_for(&EntityKind::Person, "Ian Thorpe");
+    assert!(
+        entity_map.get_mut(&uid).is_none(),
+        "a 0.35 namesake row founded the subject node past the 0.5 floor"
+    );
+}
+
+/// REQ-ENGINE-004: the exemption's three conditions, each necessary.
+#[test]
+fn only_an_all_annotation_re_emission_of_an_admitted_target_is_exempt_from_the_floor() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let point = "-33.868800,151.209300";
+    let annotated = |records: Vec<Evidence>| {
+        let mut e = Entity::new(EntityKind::Coordinates, point, 0.05, "s");
+        for r in records {
+            e.add_evidence(r);
+        }
+        e
+    };
+    let uid = crate::core::entity::uid_for(&EntityKind::Coordinates, point);
+    let annotation = || Evidence::new("au_geo", "ASGS region").as_annotation();
+    let observation = || Evidence::new("namesake", "a same-named row");
+    assert!(dispatch::min_confidence_exempt(
+        &annotated(vec![annotation()]),
+        &uid,
+        true
+    ));
+    // Not yet admitted: an annotation never founds its target.
+    assert!(!dispatch::min_confidence_exempt(
+        &annotated(vec![annotation()]),
+        &uid,
+        false
+    ));
+    // One observation among the records makes it a new claim.
+    assert!(!dispatch::min_confidence_exempt(
+        &annotated(vec![annotation(), observation()]),
+        &uid,
+        true
+    ));
+    assert!(!dispatch::min_confidence_exempt(
+        &annotated(vec![observation()]),
+        &uid,
+        true
+    ));
+    // No evidence at all is no annotation.
+    assert!(!dispatch::min_confidence_exempt(
+        &annotated(vec![]),
+        &uid,
+        true
+    ));
+    // Not the target.
+    assert!(!dispatch::min_confidence_exempt(
+        &annotated(vec![annotation()]),
+        "other-uid",
+        true
+    ));
+}
+
+/// A target-derived lookup (au_geo's shape): an ASGS region at 0.90 and a
+/// plain re-emission of the queried point at 0.85.
+struct RegionLookup;
+
+#[async_trait::async_trait]
+impl Module for RegionLookup {
+    fn name(&self) -> &'static str {
+        "region_lookup"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        t.kind == TargetKind::Coordinates
+    }
+    fn derives_from_target(&self) -> bool {
+        true
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut region = Entity::new(
+            EntityKind::Other("au-federal-electorate".into()),
+            "Sydney",
+            0.90,
+            &ctx.scan_id,
+        );
+        region.add_evidence(Evidence::new(
+            "region_lookup",
+            format!("coordinates={}", target.value),
+        ));
+        let mut echo = Entity::new(EntityKind::Coordinates, &target.value, 0.85, &ctx.scan_id);
+        echo.add_evidence(Evidence::new("region_lookup", "point lookup"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(region);
+        r.push(echo);
+        Ok(r)
+    }
+}
+
+/// Run [`RegionLookup`] through the real dispatch path on the Sydney centroid
+/// (0.72) and return (region confidence, point confidence).
+async fn run_region_lookup(is_expansion: bool, seed: Target) -> (f64, f64) {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(RegionLookup)];
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(modules, store, bus.clone());
+
+    let target = Target::new(TargetKind::Coordinates, "-33.868800,151.209300");
+    let opts = ScanOptions::default();
+    let mut ctx = ModuleContext {
+        scan_id: "derive-scan".to_string(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx = DispatchCx {
+        scan_id: "derive-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion,
+        seed: &seed,
+        quarantined: no_quarantine(),
+    };
+    let mut point = Entity::new(EntityKind::Coordinates, &target.value, 0.72, "derive-scan");
+    point.add_evidence(Evidence::new(
+        "search_engines",
+        "Geocoded from search address: Sydney, Australia",
+    ));
+    let point_uid = point.uid.clone();
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    entity_map.insert(point_uid.clone(), point);
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+    engine
+        .dispatch_target(&cx, &mut ctx, &mut state)
+        .await
+        .expect("dispatch runs");
+    let region_uid =
+        crate::core::entity::uid_for(&EntityKind::Other("au-federal-electorate".into()), "Sydney");
+    let region = entity_map
+        .get_mut(&region_uid)
+        .expect("region admitted")
+        .confidence;
+    let point = entity_map
+        .get_mut(&point_uid)
+        .expect("point present")
+        .confidence;
+    (region, point)
+}
+
+/// REQ-GEO-012: a target-derived module's findings are capped one derivation
+/// step below the pivot they were computed from, and its re-emission of the
+/// pivot cannot raise it. Scan 7258fc07: au_geo on a 0.72 search-snippet city
+/// centroid emitted nine single-source VERIFIED region facts at 0.85-0.90.
+#[tokio::test]
+async fn a_target_derived_modules_findings_are_capped_one_step_below_their_parent() {
+    use crate::core::entity::{Classification, Entity, EntityKind};
+    let (region, point) =
+        run_region_lookup(true, Target::new(TargetKind::FullName, "Ian Thorpe")).await;
+    let want = crate::core::confidence::derived_from(0.72);
+    assert!((region - want).abs() < 1e-9, "region {region}, want {want}");
+    let probe = Entity::new(EntityKind::Other("x".into()), "x", region, "s");
+    assert_eq!(probe.classify(), Classification::Probable);
+    assert!(
+        (point - 0.72).abs() < 1e-9,
+        "the lookup's copy of the point must not raise it: {point}"
+    );
+}
+
+/// REQ-GEO-012 control: on the operator's own seed coordinate nothing is
+/// capped — the seed's confidence is the operator's assertion.
+#[tokio::test]
+async fn a_target_derived_module_on_the_seed_is_not_capped() {
+    let seed = Target::new(TargetKind::Coordinates, "-33.868800,151.209300");
+    let (region, _) = run_region_lookup(false, seed).await;
+    assert!((region - 0.90).abs() < 1e-9, "{region}");
+}
+
+/// REQ-GEO-013 at the admission point: a provider's country arriving in a
+/// LATER emission of a point the box already tagged is reconciled on the
+/// merged entity, so the map never holds both `country:US` and `country:CA`.
+#[tokio::test]
+async fn a_later_provider_country_replaces_the_box_answer_on_merge() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store, bus);
+    let target = Target::new(TargetKind::Address, "Fredericton, New Brunswick");
+    let opts = ScanOptions::default();
+    let cx = DispatchCx {
+        scan_id: "tz-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: true,
+        seed: &Target::new(TargetKind::FullName, "Ian Thorpe"),
+        quarantined: no_quarantine(),
+    };
+    let mut boxed = Entity::new(
+        EntityKind::Coordinates,
+        "45.956872,-66.630394",
+        0.55,
+        "tz-scan",
+    );
+    boxed.add_evidence(Evidence::new("search_engines", "a sighting"));
+    enrich_geospatial(&mut boxed);
+    assert!(boxed.has_tag("country:US"), "sanity: the box answer");
+    let uid = boxed.uid.clone();
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    entity_map.insert(uid.clone(), boxed);
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+    let mut photon = Entity::new(
+        EntityKind::Coordinates,
+        "45.956872,-66.630394",
+        0.40,
+        "tz-scan",
+    );
+    photon.add_evidence(Evidence::new("photon", "forward").with_attr("country_code", "CA"));
+    photon.tag("country:CA");
+    let mut mr = crate::core::module::ModuleResult::new();
+    mr.push(photon);
+    engine.finalise_module_result(
+        &cx,
+        "photon",
+        Ok(Ok(mr)),
+        &mut state,
+        ModuleAdmission::default(),
+        false,
+    );
+    let merged = entity_map.get_mut(&uid).expect("merged");
+    let cs: Vec<&String> = merged
+        .tags
+        .iter()
+        .filter(|t| t.starts_with("country:"))
+        .collect();
+    assert_eq!(cs, vec!["country:CA"]);
+    assert!(!merged.has_tag("tz:America/New_York"));
+}
+
+/// REQ-GEOLABEL-037: a point tagged with several countries carries no
+/// provider answer. A `+1` dialling prefix is tagged `country:US` and
+/// `country:CA` (REQ-GEOLABEL-036), and a CSV re-import keeps those tags but
+/// drops every attribute, then re-enriches the copy (`prepare_import_batch` →
+/// `enrich_offline_geo`). `provider_geo` read the lowest tag that differed
+/// from the box as a provider's answer, so the `+1` copy at the US stand-in
+/// recorded `country_provider: CA` ("Canada") beside `country_iso_box: US`
+/// and lost its timezone, and a `+7` copy recorded `KZ` ("Kazakhstan") — an
+/// answer no provider gave. A lone disagreeing tag (a provider's answer an
+/// earlier run tagged) is still read as one.
+#[test]
+fn a_csv_copy_of_a_multi_country_signal_claims_no_provider_country() {
+    use crate::core::engine::enrich_offline_geo;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    // The live point through the offline enrichment, then its CSV copy (the
+    // tags as stored, one attribute-less record per original), imported.
+    let imported = |mut live: Entity| -> Entity {
+        enrich_geospatial(&mut live);
+        let mut bare = Entity::new(EntityKind::Coordinates, &live.value, 0.4, "imp");
+        bare.tags.clone_from(&live.tags);
+        for r in &live.evidence {
+            bare.add_evidence(Evidence::new(&r.source, &r.summary));
+        }
+        let mut batch = vec![bare];
+        enrich_offline_geo(&mut batch, "imp");
+        batch.remove(0)
+    };
+    let own_record = |e: &Entity| -> Evidence {
+        e.evidence
+            .iter()
+            .find(|ev| ev.source == "geo_normalize")
+            .cloned()
+            .expect("the enrichment record")
+    };
+    let prefix_point = |value: &str, isos: &[&str], country: &str, row: &str| {
+        let mut p = Entity::new(EntityKind::Coordinates, value, 0.4, "live");
+        for t in ["geoint", "phone-prefix", "coarse"] {
+            p.tag(t);
+        }
+        for iso in isos {
+            p.tag(format!("country:{iso}"));
+        }
+        p.add_evidence(
+            Evidence::new("geo_intel", format!("Phone prefix -> {country} for +1"))
+                .with_attr("country", country)
+                .with_attr("country_code", row)
+                .with_attr("method", "e164-prefix"),
+        );
+        p
+    };
+
+    let nanp = imported(prefix_point(
+        "39.8283,-98.5795",
+        &["US", "CA"],
+        "United States/Canada",
+        "US",
+    ));
+    let rec = own_record(&nanp);
+    assert_eq!(rec.attributes.get("country_provider"), None, "{rec:?}");
+    assert_eq!(rec.attributes.get("country_iso_box"), None, "{rec:?}");
+    assert_ne!(
+        rec.attributes.get("country_name").map(String::as_str),
+        Some("Canada"),
+        "{rec:?}"
+    );
+    assert!(
+        nanp.tags.iter().any(|t| t.starts_with("tz:")),
+        "the timezone is kept: {:?}",
+        nanp.tags
+    );
+
+    let ru = imported(prefix_point(
+        "61.5240,105.3188",
+        &["RU", "KZ"],
+        "Russia/Kazakhstan",
+        "RU",
+    ));
+    let rec = own_record(&ru);
+    assert_eq!(rec.attributes.get("country_provider"), None, "{rec:?}");
+    assert_ne!(
+        rec.attributes.get("country_name").map(String::as_str),
+        Some("Kazakhstan"),
+        "{rec:?}"
+    );
+
+    // Control: a provider's answer an earlier run tagged, alone and against
+    // the box (photon's Canada on a point the US box covers), is still the
+    // copy's provider answer.
+    let mut fredericton = Entity::new(EntityKind::Coordinates, "45.956872,-66.630394", 0.4, "live");
+    fredericton.add_evidence(Evidence::new("photon", "forward").with_attr("country_code", "CA"));
+    let copy = imported(fredericton);
+    let rec = own_record(&copy);
+    assert_eq!(
+        rec.attributes.get("country_provider").map(String::as_str),
+        Some("CA"),
+        "{rec:?}"
+    );
+    assert_eq!(
+        rec.attributes.get("country_iso_box").map(String::as_str),
+        Some("US"),
+        "{rec:?}"
+    );
+}
+
+/// What one run of the stub-breach scan against `store` left behind: the
+/// run's result, the stored row, every `scan_complete` a live subscriber
+/// heard (`(status, finalise_incomplete)`), and every one the durable event
+/// history holds, in order.
+struct TerminalOutcome {
+    result: Result<Scan>,
+    stored: Option<Scan>,
+    heard: Vec<(ScanStatus, bool)>,
+    history: Vec<(ScanStatus, bool)>,
+}
+
+async fn run_terminal_scenario(
+    inner: Arc<crate::core::test_support::InMemoryStore>,
+    store: Arc<dyn StoragePort>,
+    seed: &str,
+    pre_written_pending: bool,
+) -> TerminalOutcome {
+    let (bus, _rx) = tokio::sync::broadcast::channel(8192);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Email, seed);
+    let scan = Scan::new(crate::core::entity::scan_id("email", seed), target.clone()).with_options(
+        ScanOptions {
+            depth: 1,
+            max_roi: false,
+            ..Default::default()
+        },
+    );
+    let scan_id = scan.id.clone();
+    if pre_written_pending {
+        // The web handler's row (`scan_create` / `scan_rerun`), written
+        // before the engine is spawned.
+        inner.upsert_scan(&scan).expect("the handler's Pending row");
+    }
+    let mut late = bus.subscribe();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let result = engine.run(scan, target, ctx).await;
+    let completions = |kinds: Vec<EventKind>| -> Vec<(ScanStatus, bool)> {
+        kinds
+            .into_iter()
+            .filter_map(|k| match k {
+                EventKind::ScanComplete {
+                    status,
+                    finalise_incomplete,
+                    ..
+                } => Some((status, finalise_incomplete)),
+                _ => None,
+            })
+            .collect()
+    };
+    let heard = completions(drain_events(&mut late));
+    let history = completions(
+        inner
+            .events_for_scan(&scan_id)
+            .expect("should succeed")
+            .into_iter()
+            .map(|e| e.kind)
+            .collect(),
+    );
+    TerminalOutcome {
+        result,
+        stored: inner.get_scan(&scan_id).expect("should succeed"),
+        heard,
+        history,
+    }
+}
+
+/// REQ-SCANSTATUS-014: a strict-path commit the store refuses fails the scan
+/// and announces it. The engine recorded (and flushed) `scan_complete
+/// {complete}`, then returned the refusal before the broadcast: the row stayed
+/// `Running` under a durable completion no live subscriber heard, so `hse
+/// live` printed nothing, the radar kept "sweep #N running…" and the web scan
+/// log's pill stayed "live". Now the refusal is announced `failed`, the
+/// history's last word is `failed`, and a store that takes the next write
+/// records the row `Failed`.
+#[tokio::test]
+async fn a_scan_whose_terminal_write_is_refused_is_announced_failed() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_SCAN, RefusingStore};
+
+    // Every terminal write refused: nothing lands, the failure is heard.
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_terminal_scan_writes());
+    let out = run_terminal_scenario(inner, store, "commit@example.com", false).await;
+    assert!(out.result.is_err(), "the refusal is still returned");
+    assert_eq!(out.heard, vec![(ScanStatus::Failed, false)]);
+    assert_eq!(out.history.last(), Some(&(ScanStatus::Failed, false)));
+
+    // Only the `Complete` write refused (a busy timeout): the Failed row lands.
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_scan_writes_in(ScanStatus::Complete));
+    let out = run_terminal_scenario(inner, store, "busy@example.com", false).await;
+    let err = out.result.expect_err("the refusal is returned");
+    assert!(err.to_string().contains(REFUSED_SCAN), "{err}");
+    assert_eq!(out.heard, vec![(ScanStatus::Failed, false)]);
+    assert_eq!(out.history.last(), Some(&(ScanStatus::Failed, false)));
+    let row = out.stored.expect("the row exists");
+    assert_eq!(row.status, ScanStatus::Failed, "{row:?}");
+    assert!(
+        row.error
+            .as_deref()
+            .is_some_and(|e| e.contains("terminal status write failed") && e.contains(REFUSED_SCAN)),
+        "{row:?}"
+    );
+    assert!(row.finished_at.is_some());
+}
+
+/// REQ-SCANSTATUS-016: a refused scan-start row is written `Failed` once the
+/// store takes a write. A web one-shot scan's handler writes the row
+/// `Pending` before spawning the engine, and REQ-SCANSTATUS-011 announced
+/// `failed` without touching it — so a transient refusal left the row
+/// `pending` (in progress to `/scans` and `/stats`) for good, and returned
+/// before the writer flush, so whether the event persisted was timing.
+#[tokio::test]
+async fn a_scan_whose_start_row_is_refused_is_stored_failed() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_SCAN, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_scan_writes_in(ScanStatus::Running));
+    let out = run_terminal_scenario(inner, store, "pending@example.com", true).await;
+    assert!(out.result.is_err());
+    assert_eq!(out.heard, vec![(ScanStatus::Failed, false)]);
+    assert_eq!(
+        out.history,
+        vec![(ScanStatus::Failed, false)],
+        "the announcement is durable by the time the run returns"
+    );
+    let row = out.stored.expect("the handler's row");
+    assert_eq!(row.status, ScanStatus::Failed, "{row:?}");
+    assert!(
+        row.error
+            .as_deref()
+            .is_some_and(|e| e.contains("scan-start write failed") && e.contains(REFUSED_SCAN)),
+        "{row:?}"
+    );
+    assert!(row.finished_at.is_some());
+}
+
+/// REQ-SCANSTATUS-015: a `Complete` scan whose finalise recorded a shortfall
+/// is announced partial. Its row carries the shortfall and every export reads
+/// it "partial, finalise-incomplete", but the event said a bare `complete`.
+#[tokio::test]
+async fn a_complete_scan_with_a_finalise_shortfall_is_announced_partial() {
+    use crate::core::test_support::{InMemoryStore, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_relation_reads());
+    let out = run_terminal_scenario(inner, store, "short@example.com", false).await;
+    let done = out.result.expect("the scan completes");
+    assert_eq!(done.status, ScanStatus::Complete);
+    assert!(done.error.is_some(), "fixture: a shortfall is recorded");
+    assert_eq!(out.heard, vec![(ScanStatus::Complete, true)]);
+    assert_eq!(out.history, vec![(ScanStatus::Complete, true)]);
+
+    // Control: a clean completion is announced clean.
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> = inner.clone();
+    let out = run_terminal_scenario(inner, store, "clean@example.com", false).await;
+    assert_eq!(out.result.expect("completes").error, None);
+    assert_eq!(out.heard, vec![(ScanStatus::Complete, false)]);
+}
+
+/// A one-shot local HTTP sink standing in for an operator's webhook: the
+/// hostname a scan's `webhook_url` names (it clears the SSRF guard, which
+/// refuses an IP literal) and a client that resolves it to the sink. The
+/// receiver yields the raw request once one arrives.
+fn webhook_sink(
+    host: &'static str,
+) -> (String, reqwest::Client, std::sync::mpsc::Receiver<String>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should succeed");
+    let port = listener.local_addr().expect("should succeed").port();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            sock.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .ok();
+            let mut acc = Vec::new();
+            let mut buf = [0u8; 2048];
+            for _ in 0..10 {
+                match sock.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        acc.extend_from_slice(&buf[..n]);
+                        if String::from_utf8_lossy(&acc).contains("correlations_count") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+            let _ = tx.send(String::from_utf8_lossy(&acc).to_string());
+        }
+    });
+    let http = reqwest::Client::builder()
+        .resolve(host, std::net::SocketAddr::from(([127, 0, 0, 1], port)))
+        .build()
+        .expect("should succeed");
+    (format!("http://{host}:{port}/hook"), http, rx)
+}
+
+/// Runs the stub-breach scan against `store` with a webhook configured, and
+/// returns the run's result and the webhook request, if one arrived.
+async fn run_with_webhook(
+    store: Arc<dyn StoragePort>,
+    seed: &str,
+    host: &'static str,
+) -> (Result<Scan>, Option<String>) {
+    let (url, http, rx) = webhook_sink(host);
+    let (bus, _rx) = tokio::sync::broadcast::channel(8192);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Email, seed);
+    let scan = Scan::new(crate::core::entity::scan_id("email", seed), target.clone()).with_options(
+        ScanOptions {
+            depth: 1,
+            max_roi: false,
+            regional_search: false,
+            webhook_url: Some(url),
+            ..Default::default()
+        },
+    );
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http,
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let result = engine.run(scan, target, ctx).await;
+    let request = tokio::task::spawn_blocking(move || {
+        rx.recv_timeout(std::time::Duration::from_secs(5)).ok()
+    })
+    .await
+    .expect("should succeed");
+    (result, request)
+}
+
+/// REQ-SCANSTATUS-018: the operator's webhook hears every outcome the live
+/// subscribers hear. A strict commit the store refused, and a scan-start row
+/// the store refused, were failed and announced on the bus, then returned
+/// their error before the webhook — whose own contract promised a POST for
+/// every terminal state — so the webhook heard nothing. A completion whose
+/// finalise recorded a shortfall was posted as a bare `"status":"complete"`:
+/// the one reader still told the scan was whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_webhook_hears_refused_and_partial_scans_as_they_are() {
+    use crate::core::test_support::{InMemoryStore, RefusingStore};
+
+    // The terminal write refused (a busy timeout): the webhook hears `failed`.
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner).refusing_scan_writes_in(ScanStatus::Complete));
+    let (result, request) = run_with_webhook(
+        store,
+        "hook-commit@example.com",
+        "hook-commit.fixture-host.example-corp",
+    )
+    .await;
+    assert!(result.is_err());
+    let request = request.expect("the refused commit is posted");
+    assert!(request.contains("\"status\":\"failed\""), "{request}");
+    assert!(
+        request.contains("\"finalise_incomplete\":false"),
+        "{request}"
+    );
+
+    // The scan-start row refused: the webhook hears `failed`.
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner).refusing_scan_writes_in(ScanStatus::Running));
+    let (result, request) = run_with_webhook(
+        store,
+        "hook-start@example.com",
+        "hook-start.fixture-host.example-corp",
+    )
+    .await;
+    assert!(result.is_err());
+    let request = request.expect("the refused start is posted");
+    assert!(request.contains("\"status\":\"failed\""), "{request}");
+
+    // A finalise shortfall: `complete`, and partial.
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> = Arc::new(RefusingStore::new(inner).refusing_relation_reads());
+    let (result, request) = run_with_webhook(
+        store,
+        "hook-short@example.com",
+        "hook-short.fixture-host.example-corp",
+    )
+    .await;
+    assert!(result.expect("the scan completes").error.is_some());
+    let request = request.expect("the completion is posted");
+    assert!(request.contains("\"status\":\"complete\""), "{request}");
+    assert!(
+        request.contains("\"finalise_incomplete\":true"),
+        "{request}"
+    );
+
+    // Control: a clean completion is posted whole.
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (result, request) = run_with_webhook(
+        store,
+        "hook-clean@example.com",
+        "hook-clean.fixture-host.example-corp",
+    )
+    .await;
+    assert_eq!(result.expect("completes").error, None);
+    let request = request.expect("the completion is posted");
+    assert!(request.contains("\"status\":\"complete\""), "{request}");
+    assert!(
+        request.contains("\"finalise_incomplete\":false"),
+        "{request}"
+    );
+}
+
+/// REQ-SCANSTATUS-019: a finalise that panics fails the scan and announces
+/// it. Only the correlator runs under `guarded_correlation_pass`; a panic in
+/// any other pass of the blocking phase (here the cross-scan route pass's
+/// relation read) reached the engine as a `JoinError`, was returned as a plain
+/// error, and skipped the commit and the announcement: no `scan_complete`, the
+/// row left `Running`. `run_panic_safe`'s `catch_unwind` never saw it.
+#[tokio::test]
+async fn a_scan_whose_finalise_panics_is_failed_and_announced() {
+    use crate::core::test_support::{InMemoryStore, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).panicking_on_relation_reads());
+    let out =
+        run_terminal_scenario(inner.clone(), store, "finalise-panic@example.com", false).await;
+    let err = out.result.expect_err("the panic is returned as an error");
+    assert_eq!(err.to_string(), "the finalise panicked", "{err}");
+    assert_eq!(out.heard, vec![(ScanStatus::Failed, false)]);
+    assert_eq!(out.history.last(), Some(&(ScanStatus::Failed, false)));
+    let row = out.stored.expect("the row exists");
+    assert_eq!(row.status, ScanStatus::Failed, "{row:?}");
+    assert_eq!(
+        row.error.as_deref(),
+        Some("the finalise panicked"),
+        "a fixed reason: the payload's address never reaches the row"
+    );
+    assert!(row.finished_at.is_some());
+
+    // REQ-SCANSTATUS-023: the pass that panicked ran after the entity
+    // persist, so the scan's entities are stored. The row and the
+    // announcement claim them, and keep the run's module accounting and why
+    // its expansion stopped — all of which a scan concluded from its
+    // pre-finalise copy used to report as 0 / none.
+    let stored = inner.entities_for_scan(&row.id).expect("readable").len();
+    assert!(stored > 0, "the entities were persisted before the panic");
+    assert_eq!(row.entity_count, stored, "{row:?}");
+    assert!(row.modules_run > 0, "{row:?}");
+    assert!(row.stop_reason.is_some(), "{row:?}");
+    let announced: Vec<usize> = inner
+        .events_for_scan(&row.id)
+        .expect("readable")
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            EventKind::ScanComplete { entity_count, .. } => Some(entity_count),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced, vec![stored], "the event claims what is stored");
+}
+
+/// REQ-SCANSTATUS-025: a finalise whose entity writes the store refused
+/// after the seed round's checkpoint stored the scan's entities (a disk that
+/// filled, a database that locked) is failed claiming what the store holds.
+/// Its own Failed branch hard-coded 0 — the one failure path not concluded
+/// by `conclude_failed` — so the row, the `scan_complete` event and the
+/// webhook said 0 entities while `entities_for_scan`, and every export of the
+/// scan, listed the checkpointed ones.
+#[tokio::test]
+async fn a_finalise_whose_entity_writes_are_refused_claims_the_checkpointed_entities() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_ENTITY, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_entity_writes_after(1));
+    let out = run_terminal_scenario(inner.clone(), store, "checkpointed@example.com", false).await;
+    let done = out.result.expect("a failed finalise is the run's result");
+    assert_eq!(done.status, ScanStatus::Failed, "{done:?}");
+    assert_eq!(out.heard, vec![(ScanStatus::Failed, false)]);
+    assert_eq!(out.history, vec![(ScanStatus::Failed, false)]);
+    let row = out.stored.expect("the row exists");
+    assert_eq!(row.status, ScanStatus::Failed, "{row:?}");
+    assert_eq!(row.error.as_deref(), Some(REFUSED_ENTITY), "{row:?}");
+    assert!(row.modules_run > 0, "{row:?}");
+
+    let stored = inner.entities_for_scan(&row.id).expect("readable").len();
+    assert!(
+        stored > 0,
+        "the seed round's checkpoint stored the entities"
+    );
+    assert_eq!(row.entity_count, stored, "{row:?}");
+    assert_eq!(done.entity_count, stored, "{done:?}");
+    let announced: Vec<usize> = inner
+        .events_for_scan(&row.id)
+        .expect("readable")
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            EventKind::ScanComplete { entity_count, .. } => Some(entity_count),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced, vec![stored], "the event claims what is stored");
+}
+
+/// REQ-SCANSTATUS-028: a finalise whose store refused SOME of its entity
+/// writes claims what the store holds for the scan, as one whose store
+/// refused them all does (REQ-SCANSTATUS-025). The scan was committed
+/// `Complete` with `entity_count` set to the writes this finalise landed —
+/// N-1 here — while the refused entity kept the row its checkpoint stored,
+/// so `entities_for_scan`, and every export of the scan, listed all N. The
+/// row, the `scan_complete` event, the webhook and `/stats` said N-1.
+#[tokio::test]
+async fn a_finalise_whose_store_refused_one_entity_write_claims_what_the_store_holds() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_ENTITY, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_one_entity_write_after(1));
+    let out = run_terminal_scenario(inner.clone(), store, "one-refused@example.com", false).await;
+    let done = out.result.expect("the scan completes");
+    assert_eq!(done.status, ScanStatus::Complete, "{done:?}");
+    assert_eq!(out.heard, vec![(ScanStatus::Complete, true)]);
+    let row = out.stored.expect("the row exists");
+    assert_eq!(row.status, ScanStatus::Complete, "{row:?}");
+
+    let stored = inner.entities_for_scan(&row.id).expect("readable").len();
+    // The refused entity was one the seed round's checkpoint stored: every
+    // entity the finalise attempted is still listed for the scan.
+    assert_eq!(
+        row.error.as_deref(),
+        Some(format!("1/{stored} entities failed to persist: {REFUSED_ENTITY}").as_str()),
+        "{row:?}"
+    );
+    assert_eq!(row.entity_count, stored, "{row:?}");
+    assert_eq!(done.entity_count, stored, "{done:?}");
+    let announced: Vec<usize> = inner
+        .events_for_scan(&row.id)
+        .expect("readable")
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            EventKind::ScanComplete { entity_count, .. } => Some(entity_count),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced, vec![stored], "the event claims what is stored");
+    // The refused entity is listed as its checkpoint stored it, so the
+    // caveat does not call it absent.
+    let caveat = row.completeness_caveat("this scan").expect("a shortfall");
+    assert!(
+        caveat
+            .contains("an entity whose finalise write was refused lacks the finalise's enrichment"),
+        "{caveat}"
+    );
+}
+
+/// REQ-SCANSTATUS-024: a relation derivation its time budget cut short is
+/// recorded on the scan by the one step every finalise path derives through
+/// (the live engine, `hse import` and the web upload). It used to be a log
+/// line: the scan was written `Complete` with `error: None` over a graph —
+/// and a correlation — that depended on how busy the device was.
+#[test]
+fn a_derivation_the_budget_cut_short_is_recorded() {
+    let ents = vec![
+        Entity::new(EntityKind::Domain, "acme.com", 0.7, "s"),
+        Entity::new(EntityKind::Domain, "mail.acme.com", 0.6, "s"),
+    ];
+    let mut cut = FinaliseTally::default();
+    let rels = derive_relations_within(&ents, "s", Some(std::time::Instant::now()), &mut cut);
+    assert!(!rels.is_empty(), "the edges built before the cut are kept");
+    assert_eq!(
+        cut.message().as_deref(),
+        Some("relation derivation failed: stopped at its time budget after the structural pass")
+    );
+
+    let mut whole = FinaliseTally::default();
+    let all = derive_relations_within(&ents, "s", None, &mut whole);
+    assert_eq!(whole.message(), None, "an uncut derivation records nothing");
+    assert_eq!(
+        all.len(),
+        crate::core::relation::derive_all(&ents, "s").len()
+    );
+    let mut shipped = FinaliseTally::default();
+    derive_finalise_relations(&ents, "s", &mut shipped);
+    assert_eq!(
+        shipped.message(),
+        None,
+        "a small set is derived within budget"
+    );
+}
+
+/// REQ-SCANSTATUS-029: a scan concluded `Failed` before any of its entities
+/// were written counts the `EntityFound` events its writer still holds. With
+/// no entity rows, `entities_for_scan` is rebuilt from the event log, which
+/// the DB-writer fills asynchronously; `conclude_failed` counted before it
+/// flushed, so a panic in the seed round claimed the events stored so far —
+/// here none — on the row, the `scan_complete` event and the webhook, while
+/// `/scans/{id}/entities` and every export listed all of them once the queue
+/// drained.
+#[tokio::test]
+async fn a_failed_scan_counts_the_entities_its_queued_events_found() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::test_support::{InMemoryStore, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> = Arc::new(
+        RefusingStore::new(inner.clone())
+            .delaying_event_writes(std::time::Duration::from_millis(300)),
+    );
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store, bus);
+    let target = Target::new(TargetKind::Username, "queued");
+    let mut scan = Scan::new(crate::core::entity::scan_id("username", "queued"), target);
+    scan.error = Some("the scan panicked".to_string());
+    for v in ["a.example", "b.example", "c.example"] {
+        let entity = Entity::new(EntityKind::Domain, v, 0.7, &scan.id);
+        engine
+            .emitter
+            .emit(&scan.id, EventKind::EntityFound { entity });
+    }
+
+    let done = engine
+        .conclude_failed(scan, &crate::util::http::build_client())
+        .await;
+    assert_eq!(done.status, ScanStatus::Failed, "{done:?}");
+    let stored = inner.entities_for_scan(&done.id).expect("readable").len();
+    assert_eq!(stored, 3, "the event log lists every entity found");
+    assert_eq!(done.entity_count, stored, "{done:?}");
+    let row = inner
+        .get_scan(&done.id)
+        .expect("readable")
+        .expect("the row exists");
+    assert_eq!(row.entity_count, stored, "{row:?}");
+    let announced: Vec<usize> = inner
+        .events_for_scan(&done.id)
+        .expect("readable")
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            EventKind::ScanComplete { entity_count, .. } => Some(entity_count),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced, vec![stored], "the event claims what is stored");
+}
+
+/// REQ-GEOLABEL-039: recall re-decides a merged point's grain, as every other
+/// in-memory merge does (REQ-GEOLABEL-005). It folded the copies prior scans
+/// stored of one uid, and then folded the result into the working set, with a
+/// plain `Entity::merge`, which unions tags: a point stored at
+/// `fix-grain:locality` by one prior scan and at `fix-grain:region` by another
+/// came back carrying both, and this scan's own copy and every export showed
+/// two grains for one point.
+#[tokio::test]
+async fn a_recalled_point_carries_one_grain() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+    let stamps = |e: &Entity| -> Vec<String> {
+        e.tags
+            .iter()
+            .filter(|t| t.starts_with("fix-grain:"))
+            .cloned()
+            .collect()
+    };
+    let point = |scan: &str, grain: &str| {
+        let mut p = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, scan);
+        p.tag(crate::core::tags::COARSE);
+        p.tag(format!("fix-grain:{grain}"));
+        p.add_evidence(Evidence::new("plant", "a point an earlier scan found"));
+        p
+    };
+
+    // Two prior scans of one target stored the same point at two grains.
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    for (scan, grain) in [("scan-a", "locality"), ("scan-b", "region")] {
+        let mut seed = Entity::new(EntityKind::Username, "recallgrain", 0.9, scan);
+        seed.add_evidence(Evidence::new("anchor", "seed"));
+        store.upsert_entity(&seed).expect("should succeed");
+        store
+            .upsert_entity(&point(scan, grain))
+            .expect("should succeed");
+    }
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store_port, bus);
+    let target = Target::new(TargetKind::Username, "recallgrain");
+    let recalled = engine.recall_prior_entities(&target, "current-scan", true);
+    let got = recalled
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("recall surfaces the prior point");
+    assert_eq!(stamps(got), vec!["fix-grain:region".to_string()], "{got:?}");
+
+    // Folded into a working set that already holds the point at a finer
+    // grain, it still carries one.
+    let mut map = TrackedEntityMap::new();
+    let held = point("current-scan", "locality");
+    map.insert(held.uid.clone(), held);
+    inject_recalled(&mut map, vec![point("current-scan", "region")]);
+    let merged = map.values().next().expect("the point");
+    assert_eq!(map.len(), 1);
+    assert_eq!(
+        stamps(merged),
+        vec!["fix-grain:region".to_string()],
+        "{merged:?}"
     );
 }
