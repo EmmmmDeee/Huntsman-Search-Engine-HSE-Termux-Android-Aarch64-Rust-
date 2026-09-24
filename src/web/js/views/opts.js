@@ -198,7 +198,7 @@ export function toggleChip(t){
   const on = !!t.enabled;
   return `<button type="button" class="btn btn-xs ${on?'btn-success':'btn-default'} tg-chip"
     data-key="${attr(t.key)}" data-name="${attr(t.name)}" data-on="${on?1:0}" title="${attr(t.key)}">
-    <i class="glyphicon glyphicon-${on?'ok':'remove'}"></i> ${esc(t.name)}</button>`;
+    <i class="glyphicon ${on?'glyphicon-ok':'glyphicon-remove'}"></i> ${esc(t.name)}</button>`;
 }
 export function wireToggles(){
   $$('.tg-chip').forEach(btn=>{
@@ -210,7 +210,7 @@ export function wireToggles(){
         await API.togglesPut({key, enabled: next});
         btn.dataset.on = next ? '1' : '0';
         btn.className = 'btn btn-xs '+(next?'btn-success':'btn-default')+' tg-chip';
-        btn.innerHTML = `<i class="glyphicon glyphicon-${next?'ok':'remove'}"></i> ${esc(btn.dataset.name)}`;
+        btn.innerHTML = `<i class="glyphicon ${next?'glyphicon-ok':'glyphicon-remove'}"></i> ${esc(btn.dataset.name)}`;
         toast(`${key} ${next?'on':'off'}`);
         updateGroupCounts();   // keep the per-group "N on" tally live
       } catch(e){ alertify.error(e.message); }

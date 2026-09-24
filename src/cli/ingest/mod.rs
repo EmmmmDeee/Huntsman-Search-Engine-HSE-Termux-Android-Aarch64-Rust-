@@ -2,13 +2,13 @@
 //!
 //! With `--auto-scan`, the extracted entities are ALSO persisted as a completed,
 //! correlated scan (via [`crate::app::persist`], the same use case `hse import`
-//! runs) — so they appear in `hse list` and every view/export works on them — in
-//! addition to being written to the chosen output. This is a deterministic,
-//! offline persist-and-correlate: no modules are dispatched and no network is
-//! touched. The engine seeds from a single live target, so feeding a whole batch
-//! of document-extracted entities into it as seeds is deliberately NOT what this
-//! does; auto-launching network reconnaissance against every entity found in an
-//! arbitrary document would be both non-deterministic and a footgun.
+//! runs) — so every view/export works on them — in addition to being written to
+//! the chosen output. This is a deterministic, offline persist-and-correlate:
+//! no modules are dispatched and no network is touched. The engine seeds from a
+//! single live target, so feeding a whole batch of document-extracted entities
+//! into it as seeds is deliberately NOT what this does; auto-launching network
+//! reconnaissance against every entity found in an arbitrary document would be
+//! both non-deterministic and a footgun.
 
 use crate::util::document_parse::{DocumentFormat, DocumentResult};
 use crate::util::entity_extractor::EntityExtractor;
@@ -66,24 +66,38 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
 
     info!("Ingesting {:?} from {}", format, args.file.display());
 
+    // Why an image's text could not be read, held until the image work that
+    // needs no text has run: if that finds nothing either, this is the
+    // command's error.
+    let mut unread_image = None;
+
     // Parse document
     let raw_text = match format {
+        // An image whose text cannot be read contributes no text. This used to
+        // substitute the sentence "OCR unavailable for <path>" and mine it like
+        // the document, so the file's own path came back as findings (an email
+        // in a folder name at 0.85), and the command exited 0 with the OCR
+        // error only in the log (REQ-INGEST-001). Now the error is held, and it
+        // is the command's unless the image work below finds something.
         DocumentFormat::Image => {
-            crate::util::document_parse::ocr::ocr_image(&args.file, 60)
-                .await
-                .unwrap_or_else(|_| {
-                    // Fallback if OCR unavailable
+            // A path that is not there is that, not an OCR fault.
+            fs::metadata(&args.file)?;
+            match crate::util::document_parse::ocr::ocr_image(&args.file, 60).await {
+                Ok(text) => text,
+                Err(e) => {
+                    unread_image = Some(e);
                     crate::util::document_parse::RawDocumentText {
-                        text: format!("OCR unavailable for {}", args.file.display()),
+                        text: String::new(),
                         source_format: format,
                         confidence: 0.0,
                         metadata: crate::util::document_parse::DocumentMetadata {
                             source_file: Some(args.file.to_string_lossy().to_string()),
-                            extraction_method: "ocr_fallback".to_string(),
+                            extraction_method: "ocr_failed".to_string(),
                             ..Default::default()
                         },
                     }
-                })
+                }
+            }
         }
         DocumentFormat::Pdf => crate::util::document_parse::pdf_parse::parse_pdf(&args.file)?,
         DocumentFormat::Csv => {
@@ -184,6 +198,7 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
     info!("Found {} entities", entities.len());
 
     // Phase 6: Image processing (geolocation + reverse image search)
+    let mut variants_written = false;
     if matches!(raw_text.source_format, DocumentFormat::Image) {
         // Extract EXIF geolocation if requested
         if args.extract_geolocation {
@@ -271,6 +286,8 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
                             );
                         }
 
+                        variants_written = true;
+
                         // Save metadata summary
                         let metadata_path =
                             output_dir.join(format!("{base_name}_reverse_search_metadata.json"));
@@ -304,6 +321,21 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
         }
     }
 
+    // The image's text could not be read. Unless the image work found an
+    // entity (an EXIF GPS fix) or wrote the variants to a folder, that is a
+    // failure to read the file, not an empty result: nothing is written or
+    // stored, and the OCR error, with its cause, is the command's. Variants
+    // computed and saved nowhere are not a result an operator has.
+    if let Some(e) = unread_image {
+        if entities.is_empty() && !variants_written {
+            return Err(e);
+        }
+        tracing::warn!(
+            file = %args.file.display(),
+            "no text read from the image ({e}); the image work's results stand"
+        );
+    }
+
     // The file the entities came from — recorded on each entity's evidence chain
     // (via `app::convert`) so a persisted or exported entity is attributable
     // back to its source document. Needed by `--auto-scan` below and the output
@@ -315,10 +347,13 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
         .unwrap_or("ingest");
 
     // --auto-scan: persist the extracted entities as a completed, correlated
-    // scan (offline — no module dispatch, no network) so they land in `hse list`
-    // and every view/export, in ADDITION to the extraction output written below.
+    // scan (offline — no module dispatch, no network) so every view/export
+    // reads them, in ADDITION to the extraction output written below.
     // Best-effort, exactly like the import path: the entities are still emitted,
     // so a persistence hiccup must warn, never fail the ingest.
+    // The summary goes to stderr, where the operator reads it whatever the log
+    // level: stdout carries the extracted entities. As a log line it vanished
+    // under `RUST_LOG=off`, taking the stored scan's id with it.
     if args.auto_scan {
         match run_auto_scan(&entities, document_source).await {
             Ok((sid, batch)) => {
@@ -326,14 +361,14 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
                 // enrichment-cap skip stated once (REQ-SCANSTATUS-013).
                 for (i, line) in batch.summary_lines(&sid).into_iter().enumerate() {
                     if i == 0 {
-                        info!("auto-scan: stored {line}");
+                        eprintln!("auto-scan: stored {line}");
                     } else {
-                        tracing::warn!("auto-scan: {line}");
+                        eprintln!("auto-scan: warning: {line}");
                     }
                 }
             }
             Err(e) => {
-                tracing::warn!("auto-scan: could not persist extracted entities: {e}");
+                eprintln!("auto-scan: could not store the extracted entities: {e}");
             }
         }
     }
@@ -882,6 +917,133 @@ mod tests {
             !strict.contains("wiringtestbot"),
             "the 0.60-confidence handle must be filtered by a 0.70 floor — if this \
              fails, --min-confidence is not reaching the extractor through run(): {strict}"
+        );
+    }
+
+    /// REQ-INGEST-001: an image whose text cannot be read yields no findings
+    /// made from its path. The ingest used to mine the sentence "OCR
+    /// unavailable for <path>", so a folder named after an email came back as
+    /// that email at 0.85, and the file name as a domain. The unreadable image
+    /// here is a bare PNG signature, which no OCR can read, so the case holds
+    /// whether or not tesseract is installed.
+    #[tokio::test]
+    async fn an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let folder = dir.path().join("case-jane.doe@contoso-files.net");
+        fs::create_dir(&folder).expect("folder");
+        let unreadable = folder.join("scan-of-id.png");
+        fs::write(&unreadable, b"\x89PNG\r\n\x1a\n").expect("image");
+        let args = |file: &std::path::Path,
+                    geolocation: bool,
+                    variants: bool,
+                    variant_dir: Option<std::path::PathBuf>,
+                    out: &std::path::Path| IngestArgs {
+            file: file.to_path_buf(),
+            output_format: "jsonl".to_string(),
+            min_confidence: 0.30,
+            auto_scan: false,
+            output: Some(out.to_path_buf()),
+            extract_geolocation: geolocation,
+            generate_reverse_search_variants: variants,
+            image_variant_output_dir: variant_dir,
+        };
+
+        // Text only; EXIF asked for, but there is none; variants asked for
+        // but saved nowhere. Each time nothing could be read or made, so the
+        // OCR error, with its cause, is the command's, and nothing is written.
+        for (label, geolocation, variants) in [
+            ("text only", false, false),
+            ("EXIF with none there", true, false),
+            ("variants saved nowhere", false, true),
+        ] {
+            let out = dir.path().join(format!("{label}.jsonl"));
+            let err = run(args(&unreadable, geolocation, variants, None, &out))
+                .await
+                .expect_err("nothing read and nothing made");
+            assert!(
+                matches!(
+                    err,
+                    crate::util::document_parse::DocumentParseError::OcrUnavailable
+                        | crate::util::document_parse::DocumentParseError::OcrStart(_)
+                        | crate::util::document_parse::DocumentParseError::OcrFailed { .. }
+                        | crate::util::document_parse::DocumentParseError::OcrTimeout { .. }
+                ),
+                "{label}: the OCR failure itself, not a stand-in: {err:?}"
+            );
+            assert!(!out.exists(), "{label}: nothing is written");
+        }
+
+        // Variants saved to a folder are a result: the ingest succeeds, and the
+        // path is still not a finding.
+        let decodable = folder.join("photo.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            64,
+            64,
+            image::Rgb([200, 200, 200]),
+        ))
+        .save(&decodable)
+        .expect("a real image");
+        let saved = dir.path().join("variants");
+        let out = dir.path().join("with-variants.jsonl");
+        run(args(&decodable, false, true, Some(saved.clone()), &out))
+            .await
+            .expect("the variants are made");
+        assert!(
+            fs::read_dir(&saved).is_ok_and(|mut d| d.next().is_some()),
+            "the variants are written"
+        );
+        let written = fs::read_to_string(&out).expect("output written");
+        assert!(
+            !written.contains("contoso") && !written.contains("photo"),
+            "the file's path is not a finding: {written}"
+        );
+
+        // A photo with an EXIF GPS fix: the fix is a result, so the ingest
+        // succeeds on it alone, and the path is still not a finding.
+        use crate::util::document_parse::image_geolocation::tests::{ascii, dms, jpeg_with_exif};
+        let photo = folder.join("holiday.jpg");
+        fs::write(
+            &photo,
+            jpeg_with_exif(&[
+                (exif::Tag::GPSLatitude, dms(27, 28, 35)),
+                (exif::Tag::GPSLatitudeRef, ascii("S")),
+                (exif::Tag::GPSLongitude, dms(153, 0, 59)),
+                (exif::Tag::GPSLongitudeRef, ascii("E")),
+            ]),
+        )
+        .expect("photo");
+        let out = dir.path().join("with-exif.jsonl");
+        run(args(&photo, true, false, None, &out))
+            .await
+            .expect("the EXIF fix is a result");
+        let written = fs::read_to_string(&out).expect("output written");
+        assert!(
+            written.contains("-27.47") && written.contains("153.01"),
+            "the GPS fix is found: {written}"
+        );
+        assert!(
+            !written.contains("contoso") && !written.contains("holiday"),
+            "the file's path is not a finding: {written}"
+        );
+
+        // A path that is not there says so; it is not an OCR fault.
+        let missing = folder.join("not-there.png");
+        let err = run(args(
+            &missing,
+            false,
+            false,
+            None,
+            &dir.path().join("missing.jsonl"),
+        ))
+        .await
+        .expect_err("no such file");
+        assert!(
+            matches!(
+                &err,
+                crate::util::document_parse::DocumentParseError::IoError(e)
+                    if e.kind() == std::io::ErrorKind::NotFound
+            ),
+            "{err:?}"
         );
     }
 

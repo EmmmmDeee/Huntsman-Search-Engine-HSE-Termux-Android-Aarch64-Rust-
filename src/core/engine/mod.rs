@@ -788,6 +788,9 @@ impl ScanEngine {
         mut ctx: ModuleContext,
         dispatched: &mut DispatchLog,
     ) -> Result<Scan> {
+        // This process runs it from here on, whoever created the row
+        // (REQ-SCANSTATUS-038: another process reads liveness from it).
+        scan.runner = Some(crate::core::scan::ScanRunner::current());
         scan.status = ScanStatus::Running;
         if let Err(e) = self.store.upsert_scan(&scan) {
             // A store that refuses the scan-start row (disk full, a locked or

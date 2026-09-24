@@ -39,7 +39,7 @@ import { renderHarvest, refreshHarvest, harvestPoolFilter, harvestPoolRoi, harve
 import { renderLive, closeLiveStream, saveLiveShown } from '/static/js/views/live.js';
 import { renderRadar } from '/static/js/views/radar.js';
 import { renderDebugLog } from '/static/js/views/debug_log.js';
-import { initCompatShims, initMoreSheet, initModals, initTableLabels } from '/static/js/ui.js';
+import { initCompatShims, initNavbar, initModals, initTableLabels, showFooterTip } from '/static/js/ui.js';
 
 /* Installed at module-load time (before any view can run) so the
  * `alertify.*`/`jQuery(...).tablesorter(...)` call sites scattered across
@@ -67,6 +67,9 @@ initCompatShims();
 })();
 
 /* ─── Top-level dispatcher ─── */
+// The page the footer's tip was picked for: one tip per page, kept across
+// that page's own re-renders (see showFooterTip).
+let lastTipRoute = null;
 export async function render(){
   closeSse();
   closeLiveSse();
@@ -77,9 +80,17 @@ export async function render(){
   clearDebugLogTimer();
   clearRadarTimer();
   S.route = parseHash();
-  $$('#mainnav .navlink').forEach(a=>a.classList.remove('active'));
-  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', radar:'nav-radar', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', harvest:'nav-harvest', debuglog:'nav-debuglog', assurance:'nav-assurance', attack:'nav-attack'};
-  const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
+  // Bootstrap marks the active destination on its <li>. A page reached
+  // through the "More" menu also lights the menu itself, as SpiderFoot's
+  // navbar would, so the operator can see where they are with it closed.
+  $$('#mainnav li.active').forEach(li=>li.classList.remove('active'));
+  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', radar:'nav-radar', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', harvest:'nav-harvest', debuglog:'nav-debuglog', assurance:'nav-assurance', attack:'nav-attack', search:'nav-search', diff:'nav-diff'};
+  const navEl = $('#'+navMap[S.route.name]);
+  if (navEl){
+    navEl.closest('li')?.classList.add('active');
+    navEl.closest('.dropdown')?.classList.add('active');
+  }
+  if (S.route.name !== lastTipRoute){ lastTipRoute = S.route.name; showFooterTip(); }
 
   const v = $('#view');
   v.innerHTML = '<div class="empty-state"><h3>Loading…</h3></div>';
@@ -121,7 +132,7 @@ Object.assign(window, {
 (async function init(){
   await initWasmUi();
   applyTheme();
-  initMoreSheet();
+  initNavbar();
   initModals();
   initTableLabels();
   initDownloads();
@@ -135,8 +146,7 @@ Object.assign(window, {
   try {
     const h = await API.health();
     S.health = h; S.version = h.version || '?';
-    $('#ver').textContent = S.version;
-    $('#ver2').textContent = S.version;
+    for (const id of ['#ver', '#ver2', '#ver3']) { const el = $(id); if (el) el.textContent = S.version; }
   } catch {
     $('#ver').textContent = 'offline';
   }

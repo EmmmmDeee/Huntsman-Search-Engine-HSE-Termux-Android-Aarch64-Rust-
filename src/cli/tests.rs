@@ -259,6 +259,235 @@ use super::*;
 
     // ── `hse import --input-format` ─────────────────────────────────────────
 
+    /// REQ-SCANNAME-001: `hse scan --name` and `hse live --name` parse into
+    /// their commands, so a scan run from a terminal can be named as one
+    /// queued from the console can.
+    #[test]
+    fn scan_and_live_take_a_name() {
+        use super::command::{Cli, Command};
+        use clap::Parser;
+        let scan = Cli::try_parse_from(["hse", "scan", "-v", "a@b.com", "--name", "Q3 audit"])
+            .expect("scan --name");
+        match scan.command {
+            Command::Scan { name, .. } => assert_eq!(name.as_deref(), Some("Q3 audit")),
+            _ => panic!("parsed a different subcommand"),
+        }
+        let live = Cli::try_parse_from(["hse", "live", "-v", "a@b.com", "--name", "Q3 audit"])
+            .expect("live --name");
+        match live.command {
+            Command::Live { name, .. } => assert_eq!(name.as_deref(), Some("Q3 audit")),
+            _ => panic!("parsed a different subcommand"),
+        }
+        match Cli::try_parse_from(["hse", "scan", "-v", "a@b.com"])
+            .expect("no --name")
+            .command
+        {
+            Command::Scan { name, .. } => assert_eq!(name, None),
+            _ => panic!("parsed a different subcommand"),
+        }
+    }
+
+    /// REQ-CLI-HINTS-001: the hint printed after a scan is stored outside `hse
+    /// scan` (an import, an ingest or an investigate run) is a command that
+    /// reads that scan back, all of it. It named a list command `hse` does not
+    /// have.
+    #[test]
+    fn the_stored_scan_hint_reads_that_scan_back() {
+        use super::command::{Cli, Command};
+        use clap::Parser;
+        let hint = crate::app::persist::view_command("import-dossier-1790249205");
+        let parsed = Cli::try_parse_from(hint.split_whitespace())
+            .unwrap_or_else(|e| panic!("`{hint}` is not a command hse has: {e}"));
+        match parsed.command {
+            Command::Export {
+                scan_id, format, ..
+            } => {
+                assert_eq!(scan_id, "import-dossier-1790249205", "{hint}");
+                assert_eq!(format, "full", "the export that shows everything: {hint}");
+            }
+            _ => panic!("`{hint}` must export the scan it names"),
+        }
+    }
+
+    /// Every help page, the root's and every subcommand's, hidden and nested
+    /// ones included, with its path from `hse`.
+    fn help_pages() -> Vec<(String, String)> {
+        use clap::CommandFactory;
+        fn walk(cmd: &mut clap::Command, path: String, out: &mut Vec<(String, String)>) {
+            out.push((path.clone(), cmd.render_long_help().to_string()));
+            for sub in cmd.get_subcommands_mut() {
+                let sub_path = format!("{path} {}", sub.get_name());
+                walk(sub, sub_path, out);
+            }
+        }
+        let mut all = Vec::new();
+        walk(&mut super::command::Cli::command(), "hse".to_string(), &mut all);
+        all
+    }
+
+    /// Whether the command line `words` (after `hse`) names a real command and
+    /// passes only arguments it takes. Each word that names a subcommand, or
+    /// an alias of one, descends; `hse help …` must name subcommands only.
+    /// After that, every `--flag` or `-f` must be one of that command's
+    /// arguments (or `--help`/`-h`), a flag that takes a value takes the next
+    /// word, and any other word, a placeholder such as `<id>` included, is a
+    /// positional argument, which only a command that has one may take.
+    /// Square brackets marking an optional part (`[--yes]`) are read through.
+    fn names_a_real_command(words: &[&str]) -> std::result::Result<(), String> {
+        use clap::CommandFactory;
+        let root = super::command::Cli::command();
+        if let Some((&"help", path)) = words.split_first() {
+            let mut cmd = &root;
+            for word in path {
+                cmd = cmd
+                    .find_subcommand(word)
+                    .ok_or_else(|| format!("`hse help`: no command `{word}`"))?;
+            }
+            return Ok(());
+        }
+        let mut cmd = &root;
+        let mut rest = words;
+        while let Some((first, tail)) = rest.split_first() {
+            match cmd.find_subcommand(first) {
+                Some(sub) => {
+                    cmd = sub;
+                    rest = tail;
+                }
+                None => break,
+            }
+        }
+        if std::ptr::eq(cmd, &root) {
+            return Err(format!("no command `{}`", words.first().unwrap_or(&"")));
+        }
+        let takes_positionals = cmd.get_positionals().next().is_some();
+        // A command that is only a group of subcommands takes no bare word, so
+        // one that is not a subcommand is a misspelt one (`hse keys lsit`).
+        if let Some(word) = rest.first().filter(|w| !w.starts_with(['-', '<', '[']))
+            && cmd.has_subcommands()
+            && !takes_positionals
+        {
+            return Err(format!("`{}` has no subcommand `{word}`", cmd.get_name()));
+        }
+        let mut value_due = false;
+        for raw in rest {
+            let word = raw.trim_start_matches('[').trim_end_matches(']');
+            if value_due {
+                value_due = false;
+                continue;
+            }
+            let (flag, attached) = match word.split_once('=') {
+                Some((flag, _)) => (flag, true),
+                None => (word, false),
+            };
+            let arg = if let Some(long) = flag.strip_prefix("--") {
+                if long == "help" {
+                    continue;
+                }
+                cmd.get_arguments().find(|a| {
+                    a.get_long() == Some(long)
+                        || a.get_all_aliases().is_some_and(|al| al.contains(&long))
+                })
+            } else if let Some(short) = flag.strip_prefix('-').filter(|s| s.chars().count() == 1) {
+                let c = short.chars().next().unwrap_or('-');
+                if c == 'h' {
+                    continue;
+                }
+                cmd.get_arguments().find(|a| {
+                    a.get_short() == Some(c)
+                        || a.get_all_short_aliases().is_some_and(|al| al.contains(&c))
+                })
+            } else if takes_positionals {
+                continue;
+            } else {
+                return Err(format!("`{}` takes no argument `{word}`", cmd.get_name()));
+            };
+            let Some(arg) = arg else {
+                return Err(format!("`{}` has no `{flag}`", cmd.get_name()));
+            };
+            value_due = arg.get_action().takes_values() && !attached;
+        }
+        Ok(())
+    }
+
+    /// REQ-CLI-HINTS-001: every `hse …` command a help page quotes is one `hse`
+    /// has, with flags it takes. `hse ingest --help` and `hse investigate
+    /// --help` named a list command, and `hse query --help` a search command;
+    /// neither exists. Every page is checked, hidden and nested ones included,
+    /// and each quoted command is followed through its subcommands to its flags.
+    #[test]
+    fn every_command_the_help_names_exists() {
+        let all = help_pages();
+        assert!(
+            all.len() > 40,
+            "the whole command tree, not {} pages",
+            all.len()
+        );
+
+        let mut named = 0;
+        let mut wrong = Vec::new();
+        for (page, text) in &all {
+            // A help line wraps wherever it likes, so read the words, not lines.
+            let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            for (at, quoted) in flat.match_indices("`hse ") {
+                let span = flat[at + quoted.len()..]
+                    .split('`')
+                    .next()
+                    .unwrap_or_default();
+                let words: Vec<&str> = span.split_whitespace().collect();
+                if !words
+                    .first()
+                    .is_some_and(|w| w.starts_with(|c: char| c.is_ascii_lowercase()))
+                {
+                    continue;
+                }
+                named += 1;
+                if let Err(why) = names_a_real_command(&words) {
+                    wrong.push(format!("{page}: `hse {span}`: {why}"));
+                }
+            }
+        }
+        assert!(named > 10, "the help names commands; found only {named}");
+        assert!(
+            wrong.is_empty(),
+            "help names commands or flags hse does not have:\n{}",
+            wrong.join("\n")
+        );
+
+        // The lock itself: a phantom command, a phantom flag, a phantom nested
+        // subcommand, a positional id that `export` does not take and a
+        // `--version` below the root are each refused; real ones pass.
+        assert!(names_a_real_command(&["list"]).is_err());
+        assert!(names_a_real_command(&["export", "--scan", "<id>"]).is_err());
+        assert!(names_a_real_command(&["keys", "lsit"]).is_err());
+        assert!(names_a_real_command(&["export", "<id>", "-f", "full"]).is_err());
+        assert!(names_a_real_command(&["scan", "--version"]).is_err());
+        assert!(names_a_real_command(&["help", "lsit"]).is_err());
+        assert!(names_a_real_command(&["export", "-s", "<id>", "-f", "full"]).is_ok());
+        assert!(names_a_real_command(&["export", "--format=full"]).is_ok());
+        assert!(names_a_real_command(&["cells", "import", "--country", "AU"]).is_ok());
+        assert!(names_a_real_command(&["cells", "clear", "[--yes]"]).is_ok());
+        assert!(names_a_real_command(&["help", "keys", "set"]).is_ok());
+    }
+
+    /// REQ-CLI-HINTS-001: the `--auto-scan` help quotes the command the hint
+    /// prints, so the two cannot drift apart.
+    #[test]
+    fn the_auto_scan_help_quotes_the_stored_scan_hint() {
+        let hint = crate::app::persist::view_command("<id>");
+        let pages = help_pages();
+        for want in ["hse ingest", "hse investigate"] {
+            let (page, text) = pages
+                .iter()
+                .find(|(p, _)| p == want)
+                .unwrap_or_else(|| panic!("no help page `{want}`"));
+            let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                flat.contains(&format!("`{hint}`")),
+                "{page} --help must quote `{hint}`"
+            );
+        }
+    }
+
     /// The flag parses straight into the shared `app::import::ImportFormat`
     /// (a clap `ValueEnum`), case-insensitively, and rejects an unknown name at
     /// parse time — so `cmd_import` can never receive a spelling the web

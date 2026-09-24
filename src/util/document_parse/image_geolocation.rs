@@ -157,7 +157,7 @@ fn extract_exif_metadata(exif: &exif::Exif, metadata: &mut ImageGeolocationMetad
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use exif::{Rational, Value};
     use std::io::Cursor;
@@ -189,11 +189,11 @@ mod tests {
         Rational { num, denom }
     }
 
-    fn dms(d: u32, m: u32, s: u32) -> Value {
+    pub(crate) fn dms(d: u32, m: u32, s: u32) -> Value {
         Value::Rational(vec![rat(d, 1), rat(m, 1), rat(s, 1)])
     }
 
-    fn ascii(s: &str) -> Value {
+    pub(crate) fn ascii(s: &str) -> Value {
         Value::Ascii(vec![s.as_bytes().to_vec()])
     }
 
@@ -313,8 +313,9 @@ mod tests {
     }
 
     /// Wrap a TIFF/EXIF blob in a JPEG APP1 segment and splice it in directly
-    /// after the SOI marker — the layout every camera writes.
-    fn jpeg_with_exif(fields: &[(exif::Tag, Value)]) -> Vec<u8> {
+    /// after the SOI marker — the layout every camera writes. Shared with
+    /// `cli::ingest`'s tests, which need a photo that carries a GPS fix.
+    pub(crate) fn jpeg_with_exif(fields: &[(exif::Tag, Value)]) -> Vec<u8> {
         let mut writer = exif::experimental::Writer::new();
         let owned: Vec<exif::Field> = fields
             .iter()

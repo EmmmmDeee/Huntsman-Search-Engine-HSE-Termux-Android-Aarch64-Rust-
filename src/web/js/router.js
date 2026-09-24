@@ -1,6 +1,9 @@
-/* ─── Router (hash-based, mirrors SpiderFoot's path semantics) ─── */
+/* ─── Router (hash-based, mirrors SpiderFoot's path semantics) ───
+ * The landing page is the scan list, as SpiderFoot's `/` is; an unknown
+ * route lands there too. The dashboard stays at `#/dash`, reached from the
+ * navbar's More menu. */
 export function parseHash(){
-  const raw = (location.hash||'#/dash').replace(/^#/,'');
+  const raw = (location.hash||'#/scans').replace(/^#/,'');
   const [path, qs] = raw.split('?');
   const segs = path.split('/').filter(Boolean);
   const query = {};
@@ -17,8 +20,8 @@ export function parseHash(){
     // any other valid params in the same query string still parse.
     try { query[decodeURIComponent(k)] = decodeURIComponent(v||''); } catch {}
   });
-  if (segs.length===0 || segs[0]==='dash' || segs[0]==='dashboard') return {name:'dash', params:{}, query};
-  if (segs[0]==='scans')                    return {name:'scans', params:{}, query};
+  if (segs[0]==='dash' || segs[0]==='dashboard') return {name:'dash', params:{}, query};
+  if (segs.length===0 || segs[0]==='scans') return {name:'scans', params:{}, query};
   if (segs[0]==='newscan')                  return {name:'newscan', params:{}, query};
   if (segs[0]==='opts'||segs[0]==='settings') return {name:'opts', params:{}, query};
   if (segs[0]==='search')                   return {name:'search', params:{}, query};
@@ -31,6 +34,6 @@ export function parseHash(){
   if (segs[0]==='debuglog')                 return {name:'debuglog', params:{}, query};
   if (segs[0]==='diff')                     return {name:'diff', params:{a:query.a||'', b:query.b||''}, query};
   if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'summary'}, query};
-  return {name:'dash', params:{}, query};
+  return {name:'scans', params:{}, query};
 }
 export function nav(href){ location.hash = href; }

@@ -80,3 +80,42 @@
             "health averages the one tested (invalid → 0.0) key, not the untested pair"
         );
     }
+
+    /// REQ-SETTINGS-001: a toggle write refused because the settings file cannot
+    /// be used is a 409 that names the file and the fix, a read failure the same;
+    /// a write that failed stays a 400.
+    #[tokio::test]
+    async fn a_toggle_refused_over_an_unusable_settings_file_is_a_conflict() {
+        use super::toggle_not_written;
+        use crate::util::settings::SettingsError;
+        use axum::http::StatusCode;
+        let path = std::path::PathBuf::from("/home/op/.huntsman/settings.json");
+        let parse = serde_json::from_str::<std::collections::BTreeMap<String, bool>>("{,}")
+            .expect_err("not a settings file");
+
+        let refused = toggle_not_written(&SettingsError::Parse {
+            path: path.clone(),
+            source: parse,
+        });
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(refused.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let said: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        let said = said["error"].as_str().expect("an error text");
+        assert!(
+            said.contains("/home/op/.huntsman/settings.json") && said.contains("move it aside"),
+            "{said}"
+        );
+
+        let unreadable = SettingsError::Read {
+            path: path.clone(),
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        };
+        assert_eq!(toggle_not_written(&unreadable).status(), StatusCode::CONFLICT);
+        let failed = SettingsError::Write {
+            path,
+            source: std::io::Error::other("no space left on device"),
+        };
+        assert_eq!(toggle_not_written(&failed).status(), StatusCode::BAD_REQUEST);
+    }

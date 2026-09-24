@@ -8,41 +8,110 @@
  */
 import { esc } from '/static/js/helpers.js';
 
-/* ─── "More" sheet (narrow screens; the panel flows inline from 768px up) ───
+/* ─── Navbar: collapse toggle and dropdowns (SpiderFoot's Bootstrap JS) ───
  *
- * Replaces the old hamburger, which collapsed the whole nav behind a tap. The
- * primary destinations now live permanently in the bottom tab bar, so this only
- * raises the secondary ones. Closing on outside-tap, Escape and navigation
- * matters more here than it did for a dropdown: the sheet covers the tab bar it
- * sits on, so leaving it open would hide the primary navigation behind it. */
-export function initMoreSheet(){
-  const btn   = document.getElementById('more-toggle');
-  const panel = document.getElementById('morepanel');
-  if (!btn || !panel) return;
-
-  const setOpen = open => {
-    panel.classList.toggle('open', open);
-    // Deliberately not `.active`: that marks the destination you are ON, and
-    // the route behind the sheet still owns it. Two accented tabs would say
-    // you are in two places at once.
-    btn.classList.toggle('sheet-open', open);
-    btn.setAttribute('aria-expanded', String(open));
+ * Below 1100px the navbar's links sit behind the three-bar toggle, as
+ * Bootstrap's collapse does in SpiderFoot 4.0 (whose bar collapses at 768px:
+ * HSE's text brand makes the full bar about 1,030px wide; see app.css's
+ * Navbar section). Dropdowns — the navbar's
+ * "More" menu and any view's `data-toggle="dropdown"` button, such as an
+ * Export menu — open on click, and close on a second click, a click anywhere
+ * else, picking an item, Escape, or navigating. A menu left open after the
+ * route changes would float over a page it no longer belongs to. */
+function closeDropdowns(except){
+  document.querySelectorAll('.dropdown.open, .btn-group.open, .dropup.open').forEach(el=>{
+    if (el === except) return;
+    el.classList.remove('open');
+    const t = el.querySelector(':scope > .dropdown-toggle, :scope > [data-toggle="dropdown"]');
+    if (t) t.setAttribute('aria-expanded', 'false');
+  });
+}
+export function initNavbar(){
+  const toggle   = document.getElementById('navbar-toggle');
+  const collapse = document.getElementById('main-navbar-collapse');
+  const setCollapsed = open => {
+    if (!toggle || !collapse) return;
+    collapse.classList.toggle('in', open);
+    toggle.classList.toggle('collapsed', !open);
+    toggle.setAttribute('aria-expanded', String(open));
   };
+  if (toggle && collapse){
+    toggle.addEventListener('click', e=>{
+      e.preventDefault();
+      setCollapsed(!collapse.classList.contains('in'));
+    });
+  }
 
-  btn.addEventListener('click', e=>{
-    e.preventDefault();
-    setOpen(!panel.classList.contains('open'));
-  });
-  // Picking a destination, tapping elsewhere, or Escape all dismiss it.
-  panel.addEventListener('click', e=>{ if (e.target.closest('.navlink')) setOpen(false); });
   document.addEventListener('click', e=>{
-    if (!panel.classList.contains('open')) return;
-    if (e.target.closest('#morepanel') || e.target.closest('#more-toggle')) return;
-    setOpen(false);
+    const opener = e.target.closest('[data-toggle="dropdown"], .dropdown-toggle');
+    if (opener){
+      e.preventDefault();
+      const host = opener.closest('.dropdown, .btn-group, .dropup') || opener.parentElement;
+      const willOpen = !host.classList.contains('open');
+      closeDropdowns(host);
+      host.classList.toggle('open', willOpen);
+      opener.setAttribute('aria-expanded', String(willOpen));
+      return;
+    }
+    // An item inside a menu has been chosen, or the click landed elsewhere.
+    closeDropdowns(null);
+    if (e.target.closest('#main-navbar-collapse a[href^="#/"]')) setCollapsed(false);
   });
-  document.addEventListener('keydown', e=>{ if (e.key === 'Escape') setOpen(false); });
-  // A hash change can also come from a link inside a view, not just the sheet.
-  window.addEventListener('hashchange', ()=>setOpen(false));
+  document.addEventListener('keydown', e=>{
+    if (e.key !== 'Escape') return;
+    // Focus goes back to the toggle of the menu being closed, as Bootstrap's
+    // dropdown does, so a keyboard user is not dropped at the top of the page.
+    const open = document.querySelector('.dropdown.open, .btn-group.open, .dropup.open');
+    const back = open && open.querySelector(':scope > .dropdown-toggle, :scope > [data-toggle="dropdown"]');
+    closeDropdowns(null);
+    setCollapsed(false);
+    if (back) back.focus();
+  });
+  window.addEventListener('hashchange', ()=>{ closeDropdowns(null); setCollapsed(false); });
+
+  syncNavbarHeight();
+  const nav = document.getElementById('mainnav');
+  if (nav && typeof ResizeObserver === 'function') new ResizeObserver(syncNavbarHeight).observe(nav);
+  window.addEventListener('resize', syncNavbarHeight);
+}
+
+/* The page's top padding is `--navbar-h` (app.css). It is the bar's measured
+ * height, not a constant, so a navbar that grows (a larger default font can
+ * wrap it) never covers the page. With the links collapsed, only the header
+ * row counts: the open menu overlays the page, as Bootstrap's does, rather
+ * than pushing it down. */
+function syncNavbarHeight(){
+  const nav = document.getElementById('mainnav');
+  const toggle = document.getElementById('navbar-toggle');
+  if (!nav) return;
+  const collapsed = toggle && getComputedStyle(toggle).display !== 'none';
+  const header = nav.querySelector('.navbar-header');
+  const h = collapsed && header
+    // The header row plus the bar's own top padding (the safe-area inset).
+    ? header.getBoundingClientRect().bottom - nav.getBoundingClientRect().top
+    : nav.getBoundingClientRect().height;
+  if (h > 0) document.documentElement.style.setProperty('--navbar-h', `${Math.ceil(h)}px`);
+}
+
+/* ─── Footer tip (SpiderFoot's FOOTER.tmpl shows one, picked per page) ───
+ * main.js calls this when the page changes, not on every render: a running
+ * scan's page re-renders every few seconds, and a tip that changed with it
+ * would flicker and, on a phone, change the footer's height. */
+const FOOTER_TIPS = [
+  ['glyphicon-console',      'Did you know HSE also has a CLI? Run <code>hse --help</code> in Termux.'],
+  ['glyphicon-lock',         'Keep API keys in <code>$HOME/.huntsman.env</code> (chmod 0600) — never in chat or screenshots.'],
+  ['glyphicon-record',       'Live Scans re-run a target on an interval. Find them under More → Live Scans.'],
+  ['glyphicon-map-marker',   'Signal Radar maps nearby Wi-Fi and Bluetooth devices. Find it under More → Signal Radar.'],
+  ['glyphicon-transfer',     'Compare two scans of the same subject over time with More → Compare Scans.'],
+  ['glyphicon-download-alt', 'Exports are client-safe: breach sources appear as numbered placeholders, never by name.'],
+  ['glyphicon-search',       'Search every entity across every scan at once with More → Search All Scans.'],
+  ['glyphicon-education',    'The scan\'s Graph, Correlations and Browse views all read the same entities — pivot from any of them.'],
+];
+export function showFooterTip(){
+  const el = document.getElementById('footer-tip');
+  if (!el) return;
+  const [icon, text] = FOOTER_TIPS[Math.floor(Math.random() * FOOTER_TIPS.length)];
+  el.innerHTML = `<i class="glyphicon ${icon}" aria-hidden="true"></i>${text}`;
 }
 
 /* ─── Responsive tables ───

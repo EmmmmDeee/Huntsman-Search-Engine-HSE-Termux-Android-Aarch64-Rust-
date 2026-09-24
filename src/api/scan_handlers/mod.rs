@@ -103,7 +103,13 @@ pub(super) fn scan_request_from_json(raw: serde_json::Value) -> Result<ScanReque
         "options",
         &crate::core::scan::known_option_keys(),
     )?;
-    serde_json::from_value(raw).map_err(|e| format!("malformed scan request: {e}"))
+    let mut req: ScanRequest =
+        serde_json::from_value(raw).map_err(|e| format!("malformed scan request: {e}"))?;
+    req.options = req
+        .options
+        .checked_for_request()
+        .map_err(|e| e.to_string())?;
+    Ok(req)
 }
 
 /// Build a validated, profile-resolved `Scan` (+ its `Target`) from a request,

@@ -987,7 +987,8 @@ fn drift_path() -> std::path::PathBuf {
 
 /// Read the persisted drift map from `path`. Empty on missing/corrupt — this
 /// is a cache of past confirmations, never load-bearing state, so a parse
-/// error is non-fatal (mirrors `crate::util::settings`'s own `read_map`).
+/// error is non-fatal. (Not so `crate::util::settings`, whose file holds the
+/// operator's own switches: there a file that does not parse is an error.)
 fn read_drift_map(path: &std::path::Path) -> HashMap<String, u64> {
     std::fs::read_to_string(path)
         .ok()

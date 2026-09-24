@@ -46,6 +46,8 @@ pub(super) struct ScanCmd {
     pub expand_all_identities: bool,
     pub gate_speculative: bool,
     pub profile: Option<String>,
+    /// `--name`: the scan's name, checked by `ScanOptions::checked_for_request`.
+    pub name: Option<String>,
     pub output: String,
     /// Include platform-infrastructure entities (cloud buckets, CDN IPs,
     /// analytics tracking IDs) in the printed/JSON/dossier output. Mirrors
@@ -275,6 +277,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         max_wall_time_secs: cmd.max_wall_time_secs,
         scan_tags: Vec::new(),
         notes: None,
+        name: cmd.name,
         webhook_url: crate::core::webhook::webhook_url_from_env(),
         profile: None,
         max_roi: cmd.max_roi,
@@ -312,6 +315,10 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     } else {
         options
     };
+    // `--name` is operator input, like a request body's name: the same check.
+    let options = options
+        .checked_for_request()
+        .map_err(|e| crate::core::error::Error::Other(format!("--name: {e}")))?;
 
     if cmd.max_roi {
         eprintln!(

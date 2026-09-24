@@ -107,12 +107,13 @@ pub(super) async fn cmd_investigate(
 
     // Best-effort, exactly like `hse ingest --auto-scan`: a persistence hiccup
     // must warn, never fail the command — the extracted entities are still
-    // printed below regardless. Never persists an empty batch.
+    // printed below regardless. Never persists an empty batch. The warning goes
+    // to stderr, as ingest's does, so `RUST_LOG=off` cannot hide it.
     let scan = if auto_scan && !entities.is_empty() {
         match run_auto_scan(&entities, text).await {
             Ok(summary) => Some(summary),
             Err(e) => {
-                tracing::warn!("auto-scan: could not persist extracted entities: {e}");
+                eprintln!("auto-scan: could not store the extracted entities: {e}");
                 None
             }
         }

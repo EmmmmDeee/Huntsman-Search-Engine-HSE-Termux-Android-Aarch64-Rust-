@@ -3,129 +3,107 @@
 <head>
   <meta charset="utf-8">
   <title>Huntsman Search Engine</title>
-  <meta name="description" content="Huntsman Search Engine (HSE) — all-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition. SpiderFoot-inspired breadth, Termux-native, keyless-first, zero native dependencies.">
-  <!-- viewport-fit=cover lets the layout extend under Android's gesture bar and
-       display cutouts; the shell then pads itself back with env(safe-area-inset-*)
-       so the bottom tab bar sits above the gesture pill instead of behind it. -->
+  <meta name="description" content="Huntsman Search Engine (HSE) — all-source OSINT / GEOINT / NETINT reconnaissance with a SpiderFoot 4.0 console. Termux-native, keyless-first, zero native dependencies.">
+  <!-- viewport-fit=cover lets the layout run under Android's gesture bar and
+       display cutouts; the fixed navbar and footer pad themselves back with
+       env(safe-area-inset-*). -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <!-- Colours Chrome-on-Android's address bar to match the console. -->
-  <meta name="theme-color" content="#0a0d11">
-  <!-- Installable as a standalone fullscreen app on Chrome-for-Android (Add to
-       Home Screen): the manifest declares display:standalone, the meta is the
-       modern Chrome hint. Progressive enhancement — desktop browsers ignore it. -->
+  <!-- Colours Chrome-on-Android's address bar like the light navbar. -->
+  <meta name="theme-color" content="#f8f8f8">
+  <!-- Installable as a standalone app on Chrome-for-Android (Add to Home
+       Screen). Progressive enhancement; desktop browsers ignore it. -->
   <meta name="mobile-web-app-capable" content="yes">
   <link rel="manifest" href="/manifest.webmanifest">
-  <!-- Inline SVG favicon (concentric locator mark, brand cyan on the dark console).
-       Being a data URI, modern Chrome uses it directly and never requests
-       /favicon.ico — which would otherwise fall through to the SPA fallback and
-       return the whole HTML document as an image. Fully offline; no extra route
-       or binary asset. -->
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230a0d11'/><circle cx='16' cy='16' r='8' fill='none' stroke='%2307aef1' stroke-width='2'/><circle cx='16' cy='16' r='2.4' fill='%2307aef1'/><path d='M16 2v6M16 24v6M2 16h6M24 16h6' stroke='%2307aef1' stroke-width='2'/></svg>">
+  <!-- Inline SVG favicon (HSE's concentric locator mark). A data URI, so the
+       browser never requests /favicon.ico, which would otherwise fall through
+       to the SPA fallback and come back as HTML. -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23f8f8f8'/><circle cx='16' cy='16' r='8' fill='none' stroke='%23337ab7' stroke-width='2'/><circle cx='16' cy='16' r='2.4' fill='%23337ab7'/><path d='M16 2v6M16 24v6M2 16h6M24 16h6' stroke='%23337ab7' stroke-width='2'/></svg>">
 
-  <!-- Our own from-scratch design system (src/web/css/app.css) — no vendored UI
-       framework is loaded any more (Bootstrap/jQuery/tablesorter/alertify were
-       dropped; see that file's own doc comment). D3 stays vendored below as a
-       rendering engine, not a look-and-feel dependency. Still zero outbound
-       requests either way: everything is embedded in the binary. -->
+  <!-- The SpiderFoot 4.0 look, rebuilt from scratch in src/web/css/app.css:
+       no Bootstrap, jQuery, tablesorter or alertify is loaded, and nothing is
+       fetched from outside the binary. -->
   <link href="/static/css/app.css" rel="stylesheet">
-
 </head>
 <body>
+<!-- Dark Mode before the first paint, as SpiderFoot's HEADER.tmpl does it: the
+     module that owns the theme (wasm-ui/src/theme.rs) loads asynchronously, so
+     without this a dark-mode page flashes white on every load. The rule is the
+     same one theme.rs applies: only SpiderFoot's "dark-theme" selects dark. -->
+<script>try{if(localStorage.getItem('theme')==='dark-theme')document.body.classList.add('dark-theme')}catch(e){}</script>
 
 <!-- ══════════════════════════════════════════════════════════════════════
-     App shell.
+     Navbar — SpiderFoot 4.0's HEADER.tmpl.
 
-     One set of navigation links, laid out two ways by CSS alone — there is no
-     duplicated markup, so every `#nav-*` id stays unique and `main.js` can keep
-     addressing them directly:
-
-       • narrow  — `.navbar` becomes a fixed bottom tab bar (thumb-reachable on
-                   a phone, which is where this runs under Termux), and the
-                   secondary destinations live in `#morepanel`, a bottom sheet
-                   raised by the "More" tab.
-       • ≥768px  — the same elements flow inline into this header as a
-                   conventional top nav; the "More" tab hides and `#morepanel`
-                   stops being a sheet.
+     New Scan · Scans · Settings are SpiderFoot's three destinations. HSE's
+     own pages sit in the "More" dropdown beside them. On the right are the
+     Dark Mode switch and About. Below 1100px the links collapse behind the
+     three-bar toggle, as Bootstrap's collapse does in SpiderFoot (app.css's
+     Navbar section says why HSE's bar collapses wider than SpiderFoot's).
      ══════════════════════════════════════════════════════════════════════ -->
-<header class="appbar">
-  <a class="brand" href="#/dash">
-    <span class="brand-mark" aria-hidden="true"></span>
-    <span class="brand-text">Huntsman<span class="brand-sep">·</span>Search Engine</span>
-    <span class="brand-ver">v<span id="ver">?</span></span>
-  </a>
+<nav class="navbar navbar-default navbar-fixed-top" id="mainnav" aria-label="Primary">
+  <div class="container-fluid">
+    <div class="navbar-header">
+      <a class="navbar-brand brand" href="#/scans" title="Huntsman Search Engine">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-text">Huntsman<span class="brand-sep">·</span>Search Engine</span>
+        <span class="brand-ver">v<span id="ver">?</span></span>
+      </a>
+      <!-- Beside the brand, not on the Settings link: on a phone that link sits
+           behind the toggle, and an update notice nobody sees until they open
+           a menu is not a notice. -->
+      <a id="update-badge" href="#/opts" title="Updates available — open Settings" style="display:none"></a>
+      <button type="button" class="navbar-toggle collapsed" id="navbar-toggle"
+              aria-controls="main-navbar-collapse" aria-expanded="false">
+        <span class="sr-only">Toggle navigation</span>
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+      </button>
+    </div>
 
-  <form class="appbar-search" role="search" onsubmit="globalSearch(event)">
-    <i class="glyphicon glyphicon-search" aria-hidden="true"></i>
-    <input type="search" id="global-q" placeholder="Search all entities…"
-           aria-label="Search all entities"
-           autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-  </form>
+    <div class="collapse navbar-collapse" id="main-navbar-collapse">
+      <ul class="nav navbar-nav">
+        <li><a id="nav-newscan" href="#/newscan"><i class="glyphicon glyphicon-screenshot" aria-hidden="true"></i>&nbsp;New Scan</a></li>
+        <li><a id="nav-scans" href="#/scans"><i class="glyphicon glyphicon-list" aria-hidden="true"></i>&nbsp;Scans</a></li>
+        <li><a id="nav-opts" href="#/opts"><i class="glyphicon glyphicon-wrench" aria-hidden="true"></i>&nbsp;Settings</a></li>
+        <li class="dropdown" id="nav-more">
+          <button type="button" class="dropdown-toggle" id="more-toggle"
+                  aria-haspopup="true" aria-expanded="false" aria-controls="morepanel">
+            <i class="glyphicon glyphicon-th-large" aria-hidden="true"></i>&nbsp;More <span class="caret"></span>
+          </button>
+          <ul class="dropdown-menu" id="morepanel">
+            <li><a id="nav-dash" href="#/dash"><i class="glyphicon glyphicon-dashboard" aria-hidden="true"></i>Dashboard</a></li>
+            <li><a id="nav-live" href="#/live"><i class="glyphicon glyphicon-record" aria-hidden="true"></i>Live Scans</a></li>
+            <li><a id="nav-radar" href="#/radar"><i class="glyphicon glyphicon-map-marker" aria-hidden="true"></i>Signal Radar</a></li>
+            <li><a id="nav-search" href="#/search"><i class="glyphicon glyphicon-search" aria-hidden="true"></i>Search All Scans</a></li>
+            <li><a id="nav-diff" href="#/diff"><i class="glyphicon glyphicon-transfer" aria-hidden="true"></i>Compare Scans</a></li>
+            <li role="separator" class="divider"></li>
+            <li><a id="nav-engines" href="#/engines"><i class="glyphicon glyphicon-signal" aria-hidden="true"></i>Search Engines</a></li>
+            <li><a id="nav-harvest" href="#/harvest"><i class="glyphicon glyphicon-flash" aria-hidden="true"></i>Key Harvest</a></li>
+            <li><a id="nav-assurance" href="#/assurance"><i class="glyphicon glyphicon-check" aria-hidden="true"></i>Assurance</a></li>
+            <li><a id="nav-attack" href="#/attack"><i class="glyphicon glyphicon-eye-open" aria-hidden="true"></i>ATT&amp;CK Coverage</a></li>
+            <li><a id="nav-debuglog" href="#/debuglog"><i class="glyphicon glyphicon-console" aria-hidden="true"></i>Debug Log</a></li>
+          </ul>
+        </li>
+      </ul>
 
-  <div class="appbar-actions">
-    <!-- Lives in the app bar rather than on the Settings link: on a phone that
-         link sits inside a closed sheet, and an update notice nobody can see
-         until they open a sheet is not a notice. -->
-    <span id="update-badge" style="display:none"></span>
-    <a href="#" id="theme-toggle" class="iconbtn" title="Toggle theme" aria-label="Toggle theme">
-      <i class="glyphicon glyphicon-adjust" aria-hidden="true"></i>
-      <span id="theme-label" class="sr-only">Dark Mode</span>
-    </a>
-    <a href="#aboutmodal" class="iconbtn" data-toggle="modal" data-target="#aboutmodal"
-       title="About" aria-label="About">
-      <i class="glyphicon glyphicon-info-sign" aria-hidden="true"></i>
-    </a>
-  </div>
-</header>
-
-<!-- Raised by API._req when a request gets no answer at all (server down or
-     restarting); lowered by the next request that does. Fixed text, no
-     per-page logic — the one reachability signal every page shares. -->
-<div id="offline-banner" class="offline-banner" role="status" aria-live="polite" style="display:none"></div>
-
-<nav class="navbar" id="mainnav" aria-label="Primary">
-  <a class="navlink" id="nav-dash" href="#/dash">
-    <i class="glyphicon glyphicon-dashboard" aria-hidden="true"></i><span>Dashboard</span>
-  </a>
-  <a class="navlink" id="nav-newscan" href="#/newscan">
-    <i class="glyphicon glyphicon-screenshot" aria-hidden="true"></i><span>New Scan</span>
-  </a>
-  <a class="navlink" id="nav-scans" href="#/scans">
-    <i class="glyphicon glyphicon-list" aria-hidden="true"></i><span>Scans</span>
-  </a>
-  <a class="navlink" id="nav-live" href="#/live">
-    <i class="glyphicon glyphicon-record" aria-hidden="true"></i><span>Live</span>
-  </a>
-  <a class="navlink" id="nav-radar" href="#/radar">
-    <i class="glyphicon glyphicon-map-marker" aria-hidden="true"></i><span>Radar</span>
-  </a>
-
-  <!-- Raises #morepanel on narrow screens; hidden once the panel flows inline. -->
-  <button type="button" class="navlink navlink-more" id="more-toggle"
-          aria-controls="morepanel" aria-expanded="false">
-    <i class="glyphicon glyphicon-th-large" aria-hidden="true"></i><span>More</span>
-  </button>
-
-  <div id="morepanel" class="morepanel">
-    <a class="navlink" id="nav-assurance" href="#/assurance">
-      <i class="glyphicon glyphicon-check" aria-hidden="true"></i><span>Assurance</span>
-    </a>
-    <a class="navlink" id="nav-attack" href="#/attack">
-      <i class="glyphicon glyphicon-eye-open" aria-hidden="true"></i><span>ATT&amp;CK</span>
-    </a>
-    <a class="navlink" id="nav-engines" href="#/engines">
-      <i class="glyphicon glyphicon-search" aria-hidden="true"></i><span>Engines</span>
-    </a>
-    <a class="navlink" id="nav-harvest" href="#/harvest">
-      <i class="glyphicon glyphicon-flash" aria-hidden="true"></i><span>Key Harvest</span>
-    </a>
-    <a class="navlink" id="nav-debuglog" href="#/debuglog">
-      <i class="glyphicon glyphicon-console" aria-hidden="true"></i><span>Debug Log</span>
-    </a>
-    <a class="navlink" id="nav-opts" href="#/opts">
-      <i class="glyphicon glyphicon-wrench" aria-hidden="true"></i><span>Settings</span>
-    </a>
+      <ul class="nav navbar-nav navbar-right">
+        <li class="navbar-switch">
+          <label id="theme-label" for="theme-toggle">Dark Mode</label>
+          <label class="switch">
+            <input id="theme-toggle" class="theme-toggler" type="checkbox" aria-labelledby="theme-label">
+            <span class="slider round"></span>
+          </label>
+        </li>
+        <li><a href="#aboutmodal" data-toggle="modal" data-target="#aboutmodal"><i class="glyphicon glyphicon-info-sign" aria-hidden="true"></i>&nbsp;About</a></li>
+      </ul>
+    </div>
   </div>
 </nav>
+
+<!-- Raised by API._req when a request gets no answer at all (server down or
+     restarting); lowered by the next request that does. -->
+<div id="offline-banner" class="offline-banner" role="status" aria-live="polite" style="display:none"></div>
 
 <!-- About modal -->
 <div id="aboutmodal" class="modal fade" role="dialog" aria-hidden="true">
@@ -133,23 +111,22 @@
     <div class="modal-content">
       <div class="modal-header">
         <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
-        <h3 class="modal-title">Huntsman Search Engine</h3>
+        <h3 class="modal-title">Huntsman Search Engine v<span id="ver2">?</span></h3>
       </div>
       <div class="modal-body">
         <p>Huntsman Search Engine (HSE) is an all-source OSINT / GEOINT / NETINT
-        reconnaissance engine in the GhostSec tradition &mdash; SpiderFoot-inspired breadth
-        without the daemon or the footprint. Pure-Rust and keyless-first, it runs entirely
-        on Termux on Android aarch64 (no root): single binary, rustls-only, no native
-        dependencies, bundled SQLite, embedded SPA.</p>
-        <p>You are running version <b>v<span id="ver2">?</span></b>.</p>
-        <p>The scan workflow follows the same mental model as
-        <a href="https://www.spiderfoot.net/" target="_blank">SpiderFoot</a> for operator
-        familiarity, on a from-scratch, mobile-first console design (no vendored UI
-        framework — see the About-page source for details). Source code on
-        <a href="https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-" target="_blank">GitHub</a>.</p>
-        <p class="text-dim" style="font-size:11px">⚠️ API keys are sensitive. Set them via
+        reconnaissance engine. Pure Rust and keyless-first, it runs entirely on
+        Termux on Android aarch64 (no root): one binary, rustls only, no native
+        dependencies, bundled SQLite, and this console embedded in it.</p>
+        <p>The console follows <a href="https://www.spiderfoot.net/" target="_blank" rel="noopener">SpiderFoot</a> 4.0's
+        look and workflow (New Scan, Scans, Settings), rebuilt from scratch with
+        no vendored UI framework.</p>
+        <p>You are running version <b>v<span id="ver3">?</span></b>.</p>
+        <p>Source code and documentation are on
+        <a href="https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-" target="_blank" rel="noopener">GitHub</a>.</p>
+        <p class="text-muted small">API keys are sensitive. Set them in
         <code>$HOME/.huntsman.env</code> (chmod 0600) or on the Settings page
-        (editable by default, loopback only; lock down with <code>hse serve --no-key-write</code>).
+        (editable by default, loopback only; lock it with <code>hse serve --no-key-write</code>).
         Never paste keys into chat, screenshots, or shared documents.</p>
       </div>
       <div class="modal-footer">
@@ -159,15 +136,18 @@
   </div>
 </div>
 
-<main class="container-fluid" id="mainbody">
+<main class="container" id="mainbody">
   <div id="view"></div>
 </main>
 
-<!-- No vendored scripts. The last one, D3 v3 (151 KB, the force-directed graph
-     engine), was dropped when the graph view was rewritten as a deterministic
-     concentric SVG layout in js/scan_info/graph.js — see that file's header.
-     Everything the app needs (nav/sheet/modal behaviour, sortable tables,
-     toasts/dialogs, the graph) is our own vanilla JS, imported by main.js. -->
+<!-- Footer — SpiderFoot 4.0's FOOTER.tmpl: one tip, picked per page. -->
+<footer class="navbar-default navbar-fixed-bottom" id="footer">
+  <div class="container-fluid text-center footer"><span id="footer-tip"></span></div>
+</footer>
+
+<!-- No vendored scripts: every behaviour (navbar collapse and dropdowns,
+     modal, sortable tables, dialogs, the graph) is our own vanilla JS,
+     imported by main.js. -->
 <script type="module" src="/static/js/main.js"></script>
 </body>
 </html>

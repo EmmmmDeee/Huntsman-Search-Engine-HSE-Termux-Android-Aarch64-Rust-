@@ -436,6 +436,11 @@ use super::*;
     /// every reader of the row in the SPA — the shared `statusPill` (the
     /// scan-info header, the radar sweep list), the scan list's stat tiles
     /// (`scanStats`) and its filter box — never as a green `complete`.
+    ///
+    /// The pill and the filter are wasm-ui's (`scan_state::status_pill`,
+    /// `views::scans::scan_matches`), one copy each, and their own tests pin
+    /// the partial rule. This pins that every reader hands them the row's
+    /// flag.
     #[test]
     fn embedded_spa_reads_a_finalise_incomplete_row_as_partial() {
         let helpers = app_file("js/helpers.js");
@@ -444,14 +449,25 @@ use super::*;
             .and_then(|(_, b)| b.split_once('\n'))
             .map(|(b, _)| b)
             .expect("statusPill present in helpers.js");
-        let partial = pill
-            .find("partial===true")
-            .expect("statusPill must read the row's finalise shortfall");
-        let complete = pill
-            .find("complete:'s-complete'")
-            .expect("statusPill's status map");
-        assert!(partial < complete, "{pill}");
-        assert!(pill[partial..complete].contains("'partial'"), "{pill}");
+        assert!(
+            pill.contains("statusPillHtml(") && pill.contains("partial===true"),
+            "statusPill must hand the row's finalise shortfall to wasm-ui's pill: {pill}"
+        );
+        for (file, call) in [
+            (
+                "js/scan_info/index.js",
+                "statusPill(state, scan.finalise_incomplete)",
+            ),
+            (
+                "js/views/radar.js",
+                "statusPill(scanState(sw), sw.finalise_incomplete)",
+            ),
+        ] {
+            assert!(
+                app_file(file).contains(call),
+                "{file} must pass the row's finalise shortfall to the pill"
+            );
+        }
 
         let scans = app_file("js/views/scans.js");
         let stats = scans
@@ -474,14 +490,9 @@ use super::*;
             scans.contains("stats.partial?`${stats.partial} partial`"),
             "the Complete tile must name the partial scans it leaves out"
         );
-        let filter = scans
-            .split_once("const rows = q ? S.scans.filter(s =>")
-            .and_then(|(_, b)| b.split_once(") : S.scans;"))
-            .map(|(b, _)| b)
-            .expect("the scan filter");
         assert!(
-            filter.contains("s.finalise_incomplete===true && 'partial'.includes(q)"),
-            "the filter must find a row by the `partial` its pill says: {filter}"
+            scans.contains("S.scans.filter(s => scanMatches(s, f.value))"),
+            "the filter must be wasm-ui's scanMatches, which finds a row by the `partial` its pill says"
         );
     }
 
@@ -1432,5 +1443,454 @@ use super::*;
             "these registered routes have no exact row in the `//!` \"Endpoint \
              surface\" doc table — add one so the self-documenting API surface \
              cannot drift from the code: {missing:?}"
+        );
+    }
+
+    // ─── The console is SpiderFoot 4.0's (UI remake, 2026-09-23) ───
+
+    /// The chrome is SpiderFoot 4.0's HEADER.tmpl and FOOTER.tmpl, and every
+    /// page the router resolves has a link in it.
+    ///
+    /// The route half matters most. The remake moved HSE's own pages from a
+    /// bottom tab bar into a "More" dropdown, and a page the router knows but
+    /// no link reaches is dead to anyone who does not type its hash. So the
+    /// route list is read from `router.js` itself, not restated here: a page
+    /// added there later without a link fails this test.
+    #[test]
+    fn the_shell_is_spiderfoots_navbar_with_every_page_reachable() {
+        for marker in [
+            r#"class="navbar navbar-default navbar-fixed-top""#,
+            r#"id="navbar-toggle""#,
+            r#"id="main-navbar-collapse""#,
+            r#"id="theme-toggle" class="theme-toggler" type="checkbox""#,
+            ">Dark Mode<",
+            r##"data-target="#aboutmodal""##,
+            r#"class="navbar-default navbar-fixed-bottom""#,
+            r#"id="footer-tip""#,
+        ] {
+            assert!(
+                SPA_HTML.contains(marker),
+                "the SpiderFoot 4.0 shell lacks {marker}"
+            );
+        }
+
+        // SpiderFoot's three destinations lead, in its order, and HSE's own
+        // pages follow them in the More menu.
+        let at = |m: &str| {
+            SPA_HTML
+                .find(m)
+                .unwrap_or_else(|| panic!("shell lacks {m}"))
+        };
+        let order = [
+            at(r#"id="nav-newscan""#),
+            at(r#"id="nav-scans""#),
+            at(r#"id="nav-opts""#),
+            at(r#"id="nav-more""#),
+        ];
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "the navbar must read New Scan, Scans, Settings, More — SpiderFoot's order"
+        );
+        // On a phone everything inside the collapse sits behind the toggle, so
+        // the update notice must come before it.
+        assert!(
+            at(r#"id="update-badge""#) < at(r#"id="main-navbar-collapse""#),
+            "#update-badge must sit outside the collapsing links, or a phone never shows it"
+        );
+
+        let router = app_file("js/router.js");
+        let pages: std::collections::BTreeSet<&str> = router
+            .match_indices("{name:'")
+            .filter_map(|(i, m)| {
+                let rest = &router[i + m.len()..];
+                rest.find('\'').map(|end| &rest[..end])
+            })
+            .collect();
+        assert!(
+            pages.len() >= 14,
+            "expected the router's page names, found {pages:?} — the extractor likely broke"
+        );
+        let unreachable: Vec<&str> = pages
+            .iter()
+            .copied()
+            // A scan's own page needs a scan id; the scan list links to it.
+            .filter(|p| *p != "scaninfo")
+            .filter(|p| !SPA_HTML.contains(&format!(r##"href="#/{p}""##)))
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "these routed pages have no link in the shell: {unreachable:?}"
+        );
+    }
+
+    /// Every `glyphicon-*` class the console emits has a rule in app.css.
+    ///
+    /// The icons are masked SVG. The base `.glyphicon` rule paints the box in
+    /// `currentColor` and only an icon's own mask cuts its shape, so a class
+    /// with no rule renders as a solid square. Before the remake, ten did
+    /// (`download`, `check`, `console`, `lock`, `remove`, …). The scan covers
+    /// the shell, every served JS module, and wasm-ui's Rust sources, which
+    /// render part of the markup. Class names built from a template, such as
+    /// `glyphicon-${x}`, cannot be checked this way, so the views spell them
+    /// out in full.
+    #[test]
+    fn every_glyphicon_the_spa_uses_is_drawn() {
+        let css = app_file("css/app.css");
+        let mut sources: Vec<(String, String)> = vec![("spa.html".into(), SPA_HTML.to_string())];
+        for (name, _, bytes) in APP_FILES {
+            if name.ends_with(".js")
+                && let Ok(text) = std::str::from_utf8(bytes)
+            {
+                sources.push(((*name).to_string(), text.to_string()));
+            }
+        }
+        let mut dirs = vec![std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/wasm-ui/src"
+        ))];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("wasm-ui/src is readable") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).expect("wasm-ui source is UTF-8");
+                    sources.push((path.display().to_string(), text));
+                }
+            }
+        }
+
+        // Modifier classes, not icons.
+        const MODIFIERS: &[&str] = &["white", "spin"];
+        let mut seen = std::collections::BTreeSet::new();
+        let mut missing = std::collections::BTreeSet::new();
+        let mut unreadable = Vec::new();
+        for (file, text) in &sources {
+            for (i, m) in text.match_indices("glyphicon-") {
+                let after = &text[i + m.len()..];
+                let name: String = after
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+                    .collect();
+                let name = name.trim_end_matches('-');
+                if name.is_empty() {
+                    // `glyphicon-*` in prose names the family, not a class.
+                    // Anything else is a name this scan cannot read, such as
+                    // `glyphicon-${…}`: exactly how `remove` went undrawn.
+                    if !after.starts_with('*') {
+                        let line = text[..i].lines().count() + 1;
+                        unreadable.push(format!("{file}:{line}"));
+                    }
+                    continue;
+                }
+                if MODIFIERS.contains(&name) {
+                    continue;
+                }
+                seen.insert(name.to_string());
+                if !css.contains(&format!(".glyphicon-{name}{{")) {
+                    missing.insert(format!("glyphicon-{name} (first seen in {file})"));
+                }
+            }
+        }
+        assert!(
+            unreadable.is_empty(),
+            "icon classes built from a template cannot be checked; spell each \
+             class out in full: {unreadable:?}"
+        );
+        assert!(
+            seen.len() >= 40,
+            "expected the console's icon vocabulary, found {} names — the scan likely broke",
+            seen.len()
+        );
+        assert!(
+            missing.is_empty(),
+            "these icons have no rule in app.css and render as solid squares: {missing:?}"
+        );
+    }
+
+    /// The console defaults to SpiderFoot 4.0's light theme, and its Dark Mode
+    /// switch turns on SpiderFoot's dark palette under SpiderFoot's own
+    /// storage value.
+    #[test]
+    fn the_console_is_light_by_default_with_spiderfoots_dark_mode() {
+        let css = app_file("css/app.css");
+        let block = |selector: &str| -> String {
+            let start = css
+                .find(&format!("\n{selector}{{"))
+                .unwrap_or_else(|| panic!("app.css has no `{selector}` block"));
+            let body = &css[start..];
+            body[..body.find('}').expect("block closes")]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect()
+        };
+        let root = block(":root");
+        for (token, value) in [("--bg", "#ffffff"), ("--navbar-bg", "#f8f8f8"), ("--accent", "#337ab7")] {
+            assert!(
+                root.contains(&format!("{token}:{value};")),
+                "the default (:root) theme must be SpiderFoot's light one: {token} is not {value}"
+            );
+        }
+        let dark = block("body.dark-theme");
+        for (token, value) in [
+            ("--bg", "#1b1b1b"),
+            ("--navbar-bg", "#171717"),
+            ("--bg-elevated", "#3a3a3a"),
+            ("--accent", "#059cd7"),
+        ] {
+            assert!(
+                dark.contains(&format!("{token}:{value};")),
+                "dark mode must be SpiderFoot's dark.css palette: {token} is not {value}"
+            );
+        }
+        // The earlier dark-first console marked light mode with this class; no
+        // rule may still depend on it.
+        assert!(
+            !css.contains("body.light-theme"),
+            "app.css still styles the retired `body.light-theme`"
+        );
+        let theme = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/wasm-ui/src/theme.rs"
+        ))
+        .expect("wasm-ui/src/theme.rs is readable");
+        assert!(
+            theme.contains(r#"const DARK: &str = "dark-theme";"#),
+            "the Dark Mode switch must persist SpiderFoot's own value, `dark-theme`"
+        );
+        // The theme module loads asynchronously, so the shell applies a stored
+        // dark choice itself before the first paint, with the same rule, or
+        // every dark-mode load flashes white. It must run before the navbar.
+        let pre_paint = "if(localStorage.getItem('theme')==='dark-theme')document.body.classList.add('dark-theme')";
+        let script_at = SPA_HTML
+            .find(pre_paint)
+            .expect("the shell applies a stored dark choice before the first paint");
+        let nav_at = SPA_HTML
+            .find(r#"<nav class="navbar"#)
+            .expect("the shell has its navbar");
+        assert!(
+            script_at < nav_at,
+            "the pre-paint theme script must run before the navbar is parsed"
+        );
+    }
+
+    /// No console view decides a scan is running from its `status` alone.
+    ///
+    /// The API keeps a dead server's scan at `status: "running"` and marks it
+    /// with a derived `interrupted: true` (REQ-SCANSTATUS-001). A view that
+    /// reads `status` by itself shows that scan as running forever, with a
+    /// Stop button that answers 404, a clock that climbs and, on Scan Info, a
+    /// refresh every 8 seconds (REQ-SCANSTATUS-038). The one rule is
+    /// wasm-ui's `scan_state`, reached from JS as `scanState` and
+    /// `scanIsActive`, so this fails on a JS comparison of a `.status` with any
+    /// scan state (an `interrupted` scan is neither running nor finished by its
+    /// `status`), and on a wasm-ui match of `running` or `pending` outside
+    /// `scan_state.rs`.
+    #[test]
+    fn no_console_view_decides_a_scan_is_running_from_its_status_alone() {
+        // A live session's status, not a scan's: sessions run until stopped
+        // and have no `interrupted`.
+        const LIVE_SESSION: &str = "x.status === 'running' && x.scan_options";
+        // The status a scan ended with, not a stored row's, so never
+        // interrupted: the radar's `scan_complete` event (REQ-SCANSTATUS-035)
+        // and the import endpoint's reply (REQ-SCANSTATUS-012).
+        const ENDED: [(&str, &str); 2] = [
+            ("js/views/radar.js", "ev.status === '"),
+            ("js/views/new_scan.js", "r.status === 'aborted'"),
+        ];
+        let mut offenders = Vec::new();
+        for (name, _, bytes) in APP_FILES {
+            if !name.ends_with(".js") {
+                continue;
+            }
+            let Ok(text) = std::str::from_utf8(bytes) else {
+                continue;
+            };
+            for (n, line) in text.lines().enumerate() {
+                let squeezed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+                // `x.status === 'complete'`, `x.status != "failed"`, …, a
+                // `.status` inside an `.includes(` (`['complete', 'aborted']
+                // .includes(x.status)`, `(x.status||'').includes(q)`) and a
+                // `switch (x.status)`. `interrupted` is on the list because a
+                // `status` never holds it: comparing against it is always a
+                // mistake.
+                let compares = [
+                    "running",
+                    "pending",
+                    "complete",
+                    "aborted",
+                    "failed",
+                    "interrupted",
+                ]
+                .iter()
+                .any(|s| {
+                    ["===", "==", "!==", "!="].iter().any(|op| {
+                        squeezed.contains(&format!(".status{op}'{s}'"))
+                            || squeezed.contains(&format!(".status{op}\"{s}\""))
+                    })
+                }) || (squeezed.contains(".includes(") && squeezed.contains(".status"))
+                    || (squeezed.contains("switch(") && squeezed.contains(".status)"));
+                let ended = ENDED
+                    .iter()
+                    .any(|(file, read)| name.ends_with(file) && line.contains(read));
+                if compares && !line.contains(LIVE_SESSION) && !ended {
+                    offenders.push(format!("{name}:{}", n + 1));
+                }
+            }
+        }
+        for (path, views) in wasm_ui_production_sources() {
+            if path.file_name().is_some_and(|f| f == "scan_state.rs") {
+                continue;
+            }
+            for (n, line) in views.lines().enumerate() {
+                // `Some("running"` also catches `matches!(…, Some("running" | "pending"))`.
+                if line.contains("Some(\"running\"") || line.contains("Some(\"pending\"") {
+                    offenders.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these read a scan's `status` without its `interrupted` flag; use \
+             scanState/scanIsActive (JS) or scan_state::scan_state (wasm-ui): \
+             {offenders:?}"
+        );
+        // And the rule itself is what the views import.
+        for file in [
+            "js/scan_info/index.js",
+            "js/scan_info/log.js",
+            "js/views/scans.js",
+            "js/views/radar.js",
+            "js/views/diff.js",
+        ] {
+            assert!(
+                app_file(file).contains("scanState") || app_file(file).contains("scanIsActive"),
+                "{file} shows a scan's state and must read it through scanState/scanIsActive"
+            );
+        }
+    }
+
+    /// Every wasm-ui source file's production code: its text before its test
+    /// module, since a fixture builds a raw `running` row or spells a pill
+    /// class on purpose. Split on the test MODULE, not on the first
+    /// `#[cfg(test)]`, which a test-only `use` near the top of a file would
+    /// turn into an exemption for the whole file.
+    fn wasm_ui_production_sources() -> Vec<(std::path::PathBuf, String)> {
+        let mut sources = Vec::new();
+        let mut dirs = vec![std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/wasm-ui/src"
+        ))];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("wasm-ui/src is readable") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).expect("wasm-ui source is UTF-8");
+                    let production = text
+                        .split("#[cfg(test)]\nmod tests")
+                        .next()
+                        .unwrap_or_default()
+                        .to_string();
+                    sources.push((path, production));
+                }
+            }
+        }
+        // Vacuity guard: a walk that found nothing would pass every check.
+        assert!(sources.len() >= 20, "found only {} wasm-ui sources", sources.len());
+        sources
+    }
+
+    /// REQ-SCANNAME-001: New Scan's "Scan Name" field was collected and
+    /// dropped: the options a scan was queued with never held it. The name
+    /// must be in the options `buildWizardOptions` builds, which both of New
+    /// Scan's submit buttons (one scan, and a batch) send; the field must
+    /// stop at the server's length limit; and every page that titles a scan
+    /// or a live session, or searches scans, must do it through wasm-ui's one
+    /// rule for what a scan is called.
+    #[test]
+    fn new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it() {
+        let js = app_file("js/views/new_scan.js");
+        let body_of = |name: &str| -> &str {
+            let start = js
+                .find(&format!("function {name}("))
+                .unwrap_or_else(|| panic!("{name} is defined"));
+            let rest = &js[start..];
+            &rest[..rest.find("\n}\n").map_or(rest.len(), |i| i + 3)]
+        };
+        assert!(
+            body_of("buildWizardOptions").contains("opts.name = W.name"),
+            "buildWizardOptions must carry the form's name"
+        );
+        for submit in ["submitWizard", "submitBatch"] {
+            let body = body_of(submit);
+            assert!(
+                body.contains("const opts = buildWizardOptions();"),
+                "{submit} must send exactly the options buildWizardOptions builds"
+            );
+        }
+        let field = format!(
+            "maxlength=\"{}\"",
+            crate::core::scan::MAX_SCAN_NAME_CHARS
+        );
+        assert!(
+            js.contains("id=\"scanname\"") && js.contains(&field),
+            "the name field must stop at the server's limit ({field})"
+        );
+        for (file, rule) in [
+            ("js/scan_info/index.js", "scanLabel("),
+            ("js/views/diff.js", "scanLabel("),
+            ("js/views/live.js", "scanLabel("),
+            ("js/views/scans.js", "scanMatches("),
+        ] {
+            assert!(
+                app_file(file).contains(rule),
+                "{file} must use wasm-ui's {rule}…)"
+            );
+        }
+    }
+
+    #[test]
+    fn a_scan_states_pill_has_one_copy_of_its_markup() {
+        // helpers.js's `statusPill` is wasm-ui's `status_pill`, so a state the
+        // console adds is styled in every view at once. The JS copy this
+        // replaced had no `interrupted` entry and drew it in the `pending`
+        // style (REQ-SCANSTATUS-038).
+        assert!(
+            app_file("js/helpers.js").contains("statusPillHtml("),
+            "helpers.js's statusPill must delegate to wasm-ui's statusPillHtml"
+        );
+        let copies: Vec<&str> = APP_FILES
+            .iter()
+            .filter(|(name, _, bytes)| {
+                name.ends_with(".js")
+                    && std::str::from_utf8(bytes)
+                        .is_ok_and(|t| t.contains("s-running") || t.contains("s-interrupted"))
+            })
+            .map(|(name, _, _)| *name)
+            .collect();
+        assert!(
+            copies.is_empty(),
+            "a scan-state pill class is spelled outside wasm-ui's scan_state::status_pill: {copies:?}"
+        );
+        // Two of the three old copies were in wasm-ui itself.
+        let wasm_copies: Vec<String> = wasm_ui_production_sources()
+            .into_iter()
+            .filter(|(path, text)| {
+                path.file_name().is_some_and(|f| f != "scan_state.rs")
+                    && (text.contains("s-running")
+                        || text.contains("s-interrupted")
+                        || text.contains("status-pill"))
+            })
+            .map(|(path, _)| path.display().to_string())
+            .collect();
+        assert!(
+            wasm_copies.is_empty(),
+            "a wasm-ui view spells the pill's markup instead of calling scan_state::status_pill: {wasm_copies:?}"
+        );
+        assert!(
+            app_file("css/app.css").contains(".s-interrupted{"),
+            "the interrupted pill's style is missing from app.css"
         );
     }

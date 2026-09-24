@@ -8,7 +8,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tracing::info;
 
-use super::super::handlers::{bad_request, internal_error, not_found, ok_list, spawn_scan};
+use super::super::handlers::{bad_request, internal_error, not_found, ok_list, queue_scan};
 use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, Target, TargetKind};
@@ -29,13 +29,9 @@ pub async fn scan_create(
         Err(msg) => return bad_request(msg),
     };
 
-    let store = Arc::clone(&s.store);
-    let scan_db = scan.clone();
-    if let Err(resp) = super::offload_store(move || store.upsert_scan(&scan_db)).await {
-        return resp;
+    if let Err(e) = queue_scan(&s, scan.clone(), target).await {
+        return internal_error(&e);
     }
-
-    spawn_scan(&s, scan.clone(), target);
 
     info!(scan_id = %scan.id, kind = ?scan.target.kind, "scan queued");
     (
@@ -188,12 +184,9 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let sid = scan_id(kind.canonical_str(), &value);
     let scan = Scan::new(sid.clone(), target.clone())
         .with_options(crate::core::scan::default_scan_options());
-    let store = Arc::clone(&s.store);
-    let scan_db = scan.clone();
-    if let Err(resp) = super::offload_store(move || store.upsert_scan(&scan_db)).await {
-        return resp;
+    if let Err(e) = queue_scan(&s, scan, target).await {
+        return internal_error(&e);
     }
-    spawn_scan(&s, scan, target);
     info!(scan_id = %sid, kind = ?kind, "autonomous scan queued — seed auto-selected");
     (
         StatusCode::ACCEPTED,
@@ -381,24 +374,12 @@ pub async fn scan_auto_sweep(
         let sid = scan_id(t.kind.canonical_str(), &t.value);
         let scan = Scan::new(sid.clone(), target.clone())
             .with_options(crate::core::scan::default_scan_options());
-        let store = Arc::clone(&s.store);
-        let scan_db = scan.clone();
-        // Deliberately NOT `offload_store`: a persist failure here records a
-        // per-target error and lets the sweep continue, whereas `offload_store`
-        // would abort the whole request with a 500 on the first bad target.
-        match tokio::task::spawn_blocking(move || store.upsert_scan(&scan_db)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                dispatched.push(json!({ "error": e.to_string(), "value": t.value }));
-                continue;
-            }
-            Err(e) => {
-                dispatched
-                    .push(json!({ "error": format!("db task failed: {e}"), "value": t.value }));
-                continue;
-            }
+        // A persist failure records a per-target error and lets the sweep
+        // continue, rather than aborting the whole request with a 500.
+        if let Err(e) = queue_scan(&s, scan, target).await {
+            dispatched.push(json!({ "error": e, "value": t.value }));
+            continue;
         }
-        spawn_scan(&s, scan, target);
         dispatched.push(json!({
             "scan_id": sid,
             "status": "queued",
@@ -462,7 +443,7 @@ pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    // Derived `interrupted` flag per row — see `handlers::is_interrupted`.
+    // Derived `interrupted` flag per row — see `Scan::is_interrupted`.
     let in_flight = super::super::handlers::in_flight_scan_ids(&s.cancellations);
     let rows: Vec<serde_json::Value> = scans
         .iter()
@@ -497,7 +478,7 @@ pub async fn scan_delete(
 ) -> impl IntoResponse {
     // Refuse to delete a scan that's still in-flight: `s.cancellations` holds
     // an entry for exactly as long as the engine is running the scan — a
-    // one-shot scan's from `spawn_scan`, a live iteration's from the live loop
+    // one-shot scan's from `queue_scan`, a live iteration's from the live loop
     // — removed by `CancelRegistryGuard`'s Drop when the engine returns
     // (success, error, or panic). Without this check,
     // deleting a running scan raced the engine's own mid-scan checkpoint
@@ -551,13 +532,9 @@ pub async fn scan_rerun(
     let sid = scan_id(original.target.kind.canonical_str(), &original.target.value);
     let new_scan = Scan::new(sid, original.target.clone()).with_options(original.options.clone());
 
-    let store = Arc::clone(&s.store);
-    let scan_db = new_scan.clone();
-    if let Err(resp) = super::offload_store(move || store.upsert_scan(&scan_db)).await {
-        return resp;
+    if let Err(e) = queue_scan(&s, new_scan.clone(), original.target).await {
+        return internal_error(&e);
     }
-
-    spawn_scan(&s, new_scan.clone(), original.target);
 
     info!(scan_id = %new_scan.id, source = %id, "scan rerun queued");
     (
@@ -624,7 +601,7 @@ pub async fn scan_import(
         return bad_request("upload too large (max 16 MB)");
     }
     // Throttle concurrent imports via the shared scan semaphore — mirrors the
-    // gate in spawn_scan so an import flood can't crowd out live scans on a
+    // gate in queue_scan so an import flood can't crowd out live scans on a
     // 2-core Termux device. Owned, so it can move into the blocking import
     // below and be held until the import's last write — not only for as long
     // as this handler's future lives (see the in-flight guard below).
@@ -930,24 +907,13 @@ pub async fn scan_batch(
                 continue;
             }
         };
-        let store = Arc::clone(&s.store);
-        let scan_db = scan.clone();
-        // Deliberately NOT `offload_store`: a persist failure here records a
-        // per-request error and lets the batch continue, whereas `offload_store`
-        // would abort the whole batch with a 500 on the first bad entry.
-        match tokio::task::spawn_blocking(move || store.upsert_scan(&scan_db)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                scan_ids.push(json!({ "error": e.to_string() }));
-                continue;
-            }
-            Err(e) => {
-                scan_ids.push(json!({ "error": format!("db task failed: {e}") }));
-                continue;
-            }
-        }
+        // A persist failure records a per-request error and lets the batch
+        // continue, rather than aborting the whole batch with a 500.
         let sid = scan.id.clone();
-        spawn_scan(&s, scan, target);
+        if let Err(e) = queue_scan(&s, scan, target).await {
+            scan_ids.push(json!({ "error": e }));
+            continue;
+        }
         scan_ids.push(json!({ "scan_id": sid, "status": "queued" }));
     }
 
@@ -1024,12 +990,9 @@ pub async fn radar_sweep(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let (target, opts) = radar_scan_spec();
     let sid = scan_id("radar", target.kind.canonical_str());
     let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
-    let store = Arc::clone(&s.store);
-    let scan_db = scan.clone();
-    if let Err(resp) = super::offload_store(move || store.upsert_scan(&scan_db)).await {
-        return resp;
+    if let Err(e) = queue_scan(&s, scan, target).await {
+        return internal_error(&e);
     }
-    spawn_scan(&s, scan, target);
     info!(scan_id = %sid, "radar sweep queued — live device sensors (button activation)");
     (
         StatusCode::ACCEPTED,
@@ -1107,7 +1070,8 @@ pub async fn radar_history(
     let store = Arc::clone(&s.store);
     match super::offload_store(move || store.radar_history(limit)).await {
         // Each sweep is a scan row, so it goes out as every other scan row
-        // does (`handlers::scan_json`): with the derived `interrupted` and
+        // does (`handlers::scan_json`): with the derived `interrupted` (a
+        // sweep whose process died, REQ-SCANSTATUS-038) and
         // `finalise_incomplete` the sweep list's status pill reads.
         Ok(scans) => {
             let in_flight = super::super::handlers::in_flight_scan_ids(&s.cancellations);

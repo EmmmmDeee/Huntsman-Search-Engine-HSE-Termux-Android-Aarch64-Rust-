@@ -9,7 +9,8 @@
 use super::*;
 
 /// Per-scan customisation. All fields optional; defaults preserve plain-scan
-/// behaviour. The engine respects every field at dispatch time.
+/// behaviour. The engine respects every field at dispatch time, except
+/// [`ScanOptions::name`], which only labels the scan.
 ///
 /// Adding a knob = add a field here; CLI/API/UI surface it as needed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +98,14 @@ pub struct ScanOptions {
     /// Freeform notes / investigation context.
     #[serde(default)]
     pub notes: Option<String>,
+
+    /// The operator's name for the scan, SpiderFoot's "Scan Name". The
+    /// console titles the scan by it, with the target beside it. Nothing in
+    /// the engine reads it. A request's name passes
+    /// [`ScanOptions::checked_for_request`] first, so a stored name is one
+    /// visible line of at most [`MAX_SCAN_NAME_CHARS`] characters.
+    #[serde(default)]
+    pub name: Option<String>,
 
     /// Webhook URL to POST scan results to on completion. None = no webhook.
     #[serde(default)]
@@ -428,7 +437,98 @@ pub const DEFAULT_MAX_ENTITIES: usize = 2500;
 /// callers and the test suite remain deterministic.
 pub const DEFAULT_MIN_EXPAND_CONFIDENCE: f64 = 0.20;
 
+/// The longest [`ScanOptions::name`] a request may set, in characters.
+pub const MAX_SCAN_NAME_CHARS: usize = 200;
+
+/// Why [`ScanOptions::checked_for_request`] refused a scan name. Its
+/// `Display` is the client-facing message: what is wrong and what to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanNameError {
+    /// Longer than [`MAX_SCAN_NAME_CHARS`] characters once cleaned.
+    TooLong {
+        /// The cleaned name's length, in characters.
+        chars: usize,
+    },
+    /// Holds a line break, a line or paragraph separator, or another control
+    /// character. Every view shows a name as a one-line title.
+    NotOneLine,
+}
+
+impl std::fmt::Display for ScanNameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLong { chars } => write!(
+                f,
+                "name too long: {chars} characters, over the {MAX_SCAN_NAME_CHARS}-character \
+                 limit; shorten it"
+            ),
+            Self::NotOneLine => f.write_str(
+                "name contains control characters or a line break; a scan name is one line \
+                 of text",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ScanNameError {}
+
 impl ScanOptions {
+    /// The checks a scan or live request's options get before they are
+    /// stored: today, the scan name, which every view shows as a one-line
+    /// title. The name is cleaned, then judged:
+    ///
+    /// - invisible formatting characters (zero-width characters, the byte
+    ///   order mark, bidi overrides and isolates) are removed with
+    ///   [`crate::core::validation::strip_invisible`], as a typed target's
+    ///   are, so a name can neither look blank nor render reversed;
+    /// - a tab, which a text field lets through from a paste, becomes a space;
+    /// - the name is trimmed, and a blank one is no name;
+    /// - a name holding any other control character, or a line or paragraph
+    ///   separator, is refused ([`ScanNameError::NotOneLine`]), as is one
+    ///   over [`MAX_SCAN_NAME_CHARS`] characters ([`ScanNameError::TooLong`]).
+    ///
+    /// Applied at the request seams, like the unknown-key check
+    /// ([`known_option_keys`]) and for the same reason: `ScanOptions` is
+    /// also the persisted form, so a check inside deserialisation would make
+    /// a stored scan unreadable the day the rule tightens.
+    ///
+    /// ```
+    /// use huntsman_search_engine::core::scan::{ScanNameError, ScanOptions};
+    ///
+    /// let named = |n: &str| ScanOptions { name: Some(n.into()), ..ScanOptions::default() };
+    /// let name = |n: &str| named(n).checked_for_request().map(|o| o.name);
+    /// assert_eq!(name("  Q3\taudit "), Ok(Some("Q3 audit".into())));
+    /// assert_eq!(name("   "), Ok(None));
+    /// assert_eq!(name("\u{200B}"), Ok(None));
+    /// assert_eq!(name("two\nlines"), Err(ScanNameError::NotOneLine));
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`ScanNameError`], whose message names the fault and the fix.
+    pub fn checked_for_request(mut self) -> std::result::Result<Self, ScanNameError> {
+        let Some(raw) = self.name.take() else {
+            return Ok(self);
+        };
+        let visible = crate::core::validation::strip_invisible(&raw).replace('\t', " ");
+        let name = visible.trim();
+        if name.is_empty() {
+            return Ok(self);
+        }
+        if name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+        {
+            return Err(ScanNameError::NotOneLine);
+        }
+        let chars = name.chars().count();
+        if chars > MAX_SCAN_NAME_CHARS {
+            return Err(ScanNameError::TooLong { chars });
+        }
+        self.name = Some(name.to_string());
+        Ok(self)
+    }
+
     /// Clamp `depth` to [`MAX_DEPTH`], warning once if it actually clamps.
     /// Applied at the CLI/API/live input boundaries — deliberately NOT inside
     /// the engine core, whose halting proofs are driven at high depth on purpose.
@@ -542,6 +642,7 @@ impl Default for ScanOptions {
             max_wall_time_secs: None,
             scan_tags: Vec::new(),
             notes: None,
+            name: None,
             webhook_url: None,
             profile: None,
             max_roi: false,
