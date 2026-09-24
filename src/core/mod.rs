@@ -57,6 +57,7 @@ pub mod network;
 pub mod outage;
 pub mod path;
 pub mod pivot;
+pub mod place;
 pub mod platform;
 pub mod port;
 pub mod profiles;

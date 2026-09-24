@@ -437,6 +437,8 @@ fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
 
     // No deadline → rules run normally (AU-086 fires for this predict+confirm email).
     let full = evaluate_rules_on(&RuleContext::new(&ents), "s", 0, None);
+    assert!(!full.cut, "an unbounded pass is never cut");
+    let full = full.firings;
     assert!(
         full.iter().any(|c| c.rule_id == "AU-086"),
         "without a budget the confirmed name-derived email must fire AU-086"
@@ -444,13 +446,15 @@ fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
 
     // A deadline already in the past → no rule is started, empty result, no hang.
     let past = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    let entity_pass = evaluate_rules_on(&RuleContext::new(&ents), "s", 0, past);
     assert!(
-        evaluate_rules_on(&RuleContext::new(&ents), "s", 0, past).is_empty(),
-        "an elapsed budget must stop the entity-rule pass immediately"
+        entity_pass.firings.is_empty() && entity_pass.ran == 0 && entity_pass.cut,
+        "an elapsed budget must stop the entity-rule pass immediately, and say so"
     );
+    let relation_pass = evaluate_relation_rules_on(&RuleContext::new(&ents), &[], "s", 0, past);
     assert!(
-        evaluate_relation_rules_on(&RuleContext::new(&ents), &[], "s", 0, past).is_empty(),
-        "an elapsed budget must stop the relation-rule pass immediately"
+        relation_pass.firings.is_empty() && relation_pass.ran == 0 && relation_pass.cut,
+        "an elapsed budget must stop the relation-rule pass immediately, and say so"
     );
 }
 

@@ -646,6 +646,8 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 .status-pill{ font-size:10px; padding:2px 9px; border-radius:var(--radius-pill); font-weight:600; }
 .s-complete{background:var(--success-dim);color:var(--success)}
 .s-aborted{background:var(--warning-dim);color:var(--warning)}
+/* A finished scan whose finalise recorded a shortfall (finalise_incomplete). */
+.s-partial{background:var(--warning-dim);color:var(--warning)}
 .s-running{background:var(--info-dim);color:var(--info)}
 .s-failed{background:var(--danger-dim);color:var(--danger)}
 .s-pending{background:var(--bg-elevated-2);color:var(--text-muted)}

@@ -31,6 +31,47 @@ fn au_postcode_reads_value_token_then_evidence() {
     assert!(au_postcode(&bad).is_none());
 }
 
+/// An entity may carry several records that each name a postcode — one QLD
+/// unclaimed-money owner record per register row (review of #649). Taking the
+/// first valid one let evidence ORDER choose the owner's town; records that
+/// disagree give no single town, so none anchors, in either order. Records
+/// that agree still anchor, and a pooled attribute is judged the same way.
+#[test]
+fn au_postcode_anchors_only_on_a_single_distinct_postcode() {
+    let owner = |pcs: &[&str]| {
+        let mut e = Entity::new(EntityKind::Person, "Curt Avery", 0.32, "s");
+        for (i, pc) in pcs.iter().enumerate() {
+            e.add_evidence(
+                Evidence::new("au_unclaimed", format!("owner row {i}")).with_attr("postcode", *pc),
+            );
+        }
+        e
+    };
+    assert_eq!(au_postcode(&owner(&["4555", "4557"])), None);
+    assert_eq!(
+        au_postcode(&owner(&["4557", "4555"])),
+        None,
+        "order-independent"
+    );
+    assert_eq!(
+        au_postcode(&owner(&["4555", "4555"])).as_deref(),
+        Some("4555"),
+        "rows that agree anchor"
+    );
+    // An invalid value beside a valid one is not a second town.
+    assert_eq!(
+        au_postcode(&owner(&["65101", "4555"])).as_deref(),
+        Some("4555")
+    );
+    let mut pooled = Entity::new(EntityKind::Person, "Curt Avery", 0.32, "s");
+    pooled.add_evidence(Evidence::new("au_unclaimed", "owner").with_attr("postcode", "4555; 4557"));
+    assert_eq!(
+        au_postcode(&pooled),
+        None,
+        "a pooled attribute, judged alike"
+    );
+}
+
 #[test]
 fn au_postcode_ignores_a_leading_us_street_number() {
     // Real captured US breach addresses (Huntsman scan 90b936dc…). The leading
@@ -468,4 +509,130 @@ fn subject_surname_prefers_the_seed_over_a_register_name_match() {
     );
     // With no seed anchor the register match is still used.
     assert_eq!(subject_surname(&[row]).as_deref(), Some("thorley"));
+}
+
+/// REQ-GEO-FAMILY-002: a city named in a search result, a centroid derived from
+/// an Address, and a forward geocode of a venue named after the subject all
+/// clear the confidence floor and the correlator's anchoring allowlist, yet
+/// none of them observed the subject. Scan 7258fc07 anchored "the subject's
+/// confirmed location" on exactly these three and promoted ~235 register rows
+/// within 150 km of them to corroborated relatives.
+#[test]
+fn a_search_snippet_city_or_forward_geocode_is_not_a_subject_fix() {
+    let mut city = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.72, "s");
+    city.tag("geoint");
+    city.tag(crate::core::tags::SEARCH_GEOCODED);
+    city.add_evidence(
+        Evidence::new(
+            "search_engines",
+            "Geocoded from search address: Sydney, New South Wales",
+        )
+        .with_attr("method", "known-city-lookup")
+        .with_attr("source_address", "Sydney, New South Wales"),
+    );
+
+    let mut derived = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.65, "s");
+    derived.tag(crate::core::tags::ADDR_DERIVED);
+    derived.add_evidence(
+        Evidence::new(
+            "search_engines",
+            "Inline geocode of address 'Brisbane, QLD'",
+        )
+        .with_attr(crate::core::engine::ADDR_ENTITY_UID_ATTR, "x")
+        .with_attr("addr_value", "Brisbane, QLD"),
+    );
+
+    let mut poi = Entity::new(EntityKind::Coordinates, "-33.877410,151.198900", 0.60, "s");
+    poi.tag("photon");
+    poi.add_evidence(
+        Evidence::new(
+            "photon",
+            "Photon geocoded \"Ian Thorpe Aquatic Centre in Ultimo, New South Wales\"",
+        )
+        .with_attr(
+            "input_address",
+            "Ian Thorpe Aquatic Centre in Ultimo, New South Wales",
+        ),
+    );
+
+    // A device-class source copied from an Address onto a centroid is still the
+    // Address's source, not a sighting of the subject.
+    let mut copied = Entity::new(EntityKind::Coordinates, "-31.9505,115.8605", 0.70, "s");
+    copied.add_evidence(
+        Evidence::new("exif_geo", "Inline geocode of address 'Perth, WA'")
+            .with_attr(crate::core::engine::ADDR_ENTITY_UID_ATTR, "y"),
+    );
+
+    assert!(
+        subject_fixes(&[city.clone(), derived, poi, copied]).is_empty(),
+        "no snippet city, derived centroid or forward geocode anchors the subject"
+    );
+
+    // Control: a handset GNSS fix on the very same point does.
+    let mut gps = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.9, "s");
+    gps.add_evidence(Evidence::new("signal_radar", "gps"));
+    assert_eq!(subject_fixes(&[city, gps]).len(), 1);
+}
+
+/// REQ-GEO-FAMILY-003: once a forward geocode stopped counting as a subject
+/// fix (REQ-GEO-FAMILY-002), a name-matched address with no AU postcode had no
+/// anchor at all — the doc claimed its `exact-name-match` arm still covered it,
+/// but that arm resolved only a postcode. It now falls back to the tabulated
+/// place the address names.
+#[test]
+fn a_postcode_less_name_matched_address_still_anchors_at_its_named_place() {
+    let mut own = Entity::new(EntityKind::Address, "12 Foo St, Toowong QLD", 0.70, "s");
+    own.tag("exact-name-match");
+    assert_eq!(au_postcode(&own), None, "fixture must carry no postcode");
+    let fixes = subject_fixes(std::slice::from_ref(&own));
+    assert_eq!(fixes.len(), 1, "the subject's own address anchors");
+    assert_eq!(
+        Some(fixes[0].coord),
+        crate::util::city_coords::city_coords("Toowong QLD")
+    );
+    // A postcode still wins over the place name (the finer grain), and an
+    // address naming no tabulated place and no postcode does not anchor.
+    let mut coded = Entity::new(EntityKind::Address, "1 Bar St, Toowong QLD 4000", 0.70, "s");
+    coded.tag("exact-name-match");
+    assert_eq!(
+        Some(subject_fixes(std::slice::from_ref(&coded))[0].coord),
+        crate::util::city_coords::city_coords("4000")
+    );
+    let mut nowhere = Entity::new(EntityKind::Address, "7 Qux Lane, Zzyzxville", 0.70, "s");
+    nowhere.tag("exact-name-match");
+    assert!(subject_fixes(&[nowhere]).is_empty());
+}
+
+/// REQ-GEO-FAMILY-004 / REQ-GEO-018: the postcode-less fallback resolves the
+/// address's LOCALITY, never a place name inside its street's. "45 Sydney
+/// Road, Brunswick VIC" anchored the subject at the Sydney centroid, ~700 km
+/// from their Melbourne address, so Melbourne relatives read as discordant
+/// and Sydney namesakes as family. An untabulated locality with no postcode
+/// anchors nowhere — the conservative outcome — and a tabulated one still
+/// anchors at itself.
+#[test]
+fn a_place_named_in_the_street_never_anchors_the_subject() {
+    let sydney = crate::util::city_coords::city_coords("Sydney").expect("tabulated");
+    let mut own = Entity::new(
+        EntityKind::Address,
+        "45 Sydney Road, Brunswick VIC",
+        0.70,
+        "s",
+    );
+    own.tag("exact-name-match");
+    assert_eq!(au_postcode(&own), None, "fixture must carry no postcode");
+    assert!(
+        subject_fixes(std::slice::from_ref(&own))
+            .iter()
+            .all(|f| f.coord != sydney),
+        "anchored at the city the street is named after"
+    );
+    let mut toowong = Entity::new(EntityKind::Address, "3 Brisbane St, Toowong QLD", 0.70, "s");
+    toowong.tag("exact-name-match");
+    assert_eq!(
+        subject_fixes(std::slice::from_ref(&toowong))
+            .first()
+            .map(|f| f.coord),
+        crate::util::city_coords::city_coords("Toowong")
+    );
 }

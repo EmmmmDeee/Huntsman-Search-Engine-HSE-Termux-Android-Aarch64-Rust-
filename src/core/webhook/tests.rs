@@ -15,6 +15,7 @@ use super::*;
             target_value: "x@y.com",
             entity_count: 42,
             status: "complete",
+            finalise_incomplete: false,
             correlations_count: 3,
         };
         assert_eq!(p.scan_id, "abc");
@@ -56,6 +57,7 @@ use super::*;
             target_value: "x@y.com",
             entity_count: 1,
             status: "complete",
+            finalise_incomplete: false,
             correlations_count: 0,
         };
         notify_scan_complete(&http, &format!("http://{addr}/hook"), &payload).await;

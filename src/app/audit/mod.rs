@@ -129,6 +129,9 @@ fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
         idx("sources"),
         idx("tags"),
     );
+    // The exporter's own per-record corroboration verdict; absent from older
+    // exports, which then carry only source names.
+    let ci_corroborating = idx("corroborating_sources");
 
     let mut out = Vec::new();
     for rec in rdr.records() {
@@ -147,6 +150,11 @@ fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
             c_effective: ceff,
             corroboration: get(ci_corr).parse().unwrap_or(0),
             sources: pipe_delimited(get(ci_src)).map(str::to_owned).collect(),
+            corroborating_sources: ci_corroborating.map(|i| {
+                pipe_delimited(rec.get(i).unwrap_or(""))
+                    .map(str::to_owned)
+                    .collect()
+            }),
             tags: pipe_delimited(get(ci_tags)).map(str::to_owned).collect(),
         });
     }

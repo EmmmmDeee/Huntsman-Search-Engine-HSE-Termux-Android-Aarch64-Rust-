@@ -30,6 +30,13 @@ pub use timezone::timezone_for;
 /// verdict when the coordinate class's fixes are scattered past it. Before
 /// being pointed here, AU-098 independently re-derived this as a hardcoded
 /// `300.0` literal that had silently drifted to 2× this value.
+///
+/// Both also admit the same fixes: the correlator's person-anchor gate
+/// (`is_infrastructure_geo`, which AU-098 applies through `coord_state`) and
+/// the audit's `geo_consistency` both read one rule,
+/// `core::correlator::is_infrastructure_geo_signals`, so an infrastructure node
+/// or a nearby-place POI is compared against this radius by neither
+/// (REQ-AUDIT-GEO-001).
 pub const GEO_OUTLIER_KM: f64 = 150.0;
 
 #[cfg(test)]

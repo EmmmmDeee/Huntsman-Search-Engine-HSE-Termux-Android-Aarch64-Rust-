@@ -12,6 +12,7 @@ use crate::core::scan::ScanStatus;
                 scan_id: "scan-42".into(),
                 entity_count: 0,
                 status: ScanStatus::Complete,
+                finalise_incomplete: false,
             },
         );
         let after = unix_now();
@@ -110,6 +111,7 @@ use crate::core::scan::ScanStatus;
             scan_id: "scan-99".into(),
             entity_count: 42,
             status: ScanStatus::Aborted,
+            finalise_incomplete: false,
         };
         let json = serde_json::to_string(&kind).expect("should succeed");
         let back: EventKind = serde_json::from_str(&json).expect("should succeed");
@@ -118,6 +120,7 @@ use crate::core::scan::ScanStatus;
                 scan_id,
                 entity_count,
                 status,
+                ..
             } => {
                 assert_eq!(scan_id, "scan-99");
                 assert_eq!(entity_count, 42);
@@ -149,6 +152,75 @@ use crate::core::scan::ScanStatus;
         }
     }
 
+    #[test]
+    fn a_budget_cut_breach_sweep_logs_what_it_dispatched_and_why_it_stopped() {
+        // Scan 7258fc07's log read `breach_sweep {"anchors":18,"probes":64,
+        // "dropped":51}` straight after `expansion_stop max_entities=2500
+        // reached` — and not one sweep module ran. The line must carry the
+        // dispatched count and the stop reason, in the persisted log and the
+        // human summary alike.
+        let ev = Event::new(
+            "s",
+            EventKind::BreachSweep {
+                anchors: 18,
+                probes: 64,
+                dropped: 51,
+                dispatched: Some(0),
+                stopped: Some("max_entities=2500 reached".into()),
+            },
+        );
+        let line = ev.to_log_line();
+        assert!(line.contains("\"dispatched\":0"), "{line}");
+        assert!(
+            line.contains("\"stopped\":\"max_entities=2500 reached\""),
+            "{line}"
+        );
+        let (_, summary) = ev.kind.log_summary();
+        assert!(summary.contains("0/64 probes dispatched"), "{summary}");
+        assert!(summary.contains("stopped: max_entities=2500 reached"), "{summary}");
+        // An event persisted before these fields existed still deserialises.
+        let old: EventKind = serde_json::from_str(
+            r#"{"type":"breach_sweep","anchors":1,"probes":2,"dropped":0}"#,
+        )
+        .expect("legacy breach_sweep event deserialises");
+        assert!(matches!(
+            old,
+            EventKind::BreachSweep {
+                dispatched: None,
+                stopped: None,
+                ..
+            }
+        ));
+    }
+
+    /// REQ-SWEEP-006: a BreachSweep persisted before `dispatched` existed never
+    /// recorded its dispatch. Read as `0`, every pre-upgrade sweep that ran
+    /// normally re-rendered as "0/12 probes dispatched" — the mirror image of
+    /// the budget-cut misreport REQ-SWEEP-004 fixed. It reads as unknown and
+    /// renders the line it was written with.
+    #[test]
+    fn a_legacy_breach_sweep_never_reads_as_one_that_dispatched_nothing() {
+        let old: EventKind = serde_json::from_str(
+            r#"{"type":"breach_sweep","anchors":3,"probes":12,"dropped":0}"#,
+        )
+        .expect("legacy breach_sweep event deserialises");
+        let (_, summary) = old.log_summary();
+        assert!(!summary.contains("0/12"), "{summary}");
+        assert!(!summary.contains("dispatched"), "{summary}");
+        assert!(summary.contains("12 probes from 3 anchors"), "{summary}");
+        let line = Event::new("s", old).to_log_line();
+        assert!(!line.contains("\"dispatched\":0"), "{line}");
+        // A recorded dispatch still renders dispatched-of-planned.
+        let new = EventKind::BreachSweep {
+            anchors: 3,
+            probes: 12,
+            dropped: 0,
+            dispatched: Some(12),
+            stopped: None,
+        };
+        assert!(new.log_summary().1.contains("12/12 probes dispatched"));
+    }
+
     /// The terminal event renders its true state: an aborted or failed scan
     /// must NOT read as a green success. This is the whole point of carrying
     /// `status` on the event — the downloaded `events.log` is the client-safe
@@ -160,16 +232,19 @@ use crate::core::scan::ScanStatus;
             scan_id: "s".into(),
             entity_count: 5,
             status: ScanStatus::Complete,
+            finalise_incomplete: false,
         };
         let aborted = EventKind::ScanComplete {
             scan_id: "s".into(),
             entity_count: 5,
             status: ScanStatus::Aborted,
+            finalise_incomplete: false,
         };
         let failed = EventKind::ScanComplete {
             scan_id: "s".into(),
             entity_count: 0,
             status: ScanStatus::Failed,
+            finalise_incomplete: false,
         };
         assert_eq!(done.log_summary().1, "✔ scan complete · 5 entities");
         assert_eq!(
@@ -181,6 +256,49 @@ use crate::core::scan::ScanStatus;
         // as "all good".
         assert!(!failed.log_summary().1.contains('✔'));
         assert!(!aborted.log_summary().1.contains('✔'));
+    }
+
+    /// REQ-SCANSTATUS-015: a scan whose finalise recorded a shortfall reaches
+    /// `Complete`, and every export reads it "partial, finalise-incomplete" —
+    /// but the event said `complete`, so every surface that reads the event
+    /// alone announced a clean finish. The flag is carried, rendered partial
+    /// and warned; a clean completion's wire form and line are unchanged, and
+    /// a row persisted before the flag existed reads clean.
+    #[test]
+    fn a_scan_complete_with_a_finalise_shortfall_reads_partial() {
+        let partial = EventKind::ScanComplete {
+            scan_id: "s".into(),
+            entity_count: 5,
+            status: ScanStatus::Complete,
+            finalise_incomplete: true,
+        };
+        let line = partial.log_summary().1;
+        assert!(line.contains("PARTIAL"), "{line}");
+        assert!(line.contains("finalise incomplete"), "{line}");
+        assert!(!line.contains('✔'), "{line}");
+        assert_eq!(partial.log_level(), "warn");
+        let v = serde_json::to_value(&partial).expect("should succeed");
+        assert_eq!(v["finalise_incomplete"], true);
+
+        let clean = EventKind::ScanComplete {
+            scan_id: "s".into(),
+            entity_count: 5,
+            status: ScanStatus::Complete,
+            finalise_incomplete: false,
+        };
+        let v = serde_json::to_value(&clean).expect("should succeed");
+        assert!(v.get("finalise_incomplete").is_none(), "{v}");
+        let legacy: EventKind = serde_json::from_str(
+            r#"{"type":"scan_complete","scan_id":"s","entity_count":5,"status":"complete"}"#,
+        )
+        .expect("should succeed");
+        assert!(matches!(
+            legacy,
+            EventKind::ScanComplete {
+                finalise_incomplete: false,
+                ..
+            }
+        ));
     }
 
     // ── Structured JSON-lines log (to_log_line / log_level) ─────────────
@@ -225,16 +343,19 @@ use crate::core::scan::ScanStatus;
             scan_id: "s".into(),
             entity_count: 0,
             status: ScanStatus::Failed,
+            finalise_incomplete: false,
         };
         let aborted = EventKind::ScanComplete {
             scan_id: "s".into(),
             entity_count: 3,
             status: ScanStatus::Aborted,
+            finalise_incomplete: false,
         };
         let complete = EventKind::ScanComplete {
             scan_id: "s".into(),
             entity_count: 3,
             status: ScanStatus::Complete,
+            finalise_incomplete: false,
         };
         let skipped = EventKind::ModuleSkipped {
             module: "m".into(),
@@ -350,6 +471,8 @@ use crate::core::scan::ScanStatus;
                 anchors: 3,
                 probes: 12,
                 dropped: 1,
+                dispatched: Some(0),
+                stopped: Some("max_entities=2500 reached".into()),
             },
             EventKind::ConsensusAudit {
                 verdict: "pass".into(),
@@ -388,6 +511,7 @@ use crate::core::scan::ScanStatus;
                 scan_id: "s".into(),
                 entity_count: 0,
                 status: ScanStatus::Complete,
+                finalise_incomplete: false,
             },
         ];
 
@@ -534,7 +658,7 @@ use crate::core::scan::ScanStatus;
             ev(EventKind::ModuleError { module: "b".into(), error: "boom".into() }),
             ev(EventKind::ModuleSkipped { module: "c".into(), reason: "no key".into(), class: Some(SkipClass::Unavailable) }),
             // Non-module events must not be counted into any bucket.
-            ev(EventKind::ScanComplete { scan_id: "s".into(), entity_count: 9, status: ScanStatus::Complete }),
+            ev(EventKind::ScanComplete { scan_id: "s".into(), entity_count: 9, status: ScanStatus::Complete, finalise_incomplete: false }),
             ev(EventKind::ExpansionStop { reason: "depth".into() }),
         ];
         let t = ModuleEventTally::from_events(&events);

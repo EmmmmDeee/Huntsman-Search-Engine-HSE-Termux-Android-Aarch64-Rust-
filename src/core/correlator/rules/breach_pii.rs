@@ -1264,7 +1264,9 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
 
     // Spatial consistency check: if the coordinate class supports consensus, verify
     // those coordinates are spatially clustered — matching the audit's
-    // geo_consistency definition via the same shared GEO_OUTLIER_KM radius.
+    // geo_consistency definition via the same shared GEO_OUTLIER_KM radius and
+    // the same person-anchor gate (`coord_state` applies `is_infrastructure_geo`;
+    // the audit applies its string form, `is_infrastructure_geo_signals`).
     // Scattered coordinates (e.g. two fixes at opposite ends of a large state,
     // both nominally "agreeing" at state grain) shouldn't declare consensus even
     // if other classes agree on the state.

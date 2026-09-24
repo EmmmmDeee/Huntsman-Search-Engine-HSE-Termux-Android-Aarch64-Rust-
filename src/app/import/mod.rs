@@ -136,7 +136,7 @@ pub async fn cmd_import(path: &str, output: &str, forced: Option<ImportFormat>) 
                 output,
                 format!("Importing OathNet JSON export: query=\"{query}\", date={date}"),
             );
-            let sid = format!("import-{}", crate::core::entity::unix_now());
+            let sid = import_scan_id("json");
             let (mut entities, stats) = parse_oathnet_json(&doc, &sid).await;
             deduplicate_by_uid(&mut entities);
             print_import_stats(&stats, entities.len(), output);
@@ -569,9 +569,11 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
 /// (entities, dossier, debug bundle, GEXF) works on it, and expansion seeds can
 /// later re-scan its pivots. Derives the deterministic entity relations and runs
 /// the correlator, exactly as the live scan finalise does, so an imported dossier
-/// carries the same graph a live scan would. Best-effort on relations and
+/// carries the same graph a live scan would. Not fatal on relations and
 /// correlations: an import whose entities already persisted must not fail on a
-/// hiccup there. Returns `(relations, correlations)` persisted, for the summary.
+/// hiccup there — but what the store refused is recorded on the scan and
+/// returned in [`PersistedBatch::finalise_error`](crate::app::persist::PersistedBatch::finalise_error)
+/// with the persisted counts, for the summary.
 ///
 /// The store-opening / finalise body is the shared [`crate::app::persist`] use
 /// case — `hse ingest --auto-scan` persists document-extracted entities through
@@ -579,7 +581,7 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
 async fn persist_import(
     sid: &str,
     entities: &[crate::core::entity::Entity],
-) -> Result<(usize, usize, bool)> {
+) -> Result<crate::app::persist::PersistedBatch> {
     use crate::core::scan::TargetKind;
 
     // A readable scan label: the strongest identity in the file, else generic —
@@ -594,25 +596,9 @@ async fn persist_import(
 /// fatal — the entities were already rendered to the operator.
 async fn persist_and_report(sid: &str, entities: &[crate::core::entity::Entity], output: &str) {
     match persist_import(sid, entities).await {
-        Ok((relations, correlations, enriched)) => {
-            note(
-                output,
-                format!(
-                    "  Stored:    scan {sid} ({} entities, {relations} relations, {correlations} correlations) — view with `hse list`",
-                    entities.len()
-                ),
-            );
-            if !enriched {
-                note(
-                    output,
-                    format!(
-                        "  Note:      relations/correlations skipped — {} entities exceeds the \
-                         {}-entity enrichment cap (device-safety bound on the pairwise \
-                         correlator pass); every entity is still stored",
-                        entities.len(),
-                        crate::app::persist::PERSIST_ENRICH_MAX_ENTITIES
-                    ),
-                );
+        Ok(batch) => {
+            for line in import_summary_lines(sid, &batch) {
+                note(output, line);
             }
         }
         Err(e) => note(
@@ -620,6 +606,24 @@ async fn persist_and_report(sid: &str, entities: &[crate::core::entity::Entity],
             format!("  Warning:   could not persist import: {e}"),
         ),
     }
+}
+
+/// `hse import`'s summary of a stored batch, in its column layout — the
+/// shared [`PersistedBatch::summary_lines`](crate::app::persist::PersistedBatch::summary_lines),
+/// which counts what was stored and states an enrichment-cap skip once.
+fn import_summary_lines(sid: &str, batch: &crate::app::persist::PersistedBatch) -> Vec<String> {
+    batch
+        .summary_lines(sid)
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 {
+                format!("  Stored:    {line}")
+            } else {
+                format!("  Warning:   {line}")
+            }
+        })
+        .collect()
 }
 
 /// Persist RF sightings for `sid`, best-effort — a failure here must never
@@ -1143,6 +1147,26 @@ impl ParsedImport {
     }
 }
 
+/// A fresh scan id for one `hse import` of the `tag` format — every CLI
+/// import's id, from this one place.
+///
+/// Each import owns ONE scan row ([`crate::app::persist::ImportScanRow`]),
+/// so two imports must never share an id. The id was
+/// `import-{tag}-{unix_now()}`, at one-second resolution: two imports started
+/// in the same second — the loop `for f in part*.csv; do hse import $f;
+/// done` that the over-cap caveat's "import the data in smaller batches"
+/// invites — shared one scan. The second `ImportScanRow::begin` rewrote the
+/// first's finished row back to `Running`, both batches were stored into it,
+/// and the second's `finish` claimed only its own entity count and replaced
+/// the first's recorded shortfall with its own tally (REQ-SCANSTATUS-036).
+/// [`crate::util::uid::scan_id`] mixes in a process-wide counter and the
+/// sub-second clock, as `hse ingest --auto-scan` and `hse investigate
+/// --auto-scan` already mint theirs; the `import-{tag}-` prefix keeps the
+/// scan attributable to its format.
+fn import_scan_id(tag: &str) -> String {
+    format!("import-{tag}-{}", crate::util::uid::scan_id("import", tag))
+}
+
 /// The one CLI import lifecycle every simple per-format runner shares: announce
 /// the format, mint the scan id, parse (the `parse` closure receives that freshly
 /// minted sid), then dedupe → print stats → optionally save/announce the key
@@ -1159,7 +1183,7 @@ async fn run_import(
     parse: impl FnOnce(&str) -> ParsedImport,
 ) -> Result<()> {
     note(output, banner);
-    let sid = format!("import-{tag}-{}", crate::core::entity::unix_now());
+    let sid = import_scan_id(tag);
     let ParsedImport {
         mut entities,
         stats,

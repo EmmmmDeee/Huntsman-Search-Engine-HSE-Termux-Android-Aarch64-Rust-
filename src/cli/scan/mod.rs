@@ -432,7 +432,10 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         if let Some(ref e) = scan.error {
             eprintln!("⚠ scan error: {e}");
         }
-        if scan.modules_run > 0 {
+        // Gate on run + skipped, not run alone: a scan whose every dispatched
+        // module opted out (no keys configured) has `modules_run == 0`, and
+        // that is exactly the scan whose skip count the operator needs to see.
+        if scan.modules_run + scan.modules_skipped > 0 {
             // `skipped` is shown so toggle effects are observable in the
             // standard view: excluding a module (`--exclude`) or disabling one
             // (`hse config module.<name> off`) moves it out of `run` and into

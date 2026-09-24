@@ -16,7 +16,7 @@
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use crate::html::{escape_html, fmt_date, kind_pill};
+use crate::html::{escape_html, fmt_date, kind_pill, status_pill};
 use crate::to_js_error;
 
 /// One provider's session quota snapshot — `src/api/handlers/mod.rs`'s
@@ -188,30 +188,10 @@ struct ScanRow {
     started_at: Option<u64>,
     finished_at: Option<u64>,
     entity_count: Option<u64>,
-}
-
-/// `helpers.js`'s `statusPill(s)`. The CSS class and the displayed text
-/// default independently, exactly as the original's `m[s]||'s-pending'` /
-/// `s||'pending'` do: an unrecognised non-empty status still shows its own
-/// text (with the fallback class), while a missing/empty one shows the
-/// literal text "pending" too.
-fn status_pill(status: Option<&str>) -> String {
-    let class = match status {
-        Some("complete") => "s-complete",
-        Some("running") => "s-running",
-        Some("failed") => "s-failed",
-        Some("pending") => "s-pending",
-        Some("aborted") => "s-aborted",
-        _ => "s-pending",
-    };
-    let text = match status {
-        Some(s) if !s.is_empty() => s,
-        _ => "pending",
-    };
-    format!(
-        "<span class=\"status-pill {class}\">{}</span>",
-        escape_html(text)
-    )
+    /// `scan_json`'s derived `Scan::finalise_incomplete`: the scan finished
+    /// with a finalise shortfall, so it is partial.
+    #[serde(default)]
+    finalise_incomplete: bool,
 }
 
 /// `helpers.js`'s `fmtDuration(secs)`.
@@ -300,7 +280,7 @@ fn scan_row_html(row: &ScanRow) -> String {
         kind_pill = kind_pill(kind),
         started = escape_html(&fmt_date(row.started_at.unwrap_or(0))),
         dur = escape_html(&fmt_duration(dur_secs)),
-        status = status_pill(row.status.as_deref()),
+        status = status_pill(row.status.as_deref(), row.finalise_incomplete),
         entities = row.entity_count.unwrap_or(0),
         raw_id = row.id,
     )
@@ -337,27 +317,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_pill_defaults_class_and_text_independently() {
-        assert_eq!(
-            status_pill(None),
-            "<span class=\"status-pill s-pending\">pending</span>"
-        );
-        assert_eq!(
-            status_pill(Some("weird")),
-            "<span class=\"status-pill s-pending\">weird</span>"
-        );
-        assert_eq!(
-            status_pill(Some("complete")),
-            "<span class=\"status-pill s-complete\">complete</span>"
-        );
-    }
-
-    #[test]
     fn fmt_duration_matches_helpers_js_thresholds() {
         assert_eq!(fmt_duration(None), "\u{2014}");
         assert_eq!(fmt_duration(Some(-1)), "\u{2014}");
         assert_eq!(fmt_duration(Some(45)), "45s");
         assert_eq!(fmt_duration(Some(125)), "2m 5s");
         assert_eq!(fmt_duration(Some(3725)), "1h 2m");
+    }
+
+    /// REQ-SCANSTATUS-030: a scan row whose finalise was cut short reads
+    /// partial in the scan list (and the dashboard's Recent Scans), not the
+    /// green `complete` its bare status would earn.
+    #[test]
+    fn a_partial_scan_row_reads_partial() {
+        let row = |finalise_incomplete: bool| ScanRow {
+            id: "abc123".to_string(),
+            target: None,
+            status: Some("complete".to_string()),
+            started_at: None,
+            finished_at: None,
+            entity_count: Some(20),
+            finalise_incomplete,
+        };
+        let partial = scan_row_html(&row(true));
+        assert!(
+            partial.contains("<span class=\"status-pill s-partial\">partial</span>"),
+            "{partial}"
+        );
+        assert!(!partial.contains("s-complete"), "{partial}");
+        let whole = scan_row_html(&row(false));
+        assert!(
+            whole.contains("<span class=\"status-pill s-complete\">complete</span>"),
+            "{whole}"
+        );
     }
 }

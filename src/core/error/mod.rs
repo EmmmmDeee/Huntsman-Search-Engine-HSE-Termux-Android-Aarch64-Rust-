@@ -48,8 +48,15 @@ pub enum Error {
     /// `austlii`, both then filed as the provider being down.
     #[error("bot challenge: {0}")]
     BotChallenge(String),
-    /// A module that deliberately did **not** query the provider for this
-    /// target, saying so in-band so the engine can record a typed
+    /// A module that deliberately obtained **no answer** from the provider about
+    /// this target — it did not query it, or (for a
+    /// [`SkipClass::NotApplicable`](crate::core::event::SkipClass::NotApplicable)
+    /// skip) the provider's or a bootstrap's own reply said the target is
+    /// outside what it answers, as hackertarget's "error invalid host" and
+    /// whois's IANA bootstrap do. A module that queried and got an answer that
+    /// cannot settle the question returns a truncated result instead
+    /// (`ModuleResult::mark_truncated`), never this (REQ-SOCIAL-005,
+    /// REQ-ENGINE-005). It says so in-band so the engine can record a typed
     /// [`EventKind::ModuleSkipped`](crate::core::event::EventKind::ModuleSkipped)
     /// carrying `class` — never a `ModuleError` (which would trip the circuit
     /// breaker and degrade module health for a decision, not a fault) and never
@@ -89,7 +96,8 @@ impl Error {
 
     /// Construct an [`Error::Skipped`] — the typed "not attempted" a module
     /// returns instead of a failure or an empty result when it decided not to
-    /// query the provider at all. `reason` is operator-facing (it becomes the
+    /// query the provider at all, or (not applicable) the provider's own reply
+    /// put the target outside what it answers — see [`Error::Skipped`]. `reason` is operator-facing (it becomes the
     /// `ModuleSkipped.reason` the dossier and coverage report show), so it must
     /// say what was not asked and why, and must never read as "found nothing".
     pub fn skipped(class: crate::core::event::SkipClass, reason: impl Into<String>) -> Self {

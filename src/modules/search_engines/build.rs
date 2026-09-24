@@ -65,17 +65,28 @@ pub(super) fn build_entities(
     // yield, tiered on its own merits.
     // Whether a result is about the subject at all: the one predicate behind
     // the seed's re-affirmation and every per-result extraction below. A
-    // location seed has no identity anchor; a phone must appear as a number;
-    // any other subject's distinctive term — a multi-part name's surname, a
-    // single-token subject's only term — must appear in the result's snippet,
-    // title or URL. See `result_names_the_subject` in the loop for the
-    // reasoning behind each branch.
+    // location seed has no identity anchor; a phone must appear as a number,
+    // an ABN/ACN as its digits in any grouping;
+    // a person must appear as their surname with a compatible given name; a
+    // multi-part handle as every one of its parts; any other subject's
+    // distinctive term — a single-token subject's only term, an email local
+    // part's last token — must appear in the result's snippet, title or URL.
+    // See `result_names_the_subject` in the loop for the reasoning behind each
+    // branch.
     let names_the_subject = |r: &SearchResult| -> bool {
         let combined_text = format!("{} {}", r.title, r.snippet);
         if location_seed {
             false
         } else if matches!(target.kind, TargetKind::Phone) {
             result_mentions_phone(&format!("{combined_text} {}", r.url), &target.value)
+        } else if matches!(target.kind, TargetKind::AbnAcn) {
+            // A business number, like a phone, is a precise identifier named
+            // by its digits in any grouping: the single-term token match below
+            // failed an unspaced seed against the spaced `"ABN 74 067 173 835"`
+            // a snippet prints (and a spaced seed's `835` against the unspaced
+            // number a registry title prints), so an ABN seed stopped mining
+            // its own ACN once REQ-SEARCH-007 gated that loop (REQ-SEARCH-015).
+            result_mentions_business_number(&format!("{combined_text} {}", r.url), &target.value)
         } else if matches!(target.kind, TargetKind::Domain) {
             // A domain's distinctive term is the domain itself: its labels
             // are the web's own vocabulary (`com`, `index`, `mail`), and the
@@ -112,9 +123,29 @@ pub(super) fn build_entities(
             }
         } else {
             let hay = format!("{combined_text} {}", r.url).to_lowercase();
-            terms
-                .last()
-                .is_some_and(|term| names_word_token(&hay, term.as_str()))
+            let last_term = || {
+                terms
+                    .last()
+                    .is_some_and(|term| names_word_token(&hay, term.as_str()))
+            };
+            match target.kind {
+                // A person is named by their surname WITH a compatible given
+                // name beside it, read by the identity gate's own parser. The
+                // surname alone is every relative's and namesake's: a live "Ian
+                // Thorpe" scan re-affirmed the seed off, and mined contact
+                // details, companies and addresses from, pages about Bill,
+                // Jamie and Mark Thorpe (REQ-SEARCH-008). A mononym has no
+                // structure to test and keeps the single-term check.
+                TargetKind::FullName => crate::core::scan::text_names_person(&hay, &target.value)
+                    .unwrap_or_else(last_term),
+                // A multi-part handle is named by all of its parts, like an
+                // organisation: `thorpe` alone does not name `ian_thorpe` —
+                // it names `mark.thorpe.9` just as well.
+                TargetKind::Username if terms.len() >= 2 => {
+                    terms.iter().all(|t| names_word_token(&hay, t))
+                }
+                _ => last_term(),
+            }
         }
     };
     // Whether a URL's PATH names the subject as a whole token — the gate for
@@ -122,12 +153,15 @@ pub(super) fn build_entities(
     // `names_the_subject`: an organisation needs the conjunction of its
     // distinctive tokens (a single shared token minted a stranger's
     // `facebook.com/sougi.ceremo` as the org control's page — REQ-SEARCH-006),
-    // a person/username the surname/handle anchor.
+    // a person the surname with a compatible given name, a multi-part handle
+    // every part (a bare surname minted Spokeo's `Bill-Thorpe` page as "Ian
+    // Thorpe"'s own — REQ-SEARCH-008), anything else its distinctive anchor.
     let url_names_target = |url: &str| -> bool {
-        if matches!(target.kind, TargetKind::Organisation) {
-            url_matches_org_target(url, &terms)
-        } else {
-            url_matches_target(url, &terms)
+        match target.kind {
+            TargetKind::Organisation => url_matches_org_target(url, &terms),
+            TargetKind::FullName => url_matches_person_target(url, &target.value, &terms),
+            TargetKind::Username => url_matches_handle_target(url, &terms),
+            _ => url_matches_target(url, &terms),
         }
     };
     // The results that name the subject. The engines answer a term no page
@@ -247,20 +281,23 @@ pub(super) fn build_entities(
         let combined_text = format!("{} {}", r.title, r.snippet);
 
         // Subject-relevance gate — shared by every extraction below that mines
-        // free-text snippet content (email, phone, address): a name search
-        // returns fuzzy namesakes (a live "Cindy Haynes" scan surfaced a
-        // "Cindy He" UNSW staff page; separately, a "Riley Morley" scan pulled
+        // free-text snippet content (email, phone, ABN/ACN, organisation,
+        // address): a name search returns fuzzy namesakes (a live "Cindy
+        // Haynes" scan surfaced a "Cindy He" UNSW staff page; separately, a
+        // "Riley Morley" scan pulled
         // `pr@rileyjorja.com` off an unrelated "Riley (@rileyj)" Instagram bio
         // that never mentions "Morley" anywhere), and trusting THEIR contact
         // details injects a false attribution onto the real subject at
         // meaningful confidence (email/phone start at PROBABLE, 0.55-0.60) —
         // materially worse than the address case this gate was first built for,
         // since a wrong email/phone is directly actionable PII, not just a
-        // wrong locality. For a multi-part name, require the distinctive
-        // surname (the last name token) somewhere in this result's snippet or
-        // URL before extracting anything from it. Single-token targets (email
-        // handle / username) are not prone to this first-name collision and are
-        // unaffected. A location seed has no subject-identity anchor to gate
+        // wrong locality. For a person, require the surname WITH a compatible
+        // given name beside it somewhere in this result's title, snippet or
+        // URL before extracting anything from it: the given name alone is the
+        // "Cindy He" collision, and the surname alone is every relative's and
+        // namesake's — a live "Ian Thorpe" scan mined a Spokeo "Bill Thorpe"
+        // listing and "JAMIE THORPE PLUMBING PTY LTD" this way (REQ-SEARCH-008).
+        // A multi-part handle needs every one of its parts. A location seed has no subject-identity anchor to gate
         // on: `target_terms` splits its value into place tokens, so
         // `terms.last()` is the trailing postcode/state, which every
         // aggregator page that indexed the address reproduces verbatim — the
@@ -364,31 +401,35 @@ pub(super) fn build_entities(
                     existing.corroboration = existing.corroboration.saturating_add(1);
                 }
             }
-        }
 
-        // Extract ABN/ACN numbers from snippet text
-        for (num, kind_label) in extract_abn_acn_from_text(&combined_text) {
-            if seen_domains.insert(format!("@abn:{num}")) {
-                let mut e = Entity::new(EntityKind::AbnAcn, &num, confidence::HIGH, scan_id);
-                e.tag(tags::SEARCH_DISCOVERED);
-                e.tag(kind_label);
-                e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!(
-                            "[{}] {} {} found on {} — {}",
-                            r.engine,
-                            kind_label,
-                            num,
-                            extract_host(&r.url),
-                            r.url
-                        ),
-                    )
-                    .with_attr("url", &r.url)
-                    .with_attr("engine", r.engine)
-                    .with_attr("number_type", kind_label),
-                );
-                result.push(e);
+            // ABN/ACN numbers from snippet text — behind the same gate. A
+            // checksum-valid "ABN nn nnn nnn nnn" is minted at PROBABLE, so an
+            // ungated loop filed a bank's own ABN off its support-page footer
+            // and every registry page a location seed returned as the
+            // subject's business identifier (REQ-SEARCH-007).
+            for (num, kind_label) in extract_abn_acn_from_text(&combined_text) {
+                if seen_domains.insert(format!("@abn:{num}")) {
+                    let mut e = Entity::new(EntityKind::AbnAcn, &num, confidence::HIGH, scan_id);
+                    e.tag(tags::SEARCH_DISCOVERED);
+                    e.tag(kind_label);
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!(
+                                "[{}] {} {} found on {} — {}",
+                                r.engine,
+                                kind_label,
+                                num,
+                                extract_host(&r.url),
+                                r.url
+                            ),
+                        )
+                        .with_attr("url", &r.url)
+                        .with_attr("engine", r.engine)
+                        .with_attr("number_type", kind_label),
+                    );
+                    result.push(e);
+                }
             }
         }
 
@@ -453,14 +494,24 @@ pub(super) fn build_entities(
         };
         let snippet_addresses = if result_names_the_subject {
             let mut found = extract_addresses_from_text(&combined_text);
-            // On a name scan, a "City, State" whose city is a person carrying
-            // the scanned surname is a people-search listing title, not a place.
-            // The surname through the identity gate's own name parser, not the
-            // last whitespace token: `"Dr Ian Thorpe OAM"` is a Thorpe.
-            if target.kind == TargetKind::FullName
-                && let Some(surname) = crate::core::scan::person_surname(&target.value)
-            {
-                found.retain(|a| !is_person_listing_locality(a, &surname));
+            // On a name scan, a "City, State" whose city names a person carrying
+            // the scanned surname — a people-search listing title, or a venue
+            // named after a surname-bearer ("Ian Thorpe Aquatic Centre in
+            // Ultimo") — is not a place the subject is at, while "Ian Thorpe in
+            // Ultimo" locates the subject in Ultimo (a relative "in" a place
+            // does not) and "Box Hill North" is a suburb
+            // (REQ-SEARCH-ADDR-001/002/003/004). Deduplicated in order, since
+            // a recovered place can equal an address found beside it.
+            if target.kind == TargetKind::FullName {
+                let mut kept: Vec<String> = Vec::with_capacity(found.len());
+                for a in found {
+                    if let Some(place) = surname_bearer_locality(&a, &target.value)
+                        && !kept.contains(&place)
+                    {
+                        kept.push(place);
+                    }
+                }
+                found = kept;
             }
             found
         } else {
@@ -852,7 +903,13 @@ pub(super) fn build_entities(
                     let geo_conf = (conf.max(confidence::MEDIUM_HIGH) + corr_boost).min(0.72);
                     let mut ce = Entity::new(EntityKind::Coordinates, &coords, geo_conf, scan_id);
                     ce.tag("geoint");
-                    ce.tag("search-geocoded");
+                    ce.tag(tags::SEARCH_GEOCODED);
+                    // `city_coords` returns a city, suburb or postcode
+                    // centroid, never a street point: an area standing in for
+                    // a place, which the engine must not pivot into reverse
+                    // geocoders and cadastre lookups as if it were precise
+                    // (REQ-GEO-007).
+                    ce.tag(tags::COARSE);
                     // Tag au-state from coordinates so AU-056 jurisdiction
                     // cross-check can fire without re-parsing lat/lon strings.
                     if crate::util::geo::is_in_australia(lat, lon) {

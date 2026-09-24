@@ -303,6 +303,39 @@ use super::*;
     }
 
     #[test]
+    fn the_log_view_renders_a_breach_sweeps_dispatch_and_stop_like_the_log_summary() {
+        // REQ-SWEEP-005: `EventKind::log_summary` and cli/live render
+        // dispatched-of-planned and the stop reason; the SPA's Log tab and live
+        // SSE view printed only `probes`/`anchors`, so a budget-cut sweep read
+        // "64 probes from 18 anchors" and a sweep the budget never let start
+        // read "0 probes from 0 anchors" — a sweep with nothing to ask.
+        let log = app_file("js/scan_info/log.js");
+        let branch = log
+            .split_once("t==='breach_sweep'")
+            .and_then(|(_, rest)| rest.split_once("t==='consensus_audit'"))
+            .map(|(branch, _)| branch)
+            .expect("log.js maps breach_sweep");
+        for field in ["ev.dispatched", "ev.probes", "esc(ev.stopped)", " from ${ev.anchors}"] {
+            assert!(
+                branch.contains(field),
+                "the breach_sweep line must render {field}: {branch}"
+            );
+        }
+        // REQ-SWEEP-006: a legacy event without `dispatched` never recorded
+        // its dispatch, so it must not be defaulted to 0 ("0/12 dispatched"
+        // for a sweep that ran) — it renders the line it was written with,
+        // exactly as `EventKind::log_summary` now does.
+        assert!(
+            !branch.contains("dispatched ?? 0"),
+            "a legacy sweep must not read as one that dispatched nothing: {branch}"
+        );
+        assert!(
+            branch.contains("ev.dispatched !== null"),
+            "the unknown dispatch must be distinguished: {branch}"
+        );
+    }
+
+    #[test]
     fn embedded_spa_surfaces_the_exposure_index() {
         // `core::exposure::assess` headlines the CLI dossier and the debug
         // bundle, but had no API consumer at all — so the web console (the only
@@ -366,6 +399,185 @@ use super::*;
         assert!(
             new_scan.contains("API.autoPlan(") && new_scan.contains("API.autoSweep("),
             "the controls must call the autoPlan/autoSweep API methods"
+        );
+    }
+
+    /// REQ-SCANSTATUS-012: the web upload can commit `aborted` (a cancel
+    /// reached it while it was being enriched), and the upload view read only
+    /// `finalise_error` — an aborted import, whose error is `null`, was shown
+    /// "Imported N entities." with a success toast. The view must branch on
+    /// the committed status before reporting success.
+    #[test]
+    fn embedded_spa_reports_a_cancelled_upload_as_cancelled() {
+        let new_scan = app_file("js/views/new_scan.js");
+        let body = new_scan
+            .split_once("export async function uploadDossier(){")
+            .and_then(|(_, b)| b.split_once("\n}\n"))
+            .map(|(b, _)| b)
+            .expect("uploadDossier present in new_scan.js");
+        let aborted = body
+            .find("r.status === 'aborted'")
+            .expect("the upload view must branch on an aborted import");
+        let success = body
+            .find("toast(`Imported ${r.entity_count} entities`)")
+            .expect("the success toast");
+        assert!(
+            aborted < success,
+            "the aborted branch must be decided before the success toast"
+        );
+        assert!(
+            body[aborted..success].contains("'warn'"),
+            "a cancelled import is a warning, not a success"
+        );
+    }
+
+    /// REQ-SCANSTATUS-030 / REQ-SCANSTATUS-032: a scan row whose finalise
+    /// fell short (`scan_json`'s `finalise_incomplete`) reads `partial` on
+    /// every reader of the row in the SPA — the shared `statusPill` (the
+    /// scan-info header, the radar sweep list), the scan list's stat tiles
+    /// (`scanStats`) and its filter box — never as a green `complete`.
+    #[test]
+    fn embedded_spa_reads_a_finalise_incomplete_row_as_partial() {
+        let helpers = app_file("js/helpers.js");
+        let pill = helpers
+            .split_once("export function statusPill(s, partial){")
+            .and_then(|(_, b)| b.split_once('\n'))
+            .map(|(b, _)| b)
+            .expect("statusPill present in helpers.js");
+        let partial = pill
+            .find("partial===true")
+            .expect("statusPill must read the row's finalise shortfall");
+        let complete = pill
+            .find("complete:'s-complete'")
+            .expect("statusPill's status map");
+        assert!(partial < complete, "{pill}");
+        assert!(pill[partial..complete].contains("'partial'"), "{pill}");
+
+        let scans = app_file("js/views/scans.js");
+        let stats = scans
+            .split_once("export function scanStats(scans){")
+            .and_then(|(_, b)| b.split_once("\n}\n"))
+            .map(|(b, _)| b)
+            .expect("scanStats present in scans.js");
+        let partial = stats
+            .find("s.finalise_incomplete===true) partial++")
+            .expect("scanStats must count a partial scan apart");
+        let complete = stats
+            .find("complete++")
+            .expect("scanStats' complete bucket");
+        assert!(
+            partial < complete,
+            "a partial scan must be bucketed before the green complete count: {stats}"
+        );
+        assert!(stats.contains("partial,aborted"), "{stats}");
+        assert!(
+            scans.contains("stats.partial?`${stats.partial} partial`"),
+            "the Complete tile must name the partial scans it leaves out"
+        );
+        let filter = scans
+            .split_once("const rows = q ? S.scans.filter(s =>")
+            .and_then(|(_, b)| b.split_once(") : S.scans;"))
+            .map(|(b, _)| b)
+            .expect("the scan filter");
+        assert!(
+            filter.contains("s.finalise_incomplete===true && 'partial'.includes(q)"),
+            "the filter must find a row by the `partial` its pill says: {filter}"
+        );
+    }
+
+    /// REQ-SCANSTATUS-015: the live surfaces that read `scan_complete` alone
+    /// — the scan log's pill and line, the radar's status — read a
+    /// completion whose finalise recorded a shortfall as partial, as every
+    /// export of that scan does, never as a clean "complete" / "sweep done".
+    #[test]
+    fn embedded_spa_reads_a_finalise_incomplete_completion_as_partial() {
+        let log = app_file("js/scan_info/log.js");
+        let on_terminal = log
+            .split_once("const onTerminal = ev => {")
+            .and_then(|(_, b)| b.split_once("};"))
+            .map(|(b, _)| b)
+            .expect("onTerminal present in log.js");
+        assert!(
+            on_terminal.contains("ev.finalise_incomplete === true")
+                && on_terminal.contains("'partial'"),
+            "the log pill must read a finalise shortfall as partial: {on_terminal}"
+        );
+        let map = log
+            .split_once("if (t==='scan_complete'){")
+            .and_then(|(_, b)| b.split_once("\n  }\n"))
+            .map(|(b, _)| b)
+            .expect("mapEvent's scan_complete branch");
+        let partial = map
+            .find("PARTIAL")
+            .expect("the log line must read a finalise shortfall as partial");
+        let clean = map
+            .find("msg:`scan complete, ")
+            .expect("the clean completion line");
+        assert!(
+            partial < clean,
+            "the partial line must be decided before the clean one"
+        );
+        let radar = app_file("js/views/radar.js");
+        let on_live = radar
+            .split_once("function onLiveEvent(ev){")
+            .and_then(|(_, b)| b.split_once("\n}\n"))
+            .map(|(b, _)| b)
+            .expect("onLiveEvent present in radar.js");
+        let partial = on_live
+            .find("ev.finalise_incomplete === true")
+            .expect("the radar must read a finalise shortfall");
+        let done = on_live
+            .find("sweep done at")
+            .expect("the clean sweep line");
+        assert!(partial < done, "{on_live}");
+    }
+
+    /// REQ-SCANSTATUS-035: a radar sweep that ended `aborted` (the
+    /// per-iteration watchdog, a cancel by scan id, a session stop) reads
+    /// "stopped early", with the partial note when its finalise fell short —
+    /// it fell through to "sweep done" before.
+    #[test]
+    fn embedded_spa_radar_reads_an_aborted_sweep_as_stopped_early() {
+        let radar = app_file("js/views/radar.js");
+        let on_live = radar
+            .split_once("function onLiveEvent(ev){")
+            .and_then(|(_, b)| b.split_once("\n}\n"))
+            .map(|(b, _)| b)
+            .expect("onLiveEvent present in radar.js");
+        let aborted = on_live
+            .find("ev.status === 'aborted'")
+            .expect("the radar must read an aborted sweep");
+        let stopped = on_live
+            .find("sweep stopped early${partial} at")
+            .expect("the aborted sweep line, partial note included");
+        let done = on_live
+            .find("sweep done at")
+            .expect("the clean sweep line");
+        assert!(aborted < stopped && stopped < done, "{on_live}");
+    }
+
+    /// REQ-SCANSTATUS-034: the dashboard's Scan Status panel pills the
+    /// `/stats` `partial` / `aborted_partial` buckets as the scan list pills
+    /// such a row — never a green `complete`.
+    #[test]
+    fn embedded_spa_dashboard_pills_a_partial_bucket_as_partial() {
+        let dash = app_file("js/views/dash.js");
+        let pill = dash
+            .split_once("export function dashStatusPill(k){")
+            .and_then(|(_, b)| b.split_once("\n}\n"))
+            .map(|(b, _)| b)
+            .expect("dashStatusPill present in dash.js");
+        assert!(
+            pill.contains("k === 'partial') return statusPill('complete', true)"),
+            "{pill}"
+        );
+        assert!(
+            pill.contains("k === 'aborted_partial') return statusPill('aborted', true)"),
+            "{pill}"
+        );
+        assert!(
+            dash.contains("<tr><td>${dashStatusPill(k)}</td>"),
+            "the Scan Status panel must pill its buckets through dashStatusPill"
         );
     }
 

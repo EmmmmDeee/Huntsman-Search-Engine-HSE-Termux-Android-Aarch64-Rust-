@@ -90,6 +90,40 @@ pub fn ext_link(url: &str, max_text: Option<usize>) -> String {
     )
 }
 
+/// `helpers.js`'s `statusPill(s, partial)`: a scan's status badge, the one
+/// every view that lists or shows a scan row uses (`views::scans`'s scan
+/// list and the dashboard's Recent Scans, `scan_info::info`'s Status row).
+///
+/// The CSS class and the displayed text default independently, exactly as
+/// the JS original's `m[s]||'s-pending'` / `s||'pending'` do: an
+/// unrecognised non-empty status still shows its own text (with the
+/// fallback class), while a missing/empty one shows the literal text
+/// "pending" too.
+///
+/// `partial` is the row's derived `finalise_incomplete` (`scan_json`, from
+/// `Scan::finalise_incomplete`): a `complete` or `aborted` scan whose
+/// finalise recorded a shortfall is partial, as every export of it reads it,
+/// so it shows a warning pill reading `partial` / `aborted · partial` — the
+/// words the live scan log's pill uses — never the green `complete`
+/// (REQ-SCANSTATUS-030). Any other status ignores it.
+pub fn status_pill(status: Option<&str>, partial: bool) -> String {
+    let (class, text) = match status {
+        Some("complete") if partial => ("s-partial", "partial"),
+        Some("aborted") if partial => ("s-partial", "aborted \u{b7} partial"),
+        Some("complete") => ("s-complete", "complete"),
+        Some("running") => ("s-running", "running"),
+        Some("failed") => ("s-failed", "failed"),
+        Some("pending") => ("s-pending", "pending"),
+        Some("aborted") => ("s-aborted", "aborted"),
+        Some(s) if !s.is_empty() => ("s-pending", s),
+        _ => ("s-pending", "pending"),
+    };
+    format!(
+        "<span class=\"status-pill {class}\">{}</span>",
+        escape_html(text)
+    )
+}
+
 /// `helpers.js`'s `fmtDate()`: `ts*1000` formatted via the JS `Date` object's
 /// LOCAL-timezone getters, or an em-dash for a falsy (here: zero) timestamp.
 /// Uses [`js_sys::Date`] rather than reimplementing timezone logic in Rust —
@@ -117,6 +151,50 @@ pub fn fmt_date(ts: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_pill_defaults_class_and_text_independently() {
+        assert_eq!(
+            status_pill(None, false),
+            "<span class=\"status-pill s-pending\">pending</span>"
+        );
+        assert_eq!(
+            status_pill(Some(""), false),
+            "<span class=\"status-pill s-pending\">pending</span>"
+        );
+        assert_eq!(
+            status_pill(Some("weird"), false),
+            "<span class=\"status-pill s-pending\">weird</span>"
+        );
+        assert_eq!(
+            status_pill(Some("complete"), false),
+            "<span class=\"status-pill s-complete\">complete</span>"
+        );
+    }
+
+    /// REQ-SCANSTATUS-030: a scan whose finalise recorded a shortfall reads
+    /// partial on every row view, as its exports and its live log pill do —
+    /// never the green `complete`.
+    #[test]
+    fn a_scan_whose_finalise_was_cut_short_reads_partial() {
+        assert_eq!(
+            status_pill(Some("complete"), true),
+            "<span class=\"status-pill s-partial\">partial</span>"
+        );
+        assert_eq!(
+            status_pill(Some("aborted"), true),
+            "<span class=\"status-pill s-partial\">aborted \u{b7} partial</span>"
+        );
+        assert_eq!(
+            status_pill(Some("aborted"), false),
+            "<span class=\"status-pill s-aborted\">aborted</span>"
+        );
+        // Only a finished scan can be partial.
+        assert_eq!(
+            status_pill(Some("failed"), true),
+            "<span class=\"status-pill s-failed\">failed</span>"
+        );
+    }
 
     #[test]
     fn escapes_all_five_characters() {

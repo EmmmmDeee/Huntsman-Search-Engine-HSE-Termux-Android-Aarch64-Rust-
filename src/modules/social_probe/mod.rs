@@ -407,20 +407,33 @@ impl Module for SocialProbe {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[
-            EntityKind::Url,
-            EntityKind::Username,
-            EntityKind::Person,
-            EntityKind::Domain,
-        ];
+        // No `Domain`: a probed host is always the platform's own (see
+        // `emit_judged`), never an asset of the subject (REQ-SOCIAL-002).
+        const KINDS: &[EntityKind] = &[EntityKind::Url, EntityKind::Username, EntityKind::Person];
         KINDS
     }
 
     fn max_timeout_ms(&self) -> u64 {
         // The first wave is sequential and paced (37 platforms × up to 4 s of
         // curl + 250 ms), the control wave concurrent (one more curl per
-        // presence); the 40 s envelope was reached on this sandbox at 37 s.
+        // presence); the 40 s envelope was reached on this sandbox at 37 s,
+        // and on a phone a NORMAL sweep takes 42–45 s (Termux scan 7258fc07:
+        // completed sweeps of 43, 42, 45, 42 and 43 s). 60 s is ~15 s of
+        // headroom over the on-device happy path; a hung sweep still dies here.
         60_000
+    }
+
+    fn constrained_timeout_cap_exempt(&self) -> bool {
+        // The engine's 45 s constrained-device cap sits AT this module's
+        // on-device happy path, not above it: Termux scan 7258fc07 timed out 3
+        // of 8 full sweeps at exactly 45 s while the ones that finished took
+        // 42–45 s. The module builds its result only after both waves, so a
+        // cap timeout discards every profile already confirmed and adds a soft
+        // failure to the breaker streak — the cap was killing normal runs, not
+        // reclaiming a hung tail, which is exactly the case the exemption
+        // exists for (REQ-CORE-008). Still bounded: `constrained_timeout_ms`
+        // defaults to `max_timeout_ms`, 60 s (REQ-SOCIAL-004).
+        true
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -485,26 +498,22 @@ impl Module for SocialProbe {
         })
         .await;
 
-        let (mut result, tally) = emit_judged(&judged, &ctx.scan_id);
+        let (result, tally) = emit_judged(&judged, &ctx.scan_id);
 
         // M6: a zero-hit run where at least half the probes returned no definitive
         // answer (curl code 0 — blocked / unreachable / no egress — or a platform
-        // that cannot tell) is *inconclusive*, not a confirmed absence. Surface it
-        // as a module error so a network-blocked sweep is never read as "this
-        // handle is on no social platform" — the same disambiguation
-        // `username_search` and `streaming_probe` make. A cancelled run is
-        // exempt: the operator stopped it, so the module asserts nothing about
-        // what it didn't probe.
-        if !ctx.cancel.is_cancelled()
-            && let Some(msg) = inconclusive_sweep(
-                tally.found,
-                tally.inconclusive,
-                tally.indiscriminate_platforms.len() as u32,
-                checked_count,
-            )
-        {
-            return Err(Error::module(SRC, msg));
-        }
+        // that cannot tell) is *inconclusive*, not a confirmed absence, and is
+        // never returned as a silent empty "not on any platform" — the same
+        // disambiguation `username_search` and `streaming_probe` make. How it is
+        // reported, and the cancelled-run exemption, live in `finish_sweep`, the
+        // one tested step between the probes and what this returns.
+        let mut result = finish_sweep(
+            target.kind,
+            result,
+            &tally,
+            checked_count,
+            ctx.cancel.is_cancelled(),
+        )?;
 
         // Add a summary echo of the target ONLY when at least one profile was
         // actually confirmed (see `should_echo_target`). The negative result is
@@ -591,10 +600,17 @@ pub(super) fn emit_judged(
                 } else {
                     "weak-detection"
                 });
+                // The summary names the profile, not just the platform: an
+                // evidence record's identity is `(source, summary)` — `absorb`
+                // de-duplicates on it and the GEXF co-occurrence edge keys on
+                // it — so "Profile found on twitter" for three DIFFERENT
+                // profiles read as one record naming all three, and scan
+                // 7258fc07's graph wired twitter.com/ianthorpe, /ianthorpe26
+                // and /ianthorpe91 into a false clique.
                 entity.add_evidence(
                     Evidence::new(
                         crate::modules::corpus_source(url, SRC),
-                        format!("Profile found on {}", platform.name),
+                        format!("Profile found on {}: {url}", platform.name),
                     )
                     .with_attr("platform", platform.name)
                     .with_attr("http_status", status.to_string())
@@ -615,31 +631,18 @@ pub(super) fn emit_judged(
                 result.push(entity);
 
                 // A confirmed profile's value is the URL + handle, already
-                // emitted above. The platform's APEX domain (instagram.com,
-                // tiktok.com, …) is the provider's estate, never the subject's
-                // asset — emitting it as a Domain entity drags the scan into
-                // mapping the platform's DNS/CDN infrastructure and inflates
-                // correlations (a real on-device scan flagged exactly this as
-                // CRITICAL infrastructure-pollution). Only surface a platform host
-                // that is NOT a known mega/social/infra domain — i.e. a niche or
-                // self-hosted site that might genuinely belong to the subject.
-                if let Some(host) = url::Url::parse(url)
-                    .ok()
-                    .and_then(|u| u.host_str().map(str::to_lowercase))
-                    && host.contains('.')
-                    && !crate::core::scan::is_noncentral_domain(&host)
-                {
-                    let mut dom = Entity::new(EntityKind::Domain, &host, confidence::LOW, scan_id);
-                    dom.tag("social-platform");
-                    dom.add_evidence(
-                        Evidence::new(
-                            crate::modules::corpus_source(url, SRC),
-                            format!("Platform domain from {} profile", platform.name),
-                        )
-                        .with_attr("platform", platform.name),
-                    );
-                    result.push(dom);
-                }
+                // emitted above — and nothing else. Its host is NEVER a Domain:
+                // every probed URL is built from this module's own
+                // `url_pattern` table, where the handle is only ever in the
+                // path, so the host is always the platform's estate
+                // (behance.net, myspace.com, gitlab.com, …) and cannot be the
+                // subject's own site by construction. The earlier fallback —
+                // "surface a host that is not a known mega/infra domain, it might
+                // be the subject's" — read a denylist miss as ownership: scan
+                // 7258fc07 filed behance.net and myspace.com as the subject's
+                // Domains, linked `derived_from` to the username and queued for
+                // DNS/cert expansion (REQ-SOCIAL-002). No list can close that,
+                // because the next unlisted platform leaks the same way.
                 tally.found += found_count;
                 tally.verified += verified_count;
                 tally.found_platforms.extend(found_platforms);
@@ -648,6 +651,69 @@ pub(super) fn emit_judged(
     }
     tally.found_platforms.sort_unstable();
     (result, tally)
+}
+
+/// The post-sweep M6 verdict applied to the sweep's `result` — the one step
+/// between the probes and what [`SocialProbe`]'s `process` returns, so the
+/// verdict each table gets is tested as `process` applies it. **Pure.**
+///
+/// A cancelled run is returned as it stands: the operator stopped it, so the
+/// module asserts nothing about what it did not probe. Otherwise a sweep that
+/// [`inconclusive_sweep`] judges inconclusive is reported by what actually
+/// happened:
+///
+///   * A **Username** sweep is a module error. Thirty-odd handle platforms
+///     answering nothing is a blocked or broken egress, and benching the module
+///     after a streak of those (the circuit breaker) is the intended saving.
+///   * A **FullName** sweep in which some platform DID answer — the people
+///     directories were queried and reachable, but the ones that can tell gave
+///     no definitive answer — is an INCOMPLETE answer: `Ok`, with the result
+///     marked truncated (`ModuleResult::mark_truncated`). Its table is two
+///     entries: `facebook-public`, which answers "present" for any name, and
+///     `peekyou`, walled from a typical client, so it is inconclusive by
+///     construction on every name target. Returned as a module error, those
+///     structural verdicts fed the breaker, which is keyed by module name
+///     alone: in scan 7258fc07 six of them drove all three `social_probe`
+///     trips (one on its own, two with username-sweep timeouts) and benched
+///     the handle sweep for username targets that were answering (found 7, 3,
+///     2) (REQ-SOCIAL-003). An in-band skip (`Error::Skipped`) is no fit
+///     either: its contract is a provider the module deliberately did NOT
+///     query, and `core::coverage` reads it as `NotAttempted`, which the
+///     queried directories were not (REQ-SOCIAL-005). A truncated answer is
+///     exactly the shape: `core::coverage` reads zero findings with the caveat
+///     as `Truncated` — queried, answered, and never a clean negative, so the
+///     M6 guarantee holds — and the dispatch counts as a run.
+///   * A **FullName** sweep in which NO platform answered at all (every probe
+///     inconclusive, none indiscriminate) is the blocked-egress shape, and the
+///     same module error as a handle sweep: nothing was reachable, so an `Ok`
+///     would tell the breaker a provider answered that did not.
+pub(super) fn finish_sweep(
+    kind: TargetKind,
+    mut result: ModuleResult,
+    tally: &SweepTally,
+    checked: u32,
+    cancelled: bool,
+) -> Result<ModuleResult> {
+    if cancelled {
+        return Ok(result);
+    }
+    let indiscriminate = tally.indiscriminate_platforms.len() as u32;
+    let Some(msg) = inconclusive_sweep(tally.found, tally.inconclusive, indiscriminate, checked)
+    else {
+        return Ok(result);
+    };
+    let some_platform_answered = indiscriminate > 0 || tally.inconclusive < checked;
+    match kind {
+        TargetKind::FullName if some_platform_answered => {
+            result.mark_truncated(
+                tally.found as usize,
+                None,
+                &format!("people directories that gave no definitive answer ({msg})"),
+            );
+            Ok(result)
+        }
+        _ => Err(Error::module(SRC, msg)),
+    }
 }
 
 /// Post-sweep M6 verdict: a zero-hit run is *inconclusive* — not a confirmed

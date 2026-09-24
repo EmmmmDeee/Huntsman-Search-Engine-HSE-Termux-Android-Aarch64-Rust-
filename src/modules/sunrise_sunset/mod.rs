@@ -67,6 +67,13 @@ struct SsResults {
 /// timestamp (sunrise/sunset/solar-noon, the three twilight bands) and the day
 /// length, normalising `day_length` from either its numeric (seconds) or string
 /// form. `coord` is the original target value (kept verbatim as the entity).
+///
+/// The entity is an ANNOTATION of the queried point: when the sun rises there
+/// is a fact about the point, not a sighting of the subject at it. So it
+/// carries the confidence floor and its record is marked
+/// `Evidence::as_annotation` — it neither corroborates the point nor raises it
+/// through the max-confidence merge (it used to carry `MEDIUM_HIGH` as an
+/// independent source; REQ-GEO-008).
 fn build_solar_entity(
     coord: &str,
     lat: f64,
@@ -78,7 +85,7 @@ fn build_solar_entity(
     let mut entity = Entity::new(
         EntityKind::Coordinates,
         coord,
-        confidence::MEDIUM_HIGH,
+        confidence::DERIVED_FLOOR,
         scan_id,
     );
     entity.tag("sunrise-sunset");
@@ -136,7 +143,7 @@ fn build_solar_entity(
         }
     }
 
-    entity.add_evidence(ev);
+    entity.add_evidence(ev.as_annotation());
     entity
 }
 

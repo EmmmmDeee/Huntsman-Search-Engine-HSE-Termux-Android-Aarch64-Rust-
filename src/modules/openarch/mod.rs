@@ -43,7 +43,7 @@ use serde::Deserialize;
 
 use crate::core::{
     confidence,
-    entity::{Entity, EntityKind, Evidence},
+    entity::{Entity, EntityKind, Evidence, VerificationMethod},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -288,6 +288,15 @@ pub(super) fn build_entities(
                  fuzzy index match, not necessarily the same person.",
             );
         }
+        // A register entry matched on the name alone: whose record it is, is
+        // exactly what is unknown. The entity-level `needs-identity-verification`
+        // tag and low confidence do not survive the engine's merge onto a
+        // same-named anchor — often the subject's own — but a record's
+        // ownership status does, and it is what keeps a namesake's death entry
+        // out of the subject's corroboration, exposure and timeline (scan
+        // 7258fc07 counted a US 2012 death record as independent confirmation
+        // of "Ian Thorpe"; REQ-CORE-017).
+        ev = ev.with_verification(VerificationMethod::Unverified);
 
         let mut person = Entity::new(EntityKind::Person, personname, conf, scan_id);
         person.tag(SRC);

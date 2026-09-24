@@ -1,4 +1,7 @@
-use super::{AMBIGUOUS_CEILING, AMBIGUOUS_NAME, NameCollisions, mark_ambiguous};
+use super::{
+    AMBIGUOUS_CEILING, AMBIGUOUS_NAME, NameCollisions, PARTY_DETERMINATION_TAGS,
+    UNRESOLVED_FLAGS_ATTR, mark_ambiguous,
+};
 use crate::core::entity::{Entity, EntityKind, Evidence, VerificationMethod};
 
 const ORG: EntityKind = EntityKind::Organisation;
@@ -218,5 +221,64 @@ fn an_ownership_the_source_established_is_kept() {
             .count(),
         1,
         "idempotent"
+    );
+}
+
+#[test]
+fn a_party_determination_is_moved_off_an_ambiguous_entity_onto_its_evidence() {
+    // REQ-NAMESAKE-002: FAILS while mark_ambiguous only caps, tags and marks
+    // ownership. A PEP/sanctions tag is a verdict about ONE holder of the
+    // name; left on the entity it is unioned into the subject's anchor by the
+    // merge and AU-114 reports it against the subject.
+    let mut e = Entity::new(PERSON, "Ian Thorpe", 0.80, "s");
+    e.tag(crate::core::tags::SANCTIONED);
+    e.tag("wikidata");
+    e.tag(crate::core::tags::PEP);
+    e.add_evidence(Evidence::new("wikidata", "a namesake's item"));
+    e.add_evidence(Evidence::new(
+        "wikidata",
+        "the same namesake, second record",
+    ));
+    mark_ambiguous(&mut e);
+
+    for t in PARTY_DETERMINATION_TAGS {
+        assert!(!e.has_tag(t), "{t} survived on an ambiguous entity");
+    }
+    assert!(
+        e.has_tag("wikidata"),
+        "a descriptive tag is not a determination"
+    );
+    for ev in &e.evidence {
+        assert_eq!(
+            ev.attributes.get(UNRESOLVED_FLAGS_ATTR).map(String::as_str),
+            Some("pep,sanctioned"),
+            "the flags are recorded, sorted, on every record — nothing observed is lost"
+        );
+    }
+
+    // Idempotent: a second call finds nothing to strip and leaves the record.
+    let before = e.clone();
+    mark_ambiguous(&mut e);
+    assert_eq!(e.tags, before.tags);
+    assert_eq!(
+        e.evidence
+            .iter()
+            .map(|ev| ev.attributes.clone())
+            .collect::<Vec<_>>(),
+        before
+            .evidence
+            .iter()
+            .map(|ev| ev.attributes.clone())
+            .collect::<Vec<_>>()
+    );
+
+    // Control: an entity with no determination tag gains no attribute.
+    let mut plain = Entity::new(PERSON, "Jane Doe", 0.80, "s");
+    plain.add_evidence(Evidence::new("register", "name match"));
+    mark_ambiguous(&mut plain);
+    assert!(
+        !plain.evidence[0]
+            .attributes
+            .contains_key(UNRESOLVED_FLAGS_ATTR)
     );
 }

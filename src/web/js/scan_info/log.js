@@ -96,14 +96,19 @@ export async function renderLog(host, scan){
     // terminal state (carried on the event since the ScanComplete status fix)
     // and close the stream — `scan_complete` is the last event, so closing
     // after it drops nothing.
+    // A completion whose finalise recorded a shortfall (`finalise_incomplete`,
+    // REQ-SCANSTATUS-015) is 'partial', as every export of the scan reads it —
+    // never the 'complete' a clean finish earns.
     const onTerminal = ev => {
       const st = $('#log-status'); if (!st) return;
       const term = ev.status || 'complete';
+      const partial = term !== 'failed' && ev.finalise_incomplete === true;
       st.className = term === 'failed' ? 'label label-danger'
-                   : term === 'aborted' ? 'label label-warning'
+                   : (term === 'aborted' || partial) ? 'label label-warning'
                    : 'label label-default';
       st.textContent = term === 'failed' ? 'failed'
-                     : term === 'aborted' ? 'aborted'
+                     : term === 'aborted' ? (partial ? 'aborted · partial' : 'aborted')
+                     : partial ? 'partial'
                      : 'complete';
       closeSse();
     };
@@ -363,8 +368,12 @@ export function mapEvent(ev){
     // `EventKind::ScanComplete`'s count field is `entity_count`, not `entities`
     // (which never existed on the wire event) — both branches below always
     // rendered "undefined entities" until this was corrected.
-    if (st==='aborted') return {typ:'scan', lv:'warn', msg:`scan aborted — stopped early, ${ev.entity_count} entities`};
+    // `finalise_incomplete` (REQ-SCANSTATUS-015): the finalise did not store
+    // or compute everything, so the scan is partial, as its exports read it.
+    const partial = ev.finalise_incomplete === true;
+    if (st==='aborted') return {typ:'scan', lv:'warn', msg:`scan aborted — stopped early, ${ev.entity_count} entities${partial?' — finalise incomplete':''}`};
     if (st==='failed')  return {typ:'scan', lv:'err',  msg:`scan failed`};
+    if (partial) return {typ:'scan', lv:'warn', msg:`scan complete but PARTIAL — finalise incomplete, ${ev.entity_count} entities`};
     return {typ:'scan', lv:'ok', msg:`scan complete, ${ev.entity_count} entities`};
   }
   if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`expansion: depth ${ev.depth}, queued ${ev.queued}, visited ${ev.visited}`};
@@ -378,8 +387,23 @@ export function mapEvent(ev){
   // off by default) — purely additive telemetry, never gates dispatch.
   if (t==='dispatch_utility_computed') return {typ:'expand', lv:'info', msg:`utility ${Number(ev.final_utility).toFixed(2)}: ${esc(ev.module)} &rarr; ${esc(ev.target_kind)} ${esc(ev.target_value)}`};
   // Final bulk breach sweep. `dropped` is part of the line, not a tooltip: a
-  // capped plan and a complete one must not read the same.
-  if (t==='breach_sweep')   return {typ:'expand', lv:'info',  msg:`breach sweep: ${ev.probes} probe${plural(ev.probes)} from ${ev.anchors} anchor${plural(ev.anchors)}${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}`};
+  // capped plan and a complete one must not read the same. Likewise
+  // dispatched-of-planned and the stop reason (REQ-SWEEP-005): a plan the
+  // budget cut short read "64 probes" as if all 64 went out, and a sweep the
+  // budget never let start read "0 probes from 0 anchors" — the same line as a
+  // sweep that ran with nothing to ask. Mirrors `EventKind::log_summary` and
+  // cli/live's `render_event`, down to a legacy event without `dispatched`
+  // (null or absent): its dispatch was never recorded, so it reads the old
+  // "N probes from M anchors" line — never "0/N dispatched", which re-rendered
+  // every pre-upgrade sweep that ran as one that sent nothing (REQ-SWEEP-006).
+  // The screen and the downloaded log never disagree.
+  if (t==='breach_sweep'){
+    const known = ev.dispatched !== undefined && ev.dispatched !== null;
+    const sent = known ? `${ev.dispatched}/` : '';
+    const verb = known ? ' dispatched' : '';
+    const stop = ev.stopped ? ` <span class="text-warning">— stopped: ${esc(ev.stopped)}</span>` : '';
+    return {typ:'expand', lv: ev.stopped ? 'warn' : 'info', msg:`breach sweep: ${sent}${ev.probes} probe${plural(ev.probes)}${verb} from ${ev.anchors} anchor${plural(ev.anchors)}${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}${stop}`};
+  }
   // Autonomous audit of the breach corpus. A non-passing verdict means two
   // corpora contradict each other, so it renders at warn level.
   if (t==='consensus_audit') return {typ:'corr', lv:(ev.verdict==='PASS'||ev.verdict==='PASS_WITH_WARNINGS')?'ok':'warn', msg:`breach audit: ${esc(ev.verdict)}, ${ev.corroborated}/${ev.examined} corroborated <span class="text-muted">${ev.flags} flag${plural(ev.flags)}</span>`};

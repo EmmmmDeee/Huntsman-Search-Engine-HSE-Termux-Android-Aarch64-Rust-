@@ -26,7 +26,10 @@
 //! characterises a *subject*, so the vertices are read as:
 //!   * [`Victim`](DiamondVertex::Victim) — the identity being characterised: the
 //!     subject and any co-referent identity facet (person, email, phone, handle,
-//!     organisation).
+//!     organisation). As a per-KIND taxonomy (the `/diamond` breakdown) every
+//!     identity kind maps here; as a per-ENTITY label (the GEXF node attribute)
+//!     only an identity entity the engine has scoped to the subject is `victim`
+//!     — see [`scoped_vertex_label`].
 //!   * [`Infrastructure`](DiamondVertex::Infrastructure) — the assets, locations,
 //!     devices, network artefacts and pivotable account identifiers the subject
 //!     uses or is placed by.
@@ -144,6 +147,43 @@ impl ClassifyDiamondVertex for Entity {
     /// A convenience delegate to [`EntityKind::diamond_vertex`].
     fn diamond_vertex(&self) -> DiamondVertex {
         self.kind.diamond_vertex()
+    }
+}
+
+/// The per-entity label an identity-kind entity gets when the engine has NOT
+/// scoped it to the subject. See [`scoped_vertex_label`].
+pub const UNATTRIBUTED: &str = "unattributed";
+
+/// The Diamond vertex label for ONE entity, as the graph export writes it.
+///
+/// [`EntityKind::diamond_vertex`] is a taxonomy: it answers "which vertex does
+/// this KIND populate?", and every identity kind populates `victim`. Written
+/// onto a node, though, `victim` reads as a claim about that entity — "an
+/// identity facet of the subject" — and the kind alone never checks it. The
+/// scan-7258fc07 GEXF labelled all 886 identity nodes `victim`: a stranger's
+/// Instagram handle (`aidanthorpee`), a WikiTree relative, and "Ian Thorpe
+/// Aquatic Centre", so partitioning the graph by attribution role in Gephi
+/// merged strangers into the subject — an identifier match exported as entity
+/// identity.
+///
+/// So an identity-kind entity is `victim` only when it carries a subject claim
+/// ([`crate::core::scan::SUBJECT_CLAIM_TAGS`] — the tags the engine re-scopes at
+/// admission, so a pivot's module cannot mint one), and [`UNATTRIBUTED`]
+/// otherwise: an identity the engine has not attributed to the subject, which
+/// is all this label can honestly say. Every other vertex is the kind's own
+/// (infrastructure / capability carry no identity claim). Pure and
+/// deterministic.
+#[must_use]
+pub fn scoped_vertex_label(e: &Entity) -> &'static str {
+    match e.kind.diamond_vertex() {
+        DiamondVertex::Victim
+            if !crate::core::scan::SUBJECT_CLAIM_TAGS
+                .iter()
+                .any(|t| e.has_tag(t)) =>
+        {
+            UNATTRIBUTED
+        }
+        v => v.as_str(),
     }
 }
 

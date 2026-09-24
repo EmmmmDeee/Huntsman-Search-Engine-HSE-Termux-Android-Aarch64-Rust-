@@ -4,6 +4,15 @@ import { wireScansTable } from '/static/js/views/scans.js';
 import { renderApiBudgetsPanelHtml, renderModuleHealthPanelHtml, renderScansTableHtml } from '/static/hse_wasm_ui.js';
 
 /* ═══════════ Page: DASHBOARD (#/dash) ═══════════ */
+/* A `/stats` `scans_by_status` key as the pill each of its rows reads: a
+   finished scan whose finalise fell short is bucketed apart (`partial`,
+   `aborted_partial`, REQ-SCANSTATUS-034) and pilled as the scan list and the
+   Recent Scans table pill it, never as a green `complete`. */
+export function dashStatusPill(k){
+  if (k === 'partial') return statusPill('complete', true);
+  if (k === 'aborted_partial') return statusPill('aborted', true);
+  return statusPill(k);
+}
 export async function renderDash(v){
   // allSettled, not all: a single secondary endpoint failure (module health,
   // the module catalogue, …) must degrade its own panel to zeros/empty, not
@@ -52,7 +61,7 @@ export async function renderDash(v){
           <div class="panel-heading"><b>Scan Status</b></div>
           <div class="panel-body">
             <table class="table table-condensed" style="margin-bottom:0">
-              ${Object.entries(byStatus).map(([k,n])=>`<tr><td>${statusPill(k)}</td><td class="text-right"><b>${n}</b></td></tr>`).join('')}
+              ${Object.entries(byStatus).map(([k,n])=>`<tr><td>${dashStatusPill(k)}</td><td class="text-right"><b>${n}</b></td></tr>`).join('')}
               ${Object.keys(byStatus).length===0?'<tr><td colspan="2" class="text-center text-muted">No scans yet</td></tr>':''}
             </table>
           </div>

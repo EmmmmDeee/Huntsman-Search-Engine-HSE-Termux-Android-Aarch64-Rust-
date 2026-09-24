@@ -251,4 +251,42 @@ fn the_index_answering_no_match_is_a_clean_negative() {
             .truncation
             .is_none()
     );
+#[test]
+fn a_name_matched_register_entry_is_ownership_unverified() {
+    // REQ-CORE-017 (scan 7258fc07, target "Ian Thorpe"): a US Reclaim-The-Records
+    // death entry merged onto the subject's anchor and counted as independent
+    // corroboration. The record is a name-only index match: every record the
+    // module emits is `Unverified`, so a merge adds no corroborating source.
+    let doc = OaDoc {
+        personname: Some("Ian Thorpe".into()),
+        eventtype: Some("Death".into()),
+        relationtype: Some("Deceased".into()),
+        url: Some("https://www.openarchieven.nl/rtr:1/en".into()),
+        ..OaDoc::default()
+    };
+    let res = build_entities("Ian Thorpe", Some(1), &[doc], "s");
+    for e in &res.entities {
+        assert!(
+            e.evidence
+                .iter()
+                .all(|ev| ev.verification
+                    == Some(crate::core::entity::VerificationMethod::Unverified)),
+            "{}",
+            e.value
+        );
+    }
+    let person = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("person")
+        .clone();
+    let mut anchor = crate::core::entity::Entity::new(EntityKind::Person, "Ian Thorpe", 0.6, "s");
+    anchor.add_evidence(crate::core::entity::Evidence::new(
+        "search_engines",
+        "profile",
+    ));
+    anchor.merge(person);
+    assert_eq!(anchor.source_count(), 1);
+    assert!((anchor.c_effective() - 0.6).abs() < 1e-9);
 }

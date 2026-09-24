@@ -37,6 +37,22 @@ fn timezone_australia_specific() {
     assert_eq!(timezone_for(-34.93, 138.60), "Australia/Adelaide");
 }
 
+/// REQ-GEO-013: eastern Australia is not one zone. Queensland keeps no
+/// daylight saving (Australia/Brisbane), Victoria and Tasmania have their own
+/// zones, the NT is Darwin and western Queensland is still Queensland.
+#[test]
+fn timezone_for_splits_eastern_australia_by_state() {
+    assert_eq!(timezone_for(-27.47, 153.02), "Australia/Brisbane"); // Brisbane
+    assert_eq!(timezone_for(-21.41472, 148.57944), "Australia/Brisbane"); // scan [316]
+    assert_eq!(timezone_for(-33.87, 151.21), "Australia/Sydney");
+    assert_eq!(timezone_for(-35.28, 149.13), "Australia/Sydney"); // Canberra
+    assert_eq!(timezone_for(-37.81, 144.96), "Australia/Melbourne");
+    assert_eq!(timezone_for(-42.88, 147.33), "Australia/Hobart");
+    assert_eq!(timezone_for(-12.46, 130.85), "Australia/Darwin");
+    assert_eq!(timezone_for(-20.73, 139.49), "Australia/Brisbane"); // Mount Isa, west of 140
+    assert_eq!(timezone_for(-31.95, 141.45), "Australia/Broken_Hill");
+}
+
 #[test]
 fn timezone_us_specific() {
     assert_eq!(timezone_for(40.71, -74.00), "America/New_York");

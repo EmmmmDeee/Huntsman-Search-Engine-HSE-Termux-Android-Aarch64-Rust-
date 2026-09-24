@@ -1,6 +1,7 @@
 use super::CellIntel;
 use super::helpers::{
-    accuracy_to_confidence, build_tower_device, mcc_to_centroid, parse_cells_survey,
+    MCC_CENTROIDS, MNC_CENTROIDS, accuracy_to_confidence, build_tower_device, mcc_to_centroid,
+    parse_cells_survey,
 };
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
@@ -200,7 +201,7 @@ fn accuracy_to_confidence_tiers() {
 
 #[test]
 fn mcc_us_maps_to_us_centroid() {
-    let (lat, lon, cc) = mcc_to_centroid("310").expect("should succeed");
+    let (lat, lon, cc) = mcc_to_centroid("310", "1").expect("should succeed");
     assert!((lat - 39.8283).abs() < 0.01);
     assert!((lon - (-98.5795)).abs() < 0.01);
     assert_eq!(cc, "US");
@@ -208,7 +209,7 @@ fn mcc_us_maps_to_us_centroid() {
 
 #[test]
 fn mcc_au_maps_to_au_centroid() {
-    let (lat, lon, cc) = mcc_to_centroid("505").expect("should succeed");
+    let (lat, lon, cc) = mcc_to_centroid("505", "1").expect("should succeed");
     assert!((lat - (-25.2744)).abs() < 0.01);
     assert_eq!(cc, "AU");
     assert!(lon > 100.0);
@@ -216,7 +217,171 @@ fn mcc_au_maps_to_au_centroid() {
 
 #[test]
 fn unknown_mcc_returns_none() {
-    assert!(mcc_to_centroid("999").is_none());
+    assert!(mcc_to_centroid("999", "1").is_none());
+}
+
+/// REQ-GEOLABEL-032: every MCC stand-in point lies in the country its row
+/// names. MCC 216 (Hungary) carried Istanbul's coordinates and 219 (Croatia)
+/// central Serbia's, so a device camped on a Hungarian network was labelled
+/// "Hungary" while its pin, geohash and timezone put it in Turkey.
+///
+/// The check is containment in the country's OWN offline box
+/// (`util::geohash::country::country_box`), not `reverse_country_iso`, which
+/// answers the first matching box and so reads a right Belgian point as
+/// France. A country that table has no box for is given one here, so a new
+/// row cannot slip through unchecked.
+#[test]
+fn every_mcc_stand_in_lies_in_its_own_country() {
+    // (iso, lat_min, lat_max, lon_min, lon_max) for the MCC countries the
+    // offline table does not box.
+    const EXTRA: &[(&str, f64, f64, f64, f64)] = &[
+        ("HR", 42.4, 46.6, 13.4, 19.5),
+        ("IR", 25.0, 39.8, 44.0, 63.4),
+        ("TZ", -11.8, -0.9, 29.3, 40.5),
+        ("GH", 4.7, 11.2, -3.3, 1.2),
+    ];
+    for &(mccs, lat, lon, iso) in MCC_CENTROIDS {
+        let (la_min, la_max, lo_min, lo_max) = crate::util::geohash::country::country_box(iso)
+            .or_else(|| {
+                EXTRA
+                    .iter()
+                    .find(|&&(code, ..)| code == iso)
+                    .map(|&(_, a, b, c, d)| (a, b, c, d))
+            })
+            .unwrap_or_else(|| panic!("MCC {mccs:?}: no box to check {iso} against"));
+        assert!(
+            (la_min..=la_max).contains(&lat) && (lo_min..=lo_max).contains(&lon),
+            "MCC {mccs:?} ({lat},{lon}) is not in {iso}"
+        );
+    }
+    assert_eq!(mcc_to_centroid("216", "1").map(|(.., iso)| iso), Some("HU"));
+    assert_eq!(mcc_to_centroid("219", "1").map(|(.., iso)| iso), Some("HR"));
+}
+
+/// REQ-GEOLABEL-035: each MCC row names the country the ITU-T E.212 list
+/// assigns that code. The containment test above checks only that a row's
+/// point lies in the country its OWN row names, so the row `620` → Tanzania
+/// passed it: a Ghanaian network (MCC 620) was tagged `country:TZ` and
+/// pinned in Tanzania, and a Tanzanian one (640) resolved to nothing. And
+/// every row's country has a name, so the label and the `country` attribute
+/// read "Croatia", not "HR".
+#[test]
+fn every_mcc_row_names_the_country_the_itu_assigns_it() {
+    // A sample of the ITU-T E.212 assignments, including every code whose
+    // country a neighbouring code is easily confused with.
+    for (mcc, iso) in [
+        ("505", "AU"),
+        ("530", "NZ"),
+        ("310", "US"),
+        ("302", "CA"),
+        ("234", "GB"),
+        ("206", "BE"),
+        ("208", "FR"),
+        ("216", "HU"),
+        ("219", "HR"),
+        ("255", "UA"),
+        ("250", "RU"),
+        ("268", "PT"),
+        ("452", "VN"),
+        ("432", "IR"),
+        ("602", "EG"),
+        ("604", "MA"),
+        ("620", "GH"),
+        ("621", "NG"),
+        ("639", "KE"),
+        ("640", "TZ"),
+        ("655", "ZA"),
+    ] {
+        assert_eq!(
+            mcc_to_centroid(mcc, "1").map(|(.., iso)| iso),
+            Some(iso),
+            "MCC {mcc}"
+        );
+    }
+    for &(mccs, .., iso) in MCC_CENTROIDS {
+        assert!(
+            crate::util::geohash::country_name_for_iso(iso).is_some(),
+            "MCC {mccs:?}: {iso} has no country name"
+        );
+    }
+    let e = super::mcc_centroid_point("219", "1", "219-1-2-3", "s1").expect("HR");
+    assert!(
+        e.evidence
+            .iter()
+            .any(|ev| ev.attributes.get("country").map(String::as_str) == Some("Croatia")),
+        "{:?}",
+        e.evidence
+    );
+}
+
+/// REQ-GEOLABEL-029: the MCC fallback names itself a country signal — the
+/// record `core::place::grain` reads (`source=mcc-centroid`), the tag a CSV
+/// copy keeps, the country in words for the label — and claims no state.
+#[test]
+fn the_mcc_fallback_point_is_a_country_signal() {
+    use super::mcc_centroid_point;
+    use crate::core::place::grain::{MCC_CENTROID_METHOD, MCC_INFERRED_TAG};
+    let e = mcc_centroid_point("505", "1", "505-1-2-3", "s1").expect("AU");
+    assert_eq!(e.kind, EntityKind::Coordinates);
+    assert!(e.has_tag(MCC_INFERRED_TAG), "{:?}", e.tags);
+    assert!(e.has_tag("country:AU"), "{:?}", e.tags);
+    assert!(
+        !e.tags.iter().any(|t| t.starts_with("au-state:")),
+        "the MCC names no state: {:?}",
+        e.tags
+    );
+    let ev = &e.evidence[0];
+    let attr = |k: &str| ev.attributes.get(k).map(String::as_str);
+    assert_eq!(attr("source"), Some(MCC_CENTROID_METHOD));
+    assert_eq!(attr("country"), Some("Australia"));
+    assert_eq!(attr("country_code"), Some("AU"));
+    assert!(mcc_centroid_point("999", "1", "x", "s1").is_none());
+}
+
+/// REQ-GEOLABEL-038: a network is placed in the country its operator is in,
+/// not the one its shared MCC's row names. MCC 425 is Israel's, but Jawwal
+/// (425-05) and Ooredoo Palestine (425-06) are allocated under it, so a
+/// device in Ramallah camped on Jawwal with no OpenCelliD fix was tagged
+/// `country:IL` and labelled Israel. An Israeli network under the same MCC
+/// stays Israel, and an MNC written without its leading zero is the same
+/// network.
+#[test]
+fn a_palestinian_network_under_mcc_425_is_placed_in_palestine() {
+    use super::mcc_centroid_point;
+    for mnc in ["05", "5", "06", " 6"] {
+        let e = mcc_centroid_point("425", mnc, "425-5-1-2", "s1").expect("PS");
+        assert!(e.has_tag("country:PS"), "MNC {mnc}: {:?}", e.tags);
+        assert!(!e.has_tag("country:IL"), "MNC {mnc}: {:?}", e.tags);
+        let ev = &e.evidence[0];
+        let attr = |k: &str| ev.attributes.get(k).map(String::as_str);
+        assert_eq!(attr("country"), Some("Palestine"), "MNC {mnc}");
+        assert_eq!(attr("country_code"), Some("PS"), "MNC {mnc}");
+        assert!(!ev.summary.contains("IL"), "MNC {mnc}: {}", ev.summary);
+    }
+    for mnc in ["01", "02", "03", "07", "", "x"] {
+        assert_eq!(
+            mcc_to_centroid("425", mnc).map(|(.., iso)| iso),
+            Some("IL"),
+            "MNC {mnc:?}"
+        );
+    }
+    // Every shared-MCC row's point lies in its own country (West Bank box
+    // for PS), and its country has a name.
+    for &(mcc, mncs, lat, lon, iso) in MNC_CENTROIDS {
+        let (la_min, la_max, lo_min, lo_max) = match iso {
+            "PS" => (31.2, 32.6, 34.2, 35.6),
+            other => crate::util::geohash::country::country_box(other)
+                .unwrap_or_else(|| panic!("{mcc}-{mncs:?}: no box for {other}")),
+        };
+        assert!(
+            (la_min..=la_max).contains(&lat) && (lo_min..=lo_max).contains(&lon),
+            "{mcc}-{mncs:?} ({lat},{lon}) is not in {iso}"
+        );
+        assert!(
+            crate::util::geohash::country_name_for_iso(iso).is_some(),
+            "{iso}"
+        );
+    }
 }
 
 // ---- TowerKey / build_tower_device tests ----

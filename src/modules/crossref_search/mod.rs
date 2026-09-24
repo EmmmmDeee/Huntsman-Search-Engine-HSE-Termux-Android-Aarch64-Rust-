@@ -162,7 +162,11 @@ pub(super) fn attribution(kind: TargetKind, seed: &str, item: &CrossrefItem) -> 
 /// carry a given name, the seed's given token is the author's given name or
 /// its initial (`J.` for `Jordan`, either way round). ASCII case- and
 /// diacritic-folded. A bare family-name seed matches on the family name alone.
-pub(super) fn author_matches(seed: &str, given: &str, family: &str) -> bool {
+///
+/// `pub(crate)` because `europepmc_search` gates its author list through this
+/// same matcher: two literature sources must not disagree on whether a byline
+/// names the subject.
+pub(crate) fn author_matches(seed: &str, given: &str, family: &str) -> bool {
     let fold = |t: &str| crate::util::str_util::fold_ascii_lower(t.trim_end_matches('.'));
     let tokens: Vec<String> = seed.split_whitespace().map(fold).collect();
     let fam: Vec<String> = family.split_whitespace().map(fold).collect();
@@ -188,8 +192,9 @@ pub(super) fn author_matches(seed: &str, given: &str, family: &str) -> bool {
 /// An affiliation names the organisation when every token of the seed appears
 /// in it (folded, punctuation-split), so `University of Wollongong` matches
 /// `University of Wollongong , Wollongong , Australia` and not `The Wollongong
-/// Hospital`.
-pub(super) fn affiliation_matches(seed: &str, affiliation: &str) -> bool {
+/// Hospital`. Shared with `europepmc_search` for the same reason as
+/// [`author_matches`].
+pub(crate) fn affiliation_matches(seed: &str, affiliation: &str) -> bool {
     let tokens = |s: &str| -> Vec<String> {
         s.split(|c: char| !c.is_alphanumeric())
             .filter(|t| !t.is_empty())
@@ -248,12 +253,22 @@ pub(super) fn build_entities(
         let mut e = Entity::new(EntityKind::Url, &url, WORK_URL_CONFIDENCE, scan_id);
         e.tag("crossref");
         e.tag("academic");
+        // The summary names the WORK — its DOI, or its URL when it has none —
+        // not only the author: an evidence record's identity is `(source,
+        // summary)`, which `absorb` de-duplicates on and the GEXF
+        // co-occurrence edge keys on. One summary per author made every work
+        // by that author look like one shared record naming them all (18
+        // false Crossref edges in scan 7258fc07's graph).
+        let work = doi.map_or_else(|| url.clone(), |d| format!("doi {d}"));
         let (summary, matched_key) = match kind {
             TargetKind::Organisation => (
-                format!("Crossref work affiliated with '{matched}'"),
+                format!("Crossref work affiliated with '{matched}': {work}"),
                 "matched_affiliation",
             ),
-            _ => (format!("Crossref work by '{matched}'"), "matched_author"),
+            _ => (
+                format!("Crossref work by '{matched}': {work}"),
+                "matched_author",
+            ),
         };
         let mut ev = Evidence::new(SRC, summary)
             .with_attr("query", query)

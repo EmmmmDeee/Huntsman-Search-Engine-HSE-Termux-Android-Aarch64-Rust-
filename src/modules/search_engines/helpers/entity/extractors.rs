@@ -10,44 +10,153 @@ use super::*;
 
 /// Leading words that make a `<Word> <Surname>` run a PLACE, not a person —
 /// `Port Douglas`, `Mount Isa`, `Lake Macquarie` — so a place named like the
-/// subject survives [`is_person_listing_locality`].
+/// subject survives [`surname_bearer_locality`].
 const PLACE_PREFIXES: &[&str] = &[
     "port", "mount", "mt", "lake", "fort", "point", "cape", "glen", "saint", "st", "east", "west",
     "north", "south", "new", "upper", "lower", "old", "little", "great",
 ];
 
-/// True when an extracted `"City, State"` is really a people-search listing
-/// title — `"Ian Thorpe, North Carolina"` from `spokeo.com/Ian-Thorpe/North-
-/// Carolina` — whose "city" is a person named with the scanned `surname`.
+/// Words that may FOLLOW a surname inside a real place name — `Box Hill North`,
+/// `Castle Hill Heights`, `Thorpe Bay` — so a suburb that carries the subject's
+/// surname mid-name survives [`surname_bearer_locality`].
+const PLACE_SUFFIXES: &[&str] = &[
+    "north", "south", "east", "west", "central", "heights", "beach", "bay", "valley", "vale",
+    "creek", "springs", "junction", "village", "downs", "waters", "ridge", "lake", "lakes",
+    "grove", "estate",
+];
+
+/// The locality an extracted `"City, State"` may keep on a name scan for the
+/// scanned person `subject` — the address itself when its "city" is a place, the
+/// place a surname-bearer is said to be `in` when that is all it names, or
+/// `None` when the "city" names a PERSON carrying the surname (a people-search
+/// listing title) or a THING named after one (a venue, a business).
 ///
 /// [`extract_addresses_from_text`]'s word path takes the capitalised run before
-/// `", <State>"` as the city, and a listing title is exactly that shape. A real
-/// "Ian Thorpe" scan emitted fourteen such Addresses (Bill, Carol, David,
-/// Donald, Ian, William Thorpe, … each "in" a US state); Photon then geocoded
-/// four different names to one arbitrary North Carolina point, and the audit
-/// reported the resulting spread as geo-divergence (REQ-SEARCH-ADDR-001).
+/// `", <State>"` as the city, and its comma path takes the whole segment since
+/// the previous comma. Three shapes of text reach it on a name scan:
 ///
-/// A multi-word "city" ending in the surname, and not led by a place word
-/// ([`PLACE_PREFIXES`]), is a person. A single word that IS the surname
-/// ("Lawnton, QLD" for a Lawnton) is a real suburb and is kept — that collision
-/// is capped, not dropped, by the caller. **Pure.**
-pub(in crate::modules::search_engines) fn is_person_listing_locality(
+/// - a people-search listing title — `"Ian Thorpe, North Carolina"` from
+///   `spokeo.com/Ian-Thorpe/North-Carolina`. A real "Ian Thorpe" scan emitted
+///   fourteen such Addresses (Bill, Carol, David, Donald, Ian, William Thorpe,
+///   … each "in" a US state); Photon then geocoded four different names to one
+///   arbitrary North Carolina point, and the audit reported the resulting
+///   spread as geo-divergence (REQ-SEARCH-ADDR-001). The surname ENDS the
+///   city: `None`.
+/// - a venue named after a surname-bearer — the LinkedIn job title "…
+///   Exercise Physiologist NSW, Ian Thorpe Aquatic Centre in Ultimo, New South
+///   Wales, Australia" became the Address `"Ian Thorpe Aquatic Centre in
+///   Ultimo, New South Wales"`. The result "named the subject" only because
+///   the venue does. Photon then geocoded the real pool correctly at house
+///   grain (40 m), and that one point, at 5x fusion weight, pinned AU-059 and
+///   the headline best location fix (0.97) to a public swimming pool
+///   (REQ-SEARCH-ADDR-002). Words that are not a place's own suffix follow
+///   the surname (`Aquatic Centre`, `Plumbing`): `None`, wholesale — the
+///   venue's suburb is the venue's, not the subject's.
+/// - a statement locating the bearer — `"Swim coach, Ian Thorpe in Ultimo,
+///   New South Wales"` yields the segment `"Ian Thorpe in Ultimo"`. Nothing
+///   but `in` follows the surname, so the place after it is what the text
+///   locates: `Some("Ultimo, New South Wales")` (REQ-SEARCH-ADDR-003) — but
+///   only when the bearer IS the subject. The name standing before the
+///   surname ([`bearer_name`]) must name `subject` by the identity gate's own
+///   reading ([`crate::core::scan::text_names_person`]). A people-search
+///   snippet that names the subject passes the per-result gate and can still
+///   list his relatives — `"Ian Thorpe, 45 … Carol Thorpe in Mosman, NSW"`
+///   yields the segment `"Carol Thorpe in Mosman"`, and Mosman is Carol's
+///   place, not Ian's: `None`, exactly as the listing title is
+///   (REQ-SEARCH-ADDR-004).
+///
+/// A surname followed only by place suffixes ([`PLACE_SUFFIXES`]) is a place:
+/// `"Box Hill North, Victoria"` survives a scan for a Hill. The REQ-SEARCH-ADDR-002
+/// rule dropped every multi-word city with the surname after its first word,
+/// which lost that suburb and the `in <Place>` statement with it
+/// (REQ-SEARCH-ADDR-003). The surname counts only as a whole word AFTER the
+/// first word, not led by a place word ([`PLACE_PREFIXES`]): a city that
+/// STARTS with the surname names a place (`"Thorpe Bay, Essex"`), and a single
+/// word that IS the surname (`"Lawnton, QLD"` for a Lawnton) is a real suburb
+/// and is kept — that collision is capped, not dropped, by the caller. A
+/// two-word suburb ending in the surname (`"Box Hill"` for a Hill) is
+/// indistinguishable from a listing title and is dropped: the conservative
+/// side, since a wrong locality is worse than a missed one. Words and surname
+/// are compared diacritic-folded ([`crate::core::scan::fold_name_text`]), and
+/// the surname is `subject`'s as the identity gate reads it
+/// ([`crate::core::scan::person_surname`]: `"Dr Ian Thorpe OAM"` is a Thorpe).
+/// A mononym `subject` carries no surname, so every address is kept.
+/// **Pure.**
+pub(in crate::modules::search_engines) fn surname_bearer_locality(
     addr: &str,
-    surname: &str,
-) -> bool {
-    let Some((city, _state)) = addr.rsplit_once(',') else {
-        return false;
+    subject: &str,
+) -> Option<String> {
+    let Some((city, state)) = addr.rsplit_once(',') else {
+        return Some(addr.to_string());
+    };
+    // Both sides through the identity gate's name fold: `person_surname` is
+    // diacritic-folded (`"nguyen"`), so a raw comparison would miss the
+    // `"Nguyễn"` the listing prints.
+    let Some(surname) = crate::core::scan::person_surname(subject)
+        .map(|s| crate::core::scan::fold_name_text(s.trim()))
+        .filter(|s| !s.is_empty())
+    else {
+        return Some(addr.to_string());
     };
     let words: Vec<&str> = city.split_whitespace().collect();
-    words.len() >= 2
-        && words
-            .last()
-            .is_some_and(|last| last.eq_ignore_ascii_case(surname.trim()))
-        && !words.first().is_some_and(|w| {
-            PLACE_PREFIXES
-                .iter()
-                .any(|p| w.trim_end_matches('.').eq_ignore_ascii_case(p))
-        })
+    let place_led = words.first().is_some_and(|w| {
+        PLACE_PREFIXES
+            .iter()
+            .any(|p| w.trim_end_matches('.').eq_ignore_ascii_case(p))
+    });
+    let Some(at) = words
+        .iter()
+        .skip(1)
+        .position(|w| crate::core::scan::fold_name_text(w) == surname)
+        .map(|p| p + 1)
+        .filter(|_| !place_led)
+    else {
+        return Some(addr.to_string());
+    };
+    let after = &words[at + 1..];
+    let is = |w: &str, set: &[&str]| set.iter().any(|s| w.eq_ignore_ascii_case(s));
+    match after {
+        // "Ian Thorpe, North Carolina": a person.
+        [] => None,
+        // "Box Hill North, Victoria": a place carrying the surname.
+        _ if after.iter().all(|w| is(w, PLACE_SUFFIXES)) => Some(addr.to_string()),
+        // "Ian Thorpe in Ultimo": the place the text locates the bearer in —
+        // the subject's place only when the bearer is the subject ("Carol
+        // Thorpe in Mosman" on an Ian Thorpe scan is not).
+        [first, place @ ..] if *first == "in" && !place.is_empty() => {
+            crate::core::scan::text_names_person(&bearer_name(&words, at), subject)
+                .unwrap_or(false)
+                .then(|| format!("{},{state}", place.join(" ")))
+        }
+        // "Ian Thorpe Aquatic Centre in Ultimo", "Jamie Thorpe Plumbing": a
+        // thing named after a surname-bearer.
+        _ => None,
+    }
+}
+
+/// The name that ends at the surname `words[at]`: the run of name-shaped
+/// words directly before it ([`is_name_word`]) and the surname itself —
+/// `"Ian Thorpe"` from `"Contact Ian Thorpe"`, `"Carol Thorpe"` from `"Ian
+/// Thorpe's sister Carol Thorpe"`. Bounded by the first word that cannot
+/// stand in a name, so a subject named EARLIER in the segment (`"Ian
+/// Thorpe's"`, `"Ian and"`) is never read as this bearer's given name.
+/// **Pure.**
+fn bearer_name(words: &[&str], at: usize) -> String {
+    let start = words[..at]
+        .iter()
+        .rposition(|w| !is_name_word(w))
+        .map_or(0, |p| p + 1);
+    words[start..=at].join(" ")
+}
+
+/// Whether `w` can stand in a written person name: capitalised, letters with
+/// only the `.` of an initial and the `-` / `'` inside a name part, and not a
+/// possessive (`"Thorpe's"`). **Pure.**
+fn is_name_word(w: &str) -> bool {
+    w.chars().next().is_some_and(char::is_uppercase)
+        && w.chars()
+            .all(|c| c.is_alphabetic() || matches!(c, '.' | '-' | '\'' | '\u{2019}'))
+        && !(w.ends_with("'s") || w.ends_with("\u{2019}s"))
 }
 
 /// Extract AU location strings from free text for geolocation, in three passes:
@@ -577,27 +686,69 @@ pub(in crate::modules::search_engines) fn extract_abn_acn_from_text(
 
 /// Extract organisation names from text. Looks for patterns like
 /// "Pty Ltd", "Inc", "LLC", "Corporation" near the target context.
+///
+/// One title span yields at most one organisation, bounded to the company name
+/// itself (REQ-SEARCH-010). Live scan 7258fc07 ("Ian Thorpe") showed three faults
+/// in the earlier per-suffix scan:
+///   * the overlapping variants (` Inc.` / ` Inc`, ` Pty Ltd` / ` Ltd`) each
+///     matched the same span, so one LinkedIn title minted both "Ian Thorpe -
+///     Thorpedo Inc" and "… Inc." — the suffixes are now tried longest-first and
+///     a suffix occurrence overlapping one already claimed is the same span;
+///   * the backward walk stopped only at `, . ; ( \n`, never at a SERP title
+///     separator (` - `, ` – `, ` — `, ` | `, ` · `, `•`, `›`), so the person's
+///     name and page boilerplate were glued onto the company ("Megan Thorpe Email
+///     & Phone Number | Covalent Lithium Pty Ltd") — it now also stops at those
+///     and at the end of the previous organisation in the text;
+///   * the subject-term filter then ran on that glued string, so the PERSON's
+///     name, not the company's, satisfied it and a namesake's employer was filed
+///     as a scan organisation.
+///
+/// A separator bound alone did not close the third fault: snippet PROSE has no
+/// separator, so `"… Ian Thorpe is the managing director of Harbour Holdings
+/// Pty Ltd"` still walked back across the person's name, and — with the old
+/// 60-byte cap replaced by the separator bound — even across the title/snippet
+/// join (REQ-SEARCH-013). The name is therefore the run of NAME WORDS directly
+/// before the suffix: capitalised or digit-led words, `&`, and the connectors
+/// `and`/`of`/`the`/`for` between them (`Bank of Queensland Limited`), with a
+/// leading connector trimmed. Lowercase prose (`is the managing director`)
+/// ends it; a separator, `, . ; ( \n`, the previous organisation's end and a
+/// 60-byte floor still bound it (an all-caps title is all "capitalised").
+///
+/// The term filter then runs on that name alone, and matches a term only at
+/// the START of one of its words: a raw substring test let the given name
+/// `"ian"` admit `"Australian Unity Limited"`. A word-start match, not a
+/// whole-word one, because a company named from its founder's name keeps the
+/// name as a word stem (`Thorpedo Inc.` for Ian Thorpe). So a company is kept
+/// only when its own name carries a subject term.
 pub(in crate::modules::search_engines) fn extract_organisations_from_text(
     text: &str,
     terms: &[String],
 ) -> Vec<String> {
+    // Longest variant first within each family, so the dotted / longer form
+    // claims a span before the shorter form inside it can.
     let suffixes = [
-        " Pty Ltd",
         " Pty. Ltd.",
         " Pty Limited",
-        " Inc.",
-        " Inc",
-        " LLC",
-        " Ltd",
-        " Ltd.",
-        " Limited",
+        " Pty Ltd",
         " Corporation",
+        " Limited",
+        " Inc.",
+        " Ltd.",
         " Corp.",
-        " Corp",
         " Co.",
+        " Inc",
+        " Ltd",
+        " Corp",
+        " LLC",
     ];
-    let mut orgs = Vec::new();
+    // SERP title separators: what sits before one is another field of the
+    // title (a person's name, "Email & Phone Number"), never the company name.
+    const TITLE_SEPARATORS: [&str; 7] = [" - ", " – ", " — ", " | ", " · ", "•", "›"];
     let bytes = text.as_bytes();
+    // Phase 1: the suffix occurrences, one per span, as `(start, end)` byte
+    // ranges. A Vec scanned linearly and sorted afterwards — deterministic, and
+    // a page carries a handful of suffixes at most.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
     for suffix in &suffixes {
         // Case-insensitive search over the ORIGINAL `text`. We deliberately do
         // NOT index `text` with byte offsets taken from `text.to_lowercase()`:
@@ -626,25 +777,92 @@ pub(in crate::modules::search_engines) fn extract_organisations_from_text(
                 i += 1;
                 continue;
             }
-            // Walk backwards to the start of the org name.
-            let before = &text[..i];
-            let raw_start = before
-                .rfind([',', '.', ';', '(', '\n'])
-                .map_or(i.saturating_sub(60), |d| d + 1);
-            // The `i-60` fallback may land mid-code-point; snap forward to a
-            // boundary with the canonical primitive so the slice below is always
-            // valid. `i` is an ASCII (space) boundary and `raw_start <= i`, so the
-            // next boundary never overshoots `i`.
-            let name_start = crate::util::str_util::ceil_char_boundary(text, raw_start);
-            let org = text[name_start..end].trim();
-            if org.len() >= 5 && org.starts_with(|c: char| c.is_ascii_uppercase()) {
-                // Lowercase once per candidate rather than once per term.
-                let org_lower = org.to_lowercase();
-                if terms.iter().any(|t| org_lower.contains(t.as_str())) {
-                    orgs.push(org.to_string());
-                }
+            // A shorter variant inside a span a longer one already claimed
+            // (` Inc` in ` Inc.`, ` Ltd` in ` Pty Ltd`) is that same span.
+            if !spans.iter().any(|&(s, e)| i < e && s < end) {
+                spans.push((i, end));
             }
             i = end;
+        }
+    }
+    spans.sort_unstable();
+    // Phase 2: walk each span back over the run of name words before it.
+    // Joiners a company name can carry between its capitalised words; never its
+    // first word (a leading one is trimmed below).
+    const CONNECTORS: [&str; 5] = ["&", "and", "of", "the", "for"];
+    let is_name_word = |w: &str| {
+        CONNECTORS.contains(&w) || w.starts_with(|c: char| c.is_uppercase() || c.is_ascii_digit())
+    };
+    let mut orgs: Vec<String> = Vec::new();
+    let mut prev_end = 0;
+    for (i, end) in spans {
+        let before = &text[..i];
+        let punct = before.rfind([',', '.', ';', '(', '\n']).map(|d| d + 1);
+        // Every separator is a complete UTF-8 sequence, so `d + sep.len()` is a
+        // char boundary.
+        let separator = TITLE_SEPARATORS
+            .iter()
+            .filter_map(|sep| before.rfind(sep).map(|d| d + sep.len()))
+            .max();
+        // The `i-60` floor may land mid-code-point; snap forward to a boundary
+        // with the canonical primitive so every slice below is valid. `i` is an
+        // ASCII (space) boundary and the floor is `<= i`, so the snap never
+        // overshoots `i`.
+        let floor = crate::util::str_util::ceil_char_boundary(
+            text,
+            punct
+                .max(separator)
+                .unwrap_or(0)
+                .max(prev_end)
+                .max(i.saturating_sub(60)),
+        );
+        prev_end = end;
+        // Word by word back from the suffix while each word is a name word.
+        // `name_start` only ever moves to the start of a whole word, so a word
+        // the floor cuts through is never taken.
+        let mut name_start = i;
+        loop {
+            let head = &text[floor..name_start];
+            let trimmed = head.trim_end();
+            // Past the first step a word must be whitespace-separated from the
+            // one after it (a `-`/`'` inside a word is part of the word).
+            if name_start != i && trimmed.len() == head.len() {
+                break;
+            }
+            let word_at = trimmed.rfind(char::is_whitespace).map_or(0, |d| {
+                d + trimmed[d..].chars().next().map_or(1, char::len_utf8)
+            });
+            let word = &trimmed[word_at..];
+            if word.is_empty()
+                || !is_name_word(word)
+                || (word_at == 0 && floor > 0 && {
+                    // The floor cut into a word (no whitespace between the floor
+                    // and it): only a bound that ends at a word edge admits it.
+                    text[..floor].ends_with(|c: char| c.is_alphanumeric())
+                })
+            {
+                break;
+            }
+            name_start = floor + word_at;
+        }
+        let mut org = text[name_start..end].trim();
+        // A connector opens no company name (`of Harbour Holdings Pty Ltd`).
+        while let Some((first, rest)) = org.split_once(char::is_whitespace)
+            && CONNECTORS.contains(&first)
+        {
+            org = rest.trim_start();
+        }
+        if org.len() >= 5 && org.starts_with(|c: char| c.is_ascii_uppercase()) {
+            // Lowercase once per candidate rather than once per term.
+            let org_lower = org.to_lowercase();
+            let names_a_term = |t: &String| {
+                org_lower
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| !t.is_empty() && w.starts_with(t.as_str()))
+            };
+            if terms.iter().any(names_a_term) && !orgs.iter().any(|o| o == org) {
+                orgs.push(org.to_string());
+            }
         }
     }
     orgs

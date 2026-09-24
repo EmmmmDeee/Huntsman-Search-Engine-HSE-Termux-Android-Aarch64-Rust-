@@ -50,7 +50,42 @@ pub(super) struct NominatimResult {
 #[derive(Deserialize)]
 pub(super) struct NominatimResp {
     pub(super) display_name: Option<String>,
+    /// The `jsonv2` top-level name of the OSM object the point landed on — at
+    /// `zoom=18` usually a shop, restaurant or amenity. Recorded as evidence
+    /// (`nearest_feature`), never used as part of the address value.
+    #[serde(default)]
+    pub(super) name: Option<String>,
     pub(super) address: Option<NominatimAddr>,
+    /// Where the matched OSM object itself lies (`jsonv2` sends both as
+    /// strings; a number is accepted too). Recorded as `matched_lat` /
+    /// `matched_lon` so a reader can measure how far the "nearest address" is
+    /// from the point that was asked about: at `zoom=18` Nominatim answers with
+    /// the nearest object it indexes, which in a park or a paddock can be a
+    /// street hundreds of metres away. The place label
+    /// (`core::place::describe`) prints a house number or a road only when that
+    /// offset is small against the fix's own error bar (REQ-GEOLABEL-002).
+    #[serde(default)]
+    pub(super) lat: Option<serde_json::Value>,
+    /// See [`NominatimResp::lat`].
+    #[serde(default)]
+    pub(super) lon: Option<serde_json::Value>,
+    /// Nominatim's search rank of the matched object: 30 is an address point
+    /// or a building, 26–27 a street, 16–25 a suburb or a town. Recorded as
+    /// `place_rank`; a house number is only ever read off an object ranked at
+    /// least 28 (a building or an address point), never off a street.
+    #[serde(default)]
+    pub(super) place_rank: Option<u32>,
+}
+
+/// A `jsonv2` coordinate field — a string (`"-33.868"`) or, from a proxy that
+/// re-encodes, a number — as a finite `f64`.
+fn json_degrees(v: Option<&serde_json::Value>) -> Option<f64> {
+    let x = match v? {
+        serde_json::Value::String(s) => s.trim().parse::<f64>().ok()?,
+        serde_json::Value::Number(n) => n.as_f64()?,
+        _ => return None,
+    };
+    x.is_finite().then_some(x)
 }
 
 #[derive(Deserialize)]
@@ -277,7 +312,9 @@ impl Geocode {
         let data: NominatimResp = crate::util::http::json_scanned(resp, SRC).await?;
 
         let mut result = ModuleResult::new();
-        result.push(build_reverse_entity(lat, lon, &data, &ctx.scan_id));
+        if let Some(e) = build_reverse_entity(lat, lon, &data, &ctx.scan_id) {
+            result.push(e);
+        }
         Ok(result)
     }
 }
@@ -387,27 +424,110 @@ pub(super) fn au_relevance(lat: f64, lon: f64, addr: Option<&NominatimAddr>) -> 
     }
 }
 
-/// Build the reverse-geocode Address entity, shaping confidence and tags by
-/// [`au_relevance`]. Pure (no I/O) so the AU-gating is unit-tested directly.
+/// The street line of a Nominatim address breakdown: `"{house_number} {road}"`,
+/// or the road alone. The one rule for both the `street` evidence attribute
+/// ([`fold_address_attrs`]) and the reverse-geocode value
+/// ([`reverse_address_value`]), so the two cannot drift.
+fn street_line(addr: &NominatimAddr) -> Option<String> {
+    let road = addr
+        .road
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())?;
+    Some(match addr.house_number.as_deref().map(str::trim) {
+        Some(n) if !n.is_empty() => format!("{n} {road}"),
+        _ => road.to_string(),
+    })
+}
+
+/// The nearest proper address a reverse lookup resolved, built from
+/// Nominatim's STRUCTURED fields — street, locality (suburb, then
+/// city/town/village/municipality, case-insensitive duplicates dropped),
+/// state, postcode, country — each its own comma-separated part, or `None`
+/// when neither a road nor a locality resolved.
+///
+/// Never `display_name`. At `zoom=18` that string starts with whatever OSM
+/// object occupies the point — "Kazan Dining, 25, Martin Place, Wynyard,
+/// Sydney, …" — so the Address value led with a restaurant, and
+/// `util::geohash::parse_address` (which reads a leading part without a digit
+/// as the city) recorded `addr_city = "Kazan Dining"` (REQ-GEO-010). The POI is
+/// the business at the point, not part of anyone's address; it goes to
+/// evidence as `nearest_feature`. Nor a `"-"` placeholder when nothing
+/// resolved: no address is emitted then.
+pub(super) fn reverse_address_value(addr: &NominatimAddr) -> Option<String> {
+    let street = street_line(addr);
+    let mut localities: Vec<&str> = Vec::new();
+    for l in [
+        addr.suburb.as_deref(),
+        addr.city
+            .as_deref()
+            .or(addr.town.as_deref())
+            .or(addr.village.as_deref())
+            .or(addr.municipality.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .filter(|l| !l.is_empty())
+    {
+        if !localities.iter().any(|seen| seen.eq_ignore_ascii_case(l)) {
+            localities.push(l);
+        }
+    }
+    if street.is_none() && localities.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    parts.extend(street);
+    parts.extend(localities.into_iter().map(String::from));
+    parts.extend(
+        [
+            addr.state.as_deref(),
+            addr.postcode.as_deref(),
+            addr.country.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(String::from),
+    );
+    Some(parts.join(", "))
+}
+
+/// Build the reverse-geocode Address entity — the NEAREST ADDRESS to a point —
+/// shaping confidence and tags by [`au_relevance`]. `None` when Nominatim
+/// resolved no street or locality ([`reverse_address_value`]). Pure (no I/O)
+/// so the AU-gating is unit-tested directly.
+///
+/// Rated below Verified even in Australia (`HIGH_PLUS`, the forward leg's and
+/// Photon's reverse tier). A nearest-feature lookup cannot tell a GPS fix from
+/// the city centroid a search snippet produced — the module sees only the
+/// target's `lat,lon` — so one lookup on a centroid was a single-source
+/// VERIFIED (0.78) street address: house-number precision manufactured from a
+/// city name (REQ-GEO-010). Tagged `nearest-address` beside `reverse-geocoded`
+/// so a reader knows the value is the closest address to a point, not an
+/// address anyone reported.
 #[must_use]
 pub(super) fn build_reverse_entity(
     lat: f64,
     lon: f64,
     data: &NominatimResp,
     scan_id: &str,
-) -> Entity {
-    let display = data.display_name.as_deref().unwrap_or("-");
+) -> Option<Entity> {
+    let value = data.address.as_ref().and_then(reverse_address_value)?;
     let relevance = au_relevance(lat, lon, data.address.as_ref());
 
     let confidence = match relevance {
-        AuRelevance::InAustralia => confidence::STRONG,
+        AuRelevance::InAustralia => confidence::HIGH_PLUS,
         AuRelevance::Unknown => confidence::MEDIUM_HIGH,
         AuRelevance::OffRegion => confidence::LOW,
     };
 
-    let mut entity = Entity::new(EntityKind::Address, display, confidence, scan_id);
+    let mut entity = Entity::new(EntityKind::Address, &value, confidence, scan_id);
     entity.tag("geoint");
     entity.tag("reverse-geocoded");
+    entity.tag("nearest-address");
     match relevance {
         AuRelevance::InAustralia => {
             entity.tag("country:AU");
@@ -420,10 +540,26 @@ pub(super) fn build_reverse_entity(
         AuRelevance::Unknown => {}
     }
 
+    // Inferred, not observed: the nearest address to a point is a lookup BY the
+    // point, and nobody reported the subject at it. The flag is what renders
+    // the record "(inferred)" in the dossier and the debug bundle
+    // (REQ-GEOLABEL-006).
     let mut ev = Evidence::new(SRC, format!("Reverse geocode for {lat},{lon}"))
         .with_attr("latitude", lat.to_string())
         .with_attr("longitude", lon.to_string())
-        .with_attr("source", "OpenStreetMap Nominatim");
+        .with_attr("source", "OpenStreetMap Nominatim")
+        .with_inferred(true);
+    if let Some(feature) = data
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        ev = ev.with_attr("nearest_feature", feature);
+    }
+    if let Some(dn) = data.display_name.as_deref() {
+        ev = ev.with_attr("display_name", dn);
+    }
 
     if let Some(addr) = &data.address {
         ev = fold_address_attrs(ev, addr);
@@ -436,8 +572,20 @@ pub(super) fn build_reverse_entity(
         }
     }
 
+    if let (Some(mlat), Some(mlon)) = (
+        json_degrees(data.lat.as_ref()),
+        json_degrees(data.lon.as_ref()),
+    ) {
+        ev = ev
+            .with_attr("matched_lat", format!("{mlat:.6}"))
+            .with_attr("matched_lon", format!("{mlon:.6}"));
+    }
+    if let Some(rank) = data.place_rank {
+        ev = ev.with_attr("place_rank", rank.to_string());
+    }
+
     entity.add_evidence(ev);
-    entity
+    Some(entity)
 }
 
 /// Fold a Nominatim `address` breakdown (city/state/country/postcode/street/
@@ -469,12 +617,20 @@ pub(super) fn fold_address_attrs(mut ev: Evidence, addr: &NominatimAddr) -> Evid
     if let Some(p) = addr.postcode.as_deref() {
         ev = ev.with_attr("postcode", p);
     }
-    if let Some(r) = addr.road.as_deref() {
-        let street = match addr.house_number.as_deref() {
-            Some(n) => format!("{n} {r}"),
-            None => r.to_string(),
-        };
+    if let Some(street) = street_line(addr) {
         ev = ev.with_attr("street", street);
+    }
+    // The house number and the road SEPARATELY, beside the combined `street`:
+    // the place label (`core::place::describe`) may name the road of a
+    // street-grain fix but never its house number (REQ-GEOLABEL-002), and
+    // splitting a combined "25 Martin Place" back apart would be a guess.
+    for (key, part) in [
+        ("house_number", addr.house_number.as_deref()),
+        ("road", addr.road.as_deref()),
+    ] {
+        if let Some(v) = part.map(str::trim).filter(|v| !v.is_empty()) {
+            ev = ev.with_attr(key, v);
+        }
     }
     if let Some(sub) = addr.suburb.as_deref() {
         ev = ev.with_attr("suburb", sub);

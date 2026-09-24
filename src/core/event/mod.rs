@@ -83,9 +83,11 @@ pub enum SkipClass {
     /// spent quota or cost budget, or a capability quarantine.
     Unavailable,
     /// The provider had nothing to say about this target at all — a private or
-    /// reserved IP, a local domain, a URL with a private host. Asking would
-    /// have been rejected upstream, so its silence carries no information about
-    /// the subject either way.
+    /// reserved IP, a local domain, a URL with a private host, a host with no
+    /// DNS. Asking would have been rejected upstream — or was, when the module
+    /// learned it from the provider's own reply (hackertarget's "error invalid
+    /// host", whois's IANA bootstrap) — so its silence carries no information
+    /// about the subject either way.
     NotApplicable,
     /// Already dispatched for this target earlier in the same scan (or, for a
     /// local sensor, already run on the seed round), so its answer is already
@@ -191,14 +193,32 @@ pub enum EventKind {
         /// `DispatchUtility::explanation` — one line per contributing factor.
         explanation: Vec<String>,
     },
-    /// The final bulk breach sweep dispatched its compiled plan. Reports the
-    /// plan's shape, INCLUDING what it declined to ask, so a sweep that hit its
-    /// cap is distinguishable from one that simply had less to ask about.
+    /// The final bulk breach sweep finished. Reports the plan's shape,
+    /// INCLUDING what it declined to ask, so a sweep that hit its cap is
+    /// distinguishable from one that simply had less to ask about — and how
+    /// much of that plan was actually dispatched, so a sweep the scan budget
+    /// cut short (or never let start) is never read as one that ran.
     BreachSweep {
         anchors: usize,
+        /// Probes the plan compiled (planned, not necessarily sent).
         probes: usize,
         /// Probes the plan derived but could not fit under the cap.
         dropped: usize,
+        /// Probes actually dispatched to the breach corpora. `None` only on an
+        /// event persisted before the count was recorded: such a sweep's
+        /// dispatch is UNKNOWN, not zero, so it renders the old "N probes from
+        /// M anchors" line. Defaulting it to `0` re-rendered every pre-upgrade
+        /// sweep that ran normally as "0/12 probes dispatched" — the mirror
+        /// image of the misreport REQ-SWEEP-004 fixed (REQ-SWEEP-006). Every
+        /// new emission is `Some`.
+        #[serde(default)]
+        dispatched: Option<usize>,
+        /// Why dispatch stopped before the plan was exhausted
+        /// ([`crate::core::scan::StopReason::label`]) — a spent scan budget or
+        /// a cancel. `None` when every planned probe went out (including the
+        /// empty plan: ran, nothing to ask).
+        #[serde(default)]
+        stopped: Option<String>,
     },
     /// The autonomous audit of the breach corpus graded the scan's findings.
     /// `verdict` is the [`crate::core::breach_consensus::AuditVerdict`] label;
@@ -254,7 +274,31 @@ pub enum EventKind {
         /// default to [`ScanStatus::Complete`] and render exactly as before.
         #[serde(default = "terminal_status_default")]
         status: ScanStatus,
+        /// Whether the scan's finalise recorded a shortfall — a write the
+        /// store refused, a pass that failed outright, a relation derivation
+        /// or a correlator its time budget cut short, or an import's
+        /// relation and correlation pass skipped for size — in the row's
+        /// `error` (`FinaliseTally`). Such a scan reaches `Complete` (or
+        /// `Aborted`), yet every export classifies it partial
+        /// (`partial_export_reason`): "partial, finalise-incomplete" when
+        /// `Complete`, "partial, aborted" when `Aborted`, with the shortfall
+        /// named in the scan's completeness caveat for both
+        /// (REQ-SCANSTATUS-022). Without this the live surfaces that read the
+        /// event alone — `hse live`, the web scan log's pill, the radar —
+        /// announced a clean completion for the same scan
+        /// (REQ-SCANSTATUS-015). Never set on a `Failed` event. Omitted
+        /// from the wire when `false`, and `false` for a row persisted before
+        /// the field existed, so a clean completion serialises as before.
+        #[serde(default, skip_serializing_if = "is_false")]
+        finalise_incomplete: bool,
     },
+}
+
+/// `skip_serializing_if` for [`EventKind::ScanComplete`]'s
+/// `finalise_incomplete`: a clean completion carries no such key.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes the field by reference
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Back-compat default for [`EventKind::ScanComplete`]'s `status` (see the field
@@ -301,9 +345,14 @@ impl EventKind {
     pub fn log_level(&self) -> &'static str {
         match self {
             Self::ModuleError { .. } => "error",
-            Self::ScanComplete { status, .. } => match status {
+            Self::ScanComplete {
+                status,
+                finalise_incomplete,
+                ..
+            } => match status {
                 ScanStatus::Failed => "error",
                 ScanStatus::Aborted => "warn",
+                _ if *finalise_incomplete => "warn",
                 _ => "info",
             },
             _ => "info",
@@ -394,10 +443,14 @@ impl EventKind {
                 anchors,
                 probes,
                 dropped,
+                dispatched,
+                stopped,
             } => vec![
                 ("anchors", json!(anchors)),
                 ("probes", json!(probes)),
                 ("dropped", json!(dropped)),
+                ("dispatched", json!(dispatched)),
+                ("stopped", json!(stopped)),
             ],
             Self::ConsensusAudit {
                 verdict,
@@ -442,11 +495,18 @@ impl EventKind {
             Self::ScanComplete {
                 entity_count,
                 status,
+                finalise_incomplete,
                 ..
-            } => vec![
-                ("status", json!(status.as_str())),
-                ("entities", json!(entity_count)),
-            ],
+            } => {
+                let mut fields = vec![
+                    ("status", json!(status.as_str())),
+                    ("entities", json!(entity_count)),
+                ];
+                if *finalise_incomplete {
+                    fields.push(("finalise_incomplete", json!(true)));
+                }
+                fields
+            }
         }
     }
 
@@ -522,19 +582,34 @@ impl EventKind {
                 anchors,
                 probes,
                 dropped,
+                dispatched,
+                stopped,
             } => {
                 // The dropped count is part of the headline, not a footnote: a
                 // sweep that fit everything and one that was cut short read
-                // identically without it.
+                // identically without it. Likewise dispatched-of-planned and
+                // the stop reason: a plan the budget cut to zero is not a sweep
+                // that ran.
                 let over = if *dropped > 0 {
                     format!(" · {dropped} over cap")
                 } else {
                     String::new()
                 };
+                let stop = stopped
+                    .as_deref()
+                    .map_or_else(String::new, |r| format!(" · stopped: {r}"));
+                // A legacy event never recorded its dispatch: say what it did
+                // record, not a count of zero it never claimed.
+                let sent = dispatched.map_or_else(String::new, |d| format!("{d}/"));
+                let verb = if dispatched.is_some() {
+                    " dispatched"
+                } else {
+                    ""
+                };
                 (
                     "expand",
                     format!(
-                        "⇉ breach sweep · {probes} probe{} from {anchors} anchor{}{over}",
+                        "⇉ breach sweep · {sent}{probes} probe{}{verb} from {anchors} anchor{}{over}{stop}",
                         plural(*probes),
                         plural(*anchors)
                     ),
@@ -591,17 +666,33 @@ impl EventKind {
             Self::ScanComplete {
                 entity_count,
                 status,
+                finalise_incomplete,
                 ..
             } => match status {
                 // A cancelled or failed scan still emits this single terminal
                 // event; branch so its log line states what actually happened
                 // instead of asserting success. `mapEvent` in
-                // `web/js/scan_info/log.js` mirrors these three cases.
+                // `web/js/scan_info/log.js` mirrors these cases.
                 ScanStatus::Aborted => (
                     "scan",
-                    format!("■ scan aborted — stopped early · {entity_count} entities"),
+                    format!(
+                        "■ scan aborted — stopped early · {entity_count} entities{}",
+                        if *finalise_incomplete {
+                            " · finalise incomplete"
+                        } else {
+                            ""
+                        }
+                    ),
                 ),
                 ScanStatus::Failed => ("scan", "✗ scan failed".to_string()),
+                // Ran to the end, but its finalise did not store or compute
+                // everything: partial, as every export reads it.
+                _ if *finalise_incomplete => (
+                    "scan",
+                    format!(
+                        "◐ scan complete but PARTIAL — finalise incomplete · {entity_count} entities"
+                    ),
+                ),
                 // `Complete`, and the back-compat default for pre-field rows:
                 // the historical success line, unchanged.
                 _ => ("scan", format!("✔ scan complete · {entity_count} entities")),

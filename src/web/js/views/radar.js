@@ -358,7 +358,7 @@ function renderSweepHistory(sweeps){
     const cur = view.data && view.data.scan_id === sw.id;
     return `<tr${cur ? ' class="active"' : ''}>
       <td>${esc(fmtDate(sw.started_at))}</td>
-      <td>${statusPill(sw.status)}${sw.interrupted ? ' <span class="label label-warning">interrupted</span>' : ''}</td>
+      <td>${statusPill(sw.status, sw.finalise_incomplete)}${sw.interrupted ? ' <span class="label label-warning">interrupted</span>' : ''}</td>
       <td class="text-right">${dur == null ? '<span class="text-muted">—</span>' : (dur + 's')}</td>
       <td class="text-right">${sw.entity_count || 0}</td>
       <td class="text-right">
@@ -393,15 +393,33 @@ function syncLiveButtons(){
 function setLiveStatus(text){ const el = $('#radar-live-status'); if (el) el.textContent = text; }
 
 /* Follow a continuous radar over its own event stream (the same SSE the Live
-   page tails): a `live_tick` says a sweep started, a `scan_complete` says its
-   readings are persisted — the engine writes the row before it emits the
-   event — so the view refreshes exactly then, not on a timer. `live_stop`
-   releases the session. One stream at a time; render() closes it on leaving. */
+   page tails): a `live_tick` says a sweep started, a `scan_complete` says it
+   ended — the engine writes the row before it emits the event — so the view
+   refreshes exactly then, not on a timer. A sweep whose store refused its
+   writes — its findings (REQ-SCANSTATUS-008) or its very start row
+   (REQ-SCANSTATUS-011), or its terminal row (REQ-SCANSTATUS-014) — still
+   ends with `scan_complete` carrying `status: failed`; its row may not have
+   landed, so the status is read from the event, and the refresh re-reads
+   only the readings. A sweep whose finalise did not store or compute
+   everything carries `finalise_incomplete` and reads partial, as its exports
+   do (REQ-SCANSTATUS-015). A sweep cut off before its modules finished (the
+   per-iteration watchdog, a cancel by scan id, a session stop) carries
+   `status: aborted` and reads "stopped early", as `hse live` and the scan
+   log say it, never "done" (REQ-SCANSTATUS-035). `live_stop` releases the
+   session. One stream at a
+   time; render() closes it on leaving. */
 function onLiveEvent(ev){
   if (!ev || !ev.type) return;
   if (ev.type === 'live_tick') { setLiveStatus(`continuous radar · sweep #${ev.iteration} running…`); return; }
   if (ev.type === 'scan_complete') {
-    setLiveStatus(`continuous radar · sweep done at ${fmtClock()}`);
+    const partial = ev.finalise_incomplete === true ? ' (partial — finalise incomplete)' : '';
+    setLiveStatus(ev.status === 'failed'
+      ? `continuous radar · sweep failed at ${fmtClock()}`
+      : ev.status === 'aborted'
+        ? `continuous radar · sweep stopped early${partial} at ${fmtClock()}`
+        : partial
+          ? `continuous radar · sweep done${partial} at ${fmtClock()}`
+          : `continuous radar · sweep done at ${fmtClock()}`);
     view.sid = null; syncSweepPicker();
     refreshSignals(true); refreshRecurring(); refreshDisruptions();
     return;

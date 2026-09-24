@@ -62,6 +62,15 @@ fn au001_fires_at_two_breach_sources() {
 }
 
 #[test]
+fn au001_does_not_count_a_password_corpus_hit_as_a_breach_source() {
+    // REQ-CORE-018: `source_family` files `pwned_passwords` under "breach", but
+    // a password-list hit annotates a string — it is not a breach sighting of
+    // the account, so hibp + pwned_passwords is ONE breach source.
+    let e = email("x@y.com", &["hibp", "pwned_passwords"]);
+    assert!(rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0).is_empty());
+}
+
+#[test]
 fn au001_no_fire_at_one_source() {
     let e = email("x@y.com", &["hudsonrock"]);
     assert!(rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0).is_empty());

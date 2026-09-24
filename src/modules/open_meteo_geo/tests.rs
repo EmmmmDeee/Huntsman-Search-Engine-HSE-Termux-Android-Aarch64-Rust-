@@ -265,9 +265,9 @@ fn a_row_skipped_for_a_missing_component_does_not_consume_the_cap() {
         r#"{{"results":[{}]}}"#,
         [
             r#"{"name":"NoLat","longitude":151.0,"country_code":"AU"}"#,
-            r#"{"name":"A","latitude":-27.4766,"longitude":153.0166,"country_code":"AU"}"#,
-            r#"{"name":"B","latitude":-33.8688,"longitude":151.2093,"country_code":"AU"}"#,
-            r#"{"name":"C","latitude":-37.8136,"longitude":144.9631,"country_code":"AU"}"#,
+            r#"{"name":"X","latitude":-27.4766,"longitude":153.0166,"country_code":"AU"}"#,
+            r#"{"name":"X","latitude":-33.8688,"longitude":151.2093,"country_code":"AU"}"#,
+            r#"{"name":"X","latitude":-37.8136,"longitude":144.9631,"country_code":"AU"}"#,
         ]
         .join(",")
     );
@@ -289,4 +289,87 @@ fn a_row_skipped_for_a_missing_component_does_not_consume_the_cap() {
         names.iter().all(|v| !v.starts_with("0.000000")),
         "a fabricated equatorial coordinate reached the output: {names:?}"
     );
+}
+
+/// REQ-OPENMETEO-002: GeoNames' fuzzy search answered "Sydney, Australia" with
+/// the headland "Sydney Heads" (feature code MT) near Isaac, Queensland,
+/// ~1,400 km from Sydney, and it became the anchor. A hit whose name is not the
+/// queried place (a run of the query's whole words) is not a geocode of it: skipped without
+/// taking the anchor slot, so the real match behind it anchors.
+#[test]
+fn a_fuzzy_neighbour_of_the_query_is_not_its_geocode() {
+    let heads = GeoResult {
+        feature_code: Some("MT".to_string()),
+        ..res("Sydney Heads", -21.95, 148.68, "AU")
+    };
+    let sydney = res("Sydney", -33.8688, 151.2093, "AU");
+    let ents = build_entities(&[heads, sydney], "Sydney, Australia", "s");
+    assert_eq!(ents.len(), 1, "{ents:?}");
+    assert_eq!(ents[0].value, "-33.868800,151.209300");
+    assert!(!ents[0].has_tag("candidate"), "the real match anchors");
+
+    let heads_alone = GeoResult {
+        feature_code: Some("MT".to_string()),
+        ..res("Sydney Heads", -21.95, 148.68, "AU")
+    };
+    assert!(build_entities(&[heads_alone], "Sydney, Australia", "s").is_empty());
+
+    // Case, punctuation and diacritics do not make a match a fragment.
+    let hanoi = res("Hà Nội", 21.0245, 105.8412, "VN");
+    assert_eq!(build_entities(&[hanoi], "ha noi, vietnam", "s").len(), 1);
+}
+
+/// REQ-OPENMETEO-004: a street named after a city is not that city. GeoNames
+/// ranks a whole-address query by population, so "Adelaide St, Brisbane City
+/// QLD" (a Brisbane CBD street) can come back as the capital "Adelaide",
+/// 1,600 km away — and "Adelaide" was a run of the query's words, so it
+/// anchored the Brisbane address in South Australia. A street's name matches
+/// only with its type; the Brisbane hit behind it anchors.
+#[test]
+fn a_city_a_street_is_named_after_is_not_the_streets_geocode() {
+    let adelaide = || res("Adelaide", -34.9285, 138.6007, "AU");
+    let brisbane = res("Brisbane", -27.4679, 153.0281, "AU");
+    let ents = build_entities(
+        &[adelaide(), brisbane],
+        "Adelaide St, Brisbane City QLD",
+        "s",
+    );
+    assert_eq!(ents.len(), 1, "{ents:?}");
+    assert_eq!(ents[0].value, "-27.467900,153.028100");
+    assert!(
+        build_entities(&[adelaide()], "Adelaide St, Brisbane City QLD", "s").is_empty(),
+        "the city the street is named after is not its geocode"
+    );
+    let sydney = res("Sydney", -33.8688, 151.2093, "AU");
+    assert!(build_entities(&[sydney], "Sydney Rd, Brunswick VIC", "s").is_empty());
+}
+
+/// REQ-OPENMETEO-003: the name check forgives how ONE name is written, so the
+/// operating jurisdiction's own place names still geocode. Queried live
+/// (2026-09-23): `"Ho Chi Minh, Vietnam"` returns GeoNames' English name
+/// "Ho Chi Minh City" — whose trailing generic "City" the whole-word check
+/// rejected, leaving Vietnam's largest city with no Open-Meteo coordinate.
+/// A name written with or without its word break ("Hanoi" / "Ha Noi") and
+/// the "Mt" / "Mount" abbreviation are the same place too. The Sydney Heads
+/// rejection above still holds, and a "City" whose remainder is a state or a
+/// country is not the place asked about.
+#[test]
+fn a_name_written_another_way_is_still_the_queried_place() {
+    let hcmc = res("Ho Chi Minh City", 10.8231, 106.6297, "VN");
+    let ents = build_entities(&[hcmc], "Ho Chi Minh, Vietnam", "s");
+    assert_eq!(ents.len(), 1, "{ents:?}");
+    assert_eq!(ents[0].value, "10.823100,106.629700");
+
+    let hanoi = res("Hanoi", 21.0245, 105.8412, "VN");
+    assert_eq!(build_entities(&[hanoi], "Hà Nội, Việt Nam", "s").len(), 1);
+
+    let isa = res("Mount Isa", -20.7256, 139.4927, "AU");
+    assert_eq!(build_entities(&[isa], "Mt Isa, QLD", "s").len(), 1);
+
+    // Still not a neighbour: a different place that merely starts the same.
+    let heads = res("Sydney Heads", -21.95, 148.68, "AU");
+    assert!(build_entities(&[heads], "Sydney, Australia", "s").is_empty());
+    // A "City" standing on a state is a different place from the state.
+    let kc = res("Kansas City", 39.0997, -94.5786, "US");
+    assert!(build_entities(&[kc], "Kansas, USA", "s").is_empty());
 }

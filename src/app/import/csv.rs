@@ -405,6 +405,7 @@ pub(super) fn parse_hse_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportStats)
     let col = |name: &str| header.iter().position(|h| h.trim() == name);
     let (k_i, v_i) = (col("kind"), col("value"));
     let (conf_i, ev_i, tags_i) = (col("confidence"), col("evidence"), col("tags"));
+    let fix_radius_i = col("fix_radius_m");
 
     for row in data {
         let get = |i: Option<usize>| i.and_then(|i| row.get(i)).map(String::as_str);
@@ -431,6 +432,18 @@ pub(super) fn parse_hse_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportStats)
             for t in pipe_delimited(tags) {
                 e.tag(t);
             }
+        }
+        // The grade the exporting scan gave a coordinate travels as a radius
+        // floor: the evidence trail below comes back without its attributes
+        // (an accuracy radius, a geocoder's matched grain, the address it was
+        // asked), so without the floor the point would be graded by its source
+        // class alone — finer than the scan that found it.
+        if kind == EntityKind::Coordinates
+            && let Some(r) = get(fix_radius_i)
+                .and_then(|r| r.trim().parse::<u64>().ok())
+                .filter(|r| *r > 0)
+        {
+            e.tag(crate::core::place::grain::fix_radius_tag(r));
         }
         // Rebuild the `[source] summary || …` evidence trail.
         let mut had_ev = false;
