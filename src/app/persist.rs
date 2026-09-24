@@ -1,11 +1,12 @@
 //! Shared use case: persist an already-extracted batch of entities as a
 //! completed scan.
 //!
-//! Two commands turn a batch of entities the operator ALREADY has — rather than
-//! a live target — into a stored, correlated scan: `hse import` (breach/dossier
-//! exports) and `hse ingest --auto-scan` (entities extracted from a document).
-//! Both want the same finalise the live engine runs — offline geospatial
-//! enrichment, deterministic relation derivation, correlation — and both must
+//! Three commands turn a batch of entities the operator ALREADY has — rather
+//! than a live target — into a stored, correlated scan: `hse import`
+//! (breach/dossier exports), `hse ingest --auto-scan` (entities extracted from a
+//! document) and `hse investigate --auto-scan` (entities extracted from text).
+//! All want the same finalise the live engine runs — offline geospatial
+//! enrichment, deterministic relation derivation, correlation — and all must
 //! open the store, which the presentation layers (`cli`/`api`) are forbidden to
 //! do directly (`tests/architecture.rs`). Housing that tail here, in the
 //! application layer, lets either command produce a scan indistinguishable from
@@ -337,6 +338,22 @@ pub(crate) fn skip_enrichment_over_cap(
     true
 }
 
+/// The command that reads back a scan stored outside `hse scan`, named by the
+/// hint [`PersistedBatch::summary_lines`] ends with. `hse import`,
+/// `hse ingest --auto-scan` and `hse investigate --auto-scan` print it after
+/// storing one; `hse investigate --json` carries the scan's id in
+/// `auto_scan.scan_id` instead. The hint named a list command `hse` does not
+/// have, which failed as an unrecognized subcommand (REQ-CLI-HINTS-001). The
+/// `--auto-scan` help quotes this same command, and a test holds the two
+/// together.
+///
+/// `full` is the export that shows all of what was stored: every entity,
+/// relation and correlation. `report` leaves out relations, infrastructure and
+/// candidate rows, which the summary beside the hint counts.
+pub(crate) fn view_command(scan_id: &str) -> String {
+    format!("hse export -s {scan_id} -f full")
+}
+
 /// What [`persist_entities_as_scan`] stored, for the caller's summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PersistedBatch {
@@ -381,8 +398,11 @@ impl PersistedBatch {
     /// 4990 does not exceed 5000 (REQ-SCANSTATUS-013).
     pub(crate) fn summary_lines(&self, sid: &str) -> Vec<String> {
         let mut lines = vec![format!(
-            "scan {sid} ({} entities, {} relations, {} correlations) — view with `hse list`",
-            self.entities, self.relations, self.correlations
+            "scan {sid} ({} entities, {} relations, {} correlations) — view with `{}`",
+            self.entities,
+            self.relations,
+            self.correlations,
+            view_command(sid)
         )];
         if let Some(err) = &self.finalise_error {
             lines.push(format!(
@@ -397,9 +417,10 @@ impl PersistedBatch {
 /// Persist `entities` as a `Complete` scan `sid` (labelled `label`, target kind
 /// `kind`) in the default store, then derive the deterministic entity relations
 /// and run the correlator over it — exactly as a live scan's finalise does, so a
-/// batch-persisted scan carries the same graph a live scan would. The scan then
-/// appears in `hse list` and every view/export (entities, dossier, debug bundle,
-/// GEXF) works on it, and its pivots can later seed a re-scan.
+/// batch-persisted scan carries the same graph a live scan would. Every
+/// view/export (entities, dossier, debug bundle, GEXF) then works on the scan,
+/// [`view_command`] names the command that reads it back, and its pivots can
+/// later seed a re-scan.
 ///
 /// Not fatal on relations and correlations: the entities are already persisted,
 /// so a hiccup storing the graph must not fail the whole operation — but it is
@@ -948,8 +969,8 @@ mod tests {
     #[tokio::test]
     async fn persist_entities_as_scan_makes_a_readable_complete_scan() {
         // The core contract every batch-persist path relies on: after this call
-        // the store holds a Complete scan whose entities read back — so `hse
-        // list`, views and exports all work. Under cfg(test) the store is rooted
+        // the store holds a Complete scan whose entities read back — so views
+        // and exports work. Under cfg(test) the store is rooted
         // in a temp dir (util::paths::huntsman_dir), so this touches no real
         // ~/.huntsman. That store is SHARED and persists across runs, so the sid
         // must be unique per run — otherwise a prior run's rows would mask a
@@ -1190,7 +1211,8 @@ mod tests {
         assert_eq!(
             whole.summary_lines("s"),
             vec![
-                "scan s (2 entities, 1 relations, 0 correlations) — view with `hse list`"
+                "scan s (2 entities, 1 relations, 0 correlations) — view with \
+                 `hse export -s s -f full`"
                     .to_string()
             ]
         );

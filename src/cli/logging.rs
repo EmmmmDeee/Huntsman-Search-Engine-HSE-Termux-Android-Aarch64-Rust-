@@ -46,8 +46,8 @@ pub(super) fn initialize() {
 
     // One JSON event format, two writers behind one EnvFilter: the operator's
     // stderr console and a tee into the in-memory ring buffer, so the identical
-    // NDJSON stream is downloadable from the Web UI (`GET /api/v1/logs`) /
-    // `hse logs` and is byte-for-byte the same as what scrolled past.
+    // NDJSON stream is downloadable from the Web UI (`GET /api/v1/logs`, and
+    // `/api/v1/logs/tail`) and is byte-for-byte the same as what scrolled past.
     tracing_subscriber::registry()
         .with(filter)
         .with(

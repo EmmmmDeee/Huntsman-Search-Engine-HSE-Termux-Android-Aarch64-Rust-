@@ -804,9 +804,9 @@ pub(crate) fn render_event_log(events: &[crate::core::event::Event]) -> String {
 /// none), not the wall clock, so a terminal scan's export stays byte-identical
 /// across downloads.
 ///
-/// Shared by `GET /api/v1/scans/{id}/events.log` and `hse export {id} --format
-/// events`, so the two render identically (the download then genericises the
-/// provider names for the customer copy).
+/// Shared by `GET /api/v1/scans/{id}/events.log` and
+/// `hse export -s <id> --format events`, so the two render identically (the
+/// download then genericises the provider names for the customer copy).
 pub(crate) fn render_event_log_export(
     store: &dyn crate::core::port::StoragePort,
     sid: &str,
@@ -846,7 +846,7 @@ pub(crate) fn render_event_log_export(
 ///   4. the scored self-audit — score, every weakness finding with its
 ///      recommendation, the exclusion ledger, and the geo-consistency summary.
 ///
-/// One `hse export <id> --format debug` (or the web "Debug bundle" button) yields
+/// One `hse export -s <id> --format debug` (or the web "Debug bundle" button) yields
 /// a single text file from which the whole run — sequence, results, and every
 /// flaw — is understandable via logs alone.
 pub(crate) fn render_debug_bundle(

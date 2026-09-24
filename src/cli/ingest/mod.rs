@@ -2,13 +2,13 @@
 //!
 //! With `--auto-scan`, the extracted entities are ALSO persisted as a completed,
 //! correlated scan (via [`crate::app::persist`], the same use case `hse import`
-//! runs) — so they appear in `hse list` and every view/export works on them — in
-//! addition to being written to the chosen output. This is a deterministic,
-//! offline persist-and-correlate: no modules are dispatched and no network is
-//! touched. The engine seeds from a single live target, so feeding a whole batch
-//! of document-extracted entities into it as seeds is deliberately NOT what this
-//! does; auto-launching network reconnaissance against every entity found in an
-//! arbitrary document would be both non-deterministic and a footgun.
+//! runs) — so every view/export works on them — in addition to being written to
+//! the chosen output. This is a deterministic, offline persist-and-correlate:
+//! no modules are dispatched and no network is touched. The engine seeds from a
+//! single live target, so feeding a whole batch of document-extracted entities
+//! into it as seeds is deliberately NOT what this does; auto-launching network
+//! reconnaissance against every entity found in an arbitrary document would be
+//! both non-deterministic and a footgun.
 
 use crate::util::document_parse::{DocumentFormat, DocumentResult};
 use crate::util::entity_extractor::EntityExtractor;
@@ -347,10 +347,13 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
         .unwrap_or("ingest");
 
     // --auto-scan: persist the extracted entities as a completed, correlated
-    // scan (offline — no module dispatch, no network) so they land in `hse list`
-    // and every view/export, in ADDITION to the extraction output written below.
+    // scan (offline — no module dispatch, no network) so every view/export
+    // reads them, in ADDITION to the extraction output written below.
     // Best-effort, exactly like the import path: the entities are still emitted,
     // so a persistence hiccup must warn, never fail the ingest.
+    // The summary goes to stderr, where the operator reads it whatever the log
+    // level: stdout carries the extracted entities. As a log line it vanished
+    // under `RUST_LOG=off`, taking the stored scan's id with it.
     if args.auto_scan {
         match run_auto_scan(&entities, document_source).await {
             Ok((sid, batch)) => {
@@ -358,14 +361,14 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
                 // enrichment-cap skip stated once (REQ-SCANSTATUS-013).
                 for (i, line) in batch.summary_lines(&sid).into_iter().enumerate() {
                     if i == 0 {
-                        info!("auto-scan: stored {line}");
+                        eprintln!("auto-scan: stored {line}");
                     } else {
-                        tracing::warn!("auto-scan: {line}");
+                        eprintln!("auto-scan: warning: {line}");
                     }
                 }
             }
             Err(e) => {
-                tracing::warn!("auto-scan: could not persist extracted entities: {e}");
+                eprintln!("auto-scan: could not store the extracted entities: {e}");
             }
         }
     }

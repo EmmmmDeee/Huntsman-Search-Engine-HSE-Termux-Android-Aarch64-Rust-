@@ -565,14 +565,14 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
 
 /// Persist a parsed import as a completed scan in the default store — the CLI
 /// counterpart to the web `scan_import` handler — so `hse import` is no longer a
-/// print-and-discard: the imported scan appears in `hse list`, every view/export
-/// (entities, dossier, debug bundle, GEXF) works on it, and expansion seeds can
-/// later re-scan its pivots. Derives the deterministic entity relations and runs
-/// the correlator, exactly as the live scan finalise does, so an imported dossier
-/// carries the same graph a live scan would. Not fatal on relations and
-/// correlations: an import whose entities already persisted must not fail on a
-/// hiccup there — but what the store refused is recorded on the scan and
-/// returned in [`PersistedBatch::finalise_error`](crate::app::persist::PersistedBatch::finalise_error)
+/// print-and-discard: every view/export (entities, dossier, debug bundle, GEXF)
+/// works on the imported scan, and expansion seeds can later re-scan its
+/// pivots. Derives the deterministic entity relations and runs the correlator,
+/// exactly as the live scan finalise does, so an imported dossier carries the
+/// same graph a live scan would. Not fatal on relations and correlations: an
+/// import whose entities already persisted must not fail on a hiccup there —
+/// but what the store refused is recorded on the scan and returned in
+/// [`PersistedBatch::finalise_error`](crate::app::persist::PersistedBatch::finalise_error)
 /// with the persisted counts, for the summary.
 ///
 /// The store-opening / finalise body is the shared [`crate::app::persist`] use

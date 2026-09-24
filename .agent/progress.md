@@ -304,9 +304,30 @@ state file now also carries `competitors`, `capability_gaps`, `clusters` and
   of a non-interactive shell, which ignores SIGINT, and the reconciler's
   fake radar inherited that and never exited: recorded as an open defect.
 
+### Change 9: [DEFECT] The hint after a stored scan names a command that reads it back (REQ-CLI-HINTS-001)
+
+- **What.** `app::persist::view_command` (`hse export -s <id> -f full`)
+  ends `PersistedBatch::summary_lines`, which all three commands print;
+  `hse ingest --auto-scan` prints it on stderr. The help texts quote it,
+  and a test follows every `hse …` command every help page quotes through
+  the real parser.
+- **Why.** The hint named `hse list`, which does not exist (exit 2).
+- **Review.** The first draft named `-f report`; it names `-f full`. A
+  second review, of the re-port, found a test helper that would not
+  compile, a missed `hse export {id}` doc, `investigate`'s store failure
+  left to the log, a vacuous help-quote test and gaps in the command
+  checker; all fixed.
+- **Evidence.** Runtime on sandboxed builds: 0 of 7 checks before, 7 of 7 after; each hint, run next in a new process, reads back the scan it names. Mutations: 15 of 15 caught.
+- **Fresh worktree.** Passed, with empty target directories: the gate; the full
+  suite twice, 8863 tests, identical, none failing (the 4 new tests the only
+  difference from REQ-INGEST-001's run); doctests 88 passed, 3 ignored, twice;
+  the README's release install; the installed binary's runtime check 7 of 7,
+  twice.
+
 ## Next
 
-- **REQ-CLI-HINTS-001.** The hint after a stored scan named `hse list`,
-  which does not exist. Re-ported onto the merged base (the hint now ends
-  the shared `summary_lines`) and reviewed a second time; the review's fixes
-  are in. Applied and verified on its own next.
+- **Report.** Five changes are complete this session (REQ-SCANNAME-001,
+  REQ-KEYPOOL-003, REQ-SETTINGS-001, REQ-INGEST-001, REQ-CLI-HINTS-001):
+  the stop condition. Next session: REQ-GRAPHSVG-001 (the dormant snake SVG
+  graph export, a wiring change), then the SpiderFoot layouts for Scans,
+  New Scan, Settings and Scan Info.

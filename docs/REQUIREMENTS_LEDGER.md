@@ -26060,3 +26060,143 @@ signature, and `holiday.jpg`, a real JPEG with an EXIF GPS fix (27°28'35"S,
 | `--extract-geolocation` on the photo yields its GPS fix and nothing from its path | fail (the folder's email and `holiday.jpg` as a domain beside the fix) | pass |
 | control: a text file still yields its email | pass | pass |
 | **total** | **1 of 9** | **9 of 9** |
+
+---
+
+## REQ-CLI-HINTS-001 — the hint after a stored scan named a command `hse` does not have
+
+**Requirement.** Every command the CLI tells the operator to run exists, and
+does what the hint says.
+
+**Defect.** Three commands store a scan without running one: `hse import`,
+`hse ingest --auto-scan` and `hse investigate --auto-scan`. Each ends with the
+one summary `app::persist::PersistedBatch::summary_lines` writes, and that
+summary ended "view with `hse list`". There is no list command. On the build
+before this fix:
+
+```text
+$ hse import dossier.txt
+  Stored:    scan import-dossier-cfe013b9…4c7 (2 entities, 1 relations, 0 correlations) — view with `hse list`
+  …
+$ hse list
+error: unrecognized subcommand 'list'          (exit 2)
+```
+
+The help promised the same command: `hse ingest --help` and `hse investigate
+--help` said `--auto-scan` scans "show in `hse list`". `hse query --help`
+compared `query` to `hse search`, which does not exist either. Developer-facing
+texts carried the same drift: a comment in `cli::logging` named a `hse logs`
+command, and the docs of `persist_entities_as_scan`, `persist_import` and
+`cli::ingest` said a stored scan appears in `hse list`.
+
+**Fix.**
+
+- `app::persist::view_command(scan_id)` is the one hint:
+  `hse export -s <id> -f full`, the dossier of everything the scan holds.
+  `summary_lines` ends with it, so the three commands print it for the scan
+  they stored.
+- `hse ingest --auto-scan` prints its summary, hint included, to stderr. It
+  was a log event (`info!`, and `warn!` for an incomplete scan), so
+  `RUST_LOG=off` hid the stored scan's id, and by default it sat inside a JSON
+  log line. Stdout still carries only the extracted entities.
+- The `--auto-scan` help of `hse ingest` and `hse investigate` quotes the same
+  command. `hse query --help` compares itself to a scan's search-engine module
+  (`hse scan`), which is what builds the `site:`/`intext:` dorks it describes.
+- The `hse logs` comment names the web log endpoints instead, and those docs
+  name no list command.
+- Developer docs that wrote `hse export {id}` with a positional id now write
+  `hse export -s <id>`, and `docs/TROUBLESHOOTING.md`'s not-implemented banner
+  lists `hse scan --dry-run` with the other flags that do not exist.
+- `hse export --help` lists `events` among the formats, as the export's own
+  error message already did.
+- `hse investigate --auto-scan` prints a failure to store on stderr too, as
+  ingest does; it was a log event that `RUST_LOG=off` hid.
+
+**Review.** An independent review of the first draft found the hint named
+`-f report`, which leaves out relations (which the summary beside the hint
+counts) and infrastructure and candidate rows; it names `-f full`. A second
+review, of the re-port, found a test helper that would not compile (`Result`
+in `cli::tests` is the crate's one-parameter alias), a missed `hse export {id}`
+doc, `investigate`'s store failure left to the log, a help-quote test that
+passed if its pages were renamed, and gaps in the command checker: a
+positional id after a command that takes none passed, `--version` passed below
+the root, and `hse help …` and `[--yes]` would have been refused. All are
+fixed.
+
+This change was drafted before `main` (#649) was merged. #649 gathered the
+three summaries into `summary_lines`, so the hint moved there, and it had
+already fixed two things the draft also fixed: `persist_entities_as_scan`'s
+doc and return value, and `hse import`'s one-second scan ids.
+
+**Locks.**
+
+- `cli::tests::the_stored_scan_hint_reads_that_scan_back` parses the hint with
+  the CLI's own parser: it is `hse export` of that scan in the `full` format.
+- `cli::tests::every_command_the_help_names_exists` renders every help page from
+  the CLI definition, the root, hidden commands and nested subcommands included.
+  Each quoted `hse …` command is followed through its subcommands (names and
+  aliases); each flag it passes must be one that command takes, a flag that
+  takes a value takes the next word, and any other word is a positional
+  argument, which only a command that has one may take. A misspelt subcommand
+  of a command that is only a group (`hse keys lsit`) fails too. The test also
+  checks the checker: a phantom command, flag and nested subcommand, a
+  positional id `export` does not take and `--version` below the root are
+  refused; real ones, `--format=full`, `[--yes]` and `hse help keys set` pass.
+- `cli::tests::the_auto_scan_help_quotes_the_stored_scan_hint`: the two
+  `--auto-scan` help texts quote `view_command("<id>")` exactly.
+- `app::persist`'s summary test expects the new hint on a whole batch's line.
+- `tests/cli_seed_validation.rs` `every_stored_scan_hint_reads_that_scan_back`
+  runs the real binary three times, with logging off: `hse import` of a dossier,
+  `hse investigate --auto-scan` and `hse ingest --auto-scan`. Each time it runs
+  the command the hint names and reads the stored scan's id and entity count
+  from the dossier.
+
+**Not locked by a test: the store-failure lines.** `hse ingest --auto-scan`
+and `hse investigate --auto-scan` each print "could not store the extracted
+entities" on stderr when the store refuses the batch. No test reaches either
+line: making the store refuse from outside the process stops the command
+before it gets there. The binary test reaches only the stored-scan summary.
+
+### Mutations
+
+15 deliberate breakages, each applied alone to the finished change and run against the tests that own the behaviour. All 15 are caught; every file was restored byte for byte afterwards.
+
+| breakage | caught by |
+|---|---|
+| H1 the hint names the list command | `the_stored_scan_hint_reads_that_scan_back`, `the_auto_scan_help_quotes_the_stored_scan_hint` |
+| H1b the same, seen by the binary | `every_stored_scan_hint_reads_that_scan_back` |
+| H2 the hint drops the scan id | `the_stored_scan_hint_reads_that_scan_back`, `the_auto_scan_help_quotes_the_stored_scan_hint` |
+| H3 the hint names the report format | `the_stored_scan_hint_reads_that_scan_back`, `the_auto_scan_help_quotes_the_stored_scan_hint` |
+| H4 the summary names the list command | `an_import_summary_counts_the_batch_it_stored_and_states_a_skip_once` |
+| H4b the same, seen by the binary | `every_stored_scan_hint_reads_that_scan_back` |
+| H5 import rewrites the hint | `every_stored_scan_hint_reads_that_scan_back` |
+| H6 investigate rewrites the hint | `every_stored_scan_hint_reads_that_scan_back` |
+| H6b ingest rewrites the hint | `every_stored_scan_hint_reads_that_scan_back` |
+| H7 ingest logs its summary instead of printing it | `every_stored_scan_hint_reads_that_scan_back` |
+| H8 the query help names the search command | `every_command_the_help_names_exists` |
+| H9 a help example passes a flag export does not have | `the_auto_scan_help_quotes_the_stored_scan_hint`, `every_command_the_help_names_exists` |
+| H10 the help quotes another command than the hint | `the_auto_scan_help_quotes_the_stored_scan_hint` |
+| H11 the checker lets any command take a positional | `every_command_the_help_names_exists` |
+| H12 the checker reads a flag value as a positional | `every_command_the_help_names_exists` |
+
+### Runtime
+
+Run against a scratch `HOME` on the build before this fix (REQ-INGEST-001's)
+and this one. Each hint is run as the next command, in a new process, and must
+read back the scan the first command stored: its id, and at least one entity.
+
+| check | before | after |
+|---|---|---|
+| `hse import dossier.txt`: the hinted command reads the stored scan | fail (`hse list`, exit 2) | pass |
+| `hse investigate … --auto-scan`: the same | fail (`hse list`, exit 2) | pass |
+| `hse ingest -f notes.txt --auto-scan`: the same | fail (`hse list`, exit 2) | pass |
+| `hse ingest --help` quotes the command the hint prints | fail (`hse list`) | pass |
+| `hse investigate --help` quotes it | fail (`hse list`) | pass |
+| `hse query --help` names no `hse search` | fail | pass |
+| `hse export --help` lists the `events` format | fail | pass |
+| **total** | **0 of 7** | **7 of 7** |
+
+With `RUST_LOG=off`, `hse ingest -f notes.txt --auto-scan` on the build before
+stored a scan and printed nothing about it: stderr was empty. On this build it
+prints one line on stderr, the stored scan's id and the hint, and stdout
+carries the two extracted entities, as before.

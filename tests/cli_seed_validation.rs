@@ -7,6 +7,7 @@
 //!   - a settings file that does not parse stops `hse` and is kept.
 //!   - an image `hse ingest` cannot read fails with the reason, and its file
 //!     path is never mined for findings.
+//!   - the hint printed after a scan is stored is a command that reads it back.
 
 mod common;
 
@@ -440,6 +441,102 @@ fn ingest_reports_tesseracts_own_reason_for_refusing_an_image() {
         ),
         "tesseract's own reason: {stderr}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The scan id a summary says it stored, and the command it says views it,
+/// from a line of the form "scan <id> (N entities, ...) — view with `<command>`".
+fn stored_and_hint(said: &str) -> (String, String) {
+    const LEAD: &str = "view with `";
+    let at = said
+        .find(LEAD)
+        .unwrap_or_else(|| panic!("no hint in: {said}"));
+    let hint = said[at + LEAD.len()..]
+        .split('`')
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let stored = said[..at]
+        .rsplit("scan ")
+        .next()
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_default()
+        .to_string();
+    (stored, hint)
+}
+
+/// REQ-CLI-HINTS-001: each command that stores a scan without running one
+/// (`hse import`, `hse investigate --auto-scan`, `hse ingest --auto-scan`) ends
+/// with a hint, and the command the hint names runs and reads that scan back.
+/// All three named a list command `hse` does not have, which exited 2 as an
+/// unrecognized subcommand.
+#[test]
+fn every_stored_scan_hint_reads_that_scan_back() {
+    let dir = common::tmp_dir("stored-hint");
+    let dossier = dir.join("dossier.txt");
+    std::fs::write(
+        &dossier,
+        "Entry #1\n\u{2022} name: Isaac Frost\n\u{2022} email: isaac@frostcorp.io\n",
+    )
+    .expect("dossier");
+    let notes = dir.join("notes.txt");
+    std::fs::write(&notes, "Contact qa-hint@hse-hint-test.dev for the files.\n").expect("notes");
+    let dossier = dossier.to_str().expect("utf-8 temp path");
+    let notes = notes.to_str().expect("utf-8 temp path");
+    // Logging off: the hint must reach the operator whatever the log level.
+    let hse = |args: &[&str]| {
+        Command::new(BIN)
+            .args(args)
+            .env("RUST_LOG", "off")
+            .env("HOME", &dir)
+            .output()
+            .expect("spawn hse")
+    };
+
+    for args in [
+        vec!["import", dossier],
+        vec![
+            "investigate",
+            "what is linked to qa-hint@hse-hint-test.dev",
+            "--auto-scan",
+        ],
+        vec!["ingest", "-f", notes, "--auto-scan"],
+    ] {
+        let run = hse(&args);
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert!(run.status.success(), "{args:?}: {said}");
+        let (stored, hint) = stored_and_hint(&said);
+        let view_args: Vec<&str> = hint.split_whitespace().collect();
+        assert_eq!(view_args.first(), Some(&"hse"), "{args:?}: {hint}");
+        let view = hse(&view_args[1..]);
+        assert!(
+            view.status.success(),
+            "{args:?}: `{hint}` must run: {}",
+            String::from_utf8_lossy(&view.stderr)
+        );
+        // The full dossier: its header names the scan and counts what is in it.
+        let read_back = String::from_utf8_lossy(&view.stdout);
+        let field = |name: &str| {
+            read_back
+                .lines()
+                .find_map(|l| l.strip_prefix(name))
+                .map(|v| v.trim_start_matches([' ', ':']).trim().to_string())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            field("scan id"),
+            stored,
+            "{args:?}: `{hint}` reads the scan it stored: {read_back}"
+        );
+        assert!(
+            field("entities").parse::<usize>().is_ok_and(|n| n > 0),
+            "{args:?}: with its entities: {read_back}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

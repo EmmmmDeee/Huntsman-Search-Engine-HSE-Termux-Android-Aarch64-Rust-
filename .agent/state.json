@@ -50,6 +50,38 @@
       "category": "DEFECT",
       "evidence": "Found: cli::ingest mined the stand-in sentence \"OCR unavailable for <path>\" when OCR failed, so a path such as ~/case-jane.doe@contoso-files.net/scan-of-id.png came back as an email at 0.85 and two domains, exit 0, and --auto-scan stored them. Runtime on sandboxed builds with no tesseract on PATH: 1 of 9 checks before (a text file still yields its email, the control), 9 of 9 after: an unreadable image fails with the reason and the Termux install command, its path is never a finding, --auto-scan stores nothing, --extract-geolocation on an image with no EXIF fails the same way, and a JPEG with an EXIF GPS fix yields the fix and nothing from its file name. An independent review of the first draft found four more faults on the same path (the which probe, a missing file reported as an OCR fault, tesseract's dropped stderr, variants saved nowhere counted as work); all fixed. Mutations: 11 of 11 caught, each applied alone.",
       "fresh_worktree": "Passed on the second run. The gate passed in a fresh worktree of the committed tree (doc coverage 997, ceiling 1001). The full suite ran twice with identical results: 8859 tests, 8832 passed, 27 ignored, 0 failed; against REQ-SETTINGS-001's verified run, 5 tests are new and tesseract_availability_check is gone with the which probe it called. Doctests: 88 passed, 3 ignored, twice. The first run failed tests/reconciler_device.rs a_radar_older_than_the_package_install_is_stale_and_only_stopped_when_authorised in all three test runs because it was launched as a background job of a non-interactive shell, which starts with SIGINT ignored (SigIgn 0x6, confirmed): the fake radar inherits that and never exits on SIGINT. Launched with SIGINT at its default, it passed."
+    },
+    {
+      "contract": "The hint hse import, hse ingest --auto-scan and hse investigate --auto-scan print after storing a scan names hse export -s <id> -f full from one definition (app::persist::view_command), and every hse command a help page quotes exists with the flags it passes (REQ-CLI-HINTS-001)",
+      "category": "DEFECT",
+      "evidence": "Found: PersistedBatch::summary_lines ended \"view with `hse list`\", and hse list exits 2 as an unrecognized subcommand; the --auto-scan help promised the same, and hse query --help named hse search. Runtime on sandboxed builds: 0 of 7 checks before, 7 of 7 after; each of the three commands' hint, run as the next command in a new process, reads back the scan it stored (its id and entities), and with RUST_LOG=off the build before stored an ingest --auto-scan scan and printed nothing about it. An independent review of the first draft found the hint named -f report, which leaves out the relations the summary counts; it names -f full. A second review, of the re-port, found a test helper that would not compile (the crate's one-parameter Result), a missed hse export {id} doc, investigate's store failure left to the log, a help-quote test that could pass vacuously, and gaps in the command checker; all fixed. Re-ported onto the merged base, where #649 had gathered the three summaries into summary_lines. Mutations: 15 of 15 caught, each applied alone (the old hse list hint at the source and at each of the three commands, a dropped id, the report format, ingest logging its summary again, the query help naming hse search, a help flag export does not take, and the checker's positional and flag-value rules).",
+      "fresh_worktree": "Passed. A fresh worktree of the committed tree, built with its own empty target directories (no shared build output): the gate (scripts/gate.sh --quick: fmt, check, clippy -D warnings, rustdoc lints, full test, doctests, doc coverage, hse-core, wasm-ui) passed; the full suite ran twice with identical results, 8863 tests, 8836 passed, 27 ignored, 0 failed, and against REQ-INGEST-001's verified run the only difference is the 4 new tests; doctests 88 passed, 3 ignored, twice. Install as the README documents it (cargo build --release --locked, the binary copied into a prefix) succeeded, and the installed binary passed the runtime check 7 of 7, twice; in each check the hinted command runs in a new process and reads back the scan the previous process stored.",
+      "files": [
+        "src/app/persist.rs",
+        "src/app/import/mod.rs",
+        "src/cli/ingest/mod.rs",
+        "src/cli/investigate.rs",
+        "src/cli/command.rs",
+        "src/cli/logging.rs",
+        "src/cli/tests.rs",
+        "src/api/scan_export/mod.rs",
+        "src/app/export/renderers.rs",
+        "tests/cli_seed_validation.rs",
+        "docs/TROUBLESHOOTING.md",
+        "docs/REQUIREMENTS_LEDGER.md",
+        "CHANGELOG.md"
+      ],
+      "tests": [
+        "cli::tests::the_stored_scan_hint_reads_that_scan_back",
+        "cli::tests::every_command_the_help_names_exists",
+        "cli::tests::the_auto_scan_help_quotes_the_stored_scan_hint",
+        "app::persist::tests::an_import_summary_counts_the_batch_it_stored_and_states_a_skip_once (updated expectation)",
+        "tests/cli_seed_validation.rs every_stored_scan_hint_reads_that_scan_back"
+      ],
+      "revert_check": "hse list put back in app::persist::view_command fails the_stored_scan_hint_reads_that_scan_back, the_auto_scan_help_quotes_the_stored_scan_hint and every_stored_scan_hint_reads_that_scan_back; restored (md5-checked), all pass.",
+      "review": "Two independent read-only reviews. First draft: the hint named -f report, which leaves out relations; now -f full. Re-port: a test helper that would not compile, a missed hse export {id} doc, investigate's store failure left to the log, a vacuous help-quote test, checker gaps (positional after a command that takes none, --version below the root, hse help and [--yes] refused). All fixed.",
+      "runtime": "Sandboxed builds, scratch HOME: 0 of 7 before (REQ-INGEST-001's build), 7 of 7 after; each hint run next in a new process reads back the stored scan.",
+      "unresolved": "The store-failure lines of ingest/investigate --auto-scan are not reached by any test (recorded in the ledger). A stored batch scan's target kind is always full_name (recorded as an open defect)."
     }
   ],
   "rejected": [
@@ -88,10 +120,6 @@
       "evidence": "src/api/scan_handlers/core.rs scan_cancel looks the id up in AppState.cancellations only; ss3.sh scenario A shows the scan running with interrupted=false while the CLI runs it"
     },
     {
-      "description": "The CLI tells users to \"view with `hse list`\" after an investigate or ingest run, but no `list` subcommand exists.",
-      "evidence": "src/cli/investigate.rs:221 and src/cli/ingest/mod.rs:327 print the hint; src/cli/command.rs Command enum has no List variant (competitor gap analysis, 2026-09-24)."
-    },
-    {
       "description": "A top-level \"name\" in a POST /api/v1/scans or /api/v1/live body is silently ignored (202, no name); only unknown keys inside \"options\" are refused. Refusing unknown top-level keys changes the public API, so it needs approval.",
       "evidence": "src/api/scan_handlers/mod.rs scan_request_from_json checks only the options object; review of REQ-SCANNAME-001, finding 5."
     },
@@ -110,9 +138,13 @@
     {
       "description": "tests/reconciler_device.rs a_radar_older_than_the_package_install_is_stale_and_only_stopped_when_authorised depends on the test runner's inherited SIGINT disposition: its FakeRadar (bash -c 'exec -a hse cat radar') inherits SIG_IGN when the suite is started as a background job of a non-interactive shell, so the reconciler's SIGINT never stops it and the test fails with \"did not exit within 20s of SIGINT\".",
       "evidence": "Fresh-worktree run of REQ-INGEST-001 launched via `( ... &)`: SigIgn 0x6 (SIGINT, SIGQUIT) in the launched process, and the test failed 3 of 3; the same commit launched with SIGINT at its default passed. The fix belongs in the test (a fake radar that resets SIGINT to its default before waiting), not the reconciler, which correctly reports a process that ignores SIGINT."
+    },
+    {
+      "description": "A scan stored by hse import, hse ingest --auto-scan or hse investigate --auto-scan always has target kind full_name, whatever its label names: a note that names only an email is stored as `full_name = <the email>`, and a batch with no person or email as `full_name = ingested document: <path>` or `full_name = investigate: <prompt>`.",
+      "evidence": "Observed on the REQ-CLI-HINTS-001 build: `hse export -s <id> -f full` of an `hse ingest --auto-scan` scan read `target : full_name = qa-hint@hse-hint-test.dev`. All three callers pass TargetKind::FullName to app::persist::persist_entities_as_scan (src/app/import/mod.rs, src/cli/ingest/mod.rs, src/cli/investigate.rs), while app::persist::strongest_identity_label picks a Person, else an Email, else the caller's fallback string."
     }
   ],
-  "cycle": 8,
+  "cycle": 9,
   "competitors": [
     {
       "name": "SpiderFoot 4.0",
