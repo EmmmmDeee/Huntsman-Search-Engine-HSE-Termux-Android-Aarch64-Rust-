@@ -746,7 +746,28 @@ impl ScanEngine {
         dispatched: &mut DispatchLog,
     ) -> Result<Scan> {
         scan.status = ScanStatus::Running;
-        self.store.upsert_scan(&scan)?;
+        if let Err(e) = self.store.upsert_scan(&scan) {
+            // A store that refuses the scan-start row (disk full, a locked or
+            // read-only database) ends the scan here, before any module runs
+            // and before the finalise that announces every other outcome. It
+            // is announced `failed` all the same, exactly as the finalise's
+            // best-effort Failed branch is (REQ-SCANSTATUS-008): the status
+            // is true whether or not any row landed, and it is the only way a
+            // status-only subscriber — the radar's "sweep #N running…", the
+            // `hse live` renderer, the web scan log — learns the sweep ended.
+            // Returning the bare error left each of them waiting on a scan
+            // that had already stopped (REQ-SCANSTATUS-011).
+            error!(scan_id = %scan.id, error = %e, "scan-start row refused — scan failed before it ran");
+            self.emit(
+                &scan.id,
+                EventKind::ScanComplete {
+                    scan_id: scan.id.clone(),
+                    entity_count: 0,
+                    status: ScanStatus::Failed,
+                },
+            );
+            return Err(e);
+        }
 
         // Clear any stale events from previous scan attempts with this scan_id
         // (possible in hse serve when the same target runs twice). Per-scan event

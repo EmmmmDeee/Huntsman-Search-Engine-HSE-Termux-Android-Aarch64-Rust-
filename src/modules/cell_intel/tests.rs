@@ -237,6 +237,7 @@ fn every_mcc_stand_in_lies_in_its_own_country() {
         ("HR", 42.4, 46.6, 13.4, 19.5),
         ("IR", 25.0, 39.8, 44.0, 63.4),
         ("TZ", -11.8, -0.9, 29.3, 40.5),
+        ("GH", 4.7, 11.2, -3.3, 1.2),
     ];
     for &(mccs, lat, lon, iso) in MCC_CENTROIDS {
         let (la_min, la_max, lo_min, lo_max) = crate::util::geohash::country::country_box(iso)
@@ -254,6 +255,62 @@ fn every_mcc_stand_in_lies_in_its_own_country() {
     }
     assert_eq!(mcc_to_centroid("216").map(|(.., iso)| iso), Some("HU"));
     assert_eq!(mcc_to_centroid("219").map(|(.., iso)| iso), Some("HR"));
+}
+
+/// REQ-GEOLABEL-035: each MCC row names the country the ITU-T E.212 list
+/// assigns that code. The containment test above checks only that a row's
+/// point lies in the country its OWN row names, so the row `620` → Tanzania
+/// passed it: a Ghanaian network (MCC 620) was tagged `country:TZ` and
+/// pinned in Tanzania, and a Tanzanian one (640) resolved to nothing. And
+/// every row's country has a name, so the label and the `country` attribute
+/// read "Croatia", not "HR".
+#[test]
+fn every_mcc_row_names_the_country_the_itu_assigns_it() {
+    // A sample of the ITU-T E.212 assignments, including every code whose
+    // country a neighbouring code is easily confused with.
+    for (mcc, iso) in [
+        ("505", "AU"),
+        ("530", "NZ"),
+        ("310", "US"),
+        ("302", "CA"),
+        ("234", "GB"),
+        ("206", "BE"),
+        ("208", "FR"),
+        ("216", "HU"),
+        ("219", "HR"),
+        ("255", "UA"),
+        ("250", "RU"),
+        ("268", "PT"),
+        ("452", "VN"),
+        ("432", "IR"),
+        ("602", "EG"),
+        ("604", "MA"),
+        ("620", "GH"),
+        ("621", "NG"),
+        ("639", "KE"),
+        ("640", "TZ"),
+        ("655", "ZA"),
+    ] {
+        assert_eq!(
+            mcc_to_centroid(mcc).map(|(.., iso)| iso),
+            Some(iso),
+            "MCC {mcc}"
+        );
+    }
+    for &(mccs, .., iso) in MCC_CENTROIDS {
+        assert!(
+            crate::util::geohash::country_name_for_iso(iso).is_some(),
+            "MCC {mccs:?}: {iso} has no country name"
+        );
+    }
+    let e = super::mcc_centroid_point("219", "219-1-2-3", "s1").expect("HR");
+    assert!(
+        e.evidence
+            .iter()
+            .any(|ev| ev.attributes.get("country").map(String::as_str) == Some("Croatia")),
+        "{:?}",
+        e.evidence
+    );
 }
 
 /// REQ-GEOLABEL-029: the MCC fallback names itself a country signal — the

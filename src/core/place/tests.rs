@@ -1980,6 +1980,84 @@ fn a_cell_tower_mcc_centroid_is_the_country_never_its_stand_in_city() {
     assert!(!super::grain::claims_no_position(&located));
 }
 
+/// REQ-GEOLABEL-036: a country signal whose records lost their words (a CSV
+/// re-import keeps tags, never attributes) is named by its emitter's
+/// `country:` tags before any box. The box answers the FIRST matching
+/// country, so a Belgian MCC point read "France (approx.)", a Croatian one
+/// "Italy (approx.)", a Ukrainian one "Russia (approx.)", and a Toronto
+/// `+1 416` point "United States (approx.)" — the REQ-GEOLABEL-025 mislabel
+/// back on the CSV path — while the point's own tag named the right one.
+#[test]
+fn a_csv_copy_of_a_country_signal_is_named_by_its_own_country_tags() {
+    use crate::modules::cell_intel::mcc_centroid_point;
+    // A live point through the offline enrichment, then its CSV copy: the
+    // tags as stored, one attribute-less record per original.
+    let csv_copy = |mut live: Entity| {
+        crate::core::engine::enrich_geospatial(&mut live);
+        let mut bare = coord(&live.value);
+        bare.tags.clone_from(&live.tags);
+        for r in &live.evidence {
+            bare.add_evidence(ev(&r.source, &r.summary, &[]));
+        }
+        assert_eq!(assess(&bare).basis, FixBasis::CountrySignal, "{bare:?}");
+        bare
+    };
+    for (mcc, country, never) in [
+        ("206", "Belgium", "France"),
+        ("219", "Croatia", "Italy"),
+        ("255", "Ukraine", "Russia"),
+        ("268", "Portugal", "Spain"),
+    ] {
+        let live = mcc_centroid_point(mcc, "tower-1", "s1").expect("a tabulated MCC");
+        let bare = csv_copy(live);
+        let l = label_of(&bare, std::slice::from_ref(&bare));
+        assert!(l.text.starts_with(country), "MCC {mcc}: {l:?}");
+        assert!(!l.text.contains(never), "MCC {mcc}: {l:?}");
+        assert!(!l.text.contains("(approx.)"), "MCC {mcc}: {l:?}");
+        assert_honest(&l, &bare);
+    }
+    // `+1`: the prefix's own tags name both countries it covers.
+    let mut nanp = coord("39.8283,-98.5795");
+    for t in [
+        "geoint",
+        "phone-prefix",
+        "coarse",
+        "country:US",
+        "country:CA",
+    ] {
+        nanp.tag(t);
+    }
+    nanp.add_evidence(ev(
+        "geo_intel",
+        "Phone prefix -> United States/Canada for +14165550100",
+        &[
+            ("country", "United States/Canada"),
+            ("country_code", "US"),
+            ("method", "e164-prefix"),
+        ],
+    ));
+    let bare = csv_copy(nanp);
+    let l = label_of(&bare, std::slice::from_ref(&bare));
+    assert!(l.text.starts_with("Canada or United States"), "{l:?}");
+    assert_honest(&l, &bare);
+    // Control: a tag the box itself would write says nothing the box does
+    // not — a `.pt` email's Lisbon stand-in is boxed in Spain, and its copy
+    // reads as the approximation it is, never a sure "Spain".
+    let mut pt = coord("38.7168,-9.1421");
+    for t in ["geoint", "coarse", "cctld-inferred"] {
+        pt.tag(t);
+    }
+    pt.add_evidence(ev(
+        "email_locale",
+        "Email domain ccTLD .pt indicates Portugal",
+        &[("cctld", "pt"), ("locale", "pt"), ("country", "Portugal")],
+    ));
+    let bare = csv_copy(pt);
+    assert!(bare.has_tag("country:ES"), "fixture: {:?}", bare.tags);
+    let l = label_of(&bare, std::slice::from_ref(&bare));
+    assert!(l.text.starts_with("Spain (approx.)"), "{l:?}");
+}
+
 /// REQ-GEOLABEL-030: a fix coarser than a suburb is never named after a
 /// capital's suburb. The offline gazetteer named a point after its nearest
 /// curated anchor and stamped the label locality grain whatever the anchor

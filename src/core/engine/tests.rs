@@ -6874,6 +6874,66 @@ async fn a_failed_scan_whose_row_was_not_written_is_still_announced_failed() {
     assert_eq!(heard, vec![ScanStatus::Failed]);
 }
 
+/// REQ-SCANSTATUS-011: a store that refuses the scan-start row ends the scan
+/// before any module runs, and before the finalise that announces every other
+/// outcome. `run` returned the bare error and broadcast nothing, so the
+/// radar's "sweep #N running…" and the `hse live` renderer waited on a sweep
+/// that had already stopped — the gap REQ-SCANSTATUS-008 closed only for a
+/// store that accepted the start row.
+#[tokio::test]
+async fn a_scan_whose_start_row_is_refused_is_announced_failed() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_SCAN, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(8192);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        Arc::new(RefusingStore::new(inner.clone()).refusing_scan_writes()),
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Email, "refused@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "refused@example.com"),
+        target.clone(),
+    )
+    .with_options(ScanOptions {
+        depth: 1,
+        max_roi: false,
+        ..Default::default()
+    });
+    let scan_id = scan.id.clone();
+    let mut late = bus.subscribe();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let err = engine
+        .run(scan, target, ctx)
+        .await
+        .expect_err("a refused start row fails the scan");
+    assert!(err.to_string().contains(REFUSED_SCAN), "{err}");
+    assert!(inner.get_scan(&scan_id).expect("should succeed").is_none());
+    let heard: Vec<(String, ScanStatus)> = drain_events(&mut late)
+        .into_iter()
+        .filter_map(|k| match k {
+            EventKind::ScanComplete {
+                scan_id, status, ..
+            } => Some((scan_id, status)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        heard,
+        vec![(scan_id, ScanStatus::Failed)],
+        "a status-only subscriber must hear the scan failed"
+    );
+}
+
 /// Scan 7258fc07: `expansion_stop max_entities=2500 reached`, then
 /// `breach_sweep {probes: 64}`, then no sweep dispatch at all — the per-probe
 /// budget guard broke on probe 0, and the event (emitted before the loop)

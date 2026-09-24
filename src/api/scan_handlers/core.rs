@@ -676,11 +676,11 @@ pub async fn scan_import(
     // tens of thousands of `*@one-domain.tld` rows — degrades to a multi-minute
     // O(n²) pass that would lock a 2-core Termux phone (a 16 MB upload can hold
     // ~500k rows). The import's PRIMARY contract — persist every parsed entity —
-    // is met unconditionally below; only the best-effort enrichment is bounded,
-    // so a huge upload always COMPLETES. A realistic dossier (well under the cap)
+    // is met unconditionally below; only the best-effort enrichment is bounded
+    // (`app::persist::skip_enrichment_over_cap`, the CLI import's own cap), so a
+    // huge upload always COMPLETES. A realistic dossier (well under the cap)
     // still gets full relations + correlations; a larger one stores every entity
     // and can be correlated on demand via `/scans/{id}/rerun`.
-    const IMPORT_ENRICH_MAX_ENTITIES: usize = 5_000;
 
     // Persist scan, entities, relations, and correlations on a blocking thread
     // so SQLite commits don't stall the 2-worker async reactor.
@@ -775,7 +775,10 @@ pub async fn scan_import(
         };
         // Device-safety bound: skip the O(n²) enrichment on a pathologically
         // large import (entities are already persisted above; nothing lost).
-        if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
+        // The skip is recorded on the tally, so the row is committed
+        // `Complete` with it in `error` and the response answers `partial`
+        // (REQ-SCANSTATUS-010).
+        if crate::app::persist::skip_enrichment_over_cap(entities.len(), &mut tally) {
             let (status, error) = commit(row, ScanStatus::Complete, &tally)?;
             return Ok((
                 entity_count,
@@ -847,11 +850,13 @@ pub async fn scan_import(
             "entity_count": entity_count,
             "relation_count": relation_count,
             "correlation_count": correlation_count,
-            // `true` only when the upload exceeded `IMPORT_ENRICH_MAX_ENTITIES` —
-            // disambiguates a size-skipped enrichment pass from a dossier that
-            // genuinely yielded zero relations/correlations. Every entity is
-            // still persisted either way; the scan can be enriched on demand
-            // via `/scans/{id}/rerun`.
+            // `true` when relations/correlations were not run to the end —
+            // the upload exceeded the import enrichment cap
+            // (`app::persist::PERSIST_ENRICH_MAX_ENTITIES`), or a cancel
+            // reached it first — which disambiguates a skipped pass from a
+            // dossier that genuinely yielded zero relations/correlations.
+            // Every entity is still persisted either way; the scan can be
+            // enriched on demand via `/scans/{id}/rerun`.
             "enrichment_skipped": !enriched,
             // Together these disambiguate a stealer-log upload's paired
             // credential rows the same way `enrichment_skipped` does for
@@ -865,8 +870,8 @@ pub async fn scan_import(
             // reached the import before its enrichment finished — except that
             // a `Complete` row whose finalise did not complete answers
             // `partial`: the store refused some of the relations or
-            // correlations derived above, or the correlation pass failed
-            // outright. That row is stored `Complete` (the upload was imported
+            // correlations derived above, the correlation pass failed
+            // outright, or both were skipped for size. That row is stored `Complete` (the upload was imported
             // in full) with the shortfall in its `error`, and every export of
             // it reads "partial, finalise-incomplete". Answering `complete`
             // told the client the import was whole while the counts above

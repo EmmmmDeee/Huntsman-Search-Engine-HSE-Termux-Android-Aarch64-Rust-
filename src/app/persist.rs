@@ -158,8 +158,11 @@ impl Drop for ImportScanRow {
     }
 }
 
-/// Device-safety bound shared by every caller of [`persist_entities_as_scan`]
-/// (`hse import`, `hse investigate --auto-scan`, `hse ingest --auto-scan`).
+/// Device-safety bound shared by every import: every caller of
+/// [`persist_entities_as_scan`] (`hse import`, `hse investigate --auto-scan`,
+/// `hse ingest --auto-scan`) and the web upload
+/// (`api::scan_handlers::core::scan_import`), each through
+/// [`skip_enrichment_over_cap`].
 ///
 /// Cross-entry enrichment (relation derivation + the correlator) is pairwise
 /// WITHIN same-key buckets, so a pathological single-key batch — e.g. tens of
@@ -168,18 +171,46 @@ impl Drop for ImportScanRow {
 /// lock a 2-core Termux phone. Reproduced live: a synthetic 4,000-row
 /// same-domain SQL-dump import already took 36+ seconds with NO cap in place
 /// (this function had none prior to this guard; the web upload handler
-/// (`api::scan_handlers::core::scan_import`) already carries an identical
-/// `IMPORT_ENRICH_MAX_ENTITIES` cap — the two are intentionally kept as
-/// separate constants rather than unified here, since the web handler inlines
-/// its own persistence body around `insert_stealer_rows_batch` in the same
-/// blocking closure and merging the two risks regressing that already-shipped
-/// path for a cosmetic DRY gain).
+/// carried its own identical `IMPORT_ENRICH_MAX_ENTITIES` copy until both
+/// read this one through [`skip_enrichment_over_cap`]).
 ///
 /// The import's PRIMARY contract — persist every parsed entity — is met
 /// unconditionally by [`persist_entities_as_scan`]; only this best-effort
 /// enrichment is bounded, so a huge batch always COMPLETES. A realistic batch
 /// (well under the cap) still gets full relations + correlations.
 pub(crate) const PERSIST_ENRICH_MAX_ENTITIES: usize = 5_000;
+
+/// Whether an import of `entity_count` entities skips its relation and
+/// correlation passes for size ([`PERSIST_ENRICH_MAX_ENTITIES`]) — and, when
+/// it does, the skip recorded on `tally` as a
+/// [`FinalisePass::ImportEnrichment`](crate::core::scan::FinalisePass::ImportEnrichment)
+/// that did not run, with a deterministic reason. The one cap check both
+/// import paths make (the CLI's [`persist_batch_into`], the web upload's
+/// `api::scan_handlers::core::scan_import`).
+///
+/// The skip used to be visible only in the caller's `enriched=false` — the
+/// CLI summary line or the HTTP response. The scan was written `Complete`
+/// with `error: None`, so every export of a 6,000-row breach import read
+/// "complete" with CORRELATIONS (0): a correlator that never ran, read as
+/// one that found nothing. Recorded here, the scan's `error` carries it and
+/// every export reads it "partial, finalise-incomplete", as it does a pass
+/// that failed (REQ-SCANSTATUS-010).
+pub(crate) fn skip_enrichment_over_cap(
+    entity_count: usize,
+    tally: &mut crate::core::scan::FinaliseTally,
+) -> bool {
+    if entity_count <= PERSIST_ENRICH_MAX_ENTITIES {
+        return false;
+    }
+    tally.pass_failed(
+        crate::core::scan::FinalisePass::ImportEnrichment,
+        format!(
+            "skipped — {entity_count} entities exceed the \
+             {PERSIST_ENRICH_MAX_ENTITIES}-entity import enrichment cap"
+        ),
+    );
+    true
+}
 
 /// What [`persist_entities_as_scan`] stored, for the caller's summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,8 +224,9 @@ pub(crate) struct PersistedBatch {
     /// genuinely yielded none.
     pub enriched: bool,
     /// What the scan's finalise did not complete, as recorded in its `error`
-    /// field — relations or correlations the store refused, or a correlation
-    /// pass that failed outright — or `None` when it completed.
+    /// field — relations or correlations the store refused, a correlation
+    /// pass that failed outright, or both passes skipped for size
+    /// ([`skip_enrichment_over_cap`]) — or `None` when it completed.
     /// The scan is still `Complete`; every export of it now reads partial
     /// ("finalise-incomplete"), and a caller's summary must say so too rather
     /// than report the counts as if they were the whole graph.
@@ -311,7 +343,8 @@ fn enrich_persisted_batch(
     // Device-safety bound: skip the O(n²) enrichment on a pathologically
     // large batch (entities are already persisted above; nothing lost) — see
     // `PERSIST_ENRICH_MAX_ENTITIES`'s own doc for why and the reproduction.
-    if entities.len() > PERSIST_ENRICH_MAX_ENTITIES {
+    // The skip is recorded on the tally, so the scan does not read whole.
+    if skip_enrichment_over_cap(entities.len(), tally) {
         return (0, 0, false);
     }
 
@@ -582,7 +615,7 @@ mod tests {
         // Regression: `persist_entities_as_scan` used to carry NO entity-count
         // cap on its O(n^2)-pairwise-within-same-key-bucket enrichment pass
         // (relation derivation + correlator), unlike the web upload handler's
-        // pre-existing `IMPORT_ENRICH_MAX_ENTITIES` cap — a same-domain batch
+        // pre-existing cap — a same-domain batch
         // above the cap hung for 60+ real seconds (see
         // `PERSIST_ENRICH_MAX_ENTITIES`'s own doc for the live reproduction).
         // The primary contract — every entity persisted — must hold regardless;
@@ -636,6 +669,59 @@ mod tests {
             count,
             "every entity must still be persisted even when enrichment is skipped"
         );
+    }
+
+    /// REQ-SCANSTATUS-010: an import over the enrichment cap never runs its
+    /// relation and correlation passes, and was written `Complete` with
+    /// `error: None` — so every export read it whole, its CORRELATIONS (0) a
+    /// correlator that found nothing rather than one that never ran. The skip
+    /// is recorded on the scan, which then exports as partial.
+    #[test]
+    fn a_batch_over_the_enrichment_cap_is_stored_partial() {
+        use crate::core::StoragePort as _;
+        use crate::core::test_support::InMemoryStore;
+        use std::sync::Arc;
+
+        let sid = "persist-over-cap";
+        let inner = Arc::new(InMemoryStore::new());
+        let store: Arc<dyn crate::core::StoragePort> = inner.clone();
+        let entities: Vec<Entity> = (0..=PERSIST_ENRICH_MAX_ENTITIES)
+            .map(|i| {
+                Entity::new(
+                    EntityKind::Email,
+                    format!("user{i}@one-domain.tld"),
+                    0.9,
+                    sid,
+                )
+            })
+            .collect();
+        let batch =
+            persist_batch_into(&store, sid, "batch".into(), TargetKind::FullName, &entities)
+                .expect("the import itself succeeds");
+        assert!(!batch.enriched);
+        let want = format!(
+            "relation and correlation pass failed: skipped — {} entities exceed the \
+             {PERSIST_ENRICH_MAX_ENTITIES}-entity import enrichment cap",
+            PERSIST_ENRICH_MAX_ENTITIES + 1
+        );
+        assert_eq!(batch.finalise_error.as_deref(), Some(want.as_str()));
+        let scan = inner
+            .get_scan(sid)
+            .expect("query the scan")
+            .expect("the scan row exists");
+        assert_eq!(scan.status, crate::core::scan::ScanStatus::Complete);
+        assert_eq!(scan.error.as_deref(), Some(want.as_str()));
+        assert!(
+            scan.completeness_caveat("the import").is_some(),
+            "a scan whose correlator never ran is not a complete answer"
+        );
+        // Control: at the cap the passes run and nothing is recorded.
+        let mut tally = crate::core::scan::FinaliseTally::default();
+        assert!(!skip_enrichment_over_cap(
+            PERSIST_ENRICH_MAX_ENTITIES,
+            &mut tally
+        ));
+        assert_eq!(tally.message(), None);
     }
 
     /// A batch whose relations and correlations both derive — a username and

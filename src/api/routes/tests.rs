@@ -402,6 +402,35 @@ use super::*;
         );
     }
 
+    /// REQ-SCANSTATUS-012: the web upload can commit `aborted` (a cancel
+    /// reached it while it was being enriched), and the upload view read only
+    /// `finalise_error` — an aborted import, whose error is `null`, was shown
+    /// "Imported N entities." with a success toast. The view must branch on
+    /// the committed status before reporting success.
+    #[test]
+    fn embedded_spa_reports_a_cancelled_upload_as_cancelled() {
+        let new_scan = app_file("js/views/new_scan.js");
+        let body = new_scan
+            .split_once("export async function uploadDossier(){")
+            .and_then(|(_, b)| b.split_once("\n}\n"))
+            .map(|(b, _)| b)
+            .expect("uploadDossier present in new_scan.js");
+        let aborted = body
+            .find("r.status === 'aborted'")
+            .expect("the upload view must branch on an aborted import");
+        let success = body
+            .find("toast(`Imported ${r.entity_count} entities`)")
+            .expect("the success toast");
+        assert!(
+            aborted < success,
+            "the aborted branch must be decided before the success toast"
+        );
+        assert!(
+            body[aborted..success].contains("'warn'"),
+            "a cancelled import is a warning, not a success"
+        );
+    }
+
     #[test]
     fn embedded_spa_styles_every_entity_kind() {
         // Rendering contract: every `EntityKind` a module can produce must have a

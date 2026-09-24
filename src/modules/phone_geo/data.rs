@@ -90,7 +90,7 @@ pub(super) fn lookup_area_code(digits: &str) -> Option<AreaCodeGeo> {
 /// The country name for an ISO-3166 alpha-2 code, or `"Unknown"`. Delegates to the
 /// canonical shared ISO→name table rather than keep a divergent copy.
 pub(super) fn country_name(cc: &str) -> &'static str {
-    // Reuse the canonical ISO→name table (55 countries) rather than maintain a
+    // Reuse the canonical ISO→name table rather than maintain a
     // divergent 8-entry copy; every ISO this module's area tables use is covered.
     crate::util::geohash::country_name_for_iso(cc).unwrap_or("Unknown")
 }

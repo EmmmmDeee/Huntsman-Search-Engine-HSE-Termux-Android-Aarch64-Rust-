@@ -210,6 +210,36 @@ pub fn country_name_for_iso(iso: &str) -> Option<&'static str> {
         "NG" => "Nigeria",
         "KE" => "Kenya",
         "MA" => "Morocco",
+        // Every ISO a country-signal emitter writes — `geo_intel`'s dialling
+        // prefixes, `cell_intel`'s MCC stand-ins — so a signal's label and
+        // its `country` attribute name the country in words, never as its
+        // bare code (REQ-GEOLABEL-035).
+        "HR" => "Croatia",
+        "GH" => "Ghana",
+        "TZ" => "Tanzania",
+        "KZ" => "Kazakhstan",
+        "UG" => "Uganda",
+        "DZ" => "Algeria",
+        "TN" => "Tunisia",
+        "LY" => "Libya",
+        "GM" => "Gambia",
+        "IR" => "Iran",
+        "IQ" => "Iraq",
+        "SY" => "Syria",
+        "LB" => "Lebanon",
+        "JO" => "Jordan",
+        "KW" => "Kuwait",
+        "PK" => "Pakistan",
+        "AF" => "Afghanistan",
+        "LK" => "Sri Lanka",
+        "BD" => "Bangladesh",
+        "MM" => "Myanmar",
+        "KH" => "Cambodia",
+        "LA" => "Laos",
+        "MO" => "Macau",
+        "MV" => "Maldives",
+        "CU" => "Cuba",
+        "VE" => "Venezuela",
         _ => return None,
     })
 }

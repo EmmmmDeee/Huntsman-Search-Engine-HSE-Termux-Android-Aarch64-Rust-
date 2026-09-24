@@ -168,7 +168,10 @@ pub(crate) fn mcc_centroid_point(mcc: &str, tower_id: &str, scan_id: &str) -> Op
 /// own country: MCC 216 (Hungary) once carried Istanbul's coordinates and 219
 /// (Croatia) central Serbia's, so a device camped on a Hungarian network was
 /// labelled "Hungary" with its pin, geohash and timezone in Turkey
-/// (REQ-GEOLABEL-032).
+/// (REQ-GEOLABEL-032). Each row's MCCs are the ITU-T E.212 codes of the
+/// country its ISO names: `620` is Ghana and `640` Tanzania, and a row that
+/// once read `620` → Tanzania put every Ghanaian network in Tanzania and left
+/// Tanzania's own unresolved (REQ-GEOLABEL-035).
 pub(super) const MCC_CENTROIDS: &[(&[&str], f64, f64, &str)] = &[
     // Oceania / Australia
     (&["505"], -25.2744, 133.7751, "AU"),
@@ -230,7 +233,8 @@ pub(super) const MCC_CENTROIDS: &[(&[&str], f64, f64, &str)] = &[
     // Africa
     (&["655"], -30.5595, 22.9375, "ZA"),
     (&["621"], 9.0820, 8.6753, "NG"),
-    (&["620"], -6.3690, 34.8888, "TZ"),
+    (&["620"], 7.9465, -1.0232, "GH"),
+    (&["640"], -6.3690, 34.8888, "TZ"),
     (&["639"], -0.0236, 37.9062, "KE"),
     (&["602"], 26.8206, 30.8025, "EG"),
     (&["604"], 31.7917, -7.0926, "MA"),

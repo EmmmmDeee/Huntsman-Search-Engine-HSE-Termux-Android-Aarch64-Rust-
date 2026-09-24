@@ -23919,3 +23919,134 @@ confirms.
 `a_failed_scan_whose_row_was_not_written_is_not_announced`, which pinned the
 withdrawn behaviour. Its control run still checks that a written Failed row
 is announced exactly once.
+
+## REQ-SEARCH-ADDR-004 / REQ-GEOLABEL-034 / REQ-GEOLABEL-035 / REQ-GEOLABEL-036 / REQ-SCANSTATUS-010 / REQ-SCANSTATUS-011 / REQ-SCANSTATUS-012 — final review, correction round 3
+
+**Found** by the third correction round of the final review of PR #649,
+which raised eight findings against 4ca197dd. Each was checked against that
+head, and all eight were real. Two of them (the `fused_au_locality` grain,
+raised under the accuracy and the integration lens) are one defect, so there
+are seven. Each fix is made where its rule lives and has a regression test
+that fails on the code before it. Each fix was then undone in place, the test
+was seen to fail, and the file was restored byte-identically (table below).
+
+**REQ-SEARCH-ADDR-004 — a relative located in a place does not locate the
+subject.** REQ-SEARCH-ADDR-003 let `surname_bearer_locality` recover the
+place from `"<Given> <Surname> in <Place>"`, but the function received only
+the surname. A people-search snippet that names "Ian Thorpe" passes the
+per-result gate and can still list his relatives: `"Ian Thorpe, age 45 -
+relatives, Carol Thorpe in Mosman, NSW"` yields the comma-path segment
+`"Carol Thorpe in Mosman, NSW"`, which became the Address "Mosman, NSW" on
+Ian's scan. That was then forward-geocoded and could anchor AU-059 or the
+best location. REQ-SEARCH-ADDR-002 had dropped the whole segment. The
+function now takes the subject's full name and reads the surname through
+`person_surname` itself. The `in` branch recovers the place only when the
+name ending at the surname (`bearer_name`: the run of capitalised,
+non-possessive name words directly before it) names the subject by the
+identity gate's own reading, `text_names_person`. So "Carol Thorpe in
+Mosman", "Ian Thorpe's sister Carol Thorpe in Mosman", "Ian and Carol
+Thorpe in Mosman" and "Mr Thorpe in Mosman" return `None`, and "Contact Ian
+Thorpe in Mosman", "I. Thorpe in Mosman" and "Ian James Thorpe in Mosman"
+(for that subject) return "Mosman, NSW". A mononym subject keeps every
+address, as before. The caller in `search_engines::build` passes the target
+value.
+
+**REQ-GEOLABEL-034 — a best-location fix coarser than a locality names no
+town.** REQ-GEOLABEL-031 made `fused_au_locality` pick its anchor with the
+label's grain, but it returned the nearest town at every radius, while
+`offline_phrase` names the state at Region grain, the country at Country
+grain, and "remote … — nearest centre X" beyond `NEAR_CENTRE_KM`. So a Sydney
+landline's rung-6 fix (±650 km) printed "near Sydney" above `place:
+Australia (approx.)`, and a mobile login IP's rung-5 fix (±50 km) printed
+"near Melbourne" above `place: Victoria, Australia`, with report.json and
+`/location` carrying that `locality` beside the label. One rule now decides
+both: `core::place::label::au_named_anchor(lat, lon, grain)` returns the
+anchor a phrase at that grain names, or `None` outside Australia, at Region
+grain or coarser, or beyond `NEAR_CENTRE_KM`. `offline_phrase` words the
+anchor it returns, and `fused_au_locality` reports it. Every rung and the
+corroboration read `fused_au_locality`, so none can name a finer place than
+its label.
+
+**REQ-GEOLABEL-035 — every MCC row names the country the ITU assigns.**
+`MCC_CENTROIDS` mapped `620` to Tanzania. 620 is Ghana and 640 is
+Tanzania, so a Ghanaian network was tagged `country:TZ` and pinned in
+Tanzania, and a Tanzanian one resolved to nothing. The REQ-GEOLABEL-032
+test checks only that a row's point lies in the country its own row names,
+so the wrong row passed. The table now has `620` → Ghana (7.9465, -1.0232)
+and `640` → Tanzania, and a new test pins a sample of the ITU-T E.212
+assignments, including every code easily confused with a neighbour.
+`country_name_for_iso` had no name for HR, IR or TZ, so the MCC 219 record's
+`country` attribute, and its label, read "HR". It now names every ISO a
+country-signal emitter writes: each MCC row's and each dialling-prefix row's
+(Croatia, Ghana, Tanzania, Kazakhstan, Iran and 21 more). The test checks
+every MCC row has a name.
+
+**REQ-GEOLABEL-036 — a CSV copy of a country signal is named by its own
+country tags.** A CSV re-import keeps tags but not attributes, so
+`country_signal_place` found no `country`/`region` words and the label fell
+back to `stored_country` (which reads evidence only) and then the box. The
+box answers the first matching country, so MCC 206 Belgium read "France
+(approx.)", 219 Croatia "Italy (approx.)", 255 Ukraine "Russia (approx.)" and
+268 Portugal "Spain (approx.)", while the point still carried the right
+`country:` tag. `country_signal_place` now falls back to those tags
+(`country_signal_tagged_place`), named in words and joined with "or", before
+any box. The offline enrichment tags the box's own country on a point no
+provider named, which is every `email_locale` point, so a tag the box would
+also have written is not trusted: it is left to the box reading, which marks
+itself "(approx.)". A `.pt` email's copy still reads "Spain (approx.)",
+never a sure "Spain". The `+1` Toronto case needed the emitter too:
+`geo_intel` tagged `+1` only `country:US` and `+7` only `country:RU`.
+`prefix_country_isos` now tags every country a shared prefix covers (`US`
+and `CA`, `RU` and `KZ`), so a `+1` copy reads "Canada or United States". A
+`+1` point stored before this change still carries only `country:US`, which
+the box also answers, so it keeps reading "United States (approx.)".
+
+**REQ-SCANSTATUS-010 — an import over the enrichment cap is stored
+partial.** Both import paths skip relations and correlations over 5,000
+entities, and then wrote the scan `Complete` with `error: None`. The skip
+showed only in the caller's `enriched=false`, so every export of a
+6,000-row breach import read "complete" with CORRELATIONS (0): a correlator
+that never ran, read as one that found nothing. A new
+`FinalisePass::ImportEnrichment` records it. `app::persist::skip_enrichment_over_cap`
+is the one cap check both paths make: `enrich_persisted_batch` (the CLI) and
+`scan_import` (the web upload, which drops its own copy of the constant). It
+records "skipped — N entities exceed the 5000-entity import enrichment cap",
+so the scan's `error` carries it, exports read "partial,
+finalise-incomplete", and the web response answers `partial`.
+
+**REQ-SCANSTATUS-011 — a scan whose start row is refused is announced
+failed.** REQ-SCANSTATUS-008 announces the Failed branch even when its row
+is lost, but a store refusing writes from the start fails the scan at
+`run_with_ledger_inner`'s first `upsert_scan`, before any module runs and
+before the finalise. That `?` returned the error with no `ScanComplete`, so
+the radar kept reading "sweep #N running…" and `hse live` printed nothing.
+The engine now records and broadcasts `ScanComplete { status: Failed,
+entity_count: 0 }` there before returning the error. `RefusingStore` gains
+`refusing_scan_writes`, which refuses the start row too, and the radar's
+comment names both cases. A panic contained by `run_panic_safe` is still not
+announced. That is outside this finding.
+
+**REQ-SCANSTATUS-012 — a cancelled web upload reads as cancelled.** Since
+REQ-SCANSTATUS-005 the web upload can commit `aborted`, answering
+`"status":"aborted"` with `finalise_error: null`. `uploadDossier` checked
+only `finalise_error`, so it showed "Imported N entities." with a success
+toast. It now branches on `r.status === 'aborted'` first and says the import
+was cancelled, its entities kept and its relations and correlations not
+finished, with a warning toast. A route test pins that branch ahead of the
+success toast.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | the `in` branch recovers the place whatever the bearer's given name | killed by `modules::search_engines::helpers::entity::tests::a_relative_located_in_a_place_does_not_locate_the_subject` |
+| M2 | `fused_au_locality` asks `nearest_au_anchor` (as at 4ca197dd) | killed by `core::correlator::rules::location::tests::a_coarse_best_location_names_no_town` (`locality: Some("Sydney")` beside "Australia (approx.)") |
+| M3 | MCC `620` back on Tanzania's row | killed by `modules::cell_intel::tests::every_mcc_row_names_the_country_the_itu_assigns_it` ("MCC 620") |
+| M3a | `country_name_for_iso` without Croatia | killed by the same test ("MCC [\"219\"]: HR has no country name") |
+| M4 | `country_signal_place` never reads the tags | killed by `core::place::tests::a_csv_copy_of_a_country_signal_is_named_by_its_own_country_tags` ("France (approx.)" for MCC 206) |
+| M4a | `prefix_country_isos` tags only the row ISO | killed by `modules::geo_intel::tests::a_shared_prefix_tags_every_country_it_covers` (`["country:US"]` for `+1`) |
+| M5 | `skip_enrichment_over_cap` records nothing | killed by `app::persist::tests::a_batch_over_the_enrichment_cap_is_stored_partial` and `tests/api.rs::dossier_upload_flags_enrichment_skipped_above_the_entity_cap` (`status: complete`) |
+| M6 | the refused start row returns without the announcement | killed by `core::engine::tests::a_scan_whose_start_row_is_refused_is_announced_failed` (`[]`, not `[Failed]`) |
+| M7 | `uploadDossier` as at 4ca197dd | killed by `api::routes::tests::embedded_spa_reports_a_cancelled_upload_as_cancelled` |
+
+**9 of 9 caught.**

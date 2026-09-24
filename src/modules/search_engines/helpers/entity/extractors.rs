@@ -26,7 +26,7 @@ const PLACE_SUFFIXES: &[&str] = &[
 ];
 
 /// The locality an extracted `"City, State"` may keep on a name scan for the
-/// scanned `surname` — the address itself when its "city" is a place, the
+/// scanned person `subject` — the address itself when its "city" is a place, the
 /// place a surname-bearer is said to be `in` when that is all it names, or
 /// `None` when the "city" names a PERSON carrying the surname (a people-search
 /// listing title) or a THING named after one (a venue, a business).
@@ -55,7 +55,15 @@ const PLACE_SUFFIXES: &[&str] = &[
 /// - a statement locating the bearer — `"Swim coach, Ian Thorpe in Ultimo,
 ///   New South Wales"` yields the segment `"Ian Thorpe in Ultimo"`. Nothing
 ///   but `in` follows the surname, so the place after it is what the text
-///   locates: `Some("Ultimo, New South Wales")` (REQ-SEARCH-ADDR-003).
+///   locates: `Some("Ultimo, New South Wales")` (REQ-SEARCH-ADDR-003) — but
+///   only when the bearer IS the subject. The name standing before the
+///   surname ([`bearer_name`]) must name `subject` by the identity gate's own
+///   reading ([`crate::core::scan::text_names_person`]). A people-search
+///   snippet that names the subject passes the per-result gate and can still
+///   list his relatives — `"Ian Thorpe, 45 … Carol Thorpe in Mosman, NSW"`
+///   yields the segment `"Carol Thorpe in Mosman"`, and Mosman is Carol's
+///   place, not Ian's: `None`, exactly as the listing title is
+///   (REQ-SEARCH-ADDR-004).
 ///
 /// A surname followed only by place suffixes ([`PLACE_SUFFIXES`]) is a place:
 /// `"Box Hill North, Victoria"` survives a scan for a Hill. The REQ-SEARCH-ADDR-002
@@ -69,22 +77,27 @@ const PLACE_SUFFIXES: &[&str] = &[
 /// two-word suburb ending in the surname (`"Box Hill"` for a Hill) is
 /// indistinguishable from a listing title and is dropped: the conservative
 /// side, since a wrong locality is worse than a missed one. Words and surname
-/// are compared diacritic-folded ([`crate::core::scan::fold_name_text`]).
+/// are compared diacritic-folded ([`crate::core::scan::fold_name_text`]), and
+/// the surname is `subject`'s as the identity gate reads it
+/// ([`crate::core::scan::person_surname`]: `"Dr Ian Thorpe OAM"` is a Thorpe).
+/// A mononym `subject` carries no surname, so every address is kept.
 /// **Pure.**
 pub(in crate::modules::search_engines) fn surname_bearer_locality(
     addr: &str,
-    surname: &str,
+    subject: &str,
 ) -> Option<String> {
     let Some((city, state)) = addr.rsplit_once(',') else {
         return Some(addr.to_string());
     };
-    // Both sides through the identity gate's name fold: the caller's surname
-    // comes from `person_surname`, which is diacritic-folded (`"nguyen"`), so
-    // a raw comparison would miss the `"Nguyễn"` the listing prints.
-    let surname = crate::core::scan::fold_name_text(surname.trim());
-    if surname.is_empty() {
+    // Both sides through the identity gate's name fold: `person_surname` is
+    // diacritic-folded (`"nguyen"`), so a raw comparison would miss the
+    // `"Nguyễn"` the listing prints.
+    let Some(surname) = crate::core::scan::person_surname(subject)
+        .map(|s| crate::core::scan::fold_name_text(s.trim()))
+        .filter(|s| !s.is_empty())
+    else {
         return Some(addr.to_string());
-    }
+    };
     let words: Vec<&str> = city.split_whitespace().collect();
     let place_led = words.first().is_some_and(|w| {
         PLACE_PREFIXES
@@ -107,14 +120,43 @@ pub(in crate::modules::search_engines) fn surname_bearer_locality(
         [] => None,
         // "Box Hill North, Victoria": a place carrying the surname.
         _ if after.iter().all(|w| is(w, PLACE_SUFFIXES)) => Some(addr.to_string()),
-        // "Ian Thorpe in Ultimo": the place the text locates the bearer in.
+        // "Ian Thorpe in Ultimo": the place the text locates the bearer in —
+        // the subject's place only when the bearer is the subject ("Carol
+        // Thorpe in Mosman" on an Ian Thorpe scan is not).
         [first, place @ ..] if *first == "in" && !place.is_empty() => {
-            Some(format!("{},{state}", place.join(" ")))
+            crate::core::scan::text_names_person(&bearer_name(&words, at), subject)
+                .unwrap_or(false)
+                .then(|| format!("{},{state}", place.join(" ")))
         }
         // "Ian Thorpe Aquatic Centre in Ultimo", "Jamie Thorpe Plumbing": a
         // thing named after a surname-bearer.
         _ => None,
     }
+}
+
+/// The name that ends at the surname `words[at]`: the run of name-shaped
+/// words directly before it ([`is_name_word`]) and the surname itself —
+/// `"Ian Thorpe"` from `"Contact Ian Thorpe"`, `"Carol Thorpe"` from `"Ian
+/// Thorpe's sister Carol Thorpe"`. Bounded by the first word that cannot
+/// stand in a name, so a subject named EARLIER in the segment (`"Ian
+/// Thorpe's"`, `"Ian and"`) is never read as this bearer's given name.
+/// **Pure.**
+fn bearer_name(words: &[&str], at: usize) -> String {
+    let start = words[..at]
+        .iter()
+        .rposition(|w| !is_name_word(w))
+        .map_or(0, |p| p + 1);
+    words[start..=at].join(" ")
+}
+
+/// Whether `w` can stand in a written person name: capitalised, letters with
+/// only the `.` of an initial and the `-` / `'` inside a name part, and not a
+/// possessive (`"Thorpe's"`). **Pure.**
+fn is_name_word(w: &str) -> bool {
+    w.chars().next().is_some_and(char::is_uppercase)
+        && w.chars()
+            .all(|c| c.is_alphabetic() || matches!(c, '.' | '-' | '\'' | '\u{2019}'))
+        && !(w.ends_with("'s") || w.ends_with("\u{2019}s"))
 }
 
 /// Extract AU location strings from free text for geolocation, in three passes:

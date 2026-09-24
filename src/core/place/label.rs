@@ -682,10 +682,43 @@ pub fn fused_name_grain(radius_km: f64) -> FixGrain {
 /// They did: the correlator asked `util::geo::nearest_au_locality` whatever
 /// the radius, so a redacted `-37.8,144.9` at ±5.6 km read "near Footscray"
 /// above a label naming Melbourne, restating the suburb the redaction
-/// withheld (REQ-GEOLABEL-031). `None` outside Australia. Pure.
+/// withheld (REQ-GEOLABEL-031).
+///
+/// `None` wherever the label names no centre ([`au_named_anchor`], the one
+/// rule both read): outside Australia, for a fix graded coarser than a
+/// locality — the label names the state or the country there, so a town
+/// would be finer than the fix — and for a point beyond [`NEAR_CENTRE_KM`] of
+/// every centre, which the label calls "remote … — nearest centre X".
+/// Returning the nearest town at any radius printed "near Sydney" beside a
+/// ±650 km landline fix labelled "Australia", and "near Melbourne" beside a
+/// ±50 km mobile login-IP fix labelled "Victoria, Australia"
+/// (REQ-GEOLABEL-034). Pure.
 #[must_use]
 pub fn fused_au_locality(lat: f64, lon: f64, radius_km: f64) -> Option<&'static str> {
-    nearest_au_anchor(lat, lon, fused_name_grain(radius_km)).map(|(name, _, _)| name)
+    au_named_anchor(lat, lon, fused_name_grain(radius_km)).map(|(name, ..)| name)
+}
+
+/// The curated Australian centre a place phrase for a point graded `grain`
+/// NAMES as the place — `(name, state, distance_km, centre)` — or `None` when
+/// the phrase names none: outside Australia, at [`FixGrain::Region`] or
+/// coarser (the state or the country is named), or beyond [`NEAR_CENTRE_KM`]
+/// of the nearest anchor (the phrase is "remote …"). The one rule
+/// [`offline_phrase`] words and [`fused_au_locality`] reports, so the two
+/// cannot diverge. Pure.
+fn au_named_anchor(
+    lat: f64,
+    lon: f64,
+    grain: FixGrain,
+) -> Option<(&'static str, &'static str, f64, (f64, f64))> {
+    if grain >= FixGrain::Region {
+        return None;
+    }
+    crate::util::geo::au_state_for_coords(lat, lon)?;
+    let (name, state, km) = nearest_au_anchor(lat, lon, grain)?;
+    if km > NEAR_CENTRE_KM {
+        return None;
+    }
+    au_anchor_position(name).map(|centre| (name, state, km, centre))
 }
 
 /// The offline place phrase for a point graded `grain` / `radius_m`, and the
@@ -725,17 +758,13 @@ fn offline_phrase(
         _ => {}
     }
     let at_locality = grain.max(FixGrain::Locality);
-    if let (Some(st), Some((name, anchor_state, km))) =
-        (au_state, nearest_au_anchor(lat, lon, grain))
-    {
-        if km <= NEAR_CENTRE_KM
-            && let Some(centre) = au_anchor_position(name)
-        {
-            return Some((
-                near_centre(name, Some(anchor_state), centre, (lat, lon), km, radius_m),
-                at_locality,
-            ));
-        }
+    if let Some((name, anchor_state, km, centre)) = au_named_anchor(lat, lon, grain) {
+        return Some((
+            near_centre(name, Some(anchor_state), centre, (lat, lon), km, radius_m),
+            at_locality,
+        ));
+    }
+    if let (Some(st), Some((name, _, km))) = (au_state, nearest_au_anchor(lat, lon, grain)) {
         return Some((
             format!(
                 "remote {st} — nearest centre {name} ({})",
@@ -1168,8 +1197,9 @@ pub fn describe(e: &Entity, ctx: &PlaceContext) -> Option<PlaceLabel> {
     // "Eastern Europe (Ukraine/Russia/Serbia)"), never by the one country its
     // stand-in point falls in: the stand-in is where the module put the
     // signal, not where the signal says the subject is
-    // ([`country_signal_place`]). Only a signal whose records name nothing (a
-    // CSV copy) falls back to the stored country or the box.
+    // ([`country_signal_place`]). A copy whose records lost their words (a
+    // CSV copy) is named by its emitter's `country:` tags; only one carrying
+    // none but the box's own falls back to the stored country or the box.
     let signal_place = (fix.basis == FixBasis::CountrySignal)
         .then(|| country_signal_place(e))
         .flatten()

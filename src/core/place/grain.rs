@@ -761,6 +761,14 @@ fn is_country_signal(ev: &Evidence) -> bool {
 /// `email_locale` is a derivation module, so its records are engine-side
 /// ([`is_annotator_row`]) and its grade travels by its tags — but its record
 /// is still the one that says which place it meant.
+///
+/// A copy whose records lost their attributes (a CSV re-import keeps tags,
+/// never attributes) names its place by its `country:XX` tags instead
+/// ([`country_signal_tagged_place`]), before any box: the box the stand-in
+/// falls in answers the FIRST matching country, so a Belgian MCC point read
+/// "France", a Croatian one "Italy", a Ukrainian one "Russia" and a Toronto
+/// `+1 416` point "United States" on the CSV path while the point's own tag
+/// named the right one (REQ-GEOLABEL-036).
 #[must_use]
 pub(crate) fn country_signal_place(e: &Entity) -> Option<String> {
     let mut named: Vec<&str> = e
@@ -778,7 +786,49 @@ pub(crate) fn country_signal_place(e: &Entity) -> Option<String> {
         .collect();
     named.sort_unstable();
     named.dedup();
-    (!named.is_empty()).then(|| named.join(" or "))
+    if named.is_empty() {
+        return country_signal_tagged_place(e);
+    }
+    Some(named.join(" or "))
+}
+
+/// The countries a country-signal point's `country:XX` tags name, in words
+/// ([`crate::util::geohash::country_name_for_iso`], the code itself when the
+/// table has no name), sorted and joined with " or " — `None` when it carries
+/// none, or when its only tag is the country the offline box answers for its
+/// stand-in.
+///
+/// A tag the box would also have written may BE the box's: the offline
+/// enrichment tags `country:<box>` on a point no provider named
+/// (`engine::enrich_geospatial`), which is every `email_locale` point. Such a
+/// tag says nothing the box does not, so it is left to the caller's box
+/// reading, which marks itself "(approx.)" — a `.pt` email's point, boxed
+/// inside Spain, stays "Spain (approx.)" rather than reading as a sure
+/// "Spain". A tag the box would NOT have written was written by the emitter
+/// (`cell_intel`'s MCC country, `geo_intel`'s dialling-prefix countries),
+/// and names the country the signal meant. Pure.
+fn country_signal_tagged_place(e: &Entity) -> Option<String> {
+    let mut tagged: Vec<&str> = e
+        .tags
+        .iter()
+        .filter_map(|t| t.strip_prefix("country:"))
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .collect();
+    tagged.sort_unstable();
+    tagged.dedup();
+    let boxed = crate::util::geohash::parse_coords(&e.value)
+        .and_then(|(lat, lon)| crate::util::geohash::reverse_country_iso(lat, lon));
+    if tagged.is_empty() || (tagged.len() == 1 && Some(tagged[0]) == boxed) {
+        return None;
+    }
+    let mut names: Vec<&str> = tagged
+        .into_iter()
+        .map(|c| crate::util::geohash::country_name_for_iso(c).unwrap_or(c))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    Some(names.join(" or "))
 }
 
 /// One originating record's account of the point, or `None` for an annotator

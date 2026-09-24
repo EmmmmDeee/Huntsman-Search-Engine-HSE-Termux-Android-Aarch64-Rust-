@@ -867,3 +867,71 @@ use super::*;
             .expect("rung-2 estimate");
         assert_eq!(geelong.locality.as_deref(), Some("Geelong"), "{geelong:?}");
     }
+
+    /// REQ-GEOLABEL-034: a fix graded coarser than a locality names no town.
+    /// `fused_au_locality` returned the nearest town at any radius, so a
+    /// Sydney landline's ±650 km area-code fix — labelled "Australia" — still
+    /// printed "near Sydney", and a mobile login IP's ±50 km fix — labelled
+    /// "Victoria, Australia" — "near Melbourne": a name finer than the fix,
+    /// beside a label that did not name it.
+    #[test]
+    fn a_coarse_best_location_names_no_town() {
+        let label_of = |est: &AuLocationEstimate| {
+            crate::core::place::describe_fused(
+                est.lat,
+                est.lon,
+                est.radius_km,
+                crate::core::place::FixKind::SingleSignal,
+            )
+            .expect("place label")
+            .text
+        };
+        // Rung 6: a Sydney geographic landline, ±650 km.
+        let phone = Entity::new(EntityKind::Phone, "+61 2 9374 4000", 0.7, "s");
+        let landline = best_au_location_estimate(&[phone]).expect("rung-6 estimate");
+        assert_eq!(landline.basis, "landline area-code region", "{landline:?}");
+        assert!(landline.radius_km > 150.0, "{landline:?}");
+        let text = label_of(&landline);
+        assert!(text.starts_with("Australia"), "{text}");
+        assert_eq!(landline.locality, None, "{landline:?} beside {text}");
+
+        // Rung 5: a mobile login IP geolocated to Melbourne, ±50 km.
+        let mut ip = Entity::new(EntityKind::IpAddress, "1.132.97.84", 0.6, "s");
+        ip.tag("geolocation-lead");
+        let mut coord = Entity::new(EntityKind::Coordinates, "-37.8136,144.9631", 0.6, "s");
+        coord.tag("mobile");
+        coord.add_evidence(Evidence::new("ip_geo", "g").with_attr("ip", "1.132.97.84"));
+        let mobile = best_au_location_estimate(&[ip, coord]).expect("rung-5 estimate");
+        assert_eq!(mobile.basis, "breach login-IP city", "{mobile:?}");
+        assert!((mobile.radius_km - 50.0).abs() < 1e-9, "{mobile:?}");
+        let text = label_of(&mobile);
+        assert!(text.starts_with("Victoria, Australia"), "{text}");
+        assert_eq!(mobile.locality, None, "{mobile:?} beside {text}");
+
+        // Every AU rung radius: `locality` is named exactly when the label
+        // names that centre.
+        for radius_km in [0.05, 5.0, 25.0, 30.0, 30.1, 50.0, 150.0, 650.0, 1700.0] {
+            for (lat, lon) in [(-33.8688, 151.2093), (-37.8136, 144.9631), (-23.7, 133.88)] {
+                let text = crate::core::place::describe_fused(
+                    lat,
+                    lon,
+                    radius_km,
+                    crate::core::place::FixKind::SingleSignal,
+                )
+                .expect("label")
+                .text;
+                match crate::core::place::fused_au_locality(lat, lon, radius_km) {
+                    Some(town) => assert!(
+                        text.contains(town) && !text.starts_with("remote"),
+                        "({lat},{lon}) ±{radius_km} km: {town} vs {text}"
+                    ),
+                    None => assert!(
+                        crate::core::place::fused_name_grain(radius_km)
+                            > crate::core::place::FixGrain::Locality
+                            || text.starts_with("remote"),
+                        "({lat},{lon}) ±{radius_km} km names a centre: {text}"
+                    ),
+                }
+            }
+        }
+    }

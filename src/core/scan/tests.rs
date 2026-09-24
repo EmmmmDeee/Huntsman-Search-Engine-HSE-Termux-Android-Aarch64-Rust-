@@ -1818,6 +1818,15 @@ fn finalise_tally_message_names_failed_passes_and_every_write_kind() {
         Some("correlation pass failed: panicked; corroboration boost pass failed: locked"),
         "passes alone, in finalise order"
     );
+    // An import's size skip leads: it precedes every other pass.
+    passes.pass_failed(FinalisePass::ImportEnrichment, "skipped");
+    assert!(
+        passes
+            .message()
+            .is_some_and(|m| m.starts_with("relation and correlation pass failed: skipped; ")),
+        "{:?}",
+        passes.message()
+    );
     assert_eq!(
         passes.pass_failure(FinalisePass::Correlation),
         Some(crate::core::engine::CORRELATION_PASS_PANICKED)

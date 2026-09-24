@@ -498,17 +498,14 @@ pub(super) fn build_entities(
             // the scanned surname — a people-search listing title, or a venue
             // named after a surname-bearer ("Ian Thorpe Aquatic Centre in
             // Ultimo") — is not a place the subject is at, while "Ian Thorpe in
-            // Ultimo" locates its bearer in Ultimo and "Box Hill North" is a
-            // suburb (REQ-SEARCH-ADDR-001/002/003). Deduplicated in order, since
+            // Ultimo" locates the subject in Ultimo (a relative "in" a place
+            // does not) and "Box Hill North" is a suburb
+            // (REQ-SEARCH-ADDR-001/002/003/004). Deduplicated in order, since
             // a recovered place can equal an address found beside it.
-            // The surname through the identity gate's own name parser, not the
-            // last whitespace token: `"Dr Ian Thorpe OAM"` is a Thorpe.
-            if target.kind == TargetKind::FullName
-                && let Some(surname) = crate::core::scan::person_surname(&target.value)
-            {
+            if target.kind == TargetKind::FullName {
                 let mut kept: Vec<String> = Vec::with_capacity(found.len());
                 for a in found {
-                    if let Some(place) = surname_bearer_locality(&a, &surname)
+                    if let Some(place) = surname_bearer_locality(&a, &target.value)
                         && !kept.contains(&place)
                     {
                         kept.push(place);

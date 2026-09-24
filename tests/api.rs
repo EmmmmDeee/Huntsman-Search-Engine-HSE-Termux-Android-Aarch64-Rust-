@@ -1346,7 +1346,7 @@ async fn dossier_upload_derives_and_persists_entity_relations() {
 #[tokio::test]
 async fn dossier_upload_reports_relation_count_as_a_true_zero_within_the_enrichment_cap() {
     // A dossier with no relatable entities (one bare email, no shared
-    // domain/URL to link) is well within `IMPORT_ENRICH_MAX_ENTITIES`, so
+    // domain/URL to link) is well within the import enrichment cap, so
     // enrichment actually runs and the reported zero is a REAL zero — not the
     // size-skip zero the over-cap case below also reports as `0`.
     let app = test_app("import-real-zero");
@@ -1369,11 +1369,12 @@ async fn dossier_upload_reports_relation_count_as_a_true_zero_within_the_enrichm
 
 #[tokio::test]
 async fn dossier_upload_flags_enrichment_skipped_above_the_entity_cap() {
-    // Above `IMPORT_ENRICH_MAX_ENTITIES` (5,000) the O(n²) relation/correlator
+    // Above the import enrichment cap (5,000) the O(n²) relation/correlator
     // pass is skipped for device safety — every entity is still persisted, but
     // the response must say so rather than reporting the SAME `relation_count:
     // 0` / `correlation_count: 0` a genuinely relation-free small dossier
-    // (the sibling test above) also reports.
+    // (the sibling test above) also reports. And the stored scan must not read
+    // whole (REQ-SCANSTATUS-010): it answers `partial`, with the skip named.
     let app = test_app("import-enrich-cap");
     let mut dossier = String::with_capacity(500_000);
     for i in 0..5_100u32 {
@@ -1402,6 +1403,13 @@ async fn dossier_upload_flags_enrichment_skipped_above_the_entity_cap() {
     );
     assert_eq!(json["relation_count"], 0);
     assert_eq!(json["correlation_count"], 0);
+    assert_eq!(json["status"], "partial", "{json}");
+    let err = json["finalise_error"].as_str().unwrap_or_default();
+    assert!(
+        err.starts_with("relation and correlation pass failed: skipped")
+            && err.contains("5000-entity import enrichment cap"),
+        "{json}"
+    );
 }
 
 #[tokio::test]

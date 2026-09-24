@@ -1062,6 +1062,13 @@ impl FinaliseWrite {
 /// runs them in, and the order [`FinaliseTally::message`] lists them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinalisePass {
+    /// An import's relation derivation and correlation, taken together: the
+    /// import paths (`hse import` / `ingest --auto-scan` and the web upload)
+    /// do not run them at all over a batch larger than their enrichment cap
+    /// (`app::persist::PERSIST_ENRICH_MAX_ENTITIES`). A skip on purpose still
+    /// leaves the scan's relations and correlations never produced, so its
+    /// exports must not read it whole (REQ-SCANSTATUS-010).
+    ImportEnrichment,
     /// The authoritative correlator over the persisted scan.
     Correlation,
     /// The cross-scan route learning that fires AU-065 / AU-066.
@@ -1072,7 +1079,8 @@ pub enum FinalisePass {
 
 impl FinalisePass {
     /// Every pass, in declaration order.
-    const ALL: [Self; 3] = [
+    const ALL: [Self; 4] = [
+        Self::ImportEnrichment,
         Self::Correlation,
         Self::CrossScanRoutes,
         Self::CorroborationBoosts,
@@ -1081,6 +1089,7 @@ impl FinalisePass {
     /// The name [`FinaliseTally::message`] prints.
     fn label(self) -> &'static str {
         match self {
+            Self::ImportEnrichment => "relation and correlation pass",
             Self::Correlation => "correlation pass",
             Self::CrossScanRoutes => "cross-scan route pass",
             Self::CorroborationBoosts => "corroboration boost pass",
@@ -1090,9 +1099,10 @@ impl FinalisePass {
     /// Slot in [`FinaliseTally`]'s pass failures.
     fn index(self) -> usize {
         match self {
-            Self::Correlation => 0,
-            Self::CrossScanRoutes => 1,
-            Self::CorroborationBoosts => 2,
+            Self::ImportEnrichment => 0,
+            Self::Correlation => 1,
+            Self::CrossScanRoutes => 2,
+            Self::CorroborationBoosts => 3,
         }
     }
 }
@@ -1138,7 +1148,7 @@ pub struct FinaliseTally {
     first_err: Option<String>,
     /// Why each [`FinalisePass`] produced nothing, when it failed outright,
     /// indexed by [`FinalisePass::index`].
-    passes: [Option<String>; 3],
+    passes: [Option<String>; 4],
 }
 
 impl FinaliseTally {

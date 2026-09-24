@@ -556,7 +556,7 @@ use super::*;
         );
         assert!(listed.iter().any(|a| a == "Ian Thorpe, North Carolina"), "{listed:?}");
         for person in ["Ian Thorpe, North Carolina", "Bill Thorpe, Florida"] {
-            assert!(surname_bearer_locality(person, "Thorpe").is_none(), "{person}");
+            assert!(surname_bearer_locality(person, "Ian Thorpe").is_none(), "{person}");
         }
         // Real places survive: a suburb that IS the surname, a place-prefixed
         // name, an unrelated city, and a comma-free string.
@@ -567,12 +567,12 @@ use super::*;
             "Houston, Texas",
             "Thorpe",
         ] {
-            assert!(surname_bearer_locality(place, "Thorpe").is_some_and(|a| a == place), "{place}");
+            assert!(surname_bearer_locality(place, "Ian Thorpe").is_some_and(|a| a == place), "{place}");
         }
-        assert!(surname_bearer_locality("Lawnton, QLD", "Lawnton").is_some_and(|a| a == "Lawnton, QLD"));
-        // `person_surname` hands this a diacritic-folded surname
+        assert!(surname_bearer_locality("Lawnton, QLD", "Ian Lawnton").is_some_and(|a| a == "Lawnton, QLD"));
+        // `person_surname` reads a diacritic-folded surname
         // (REQ-IDENTITY-GATE-003); the listing prints the accented one.
-        assert!(surname_bearer_locality("Bich Nguyễn, Hà Nội", "nguyen").is_none());
+        assert!(surname_bearer_locality("Bich Nguyễn, Hà Nội", "Lan Nguyen").is_none());
     }
 
     /// REQ-SEARCH-ADDR-003: the REQ-SEARCH-ADDR-002 rule dropped every
@@ -589,11 +589,11 @@ use super::*;
             "input pinned: {found:?}"
         );
         for place in ["Box Hill North, Victoria", "Box Hill South, VIC"] {
-            assert_eq!(surname_bearer_locality(place, "Hill").as_deref(), Some(place));
+            assert_eq!(surname_bearer_locality(place, "Ian Hill").as_deref(), Some(place));
         }
         // REQ-SEARCH-ADDR-002's stated loss, closed: a lake named for a park.
         assert_eq!(
-            surname_bearer_locality("Albert Park Lake, VIC", "Park").as_deref(),
+            surname_bearer_locality("Albert Park Lake, VIC", "Ian Park").as_deref(),
             Some("Albert Park Lake, VIC")
         );
         let found = extract_addresses_from_text(
@@ -602,7 +602,7 @@ use super::*;
         let located = "Ian Thorpe in Ultimo, New South Wales";
         assert!(found.iter().any(|a| a == located), "input pinned: {found:?}");
         assert_eq!(
-            surname_bearer_locality(located, "Thorpe").as_deref(),
+            surname_bearer_locality(located, "Ian Thorpe").as_deref(),
             Some("Ultimo, New South Wales")
         );
         // Still dropped: a listing title, a venue, a business, and a bare
@@ -613,8 +613,52 @@ use super::*;
             "Jamie Thorpe Plumbing, QLD",
             "Ian Thorpe in, NSW",
         ] {
-            assert_eq!(surname_bearer_locality(bearer, "Thorpe"), None, "{bearer}");
+            assert_eq!(surname_bearer_locality(bearer, "Ian Thorpe"), None, "{bearer}");
         }
+    }
+
+    /// REQ-SEARCH-ADDR-004: `"<Given> <Surname> in <Place>"` locates the
+    /// subject only when `<Given> <Surname>` names the subject. A people-search
+    /// snippet that names "Ian Thorpe" passes the per-result gate and can list
+    /// his relatives; REQ-SEARCH-ADDR-003 read the surname alone, so "Carol
+    /// Thorpe in Mosman" became the Address "Mosman, NSW" on Ian's scan.
+    #[test]
+    fn a_relative_located_in_a_place_does_not_locate_the_subject() {
+        let found = extract_addresses_from_text(
+            "Ian Thorpe, age 45 - relatives, Carol Thorpe in Mosman, NSW",
+        );
+        let relative = "Carol Thorpe in Mosman, NSW";
+        assert!(found.iter().any(|a| a == relative), "input pinned: {found:?}");
+        for bearer in [
+            relative,
+            "Relatives: Bill Thorpe; Carol Thorpe in Mosman, NSW",
+            // The subject named earlier in the segment is not this bearer.
+            "Ian Thorpe's sister Carol Thorpe in Mosman, NSW",
+            "Ian and Carol Thorpe in Mosman, NSW",
+            // A bare title names nobody in particular.
+            "Mr Thorpe in Mosman, NSW",
+        ] {
+            assert_eq!(surname_bearer_locality(bearer, "Ian Thorpe"), None, "{bearer}");
+        }
+        // The subject himself, however the name before the surname is written.
+        for (located, subject) in [
+            ("Ian Thorpe in Mosman, NSW", "Ian Thorpe"),
+            ("Contact Ian Thorpe in Mosman, NSW", "Ian Thorpe"),
+            ("I. Thorpe in Mosman, NSW", "Ian Thorpe"),
+            ("Ian James Thorpe in Mosman, NSW", "Ian James Thorpe"),
+            ("Carol Thorpe in Mosman, NSW", "Carol Thorpe"),
+        ] {
+            assert_eq!(
+                surname_bearer_locality(located, subject).as_deref(),
+                Some("Mosman, NSW"),
+                "{located} for {subject}"
+            );
+        }
+        // A mononym subject has no surname to read: every address is kept.
+        assert_eq!(
+            surname_bearer_locality("Carol Thorpe in Mosman, NSW", "Thorpe").as_deref(),
+            Some("Carol Thorpe in Mosman, NSW")
+        );
     }
 
     /// REQ-SEARCH-ADDR-002: a venue named after a surname-bearer is not a
@@ -630,7 +674,7 @@ use super::*;
         );
         let venue = "Ian Thorpe Aquatic Centre in Ultimo, New South Wales";
         assert!(found.iter().any(|a| a == venue), "input pinned: {found:?}");
-        assert!(surname_bearer_locality(venue, "Thorpe").is_none());
+        assert!(surname_bearer_locality(venue, "Ian Thorpe").is_none());
         // Places survive: a one-word suburb that is the surname, a place-word
         // prefix, a place that STARTS with the surname, an unrelated city.
         for place in [
@@ -640,7 +684,7 @@ use super::*;
             "Thorpe Bay, Essex",
             "Houston, Texas",
         ] {
-            assert!(surname_bearer_locality(place, "Thorpe").is_some_and(|a| a == place), "{place}");
+            assert!(surname_bearer_locality(place, "Ian Thorpe").is_some_and(|a| a == place), "{place}");
         }
     }
 

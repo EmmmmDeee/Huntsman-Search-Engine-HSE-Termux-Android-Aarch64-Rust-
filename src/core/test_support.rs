@@ -477,6 +477,7 @@ pub struct RefusingStore {
     refuse_entity_writes: bool,
     refuse_template_counts: bool,
     refuse_terminal_scan_writes: bool,
+    refuse_scan_writes: bool,
     entity_batch_gate: Option<EntityBatchGate>,
 }
 
@@ -509,6 +510,8 @@ pub const REFUSED_ENTITY: &str = "injected entity write failure";
 pub const REFUSED_TEMPLATE_COUNT: &str = "injected template count failure";
 /// The error text [`RefusingStore`] returns for a refused terminal scan write.
 pub const REFUSED_TERMINAL_SCAN: &str = "injected terminal scan write failure";
+/// The error text [`RefusingStore`] returns for any refused scan write.
+pub const REFUSED_SCAN: &str = "injected scan write failure";
 
 fn injected(text: &str) -> crate::core::error::Error {
     crate::core::error::Error::Other(text.to_string())
@@ -575,6 +578,14 @@ impl RefusingStore {
         self
     }
 
+    /// Refuse every write of a scan row, the scan-start `Running` row
+    /// included — a store refusing writes from the start.
+    #[must_use]
+    pub fn refusing_scan_writes(mut self) -> Self {
+        self.refuse_scan_writes = true;
+        self
+    }
+
     /// Hold every entity batch write until the test releases it: the store
     /// announces the write on [`EntityBatchPause::entered`] and blocks until
     /// a message arrives on [`EntityBatchPause::release`] — a write the test
@@ -614,6 +625,9 @@ impl RefusingStore {
 impl StoragePort for RefusingStore {
     fn upsert_scan(&self, scan: &Scan) -> Result<()> {
         use crate::core::scan::ScanStatus;
+        if self.refuse_scan_writes {
+            return Err(injected(REFUSED_SCAN));
+        }
         if self.refuse_terminal_scan_writes
             && matches!(
                 scan.status,

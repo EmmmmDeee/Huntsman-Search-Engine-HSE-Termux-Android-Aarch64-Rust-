@@ -396,8 +396,9 @@ function setLiveStatus(text){ const el = $('#radar-live-status'); if (el) el.tex
    page tails): a `live_tick` says a sweep started, a `scan_complete` says it
    ended — the engine writes the row before it emits the event — so the view
    refreshes exactly then, not on a timer. A sweep whose store refused its
-   writes still ends with `scan_complete` carrying `status: failed`
-   (REQ-SCANSTATUS-008); its row may not have landed, so the status is read
+   writes — its findings (REQ-SCANSTATUS-008) or its very start row
+   (REQ-SCANSTATUS-011) — still ends with `scan_complete` carrying
+   `status: failed`; its row may not have landed, so the status is read
    from the event, and the refresh re-reads only the readings. `live_stop`
    releases the session. One stream at a time; render() closes it on leaving. */
 function onLiveEvent(ev){
