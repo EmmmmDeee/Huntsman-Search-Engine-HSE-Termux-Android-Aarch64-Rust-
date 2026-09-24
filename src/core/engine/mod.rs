@@ -757,15 +757,39 @@ impl ScanEngine {
             // `hse live` renderer, the web scan log — learns the sweep ended.
             // Returning the bare error left each of them waiting on a scan
             // that had already stopped (REQ-SCANSTATUS-011).
+            //
+            // The row is then written `Failed`, best-effort, as
+            // `force_fail_panicked_scan` does for a panic: a web one-shot
+            // scan's handler already wrote it `Pending` (`scan_create` /
+            // `scan_rerun`), and a refusal that was transient (a busy
+            // timeout) left that row reading `pending` — in progress to
+            // `/scans` and `/stats`, never started to the `interrupted`
+            // derivation — for good, under an event that said `failed`. A
+            // store that recovered now records the outcome the event
+            // announced. The event is flushed first, so the row never reads
+            // terminal before its `scan_complete` is durable (the commit
+            // step's invariant), and before returning, so a subscriber that
+            // connects after the broadcast finds it in the history
+            // (REQ-SCANSTATUS-016).
             error!(scan_id = %scan.id, error = %e, "scan-start row refused — scan failed before it ran");
-            self.emit(
+            let completion = self.emitter.record(
                 &scan.id,
                 EventKind::ScanComplete {
                     scan_id: scan.id.clone(),
                     entity_count: 0,
                     status: ScanStatus::Failed,
+                    finalise_incomplete: false,
                 },
             );
+            self.writer.flush().await;
+            scan.status = ScanStatus::Failed;
+            scan.entity_count = 0;
+            scan.error = Some(format!("the scan-start write failed: {e}"));
+            scan.finished_at = Some(crate::core::entity::unix_now());
+            if let Err(again) = self.store.upsert_scan(&scan) {
+                error!(scan_id = %scan.id, error = %again, "failed to persist the start-refused scan as Failed");
+            }
+            self.emitter.broadcast(completion);
             return Err(e);
         }
 
@@ -1197,6 +1221,7 @@ impl ScanEngine {
                         scan_id: scan.id.clone(),
                         entity_count: 0,
                         status: scan.status,
+                        finalise_incomplete: false,
                     },
                 );
                 return Ok((scan, true, completion));
@@ -1271,6 +1296,9 @@ impl ScanEngine {
                     // `Complete` or `Aborted` per the branch above — carried on
                     // the event so the log renders the true terminal state.
                     status: terminal,
+                    // A shortfall recorded above reads partial on every live
+                    // surface, as it does in every export (REQ-SCANSTATUS-015).
+                    finalise_incomplete: scan.error.is_some(),
                 },
             );
 
@@ -1300,23 +1328,73 @@ impl ScanEngine {
         // the status.
         self.writer.flush().await;
         let commit_store = Arc::clone(&self.store);
-        let scan = tokio::task::spawn_blocking(move || -> Result<Scan> {
-            match commit_store.upsert_scan(&scan) {
-                Ok(()) => Ok(scan),
-                Err(e) if best_effort_persist => {
-                    // error!, not warn!: this is the terminal Failed record for
-                    // a scan that persisted nothing. Losing the write means the
-                    // stored scan never reflects its own failure — an
-                    // unrecoverable integrity gap the operator can only see
-                    // here. The failed scan is still returned to the caller.
-                    error!(scan_id = %scan.id, error = %e, "failed to persist failed-scan record");
-                    Ok(scan)
-                }
-                Err(e) => Err(e),
-            }
+        let (mut scan, written) = tokio::task::spawn_blocking(move || {
+            let written = commit_store.upsert_scan(&scan);
+            (scan, written)
         })
         .await
-        .map_err(|e| crate::core::error::Error::Other(e.to_string()))??;
+        .map_err(|e| crate::core::error::Error::Other(e.to_string()))?;
+        let mut completion = completion;
+        let mut refused = None;
+        match written {
+            Ok(()) => {}
+            Err(e) if best_effort_persist => {
+                // error!, not warn!: this is the terminal Failed record for
+                // a scan that persisted nothing. Losing the write means the
+                // stored scan never reflects its own failure — an
+                // unrecoverable integrity gap the operator can only see
+                // here. The failed scan is still returned to the caller.
+                error!(scan_id = %scan.id, error = %e, "failed to persist failed-scan record");
+            }
+            Err(e) => {
+                // The strict path's commit was refused (a full disk, a busy
+                // timeout) after the scan stored its entities, relations and
+                // correlations. Returning the error here, as this did, left
+                // the row `Running` — `interrupted` once the web guard drops —
+                // under a durable `scan_complete {status: complete}` that no
+                // live subscriber ever heard: `hse live` printed nothing, the
+                // radar kept "sweep #N running…", and the web scan log's pill
+                // stayed "live" and cycled through reconnects against the
+                // stored `Running` row — the gap REQ-SCANSTATUS-008 closed
+                // for the Failed branch alone. The scan is failed now, as that
+                // branch fails it: a `scan_complete {status: failed}` is
+                // recorded and made durable, the row is written `Failed`
+                // best-effort, and the failure is what subscribers hear. The
+                // `complete` event recorded above stays in the history (the
+                // event log is append-only), followed by this one: the log's
+                // last word on the scan is `failed`, as its row's is when the
+                // store takes that write (REQ-SCANSTATUS-014).
+                error!(scan_id = %scan.id, error = %e, "the terminal status write was refused — failing the scan");
+                scan.status = ScanStatus::Failed;
+                scan.error = Some(match scan.error.take() {
+                    Some(shortfall) => {
+                        format!("{shortfall}; the terminal status write failed: {e}")
+                    }
+                    None => format!("the terminal status write failed: {e}"),
+                });
+                completion = self.emitter.record(
+                    &scan.id,
+                    EventKind::ScanComplete {
+                        scan_id: scan.id.clone(),
+                        entity_count: scan.entity_count,
+                        status: ScanStatus::Failed,
+                        finalise_incomplete: false,
+                    },
+                );
+                self.writer.flush().await;
+                let fallback_store = Arc::clone(&self.store);
+                let failed_row = scan.clone();
+                let fallback =
+                    tokio::task::spawn_blocking(move || fallback_store.upsert_scan(&failed_row))
+                        .await
+                        .map_err(|join| crate::core::error::Error::Other(join.to_string()))
+                        .and_then(|r| r);
+                if let Err(again) = fallback {
+                    error!(scan_id = %scan.id, error = %again, "failed to persist the commit-refused scan as Failed");
+                }
+                refused = Some(e);
+            }
+        }
 
         // Only now does a live subscriber hear `scan_complete`. The event was
         // recorded inside the blocking phase and is durable (the flush above),
@@ -1325,9 +1403,9 @@ impl ScanEngine {
         // (the radar view does exactly that, on the documented promise that
         // "the engine writes the row before it emits the event") read
         // `running` and the scan-start row's counts, and nothing prompted it to
-        // look again (REQ-SCANSTATUS-004). A commit that failed outright
-        // returned above, so no completion is announced for a row that never
-        // became terminal on the strict path.
+        // look again (REQ-SCANSTATUS-004). A strict commit the store refused
+        // never announces the `complete` it recorded: it is failed above and
+        // `completion` is its `failed` event instead.
         //
         // The best-effort Failed record is the exception, and it IS announced
         // even when the store refused it (REQ-SCANSTATUS-008): the event's
@@ -1339,8 +1417,13 @@ impl ScanEngine {
         // reconnect found the `Running` start row and cycled forever — in
         // exactly the case, a store refusing writes, where the operator most
         // needs telling. The radar re-reads only the sweep's readings, which a
-        // refused store never held.
+        // refused store never held. A strict commit the store refused is
+        // failed above and announced the same way (REQ-SCANSTATUS-014), then
+        // its error returned.
         self.emitter.broadcast(completion);
+        if let Some(e) = refused {
+            return Err(e);
+        }
 
         // Fire the operator's completion webhook, if one was configured via
         // `HUNTSMAN_WEBHOOK_URL` / `ScanOptions`. The URL was already threaded into

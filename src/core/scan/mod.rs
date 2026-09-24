@@ -943,10 +943,25 @@ impl Scan {
         match self.status {
             ScanStatus::Complete => {
                 if let Some(err) = self.error.as_deref() {
+                    // The remedy follows the cause. An import's relation and
+                    // correlation pass skipped for size is not rebuilt by a
+                    // re-run: `/scans/{id}/rerun` starts a LIVE scan of the
+                    // import's label (an email string read as a full name),
+                    // which neither enriches the stored entities nor lifts
+                    // the cap, and re-importing the same data hits the same
+                    // cap (REQ-SCANSTATUS-017).
+                    let remedy = if FinaliseTally::records_import_enrichment_skip(err) {
+                        "re-running cannot rebuild it (a re-run is a live scan of the import's \
+                         label, and re-importing the same data hits the same cap) — import the \
+                         data in smaller batches, each within the cap, to get its relations and \
+                         correlations"
+                    } else {
+                        "re-run the scan to rebuild it"
+                    };
                     return Some(format!(
                         "{subject} finished, but its finalise did not complete ({err}) — what it \
                          did not store or compute is absent from every view and export of it, so \
-                         that absence is not a finding; re-run the scan to rebuild it"
+                         that absence is not a finding; {remedy}"
                     ));
                 }
                 let r = self.stop_reason?;
@@ -1107,6 +1122,10 @@ impl FinalisePass {
     }
 }
 
+/// The reason [`FinaliseTally::import_enrichment_skipped`] opens with — the
+/// word [`FinaliseTally::records_import_enrichment_skip`] reads it back by.
+const IMPORT_ENRICHMENT_SKIP_REASON: &str = "skipped";
+
 /// Everything a finalise did not complete: how many of each [`FinaliseWrite`]
 /// it attempted and how many the store refused (with the first refusal's
 /// error), and which [`FinalisePass`] failed outright — the single
@@ -1201,6 +1220,34 @@ impl FinaliseTally {
         if slot.is_none() {
             *slot = Some(reason.into());
         }
+    }
+
+    /// Record that an import skipped its relation and correlation pass
+    /// ([`FinalisePass::ImportEnrichment`]) because its `entity_count`
+    /// entities exceed the import enrichment cap `cap`. The one writer of
+    /// that clause, beside its one reader
+    /// ([`Self::records_import_enrichment_skip`]), so the scan's caveat can
+    /// name the remedy a size skip needs.
+    pub fn import_enrichment_skipped(&mut self, entity_count: usize, cap: usize) {
+        self.pass_failed(
+            FinalisePass::ImportEnrichment,
+            format!(
+                "{IMPORT_ENRICHMENT_SKIP_REASON} — {entity_count} entities exceed the \
+                 {cap}-entity import enrichment cap"
+            ),
+        );
+    }
+
+    /// Whether a stored [`Scan::error`] (a [`Self::message`]) records an
+    /// import's relation and correlation pass skipped for size
+    /// ([`Self::import_enrichment_skipped`]).
+    #[must_use]
+    pub fn records_import_enrichment_skip(error: &str) -> bool {
+        let clause = format!(
+            "{} failed: {IMPORT_ENRICHMENT_SKIP_REASON} — ",
+            FinalisePass::ImportEnrichment.label()
+        );
+        error.split("; ").any(|c| c.starts_with(&clause))
     }
 
     /// Why `pass` failed, if it did.

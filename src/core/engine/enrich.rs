@@ -14,9 +14,21 @@ const COORD_ENRICHMENT_SUMMARY: &str = "Geospatial enrichment";
 
 /// The country and timezone a PROVIDER already reported for this coordinate,
 /// read from its evidence (`country_code` / `timezone` attributes of any source
-/// but the engine's own `geo_normalize`), or — for the country — from a
-/// `country:XX` tag that disagrees with the offline box (`box_iso`), which only
-/// a provider can have set.
+/// but the engine's own `geo_normalize`), or — for the country — from the
+/// point's `country:XX` tag when it is the point's ONLY `country:` tag and
+/// disagrees with the offline box (`box_iso`): a provider's answer this
+/// function tagged on an earlier run, carried by a copy that lost its records'
+/// attributes (a CSV re-import keeps tags, not attributes).
+///
+/// Only a lone tag is an answer. A point tagged with several countries names a
+/// set of candidates, not one: a `+1` dialling prefix is tagged `country:US`
+/// and `country:CA`, a `+7` one `country:RU` and `country:KZ`
+/// (`geo_intel::prefix_country_isos`). Reading the lowest tag that differs
+/// from the box as the answer made the CSV copy of a `+1` point at the US
+/// stand-in record `country_provider: CA` ("Canada") beside
+/// `country_iso_box: US`, and drop its timezone because the box "disagreed" —
+/// a provider answer no provider gave, built out of the emitter's list of
+/// possible countries (REQ-GEOLABEL-037).
 ///
 /// Deterministic whatever order the entity's records were merged in: each is
 /// the first value by `(source, value)` order, not by evidence position.
@@ -42,13 +54,15 @@ fn provider_geo(
     let cc = first_attr("country_code")
         .map(|c| c.to_ascii_uppercase())
         .or_else(|| {
-            entity
+            let tagged: std::collections::BTreeSet<&str> = entity
                 .tags
                 .iter()
                 .filter_map(|t| t.strip_prefix("country:"))
-                .filter(|c| Some(*c) != box_iso)
-                .min()
-                .map(str::to_string)
+                .collect();
+            match tagged.first() {
+                Some(&only) if tagged.len() == 1 && Some(only) != box_iso => Some(only.to_string()),
+                _ => None,
+            }
         });
     (cc, first_attr("timezone"))
 }

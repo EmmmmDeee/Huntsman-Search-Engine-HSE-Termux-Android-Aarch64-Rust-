@@ -431,6 +431,53 @@ use super::*;
         );
     }
 
+    /// REQ-SCANSTATUS-015: the live surfaces that read `scan_complete` alone
+    /// — the scan log's pill and line, the radar's status — read a
+    /// completion whose finalise recorded a shortfall as partial, as every
+    /// export of that scan does, never as a clean "complete" / "sweep done".
+    #[test]
+    fn embedded_spa_reads_a_finalise_incomplete_completion_as_partial() {
+        let log = app_file("js/scan_info/log.js");
+        let on_terminal = log
+            .split_once("const onTerminal = ev => {")
+            .and_then(|(_, b)| b.split_once("};"))
+            .map(|(b, _)| b)
+            .expect("onTerminal present in log.js");
+        assert!(
+            on_terminal.contains("ev.finalise_incomplete === true")
+                && on_terminal.contains("'partial'"),
+            "the log pill must read a finalise shortfall as partial: {on_terminal}"
+        );
+        let map = log
+            .split_once("if (t==='scan_complete'){")
+            .and_then(|(_, b)| b.split_once("\n  }\n"))
+            .map(|(b, _)| b)
+            .expect("mapEvent's scan_complete branch");
+        let partial = map
+            .find("PARTIAL")
+            .expect("the log line must read a finalise shortfall as partial");
+        let clean = map
+            .find("msg:`scan complete, ")
+            .expect("the clean completion line");
+        assert!(
+            partial < clean,
+            "the partial line must be decided before the clean one"
+        );
+        let radar = app_file("js/views/radar.js");
+        let on_live = radar
+            .split_once("function onLiveEvent(ev){")
+            .and_then(|(_, b)| b.split_once("\n}\n"))
+            .map(|(b, _)| b)
+            .expect("onLiveEvent present in radar.js");
+        let partial = on_live
+            .find("ev.finalise_incomplete === true")
+            .expect("the radar must read a finalise shortfall");
+        let done = on_live
+            .find("sweep done at")
+            .expect("the clean sweep line");
+        assert!(partial < done, "{on_live}");
+    }
+
     #[test]
     fn embedded_spa_styles_every_entity_kind() {
         // Rendering contract: every `EntityKind` a module can produce must have a

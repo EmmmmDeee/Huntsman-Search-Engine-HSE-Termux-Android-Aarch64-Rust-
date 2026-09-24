@@ -617,6 +617,7 @@ fn event_log_renders_a_readable_aligned_timeline() {
                 scan_id: "s".into(),
                 entity_count: 2,
                 status: crate::core::scan::ScanStatus::Complete,
+                finalise_incomplete: false,
             },
         ),
     ];

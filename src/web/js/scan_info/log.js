@@ -96,14 +96,19 @@ export async function renderLog(host, scan){
     // terminal state (carried on the event since the ScanComplete status fix)
     // and close the stream — `scan_complete` is the last event, so closing
     // after it drops nothing.
+    // A completion whose finalise recorded a shortfall (`finalise_incomplete`,
+    // REQ-SCANSTATUS-015) is 'partial', as every export of the scan reads it —
+    // never the 'complete' a clean finish earns.
     const onTerminal = ev => {
       const st = $('#log-status'); if (!st) return;
       const term = ev.status || 'complete';
+      const partial = term !== 'failed' && ev.finalise_incomplete === true;
       st.className = term === 'failed' ? 'label label-danger'
-                   : term === 'aborted' ? 'label label-warning'
+                   : (term === 'aborted' || partial) ? 'label label-warning'
                    : 'label label-default';
       st.textContent = term === 'failed' ? 'failed'
-                     : term === 'aborted' ? 'aborted'
+                     : term === 'aborted' ? (partial ? 'aborted · partial' : 'aborted')
+                     : partial ? 'partial'
                      : 'complete';
       closeSse();
     };
@@ -363,8 +368,12 @@ export function mapEvent(ev){
     // `EventKind::ScanComplete`'s count field is `entity_count`, not `entities`
     // (which never existed on the wire event) — both branches below always
     // rendered "undefined entities" until this was corrected.
-    if (st==='aborted') return {typ:'scan', lv:'warn', msg:`scan aborted — stopped early, ${ev.entity_count} entities`};
+    // `finalise_incomplete` (REQ-SCANSTATUS-015): the finalise did not store
+    // or compute everything, so the scan is partial, as its exports read it.
+    const partial = ev.finalise_incomplete === true;
+    if (st==='aborted') return {typ:'scan', lv:'warn', msg:`scan aborted — stopped early, ${ev.entity_count} entities${partial?' — finalise incomplete':''}`};
     if (st==='failed')  return {typ:'scan', lv:'err',  msg:`scan failed`};
+    if (partial) return {typ:'scan', lv:'warn', msg:`scan complete but PARTIAL — finalise incomplete, ${ev.entity_count} entities`};
     return {typ:'scan', lv:'ok', msg:`scan complete, ${ev.entity_count} entities`};
   }
   if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`expansion: depth ${ev.depth}, queued ${ev.queued}, visited ${ev.visited}`};

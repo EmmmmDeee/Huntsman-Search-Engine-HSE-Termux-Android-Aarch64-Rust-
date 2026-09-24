@@ -1880,6 +1880,52 @@ fn a_complete_scan_missing_stored_records_is_caveated() {
     assert_eq!(s.completeness_caveat("this scan"), None);
 }
 
+/// REQ-SCANSTATUS-017: an import stored partial because its relation and
+/// correlation pass was skipped for size is not told to "re-run the scan".
+/// A re-run of an import is a live scan of its label — it neither enriches
+/// the stored entities nor lifts the cap — and a re-import of the same data
+/// hits the same cap. The caveat names the remedy that works; every other
+/// shortfall keeps the re-run advice.
+#[test]
+fn an_import_skipped_for_size_is_not_told_to_re_run() {
+    let mut tally = FinaliseTally::default();
+    tally.import_enrichment_skipped(6000, 5000);
+    let err = tally.message().expect("the skip is recorded");
+    assert!(FinaliseTally::records_import_enrichment_skip(&err), "{err}");
+    let mut s = scan_for(ScanStatus::Complete, None);
+    s.error = Some(err);
+    let caveat = s.completeness_caveat("the import").expect("caveated");
+    assert!(!caveat.contains("re-run the scan"), "{caveat}");
+    assert!(caveat.contains("smaller batches"), "{caveat}");
+    assert!(caveat.contains("6000 entities exceed"), "{caveat}");
+
+    // Behind a write shortfall, the skip still decides the remedy.
+    let mut both = FinaliseTally::default();
+    both.add(FinaliseWrite::Entities, 3, 1, Some("busy".into()));
+    both.import_enrichment_skipped(6000, 5000);
+    assert!(FinaliseTally::records_import_enrichment_skip(
+        &both.message().expect("recorded")
+    ));
+
+    // Control: any other shortfall is rebuilt by a re-run, and says so — a
+    // correlation pass that failed is not mistaken for the import's pass.
+    for other in [
+        "2/40 relations failed to persist: disk full",
+        "correlation pass failed: panicked",
+    ] {
+        assert!(
+            !FinaliseTally::records_import_enrichment_skip(other),
+            "{other}"
+        );
+        s.error = Some(other.into());
+        let caveat = s.completeness_caveat("this scan").expect("caveated");
+        assert!(
+            caveat.ends_with("re-run the scan to rebuild it"),
+            "{caveat}"
+        );
+    }
+}
+
 #[test]
 fn completeness_caveat_names_the_subject_it_was_given() {
     // Callers refer to the scan differently ("scan latest", "scan a1b2", "this

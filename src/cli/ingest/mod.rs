@@ -321,24 +321,15 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
     // so a persistence hiccup must warn, never fail the ingest.
     if args.auto_scan {
         match run_auto_scan(&entities, document_source).await {
-            Ok((sid, n, batch)) => {
-                info!(
-                    "auto-scan: stored scan {sid} ({n} entities, {} relations, \
-                     {} correlations) — view with `hse list`",
-                    batch.relations, batch.correlations
-                );
-                if let Some(err) = &batch.finalise_error {
-                    tracing::warn!(
-                        "auto-scan: the scan is stored but INCOMPLETE — {err}; its exports \
-                         read partial (finalise-incomplete)"
-                    );
-                }
-                if !batch.enriched {
-                    info!(
-                        "auto-scan: relations/correlations skipped — {n} entities exceeds \
-                         the {}-entity enrichment cap; every entity is still stored",
-                        crate::app::persist::PERSIST_ENRICH_MAX_ENTITIES
-                    );
+            Ok((sid, batch)) => {
+                // The shared summary: counted from what was stored, an
+                // enrichment-cap skip stated once (REQ-SCANSTATUS-013).
+                for (i, line) in batch.summary_lines(&sid).into_iter().enumerate() {
+                    if i == 0 {
+                        info!("auto-scan: stored {line}");
+                    } else {
+                        tracing::warn!("auto-scan: {line}");
+                    }
                 }
             }
             Err(e) => {
@@ -373,16 +364,17 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
 /// Store construction lives in that application-layer use case, not here, so
 /// the CLI never opens the store directly (`tests/architecture.rs`).
 ///
-/// Returns the new scan id, its entity count, and what the persist stored
-/// ([`PersistedBatch`](crate::app::persist::PersistedBatch): the relation and
-/// correlation counts, whether enrichment ran — `false` when skipped for size,
+/// Returns the new scan id and what the persist stored
+/// ([`PersistedBatch`](crate::app::persist::PersistedBatch): the entity count
+/// of the prepared batch it stored, the relation and correlation counts,
+/// whether enrichment ran — `false` when skipped for size,
 /// see `app::persist::PERSIST_ENRICH_MAX_ENTITIES`; every entity is still
 /// stored either way — and any shortfall the store left on the scan).
 /// Entirely offline and deterministic: no module dispatch, no network.
 async fn run_auto_scan(
     entities: &[crate::util::entity_extractor::ExtractedEntity],
     document_source: &str,
-) -> crate::core::error::Result<(String, usize, crate::app::persist::PersistedBatch)> {
+) -> crate::core::error::Result<(String, crate::app::persist::PersistedBatch)> {
     // A unique id per call: `unix_now()` has one-second resolution, so two
     // `hse ingest --auto-scan` runs in the same second would collide and the
     // second would overwrite the first's scan row + entities. `uid::scan_id`
@@ -421,7 +413,7 @@ async fn run_auto_scan(
         &converted,
     )
     .await?;
-    Ok((sid, converted.len(), batch))
+    Ok((sid, batch))
 }
 
 /// Format entities as JSONL, JSON, CSV, HSE entities, or human-readable table.
@@ -578,7 +570,7 @@ mod tests {
         // persistence succeeded. Before this wiring the flag merely warned and
         // this function did not exist. Under cfg(test) the store is rooted in a
         // temp dir, so this touches no real ~/.huntsman.
-        let (sid, n, batch) = run_auto_scan(&sample(), "notes.txt")
+        let (sid, batch) = run_auto_scan(&sample(), "notes.txt")
             .await
             .expect("auto-scan should persist the extracted entities");
         assert!(
@@ -586,7 +578,7 @@ mod tests {
             "the scan id must mark it as an ingest-originated scan: {sid}"
         );
         assert_eq!(
-            n, 1,
+            batch.entities, 1,
             "the one extracted entity must be converted and counted"
         );
         assert!(batch.enriched, "a one-entity batch must not be size-capped");
@@ -600,10 +592,10 @@ mod tests {
         // counter mixed into the hash) must give every call a distinct id while
         // keeping the `ingest-` attribution prefix. Both calls here run well
         // within the same wall-clock second.
-        let (sid_a, _, _) = run_auto_scan(&sample(), "notes.txt")
+        let (sid_a, _) = run_auto_scan(&sample(), "notes.txt")
             .await
             .expect("first auto-scan persists");
-        let (sid_b, _, _) = run_auto_scan(&sample(), "notes.txt")
+        let (sid_b, _) = run_auto_scan(&sample(), "notes.txt")
             .await
             .expect("second auto-scan persists");
         assert!(sid_a.starts_with("ingest-") && sid_b.starts_with("ingest-"));
@@ -633,11 +625,11 @@ mod tests {
             source_pattern: "email_rfc5322".to_string(),
             boost_reason: None,
         }];
-        let (_sid, n, _batch) = run_auto_scan(&placeholder, "notes.txt")
+        let (_sid, batch) = run_auto_scan(&placeholder, "notes.txt")
             .await
             .expect("auto-scan must still succeed on an all-filtered batch");
         assert_eq!(
-            n, 0,
+            batch.entities, 0,
             "a placeholder email must never be persisted as a real finding"
         );
     }

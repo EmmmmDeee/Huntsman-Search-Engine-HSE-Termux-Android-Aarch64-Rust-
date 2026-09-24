@@ -274,7 +274,27 @@ pub enum EventKind {
         /// default to [`ScanStatus::Complete`] and render exactly as before.
         #[serde(default = "terminal_status_default")]
         status: ScanStatus,
+        /// Whether the scan's finalise recorded a shortfall — a write the
+        /// store refused, a pass that failed outright, or an import's
+        /// relation and correlation pass skipped for size — in the row's
+        /// `error` (`FinaliseTally`). Such a scan reaches `Complete` (or
+        /// `Aborted`), yet every export classifies it "partial,
+        /// finalise-incomplete" (`partial_export_reason`); without this the
+        /// live surfaces that read the event alone — `hse live`, the web scan
+        /// log's pill, the radar — announced a clean completion for the same
+        /// scan (REQ-SCANSTATUS-015). Never set on a `Failed` event. Omitted
+        /// from the wire when `false`, and `false` for a row persisted before
+        /// the field existed, so a clean completion serialises as before.
+        #[serde(default, skip_serializing_if = "is_false")]
+        finalise_incomplete: bool,
     },
+}
+
+/// `skip_serializing_if` for [`EventKind::ScanComplete`]'s
+/// `finalise_incomplete`: a clean completion carries no such key.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes the field by reference
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Back-compat default for [`EventKind::ScanComplete`]'s `status` (see the field
@@ -321,9 +341,14 @@ impl EventKind {
     pub fn log_level(&self) -> &'static str {
         match self {
             Self::ModuleError { .. } => "error",
-            Self::ScanComplete { status, .. } => match status {
+            Self::ScanComplete {
+                status,
+                finalise_incomplete,
+                ..
+            } => match status {
                 ScanStatus::Failed => "error",
                 ScanStatus::Aborted => "warn",
+                _ if *finalise_incomplete => "warn",
                 _ => "info",
             },
             _ => "info",
@@ -466,11 +491,18 @@ impl EventKind {
             Self::ScanComplete {
                 entity_count,
                 status,
+                finalise_incomplete,
                 ..
-            } => vec![
-                ("status", json!(status.as_str())),
-                ("entities", json!(entity_count)),
-            ],
+            } => {
+                let mut fields = vec![
+                    ("status", json!(status.as_str())),
+                    ("entities", json!(entity_count)),
+                ];
+                if *finalise_incomplete {
+                    fields.push(("finalise_incomplete", json!(true)));
+                }
+                fields
+            }
         }
     }
 
@@ -630,17 +662,33 @@ impl EventKind {
             Self::ScanComplete {
                 entity_count,
                 status,
+                finalise_incomplete,
                 ..
             } => match status {
                 // A cancelled or failed scan still emits this single terminal
                 // event; branch so its log line states what actually happened
                 // instead of asserting success. `mapEvent` in
-                // `web/js/scan_info/log.js` mirrors these three cases.
+                // `web/js/scan_info/log.js` mirrors these cases.
                 ScanStatus::Aborted => (
                     "scan",
-                    format!("■ scan aborted — stopped early · {entity_count} entities"),
+                    format!(
+                        "■ scan aborted — stopped early · {entity_count} entities{}",
+                        if *finalise_incomplete {
+                            " · finalise incomplete"
+                        } else {
+                            ""
+                        }
+                    ),
                 ),
                 ScanStatus::Failed => ("scan", "✗ scan failed".to_string()),
+                // Ran to the end, but its finalise did not store or compute
+                // everything: partial, as every export reads it.
+                _ if *finalise_incomplete => (
+                    "scan",
+                    format!(
+                        "◐ scan complete but PARTIAL — finalise incomplete · {entity_count} entities"
+                    ),
+                ),
                 // `Complete`, and the back-compat default for pre-field rows:
                 // the historical success line, unchanged.
                 _ => ("scan", format!("✔ scan complete · {entity_count} entities")),

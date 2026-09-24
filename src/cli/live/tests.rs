@@ -238,6 +238,7 @@ use super::*;
             scan_id: "s".into(),
             entity_count: 5,
             status,
+            finalise_incomplete: false,
         };
         // A clean finish keeps the success line; an aborted or failed sweep must
         // NOT read as success in this fully-unredacted live view (same defect
@@ -249,6 +250,16 @@ use super::*;
         let failed = render_event(&ev(ScanStatus::Failed));
         assert!(failed.contains("failed"), "got: {failed}");
         assert!(!failed.contains("scan complete"));
+        // REQ-SCANSTATUS-015: a completion whose finalise recorded a shortfall
+        // reads partial here, as every export of it does.
+        let partial = render_event(&EventKind::ScanComplete {
+            scan_id: "s".into(),
+            entity_count: 5,
+            status: ScanStatus::Complete,
+            finalise_incomplete: true,
+        });
+        assert!(partial.contains("PARTIAL"), "got: {partial}");
+        assert!(partial.contains("finalise incomplete"), "got: {partial}");
     }
 
     /// REQ-SWEEP-006: a BreachSweep persisted before `dispatched` existed renders

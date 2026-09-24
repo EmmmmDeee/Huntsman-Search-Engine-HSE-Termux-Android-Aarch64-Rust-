@@ -202,19 +202,20 @@ pub(crate) fn skip_enrichment_over_cap(
     if entity_count <= PERSIST_ENRICH_MAX_ENTITIES {
         return false;
     }
-    tally.pass_failed(
-        crate::core::scan::FinalisePass::ImportEnrichment,
-        format!(
-            "skipped — {entity_count} entities exceed the \
-             {PERSIST_ENRICH_MAX_ENTITIES}-entity import enrichment cap"
-        ),
-    );
+    tally.import_enrichment_skipped(entity_count, PERSIST_ENRICH_MAX_ENTITIES);
     true
 }
 
 /// What [`persist_entities_as_scan`] stored, for the caller's summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PersistedBatch {
+    /// Entities stored — the batch AFTER [`prepare_import_batch`] appended the
+    /// Coordinates it derives from addresses, so the count the enrichment cap
+    /// ([`skip_enrichment_over_cap`]) and the scan row read. A caller's own
+    /// pre-preparation count is not what was stored: a 4,990-row file whose
+    /// addresses derived 11 fixes stored 5,001 entities and tripped the cap,
+    /// while the summary said "4990 entities" (REQ-SCANSTATUS-013).
+    pub entities: usize,
     /// Relations persisted.
     pub relations: usize,
     /// Correlations persisted.
@@ -231,6 +232,35 @@ pub(crate) struct PersistedBatch {
     /// ("finalise-incomplete"), and a caller's summary must say so too rather
     /// than report the counts as if they were the whole graph.
     pub finalise_error: Option<String>,
+}
+
+impl PersistedBatch {
+    /// The summary every CLI import surface prints (`hse import`, `hse ingest
+    /// --auto-scan`, `hse investigate --auto-scan`), each under its own
+    /// prefix ("Stored:", "auto-scan: stored"): the scan that was stored,
+    /// counted from this batch, then — when the finalise did not complete —
+    /// that the scan is incomplete and why.
+    ///
+    /// The one statement of an enrichment-cap skip is that second line: the
+    /// skip is recorded in [`Self::finalise_error`] with the count the cap
+    /// read ([`skip_enrichment_over_cap`]). Each surface also printed its own
+    /// "relations/correlations skipped — N entities exceeds the cap" note from
+    /// its pre-preparation count, so one skip read "5001 entities exceed the
+    /// cap" and "4990 entities exceeds the cap" on consecutive lines — and
+    /// 4990 does not exceed 5000 (REQ-SCANSTATUS-013).
+    pub(crate) fn summary_lines(&self, sid: &str) -> Vec<String> {
+        let mut lines = vec![format!(
+            "scan {sid} ({} entities, {} relations, {} correlations) — view with `hse list`",
+            self.entities, self.relations, self.correlations
+        )];
+        if let Some(err) = &self.finalise_error {
+            lines.push(format!(
+                "the scan is stored but INCOMPLETE — {err}; its exports read partial \
+                 (finalise-incomplete)"
+            ));
+        }
+        lines
+    }
 }
 
 /// Persist `entities` as a `Complete` scan `sid` (labelled `label`, target kind
@@ -318,6 +348,7 @@ fn persist_batch_into(
     // terminal write, where every export's completeness check reads it.
     let finalise_error = row.finish(ScanStatus::Complete, &tally)?;
     Ok(PersistedBatch {
+        entities: entities.len(),
         relations,
         correlations,
         enriched,
@@ -722,6 +753,84 @@ mod tests {
             &mut tally
         ));
         assert_eq!(tally.message(), None);
+    }
+
+    /// REQ-SCANSTATUS-013: an import's summary counts the batch it stored —
+    /// after [`prepare_import_batch`] appended the Coordinates its addresses
+    /// derive — and states an enrichment-cap skip once. Each CLI surface
+    /// printed "Stored: … (N entities …)" and a "skipped — N entities exceeds
+    /// the cap" note from its own pre-preparation count, beside the recorded
+    /// skip that counts the prepared batch: a 5,000-row file whose address
+    /// derived a fix stored 5,001 entities and read "5000 entities exceeds
+    /// the 5000-entity cap" under "5001 entities exceed" — two counts for one
+    /// skip, one of them false.
+    #[test]
+    fn an_import_summary_counts_the_batch_it_stored_and_states_a_skip_once() {
+        use crate::core::entity::Evidence;
+        use crate::core::test_support::InMemoryStore;
+        use std::sync::Arc;
+
+        let sid = "persist-summary";
+        let mut entities: Vec<Entity> = (0..PERSIST_ENRICH_MAX_ENTITIES - 1)
+            .map(|i| {
+                Entity::new(
+                    EntityKind::Email,
+                    format!("user{i}@one-domain.tld"),
+                    0.9,
+                    sid,
+                )
+            })
+            .collect();
+        let mut addr = Entity::new(
+            EntityKind::Address,
+            "10 Smith St, Sydney NSW 2000",
+            0.7,
+            sid,
+        );
+        addr.add_evidence(Evidence::new("import:dossier", "breach record"));
+        entities.push(addr);
+        let parsed = entities.len();
+        assert_eq!(parsed, PERSIST_ENRICH_MAX_ENTITIES, "fixture: at the cap");
+        prepare_import_batch(&mut entities, sid);
+        assert_eq!(entities.len(), parsed + 1, "fixture: one derived fix");
+
+        let store: Arc<dyn crate::core::StoragePort> = Arc::new(InMemoryStore::new());
+        let batch =
+            persist_batch_into(&store, sid, "batch".into(), TargetKind::FullName, &entities)
+                .expect("the import itself succeeds");
+        assert_eq!(batch.entities, parsed + 1);
+        assert!(!batch.enriched);
+
+        let lines = batch.summary_lines(sid);
+        assert_eq!(lines.len(), 2, "{lines:#?}");
+        assert!(
+            lines[0].contains(&format!("({} entities,", parsed + 1)),
+            "{lines:#?}"
+        );
+        let cap_mentions = lines.iter().filter(|l| l.contains("cap")).count();
+        assert_eq!(cap_mentions, 1, "the skip is stated once: {lines:#?}");
+        assert!(
+            lines
+                .iter()
+                .all(|l| !l.contains(&format!("{parsed} entities"))),
+            "no line counts the batch before preparation: {lines:#?}"
+        );
+
+        // Control: a whole batch prints the stored line alone.
+        let whole = PersistedBatch {
+            entities: 2,
+            relations: 1,
+            correlations: 0,
+            enriched: true,
+            finalise_error: None,
+        };
+        assert_eq!(
+            whole.summary_lines("s"),
+            vec![
+                "scan s (2 entities, 1 relations, 0 correlations) — view with `hse list`"
+                    .to_string()
+            ]
+        );
     }
 
     /// A batch whose relations and correlations both derive — a username and

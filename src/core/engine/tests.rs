@@ -8987,3 +8987,284 @@ async fn a_later_provider_country_replaces_the_box_answer_on_merge() {
     assert_eq!(cs, vec!["country:CA"]);
     assert!(!merged.has_tag("tz:America/New_York"));
 }
+
+/// REQ-GEOLABEL-037: a point tagged with several countries carries no
+/// provider answer. A `+1` dialling prefix is tagged `country:US` and
+/// `country:CA` (REQ-GEOLABEL-036), and a CSV re-import keeps those tags but
+/// drops every attribute, then re-enriches the copy (`prepare_import_batch` →
+/// `enrich_offline_geo`). `provider_geo` read the lowest tag that differed
+/// from the box as a provider's answer, so the `+1` copy at the US stand-in
+/// recorded `country_provider: CA` ("Canada") beside `country_iso_box: US`
+/// and lost its timezone, and a `+7` copy recorded `KZ` ("Kazakhstan") — an
+/// answer no provider gave. A lone disagreeing tag (a provider's answer an
+/// earlier run tagged) is still read as one.
+#[test]
+fn a_csv_copy_of_a_multi_country_signal_claims_no_provider_country() {
+    use crate::core::engine::enrich_offline_geo;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    // The live point through the offline enrichment, then its CSV copy (the
+    // tags as stored, one attribute-less record per original), imported.
+    let imported = |mut live: Entity| -> Entity {
+        enrich_geospatial(&mut live);
+        let mut bare = Entity::new(EntityKind::Coordinates, &live.value, 0.4, "imp");
+        bare.tags.clone_from(&live.tags);
+        for r in &live.evidence {
+            bare.add_evidence(Evidence::new(&r.source, &r.summary));
+        }
+        let mut batch = vec![bare];
+        enrich_offline_geo(&mut batch, "imp");
+        batch.remove(0)
+    };
+    let own_record = |e: &Entity| -> Evidence {
+        e.evidence
+            .iter()
+            .find(|ev| ev.source == "geo_normalize")
+            .cloned()
+            .expect("the enrichment record")
+    };
+    let prefix_point = |value: &str, isos: &[&str], country: &str, row: &str| {
+        let mut p = Entity::new(EntityKind::Coordinates, value, 0.4, "live");
+        for t in ["geoint", "phone-prefix", "coarse"] {
+            p.tag(t);
+        }
+        for iso in isos {
+            p.tag(format!("country:{iso}"));
+        }
+        p.add_evidence(
+            Evidence::new("geo_intel", format!("Phone prefix -> {country} for +1"))
+                .with_attr("country", country)
+                .with_attr("country_code", row)
+                .with_attr("method", "e164-prefix"),
+        );
+        p
+    };
+
+    let nanp = imported(prefix_point(
+        "39.8283,-98.5795",
+        &["US", "CA"],
+        "United States/Canada",
+        "US",
+    ));
+    let rec = own_record(&nanp);
+    assert_eq!(rec.attributes.get("country_provider"), None, "{rec:?}");
+    assert_eq!(rec.attributes.get("country_iso_box"), None, "{rec:?}");
+    assert_ne!(
+        rec.attributes.get("country_name").map(String::as_str),
+        Some("Canada"),
+        "{rec:?}"
+    );
+    assert!(
+        nanp.tags.iter().any(|t| t.starts_with("tz:")),
+        "the timezone is kept: {:?}",
+        nanp.tags
+    );
+
+    let ru = imported(prefix_point(
+        "61.5240,105.3188",
+        &["RU", "KZ"],
+        "Russia/Kazakhstan",
+        "RU",
+    ));
+    let rec = own_record(&ru);
+    assert_eq!(rec.attributes.get("country_provider"), None, "{rec:?}");
+    assert_ne!(
+        rec.attributes.get("country_name").map(String::as_str),
+        Some("Kazakhstan"),
+        "{rec:?}"
+    );
+
+    // Control: a provider's answer an earlier run tagged, alone and against
+    // the box (photon's Canada on a point the US box covers), is still the
+    // copy's provider answer.
+    let mut fredericton = Entity::new(EntityKind::Coordinates, "45.956872,-66.630394", 0.4, "live");
+    fredericton.add_evidence(Evidence::new("photon", "forward").with_attr("country_code", "CA"));
+    let copy = imported(fredericton);
+    let rec = own_record(&copy);
+    assert_eq!(
+        rec.attributes.get("country_provider").map(String::as_str),
+        Some("CA"),
+        "{rec:?}"
+    );
+    assert_eq!(
+        rec.attributes.get("country_iso_box").map(String::as_str),
+        Some("US"),
+        "{rec:?}"
+    );
+}
+
+/// What one run of the stub-breach scan against `store` left behind: the
+/// run's result, the stored row, every `scan_complete` a live subscriber
+/// heard (`(status, finalise_incomplete)`), and every one the durable event
+/// history holds, in order.
+struct TerminalOutcome {
+    result: Result<Scan>,
+    stored: Option<Scan>,
+    heard: Vec<(ScanStatus, bool)>,
+    history: Vec<(ScanStatus, bool)>,
+}
+
+async fn run_terminal_scenario(
+    inner: Arc<crate::core::test_support::InMemoryStore>,
+    store: Arc<dyn StoragePort>,
+    seed: &str,
+    pre_written_pending: bool,
+) -> TerminalOutcome {
+    let (bus, _rx) = tokio::sync::broadcast::channel(8192);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Email, seed);
+    let scan = Scan::new(crate::core::entity::scan_id("email", seed), target.clone()).with_options(
+        ScanOptions {
+            depth: 1,
+            max_roi: false,
+            ..Default::default()
+        },
+    );
+    let scan_id = scan.id.clone();
+    if pre_written_pending {
+        // The web handler's row (`scan_create` / `scan_rerun`), written
+        // before the engine is spawned.
+        inner.upsert_scan(&scan).expect("the handler's Pending row");
+    }
+    let mut late = bus.subscribe();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let result = engine.run(scan, target, ctx).await;
+    let completions = |kinds: Vec<EventKind>| -> Vec<(ScanStatus, bool)> {
+        kinds
+            .into_iter()
+            .filter_map(|k| match k {
+                EventKind::ScanComplete {
+                    status,
+                    finalise_incomplete,
+                    ..
+                } => Some((status, finalise_incomplete)),
+                _ => None,
+            })
+            .collect()
+    };
+    let heard = completions(drain_events(&mut late));
+    let history = completions(
+        inner
+            .events_for_scan(&scan_id)
+            .expect("should succeed")
+            .into_iter()
+            .map(|e| e.kind)
+            .collect(),
+    );
+    TerminalOutcome {
+        result,
+        stored: inner.get_scan(&scan_id).expect("should succeed"),
+        heard,
+        history,
+    }
+}
+
+/// REQ-SCANSTATUS-014: a strict-path commit the store refuses fails the scan
+/// and announces it. The engine recorded (and flushed) `scan_complete
+/// {complete}`, then returned the refusal before the broadcast: the row stayed
+/// `Running` under a durable completion no live subscriber heard, so `hse
+/// live` printed nothing, the radar kept "sweep #N running…" and the web scan
+/// log's pill stayed "live". Now the refusal is announced `failed`, the
+/// history's last word is `failed`, and a store that takes the next write
+/// records the row `Failed`.
+#[tokio::test]
+async fn a_scan_whose_terminal_write_is_refused_is_announced_failed() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_SCAN, RefusingStore};
+
+    // Every terminal write refused: nothing lands, the failure is heard.
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_terminal_scan_writes());
+    let out = run_terminal_scenario(inner, store, "commit@example.com", false).await;
+    assert!(out.result.is_err(), "the refusal is still returned");
+    assert_eq!(out.heard, vec![(ScanStatus::Failed, false)]);
+    assert_eq!(out.history.last(), Some(&(ScanStatus::Failed, false)));
+
+    // Only the `Complete` write refused (a busy timeout): the Failed row lands.
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_scan_writes_in(ScanStatus::Complete));
+    let out = run_terminal_scenario(inner, store, "busy@example.com", false).await;
+    let err = out.result.expect_err("the refusal is returned");
+    assert!(err.to_string().contains(REFUSED_SCAN), "{err}");
+    assert_eq!(out.heard, vec![(ScanStatus::Failed, false)]);
+    assert_eq!(out.history.last(), Some(&(ScanStatus::Failed, false)));
+    let row = out.stored.expect("the row exists");
+    assert_eq!(row.status, ScanStatus::Failed, "{row:?}");
+    assert!(
+        row.error
+            .as_deref()
+            .is_some_and(|e| e.contains("terminal status write failed") && e.contains(REFUSED_SCAN)),
+        "{row:?}"
+    );
+    assert!(row.finished_at.is_some());
+}
+
+/// REQ-SCANSTATUS-016: a refused scan-start row is written `Failed` once the
+/// store takes a write. A web one-shot scan's handler writes the row
+/// `Pending` before spawning the engine, and REQ-SCANSTATUS-011 announced
+/// `failed` without touching it — so a transient refusal left the row
+/// `pending` (in progress to `/scans` and `/stats`) for good, and returned
+/// before the writer flush, so whether the event persisted was timing.
+#[tokio::test]
+async fn a_scan_whose_start_row_is_refused_is_stored_failed() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_SCAN, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_scan_writes_in(ScanStatus::Running));
+    let out = run_terminal_scenario(inner, store, "pending@example.com", true).await;
+    assert!(out.result.is_err());
+    assert_eq!(out.heard, vec![(ScanStatus::Failed, false)]);
+    assert_eq!(
+        out.history,
+        vec![(ScanStatus::Failed, false)],
+        "the announcement is durable by the time the run returns"
+    );
+    let row = out.stored.expect("the handler's row");
+    assert_eq!(row.status, ScanStatus::Failed, "{row:?}");
+    assert!(
+        row.error
+            .as_deref()
+            .is_some_and(|e| e.contains("scan-start write failed") && e.contains(REFUSED_SCAN)),
+        "{row:?}"
+    );
+    assert!(row.finished_at.is_some());
+}
+
+/// REQ-SCANSTATUS-015: a `Complete` scan whose finalise recorded a shortfall
+/// is announced partial. Its row carries the shortfall and every export reads
+/// it "partial, finalise-incomplete", but the event said a bare `complete`.
+#[tokio::test]
+async fn a_complete_scan_with_a_finalise_shortfall_is_announced_partial() {
+    use crate::core::test_support::{InMemoryStore, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_relation_reads());
+    let out = run_terminal_scenario(inner, store, "short@example.com", false).await;
+    let done = out.result.expect("the scan completes");
+    assert_eq!(done.status, ScanStatus::Complete);
+    assert!(done.error.is_some(), "fixture: a shortfall is recorded");
+    assert_eq!(out.heard, vec![(ScanStatus::Complete, true)]);
+    assert_eq!(out.history, vec![(ScanStatus::Complete, true)]);
+
+    // Control: a clean completion is announced clean.
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> = inner.clone();
+    let out = run_terminal_scenario(inner, store, "clean@example.com", false).await;
+    assert_eq!(out.result.expect("completes").error, None);
+    assert_eq!(out.heard, vec![(ScanStatus::Complete, false)]);
+}

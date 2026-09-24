@@ -303,17 +303,29 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
         E::ScanComplete {
             entity_count,
             status,
+            finalise_incomplete,
             ..
         } => match status {
             // Mirror `EventKind::log_summary` (core/event/mod.rs): a cancelled or
             // failed iteration still emits `ScanComplete`, so this
             // fully-unredacted live view must state what actually happened
-            // instead of printing the success line for every terminal state.
+            // instead of printing the success line for every terminal state —
+            // including a finalise that did not store or compute everything,
+            // which every export reads as partial (REQ-SCANSTATUS-015).
             crate::core::scan::ScanStatus::Aborted => format!(
-                "scan aborted — stopped early — {entity_count} entit{}",
-                plural(*entity_count)
+                "scan aborted — stopped early — {entity_count} entit{}{}",
+                plural(*entity_count),
+                if *finalise_incomplete {
+                    " — finalise incomplete"
+                } else {
+                    ""
+                }
             ),
             crate::core::scan::ScanStatus::Failed => "scan failed".to_string(),
+            _ if *finalise_incomplete => format!(
+                "scan complete but PARTIAL — finalise incomplete — {entity_count} entit{}",
+                plural(*entity_count)
+            ),
             _ => format!(
                 "scan complete — {entity_count} entit{}",
                 plural(*entity_count)

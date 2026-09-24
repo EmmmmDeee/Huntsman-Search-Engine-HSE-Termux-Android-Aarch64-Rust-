@@ -24050,3 +24050,134 @@ success toast.
 | M7 | `uploadDossier` as at 4ca197dd | killed by `api::routes::tests::embedded_spa_reports_a_cancelled_upload_as_cancelled` |
 
 **9 of 9 caught.**
+
+## REQ-GEOLABEL-037 / REQ-SCANSTATUS-013 / REQ-SCANSTATUS-014 / REQ-SCANSTATUS-015 / REQ-SCANSTATUS-016 / REQ-SCANSTATUS-017 — final review, correction round 4
+
+**Found** by the fourth correction round of the final review of PR #649,
+which raised eight findings against 9c92f431. Each was checked against that
+head, and all eight were real. Two pairs describe one defect each, raised
+under two lenses: the `provider_geo` reading of a `+1` / `+7` point's tags
+(accuracy and integration) and the CLI import summary's stale count
+(accuracy and integration). That leaves six defects. Each fix is made where
+its rule lives and has a regression test that fails on the code before it.
+Each fix was then undone in place, the test was seen to fail, and the file
+was restored byte-identically (table below).
+
+**REQ-GEOLABEL-037 — a point tagged with several countries carries no
+provider answer.** REQ-GEOLABEL-036 tagged a `+1` point `country:US` and
+`country:CA`, and a `+7` point `country:RU` and `country:KZ`.
+`engine::enrich::provider_geo` read a point's country from a `country:` tag
+that differs from the offline box when no record carried a `country_code`
+attribute, and picked the lowest such tag. A CSV re-import keeps tags but no
+attributes, and `prepare_import_batch` → `enrich_offline_geo` re-enriches
+the copy. So the copy of a `+1` point at the US stand-in (box `US`) got
+`country_provider: CA`, `country_name: Canada` and `country_iso_box: US`,
+and lost its timezone because the box "disagreed". A `+7` copy got
+`country_provider: KZ` ("Kazakhstan"). No provider gave either answer. The
+tag fallback now reads an answer only when the point carries exactly one
+`country:` tag and it differs from the box: a provider's answer that an
+earlier run tagged. A point tagged with several countries names candidates,
+not an answer, so no provider answer is read and the box stays the hint it
+is. The REQ-GEOLABEL-036 test built its CSV copy but never re-enriched it.
+The new test runs the real import step (`enrich_offline_geo`) on the bare
+copy. The `+1` copy now carries no `country_provider` and keeps its `tz:`
+tag, the `+7` copy names no Kazakhstan, and a lone provider tag (photon's
+Canada on a point the US box covers) is still read as the provider's answer.
+
+**REQ-SCANSTATUS-013 — an import's summary counts what it stored and states
+a size skip once.** `prepare_import_batch` appends the Coordinates it
+derives from addresses. The enrichment cap, the stored row and the skip that
+REQ-SCANSTATUS-010 records all count the batch after that step. The CLI
+summaries counted it before. `hse import` printed "Stored: scan … (4990
+entities …)", then the recorded skip "Warning: … 5001 entities exceed the
+5000-entity import enrichment cap", then its own "Note: relations/correlations
+skipped — 4990 entities exceeds the 5000-entity enrichment cap". That is two
+counts for one skip, and the second is false: 4990 does not exceed 5000.
+`hse investigate --auto-scan` and `hse ingest --auto-scan` did the same.
+`PersistedBatch` now carries `entities`, the stored count.
+`PersistedBatch::summary_lines` is the one summary: the stored scan with
+that count, then the recorded shortfall when there is one. All three
+surfaces print it under their own prefixes, and the separate "skipped" note
+is gone, because the recorded skip states it with the right count.
+`investigate --output json` reads the same batch. `ingest`'s
+`run_auto_scan` returns the batch in place of its own count.
+
+**REQ-SCANSTATUS-014 — a strict-path commit the store refuses is announced
+failed.** On the Complete/Aborted path, a refused terminal `upsert_scan`
+returned the error after `scan_complete {status: complete}` was recorded and
+flushed, and before it was broadcast. The row stayed `Running` (and read
+`interrupted` once the web guard dropped) under a durable completion that no
+live subscriber heard. `hse live` printed nothing, the radar stayed on
+"sweep #N running…", and the web scan log's pill stayed "live" and cycled
+through reconnects against the stored `Running` row. That is the gap
+REQ-SCANSTATUS-008 closed for the Failed branch only. The refusal now fails
+the scan the same way the Failed branch does. The engine records a
+`scan_complete {status: failed}` and flushes it. It then writes the row
+`Failed`, best-effort, with the error "the terminal status write failed: …"
+after any recorded shortfall. It broadcasts the failed event and returns the
+refusal. The `complete` event recorded before the commit stays in the
+history, because the event log is append-only and no store method removes a
+single event. The failed event follows it, so the history's last word on
+the scan is `failed`. A store that takes the next write also stores the row
+`Failed`. The event is made durable before the fallback row, so the
+REQ-SCANSTATUS-004 invariant holds: a row reads terminal only once its
+`scan_complete` is durable. `RefusingStore::refusing_scan_writes_in(status)`
+refuses one status only, which stands in for a transient refusal.
+
+**REQ-SCANSTATUS-015 — a completion whose finalise recorded a shortfall is
+announced partial.** A scan whose `FinaliseTally` recorded a shortfall is
+written `Complete` with `error` set, and every export classifies it
+"partial, finalise-incomplete". But `scan_complete` carried only
+`status: complete`, so `hse live` printed "scan complete", the web scan log
+showed a "complete" pill and the radar showed "sweep done". The event now
+carries `finalise_incomplete` (`serde(default)`, omitted when false, so a
+clean completion's wire form and every legacy row are unchanged), set from
+the row's `error`. `EventKind::log_summary` renders it "◐ scan complete but
+PARTIAL — finalise incomplete", `log_level` gives `warn`, and `log_fields`
+adds the flag. `cli::live::render_event`, the scan log's line (`mapEvent`)
+and pill (`onTerminal`, "partial"), and the radar's status line all read it.
+
+**REQ-SCANSTATUS-016 — a scan whose start row is refused is stored failed
+once the store takes a write.** REQ-SCANSTATUS-011 announced the refusal but
+never wrote the row. A web one-shot scan's handler has already written it
+`Pending` (`scan_create` / `scan_rerun`). After a transient refusal, that
+row read `pending` for good: in progress to `/scans` and `/stats`, and
+ignored by the `interrupted` derivation, all under an event that said
+`failed`. The run also returned before the writer flush, so whether the
+event persisted depended on timing. The engine now records the failed event
+and flushes it. It then writes the row `Failed`, best-effort, with the error
+"the scan-start write failed: …" and `finished_at`, as
+`force_fail_panicked_scan` does for a panic. Then it broadcasts and returns
+the error. A store refusing every write still stores nothing, and the
+REQ-SCANSTATUS-011 test still passes.
+
+**REQ-SCANSTATUS-017 — an import skipped for size is not told to re-run.**
+`Scan::completeness_caveat` ended every finalise shortfall with "re-run the
+scan to rebuild it". For an import over the enrichment cap, a re-run cannot
+rebuild it. `/scans/{id}/rerun` starts a live network scan of the import's
+label, such as an email string read as a full name, which neither enriches
+the stored entities nor lifts the cap, and re-importing the same data hits
+the same cap. The skip clause now has one writer,
+`FinaliseTally::import_enrichment_skipped` (which `skip_enrichment_over_cap`
+calls), and one reader, `FinaliseTally::records_import_enrichment_skip`. The
+caveat reads the clause and names the remedy that works: import the data in
+smaller batches, each within the cap. Every other shortfall keeps the
+re-run advice, and a failed correlation pass is not mistaken for the
+import's pass.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `provider_geo`'s tag fallback reads the lowest non-box tag (as at 9c92f431) | killed by `core::engine::tests::a_csv_copy_of_a_multi_country_signal_claims_no_provider_country` (`country_provider: "CA"`) |
+| M2 | `summary_lines` also prints the size-skip note when `!enriched` | killed by `app::persist::tests::an_import_summary_counts_the_batch_it_stored_and_states_a_skip_once` (the cap stated twice) |
+| M2a | `import_summary_lines` appends the "Note: … skipped" line (as at 9c92f431) | killed by `app::import::tests::an_import_summary_states_a_size_skip_once` |
+| M3 | a refused strict commit returns the error at once (as at 9c92f431) | killed by `core::engine::tests::a_scan_whose_terminal_write_is_refused_is_announced_failed` (`heard: []`) |
+| M4 | a refused start row writes no Failed row (as at 9c92f431) | killed by `core::engine::tests::a_scan_whose_start_row_is_refused_is_stored_failed` (`status: Pending`) |
+| M5 | the engine sets `finalise_incomplete: false` | killed by `core::engine::tests::a_complete_scan_with_a_finalise_shortfall_is_announced_partial` |
+| M5a | `log_summary` without the partial arm | killed by `core::event::tests::a_scan_complete_with_a_finalise_shortfall_reads_partial` |
+| M5b | `render_event` without the partial arm | killed by `cli::live::tests::render_event_scan_complete_reflects_terminal_status` |
+| M5c | `log.js` `onTerminal` as at 9c92f431 | killed by `api::routes::tests::embedded_spa_reads_a_finalise_incomplete_completion_as_partial` |
+| M6 | `completeness_caveat` without the import-skip remedy | killed by `core::scan::tests::an_import_skipped_for_size_is_not_told_to_re_run` |
+
+**10 of 10 caught.**

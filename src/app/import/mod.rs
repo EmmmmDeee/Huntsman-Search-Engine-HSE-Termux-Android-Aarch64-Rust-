@@ -597,35 +597,8 @@ async fn persist_import(
 async fn persist_and_report(sid: &str, entities: &[crate::core::entity::Entity], output: &str) {
     match persist_import(sid, entities).await {
         Ok(batch) => {
-            note(
-                output,
-                format!(
-                    "  Stored:    scan {sid} ({} entities, {} relations, {} correlations) — view with `hse list`",
-                    entities.len(),
-                    batch.relations,
-                    batch.correlations
-                ),
-            );
-            if let Some(err) = &batch.finalise_error {
-                note(
-                    output,
-                    format!(
-                        "  Warning:   the scan is stored but INCOMPLETE — {err}; its exports \
-                         read partial (finalise-incomplete)"
-                    ),
-                );
-            }
-            if !batch.enriched {
-                note(
-                    output,
-                    format!(
-                        "  Note:      relations/correlations skipped — {} entities exceeds the \
-                         {}-entity enrichment cap (device-safety bound on the pairwise \
-                         correlator pass); every entity is still stored",
-                        entities.len(),
-                        crate::app::persist::PERSIST_ENRICH_MAX_ENTITIES
-                    ),
-                );
+            for line in import_summary_lines(sid, &batch) {
+                note(output, line);
             }
         }
         Err(e) => note(
@@ -633,6 +606,24 @@ async fn persist_and_report(sid: &str, entities: &[crate::core::entity::Entity],
             format!("  Warning:   could not persist import: {e}"),
         ),
     }
+}
+
+/// `hse import`'s summary of a stored batch, in its column layout — the
+/// shared [`PersistedBatch::summary_lines`](crate::app::persist::PersistedBatch::summary_lines),
+/// which counts what was stored and states an enrichment-cap skip once.
+fn import_summary_lines(sid: &str, batch: &crate::app::persist::PersistedBatch) -> Vec<String> {
+    batch
+        .summary_lines(sid)
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 {
+                format!("  Stored:    {line}")
+            } else {
+                format!("  Warning:   {line}")
+            }
+        })
+        .collect()
 }
 
 /// Persist RF sightings for `sid`, best-effort — a failure here must never

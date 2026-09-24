@@ -3400,3 +3400,32 @@ fn a_city_read_under_a_country_signal_re_imports_as_the_city() {
         assert!(!label.contains("country-level"), "{label}");
     }
 }
+
+/// REQ-SCANSTATUS-013: `hse import`'s summary of a batch skipped for size is
+/// the stored line and the recorded skip — no separate "Note: … skipped"
+/// line counting the file before preparation beside it.
+#[test]
+fn an_import_summary_states_a_size_skip_once() {
+    let batch = crate::app::persist::PersistedBatch {
+        entities: 5001,
+        relations: 0,
+        correlations: 0,
+        enriched: false,
+        finalise_error: Some(
+            "relation and correlation pass failed: skipped — 5001 entities exceed the \
+             5000-entity import enrichment cap"
+                .into(),
+        ),
+    };
+    let lines = super::import_summary_lines("imp", &batch);
+    assert_eq!(lines.len(), 2, "{lines:#?}");
+    assert!(
+        lines[0].starts_with("  Stored:    scan imp (5001 entities,"),
+        "{lines:#?}"
+    );
+    assert!(
+        lines[1].starts_with("  Warning:   the scan is stored but INCOMPLETE"),
+        "{lines:#?}"
+    );
+    assert!(lines.iter().all(|l| !l.contains("Note:")), "{lines:#?}");
+}

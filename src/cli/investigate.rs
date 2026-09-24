@@ -132,17 +132,10 @@ pub(super) async fn cmd_investigate(
 /// operator.
 struct AutoScanSummary {
     sid: String,
-    entities: usize,
-    relations: usize,
-    correlations: usize,
-    /// `false` when relations/correlations were skipped for size (see
-    /// `app::persist::PERSIST_ENRICH_MAX_ENTITIES`) — every entity is still
-    /// stored either way; this disambiguates a size-skipped pass from a batch
-    /// that genuinely yielded zero relations/correlations.
-    enriched: bool,
-    /// What the store refused, as recorded on the scan — see
-    /// `app::persist::PersistedBatch::finalise_error`. `None` when whole.
-    finalise_error: Option<String>,
+    /// What was stored — its entity count is the prepared batch's, the one
+    /// the enrichment cap and the scan row read, never the extracted count
+    /// (see `app::persist::PersistedBatch::entities`).
+    batch: crate::app::persist::PersistedBatch,
 }
 
 /// Persist the extracted `entities` as a completed, correlated scan — the
@@ -184,14 +177,7 @@ async fn run_auto_scan(entities: &[ExtractedEntity], text: &str) -> Result<AutoS
         &converted,
     )
     .await?;
-    Ok(AutoScanSummary {
-        sid,
-        entities: converted.len(),
-        relations: batch.relations,
-        correlations: batch.correlations,
-        enriched: batch.enriched,
-        finalise_error: batch.finalise_error,
-    })
+    Ok(AutoScanSummary { sid, batch })
 }
 
 fn print_table(text: &str, entities: &[ExtractedEntity], scan: Option<&AutoScanSummary>) {
@@ -220,26 +206,28 @@ fn print_table(text: &str, entities: &[ExtractedEntity], scan: Option<&AutoScanS
         );
     }
     if let Some(s) = scan {
-        println!(
-            "\nauto-scan: stored scan {} ({} entities, {} relations, {} correlations) — \
-             view with `hse list`",
-            s.sid, s.entities, s.relations, s.correlations
-        );
-        if let Some(err) = &s.finalise_error {
-            println!(
-                "  warning: the scan is stored but INCOMPLETE — {err}; its exports read \
-                 partial (finalise-incomplete)"
-            );
-        }
-        if !s.enriched {
-            println!(
-                "  note: relations/correlations skipped — {} entities exceeds the \
-                 {}-entity enrichment cap; every entity is still stored",
-                s.entities,
-                crate::app::persist::PERSIST_ENRICH_MAX_ENTITIES
-            );
+        for line in auto_scan_lines(s) {
+            println!("{line}");
         }
     }
+}
+
+/// The `--auto-scan` summary under the table — the shared
+/// [`PersistedBatch::summary_lines`](crate::app::persist::PersistedBatch::summary_lines),
+/// which counts what was stored and states an enrichment-cap skip once.
+fn auto_scan_lines(s: &AutoScanSummary) -> Vec<String> {
+    s.batch
+        .summary_lines(&s.sid)
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 {
+                format!("\nauto-scan: stored {line}")
+            } else {
+                format!("  warning: {line}")
+            }
+        })
+        .collect()
 }
 
 fn print_json(text: &str, entities: &[ExtractedEntity], scan: Option<&AutoScanSummary>) {
@@ -262,11 +250,11 @@ fn print_json(text: &str, entities: &[ExtractedEntity], scan: Option<&AutoScanSu
     if let Some(s) = scan {
         body["auto_scan"] = serde_json::json!({
             "scan_id": s.sid,
-            "entities": s.entities,
-            "relations": s.relations,
-            "correlations": s.correlations,
-            "enrichment_skipped": !s.enriched,
-            "finalise_error": s.finalise_error,
+            "entities": s.batch.entities,
+            "relations": s.batch.relations,
+            "correlations": s.batch.correlations,
+            "enrichment_skipped": !s.batch.enriched,
+            "finalise_error": s.batch.finalise_error,
         });
     }
     println!(
@@ -355,7 +343,7 @@ mod tests {
             "the scan id must mark it as an investigate-originated scan: {}",
             summary.sid
         );
-        assert_eq!(summary.entities, entities.len());
+        assert_eq!(summary.batch.entities, entities.len());
     }
 
     #[tokio::test]
@@ -397,7 +385,7 @@ mod tests {
             .await
             .expect("auto-scan must still succeed on an all-filtered batch");
         assert_eq!(
-            summary.entities, 0,
+            summary.batch.entities, 0,
             "placeholder entities (alice@example.com, example.com) must never be persisted as real findings"
         );
     }

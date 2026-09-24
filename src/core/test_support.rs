@@ -478,6 +478,7 @@ pub struct RefusingStore {
     refuse_template_counts: bool,
     refuse_terminal_scan_writes: bool,
     refuse_scan_writes: bool,
+    refuse_scan_writes_in: Option<crate::core::scan::ScanStatus>,
     entity_batch_gate: Option<EntityBatchGate>,
 }
 
@@ -586,6 +587,15 @@ impl RefusingStore {
         self
     }
 
+    /// Refuse every write of a scan row in `status` alone, while rows in any
+    /// other status land — a refusal that passes (a busy timeout), so a later
+    /// write of the same row in another status succeeds.
+    #[must_use]
+    pub fn refusing_scan_writes_in(mut self, status: crate::core::scan::ScanStatus) -> Self {
+        self.refuse_scan_writes_in = Some(status);
+        self
+    }
+
     /// Hold every entity batch write until the test releases it: the store
     /// announces the write on [`EntityBatchPause::entered`] and blocks until
     /// a message arrives on [`EntityBatchPause::release`] — a write the test
@@ -625,7 +635,7 @@ impl RefusingStore {
 impl StoragePort for RefusingStore {
     fn upsert_scan(&self, scan: &Scan) -> Result<()> {
         use crate::core::scan::ScanStatus;
-        if self.refuse_scan_writes {
+        if self.refuse_scan_writes || self.refuse_scan_writes_in == Some(scan.status) {
             return Err(injected(REFUSED_SCAN));
         }
         if self.refuse_terminal_scan_writes
