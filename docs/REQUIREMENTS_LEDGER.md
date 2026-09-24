@@ -25923,3 +25923,140 @@ any source tree, so an update it is asked for can find nothing to install.
 Across versions, on one settings file: this build's `hse config` write was
 read back by the build before it, and that build's write by this one, every
 switch kept both ways. The file format did not change.
+
+---
+
+## REQ-INGEST-001 — an unread image's file path came back as findings
+
+**Requirement.** An image whose text cannot be read contributes no text.
+`hse ingest` never mines a stand-in for the text it could not read, and a
+failure to read it is the command's failure, reported with its cause.
+
+**Defect.** When OCR failed, for any reason, `cli::ingest::run` swallowed the
+error and mined this sentence as if it were the image's text:
+
+```rust
+text: format!("OCR unavailable for {}", args.file.display()),
+```
+
+The sentence carries the file's path, and a path is full of things the
+extractor finds. On the build before this fix, on a host without tesseract,
+`hse ingest -f <dir>/case-jane.doe@contoso-files.net/scan-of-id.png` exited 0
+and printed:
+
+| kind | value | confidence |
+|---|---|---|
+| email | `case-jane.doe@contoso-files.net` | 0.85 |
+| domain | `contoso-files.net` | 0.80 |
+| domain | `scan-of-id.png` | 0.75 |
+
+With `--auto-scan` it stored all three as a completed scan, which every view
+and export then presents as findings. The OCR module logged why it failed, as a
+warning, but the typed error was dropped and the command reported success.
+
+The review of the first draft of this fix found four more faults in the same
+path, all fixed here:
+
+- `ocr_image` asked `which tesseract` first, and read any failure as "not
+  installed", so a host without `which` was told to install a tesseract it had.
+- A missing file was reported as an OCR fault ("tesseract is not installed").
+- `OcrFailed` kept only tesseract's exit code, and a launch failure read "IO
+  error: Permission denied", naming neither tesseract nor the cause.
+- Reverse-search variants counted as work left even when saved nowhere, so an
+  unreadable image "succeeded" with nothing, and `--auto-scan` stored an empty
+  scan that reads as "looked, found nothing".
+
+Two docs were also wrong: the OCR module promised a "pure-Rust fallback" that
+does not exist (an older ledger entry repeats the claim), and `OcrUnavailable`
+said "image processing disabled", which is not true of EXIF geolocation or
+variants.
+
+**Fix.**
+
+- An image's OCR error is held while the image work that needs no text runs:
+  EXIF geolocation, and variants saved to `--image-variant-output-dir`. If that
+  work finds no entity and writes no variant, or none was asked for, the OCR
+  error is the command's: `hse ingest` exits 1 with it, and writes and stores
+  nothing. Otherwise the ingest completes, with a warning that no text was read.
+- The file is checked before OCR, so a path that is not there says so.
+- There is no `which` probe. Tesseract is spawned directly, and a spawn that
+  fails is `OcrUnavailable` only when no file of that name is on `PATH`; a
+  tesseract that is there and will not start (no permission, a missing
+  interpreter, too few resources) is the new `OcrStart`, with the cause.
+- `OcrFailed` carries the end of tesseract's stderr, on one line and at most
+  300 characters, which is where it says why it refused an image. Tesseract's
+  output is read as lossy UTF-8, so one stray byte costs a character, not the
+  page.
+- `OcrUnavailable` says what is missing and how to install it: "OCR not
+  available: tesseract is not installed, so no text can be read from an image
+  (Termux: pkg install tesseract)".
+- The OCR module's docs say there is no fallback, `ocr_image` documents the
+  errors it returns, and `hse ingest --help` says what happens to an unreadable
+  image.
+
+**Locks.**
+
+- `cli::ingest::tests::an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path`
+  calls `run`, the function the CLI dispatches to. An unreadable image (a bare
+  PNG signature, which no OCR reads, so the test holds with or without
+  tesseract) fails with the OCR error itself and writes nothing, whether text
+  alone, EXIF, or unsaved variants were asked for. A real 64-pixel image with
+  its variants saved succeeds, and so does a JPEG whose EXIF carries a GPS fix,
+  which is found; neither yields a finding from its path. A path that is not
+  there fails as "not found", not as an OCR fault.
+- `document_parse::ocr::tests`:
+  - `a_program_that_is_there_but_will_not_start_is_not_reported_as_missing`: a
+    script whose interpreter is missing and a file without permission to run
+    are both `OcrStart`.
+  - `a_refusal_keeps_the_end_of_stderr_on_one_line`.
+  - The existing `only_an_absent_binary_is_reported_as_missing` still holds
+    without the `which` probe.
+- `tests/cli_seed_validation.rs`
+  `ingest_of_an_image_it_cannot_read_says_why_and_finds_nothing` runs the real
+  binary with `PATH` set to an empty directory, so the host has no tesseract,
+  plain, with `--auto-scan` and with `--extract-geolocation`. Each exits
+  non-zero, stderr carries the reason and the fix, and stdout carries no
+  finding.
+- `tests/cli_seed_validation.rs`
+  `ingest_reports_tesseracts_own_reason_for_refusing_an_image` puts a stand-in
+  `tesseract` on `PATH` that exits 1 with tesseract's usual complaint; the
+  command's error carries it.
+
+### Mutations
+
+11 deliberate breakages, each applied alone to the finished change and run against the tests that own the behaviour. All 11 are caught.
+
+| breakage | caught by |
+|---|---|
+| I1 an unread image is an empty success again | `an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path` |
+| I1b the same, seen by the binary | `ingest_reports_tesseracts_own_reason_for_refusing_an_image`, `ingest_of_an_image_it_cannot_read_says_why_and_finds_nothing` |
+| I2 saved variants are not a result | `an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path` |
+| I3 an EXIF fix is not a result | `an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path` |
+| I4 written variants are not recorded | `an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path` |
+| I5 a missing path is an OCR fault | `an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path` |
+| I6 the stand-in text is mined again | `an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path` |
+| I7 installed but unstartable reads as not installed | `a_program_that_is_there_but_will_not_start_is_not_reported_as_missing` |
+| I8 a start failure is a bare IO error | `a_program_that_is_there_but_will_not_start_is_not_reported_as_missing` |
+| I9 tesseract's reason is dropped | `ingest_reports_tesseracts_own_reason_for_refusing_an_image` |
+| I10 the message drops the fix | `ingest_of_an_image_it_cannot_read_says_why_and_finds_nothing` |
+
+### Runtime
+
+Run against a scratch `HOME` with `PATH` set to an empty directory, so the host
+has no tesseract, on the build before this fix (the merged base) and this one.
+The images sit in a folder named `case-jane.doe@contoso-files.net`: a bare PNG
+signature, and `holiday.jpg`, a real JPEG with an EXIF GPS fix (27°28'35"S,
+153°0'59"E) spliced in as a camera writes it.
+
+| check | before | after |
+|---|---|---|
+| `hse ingest -f scan-of-id.png` fails | fail (exit 0) | pass |
+| the reason and the fix are on stderr | fail | pass |
+| the path is not a finding | fail (the email at 0.85) | pass |
+| `--auto-scan` fails and prints no finding | fail (exit 0) | pass |
+| `--auto-scan` stores no scan | fail (a scan stored) | pass |
+| `--extract-geolocation` on the PNG, which has no EXIF, fails the same way | fail (exit 0) | pass |
+| `--extract-geolocation`: the path is not a finding | fail | pass |
+| `--extract-geolocation` on the photo yields its GPS fix and nothing from its path | fail (the folder's email and `holiday.jpg` as a domain beside the fix) | pass |
+| control: a text file still yields its email | pass | pass |
+| **total** | **1 of 9** | **9 of 9** |

@@ -281,13 +281,32 @@ state file now also carries `competitors`, `capability_gaps`, `clusters` and
   difference from the key-pool run is the 7 new settings tests. Doctests: 88
   passed, 3 ignored, twice.
 
+### Change 8: [DEFECT] An unread image's file path is never mined for findings (REQ-INGEST-001)
+
+- **What.** `cli::ingest` holds an image's OCR error while the image work
+  that needs no text runs; if that finds nothing and writes nothing, the
+  error is the command's (exit 1, nothing written or stored). A missing
+  file says so first; tesseract is spawned without a `which` probe, and
+  its own stderr reaches the error (`OcrStart`, `OcrFailed`).
+- **Why.** The stand-in sentence carried the file path, which the
+  extractor mined into findings, and the command exited 0.
+- **Review.** Four more faults on the same path found and fixed.
+- **Evidence.**
+  - Runtime on sandboxed builds, no tesseract on PATH: 1 of 9 checks
+    before (the control), 9 of 9 after, including a GPS-tagged photo that
+    yields its fix and nothing from its file name.
+  - Mutations: 11 of 11 caught, each applied alone.
+- **Fresh worktree.** Passed, on the second run. The gate passed. The full
+  suite ran twice with identical results: 8859 tests, 8832 passed, 27
+  ignored, 0 failed; against the settings run, 5 tests are new and one
+  assertion-free test went with the `which` probe it called. Doctests: 88
+  passed, 3 ignored, twice. The first run was launched as a background job
+  of a non-interactive shell, which ignores SIGINT, and the reconciler's
+  fake radar inherited that and never exited: recorded as an open defect.
+
 ## Next
 
-- **REQ-INGEST-001.** `hse ingest` mined the "OCR unavailable for <path>"
-  stand-in for an image it could not read, so the file's path came back as
-  findings. Drafted and reviewed; applied on the settings change (only the
-  test file's doc list and insertion points needed joining) and verified on
-  its own next.
-- **Then** REQ-CLI-HINTS-001 (the hint after a stored scan names `hse list`,
-  which does not exist), re-ported onto the merged base and reviewed a second
-  time; the review's fixes are in.
+- **REQ-CLI-HINTS-001.** The hint after a stored scan named `hse list`,
+  which does not exist. Re-ported onto the merged base (the hint now ends
+  the shared `summary_lines`) and reviewed a second time; the review's fixes
+  are in. Applied and verified on its own next.

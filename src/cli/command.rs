@@ -633,7 +633,10 @@ pub enum Command {
     /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, IPv4, IPv6, domain, URL, social handle, MD5/SHA hashes),
     /// classify by kind, assign confidence scores, and output as HSE-ready batch queries (JSONL/JSON/CSV/table).
     Ingest {
-        /// Input file path (image, PDF, CSV, JSON, JSONL, text).
+        /// Input file path (image, PDF, CSV, JSON, JSONL, text). An image's
+        /// text is read with tesseract. An image it cannot read fails the
+        /// command with the reason, unless image work that needs no text
+        /// (EXIF geolocation, reverse-search variants) was asked for too.
         #[arg(short, long, value_name = "PATH")]
         file: String,
         /// Output format: jsonl (default), json, csv, table, or hse

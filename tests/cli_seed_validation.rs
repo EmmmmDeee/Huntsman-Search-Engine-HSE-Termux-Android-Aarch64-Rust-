@@ -5,6 +5,8 @@
 //!   - `-o json` output discipline: stdout must be a single JSON document, with
 //!     all human-readable progress/summary on stderr, so `| jq` works.
 //!   - a settings file that does not parse stops `hse` and is kept.
+//!   - an image `hse ingest` cannot read fails with the reason, and its file
+//!     path is never mined for findings.
 
 mod common;
 
@@ -76,6 +78,56 @@ fn scan_name_is_stored_cleaned_and_a_broken_one_refused() {
         stderr.contains("--name: name contains control characters or a line break"),
         "{stderr}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REQ-INGEST-001: `hse ingest` of an image with no OCR on the host exits
+/// non-zero, says why and how to fix it, and prints no findings. It used to
+/// exit 0 and print three, all read from the sentence "OCR unavailable for
+/// <path>": the email in the folder's name at 0.85, that email's domain, and
+/// the file name as a domain. With `--auto-scan` it stored them as a scan.
+/// With `--extract-geolocation` on an image with no EXIF, nothing is found
+/// either, so that fails the same way.
+///
+/// `PATH` is an empty directory, so the host has no `tesseract`, whatever the
+/// machine running the test has installed.
+#[test]
+fn ingest_of_an_image_it_cannot_read_says_why_and_finds_nothing() {
+    let dir = common::tmp_dir("ingest-ocr");
+    let no_tools = dir.join("empty-path");
+    let folder = dir.join("case-jane.doe@contoso-files.net");
+    std::fs::create_dir_all(&no_tools).expect("empty PATH dir");
+    std::fs::create_dir_all(&folder).expect("folder");
+    let image = folder.join("scan-of-id.png");
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\n").expect("image");
+    let image = image.to_str().expect("utf-8 temp path");
+
+    for extra in [
+        &[][..],
+        &["--auto-scan"][..],
+        &["--extract-geolocation"][..],
+    ] {
+        let out = Command::new(BIN)
+            .args(["ingest", "-f", image])
+            .args(extra)
+            .env("RUST_LOG", "off")
+            .env("HOME", &dir)
+            .env("PATH", &no_tools)
+            .output()
+            .expect("spawn hse ingest");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{extra:?}: must fail: {stdout}");
+        assert!(
+            stderr.contains("OCR not available: tesseract is not installed")
+                && stderr.contains("pkg install tesseract"),
+            "{extra:?}: the reason and the fix: {stderr}"
+        );
+        assert!(
+            !stdout.contains("contoso") && !stdout.contains("scan-of-id"),
+            "{extra:?}: the file's path is not a finding: {stdout}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -337,6 +389,56 @@ fn a_settings_file_that_does_not_parse_stops_hse_and_is_kept() {
     assert!(
         stamp.exists(),
         "the self-update check did not run: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REQ-INGEST-001: when tesseract runs and refuses an image, its own reason
+/// reaches the operator, not just its exit code. A stand-in `tesseract` on
+/// `PATH` exits 1 with tesseract's usual complaint on stderr.
+#[cfg(unix)]
+#[test]
+fn ingest_reports_tesseracts_own_reason_for_refusing_an_image() {
+    use std::os::unix::fs::PermissionsExt;
+    // The stand-in's interpreter by absolute path: `/bin/sh` is not where it
+    // lives on every host (Termux), and the stand-in runs with a bare `PATH`.
+    let sh = std::env::var_os("PATH")
+        .and_then(|p| {
+            std::env::split_paths(&p)
+                .map(|d| d.join("sh"))
+                .find(|c| c.is_file())
+        })
+        .expect("a POSIX sh on PATH");
+    let dir = common::tmp_dir("ingest-ocr-refusal");
+    let tools = dir.join("tools");
+    std::fs::create_dir_all(&tools).expect("tools dir");
+    let fake = tools.join("tesseract");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!{}\necho 'Error in pixReadStream: Unknown format: no pix returned' >&2\nexit 1\n",
+            sh.display()
+        ),
+    )
+    .expect("stand-in tesseract");
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let image = dir.join("scan.png");
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\n").expect("image");
+
+    let out = Command::new(BIN)
+        .args(["ingest", "-f", image.to_str().expect("utf-8 temp path")])
+        .env("RUST_LOG", "off")
+        .env("HOME", &dir)
+        .env("PATH", &tools)
+        .output()
+        .expect("spawn hse ingest");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(
+            "tesseract exited with 1: Error in pixReadStream: Unknown format: no pix returned"
+        ),
+        "tesseract's own reason: {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
