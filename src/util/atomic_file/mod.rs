@@ -8,7 +8,8 @@
 //! from `PUT /api/v1/settings/toggles`, the key pool from modules harvesting keys
 //! during overlapping scans in `hse serve` — and a shared fixed temp would let two
 //! writers truncate and interleave into it, then rename a corrupt file into place
-//! (which the loaders treat as empty/corrupt, silently dropping all state). With a
+//! (which costs the store its state: the key pool is moved aside, and the settings
+//! stop every command until repaired). With a
 //! unique temp each write is self-contained: the atomic rename is always over a
 //! complete, internally-consistent snapshot (last writer wins), never a torn one.
 //! The temp is removed on any error so a failed write leaves no straggler.

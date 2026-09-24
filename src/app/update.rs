@@ -476,10 +476,58 @@ pub async fn maybe_auto_update() -> AutoUpdateOutcome {
     }
 }
 
+/// What `hse serve`'s update timer does after a check.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TimerUpdate {
+    /// Nothing to install.
+    UpToDate,
+    /// The settings file cannot be used; the reason, for the update status.
+    Refused(String),
+    /// `feature.auto_update` is off in the file as it is now.
+    Off,
+    /// Install now.
+    Apply,
+}
+
+/// Decide what the update timer does with `behind` commits waiting. With any,
+/// the settings file is read again first (`load`), so the switch it then reads
+/// (`auto_update`) is the one in the file now: `hse config feature.auto_update
+/// off`, run since the server started, stops the update, and a file that no
+/// longer parses stops it too, as [`apply_update`] would (REQ-SETTINGS-001).
+pub fn timer_update(
+    behind: Option<u64>,
+    load: impl FnOnce() -> std::result::Result<(), crate::util::settings::SettingsError>,
+    auto_update: impl FnOnce() -> bool,
+) -> TimerUpdate {
+    if behind.unwrap_or(0) == 0 {
+        return TimerUpdate::UpToDate;
+    }
+    if let Err(e) = load() {
+        return TimerUpdate::Refused(format!("not updating: {e}"));
+    }
+    if auto_update() {
+        TimerUpdate::Apply
+    } else {
+        TimerUpdate::Off
+    }
+}
+
 /// Apply an update by running `install.sh` from the located source directory.
-/// Returns `Ok(())` on success, `Err` if the script is not found or exits
-/// non-zero. Does not print banners (designed for headless background use).
+/// Returns `Ok(())` on success, `Err` if the settings file cannot be used, or
+/// the script is not found or exits non-zero. Does not print banners (designed
+/// for headless background use).
 pub async fn apply_update(ref_: Option<String>) -> Result<()> {
+    // The updated hse loads the settings file at startup and stops if it
+    // cannot (REQ-SETTINGS-001), and `hse serve` restarts into it after an
+    // update, from its timer or its update button: over a file that no longer
+    // parses, the server would stop instead of coming back. So nothing is
+    // replaced until the file loads. Logged as well as returned, because the
+    // console shows only that the update failed.
+    if let Err(e) = crate::util::settings::load() {
+        tracing::error!("not updating: {e}");
+        return Err(Error::Other(format!("not updating: {e}")));
+    }
+
     // ── Locate install.sh ────────────────────────────────────────────────────
     let script = ensure_install_dir()
         .map(|d| d.join("install.sh"))
@@ -578,6 +626,58 @@ pub fn self_restart() -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ-SETTINGS-001: the update timer reads the settings file again
+    /// before it decides, and decides by the file as it is then.
+    #[test]
+    fn the_update_timer_decides_by_the_settings_file_as_it_is_now() {
+        use crate::util::settings::SettingsError;
+        let unusable = || {
+            Err(SettingsError::Read {
+                path: "/home/op/.huntsman/settings.json".into(),
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            })
+        };
+        let order = std::cell::RefCell::new(Vec::new());
+        let decision = timer_update(
+            Some(3),
+            || {
+                order.borrow_mut().push("load");
+                Ok(())
+            },
+            || {
+                order.borrow_mut().push("read the switch");
+                false
+            },
+        );
+        assert_eq!(decision, TimerUpdate::Off, "the file now says off");
+        assert_eq!(*order.borrow(), ["load", "read the switch"]);
+
+        assert_eq!(
+            timer_update(Some(3), || Ok(()), || true),
+            TimerUpdate::Apply
+        );
+        match timer_update(Some(3), unusable, || true) {
+            TimerUpdate::Refused(reason) => assert!(
+                reason.starts_with("not updating: ") && reason.contains("settings.json"),
+                "{reason}"
+            ),
+            other => panic!("a file that cannot be used must stop the update: {other:?}"),
+        }
+        // Nothing to install: the file is not read at all.
+        let read = std::cell::Cell::new(false);
+        let decision = timer_update(
+            Some(0),
+            || {
+                read.set(true);
+                Ok(())
+            },
+            || true,
+        );
+        assert_eq!(decision, TimerUpdate::UpToDate);
+        assert!(!read.get());
+        assert_eq!(timer_update(None, unusable, || true), TimerUpdate::UpToDate);
+    }
 
     #[test]
     fn install_dir_var_recovers_a_value_stranded_after_a_malformed_env_line() {

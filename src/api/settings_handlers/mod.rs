@@ -603,7 +603,24 @@ pub async fn settings_toggles_put(
             )
                 .into_response()
         }
-        Err(e) => bad_request(e.to_string()),
+        Err(e) => toggle_not_written(&e),
+    }
+}
+
+/// The answer to a toggle write that `set_bool` refused. A settings file that
+/// cannot be used is kept, and nothing changed, in this process or on disk,
+/// until the operator repairs it (REQ-SETTINGS-001): a 409 with the reason,
+/// since nothing was wrong with the request. A failed write stays the 400 it
+/// was.
+fn toggle_not_written(e: &crate::util::settings::SettingsError) -> axum::response::Response {
+    use crate::util::settings::SettingsError;
+    match e {
+        SettingsError::Read { .. } | SettingsError::Parse { .. } => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+        SettingsError::Write { .. } => bad_request(e.to_string()),
     }
 }
 

@@ -231,9 +231,17 @@ pub(super) async fn cmd_serve(
                 // recent server-side check throttles the CLI path too (one device,
                 // one cadence) — and vice-versa.
                 crate::app::update::record_check_stamp(now_secs);
-                if behind.unwrap_or(0) > 0
-                    && crate::util::settings::get_bool("feature.auto_update", true)
-                {
+                let decision =
+                    crate::app::update::timer_update(behind, crate::util::settings::load, || {
+                        crate::util::settings::get_bool("feature.auto_update", true)
+                    });
+                if let crate::app::update::TimerUpdate::Refused(reason) = &decision {
+                    tracing::error!("{reason}");
+                    if let Ok(mut info) = update_info.lock() {
+                        info.phase = UpdatePhase::Error(reason.clone());
+                    }
+                }
+                if decision == crate::app::update::TimerUpdate::Apply {
                     if let Ok(mut info) = update_info.lock() {
                         info.phase = UpdatePhase::Applying;
                     }

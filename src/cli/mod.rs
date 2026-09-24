@@ -52,6 +52,18 @@ pub async fn run() -> Result<()> {
     logging::initialize();
 
     let cli = Cli::parse();
+    // Before anything reads a toggle (the self-update below reads one): a
+    // settings file that does not parse stops the command with the reason,
+    // rather than being read as no overrides (REQ-SETTINGS-001). Not the two
+    // commands that read none and that install.sh runs, `build-sha` to verify
+    // a new binary and `provision --env-only` to merge the env file: a
+    // settings file is no reason to fail an install.
+    if !matches!(
+        cli.command,
+        Command::BuildSha { .. } | Command::Provision { env_only: true, .. }
+    ) {
+        crate::util::settings::load().map_err(|e| Error::Other(e.to_string()))?;
+    }
     // Opportunistic, throttled, non-blocking self-update: any routine CLI use
     // keeps the binary current with GitHub main (the server has its own loop).
     // Best-effort and time-boxed — never delays or fails the command below.

@@ -38,6 +38,12 @@
       "category": "DEFECT",
       "evidence": "Found: util::key_pool::persistence::backup_and_fresh renamed an unusable pool file to key_pool.json.bak every time and ignored a failed rename, so a second unusable file replaced the first backup, and when the rename failed (a directory at .bak is enough) the next save replaced the unread file. Runtime on sandboxed builds (hse keys against a scratch HOME, and a sandboxed hse serve for the console's pool routes): 0 of 10 checks before, 10 of 10 after (two unusable files in turn, a directory at .bak, every backup name taken, and the console's add, rotate and revoke over a pool that cannot be saved); with one backup name freed by hand, the next hse keys command moved the file there and a key added then persisted across processes. An independent review of the first draft found the free-name check could race another process (now create_new) and an ID collision with REQ-KEYPOOL-002 (now 003). Mutations: 11 of 11 caught, each applied alone: K1-K8 by the key_pool unit tests, K9-K11 (the console handlers answering 200 over a pool that cannot be saved) by the runtime check alone. The write side gained save_pool_to(pool, path), the counterpart of load_pool_from(path) it lacked.",
       "fresh_worktree": "Passed. The gate (scripts/gate.sh --quick) passed in a fresh worktree of the committed tree (doc coverage 998, ceiling 1001). The full suite ran twice with identical results: 8848 tests, 8821 passed, 27 ignored, 0 failed; against the merge's verified run, the only difference is the 4 new util::key_pool tests. Doctests: 88 passed, 3 ignored, twice."
+    },
+    {
+      "contract": "A settings.json that exists and cannot be read or parsed stops every hse command that reads a switch with the file and the fix, is never written over, and a toggle write keeps switches set in the file since the process loaded it (REQ-SETTINGS-001)",
+      "category": "DEFECT",
+      "evidence": "Found: util::settings read the file with .ok()…unwrap_or_default(), so a trailing comma read as no overrides, turning auto-update, the map-tile fetch and the live radar back on without a word, and the next hse config replaced the file with the one switch it set; hse serve's toggle write also wrote out its stale copy, undoing hse config run meanwhile. Runtime on sandboxed builds (hse config, hse scan, build-sha against a scratch HOME; a copied binary's hse serve for the toggle PUT, the update trigger and a restart): 3 of 19 checks before (the three controls), 19 of 19 after: hse config refuses and names the file and the fix, the file keeps its bytes, the self-update never runs on it, hse scan stops, build-sha still answers, the console's toggle is a 409 with the refused switch not in effect, the update is refused naming the file, a repaired file keeps a switch set meanwhile across a restart, and hse serve does not start on a broken file. Each build read the other's settings writes, every switch kept. Two independent reviews: the first found build-sha refused, the cache changed before a refused write, a lazily filled cache that read a broken file as defaults, missing field docs and a binary test that did not prove the order; the second found a rustfmt failure, a load/write race, a stale update timer and a CHANGELOG line that said installs were unaffected. All fixed, and the nits but one (the guard runs once, before the install). Mutations: 20 of 20 caught, each applied alone; S14 (the apply_update guard removed) by the runtime check alone, from a copied binary outside any source tree.",
+      "fresh_worktree": "Passed. The gate (scripts/gate.sh --quick) passed in a fresh worktree of the committed tree (doc coverage 998, ceiling 1001). The full suite ran twice with identical results: 8855 tests, 8828 passed, 27 ignored, 0 failed; against REQ-KEYPOOL-003's verified run, the only difference is the 7 new settings tests. Doctests: 88 passed, 3 ignored, twice."
     }
   ],
   "rejected": [
@@ -90,9 +96,13 @@
     {
       "description": "Repository tooling is shell: scripts/gate.sh, scripts/wasm_ui_drift_check.sh, scripts/doc_coverage.sh and others (3271 lines under scripts/). Porting to a cargo xtask is larger than one change.",
       "evidence": "Language rule: tooling in Rust (build.rs, xtask or a bin target). Cluster \"scripts [1]\" signals nonrust=3271 lines."
+    },
+    {
+      "description": "settings.json has no lock across processes: hse config and a console toggle at the same instant can still lose one change, and a running hse serve sees a switch set by hse config only at its next toggle write or update check (REQ-SETTINGS-001 residual).",
+      "evidence": "By design of REQ-SETTINGS-001's fix: set_bool re-reads the file under an in-process writer lock only; recorded in the ledger's What remains."
     }
   ],
-  "cycle": 6,
+  "cycle": 7,
   "competitors": [
     {
       "name": "SpiderFoot 4.0",

@@ -4,6 +4,7 @@
 //!     targets at the boundary, so an "example anything" can never be dispatched.
 //!   - `-o json` output discipline: stdout must be a single JSON document, with
 //!     all human-readable progress/summary on stderr, so `| jq` works.
+//!   - a settings file that does not parse stops `hse` and is kept.
 
 mod common;
 
@@ -234,6 +235,109 @@ fn import_json_stdout_is_pure_json_summary_on_stderr() {
         "summary must be on stderr only; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REQ-SETTINGS-001: a settings file that does not parse stops `hse` with the
+/// reason, before the self-update reads a switch, and is left as it is. It was
+/// read as no overrides, so one trailing comma turned auto-update, the
+/// map-tile fetch and the live radar back on without a word, and the next
+/// `hse config` replaced the file. The two commands install.sh runs that read
+/// no switch, `hse build-sha` and `hse provision --env-only`, still work.
+#[test]
+fn a_settings_file_that_does_not_parse_stops_hse_and_is_kept() {
+    let dir = common::tmp_dir("settings-broken");
+    std::fs::create_dir_all(dir.join(".huntsman")).expect("data dir");
+    let path = dir.join(".huntsman").join("settings.json");
+    let stamp = dir.join(".cache").join("hse-autoupdate.stamp");
+    let _ = std::fs::remove_dir_all(dir.join(".cache"));
+    // Run a copy of the binary from the scratch dir, not the one in the build
+    // tree: the self-update this test proves never ran would otherwise find
+    // that source tree, and a regression could start a real install from it.
+    let bin = dir.join("hse");
+    if std::fs::hard_link(BIN, &bin).is_err() {
+        std::fs::copy(BIN, &bin).expect("copy hse");
+    }
+    let run_in = |home: &std::path::Path, args: &[&str]| {
+        Command::new(&bin)
+            .args(args)
+            .env("RUST_LOG", "off")
+            .env("HOME", home)
+            .env_remove("HUNTSMAN_INSTALL_DIR")
+            .output()
+            .expect("spawn hse")
+    };
+    let hse = |args: &[&str]| run_in(&dir, args);
+
+    let broken =
+        r#"{"feature.auto_update":false,"feature.map_tiles":false,"feature.live_radar":false,}"#;
+    std::fs::write(&path, broken).expect("settings");
+    for args in [&["config"][..], &["config", "feature.regional", "off"][..]] {
+        let out = hse(args);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?} must refuse: {stdout}");
+        assert!(
+            stderr.contains("settings.json") && stderr.contains("move it aside"),
+            "{args:?}: the file and the fix: {stderr}"
+        );
+        assert!(
+            !stdout.contains("● on"),
+            "{args:?}: nothing reset is shown: {stdout}"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&path).expect("kept"), broken);
+    // Stopped before the self-update, which reads `feature.auto_update` and
+    // stamps its check: read as no overrides, the file turned it back on.
+    assert!(
+        !stamp.exists(),
+        "the self-update ran on a settings file that does not parse"
+    );
+
+    let fresh = common::tmp_dir("settings-none");
+    let (with_broken, without) = (hse(&["build-sha"]), run_in(&fresh, &["build-sha"]));
+    assert_eq!(
+        (with_broken.status.code(), &with_broken.stdout),
+        (without.status.code(), &without.stdout),
+        "build-sha reads no switch: {}",
+        String::from_utf8_lossy(&with_broken.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&fresh);
+    let out = hse(&["provision", "--env-only", "--dry-run"]);
+    assert!(
+        out.status.success(),
+        "provision --env-only reads no switch: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Repaired, the same switches are read and shown off.
+    std::fs::write(&path, broken.replace(",}", "}")).expect("repaired");
+    let out = hse(&["config"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for key in [
+        "feature.auto_update",
+        "feature.map_tiles",
+        "feature.live_radar",
+    ] {
+        assert!(
+            stdout
+                .lines()
+                .any(|l| l.contains(key) && l.contains("○ off")),
+            "{key} reads off: {stdout}"
+        );
+    }
+    // The control for the stamp check above: once the file parses, the same
+    // command reaches the self-update, which stamps its check (update notices
+    // are still on).
+    assert!(
+        stamp.exists(),
+        "the self-update check did not run: {stdout}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

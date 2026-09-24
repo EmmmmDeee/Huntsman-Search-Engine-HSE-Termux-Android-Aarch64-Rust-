@@ -25722,3 +25722,204 @@ It exits 1, and the file keeps its bytes. With one backup name freed by hand
 (`.bak.7`), the next `hse keys list` moved the file there, bytes intact, and
 started from an empty pool; `hse keys add` then saved, and a new process read
 the key back.
+
+---
+
+## REQ-SETTINGS-001 — a settings file that did not parse reset every switch the operator had set
+
+**Requirement.** The operator's switches in `~/.huntsman/settings.json` are
+never replaced by defaults behind their back. A file that exists and cannot be
+read or parsed stops `hse` with the reason, and is never written over.
+
+**Defect.** `util::settings::read_map` read the file like this:
+
+```rust
+std::fs::read_to_string(path).ok()
+    .and_then(|s| serde_json::from_str(&s).ok())
+    .unwrap_or_default()
+```
+
+Its doc said toggles are "never load-bearing state, so a parse error is
+non-fatal". But the file holds kill-switches, and several default to on. On the
+build before this fix, with a trailing comma in a file that turned three of
+them off:
+
+```text
+$ cat ~/.huntsman/settings.json
+{"feature.auto_update":false,"feature.map_tiles":false,"feature.live_radar":false,}
+$ hse config
+Capability toggles — set with `hse config <key> <on|off>`
+
+Features:
+  feature.live_radar         ● on
+  feature.map_tiles          ● on
+  …
+  feature.auto_update        ● on
+  …
+$ hse config feature.regional off        # exit 0
+feature.regional = ○ off
+$ cat ~/.huntsman/settings.json
+{
+  "feature.regional": false
+}
+```
+
+Nothing was logged at any level. So a typo re-enabled self-update (a `git
+pull` and rebuild), the outbound map-tile fetch and the live radar, and the
+next write replaced the file, losing the three switches for good.
+
+**Fix.**
+
+- `load_map` returns `Result<_, SettingsError>`: an empty map when there is no
+  file, and `SettingsError::Read` or `SettingsError::Parse`, carrying the path
+  and the cause, when there is one it cannot use. The message names the file and
+  the fix: repair it, or move it aside to start from the defaults. An empty file
+  and a leading byte-order mark hold no switch, so they read as no overrides.
+- `settings::load()` reads the file into the in-process cache, or returns that
+  error and leaves the cache as it was. `cli::run` calls it straight after the
+  command line is parsed, before anything reads a toggle (the self-update check
+  reads one). Every command, `hse serve` included, stops with the error, as git
+  does with a malformed config. `--help` and `--version` still work, and so do
+  the two commands install.sh runs that read no switch: `hse build-sha`, which
+  verifies a new binary, and `hse provision --env-only`, which merges the env
+  file.
+- `set_bool`, behind `hse config` and `PUT /api/v1/settings/toggles`, reads the
+  file again, sets the one switch, writes the file, and only then replaces the
+  cache. A file it cannot read is refused and kept, and nothing changes in the
+  process either. Reading the file rather than writing the cache out also keeps
+  a switch set in the file since the process loaded it: `hse config` run while
+  `hse serve` ran was undone by the server's next toggle write, the same silent
+  loss of a switch.
+- One writer lock covers the file read through the cache swap, for `load` and
+  `set_bool` alike, so a load never puts back a map a toggle write has just
+  replaced. Toggle reads take only the cache's read lock and never wait on the
+  file. The cache is a `OnceLock` that `load` fills directly, so each command
+  reads the file once.
+- The toggle PUT answers a settings file it cannot use with 409 and the error,
+  not 400: nothing was wrong with the request.
+- `apply_update`, behind `hse update` and the console's update button, loads
+  the settings file before anything is replaced, and logs the refusal: `hse
+  serve` restarts into the updated binary, which stops on a file that does not
+  parse, so an update over one would leave the server down.
+- `hse serve`'s update timer reads the file again before it decides
+  (`app::update::timer_update`), so `hse config feature.auto_update off`, run
+  since the server started, stops the update, and a file that no longer parses
+  sets the update status to the error instead.
+- `capability_probe`'s drift cache, a true cache, stays non-fatal. Its comment
+  no longer claims to mirror the settings reader.
+
+**Locks.**
+
+- `util::settings::tests`:
+  - `a_settings_file_that_does_not_parse_is_an_error_not_an_empty_map`: no file
+    is no overrides; a trailing comma is `SettingsError::Parse`, and the message
+    names the file and the fix; a name taken by a directory is
+    `SettingsError::Read`; a valid file reads back.
+  - `a_write_never_replaces_a_settings_file_that_does_not_parse`, against a
+    scratch cache and file: a write over a trailing comma is
+    `SettingsError::Parse`, the file keeps its bytes, and the cache holds the
+    same map; an unfilled cache stays unfilled. Repaired by hand with a switch
+    the cache never held, the write keeps that switch, and the cache becomes
+    the file. With no file, the one switch is written. A write that fails (its
+    directory is gone) is `SettingsError::Write` and leaves the cache as it
+    was.
+  - `load_reads_the_file_into_the_cache_or_leaves_it`: a file that does not
+    parse leaves a filled cache and an unfilled one as they were; a valid file
+    fills or replaces it; no file empties it.
+  - `an_empty_file_and_a_byte_order_mark_are_no_reason_to_stop`.
+- `app::update::tests::the_update_timer_decides_by_the_settings_file_as_it_is_now`:
+  with commits waiting, the timer loads the file before it reads the switch,
+  and decides by that read; a file that cannot be used refuses the update with
+  the reason; with nothing waiting, the file is not read.
+- `api::settings_handlers::tests`
+  `a_toggle_refused_over_an_unusable_settings_file_is_a_conflict`: a parse or
+  read refusal is a 409 whose error names the file and the fix; a failed write
+  is a 400.
+- `tests/cli_seed_validation.rs`
+  `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` runs a copy of
+  the binary from a scratch directory, outside any source tree. `hse config`
+  and `hse config feature.regional off` both exit non-zero, with the file and
+  the fix on stderr, and the file is unchanged. The self-update's check stamp
+  is never written, so the file is refused before the self-update reads a
+  switch. `hse build-sha` gives the same exit code and output as in a home with
+  no settings file, and `hse provision --env-only --dry-run` succeeds. Once the
+  file is repaired, `hse config` shows the three switches off, and the stamp is
+  written: the control that the stamp check can fail.
+
+**Not locked by a test: the `apply_update` guard.** A test that got past the
+guard, on a regression, would run a real `install.sh` from the source tree the
+test binary is built in. It is checked at runtime instead, from a copy of the
+binary outside any source tree, where no install can start (below).
+
+**What remains.**
+
+- There is no lock across processes: `hse config` and a console toggle at the
+  same instant can still lose one change, and a running server sees a switch
+  set by `hse config` only at its next toggle write or update check.
+- The guard runs once, before the install. A file broken during a long source
+  build still meets the restart.
+- install.sh stops a running `hse-bg` to restart it on the new build. Over a
+  settings file that does not parse, the new server refuses to start, and
+  `hse-bg start` says so ("hse serve died at startup", with the reason in
+  `~/.cache/hse-bg.log`), until the file is repaired.
+
+### Mutations
+
+20 deliberate breakages, each applied alone to the finished change and run against the tests that own the behaviour: the unit and binary tests for S1 to S13, and for S14, which removes the `apply_update` guard no test may reach, a binary built with the breakage and the runtime check below, run from a copy outside any source tree. All 20 are caught.
+
+| breakage | caught by |
+|---|---|
+| S1 no startup load | `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` |
+| S1b the load runs after the self-update | `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` |
+| S1c build-sha is refused too | `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` |
+| S1d provision --env-only is refused too | `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` |
+| S2 a file that does not parse is no overrides again | `a_settings_file_that_does_not_parse_is_an_error_not_an_empty_map`, `an_empty_file_and_a_byte_order_mark_are_no_reason_to_stop`, `a_write_never_replaces_a_settings_file_that_does_not_parse`, `load_reads_the_file_into_the_cache_or_leaves_it` |
+| S2b the same, seen by the binary | `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` |
+| S3 a write replaces a file it cannot read | `a_write_never_replaces_a_settings_file_that_does_not_parse` |
+| S3b a write writes the cache out, not the file | `a_write_never_replaces_a_settings_file_that_does_not_parse` |
+| S3c the cache changes before the write | `a_write_never_replaces_a_settings_file_that_does_not_parse` |
+| S3d a refused write is in effect anyway | `a_write_never_replaces_a_settings_file_that_does_not_parse` |
+| S4 an unreadable file is a fresh start | `a_settings_file_that_does_not_parse_is_an_error_not_an_empty_map` |
+| S5 the message drops the fix | `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` |
+| S6 a load that fails empties the cache | `load_reads_the_file_into_the_cache_or_leaves_it` |
+| S7 a load does not fill the cache | `load_reads_the_file_into_the_cache_or_leaves_it` |
+| S8 the refusal is a 400 again | `a_toggle_refused_over_an_unusable_settings_file_is_a_conflict` |
+| S10 an empty file stops hse | `an_empty_file_and_a_byte_order_mark_are_no_reason_to_stop` |
+| S11 a byte-order mark stops hse | `an_empty_file_and_a_byte_order_mark_are_no_reason_to_stop` |
+| S12 the timer decides on the stale cache | `the_update_timer_decides_by_the_settings_file_as_it_is_now` |
+| S13 the timer reads the file with nothing to install | `the_update_timer_decides_by_the_settings_file_as_it_is_now` |
+| S14 an update starts over a settings file that does not parse | the runtime check alone (below): the console's update is refused, naming the file |
+
+### Runtime
+
+Run against a scratch `HOME` whose `settings.json` turns off auto-update,
+update notices and the map-tile fetch, with the build before this fix (the
+merged base) and this one. The server checks use a copy of the binary outside
+any source tree, so an update it is asked for can find nothing to install.
+
+| check | before | after |
+|---|---|---|
+| a trailing comma: `hse config` stops (non-zero) | fail (exit 0) | pass |
+| the error names the file and the fix | fail | pass |
+| no switch is shown reset to on | fail | pass |
+| `hse config feature.regional off` is refused | fail (exit 0) | pass |
+| the file keeps its bytes | fail (replaced) | pass |
+| the self-update never ran on it (no check stamp) | fail (stamp written) | pass |
+| `hse scan` does not run on reset switches | fail (exit 0) | pass |
+| control: `hse build-sha` answers as it does with no settings file | pass | pass |
+| control: repaired, the three switches read off | pass | pass |
+| control: `hse serve` starts on a file that parses | pass | pass |
+| `PUT /api/v1/settings/toggles` over a broken file: 409 | fail (200) | pass |
+| the 409 names the file and the fix | fail | pass |
+| the broken file keeps its bytes | fail | pass |
+| the refused switch is not in effect | fail | pass |
+| the console's update is refused before it starts, naming the file | fail ("No local source found") | pass |
+| repaired, a toggle write keeps a switch set in the file meanwhile | fail | pass |
+| and the server serves what it wrote | fail | pass |
+| after a restart, both switches read on | fail | pass |
+| `hse serve` does not start on a file that does not parse | fail (starts) | pass |
+| **total** | **3 of 19** | **19 of 19** |
+
+Across versions, on one settings file: this build's `hse config` write was
+read back by the build before it, and that build's write by this one, every
+switch kept both ways. The file format did not change.

@@ -258,11 +258,36 @@ state file now also carries `competitors`, `capability_gaps`, `clusters` and
   difference from the merge's verified run is the 4 new key-pool tests.
   Doctests: 88 passed, 3 ignored, twice.
 
+### Change 7: [DEFECT] A settings.json that does not parse stops hse with the reason and is never replaced (REQ-SETTINGS-001)
+
+- **What.** `util::settings::load_map` returns `SettingsError::{Read,
+  Parse}`; `cli::run` loads the file before anything reads a toggle, and
+  every command but `build-sha` and `provision --env-only` stops on a file
+  it cannot use. `set_bool` reads the file again under one writer lock,
+  writes, then swaps the cache. The toggle PUT answers a refusal with 409;
+  `apply_update` and the serve timer (`timer_update`) read the file before
+  they act.
+- **Why.** A trailing comma read as no overrides, turning three
+  kill-switches back on silently, and the next write replaced the file.
+- **Review.** Two independent reviews; every finding fixed but one nit,
+  recorded with the cross-process residual.
+- **Evidence.**
+  - Runtime on sandboxed builds: 3 of 19 checks before (the controls), 19
+    of 19 after. Each build read the other's settings writes.
+  - Mutations: 20 of 20 caught, the `apply_update` guard's by the runtime
+    check alone.
+- **Fresh worktree.** Passed. The gate passed. The full suite ran twice with
+  identical results: 8855 tests, 8828 passed, 27 ignored, 0 failed; the only
+  difference from the key-pool run is the 7 new settings tests. Doctests: 88
+  passed, 3 ignored, twice.
+
 ## Next
 
-- **REQ-SETTINGS-001.** A `settings.json` that does not parse reset every
-  switch; drafted and reviewed, applied and verified on its own next.
-- **Then**, drafted and reviewed the same way: REQ-INGEST-001 (an unread
-  image's file path came back as findings) and REQ-CLI-HINTS-001 (the hint
-  after a stored scan names `hse list`, which does not exist), re-ported
-  onto the merged base.
+- **REQ-INGEST-001.** `hse ingest` mined the "OCR unavailable for <path>"
+  stand-in for an image it could not read, so the file's path came back as
+  findings. Drafted and reviewed; applied on the settings change (only the
+  test file's doc list and insertion points needed joining) and verified on
+  its own next.
+- **Then** REQ-CLI-HINTS-001 (the hint after a stored scan names `hse list`,
+  which does not exist), re-ported onto the merged base and reviewed a second
+  time; the review's fixes are in.

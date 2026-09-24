@@ -1,5 +1,166 @@
 use super::*;
 
+/// REQ-SETTINGS-001: a settings file that exists and does not parse is an
+/// error that names the file, never an empty map. Read as empty, one trailing
+/// comma turned every switch the operator had turned off back on.
+#[test]
+fn a_settings_file_that_does_not_parse_is_an_error_not_an_empty_map() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    assert!(
+        load_map(&path).expect("no file is no overrides").is_empty(),
+        "a missing file is a fresh start"
+    );
+
+    std::fs::write(
+        &path,
+        r#"{"feature.auto_update":false,"feature.map_tiles":false,}"#,
+    )
+    .expect("write");
+    let err = load_map(&path).expect_err("a trailing comma is not a settings file");
+    assert!(matches!(err, SettingsError::Parse { .. }), "{err:?}");
+    let said = err.to_string();
+    assert!(
+        said.contains(&path.display().to_string()) && said.contains("move it aside"),
+        "{said}"
+    );
+
+    std::fs::write(&path, r#"{"feature.auto_update":false}"#).expect("write");
+    assert_eq!(
+        load_map(&path).expect("parses").get("feature.auto_update"),
+        Some(&false)
+    );
+
+    // A file that is there and cannot be read is an error too, not a fresh
+    // start: here the name is taken by a directory.
+    let taken = dir.path().join("taken.json");
+    std::fs::create_dir(&taken).expect("dir");
+    assert!(
+        matches!(load_map(&taken), Err(SettingsError::Read { .. })),
+        "an unreadable settings file is not an empty one"
+    );
+}
+
+/// A scratch cache holding `map`, as [`set_bool_in`] and [`load_into`] take.
+fn cache_of(map: Map) -> OnceLock<RwLock<Map>> {
+    OnceLock::from(RwLock::new(map))
+}
+
+/// What a scratch cache holds; `None` when nothing has filled it.
+fn held(cache: &OnceLock<RwLock<Map>>) -> Option<Map> {
+    cache.get().map(|lock| lock.read().expect("lock").clone())
+}
+
+/// REQ-SETTINGS-001: a write never replaces a settings file it cannot read,
+/// and a refused write changes nothing in this process either. The next
+/// `hse config` used to replace the file with the one switch it set, and
+/// `hse serve` put the refused switch in effect while saying it had failed.
+#[test]
+fn a_write_never_replaces_a_settings_file_that_does_not_parse() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let broken = r#"{"feature.auto_update":false,"feature.map_tiles":false,}"#;
+    std::fs::write(&path, broken).expect("write");
+    let before = Map::from([("feature.regional".to_string(), false)]);
+    let cache = cache_of(before.clone());
+
+    let err = set_bool_in(&cache, &path, "feature.regional", true)
+        .expect_err("must not replace the operator's file");
+    assert!(matches!(err, SettingsError::Parse { .. }), "{err:?}");
+    assert!(err.to_string().contains("cannot be used"), "{err}");
+    assert_eq!(std::fs::read_to_string(&path).expect("still there"), broken);
+    assert_eq!(held(&cache), Some(before), "a refused write is not in effect");
+
+    // Nothing filled yet: a refused write leaves it so.
+    let empty = OnceLock::new();
+    assert!(set_bool_in(&empty, &path, "feature.regional", true).is_err());
+    assert_eq!(held(&empty), None);
+
+    // Repaired by hand with a switch this process never saw: a write keeps
+    // it, and the cache becomes what was written.
+    std::fs::write(&path, r#"{"feature.map_tiles":false}"#).expect("repaired");
+    set_bool_in(&cache, &path, "feature.regional", true).expect("the file parses");
+    let written = load_map(&path).expect("parses");
+    assert_eq!(
+        written,
+        Map::from([
+            ("feature.map_tiles".to_string(), false),
+            ("feature.regional".to_string(), true),
+        ])
+    );
+    assert_eq!(held(&cache), Some(written.clone()));
+    set_bool_in(&empty, &path, "feature.regional", true).expect("parses");
+    assert_eq!(held(&empty), Some(written), "a first write fills the cache");
+
+    // No file is a fresh start: written with the one switch.
+    std::fs::remove_file(&path).expect("remove");
+    set_bool_in(&cache, &path, "feature.recall", true).expect("no file: written");
+    assert_eq!(
+        load_map(&path).expect("parses"),
+        Map::from([("feature.recall".to_string(), true)])
+    );
+
+    // A write that fails changes nothing in this process either: here the
+    // file's directory is gone, so there is no file to keep and nowhere to
+    // write one.
+    let before = held(&cache);
+    let nowhere = dir.path().join("gone").join("settings.json");
+    let err = set_bool_in(&cache, &nowhere, "feature.regional", false)
+        .expect_err("no directory to write in");
+    assert!(matches!(err, SettingsError::Write { .. }), "{err:?}");
+    assert_eq!(held(&cache), before);
+}
+
+/// REQ-SETTINGS-001: loading puts the file as it is now into the cache, and
+/// a file that cannot be used leaves the cache as it was: holding its map,
+/// or empty if nothing filled it.
+#[test]
+fn load_reads_the_file_into_the_cache_or_leaves_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let before = Map::from([("feature.auto_update".to_string(), true)]);
+    let cache = cache_of(before.clone());
+    let empty = OnceLock::new();
+
+    std::fs::write(&path, r#"{"feature.auto_update":false,}"#).expect("write");
+    let err = load_into(&cache, &path).expect_err("does not parse");
+    assert!(matches!(err, SettingsError::Parse { .. }), "{err:?}");
+    assert_eq!(held(&cache), Some(before), "a file that cannot be used changes nothing");
+    assert!(load_into(&empty, &path).is_err());
+    assert_eq!(held(&empty), None);
+
+    let valid = Map::from([("feature.auto_update".to_string(), false)]);
+    std::fs::write(&path, r#"{"feature.auto_update":false}"#).expect("write");
+    load_into(&cache, &path).expect("parses");
+    assert_eq!(held(&cache), Some(valid.clone()));
+    load_into(&empty, &path).expect("parses");
+    assert_eq!(held(&empty), Some(valid));
+
+    std::fs::remove_file(&path).expect("remove");
+    load_into(&cache, &path).expect("no file is no overrides");
+    assert_eq!(held(&cache), Some(Map::new()));
+}
+
+/// An empty settings file, or one an editor began with a byte-order mark,
+/// holds no switch the operator could lose, so neither stops `hse`.
+#[test]
+fn an_empty_file_and_a_byte_order_mark_are_no_reason_to_stop() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    for empty in ["", "  \n", "\u{feff}", "\u{feff}\n"] {
+        std::fs::write(&path, empty).expect("write");
+        assert_eq!(load_map(&path).expect("no switches"), Map::new(), "{empty:?}");
+    }
+    std::fs::write(&path, "\u{feff}{\"feature.recall\":true}").expect("write");
+    assert_eq!(
+        load_map(&path).expect("parses"),
+        Map::from([("feature.recall".to_string(), true)])
+    );
+    // A mark before a broken file is still a broken file.
+    std::fs::write(&path, "\u{feff}{\"feature.recall\":true,}").expect("write");
+    assert!(matches!(load_map(&path), Err(SettingsError::Parse { .. })));
+}
+
 #[test]
 fn is_feature_key_accepts_registered_and_rejects_others() {
     assert!(is_feature_key("feature.regional"));
@@ -103,7 +264,7 @@ fn set_bool_persists_and_get_bool_reads_it_back() {
     );
     // Read the file back independently of the CACHE static, proving the
     // write landed on disk and isn't just an in-memory mutation.
-    let on_disk = read_map(&settings_path());
+    let on_disk = load_map(&settings_path()).expect("the settings file parses");
     assert_eq!(
         on_disk.get(key),
         Some(&true),
