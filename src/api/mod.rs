@@ -283,7 +283,7 @@ fn test_state_from_parts(
         Arc::clone(&store),
         bus.clone(),
     ));
-    // ONE in-flight registry, shared by `spawn_scan` and the live loop.
+    // ONE in-flight registry, shared by `queue_scan` and the live loop.
     let cancellations = new_cancel_registry();
     let live = crate::core::live::LiveScanner::new(
         Arc::clone(&engine),

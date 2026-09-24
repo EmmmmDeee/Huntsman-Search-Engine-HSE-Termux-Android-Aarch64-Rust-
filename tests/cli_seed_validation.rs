@@ -4,6 +4,10 @@
 //!     targets at the boundary, so an "example anything" can never be dispatched.
 //!   - `-o json` output discipline: stdout must be a single JSON document, with
 //!     all human-readable progress/summary on stderr, so `| jq` works.
+//!   - a settings file that does not parse stops `hse` and is kept.
+//!   - an image `hse ingest` cannot read fails with the reason, and its file
+//!     path is never mined for findings.
+//!   - the hint printed after a scan is stored is a command that reads it back.
 
 mod common;
 
@@ -28,6 +32,104 @@ fn run(args: &[&str]) -> (bool, String) {
         out.status.success(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+/// REQ-SCANNAME-001: `hse scan --name` stores the scan's name, cleaned as a
+/// request body's is, and a name that is not one line is refused before
+/// anything runs.
+#[test]
+fn scan_name_is_stored_cleaned_and_a_broken_one_refused() {
+    let dir = common::tmp_dir("scan-name");
+    let scan = |name: &str| {
+        Command::new(BIN)
+            .args([
+                "scan",
+                "-v",
+                "Jane Smith",
+                "-k",
+                "name",
+                "--modules",
+                "name_intel",
+                "--throttle",
+                "0",
+                "--name",
+                name,
+                "-o",
+                "json",
+            ])
+            .env("RUST_LOG", "off")
+            .env("HOME", &dir)
+            .output()
+            .expect("spawn hse scan")
+    };
+    let named = scan("  Q3\taudit ");
+    assert!(
+        named.status.success(),
+        "{}",
+        String::from_utf8_lossy(&named.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&named.stdout).expect("one JSON document on stdout");
+    assert_eq!(report["scan"]["options"]["name"], "Q3 audit", "{report}");
+
+    let broken = scan("two\nlines");
+    assert!(!broken.status.success(), "a two-line name must be refused");
+    let stderr = String::from_utf8_lossy(&broken.stderr);
+    assert!(
+        stderr.contains("--name: name contains control characters or a line break"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REQ-INGEST-001: `hse ingest` of an image with no OCR on the host exits
+/// non-zero, says why and how to fix it, and prints no findings. It used to
+/// exit 0 and print three, all read from the sentence "OCR unavailable for
+/// <path>": the email in the folder's name at 0.85, that email's domain, and
+/// the file name as a domain. With `--auto-scan` it stored them as a scan.
+/// With `--extract-geolocation` on an image with no EXIF, nothing is found
+/// either, so that fails the same way.
+///
+/// `PATH` is an empty directory, so the host has no `tesseract`, whatever the
+/// machine running the test has installed.
+#[test]
+fn ingest_of_an_image_it_cannot_read_says_why_and_finds_nothing() {
+    let dir = common::tmp_dir("ingest-ocr");
+    let no_tools = dir.join("empty-path");
+    let folder = dir.join("case-jane.doe@contoso-files.net");
+    std::fs::create_dir_all(&no_tools).expect("empty PATH dir");
+    std::fs::create_dir_all(&folder).expect("folder");
+    let image = folder.join("scan-of-id.png");
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\n").expect("image");
+    let image = image.to_str().expect("utf-8 temp path");
+
+    for extra in [
+        &[][..],
+        &["--auto-scan"][..],
+        &["--extract-geolocation"][..],
+    ] {
+        let out = Command::new(BIN)
+            .args(["ingest", "-f", image])
+            .args(extra)
+            .env("RUST_LOG", "off")
+            .env("HOME", &dir)
+            .env("PATH", &no_tools)
+            .output()
+            .expect("spawn hse ingest");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{extra:?}: must fail: {stdout}");
+        assert!(
+            stderr.contains("OCR not available: tesseract is not installed")
+                && stderr.contains("pkg install tesseract"),
+            "{extra:?}: the reason and the fix: {stderr}"
+        );
+        assert!(
+            !stdout.contains("contoso") && !stdout.contains("scan-of-id"),
+            "{extra:?}: the file's path is not a finding: {stdout}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -186,6 +288,255 @@ fn import_json_stdout_is_pure_json_summary_on_stderr() {
         "summary must be on stderr only; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REQ-SETTINGS-001: a settings file that does not parse stops `hse` with the
+/// reason, before the self-update reads a switch, and is left as it is. It was
+/// read as no overrides, so one trailing comma turned auto-update, the
+/// map-tile fetch and the live radar back on without a word, and the next
+/// `hse config` replaced the file. The two commands install.sh runs that read
+/// no switch, `hse build-sha` and `hse provision --env-only`, still work.
+#[test]
+fn a_settings_file_that_does_not_parse_stops_hse_and_is_kept() {
+    let dir = common::tmp_dir("settings-broken");
+    std::fs::create_dir_all(dir.join(".huntsman")).expect("data dir");
+    let path = dir.join(".huntsman").join("settings.json");
+    let stamp = dir.join(".cache").join("hse-autoupdate.stamp");
+    let _ = std::fs::remove_dir_all(dir.join(".cache"));
+    // Run a copy of the binary from the scratch dir, not the one in the build
+    // tree: the self-update this test proves never ran would otherwise find
+    // that source tree, and a regression could start a real install from it.
+    let bin = dir.join("hse");
+    if std::fs::hard_link(BIN, &bin).is_err() {
+        std::fs::copy(BIN, &bin).expect("copy hse");
+    }
+    let run_in = |home: &std::path::Path, args: &[&str]| {
+        Command::new(&bin)
+            .args(args)
+            .env("RUST_LOG", "off")
+            .env("HOME", home)
+            .env_remove("HUNTSMAN_INSTALL_DIR")
+            .output()
+            .expect("spawn hse")
+    };
+    let hse = |args: &[&str]| run_in(&dir, args);
+
+    let broken =
+        r#"{"feature.auto_update":false,"feature.map_tiles":false,"feature.live_radar":false,}"#;
+    std::fs::write(&path, broken).expect("settings");
+    for args in [&["config"][..], &["config", "feature.regional", "off"][..]] {
+        let out = hse(args);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?} must refuse: {stdout}");
+        assert!(
+            stderr.contains("settings.json") && stderr.contains("move it aside"),
+            "{args:?}: the file and the fix: {stderr}"
+        );
+        assert!(
+            !stdout.contains("● on"),
+            "{args:?}: nothing reset is shown: {stdout}"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&path).expect("kept"), broken);
+    // Stopped before the self-update, which reads `feature.auto_update` and
+    // stamps its check: read as no overrides, the file turned it back on.
+    assert!(
+        !stamp.exists(),
+        "the self-update ran on a settings file that does not parse"
+    );
+
+    let fresh = common::tmp_dir("settings-none");
+    let (with_broken, without) = (hse(&["build-sha"]), run_in(&fresh, &["build-sha"]));
+    assert_eq!(
+        (with_broken.status.code(), &with_broken.stdout),
+        (without.status.code(), &without.stdout),
+        "build-sha reads no switch: {}",
+        String::from_utf8_lossy(&with_broken.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&fresh);
+    let out = hse(&["provision", "--env-only", "--dry-run"]);
+    assert!(
+        out.status.success(),
+        "provision --env-only reads no switch: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Repaired, the same switches are read and shown off.
+    std::fs::write(&path, broken.replace(",}", "}")).expect("repaired");
+    let out = hse(&["config"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for key in [
+        "feature.auto_update",
+        "feature.map_tiles",
+        "feature.live_radar",
+    ] {
+        assert!(
+            stdout
+                .lines()
+                .any(|l| l.contains(key) && l.contains("○ off")),
+            "{key} reads off: {stdout}"
+        );
+    }
+    // The control for the stamp check above: once the file parses, the same
+    // command reaches the self-update, which stamps its check (update notices
+    // are still on).
+    assert!(
+        stamp.exists(),
+        "the self-update check did not run: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REQ-INGEST-001: when tesseract runs and refuses an image, its own reason
+/// reaches the operator, not just its exit code. A stand-in `tesseract` on
+/// `PATH` exits 1 with tesseract's usual complaint on stderr.
+#[cfg(unix)]
+#[test]
+fn ingest_reports_tesseracts_own_reason_for_refusing_an_image() {
+    use std::os::unix::fs::PermissionsExt;
+    // The stand-in's interpreter by absolute path: `/bin/sh` is not where it
+    // lives on every host (Termux), and the stand-in runs with a bare `PATH`.
+    let sh = std::env::var_os("PATH")
+        .and_then(|p| {
+            std::env::split_paths(&p)
+                .map(|d| d.join("sh"))
+                .find(|c| c.is_file())
+        })
+        .expect("a POSIX sh on PATH");
+    let dir = common::tmp_dir("ingest-ocr-refusal");
+    let tools = dir.join("tools");
+    std::fs::create_dir_all(&tools).expect("tools dir");
+    let fake = tools.join("tesseract");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!{}\necho 'Error in pixReadStream: Unknown format: no pix returned' >&2\nexit 1\n",
+            sh.display()
+        ),
+    )
+    .expect("stand-in tesseract");
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let image = dir.join("scan.png");
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\n").expect("image");
+
+    let out = Command::new(BIN)
+        .args(["ingest", "-f", image.to_str().expect("utf-8 temp path")])
+        .env("RUST_LOG", "off")
+        .env("HOME", &dir)
+        .env("PATH", &tools)
+        .output()
+        .expect("spawn hse ingest");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(
+            "tesseract exited with 1: Error in pixReadStream: Unknown format: no pix returned"
+        ),
+        "tesseract's own reason: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The scan id a summary says it stored, and the command it says views it,
+/// from a line of the form "scan <id> (N entities, ...) — view with `<command>`".
+fn stored_and_hint(said: &str) -> (String, String) {
+    const LEAD: &str = "view with `";
+    let at = said
+        .find(LEAD)
+        .unwrap_or_else(|| panic!("no hint in: {said}"));
+    let hint = said[at + LEAD.len()..]
+        .split('`')
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let stored = said[..at]
+        .rsplit("scan ")
+        .next()
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_default()
+        .to_string();
+    (stored, hint)
+}
+
+/// REQ-CLI-HINTS-001: each command that stores a scan without running one
+/// (`hse import`, `hse investigate --auto-scan`, `hse ingest --auto-scan`) ends
+/// with a hint, and the command the hint names runs and reads that scan back.
+/// All three named a list command `hse` does not have, which exited 2 as an
+/// unrecognized subcommand.
+#[test]
+fn every_stored_scan_hint_reads_that_scan_back() {
+    let dir = common::tmp_dir("stored-hint");
+    let dossier = dir.join("dossier.txt");
+    std::fs::write(
+        &dossier,
+        "Entry #1\n\u{2022} name: Isaac Frost\n\u{2022} email: isaac@frostcorp.io\n",
+    )
+    .expect("dossier");
+    let notes = dir.join("notes.txt");
+    std::fs::write(&notes, "Contact qa-hint@hse-hint-test.dev for the files.\n").expect("notes");
+    let dossier = dossier.to_str().expect("utf-8 temp path");
+    let notes = notes.to_str().expect("utf-8 temp path");
+    // Logging off: the hint must reach the operator whatever the log level.
+    let hse = |args: &[&str]| {
+        Command::new(BIN)
+            .args(args)
+            .env("RUST_LOG", "off")
+            .env("HOME", &dir)
+            .output()
+            .expect("spawn hse")
+    };
+
+    for args in [
+        vec!["import", dossier],
+        vec![
+            "investigate",
+            "what is linked to qa-hint@hse-hint-test.dev",
+            "--auto-scan",
+        ],
+        vec!["ingest", "-f", notes, "--auto-scan"],
+    ] {
+        let run = hse(&args);
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert!(run.status.success(), "{args:?}: {said}");
+        let (stored, hint) = stored_and_hint(&said);
+        let view_args: Vec<&str> = hint.split_whitespace().collect();
+        assert_eq!(view_args.first(), Some(&"hse"), "{args:?}: {hint}");
+        let view = hse(&view_args[1..]);
+        assert!(
+            view.status.success(),
+            "{args:?}: `{hint}` must run: {}",
+            String::from_utf8_lossy(&view.stderr)
+        );
+        // The full dossier: its header names the scan and counts what is in it.
+        let read_back = String::from_utf8_lossy(&view.stdout);
+        let field = |name: &str| {
+            read_back
+                .lines()
+                .find_map(|l| l.strip_prefix(name))
+                .map(|v| v.trim_start_matches([' ', ':']).trim().to_string())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            field("scan id"),
+            stored,
+            "{args:?}: `{hint}` reads the scan it stored: {read_back}"
+        );
+        assert!(
+            field("entities").parse::<usize>().is_ok_and(|n| n > 0),
+            "{args:?}: with its entities: {read_back}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

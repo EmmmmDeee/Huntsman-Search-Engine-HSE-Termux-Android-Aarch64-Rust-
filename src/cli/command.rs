@@ -260,6 +260,11 @@ pub enum Command {
         /// Sets depth/free-only/budgets; `--modules`/`--exclude`/`--format` still apply.
         #[arg(long)]
         profile: Option<String>,
+        /// A name for the scan (SpiderFoot's "Scan Name"). The web console
+        /// titles the scan by it, with the target beside it. One line of at
+        /// most 200 characters; a blank name is no name.
+        #[arg(long)]
+        name: Option<String>,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(
             short = 'f',
@@ -349,9 +354,9 @@ pub enum Command {
     /// General web search: run an everyday free-text query across every free
     /// search engine and print ranked results.
     ///
-    /// Unlike `hse search`, which treats its input as an OSINT target
-    /// (email / username / domain / …) and wraps it in `site:`/`intext:` dorks,
-    /// `query` searches the text verbatim — e.g.
+    /// Unlike a scan's search-engine module (`hse scan`), which treats its
+    /// input as an OSINT target (email / username / domain / …) and wraps it in
+    /// `site:`/`intext:` dorks, `query` searches the text verbatim — e.g.
     /// `hse query "buy panadeine forte online"` — and returns the raw web
     /// results, deduplicated across engines and ranked by how many independent
     /// engines surfaced each URL.
@@ -628,7 +633,10 @@ pub enum Command {
     /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, IPv4, IPv6, domain, URL, social handle, MD5/SHA hashes),
     /// classify by kind, assign confidence scores, and output as HSE-ready batch queries (JSONL/JSON/CSV/table).
     Ingest {
-        /// Input file path (image, PDF, CSV, JSON, JSONL, text).
+        /// Input file path (image, PDF, CSV, JSON, JSONL, text). An image's
+        /// text is read with tesseract. An image it cannot read fails the
+        /// command with the reason, unless image work that needs no text
+        /// (EXIF geolocation, reverse-search variants) was asked for too.
         #[arg(short, long, value_name = "PATH")]
         file: String,
         /// Output format: jsonl (default), json, csv, table, or hse
@@ -646,8 +654,9 @@ pub enum Command {
         #[arg(long, default_value = "0.30", value_parser = confidence_floor)]
         min_confidence: f64,
         /// Also persist the extracted entities as a completed, correlated scan
-        /// (offline — no module dispatch, no network), so they show in `hse
-        /// list` and every view/export. The output is still written as usual.
+        /// (offline — no module dispatch, no network), which every view/export
+        /// reads, e.g. `hse export -s <id> -f full`, with the id it prints.
+        /// The output is still written as usual.
         #[arg(long)]
         auto_scan: bool,
         /// Output file (default: stdout).
@@ -675,8 +684,8 @@ pub enum Command {
         #[arg(allow_hyphen_values = true)]
         text: Option<String>,
         /// Also persist the extracted entities as a completed, correlated scan
-        /// (offline — no module dispatch, no network), so they show in `hse
-        /// list` and every view/export.
+        /// (offline — no module dispatch, no network), which every view/export
+        /// reads, e.g. `hse export -s <id> -f full`, with the id it prints.
         #[arg(long)]
         auto_scan: bool,
         /// Minimum confidence threshold (0.0-1.0, default 0.30).
@@ -802,6 +811,9 @@ pub enum Command {
         /// Same as `scan --gate-speculative`.
         #[arg(long)]
         gate_speculative: bool,
+        /// Same as `scan --name`: every iteration's scan carries it.
+        #[arg(long)]
+        name: Option<String>,
         /// Radar mode: persist the keyed-module dispatch ledger across
         /// iterations so paid APIs are never re-queried on a seed an earlier
         /// sweep already covered — each sweep spends quota only on NEW seeds.
@@ -851,7 +863,8 @@ pub enum Command {
         /// Scan ID (or `latest` for the most-recent completed scan).
         #[arg(short, long)]
         scan_id: String,
-        /// Output format: json | csv | gexf | report | full | debug. Default `json`.
+        /// Output format: json | csv | gexf | report | full | debug | events.
+        /// Default `json`.
         #[arg(short, long, default_value = "json")]
         format: String,
         /// File path to write to. Omit for stdout.

@@ -56,7 +56,7 @@ pub(super) async fn cmd_serve(
     let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
         crate::app::runtime::build_runtime(1024)?;
     let http = build_client();
-    // ONE in-flight scan registry for the process: `spawn_scan` and the live
+    // ONE in-flight scan registry for the process: `queue_scan` and the live
     // loop both register in it, and every "is it in flight?" reader consults it.
     let cancellations = crate::api::new_cancel_registry();
     let live = LiveScanner::new(
@@ -233,9 +233,17 @@ pub(super) async fn cmd_serve(
                 // recent server-side check throttles the CLI path too (one device,
                 // one cadence) — and vice-versa.
                 crate::app::update::record_check_stamp(now_secs);
-                if behind.unwrap_or(0) > 0
-                    && crate::util::settings::get_bool("feature.auto_update", true)
-                {
+                let decision =
+                    crate::app::update::timer_update(behind, crate::util::settings::load, || {
+                        crate::util::settings::get_bool("feature.auto_update", true)
+                    });
+                if let crate::app::update::TimerUpdate::Refused(reason) = &decision {
+                    tracing::error!("{reason}");
+                    if let Ok(mut info) = update_info.lock() {
+                        info.phase = UpdatePhase::Error(reason.clone());
+                    }
+                }
+                if decision == crate::app::update::TimerUpdate::Apply {
                     if let Ok(mut info) = update_info.lock() {
                         info.phase = UpdatePhase::Applying;
                     }

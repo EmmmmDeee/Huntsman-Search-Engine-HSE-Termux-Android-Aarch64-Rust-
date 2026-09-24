@@ -1,4 +1,6 @@
-//! OCR via system tesseract or pure-Rust fallback.
+//! OCR via the system `tesseract` binary. There is no fallback: an image
+//! tesseract cannot read yields an error that says why, and the caller decides
+//! what, if anything, it can still do without the text.
 
 use super::{DocumentMetadata, DocumentParseError, DocumentResult, RawDocumentText};
 use crate::util::document_parse::DocumentFormat;
@@ -20,6 +22,7 @@ use tracing::{debug, warn};
 /// A zero timeout is treated as "no bound", so a caller that has not thought
 /// about it cannot accidentally make every OCR fail instantly.
 async fn run_bounded(mut cmd: Command, timeout_secs: u64) -> DocumentResult<Output> {
+    let program = cmd.as_std().get_program().to_os_string();
     cmd.kill_on_drop(true);
     let run = cmd.output();
     let output = if timeout_secs == 0 {
@@ -34,23 +37,59 @@ async fn run_bounded(mut cmd: Command, timeout_secs: u64) -> DocumentResult<Outp
         }
     };
     output.map_err(|e| {
-        // Only a genuinely absent binary is `OcrUnavailable` — that variant's
-        // message asserts "tesseract missing" and must stay true wherever it is
-        // shown. Permission denied, ENOMEM, a broken interpreter and the rest
-        // are real, actionable, and different from "not installed", so the
-        // underlying error is carried through instead of being flattened.
-        if e.kind() == std::io::ErrorKind::NotFound {
-            warn!("tesseract vanished between the probe and the spawn");
+        // Only a program that is nowhere to be found is `OcrUnavailable`: that
+        // variant's message says tesseract is not installed, and that must
+        // stay true wherever it is shown. One that is there and would not start
+        // is `OcrStart`, with the cause: no permission to run it, too few
+        // resources, or a missing script interpreter, which the kernel also
+        // reports as "not found". Telling that operator to install tesseract
+        // would be wrong.
+        if e.kind() == std::io::ErrorKind::NotFound && !on_path(&program) {
+            warn!("tesseract is not installed");
             DocumentParseError::OcrUnavailable
         } else {
-            warn!("tesseract execution failed: {}", e);
-            DocumentParseError::IoError(e)
+            warn!("tesseract could not be started: {e}");
+            DocumentParseError::OcrStart(e)
         }
     })
 }
 
-/// Attempt OCR on an image file via system `tesseract` binary.
-/// Falls back gracefully if tesseract is unavailable.
+/// Whether `program` names a file that exists: itself when it is a path, else
+/// a file of that name in a `PATH` directory. Pure Rust, so telling "not
+/// installed" from "installed and would not start" needs no `which`, which
+/// minimal systems do not ship.
+fn on_path(program: &std::ffi::OsStr) -> bool {
+    let named = Path::new(program);
+    if named.components().count() > 1 {
+        return named.is_file();
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|dirs| std::env::split_paths(&dirs).any(|dir| dir.join(program).is_file()))
+}
+
+/// How much of tesseract's stderr an [`DocumentParseError::OcrFailed`] keeps.
+const STDERR_TAIL_CHARS: usize = 300;
+
+/// The end of tesseract's stderr, where it says why it refused an image: on
+/// one line, and at most [`STDERR_TAIL_CHARS`] characters.
+fn stderr_tail(stderr: &[u8]) -> String {
+    let line = String::from_utf8_lossy(stderr)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let skip = line.chars().count().saturating_sub(STDERR_TAIL_CHARS);
+    line.chars().skip(skip).collect()
+}
+
+/// Attempt OCR on an image file via the system `tesseract` binary.
+///
+/// # Errors
+///
+/// [`DocumentParseError::OcrUnavailable`] when tesseract is not installed,
+/// [`DocumentParseError::OcrStart`] when it is and could not be started,
+/// [`DocumentParseError::OcrFailed`] when it ran and rejected the image (with
+/// the end of its stderr), and [`DocumentParseError::OcrTimeout`] when it
+/// overran `timeout_secs`.
 ///
 /// `timeout_secs` is enforced. It previously was not: the parameter was bound as
 /// `_timeout_secs` and discarded while the comment above the call claimed "run
@@ -69,12 +108,8 @@ pub async fn ocr_image<P: AsRef<Path>>(
     let path = image_path.as_ref();
     let path_str = path.to_string_lossy().to_string();
 
-    // Check if tesseract is available
-    if !is_tesseract_available().await {
-        warn!("tesseract not found in PATH; OCR disabled for {}", path_str);
-        return Err(DocumentParseError::OcrUnavailable);
-    }
-
+    // No `which` probe first: spawning tesseract is the probe, and the spawn
+    // error says whether it is missing (`run_bounded`).
     debug!("OCR via tesseract: {}", path_str);
 
     let mut cmd = Command::new("tesseract");
@@ -89,11 +124,14 @@ pub async fn ocr_image<P: AsRef<Path>>(
         // that as "tesseract missing" would send an operator to install a
         // package they already have.
         let code = output.status.code();
-        warn!(?code, "tesseract returned a failure exit status");
-        return Err(DocumentParseError::OcrFailed { code });
+        let stderr = stderr_tail(&output.stderr);
+        warn!(?code, %stderr, "tesseract returned a failure exit status");
+        return Err(DocumentParseError::OcrFailed { code, stderr });
     }
 
-    let text = String::from_utf8(output.stdout)?;
+    // Tesseract writes UTF-8; a stray invalid byte costs one character, not
+    // the page.
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
     let character_count = text.len();
 
     Ok(RawDocumentText {
@@ -109,31 +147,9 @@ pub async fn ocr_image<P: AsRef<Path>>(
     })
 }
 
-/// Check if tesseract is available in PATH.
-///
-/// Async for the same reason as the OCR run itself: this is a fork+exec, and
-/// running it inline on the async worker blocks it. It is also the probe that
-/// runs on *every* ingest, including the common case where tesseract is absent.
-async fn is_tesseract_available() -> bool {
-    Command::new("which")
-        .arg("tesseract")
-        .kill_on_drop(true)
-        .output()
-        .await
-        .is_ok_and(|o| o.status.success())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn tesseract_availability_check() {
-        // This test just verifies the availability check function runs
-        let available = is_tesseract_available().await;
-        // Don't assert on availability (environment-dependent)
-        println!("tesseract available: {available}");
-    }
 
     /// The timeout must actually bound the run, and must report a hang as a
     /// hang rather than as "tesseract is missing" — those are different facts
@@ -190,6 +206,46 @@ mod tests {
             "the failing exit status must reach the caller intact, so it can be \
              reported as OcrFailed rather than as a missing binary"
         );
+    }
+
+    /// A program that is there and will not start is `OcrStart`, never "not
+    /// installed": a script whose interpreter is missing (the kernel reports
+    /// that as "not found" too), and a file without permission to run.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_program_that_is_there_but_will_not_start_is_not_reported_as_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let no_interpreter = dir.path().join("no-interpreter");
+        std::fs::write(&no_interpreter, "#!/hse/no/such/interpreter\n").expect("script");
+        std::fs::set_permissions(&no_interpreter, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+        let not_executable = dir.path().join("not-executable");
+        std::fs::write(&not_executable, "#!/bin/sh\n").expect("script");
+        std::fs::set_permissions(&not_executable, std::fs::Permissions::from_mode(0o644))
+            .expect("chmod");
+        for program in [&no_interpreter, &not_executable] {
+            let err = run_bounded(Command::new(program), 30)
+                .await
+                .expect_err("must not start");
+            assert!(
+                matches!(err, DocumentParseError::OcrStart(_)),
+                "{program:?}: {err:?}"
+            );
+        }
+    }
+
+    /// Tesseract's reason reaches the error, on one line and bounded.
+    #[test]
+    fn a_refusal_keeps_the_end_of_stderr_on_one_line() {
+        assert_eq!(
+            stderr_tail(b"Error in pixRead\n  image file could not be read\n"),
+            "Error in pixRead image file could not be read"
+        );
+        let long = "x".repeat(STDERR_TAIL_CHARS + 50) + " END";
+        let tail = stderr_tail(long.as_bytes());
+        assert_eq!(tail.chars().count(), STDERR_TAIL_CHARS);
+        assert!(tail.ends_with(" END"), "the end is what is kept: {tail}");
     }
 
     /// Zero means "no bound" — a caller that never considered the timeout must

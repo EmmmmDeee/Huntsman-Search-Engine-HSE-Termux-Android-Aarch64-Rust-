@@ -19,7 +19,7 @@
 //!   to run to completion before the outer loop's next check (issue #23).
 //! - Every iteration is registered, under its SCAN id, in the process-wide
 //!   in-flight registry ([`CancelRegistry`]) that `AppState.cancellations`
-//!   and `spawn_scan` share, for exactly as long as the engine runs it — so a
+//!   and `queue_scan` share, for exactly as long as the engine runs it — so a
 //!   live-driven scan is cancellable by scan id, refused deletion mid-run,
 //!   counted by the shutdown drain, and never reported `interrupted` by the
 //!   process running it (REQ-SCANSTATUS-001).
@@ -447,7 +447,7 @@ async fn session_loop(
         let iter_cancel = CancelHandle::new();
 
         // Mint this iteration's scan id straight into the process-wide
-        // in-flight registry, under its OWN handle, exactly as `spawn_scan`
+        // in-flight registry, under its OWN handle, exactly as `queue_scan`
         // registers a one-shot scan, and hold the entry until the engine has
         // performed the scan's final status write (`run_*_panic_safe` returns
         // only after it). Cancel-by-scan-id, the delete-while-running refusal,

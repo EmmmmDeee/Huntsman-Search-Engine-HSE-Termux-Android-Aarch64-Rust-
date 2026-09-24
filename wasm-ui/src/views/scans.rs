@@ -1,11 +1,13 @@
 //! Ports `src/web/js/views/scans.js`'s pure, DOM-free rendering helpers:
 //! `budgetBar`/`apiBudgetsPanel` (the dashboard's "API Budgets" panel) and
 //! `renderScansTable` (the per-row scan-list table, reused by both
-//! `scans.js`'s own `#/scans` page and `dash.js`'s "Recent Scans" panel).
-//! `renderScans` itself (the `#/scans` page's own live filter-input wiring)
-//! and `scanStats` (a plain tally with no HTML output at all — nothing here
-//! for a WASM port to buy) stay in JS, like every other view's interactive
-//! shell.
+//! `scans.js`'s own `#/scans` page and `dash.js`'s "Recent Scans" panel),
+//! plus the two per-scan rules other views share through the same row type:
+//! `scanLabel` (what a scan is called, [`crate::scan_label`]) and
+//! `scanMatches` (the scan list's search box). `renderScans` itself (the
+//! `#/scans` page's own live filter-input wiring) and `scanStats` (a plain
+//! tally with no HTML output at all — nothing here for a WASM port to buy)
+//! stay in JS, like every other view's interactive shell.
 //!
 //! `Budget`/`ScanTarget`/`ScanRow` are view-local response structs, not
 //! `hse_core` domain types: the real `crate::util::budget::BudgetSnapshot`
@@ -13,10 +15,12 @@
 //! binary crate, which this crate deliberately does not depend on (see this
 //! crate's own `Cargo.toml`).
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-use crate::html::{escape_html, fmt_date, kind_pill, status_pill};
+use crate::html::{escape_html, fmt_date, kind_pill};
+use crate::scan_label::{ScanLabel, scan_label};
+use crate::scan_state::{is_active, pill_words, scan_state, status_pill};
 use crate::to_js_error;
 
 /// One provider's session quota snapshot — `src/api/handlers/mod.rs`'s
@@ -185,6 +189,11 @@ struct ScanRow {
     id: String,
     target: Option<ScanTarget>,
     status: Option<String>,
+    /// Derived by the API on every read (REQ-SCANSTATUS-001): a `running` row
+    /// no live process holds. Absent from an older server, where it reads as
+    /// not interrupted.
+    #[serde(default)]
+    interrupted: bool,
     started_at: Option<u64>,
     finished_at: Option<u64>,
     entity_count: Option<u64>,
@@ -192,6 +201,82 @@ struct ScanRow {
     /// with a finalise shortfall, so it is partial.
     #[serde(default)]
     finalise_incomplete: bool,
+    /// A scan's `options`; a live session sends the same object as
+    /// `scan_options`, so the Live page labels its sessions by the same rule.
+    #[serde(alias = "scan_options")]
+    options: Option<RowOptions>,
+}
+
+/// The one option a row reads: the scan's name (REQ-SCANNAME-001).
+#[derive(Deserialize)]
+struct RowOptions {
+    name: Option<String>,
+}
+
+impl ScanRow {
+    fn label(&self) -> ScanLabel<'_> {
+        scan_label(
+            self.options.as_ref().and_then(|o| o.name.as_deref()),
+            self.target.as_ref().and_then(|t| t.value.as_deref()),
+            &self.id,
+        )
+    }
+}
+
+/// [`ScanLabel`] as the JS views receive it from `scanLabel(scan)`.
+#[derive(Serialize)]
+struct LabelOut {
+    title: String,
+    /// Absent when the target is the title, or there is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+}
+
+/// `scanLabel(scan)`: `{ title, target? }` for a scan or a live session, by
+/// the rule in [`crate::scan_label`]. The views escape both.
+#[wasm_bindgen(js_name = scanLabel)]
+pub fn scan_label_js(scan_js: JsValue) -> Result<JsValue, JsValue> {
+    let row: ScanRow = serde_wasm_bindgen::from_value(scan_js).map_err(to_js_error)?;
+    let label = row.label();
+    let out = LabelOut {
+        title: label.title.to_string(),
+        target: label.target.map(str::to_string),
+    };
+    serde_wasm_bindgen::to_value(&out).map_err(to_js_error)
+}
+
+/// Whether a row matches the scan list's search box: the query, trimmed and
+/// case-folded, appears in the scan's name, target, target kind, the words
+/// its pill shows (`interrupted` and `partial` included) or id. A partial
+/// row also matches the state it reached, `complete` or `aborted`, short of
+/// some results (REQ-SCANSTATUS-032); an interrupted one does not match
+/// `running`, because it is not. A blank query matches every row.
+fn scan_matches(row: &ScanRow, query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    let target = row.target.as_ref();
+    let state = scan_state(row.status.as_deref(), row.interrupted);
+    let shown = pill_words(state, row.finalise_incomplete);
+    [
+        row.options.as_ref().and_then(|o| o.name.as_deref()),
+        target.and_then(|t| t.value.as_deref()),
+        target.and_then(|t| t.kind.as_deref()),
+        Some(shown),
+        (shown != state).then_some(state),
+        Some(row.id.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|field| field.to_lowercase().contains(&q))
+}
+
+/// `scanMatches(scan, query)`: [`scan_matches`] for `scans.js`'s search box.
+#[wasm_bindgen(js_name = scanMatches)]
+pub fn scan_matches_js(scan_js: JsValue, query: &str) -> Result<bool, JsValue> {
+    let row: ScanRow = serde_wasm_bindgen::from_value(scan_js).map_err(to_js_error)?;
+    Ok(scan_matches(&row, query))
 }
 
 /// `helpers.js`'s `fmtDuration(secs)`.
@@ -214,7 +299,9 @@ fn fmt_duration(secs: Option<i64>) -> String {
 
 /// `renderScansTable`'s per-row `dur` computation: a finished scan's actual
 /// elapsed time, a running scan's elapsed-so-far against the current clock,
-/// or `None` for any other status with no `finished_at` yet.
+/// or `None` for any other state with no `finished_at`. An interrupted scan
+/// is one: it ended with its server, at a time nothing recorded, so its
+/// clock does not climb.
 fn row_duration(row: &ScanRow) -> Option<i64> {
     let started = row.started_at.filter(|&t| t != 0);
     let finished = row.finished_at.filter(|&t| t != 0);
@@ -222,7 +309,7 @@ fn row_duration(row: &ScanRow) -> Option<i64> {
         #[allow(clippy::cast_possible_wrap)]
         return Some(f as i64 - st as i64);
     }
-    if row.status.as_deref() == Some("running") {
+    if scan_state(row.status.as_deref(), row.interrupted) == "running" {
         let st = started.unwrap_or_else(hse_core::unix_now);
         #[allow(clippy::cast_possible_wrap)]
         return Some(hse_core::unix_now() as i64 - st as i64);
@@ -242,16 +329,21 @@ fn scan_row_html(row: &ScanRow) -> String {
         .and_then(|t| t.kind.as_deref())
         .filter(|k| !k.is_empty())
         .unwrap_or("\u{2014}");
-    let value = row
-        .target
-        .as_ref()
-        .and_then(|t| t.value.as_deref())
-        .filter(|v| !v.is_empty())
-        .unwrap_or(&row.id);
+    let label = row.label();
+    // A named scan still shows what it scanned.
+    let target_line = match label.target {
+        Some(t) => format!(
+            "<div class=\"text-muted\" style=\"font-size:11px\">{}</div>",
+            escape_html(t)
+        ),
+        None => String::new(),
+    };
     let id = escape_html(&row.id);
+    let state = scan_state(row.status.as_deref(), row.interrupted);
     let dur_secs = row_duration(row);
-    let is_active = matches!(row.status.as_deref(), Some("running" | "pending"));
-    let action_btn = if is_active {
+    // Only a scan something is running gets Stop; anything else, an
+    // interrupted one included, gets Rescan.
+    let action_btn = if is_active(state) {
         format!(
             "<button class=\"btn btn-warning btn-xs\" data-cancel=\"{id}\" title=\"Stop scan\"><i class=\"glyphicon glyphicon-stop\"></i></button>"
         )
@@ -262,7 +354,7 @@ fn scan_row_html(row: &ScanRow) -> String {
     };
     format!(
         "<tr>\n      \
-         <td><a href=\"#/scaninfo?id={id}\" class=\"link\">{value}</a></td>\n      \
+         <td><a href=\"#/scaninfo?id={id}\" class=\"link\">{title}</a>{target_line}</td>\n      \
          <td>{kind_pill}</td>\n      \
          <td>{started}</td>\n      \
          <td>{dur}</td>\n      \
@@ -276,11 +368,11 @@ fn scan_row_html(row: &ScanRow) -> String {
          <button class=\"btn btn-danger btn-xs\" data-delete=\"{id}\" title=\"Delete\"><i class=\"glyphicon glyphicon-trash\"></i></button>\n      \
          </td>\n    \
          </tr>",
-        value = escape_html(value),
+        title = escape_html(label.title),
         kind_pill = kind_pill(kind),
         started = escape_html(&fmt_date(row.started_at.unwrap_or(0))),
         dur = escape_html(&fmt_duration(dur_secs)),
-        status = status_pill(row.status.as_deref(), row.finalise_incomplete),
+        status = status_pill(state, row.finalise_incomplete),
         entities = row.entity_count.unwrap_or(0),
         raw_id = row.id,
     )
@@ -305,7 +397,7 @@ pub fn render_scans_table_html(scans_js: JsValue) -> Result<String, JsValue> {
     Ok(format!(
         "<div class=\"table-responsive\"><table class=\"table table-striped table-condensed tablesorter\" id=\"scans-table\">\n    \
          <thead><tr>\n      \
-         <th>Target</th><th>Type</th><th>Created</th><th>Duration</th>\n      \
+         <th>Scan</th><th>Type</th><th>Created</th><th>Duration</th>\n      \
          <th>Status</th><th class=\"text-right\">Entities</th>\n      \
          <th class=\"sorter-false\">Actions</th>\n    \
          </tr></thead><tbody>{rows}</tbody></table></div>"
@@ -315,6 +407,112 @@ pub fn render_scans_table_html(scans_js: JsValue) -> Result<String, JsValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row(status: &str, interrupted: bool) -> ScanRow {
+        ScanRow {
+            id: "abc123".to_string(),
+            target: Some(ScanTarget {
+                kind: Some("email".to_string()),
+                value: Some("a@example.com".to_string()),
+            }),
+            status: Some(status.to_string()),
+            interrupted,
+            // No timestamps: `fmt_date` reads the browser's clock, which a
+            // native test does not have.
+            started_at: None,
+            finished_at: None,
+            entity_count: Some(3),
+            options: None,
+            finalise_incomplete: false,
+        }
+    }
+
+    /// REQ-SCANNAME-001: a named scan is listed by its name, with what it
+    /// scanned beneath it; an unnamed one by its target alone.
+    #[test]
+    fn a_named_row_shows_its_name_and_its_target() {
+        let mut r = row("complete", false);
+        r.options = Some(RowOptions {
+            name: Some("Q3 <audit>".to_string()),
+        });
+        let html = scan_row_html(&r);
+        assert!(
+            html.contains("class=\"link\">Q3 &lt;audit&gt;</a>"),
+            "{html}"
+        );
+        assert!(html.contains(">a@example.com</div>"), "{html}");
+
+        let html = scan_row_html(&row("complete", false));
+        assert!(html.contains("class=\"link\">a@example.com</a>"), "{html}");
+        assert!(!html.contains("</a><div"), "no second line: {html}");
+
+        // A target with stray whitespace is still one title, not the title
+        // and the same target again beneath it.
+        let mut r = row("complete", false);
+        r.target = Some(ScanTarget {
+            kind: Some("email".to_string()),
+            value: Some(" a@example.com ".to_string()),
+        });
+        let html = scan_row_html(&r);
+        assert!(
+            html.contains("class=\"link\">a@example.com</a></td>"),
+            "{html}"
+        );
+    }
+
+    /// REQ-SCANNAME-001: the search box finds a scan by its name, as by its
+    /// target, kind, shown state and id, ignoring case and padding.
+    #[test]
+    fn the_search_box_matches_what_the_row_shows() {
+        let mut r = row("running", true);
+        r.options = Some(RowOptions {
+            name: Some("Q3 Audit".to_string()),
+        });
+        for q in [
+            "q3 aud",
+            "  Q3  ",
+            "A@EXAMPLE",
+            "email",
+            "interrupted",
+            "abc1",
+            "",
+        ] {
+            assert!(scan_matches(&r, q), "{q:?}");
+        }
+        // The state searched is the one the row shows, not the stored one.
+        for q in ["running", "zzz"] {
+            assert!(!scan_matches(&r, q), "{q:?}");
+        }
+    }
+
+    #[test]
+    fn an_interrupted_row_offers_rescan_not_stop() {
+        let html = scan_row_html(&row("running", true));
+        assert!(html.contains("s-interrupted"), "{html}");
+        assert!(
+            !html.contains("data-cancel"),
+            "an interrupted scan has nothing to stop: {html}"
+        );
+        assert!(html.contains("data-rerun"), "{html}");
+    }
+
+    #[test]
+    fn a_running_row_still_offers_stop() {
+        let html = scan_row_html(&row("running", false));
+        assert!(html.contains("s-running"), "{html}");
+        assert!(html.contains("data-cancel"), "{html}");
+        assert!(!html.contains("data-rerun"), "{html}");
+    }
+
+    #[test]
+    fn an_interrupted_scans_clock_does_not_climb() {
+        let mut r = row("running", true);
+        r.started_at = Some(1);
+        assert_eq!(row_duration(&r), None);
+        // The same row with a process behind it counts from its start.
+        r.interrupted = false;
+        assert!(row_duration(&r).is_some_and(|d| d > 0));
+    }
 
     #[test]
     fn fmt_duration_matches_helpers_js_thresholds() {
@@ -330,25 +528,49 @@ mod tests {
     /// green `complete` its bare status would earn.
     #[test]
     fn a_partial_scan_row_reads_partial() {
-        let row = |finalise_incomplete: bool| ScanRow {
-            id: "abc123".to_string(),
-            target: None,
-            status: Some("complete".to_string()),
-            started_at: None,
-            finished_at: None,
-            entity_count: Some(20),
+        let partial_row = |finalise_incomplete: bool| ScanRow {
             finalise_incomplete,
+            ..row("complete", false)
         };
-        let partial = scan_row_html(&row(true));
+        let partial = scan_row_html(&partial_row(true));
         assert!(
             partial.contains("<span class=\"status-pill s-partial\">partial</span>"),
             "{partial}"
         );
         assert!(!partial.contains("s-complete"), "{partial}");
-        let whole = scan_row_html(&row(false));
+        let whole = scan_row_html(&partial_row(false));
         assert!(
             whole.contains("<span class=\"status-pill s-complete\">complete</span>"),
             "{whole}"
         );
+    }
+
+    /// REQ-SCANSTATUS-032: the search box finds a partial row by the
+    /// `partial` its pill says, and by the state it reached; an interrupted
+    /// row is still not found by the `running` it no longer is.
+    #[test]
+    fn the_search_box_finds_a_partial_row_by_its_pill_and_its_state() {
+        let partial = ScanRow {
+            finalise_incomplete: true,
+            ..row("complete", false)
+        };
+        for q in ["partial", "PART", "complete"] {
+            assert!(scan_matches(&partial, q), "{q:?}");
+        }
+        let aborted_partial = ScanRow {
+            finalise_incomplete: true,
+            ..row("aborted", false)
+        };
+        for q in ["partial", "aborted"] {
+            assert!(scan_matches(&aborted_partial, q), "{q:?}");
+        }
+        // A whole scan is not partial, and a failure is never partial.
+        assert!(!scan_matches(&row("complete", false), "partial"));
+        let failed = ScanRow {
+            finalise_incomplete: true,
+            ..row("failed", false)
+        };
+        assert!(!scan_matches(&failed, "partial"));
+        assert!(!scan_matches(&row("running", true), "running"));
     }
 }

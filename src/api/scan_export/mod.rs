@@ -129,7 +129,7 @@ pub async fn scan_export_gexf(
 /// scan state (every entity + evidence, relations, correlations, the complete
 /// event sequence, and the scored self-audit with every weakness) in one
 /// downloadable text file. The web "Debug bundle" button and the CLI
-/// `hse export {id} --format debug` produce the same artifact.
+/// `hse export -s <id> --format debug` produce the same artifact.
 pub async fn scan_debug_bundle(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -165,9 +165,9 @@ pub async fn scan_debug_bundle(
 /// It is whole only for a scan that ran to completion. Served mid-scan it is a
 /// strict prefix of the eventual sequence, so a scan that is not a whole run
 /// (still running, aborted, failed, or budget-truncated) gets one closing
-/// `{"kind":"export_snapshot","state":…,"events":N}` line saying so. `hse
-/// export {id} --format events` renders the same body (before redaction) via
-/// [`crate::app::export::render_event_log_export`].
+/// `{"kind":"export_snapshot","state":…,"events":N}` line saying so.
+/// `hse export -s <id> --format events` renders the same body (before
+/// redaction) via [`crate::app::export::render_event_log_export`].
 pub async fn scan_events_log(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

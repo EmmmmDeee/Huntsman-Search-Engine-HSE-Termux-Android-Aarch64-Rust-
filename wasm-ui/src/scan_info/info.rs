@@ -17,7 +17,8 @@
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use crate::html::{escape_html, fmt_date, kind_pill, status_pill};
+use crate::html::{escape_html, fmt_date, kind_pill};
+use crate::scan_state::{scan_state, status_pill};
 use crate::to_js_error;
 
 /// The subset of `crate::core::exposure::ExposureComponent`'s fields this
@@ -138,6 +139,7 @@ struct TargetView {
 /// own JS-matching fallback explicitly.
 #[derive(Deserialize, Default)]
 struct ScanOptionsView {
+    name: Option<String>,
     modules: Option<Vec<String>>,
     exclude_modules: Option<Vec<String>>,
     throttle_ms: Option<u64>,
@@ -164,6 +166,9 @@ struct ScanView {
     id: Option<String>,
     target: Option<TargetView>,
     status: Option<String>,
+    /// Derived by the API on every read (REQ-SCANSTATUS-001).
+    #[serde(default)]
+    interrupted: bool,
     started_at: Option<u64>,
     finished_at: Option<u64>,
     entity_count: Option<u64>,
@@ -194,6 +199,11 @@ fn fmt_list(xs: Option<&[String]>) -> String {
 #[wasm_bindgen(js_name = renderScanSettingsHtml)]
 pub fn render_scan_settings_html(scan_js: JsValue) -> Result<String, JsValue> {
     let scan: ScanView = serde_wasm_bindgen::from_value(scan_js).map_err(to_js_error)?;
+    Ok(scan_settings_html(scan))
+}
+
+/// The "Scan settings" panel for a scan already read from JS.
+fn scan_settings_html(scan: ScanView) -> String {
     let target = scan.target.unwrap_or_default();
     let opts = scan.options.unwrap_or_default();
 
@@ -204,6 +214,13 @@ pub fn render_scan_settings_html(scan_js: JsValue) -> Result<String, JsValue> {
                 "<code>{}</code>",
                 escape_html(scan.id.as_deref().unwrap_or(""))
             ),
+        ),
+        (
+            "Scan name",
+            match opts.name.as_deref() {
+                Some(n) if !n.is_empty() => escape_html(n),
+                _ => NONE_MUTED.to_string(),
+            },
         ),
         (
             "Target type",
@@ -221,7 +238,10 @@ pub fn render_scan_settings_html(scan_js: JsValue) -> Result<String, JsValue> {
         ),
         (
             "Status",
-            status_pill(scan.status.as_deref(), scan.finalise_incomplete),
+            status_pill(
+                scan_state(scan.status.as_deref(), scan.interrupted),
+                scan.finalise_incomplete,
+            ),
         ),
         ("Started", fmt_date(scan.started_at.unwrap_or(0))),
         ("Finished", fmt_date(scan.finished_at.unwrap_or(0))),
@@ -318,12 +338,60 @@ pub fn render_scan_settings_html(scan_js: JsValue) -> Result<String, JsValue> {
         })
         .collect();
 
-    Ok(format!(
+    format!(
         "\n    <div class=\"panel panel-default\">\n      \
          <div class=\"panel-heading\"><b>Scan settings</b></div>\n      \
          <table class=\"table table-striped table-condensed\" style=\"margin-bottom:0\">\n        \
          <tbody>{body}</tbody>\n      \
          </table>\n    \
          </div>"
-    ))
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REQ-SCANNAME-001: Scan Settings names the scan, escaped.
+    #[test]
+    fn scan_settings_shows_the_scans_name() {
+        let html = scan_settings_html(ScanView {
+            options: Some(ScanOptionsView {
+                name: Some("Q3 <audit>".into()),
+                ..ScanOptionsView::default()
+            }),
+            ..ScanView::default()
+        });
+        assert!(html.contains("Scan name"), "{html}");
+        assert!(html.contains("Q3 &lt;audit&gt;"), "{html}");
+        let unnamed = scan_settings_html(ScanView::default());
+        assert!(
+            unnamed.contains(&format!("Scan name</td><td>{NONE_MUTED}</td>")),
+            "{unnamed}"
+        );
+    }
+
+    #[test]
+    fn an_interrupted_scans_status_row_says_interrupted() {
+        // The API keeps a dead server's scan at `running` and marks it
+        // interrupted (REQ-SCANSTATUS-038).
+        let html = scan_settings_html(ScanView {
+            status: Some("running".into()),
+            interrupted: true,
+            ..ScanView::default()
+        });
+        assert!(
+            html.contains("<span class=\"status-pill s-interrupted\">interrupted</span>"),
+            "{html}"
+        );
+        // The same row with a live process behind it is running.
+        let html = scan_settings_html(ScanView {
+            status: Some("running".into()),
+            ..ScanView::default()
+        });
+        assert!(
+            html.contains("<span class=\"status-pill s-running\">running</span>"),
+            "{html}"
+        );
+    }
 }

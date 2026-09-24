@@ -177,6 +177,12 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
     use crate::util::key_pool::{self, KeyEntry, KeyStatus};
 
     let pool = key_pool::global_pool();
+    // A pool file that could be neither loaded nor moved aside is kept, and
+    // nothing is saved over it. Every `hse keys` command says so first: the
+    // pool it shows is not the one on disk (REQ-KEYPOOL-003).
+    if let Some(refusal) = pool.save_refusal() {
+        eprintln!("warning: {refusal}");
+    }
 
     match action {
         KeysAction::Set { name, value } => cmd_set_key(name, value)?,

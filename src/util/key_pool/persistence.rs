@@ -22,39 +22,145 @@ pub(super) fn load_pool_from(path: &std::path::Path) -> KeyPool {
             Ok(data) => KeyPool::from_data(data),
             Err(e) => {
                 tracing::warn!(
-                    "key pool at {} is corrupted ({e}); backing up and starting fresh",
+                    "key pool at {} is corrupted ({e}); moving it aside",
                     path.display()
                 );
-                backup_and_fresh(path)
+                backup_and_fresh(path, &e.to_string())
             }
         },
         // A missing file is the legitimate first-run fresh start — quiet.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => KeyPool::new(),
         // The file EXISTS but could not be read: non-UTF-8 InvalidData corruption,
         // PermissionDenied, or a transient IO error. Mirror the JSON-corruption
-        // branch — warn and preserve the file as `.json.bak` before starting fresh
-        // — so a real read failure is observable and the still-present on-disk keys
+        // branch — warn and move the file aside before starting fresh — so a
+        // real read failure is observable and the still-present on-disk keys
         // are not silently dropped and then clobbered by the next atomic save.
         Err(e) => {
             tracing::warn!(
-                "key pool at {} could not be read ({e}); backing up and starting fresh",
+                "key pool at {} could not be read ({e}); moving it aside",
                 path.display()
             );
-            backup_and_fresh(path)
+            backup_and_fresh(path, &e.to_string())
         }
     }
 }
 
-/// Rename a present-but-unusable pool file aside to `.json.bak` and return a fresh
-/// empty pool. Best-effort: a failed rename still yields a working (empty) pool.
-fn backup_and_fresh(path: &std::path::Path) -> KeyPool {
-    let backup = path.with_extension("json.bak");
-    let _ = std::fs::rename(path, &backup);
-    KeyPool::new()
+/// Move a present-but-unusable pool file aside, to a backup name that holds
+/// nothing yet, and return an empty pool (REQ-KEYPOOL-003). `load_error` says
+/// why the file could not be used.
+///
+/// The file is kept either way, because it may still hold keys. The backup
+/// went to `.json.bak` every time, so a second unusable file replaced the
+/// first backup, and a failed rename was ignored, so the next save replaced
+/// the file itself. Now a backup never replaces anything, and when the file
+/// cannot be moved aside it stays where it is, and the returned pool refuses
+/// every save, saying why.
+fn backup_and_fresh(path: &std::path::Path, load_error: &str) -> KeyPool {
+    backup_and_fresh_with(path, load_error, |from, to| std::fs::rename(from, to))
+}
+
+/// [`backup_and_fresh`] with the rename injected, so the branch where it
+/// fails can be tested.
+pub(super) fn backup_and_fresh_with(
+    path: &std::path::Path,
+    load_error: &str,
+    rename: impl Fn(&std::path::Path, &std::path::Path) -> std::io::Result<()>,
+) -> KeyPool {
+    let moved = claim_backup_name(path).and_then(|backup| match rename(path, &backup) {
+        Ok(()) => Ok(backup),
+        Err(e) => {
+            // The claimed name is this process's own empty placeholder.
+            if let Err(cleanup) = std::fs::remove_file(&backup) {
+                tracing::warn!(
+                    "could not remove the unused backup name {}: {cleanup}",
+                    backup.display()
+                );
+            }
+            Err(e)
+        }
+    });
+    match moved {
+        Ok(backup) => {
+            tracing::warn!(
+                "the unusable key pool was moved to {}; starting with an empty pool",
+                backup.display()
+            );
+            KeyPool::new()
+        }
+        // Gone already (another hse process moved it first): nothing is left
+        // to protect, so the empty pool may save.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && is_absent(path) => {
+            tracing::warn!(
+                "the unusable key pool at {} was moved away by another process; starting \
+                 with an empty pool",
+                path.display()
+            );
+            KeyPool::new()
+        }
+        Err(e) => {
+            let reason = format!(
+                "the key pool at {} could not be loaded ({load_error}) or moved aside ({e}). \
+                 It is left in place, and nothing is saved over it: repair or move it, then \
+                 restart hse",
+                path.display()
+            );
+            tracing::error!("{reason}");
+            KeyPool::never_saved(reason)
+        }
+    }
+}
+
+/// Whether nothing is at `path`. A path that cannot be checked is not absent,
+/// the same rule [`claim_backup_name`] applies to a name it cannot create.
+fn is_absent(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// How many numbered backups ([`claim_backup_name`]) are tried before giving up.
+const MAX_BACKUPS: u32 = 999;
+
+/// Claim the first free backup name of `key_pool.json.bak`,
+/// `key_pool.json.bak.1` … `.bak.999`, by creating it empty with `create_new`,
+/// which fails if anything at all is there. Two processes can never claim the
+/// same name, and the rename that follows replaces only the claimant's own
+/// placeholder, so a backup never replaces anything. A name that cannot be
+/// created counts as taken.
+fn claim_backup_name(path: &std::path::Path) -> std::io::Result<PathBuf> {
+    let first = path.with_extension("json.bak");
+    let numbered = (1..=MAX_BACKUPS).map(|n| {
+        let mut name = first.clone().into_os_string();
+        name.push(format!(".{n}"));
+        PathBuf::from(name)
+    });
+    std::iter::once(first.clone())
+        .chain(numbered)
+        .find(|candidate| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(candidate)
+                .is_ok()
+        })
+        .ok_or_else(|| {
+            std::io::Error::other(format!(
+                "no usable backup name from {} to .bak.{MAX_BACKUPS}",
+                first.display()
+            ))
+        })
 }
 
 pub fn save_pool(pool: &KeyPool) -> std::io::Result<()> {
-    let path = pool_path();
+    save_pool_to(pool, &pool_path())
+}
+
+/// The path-taking core of [`save_pool`], the counterpart of
+/// [`load_pool_from`]. A pool that must not be saved over its file
+/// (`KeyPool::never_saved`) is refused with the reason, and the file is not
+/// touched.
+pub(super) fn save_pool_to(pool: &KeyPool, path: &std::path::Path) -> std::io::Result<()> {
+    if let Some(reason) = &pool.not_saved_over {
+        return Err(std::io::Error::other(reason.clone()));
+    }
     let data = pool.snapshot();
     let json = serde_json::to_string_pretty(&data).map_err(std::io::Error::other)?;
     // Atomic write via the shared helper: a UNIQUE temp + fsync + rename. A plain
@@ -65,7 +171,7 @@ pub fn save_pool(pool: &KeyPool) -> std::io::Result<()> {
     // and a shared fixed temp could be interleaved by two writers into a corrupt
     // file. The rename is atomic on the same filesystem, so a crash leaves the
     // previous valid pool intact.
-    crate::util::atomic_file::write(&path, json.as_bytes())
+    crate::util::atomic_file::write(path, json.as_bytes())
 }
 
 /// Write secret text (an exported key pool) to an arbitrary path with `0600`
@@ -87,6 +193,13 @@ pub fn write_secret_file(path: &str, contents: &str) -> std::io::Result<()> {
 /// call [`save_pool`] directly and handle the `Result`.
 pub fn save_pool_best_effort(pool: &KeyPool) {
     if let Err(e) = save_pool(pool) {
+        // A pool kept off its unreadable file refuses every save on purpose,
+        // and said so, once, as an error when the refusal was decided. One
+        // warning per harvested key or status change would bury that line.
+        if pool.save_refusal().is_some() {
+            tracing::debug!(error = %e, "key pool not saved: its file is kept");
+            return;
+        }
         tracing::warn!(
             error = %e,
             path = %pool_path().display(),

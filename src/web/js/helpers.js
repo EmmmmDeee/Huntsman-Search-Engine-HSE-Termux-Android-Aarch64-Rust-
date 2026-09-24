@@ -1,4 +1,5 @@
 /* ─── Helpers ─── */
+import { statusPillHtml } from '/static/hse_wasm_ui.js';
 export const $ = (s,r)=>(r||document).querySelector(s);
 export const $$ = (s,r)=>Array.from((r||document).querySelectorAll(s));
 export function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -19,11 +20,13 @@ export function fmtDuration(secs){
   return `${h}h ${mm}m`;
 }
 export function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
-// `partial` is the scan row's derived `finalise_incomplete`: a complete or
-// aborted scan whose finalise recorded a shortfall reads partial, as its
-// exports and its live log pill do (REQ-SCANSTATUS-030). Mirrors wasm-ui's
-// `html::status_pill`.
-export function statusPill(s, partial){if(partial===true&&(s==='complete'||s==='aborted'))return `<span class="status-pill s-partial">${s==='aborted'?'aborted \u00b7 partial':'partial'}</span>`;const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending',aborted:'s-aborted'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
+/* The status pill for a state (`complete`, `running`, `interrupted`, …).
+   Its markup is wasm-ui's `status_pill`, the one copy every view draws with.
+   For a scan, pass `scanState(scan)`, so a scan whose server died shows as
+   interrupted, not running (REQ-SCANSTATUS-038), and the row's
+   `finalise_incomplete` as `partial`, so a complete or aborted scan whose
+   finalise fell short reads partial, as its exports do (REQ-SCANSTATUS-030). */
+export function statusPill(s, partial){ return statusPillHtml(s == null ? undefined : String(s), partial===true); }
 export function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
 // Render a per-service pool's mean health for a table cell, honestly. The
 // backend sends `avg_health: null` when a service has NO tested key yet (every

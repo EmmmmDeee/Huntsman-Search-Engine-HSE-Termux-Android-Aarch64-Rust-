@@ -76,10 +76,6 @@ use crate::app::export::csv_escape;
         assert_eq!(empty, super::ScanStatsAgg::default());
     }
 
-    /// REQ-SCANSTATUS-001: the same `running` row with NO handle in this
-    /// process is a scan nobody is running. Pre-fix it was histogrammed as
-    /// `running`, so `/stats` reported a hard-killed scan as in progress
-    /// forever — observed on `ff4d63c` after `kill -9` + restart.
     /// REQ-SCANSTATUS-030: a scan row carries its derived
     /// `finalise_incomplete`, so the web views that read rows (the scan list,
     /// the scan-info Status row, the radar sweep list) can call a `Complete`
@@ -139,9 +135,18 @@ use crate::app::export::csv_escape;
         assert_eq!(agg.by_status.values().sum::<u64>(), 5, "{agg:?}");
     }
 
+    /// REQ-SCANSTATUS-001: the same `running` row with NO handle in this
+    /// process is a scan nobody is running. Pre-fix it was histogrammed as
+    /// `running`, so `/stats` reported a hard-killed scan as in progress
+    /// forever — observed on `ff4d63c` after `kill -9` + restart.
+    ///
+    /// REQ-SCANSTATUS-038: a `pending` row with no handle is one too. Every
+    /// create path now registers a scan before writing its row (`queue_scan`),
+    /// so the window in which a healthy queued scan had no handle is gone, and
+    /// a server killed with scans still queued left them `pending` for good.
     #[test]
-    fn a_running_row_with_no_handle_is_histogrammed_as_interrupted() {
-        use super::{aggregate_scan_stats, is_interrupted};
+    fn a_row_this_process_does_not_hold_is_histogrammed_as_interrupted() {
+        use super::aggregate_scan_stats;
         use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
 
         let mk = |id: &str, status: ScanStatus| {
@@ -153,30 +158,154 @@ use crate::app::export::csv_escape;
             mk("orphan", ScanStatus::Running),
             mk("live", ScanStatus::Running),
             mk("done", ScanStatus::Complete),
+            mk("queued-orphan", ScanStatus::Pending),
             mk("queued", ScanStatus::Pending),
         ];
-        let in_flight: std::collections::HashSet<String> = ["live".to_string()].into();
+        let in_flight: std::collections::HashSet<String> =
+            ["live".to_string(), "queued".to_string()].into();
+        let interrupted = |s: &Scan| s.is_interrupted(Some(&in_flight));
 
-        assert!(is_interrupted(&scans[0], &in_flight), "running + no handle");
+        assert!(interrupted(&scans[0]), "running + no handle");
+        assert!(interrupted(&scans[3]), "pending + no handle");
         // CONTROLS — each is what an over-eager derivation would get wrong:
         assert!(
-            !is_interrupted(&scans[1], &in_flight),
+            !interrupted(&scans[1]),
             "running + handle is genuinely in flight, never interrupted"
         );
-        assert!(
-            !is_interrupted(&scans[2], &in_flight),
-            "a terminal row is never interrupted"
-        );
-        assert!(
-            !is_interrupted(&scans[3], &in_flight),
-            "pending has a legitimate no-handle window between upsert and spawn"
-        );
+        assert!(!interrupted(&scans[2]), "a terminal row is never interrupted");
+        assert!(!interrupted(&scans[4]), "a queued scan this process holds");
 
         let agg = aggregate_scan_stats(&scans, &in_flight);
-        assert_eq!(agg.by_status.get("interrupted"), Some(&1));
+        assert_eq!(agg.by_status.get("interrupted"), Some(&2));
         assert_eq!(agg.by_status.get("running"), Some(&1));
         assert_eq!(agg.by_status.get("complete"), Some(&1));
         assert_eq!(agg.by_status.get("pending"), Some(&1));
+    }
+
+    /// REQ-SCANSTATUS-038: `hse scan`, `hse radar` and `hse live` run the
+    /// engine in their own process against the server's database. The
+    /// server's registry does not know their scans, and read alone it called
+    /// every one of them interrupted, and the console said nothing would
+    /// finish them. The row's runner says who runs it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_scan_another_live_process_runs_is_not_interrupted() {
+        use crate::core::scan::{Scan, ScanRunner, ScanStatus, Target, TargetKind};
+
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a stand-in for another hse process");
+        let stat = std::fs::read_to_string(format!("/proc/{}/stat", child.id())).expect("stat");
+        let start_ticks = stat[stat.rfind(')').expect("comm") + 1..]
+            .split_whitespace()
+            .nth(19)
+            .and_then(|f| f.parse().ok())
+            .expect("starttime");
+        let mut scan = Scan::new("cli-scan", Target::new(TargetKind::Domain, "cloudflare.com"));
+        scan.status = ScanStatus::Running;
+        scan.runner = Some(ScanRunner {
+            pid: child.id(),
+            start_ticks,
+            boot_id: ScanRunner::current().boot_id,
+        });
+        let registry = std::collections::HashSet::new();
+
+        assert!(
+            !scan.is_interrupted(Some(&registry)),
+            "another process that is still running it"
+        );
+        child.kill().expect("kill");
+        child.wait().expect("reap");
+        assert!(
+            scan.is_interrupted(Some(&registry)),
+            "the same scan once that process has died"
+        );
+    }
+
+    /// Without a registry (an export), a scan this process runs counts as
+    /// live, and a row that predates the runner field counts as interrupted:
+    /// only a registry could vouch for it.
+    #[test]
+    fn without_a_registry_only_the_runner_can_vouch_for_a_scan() {
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+
+        let mut ours = Scan::new("ours", Target::new(TargetKind::Domain, "cloudflare.com"));
+        ours.status = ScanStatus::Running;
+        assert!(!ours.is_interrupted(None));
+
+        let mut legacy = ours.clone();
+        legacy.runner = None;
+        assert!(legacy.is_interrupted(None));
+        let held: std::collections::HashSet<String> = ["ours".to_string()].into();
+        assert!(!legacy.is_interrupted(Some(&held)), "a registry vouches for it");
+    }
+
+    /// REQ-SCANSTATUS-038: `queue_scan` registers a scan before its row
+    /// exists, so a `pending` row with no registry entry can only mean the
+    /// process that queued it died. The write is held back here by another
+    /// connection's write lock on the same database file: while it waits, the
+    /// scan must already be registered and its row must not yet exist.
+    /// Writing first and registering after fails the first assertion.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_queued_scan_is_registered_before_its_row_is_written() {
+        use crate::core::scan::{Scan, Target, TargetKind};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("hse.db");
+        let path_str = path.to_str().expect("utf-8 path").to_string();
+        let mut state = (*crate::api::test_state()).clone();
+        state.store = std::sync::Arc::new(crate::storage::Store::open(&path_str).expect("file store"));
+        let state = std::sync::Arc::new(state);
+
+        let blocker = rusqlite::Connection::open(&path).expect("second connection");
+        blocker
+            .execute_batch("BEGIN EXCLUSIVE")
+            .expect("take the write lock");
+
+        let target = Target::new(TargetKind::Domain, "cloudflare.com");
+        let scan = Scan::new("queued-first", target.clone());
+        let queued = {
+            let state = std::sync::Arc::clone(&state);
+            tokio::spawn(async move { super::queue_scan(&state, scan, target).await })
+        };
+
+        let registered = {
+            let mut seen = false;
+            for _ in 0..200 {
+                if super::in_flight_scan_ids(&state.cancellations).contains("queued-first") {
+                    seen = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            seen
+        };
+        let rows: i64 = blocker
+            .query_row(
+                "SELECT COUNT(*) FROM scans WHERE id = 'queued-first'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        blocker.execute_batch("COMMIT").expect("release the lock");
+        assert!(
+            registered,
+            "the scan must be registered while its row is still being written"
+        );
+        assert_eq!(rows, 0, "the row cannot exist before the write lock is released");
+
+        queued
+            .await
+            .expect("join")
+            .expect("queued once the lock is released");
+        assert!(
+            state
+                .store
+                .get_scan("queued-first")
+                .expect("read")
+                .is_some()
+        );
     }
 
     #[test]

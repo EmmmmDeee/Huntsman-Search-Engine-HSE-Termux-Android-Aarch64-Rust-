@@ -17405,10 +17405,19 @@ row legitimately has no handle for a microsecond, and a reader in that window
 must not be told the scan was interrupted. A pending scan orphaned by a kill
 inside that window never started; `pending` is the honest word for it, and the
 Pending control in `a_running_row_with_no_handle_is_histogrammed_as_interrupted`
-asserts the exclusion rather than leaving it incidental.
+asserts the exclusion rather than leaving it incidental. *(Superseded by
+REQ-SCANSTATUS-038: every create path now registers a scan before writing its
+row, so that window is gone, and a server killed with scans still queued left
+them `pending` for good. `pending` rows are flagged too.)*
 
 Scope: exactly the three read surfaces. No other API consumer branches on
-`Running` (grep-verified), so nothing else needed rewiring.
+`Running` (grep-verified), so nothing else needed rewiring. *(Corrected by
+REQ-SCANSTATUS-038: that grep covered the Rust sources only. The console's
+JavaScript and wasm-ui branch on `running` too, and none of them read the
+flag. Two more Rust readers classified on status alone: `/radar/history`, which
+sent raw rows, and the exports' completeness reason. And a derivation from one
+process's registry is wrong for a scan another `hse` process runs on the same
+database: REQ-SCANSTATUS-038 records each scan's runner so it can tell.)*
 
 #### Observed again, on the fixed binary
 
@@ -25897,3 +25906,1193 @@ event.
 | M4 | `finish` ignores a refused event write and `Drop` never names one (as at c089f3a6) | killed by `app::persist::tests::an_import_whose_completion_event_is_refused_never_reads_complete` |
 
 **5 of 5 caught.**
+
+---
+
+## REQ-UI-002 — the console's shell is SpiderFoot 4.0's
+
+**Asked for** by the operator on 2026-09-23: "Completely remake the UI UX to
+mimic Spiderfoot 4.0". This entry covers the shell every page sits in. Each
+page's own layout has its own entry.
+
+**What SpiderFoot 4.0's shell is.** Read from its templates (`HEADER.tmpl`,
+`FOOTER.tmpl`), its `spiderfoot.css` and its `dark.css`:
+
+- a Bootstrap 3 `navbar navbar-default navbar-fixed-top` with three
+  destinations, New Scan, Scans and Settings, and About on the right;
+- a "Dark Mode" switch on a light default, persisted as
+  `localStorage.theme = "dark-theme"` and applied in the page head, before
+  the body renders;
+- a fixed footer that carries one tip;
+- `/` opens the scan list.
+
+**What HSE had.** A dark-first console: an app bar with a search box, a
+bottom tab bar on phones with a "More" sheet, and the dashboard as the
+landing page.
+
+### Implemented
+
+- `spa.html`: the navbar. The brand, then New Scan, Scans and Settings, then a
+  More dropdown holding HSE's ten other pages. More is a real `<button>`, so
+  Space opens it as well as Enter. On the right are the Dark Mode switch and
+  About. The footer carries one tip per page.
+- Below 1,100px wide the links collapse behind the three-bar toggle, as
+  Bootstrap's collapse does in SpiderFoot. SpiderFoot collapses below 768px,
+  but its brand is a small logo. HSE's brand is text, and the full bar is
+  about 1,030px wide, so a window between the two widths would wrap the bar
+  onto a second row. The page's top padding follows `--navbar-h`, the bar's
+  measured height (`syncNavbarHeight` in `ui.js`), so even a wrap from a
+  larger default font cannot cover the page.
+- `app.css`, rewritten on Bootstrap 3's metrics and palette over the class
+  vocabulary the views already emit (`.btn`, `.panel`, `.table-striped`,
+  `.nav-tabs`, `.badge`, `.alert`, …). The views' markup did not have to
+  change to take the look. The Search page changed because the search box
+  moved into it. The light palette is on `:root`. SpiderFoot's `dark.css`
+  palette is on `body.dark-theme`.
+- `wasm-ui/src/theme.rs`: the switch stores SpiderFoot's own value. Only
+  `"dark-theme"` selects dark. The earlier console stored the same two
+  strings, `"dark-theme"` and `"light-theme"`, so a choice saved there keeps
+  its meaning. A console that never chose now opens light, which is
+  SpiderFoot's default. `theme.rs` loads asynchronously, so a one-line
+  script at the top of `<body>` applies a stored dark choice before the
+  first paint, as SpiderFoot's `HEADER.tmpl` does.
+- `ui.js`: the collapse toggle and dropdowns. A dropdown opens on click and
+  closes on a second click, a click elsewhere, a pick, Escape (which returns
+  focus to its toggle) or navigation. `ui.js` also holds the footer tips; one
+  is picked when the page changes, not on every re-render.
+- `router.js`: `#/` and any unknown route open the scan list. The dashboard is
+  `#/dash`, under More.
+- `search.js`: the cross-scan search box moved from the app bar to the Search
+  page, since SpiderFoot's navbar has none. A query the API refuses (over 256
+  bytes) is reported on that page, beside the box, instead of on the generic
+  error page, which offered only a Retry of the same query.
+- The update badge stays visible on a phone. It sits beside the brand, outside
+  the collapse. Inside the Settings link, where the first draft put it, a phone
+  would hide it behind the toggle. The earlier console had placed it in the app
+  bar for exactly that reason.
+
+### Found on the way
+
+The glyphicons are masked SVG, so a class with no rule renders as a solid
+square. On the baseline, ten icons the console emits had no rule: `align-left`
+(the scan list's log download), `check` (the Assurance link), `console` (the
+Debug Log link), `copy` and `file` (Stealer Logs), `download` and `lock` (Scan
+Info's export row), `hourglass` (Search Engines), `road` (the timeline), and
+`remove` (the Settings toggles). The last is invisible to a static check,
+because the toggles built the class as `glyphicon-${on?'ok':'remove'}`. That
+template now spells out both names. Each of the ten has a rule now.
+
+**Found by the runtime check, on the first build of this change.** The generic
+`.nav>li` and `.nav>li>a` rules, lower in `app.css`, have the same specificity
+as the navbar's and won by coming later. Links were 40px tall in a 50px bar, so
+the active highlight stopped 10px short, and the Dark Mode switch sat 14px
+above the bar's midline. On a 360px phone the brand pushed the three-bar toggle
+17px off-screen, where a tap could not reach its centre. The navbar rules now
+carry `.navbar` in their selectors. On a phone the brand is 16px and drops the
+version, which About shows.
+
+### Review
+
+An independent read-only review of the draft found one blocking defect and
+several should-fix ones. Each was confirmed on a real page before it was
+fixed, and each fix has a runtime check below.
+
+| finding | fix |
+|---|---|
+| **Blocking.** From 768px to about 1,020px wide the bar wrapped to 101px while the page kept 60px of top padding. Every page title was half hidden, and a tap on the scan list's Refresh button landed on the bar. | Collapse below 1,100px; the top padding follows the measured bar. |
+| On a phone, the active page's More item was #777 on #337ab7 (contrast 1.02:1), a blank blue bar. | Bootstrap's collapsed-navbar active colours. |
+| The phone Dark Mode row rule never applied (the same specificity class as above): a 26px row, the switch 5px off its label. | A selector that outranks `.navbar .navbar-nav>li`. |
+| Stealer Logs' `<mark>` drew #1b1200 on `--warning`, which the remake made a dark text shade: contrast fell from 8.24:1 to 3.82:1. | `--warning-solid`, the saturated amber both themes share. |
+| The phone menu's height limit ignored the fixed footer, which sat over its last item; a tap on About hit the footer. | The bar sits above the footer (`z-index` 1031). |
+| The icon test skipped any name it could not read, so restoring the `glyphicon-${…}` template, and deleting `.glyphicon-remove{`, passed. | An unreadable name fails the test. |
+| Nits: a dark-mode page flashed white on every load; Space did not open More, and Escape left focus inside the closed menu; the footer tip changed on every 8-second re-render of a running scan; a refused search lost its box; at 320px the update badge overlapped the brand; the dark-mode divider was invisible (1.08:1); an unused `navlink` class; `.offline-banner` defined twice; two of the three `tests/api.rs` markers were already true of the old console. | Each fixed. The markers are now the checkbox switch, `body.dark-theme{` and `#1b1b1b`. |
+
+### Locks
+
+`routes::tests`:
+
+- `the_shell_is_spiderfoots_navbar_with_every_page_reachable`: the navbar,
+  toggle, collapse, Dark Mode switch, About and footer markers; New Scan,
+  Scans, Settings and More in that order; the update badge before the
+  collapse; and every page `router.js` resolves has a link in the shell. The
+  page list is read from `router.js` itself, so a page added there without a
+  link fails the test.
+- `every_glyphicon_the_spa_uses_is_drawn`: every `glyphicon-*` class in the
+  shell, the served JS modules and wasm-ui's Rust sources has a rule in
+  `app.css`, and no class name is built from a template.
+- `the_console_is_light_by_default_with_spiderfoots_dark_mode`: the light
+  tokens on `:root`, `dark.css`'s on `body.dark-theme`, no rule left on the
+  retired `body.light-theme`, `theme.rs` storing `"dark-theme"`, and the
+  pre-paint script applying the same rule ahead of the navbar.
+
+`wasm-ui`: `theme::tests::only_spiderfoots_dark_value_selects_dark_mode`.
+`tests/api.rs`: `spa_served_with_required_ui_structure` pins the checkbox
+switch, `body.dark-theme{` and `dark.css`'s page colour where it pinned the
+dark default's.
+
+| # | mutation | result |
+|---|---|---|
+| UI2-A | the Signal Radar link points at `#/radar-x` | killed: "these routed pages have no link in the shell: [\"radar\"]" |
+| UI2-B | `#update-badge` moves back inside the Settings link | killed: "#update-badge must sit outside the collapsing links" |
+| UI2-C | the `.glyphicon-console{` rule is deleted | killed: "these icons have no rule in app.css" (console) |
+| UI2-D | `:root`'s `--bg` goes back to the dark default `#0a0d11` | killed: "--bg is not #ffffff" |
+| UI2-E | `is_dark` becomes `stored != Some(LIGHT)` (dark unless light was chosen) | killed: `assertion failed: !is_dark(None)` |
+| UI2-F | the pre-paint script is removed | killed: "the shell applies a stored dark choice before the first paint" |
+| UI2-G | `opts.js` builds `glyphicon-${on?'ok':'remove'}` again | killed: "icon classes built from a template cannot be checked … js/views/opts.js:202" |
+
+On the unchanged baseline all three route tests fail, and the icon test lists
+the nine icons it can see.
+
+### Runtime
+
+A Playwright script drove a sandboxed `hse serve` (scratch `HOME`, update
+checks and map tiles off, no proxy). The script lived in the session's
+scratch space, not in the repository; what it checked is listed here so it
+can be repeated by hand. All 51 checks passed, at 1280, 1150, 1100, 1024, 915
+and 800px wide, and on 360px and 320px phones with touch:
+
+- the landing page is the scan list, light, with the switch off;
+- the navbar reads New Scan, Scans, Settings, More, and its links fill the bar;
+- the switch and its label sit on the bar's midline;
+- at 800, 915, 1024 and 1100px, and with the brand lengthened to force a
+  wrap, the bar never covers the page title;
+- More opens on a click and on Space, and lists ten pages. It closes on an
+  outside click, on Escape (with focus back on More), and after a pick, which
+  navigates and lights both the page and More;
+- About opens, shows the running version and closes on Escape;
+- the switch turns dark on, stores `theme=dark-theme` and paints `#1b1b1b`.
+  Dark survives a reload. Off stores `theme=light-theme`;
+- a stored `dark-theme` opens dark, and a stored `light-theme` opens light;
+- on a first load with a stored `dark-theme`, the page is dark while the
+  wasm download is still held back, before the theme module has run;
+- the footer tip stays the same through four re-renders of a page;
+- a 300-character search stays on the Search page, with its box and the
+  API's reason;
+- on the phones the toggle is fully on screen, the links are collapsed, an
+  update badge shows with the menu closed, the toggle opens the links, More
+  expands inline, the active page's item is readable (contrast at least
+  4.5:1), the Dark Mode row is centred, the menu's last item can be tapped
+  over the footer, and a pick navigates and collapses the menu. At 320px the
+  brand, badge and toggle do not overlap;
+- there were no page errors. The only failed request was the Radar view's
+  "no sweep yet" 404, which is its documented answer.
+
+The build before the review failed ten of the checks the review added, and
+it could not reach the menu's last item past the footer. The first build of
+this change failed four checks: the layout findings above.
+
+The existing all-routes sweep (24 routes, hostile ids and payloads included)
+found no page error, HTML injection, blank page or 5xx. The server logged no
+panic. The sweep's only console lines are the browser's "Failed to load
+resource" for a 404, from unknown scan ids and the empty Radar.
+
+## REQ-SCANSTATUS-038 — the console never read `interrupted`, and the flag was only true for the server's own scans
+
+**Numbering.** Committed as REQ-SCANSTATUS-002 in f55b3b3c6. PR #649, merged
+to main first, gave that number to another defect (a scan read Complete
+before its exports' artefacts were stored), so this entry, and every
+reference to it in the code, took the next free number when main was merged
+into this branch. The pushed commit message keeps the old number.
+
+**Found** while rebuilding the scan list for the SpiderFoot 4.0 remake
+(REQ-UI-002's follow-on). REQ-SCANSTATUS-001 made the API answer honestly for
+a scan whose server died under it: the row still reads `status: "running"`,
+and a derived `interrupted: true` beside it says no live process holds it.
+Its scope note says no other consumer branches on `running`
+("grep-verified"). That grep covered the Rust sources. The console's
+JavaScript and wasm-ui branch on a scan's status too, and none of them read
+the flag. The radar's sweep history tried to, with a label beside a
+`running` pill, but `/radar/history` never sent the flag, so the label could
+not appear.
+
+So, for a scan whose process was gone:
+
+| surface | what it showed or did | why that is wrong |
+|---|---|---|
+| scan list and the dashboard's Recent Scans | a `running` pill, a Stop button, a duration that kept climbing | Stop answers 404 ("no in-flight scan"): nothing is running to stop |
+| Scan Info header | `running`, an Abort button, a climbing duration | the same 404, and a clock for a scan that ended when its process did |
+| Scan Info, every tab but Log | re-fetched the scan, its entities and its correlations every 8 s, forever | the refresh stops only when the status leaves `running`, and this one never does |
+| Scan Info, Log tab | a `live` label over an open event stream | no event will ever arrive on it |
+| Scan Info, Insights → Scan Settings | a `running` Status row | the same stale state, drawn by a third copy of the pill |
+| the scan list's Running tally | counted it | it is not running |
+| the scan list's search box | found it under "running", and "interrupted" found nothing | it searched the stored status, not the one on screen |
+| the dashboard's status table | an `interrupted` pill in the `pending` style | `/stats` sends the bucket; the pill had no class for it |
+| Compare Scans | left it out of both pickers | it offers finished scans, and an interrupted scan is finished: like an aborted one it stopped early and keeps what it found |
+| Radar's Sweep button | would keep polling a sweep interrupted by a server restart, up to its 3-minute bound | it waited for `complete`, `failed` or `aborted`, which such a scan never reaches (read from the code; the sandbox has no radio to sweep) |
+| Radar's sweep history | `running` | `/radar/history` sent raw rows, without the flag |
+| a queued scan the server was killed with | `pending` for good, with every symptom above | the API flagged `running` rows only |
+| the Log download, the dossier and the debug bundle | `live` | the export classified on status alone |
+
+The 8-second refresh is the costly row: four requests and a full re-render
+every 8 s for as long as the tab stays open, on the phone that runs the
+server. Measured on a scan killed mid-run: 18 requests in 20 seconds.
+
+The first draft of this fix made the console read the flag, and exposed
+that the flag was wrong for one ordinary case. `hse scan`, `hse radar` and
+`hse live` run the engine in their own process against the server's
+database. The server's registry knows only its own scans, so REQ-SCANSTATUS-001
+flagged every scan a terminal was running as interrupted. Until the console
+read the flag nothing acted on it; with this change's first draft, such a
+scan lost its refresh, and Scan Info said nothing would finish it.
+
+### Implemented
+
+**The flag is true across processes.** `Scan::is_interrupted(registry)` in
+`core::scan` is the one rule: a `pending` or `running` scan whose process is
+gone. A scan records its runner, `core::scan::ScanRunner` (pid, the
+process's start time, the boot id), when it is created and again when the
+engine starts it.
+
+- The server's in-flight registry answers exactly for its own scans.
+- A scan another process runs is interrupted when that process is gone:
+  `/proc/<pid>/stat` must show the same pid with the same start time, on
+  the same boot, and not a zombie. A recycled pid or one from before a
+  reboot does not count.
+- A row with no runner predates the field, so only a registry can vouch for
+  it.
+- The runner is stored in the scan's row (`Store::upsert_scan` writes it
+  into `data_json`) and serialised nowhere else (`#[serde(skip_serializing)]`),
+  so no API response or export carries a process identity. No migration: an
+  older row reads back with no runner.
+
+Every create path (scan, batch, auto, auto-sweep, rerun, radar sweep) now
+goes through one `queue_scan`, which registers a scan before writing its
+row. So a `pending` row with no registry entry can only mean the process
+that queued it died, and `pending` rows are flagged too. REQ-SCANSTATUS-001
+had excluded them for the moment between the write and the registration,
+which is gone. `/radar/history` now goes through `scan_json` like every
+other scan read. The exports' completeness reason says `interrupted`, not
+`live`, for such a scan.
+
+**The console reads it.** One rule, `wasm-ui/src/scan_state.rs`:
+`scan_state(status, interrupted)` is `"interrupted"` for a row the API marks
+interrupted, the status itself otherwise, and `pending` when there is none.
+`is_active(state)` is `running` or `pending`: only those get a Stop or Abort
+control, a live log and a refresh timer, and only a `running` scan's clock
+climbs. The JS views reach both as `scanState(scan)` and
+`scanIsActive(scan)`:
+
+- the scan table (list and dashboard): the pill, the action button and the
+  duration. `row_duration` derives the state from the row itself, so no
+  caller can hand it the wrong one;
+- `scan_info/index.js`: the header pill, the Abort button, the duration and
+  the refresh timer. An interrupted scan also says what happened and what
+  to do: rescan it;
+- `scan_info/log.js`: no stream for a scan that is not active, and the label
+  reads `interrupted` over the stored events. A stream that reconnects after
+  a drop re-reads the scan, and closes if the scan finished or was
+  interrupted meanwhile;
+- Scan Settings' Status row (wasm-ui `scan_info/info.rs`);
+- `scans.js`: the tallies, with an `interrupted` count, and the search box;
+- `diff.js`: complete, aborted and interrupted scans are comparable, a scan
+  that stopped early is marked so in the picker, and the default pair is two
+  complete scans when a subject has them;
+- `radar.js`: the sweep history drops its private label for the shared
+  pill, and the Sweep button stops waiting once `scanIsActive` is false.
+
+The pill had three copies: `helpers.js`'s `statusPill` and two wasm-ui ports
+of it (the scan table's and Scan Settings'). All three needed the new class.
+Now `scan_state::status_pill` is the only one, and `helpers.js`'s
+`statusPill` calls it through `statusPillHtml`. `.s-interrupted` is styled in
+`app.css`, and dark mode reaches it through the theme's colour tokens.
+
+### Review
+
+An independent review of the first draft found four should-fix defects and
+six nits, none blocking. Each was checked against the code, and all are
+fixed here:
+
+1. `/radar/history` sent no flag. Fixed as above.
+2. An open Log tab never learned: it decided `live` once, at render, and a
+   restarted server opens a stream for any stored scan. Fixed by the
+   re-read after a reconnect.
+3. The regression above. Fixed by the runner.
+4. A queued scan the server was killed with stayed `pending`. Fixed by
+   `queue_scan` and by flagging `pending` rows.
+5. Gaps in the locks. The JS check now covers `interrupted`, a `.status`
+   inside `.includes(` and `switch (x.status)`. The pill lock now also scans
+   wasm-ui's production code, and both locks split a wasm-ui file at its
+   test module, not at its first `#[cfg(test)]`.
+6. `scanStats` repeated the active rule; it calls `scanIsActive`.
+7. `is_active`'s doc promised a climbing clock to `pending` scans.
+8. The pill test pinned only some classes; it pins every state's.
+9. The Log download ended with a `live` marker, and its tooltip said to
+   download again once the scan finishes. The marker now says
+   `interrupted`, and so does the tooltip.
+10. Compare's default pair could pick an interrupted scan.
+
+Copilot's review of PR #650 found two stale comments (`ui.js`, `spa.html`)
+still giving the navbar's breakpoint as 768px. Both now say 1100px, as the
+CSS does.
+
+**Residual.** Stop or Abort on a scan another `hse` process runs still
+answers 404: a server can only cancel the scans it runs. That was true
+before this change, and it is recorded as an open defect.
+
+### Locks
+
+- wasm-ui (native, run by CI and the gate): `scan_state`'s five tests, the
+  scan table's three, and Scan Settings' one.
+- `core::scan::runner`: the `/proc` parse (a command name with spaces and
+  parentheses); zombies are not running; this process is alive while a
+  recycled pid, another boot and an unread start time are not; a child is
+  alive until it exits.
+- `api::handlers`:
+  - `a_row_this_process_does_not_hold_is_histogrammed_as_interrupted`
+    (running and pending, with controls);
+  - `a_scan_another_live_process_runs_is_not_interrupted` (a real child
+    process, then killed);
+  - `without_a_registry_only_the_runner_can_vouch_for_a_scan`;
+  - `a_queued_scan_is_registered_before_its_row_is_written`, which holds a
+    write lock on the database from a second connection and checks the scan
+    is registered while its row cannot yet exist.
+- `storage`: the runner is stored and read back, and is absent from the
+  serialised `Scan`.
+- The export's `interrupted` reason, `/radar/history`'s flag, and the
+  engine's stamp.
+- The two route locks: no JS comparison of a scan's `.status` with a state,
+  and no wasm-ui production match of `Some("running"` or `Some("pending"`
+  outside `scan_state.rs`; the pill's markup exists once.
+
+Mutations, each applied alone to the final tree:
+
+| mutation | caught by |
+|---|---|
+| W1 `scan_state` ignores the flag | 4 wasm-ui tests |
+| W2 `interrupted` counts as active | 3 wasm-ui tests |
+| W3 the scan table drops the flag | `an_interrupted_row_offers_rescan_not_stop` |
+| W4 Scan Settings drops the flag | `an_interrupted_scans_status_row_says_interrupted` |
+| W5 the table's clock reads the raw status | `an_interrupted_scans_clock_does_not_climb` |
+| W6 the pill loses its `interrupted` class | 3 wasm-ui tests |
+| J1–J4 Scan Info, the log, the radar sweep and the compare picker decide from `.status` | the status lock, which names each line |
+| J5 `helpers.js` gets its own class map back | the pill lock |
+| J6 the tallies read `.status`; J7 Scan Info drops the notice | the runtime check, 2 of its 17 checks (no static test reaches either) |
+| R1 `queue_scan` writes the row before registering | `a_queued_scan_is_registered_before_its_row_is_written` |
+| R2 `/radar/history` sends raw rows | `the_radar_history_says_which_sweeps_were_interrupted` |
+| R3 a live runner in another process does not count | `a_scan_another_live_process_runs_is_not_interrupted` |
+| R4 only `running` rows qualify | `a_row_this_process_does_not_hold_is_histogrammed_as_interrupted` |
+| R5 the runner is serialised outward | `a_scans_runner_is_stored_with_its_row_and_serialised_nowhere_else`, and two more: the stored row then names `runner` twice and no longer reads back |
+| R6 the store writes the `Scan` alone | `a_scans_runner_is_stored_with_its_row_and_serialised_nowhere_else` |
+| R7 exports always say `live` | `an_interrupted_scans_export_says_interrupted_not_live` |
+| R8 the engine does not stamp its runner | `the_engine_records_itself_as_the_scans_runner` |
+| R9 liveness ignores the start time | `this_process_is_alive_and_a_recycled_pid_is_not` |
+
+W5 first survived: the clock test passed the state in, so a call site
+passing the raw status went unseen. `row_duration` now derives the state
+itself, and W5 is caught.
+
+### Runtime
+
+Every run uses a sandboxed `hse serve`, with no proxy and with auto-update,
+update notices and map tiles off. The scans run offline phone modules only.
+
+| check | before this change | first draft | final |
+|---|---|---|---|
+| 17 browser checks on a scan SIGKILLed mid-run | 3 | 17 | 17 |
+| positive control on a scan that really runs | 10 of 10 | 10 of 10 | 10 of 10 |
+| API: a scan the CLI runs, then the CLI SIGKILLed; 10 queued scans, then the server SIGKILLed and restarted; `/stats`; the log export | not run | 2 of 6 | 6 of 6 |
+| an open Log tab across a server SIGKILL and restart | not run | reads `live` again | reads `interrupted`, and stops |
+
+The first draft's 2 of 6 is the regression and the queued-scan gap,
+reproduced. It showed a scan the CLI was running as interrupted, left the two
+queued scans `pending` and not interrupted, bucketed them in `/stats` as
+pending, and ended the orphan's log with `live`. The Phase 1 shell check
+passed 51 of 51 on the final build, and the all-routes sweep's findings are
+identical to the pre-fix build's. No server panicked in any run.
+
+## REQ-SCANNAME-001 — New Scan collected a scan name and dropped it
+
+**Found** while rebuilding New Scan for the SpiderFoot 4.0 remake. SpiderFoot's
+New Scan asks for a Scan Name, and a scan is known by that name from then on:
+it titles the scan list's row and the scan's own page. HSE's form has the same
+field, and kept what the operator typed in `S.wizard.name`. Nothing read it:
+
+| where | what happened to the name |
+|---|---|
+| `submitWizard` and `submitBatch` (`new_scan.js`) | built the request from `buildWizardOptions()`, which never held the name; `submitWizard` then cleared the field |
+| `ScanOptions` | had no field for it, so no request could carry one |
+| the API | refused one: since REQ-SCANOPTS-001 an unknown `options` key is a 400 (`unrecognised options key(s): name`) |
+| `hse scan`, `hse live` | had no flag for it |
+| the scan list, Scan Info, Compare, the Live page | titled a scan by its target, the only label a scan had |
+
+So the field looked like it worked, and its value was thrown away.
+
+### Implemented
+
+- **Stored.** `ScanOptions.name` (`#[serde(default)]`). A scan's options are
+  its stored form, so the name is kept with the scan's row and survives a
+  restart. An older row reads back with no name, and the previous binary
+  reads a newer row and ignores the name. No migration.
+- **One visible line, checked where it enters.**
+  `ScanOptions::checked_for_request` cleans a name, then judges it:
+  - invisible formatting characters (zero-width characters, the byte order
+    mark, bidi overrides and isolates) are removed with the same
+    `core::validation::strip_invisible` a typed target goes through, so a
+    name can neither look blank nor render reversed;
+  - a tab, which a text field lets through from a paste, becomes a space;
+  - the name is trimmed, and a blank one is no name;
+  - any other control character, or a line or paragraph separator, is
+    refused (`ScanNameError::NotOneLine`), as is a name over
+    `MAX_SCAN_NAME_CHARS` (200) characters (`ScanNameError::TooLong`). Each
+    error's message says what is wrong and what to do.
+
+  It runs at every seam that takes a name: `scan_request_from_json` (a scan
+  and each batch item), `live_request_from_json`, and the CLI's `--name` on
+  `hse scan` and `hse live`. It is a seam check and not a serde rule for the
+  reason the unknown-key check is: `ScanOptions` is also the persisted form,
+  and a rule inside deserialisation would make a stored scan unreadable the
+  day it tightens.
+- **Sent.** `buildWizardOptions` carries the name, so both of New Scan's
+  buttons send it: one scan, and a batch, whose every item gets the name.
+  The field stops at 200 characters.
+- **Shown by one rule.** `wasm-ui/src/scan_label.rs`: `scan_label(name,
+  target, id)` titles a scan by its name, else its target, else its id, and
+  gives the target beside a named scan. The console reaches it as
+  `scanLabel(scan)`, which reads a scan or a live session (`scan_options`):
+  - the scan table (the scan list and the dashboard's Recent Scans), whose
+    first column is now headed Scan;
+  - Scan Info's header and crumbs;
+  - Compare's two pickers;
+  - the Live page's sessions.
+
+  Scan Settings has a Scan name row. The scan list's search box moved into
+  wasm-ui as `scanMatches(scan, query)`, which matches the name, target,
+  kind, shown state and id.
+- **Kept by a rerun**, which copies the options, as SpiderFoot's rerun keeps
+  the name.
+
+### Review
+
+An independent review found no blocking defect, three should-fix ones and
+some nits. Each was checked, and all but one are fixed here:
+
+1. Compare's pickers dropped the target of a named scan, so five subjects
+   each scanned as "Weekly check" gave ten options told apart only by date.
+   Fixed by `scan_label`'s target, which Compare now shows.
+2. The batch button still dropped the name. Fixed by moving the name into
+   `buildWizardOptions`, which both buttons send.
+3. Zero-width and bidi characters, and U+2028/U+2029, passed the one-line
+   rule: a name could show as blank, or reverse the text after it. Fixed by
+   the cleaning above.
+4. A pasted tab reached the server and came back as a 400. It now becomes a
+   space.
+5. Not fixed: a top-level `"name"` in a request body is ignored, because only
+   keys inside `options` are checked. Refusing unknown top-level keys changes
+   the public API, so it is recorded as an open defect that needs approval.
+6. Test gaps: a leftover 1.1 s sleep, a live refusal checked for its status
+   but not its reason, an assertion that always held, and no test of the
+   search box. All are fixed, and the search now has Rust tests.
+7. Docs: `ScanOptions`' "the engine respects every field" now excepts the
+   name, `docs/ROADMAP.md` no longer pins a field count that drifts, and
+   wasm-ui's module list names `scan_label`.
+8. `hse scan` had no `--name`, though its module doc promised every option,
+   and the Live page ignored a session's name. Both are fixed.
+
+### Locks
+
+- `core::scan`:
+  - `a_request_name_is_measured_in_characters_and_nothing_else_changes`;
+  - `a_request_name_is_one_visible_line`: invisible characters, bidi
+    overrides, tabs, U+2028/U+2029, CR, NEL and BEL, and the messages;
+  - the `checked_for_request` doctest.
+- `tests/api.rs`:
+  - `a_scan_keeps_the_name_it_was_created_with`: stored, cleaned, read back
+    by the scan and the list, kept by a rerun, carried by both items of a
+    batch;
+  - `a_blank_scan_name_is_no_name`: spaces, and invisible characters only;
+  - `a_scan_name_that_is_not_one_short_line_is_refused`: a scan, a batch
+    item and a live session each refuse, with the reason; exactly 200 is
+    taken.
+- CLI:
+  - `scan_and_live_take_a_name`: the flags parse;
+  - `build_live_scan_options_carries_a_checked_name`;
+  - `tests/cli_seed_validation.rs`
+    `scan_name_is_stored_cleaned_and_a_broken_one_refused`, which runs the
+    real binary: the JSON report carries the cleaned name, and a two-line
+    name exits non-zero with the reason.
+- wasm-ui:
+  - `scan_label`'s three tests;
+  - the scan table's `a_named_row_shows_its_name_and_its_target` and
+    `the_search_box_matches_what_the_row_shows`;
+  - Scan Settings' `scan_settings_shows_the_scans_name`.
+- `api::routes`: `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it`.
+  `buildWizardOptions` carries the name; both submit functions send exactly
+  its options; the field's `maxlength` is `MAX_SCAN_NAME_CHARS`; Scan Info,
+  Compare and Live use `scanLabel(`; and the scan list uses `scanMatches(`.
+
+### Mutations
+
+29 deliberate breakages, each applied alone to the finished change and run against the tests that own the behaviour. All 29 are caught.
+
+| breakage | caught by |
+|---|---|
+| N1 the scan seam does not check the name | `a_scan_keeps_the_name_it_was_created_with`, `a_blank_scan_name_is_no_name`, `a_scan_name_that_is_not_one_short_line_is_refused` |
+| N2 the live seam does not check the name | `a_scan_name_that_is_not_one_short_line_is_refused` |
+| N3 the name is not trimmed | `build_live_scan_options_carries_a_checked_name`, `a_request_name_is_one_visible_line` |
+| N4 the limit counts bytes | `a_request_name_is_measured_in_characters_and_nothing_else_changes` |
+| N5 control characters pass | `build_live_scan_options_carries_a_checked_name`, `a_request_name_is_one_visible_line` |
+| N6 line and paragraph separators pass | `a_request_name_is_one_visible_line` |
+| N7 the limit is off by one | `a_request_name_is_measured_in_characters_and_nothing_else_changes` |
+| N8 the name is never serialised | `a_scan_keeps_the_name_it_was_created_with`, `a_blank_scan_name_is_no_name`, `a_scan_name_that_is_not_one_short_line_is_refused` |
+| N9 a rerun drops the name | `a_scan_keeps_the_name_it_was_created_with` |
+| N10 invisible characters are kept | `a_request_name_is_one_visible_line` |
+| N11 a tab is refused, not a space | `a_request_name_is_one_visible_line` |
+| N12 hse scan drops --name | `scan_name_is_stored_cleaned_and_a_broken_one_refused` |
+| N13 hse scan does not check --name | `scan_name_is_stored_cleaned_and_a_broken_one_refused` |
+| N14 hse live drops --name | `build_live_scan_options_carries_a_checked_name` |
+| W1 the title ignores the name | `a_named_scan_is_called_by_its_name_and_shows_its_target`, `a_named_row_shows_its_name_and_its_target` |
+| W2 the name is not trimmed | `an_unnamed_scan_is_called_by_its_target_then_its_id` |
+| W3 the target repeats the title | `an_unnamed_scan_is_called_by_its_target_then_its_id`, `a_name_that_is_its_target_is_shown_once`, `a_named_row_shows_its_name_and_its_target` |
+| W4 a named row hides its target | `a_named_row_shows_its_name_and_its_target` |
+| W5 Scan Settings has no name row | `scan_settings_shows_the_scans_name` |
+| W6 Scan Settings does not escape the name | `scan_settings_shows_the_scans_name` |
+| W7 the search ignores the name | `the_search_box_matches_what_the_row_shows` |
+| W8 the search reads the stored status | `the_search_box_matches_what_the_row_shows` |
+| J1 the form drops the name | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+| J2 the field has no limit | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+| J3 the batch builds its own options | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+| J4 Scan Info titles by target | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+| J5 Compare titles by target | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+| J6 Live titles by target | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+| J7 the search box matches in JS | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+
+### Runtime
+
+Every run uses a sandboxed `hse serve`, with no proxy and with auto-update,
+update notices and map tiles off. Scans run the offline `phone_intl` module
+only. The browser drives the real New Scan form. Its request is intercepted
+only to pin the module list, and the name is the form's own.
+
+| check | before | after |
+|---|---|---|
+| New Scan to list, Scan Info, Settings and Compare; the API's limits (18 browser checks) | 4 of 18 | 18 of 18 |
+| the same after the review, plus the batch, Live, tab, invisible and bidi cases (23) | not run | 23 of 23 |
+| the same database after a server restart | not run | 12 of 12 |
+| a database the previous build wrote, opened by this one | not run | 6 of 6 |
+| a database this build wrote, opened by the previous build | not run | 4 of 4: every row loads, the name is ignored |
+| `hse scan --name "  CLI<TAB><run>  "`, then a two-line name | not run | stored as `CLI <run>`; the second exits 1 with the reason and stores nothing |
+
+Before the fix the form never sent the name, and the API refused one as an
+unknown option key. The 4 checks that passed are the ones a nameless build
+also satisfies: the scan was queued, it still showed its target, the
+unnamed scan was titled by its target, and there were no page errors. No
+server panicked in any run.
+
+---
+
+## REQ-KEYPOOL-003 — a key pool file that would not load was destroyed
+
+**Requirement.** A key pool file HSE cannot load may still hold keys, so it is
+never destroyed. It is moved aside to a name that holds nothing yet, or, if it
+cannot be moved, it is left in place, nothing is saved over it, and the
+operator is told.
+
+**Defect.** `util::key_pool::persistence::backup_and_fresh` ran whenever the
+pool file existed but could not be loaded: corrupt JSON (a hand edit gone
+wrong), bytes that are not UTF-8, or a failed read. It did this:
+
+```rust
+let backup = path.with_extension("json.bak");
+let _ = std::fs::rename(path, &backup);
+KeyPool::new()
+```
+
+Two ways to lose keys followed:
+
+- **Every backup had the same name.** On Linux a rename replaces its
+  destination, so a second unusable pool file replaced the first backup, and
+  every key in it.
+- **A failed rename was ignored.** The warning just logged said "backing up",
+  the empty pool was returned all the same, and the next save (a harvested key,
+  `hse keys add`) atomically replaced the file that had not been moved. A
+  directory at `key_pool.json.bak` is enough to make the rename fail.
+
+On the build before this fix, both happened at runtime: after two unusable
+files in turn, `.bak` held only the second; with a directory at `.bak`, `hse
+keys add` replaced the unreadable file; and with every backup name taken, the
+older `.bak` was replaced and the add reported success.
+
+**Fix.**
+
+- `claim_backup_name` claims the first free name of `key_pool.json.bak`, then
+  `.bak.1` up to `.bak.999`, by creating it with `create_new`, which fails if
+  anything is there. The rename then replaces only that empty placeholder, so a
+  backup never replaces anything, even with two `hse` processes loading the
+  same broken file at once. (The first draft checked the name, then renamed;
+  the review found another process could take the name in between.) A failed
+  rename gives the placeholder back.
+- When the file cannot be moved aside, or no name is free, it stays where it
+  is. The pool returned in its place is `KeyPool::never_saved`, and every save
+  refuses with the reason: why the file would not load, why it would not move,
+  and the remedy, "repair or move it, then restart hse". The one failure that
+  leaves nothing to protect is the file being gone already (another process
+  moved it first); then the empty pool saves as usual.
+- The refusal is visible where a change is made: `KeyPool::save_refusal()`.
+  Every `hse keys` command prints it first, and the web key editor's add,
+  revoke and rotate answer 409 with it instead of a 200 for a change that lasts
+  only until the process exits. It is logged as an error when it is decided,
+  and as a warning by each scan's end-of-scan save, but not by the saves that
+  follow each harvested key or key status change, which would bury it.
+- All saves go through `save_pool_to(pool, path)`, the counterpart of
+  `load_pool_from(path)` the write side lacked, so the refusal has one place to
+  live, and it runs before anything touches the disk.
+
+The first draft of this change reused the id `REQ-KEYPOOL-002`, which already
+names another defect; the review caught it.
+
+**Locks** (`util::key_pool::tests`):
+
+- `a_second_unusable_pool_file_does_not_replace_the_first_backup`: two unusable
+  files in turn; the first survives in `.bak` and the second goes to `.bak.1`.
+  The fresh pool then saves normally and touches no backup.
+- `a_backup_name_held_by_a_directory_is_skipped`: a directory at `.bak`; the
+  file goes to `.bak.1` and is no longer where a save would replace it.
+- `when_every_backup_name_is_taken_nothing_is_replaced`: `.bak` to `.bak.999`
+  all exist; the older backup keeps its bytes, the file stays, and the save is
+  refused.
+- `a_pool_file_that_cannot_be_moved_aside_is_never_saved_over`: a failing
+  rename is injected; a key is added; the save is refused with both reasons and
+  the remedy, the file keeps its bytes, and the claimed name is given back.
+  "Not found" from the move while the file is still there is refused too; a
+  file that is really gone lets the pool save.
+
+**Not locked by a test: where the refusal is shown.** The web handlers and
+`hse keys` read the process-wide pool, which no test can point at a broken
+file without touching every other test's pool. Both are checked at runtime
+instead (below): the console's add, rotate and revoke each answer 409 over a
+pool file that must be kept, and `hse keys add` fails with the reason.
+
+### Mutations
+
+11 deliberate breakages, each applied alone to the finished change and run against the tests that own the behaviour: the unit tests for K1 to K8, and for K9 to K11, which break the console handlers, a binary built with the breakage and the runtime check below. All 11 are caught.
+
+| breakage | caught by |
+|---|---|
+| K1 a backup name already taken is reused | `a_second_unusable_pool_file_does_not_replace_the_first_backup`, `when_every_backup_name_is_taken_nothing_is_replaced` |
+| K1b every backup is .json.bak again | `a_backup_name_held_by_a_directory_is_skipped`, `a_second_unusable_pool_file_does_not_replace_the_first_backup`, `when_every_backup_name_is_taken_nothing_is_replaced` |
+| K3 a failed move is ignored again | `when_every_backup_name_is_taken_nothing_is_replaced`, `a_pool_file_that_cannot_be_moved_aside_is_never_saved_over` |
+| K4 save ignores a pool that must not be saved | `a_pool_file_that_cannot_be_moved_aside_is_never_saved_over`, `when_every_backup_name_is_taken_nothing_is_replaced` |
+| K5 a file already gone still blocks saves | `a_pool_file_that_cannot_be_moved_aside_is_never_saved_over` |
+| K6 NotFound while the file is there blocks nothing | `a_pool_file_that_cannot_be_moved_aside_is_never_saved_over` |
+| K7 the claimed name is not given back | `a_pool_file_that_cannot_be_moved_aside_is_never_saved_over` |
+| K8 the numbered names never run out | `when_every_backup_name_is_taken_nothing_is_replaced` |
+| K9 the web add answers 200 over a pool it cannot save | the runtime check alone (below): the console's pool add is a 409 |
+| K10 the web rotate answers 200 over a pool it cannot save | the runtime check alone: rotate is a 409 |
+| K11 the web revoke answers 200 over a pool it cannot save | the runtime check alone: revoke is a 409 |
+
+### Runtime
+
+Run against a scratch `HOME` with `hse keys` from the build before the fix and
+from this one, and against a sandboxed `hse serve` for the console's pool
+routes. The server binary is a copy outside any source tree, with auto-update,
+update notices and the map-tile fetch switched off.
+
+| check | before | after |
+|---|---|---|
+| two unusable pool files in turn: the first backup keeps its bytes | fail | pass |
+| the second goes to `.bak.1` | fail | pass |
+| a directory at `.bak`: the unreadable file survives `hse keys add` | fail | pass |
+| every backup name taken: the older `.bak` keeps its bytes | fail | pass |
+| the unreadable file is not saved over | fail | pass |
+| `hse keys add` fails with the reason | fail (exit 0) | pass |
+| console pool add over a pool it cannot save: 409 that says so | fail (200) | pass |
+| rotate: 409 | fail (200) | pass |
+| revoke: 409 | fail (200) | pass |
+| the unreadable file is not saved over by the server | fail | pass |
+| **total** | **0 of 10** | **10 of 10** |
+
+The three console checks are the only ones that reach the handlers' 409
+(no unit test can point the process-wide pool at a broken file), so each
+handler's check was also broken on purpose and built into the binary: K9 to
+K11 in the table above, each caught by its console check alone.
+
+What the operator sees, from `hse keys add` with every backup name taken (the
+path shortened):
+
+```text
+warning: the key pool at ~/.huntsman/key_pool.json could not be loaded (key must be a string at line 1 column 3) or moved aside (no usable backup name from ~/.huntsman/key_pool.json.bak to .bak.999). It is left in place, and nothing is saved over it: repair or move it, then restart hse
+error: save: the key pool at ~/.huntsman/key_pool.json could not be loaded (…) or moved aside (…). It is left in place, and nothing is saved over it: repair or move it, then restart hse
+```
+
+It exits 1, and the file keeps its bytes. With one backup name freed by hand
+(`.bak.7`), the next `hse keys list` moved the file there, bytes intact, and
+started from an empty pool; `hse keys add` then saved, and a new process read
+the key back.
+
+---
+
+## REQ-SETTINGS-001 — a settings file that did not parse reset every switch the operator had set
+
+**Requirement.** The operator's switches in `~/.huntsman/settings.json` are
+never replaced by defaults behind their back. A file that exists and cannot be
+read or parsed stops `hse` with the reason, and is never written over.
+
+**Defect.** `util::settings::read_map` read the file like this:
+
+```rust
+std::fs::read_to_string(path).ok()
+    .and_then(|s| serde_json::from_str(&s).ok())
+    .unwrap_or_default()
+```
+
+Its doc said toggles are "never load-bearing state, so a parse error is
+non-fatal". But the file holds kill-switches, and several default to on. On the
+build before this fix, with a trailing comma in a file that turned three of
+them off:
+
+```text
+$ cat ~/.huntsman/settings.json
+{"feature.auto_update":false,"feature.map_tiles":false,"feature.live_radar":false,}
+$ hse config
+Capability toggles — set with `hse config <key> <on|off>`
+
+Features:
+  feature.live_radar         ● on
+  feature.map_tiles          ● on
+  …
+  feature.auto_update        ● on
+  …
+$ hse config feature.regional off        # exit 0
+feature.regional = ○ off
+$ cat ~/.huntsman/settings.json
+{
+  "feature.regional": false
+}
+```
+
+Nothing was logged at any level. So a typo re-enabled self-update (a `git
+pull` and rebuild), the outbound map-tile fetch and the live radar, and the
+next write replaced the file, losing the three switches for good.
+
+**Fix.**
+
+- `load_map` returns `Result<_, SettingsError>`: an empty map when there is no
+  file, and `SettingsError::Read` or `SettingsError::Parse`, carrying the path
+  and the cause, when there is one it cannot use. The message names the file and
+  the fix: repair it, or move it aside to start from the defaults. An empty file
+  and a leading byte-order mark hold no switch, so they read as no overrides.
+- `settings::load()` reads the file into the in-process cache, or returns that
+  error and leaves the cache as it was. `cli::run` calls it straight after the
+  command line is parsed, before anything reads a toggle (the self-update check
+  reads one). Every command, `hse serve` included, stops with the error, as git
+  does with a malformed config. `--help` and `--version` still work, and so do
+  the two commands install.sh runs that read no switch: `hse build-sha`, which
+  verifies a new binary, and `hse provision --env-only`, which merges the env
+  file.
+- `set_bool`, behind `hse config` and `PUT /api/v1/settings/toggles`, reads the
+  file again, sets the one switch, writes the file, and only then replaces the
+  cache. A file it cannot read is refused and kept, and nothing changes in the
+  process either. Reading the file rather than writing the cache out also keeps
+  a switch set in the file since the process loaded it: `hse config` run while
+  `hse serve` ran was undone by the server's next toggle write, the same silent
+  loss of a switch.
+- One writer lock covers the file read through the cache swap, for `load` and
+  `set_bool` alike, so a load never puts back a map a toggle write has just
+  replaced. Toggle reads take only the cache's read lock and never wait on the
+  file. The cache is a `OnceLock` that `load` fills directly, so each command
+  reads the file once.
+- The toggle PUT answers a settings file it cannot use with 409 and the error,
+  not 400: nothing was wrong with the request.
+- `apply_update`, behind `hse update` and the console's update button, loads
+  the settings file before anything is replaced, and logs the refusal: `hse
+  serve` restarts into the updated binary, which stops on a file that does not
+  parse, so an update over one would leave the server down.
+- `hse serve`'s update timer reads the file again before it decides
+  (`app::update::timer_update`), so `hse config feature.auto_update off`, run
+  since the server started, stops the update, and a file that no longer parses
+  sets the update status to the error instead.
+- `capability_probe`'s drift cache, a true cache, stays non-fatal. Its comment
+  no longer claims to mirror the settings reader.
+
+**Locks.**
+
+- `util::settings::tests`:
+  - `a_settings_file_that_does_not_parse_is_an_error_not_an_empty_map`: no file
+    is no overrides; a trailing comma is `SettingsError::Parse`, and the message
+    names the file and the fix; a name taken by a directory is
+    `SettingsError::Read`; a valid file reads back.
+  - `a_write_never_replaces_a_settings_file_that_does_not_parse`, against a
+    scratch cache and file: a write over a trailing comma is
+    `SettingsError::Parse`, the file keeps its bytes, and the cache holds the
+    same map; an unfilled cache stays unfilled. Repaired by hand with a switch
+    the cache never held, the write keeps that switch, and the cache becomes
+    the file. With no file, the one switch is written. A write that fails (its
+    directory is gone) is `SettingsError::Write` and leaves the cache as it
+    was.
+  - `load_reads_the_file_into_the_cache_or_leaves_it`: a file that does not
+    parse leaves a filled cache and an unfilled one as they were; a valid file
+    fills or replaces it; no file empties it.
+  - `an_empty_file_and_a_byte_order_mark_are_no_reason_to_stop`.
+- `app::update::tests::the_update_timer_decides_by_the_settings_file_as_it_is_now`:
+  with commits waiting, the timer loads the file before it reads the switch,
+  and decides by that read; a file that cannot be used refuses the update with
+  the reason; with nothing waiting, the file is not read.
+- `api::settings_handlers::tests`
+  `a_toggle_refused_over_an_unusable_settings_file_is_a_conflict`: a parse or
+  read refusal is a 409 whose error names the file and the fix; a failed write
+  is a 400.
+- `tests/cli_seed_validation.rs`
+  `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` runs a copy of
+  the binary from a scratch directory, outside any source tree. `hse config`
+  and `hse config feature.regional off` both exit non-zero, with the file and
+  the fix on stderr, and the file is unchanged. The self-update's check stamp
+  is never written, so the file is refused before the self-update reads a
+  switch. `hse build-sha` gives the same exit code and output as in a home with
+  no settings file, and `hse provision --env-only --dry-run` succeeds. Once the
+  file is repaired, `hse config` shows the three switches off, and the stamp is
+  written: the control that the stamp check can fail.
+
+**Not locked by a test: the `apply_update` guard.** A test that got past the
+guard, on a regression, would run a real `install.sh` from the source tree the
+test binary is built in. It is checked at runtime instead, from a copy of the
+binary outside any source tree, where no install can start (below).
+
+**What remains.**
+
+- There is no lock across processes: `hse config` and a console toggle at the
+  same instant can still lose one change, and a running server sees a switch
+  set by `hse config` only at its next toggle write or update check.
+- The guard runs once, before the install. A file broken during a long source
+  build still meets the restart.
+- install.sh stops a running `hse-bg` to restart it on the new build. Over a
+  settings file that does not parse, the new server refuses to start, and
+  `hse-bg start` says so ("hse serve died at startup", with the reason in
+  `~/.cache/hse-bg.log`), until the file is repaired.
+
+### Mutations
+
+20 deliberate breakages, each applied alone to the finished change and run against the tests that own the behaviour: the unit and binary tests for S1 to S13, and for S14, which removes the `apply_update` guard no test may reach, a binary built with the breakage and the runtime check below, run from a copy outside any source tree. All 20 are caught.
+
+| breakage | caught by |
+|---|---|
+| S1 no startup load | `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` |
+| S1b the load runs after the self-update | `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` |
+| S1c build-sha is refused too | `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` |
+| S1d provision --env-only is refused too | `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` |
+| S2 a file that does not parse is no overrides again | `a_settings_file_that_does_not_parse_is_an_error_not_an_empty_map`, `an_empty_file_and_a_byte_order_mark_are_no_reason_to_stop`, `a_write_never_replaces_a_settings_file_that_does_not_parse`, `load_reads_the_file_into_the_cache_or_leaves_it` |
+| S2b the same, seen by the binary | `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` |
+| S3 a write replaces a file it cannot read | `a_write_never_replaces_a_settings_file_that_does_not_parse` |
+| S3b a write writes the cache out, not the file | `a_write_never_replaces_a_settings_file_that_does_not_parse` |
+| S3c the cache changes before the write | `a_write_never_replaces_a_settings_file_that_does_not_parse` |
+| S3d a refused write is in effect anyway | `a_write_never_replaces_a_settings_file_that_does_not_parse` |
+| S4 an unreadable file is a fresh start | `a_settings_file_that_does_not_parse_is_an_error_not_an_empty_map` |
+| S5 the message drops the fix | `a_settings_file_that_does_not_parse_stops_hse_and_is_kept` |
+| S6 a load that fails empties the cache | `load_reads_the_file_into_the_cache_or_leaves_it` |
+| S7 a load does not fill the cache | `load_reads_the_file_into_the_cache_or_leaves_it` |
+| S8 the refusal is a 400 again | `a_toggle_refused_over_an_unusable_settings_file_is_a_conflict` |
+| S10 an empty file stops hse | `an_empty_file_and_a_byte_order_mark_are_no_reason_to_stop` |
+| S11 a byte-order mark stops hse | `an_empty_file_and_a_byte_order_mark_are_no_reason_to_stop` |
+| S12 the timer decides on the stale cache | `the_update_timer_decides_by_the_settings_file_as_it_is_now` |
+| S13 the timer reads the file with nothing to install | `the_update_timer_decides_by_the_settings_file_as_it_is_now` |
+| S14 an update starts over a settings file that does not parse | the runtime check alone (below): the console's update is refused, naming the file |
+
+### Runtime
+
+Run against a scratch `HOME` whose `settings.json` turns off auto-update,
+update notices and the map-tile fetch, with the build before this fix (the
+merged base) and this one. The server checks use a copy of the binary outside
+any source tree, so an update it is asked for can find nothing to install.
+
+| check | before | after |
+|---|---|---|
+| a trailing comma: `hse config` stops (non-zero) | fail (exit 0) | pass |
+| the error names the file and the fix | fail | pass |
+| no switch is shown reset to on | fail | pass |
+| `hse config feature.regional off` is refused | fail (exit 0) | pass |
+| the file keeps its bytes | fail (replaced) | pass |
+| the self-update never ran on it (no check stamp) | fail (stamp written) | pass |
+| `hse scan` does not run on reset switches | fail (exit 0) | pass |
+| control: `hse build-sha` answers as it does with no settings file | pass | pass |
+| control: repaired, the three switches read off | pass | pass |
+| control: `hse serve` starts on a file that parses | pass | pass |
+| `PUT /api/v1/settings/toggles` over a broken file: 409 | fail (200) | pass |
+| the 409 names the file and the fix | fail | pass |
+| the broken file keeps its bytes | fail | pass |
+| the refused switch is not in effect | fail | pass |
+| the console's update is refused before it starts, naming the file | fail ("No local source found") | pass |
+| repaired, a toggle write keeps a switch set in the file meanwhile | fail | pass |
+| and the server serves what it wrote | fail | pass |
+| after a restart, both switches read on | fail | pass |
+| `hse serve` does not start on a file that does not parse | fail (starts) | pass |
+| **total** | **3 of 19** | **19 of 19** |
+
+Across versions, on one settings file: this build's `hse config` write was
+read back by the build before it, and that build's write by this one, every
+switch kept both ways. The file format did not change.
+
+---
+
+## REQ-INGEST-001 — an unread image's file path came back as findings
+
+**Requirement.** An image whose text cannot be read contributes no text.
+`hse ingest` never mines a stand-in for the text it could not read, and a
+failure to read it is the command's failure, reported with its cause.
+
+**Defect.** When OCR failed, for any reason, `cli::ingest::run` swallowed the
+error and mined this sentence as if it were the image's text:
+
+```rust
+text: format!("OCR unavailable for {}", args.file.display()),
+```
+
+The sentence carries the file's path, and a path is full of things the
+extractor finds. On the build before this fix, on a host without tesseract,
+`hse ingest -f <dir>/case-jane.doe@contoso-files.net/scan-of-id.png` exited 0
+and printed:
+
+| kind | value | confidence |
+|---|---|---|
+| email | `case-jane.doe@contoso-files.net` | 0.85 |
+| domain | `contoso-files.net` | 0.80 |
+| domain | `scan-of-id.png` | 0.75 |
+
+With `--auto-scan` it stored all three as a completed scan, which every view
+and export then presents as findings. The OCR module logged why it failed, as a
+warning, but the typed error was dropped and the command reported success.
+
+The review of the first draft of this fix found four more faults in the same
+path, all fixed here:
+
+- `ocr_image` asked `which tesseract` first, and read any failure as "not
+  installed", so a host without `which` was told to install a tesseract it had.
+- A missing file was reported as an OCR fault ("tesseract is not installed").
+- `OcrFailed` kept only tesseract's exit code, and a launch failure read "IO
+  error: Permission denied", naming neither tesseract nor the cause.
+- Reverse-search variants counted as work left even when saved nowhere, so an
+  unreadable image "succeeded" with nothing, and `--auto-scan` stored an empty
+  scan that reads as "looked, found nothing".
+
+Two docs were also wrong: the OCR module promised a "pure-Rust fallback" that
+does not exist (an older ledger entry repeats the claim), and `OcrUnavailable`
+said "image processing disabled", which is not true of EXIF geolocation or
+variants.
+
+**Fix.**
+
+- An image's OCR error is held while the image work that needs no text runs:
+  EXIF geolocation, and variants saved to `--image-variant-output-dir`. If that
+  work finds no entity and writes no variant, or none was asked for, the OCR
+  error is the command's: `hse ingest` exits 1 with it, and writes and stores
+  nothing. Otherwise the ingest completes, with a warning that no text was read.
+- The file is checked before OCR, so a path that is not there says so.
+- There is no `which` probe. Tesseract is spawned directly, and a spawn that
+  fails is `OcrUnavailable` only when no file of that name is on `PATH`; a
+  tesseract that is there and will not start (no permission, a missing
+  interpreter, too few resources) is the new `OcrStart`, with the cause.
+- `OcrFailed` carries the end of tesseract's stderr, on one line and at most
+  300 characters, which is where it says why it refused an image. Tesseract's
+  output is read as lossy UTF-8, so one stray byte costs a character, not the
+  page.
+- `OcrUnavailable` says what is missing and how to install it: "OCR not
+  available: tesseract is not installed, so no text can be read from an image
+  (Termux: pkg install tesseract)".
+- The OCR module's docs say there is no fallback, `ocr_image` documents the
+  errors it returns, and `hse ingest --help` says what happens to an unreadable
+  image.
+
+**Locks.**
+
+- `cli::ingest::tests::an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path`
+  calls `run`, the function the CLI dispatches to. An unreadable image (a bare
+  PNG signature, which no OCR reads, so the test holds with or without
+  tesseract) fails with the OCR error itself and writes nothing, whether text
+  alone, EXIF, or unsaved variants were asked for. A real 64-pixel image with
+  its variants saved succeeds, and so does a JPEG whose EXIF carries a GPS fix,
+  which is found; neither yields a finding from its path. A path that is not
+  there fails as "not found", not as an OCR fault.
+- `document_parse::ocr::tests`:
+  - `a_program_that_is_there_but_will_not_start_is_not_reported_as_missing`: a
+    script whose interpreter is missing and a file without permission to run
+    are both `OcrStart`.
+  - `a_refusal_keeps_the_end_of_stderr_on_one_line`.
+  - The existing `only_an_absent_binary_is_reported_as_missing` still holds
+    without the `which` probe.
+- `tests/cli_seed_validation.rs`
+  `ingest_of_an_image_it_cannot_read_says_why_and_finds_nothing` runs the real
+  binary with `PATH` set to an empty directory, so the host has no tesseract,
+  plain, with `--auto-scan` and with `--extract-geolocation`. Each exits
+  non-zero, stderr carries the reason and the fix, and stdout carries no
+  finding.
+- `tests/cli_seed_validation.rs`
+  `ingest_reports_tesseracts_own_reason_for_refusing_an_image` puts a stand-in
+  `tesseract` on `PATH` that exits 1 with tesseract's usual complaint; the
+  command's error carries it.
+
+### Mutations
+
+11 deliberate breakages, each applied alone to the finished change and run against the tests that own the behaviour. All 11 are caught.
+
+| breakage | caught by |
+|---|---|
+| I1 an unread image is an empty success again | `an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path` |
+| I1b the same, seen by the binary | `ingest_reports_tesseracts_own_reason_for_refusing_an_image`, `ingest_of_an_image_it_cannot_read_says_why_and_finds_nothing` |
+| I2 saved variants are not a result | `an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path` |
+| I3 an EXIF fix is not a result | `an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path` |
+| I4 written variants are not recorded | `an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path` |
+| I5 a missing path is an OCR fault | `an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path` |
+| I6 the stand-in text is mined again | `an_image_whose_text_cannot_be_read_yields_no_findings_from_its_path` |
+| I7 installed but unstartable reads as not installed | `a_program_that_is_there_but_will_not_start_is_not_reported_as_missing` |
+| I8 a start failure is a bare IO error | `a_program_that_is_there_but_will_not_start_is_not_reported_as_missing` |
+| I9 tesseract's reason is dropped | `ingest_reports_tesseracts_own_reason_for_refusing_an_image` |
+| I10 the message drops the fix | `ingest_of_an_image_it_cannot_read_says_why_and_finds_nothing` |
+
+### Runtime
+
+Run against a scratch `HOME` with `PATH` set to an empty directory, so the host
+has no tesseract, on the build before this fix (the merged base) and this one.
+The images sit in a folder named `case-jane.doe@contoso-files.net`: a bare PNG
+signature, and `holiday.jpg`, a real JPEG with an EXIF GPS fix (27°28'35"S,
+153°0'59"E) spliced in as a camera writes it.
+
+| check | before | after |
+|---|---|---|
+| `hse ingest -f scan-of-id.png` fails | fail (exit 0) | pass |
+| the reason and the fix are on stderr | fail | pass |
+| the path is not a finding | fail (the email at 0.85) | pass |
+| `--auto-scan` fails and prints no finding | fail (exit 0) | pass |
+| `--auto-scan` stores no scan | fail (a scan stored) | pass |
+| `--extract-geolocation` on the PNG, which has no EXIF, fails the same way | fail (exit 0) | pass |
+| `--extract-geolocation`: the path is not a finding | fail | pass |
+| `--extract-geolocation` on the photo yields its GPS fix and nothing from its path | fail (the folder's email and `holiday.jpg` as a domain beside the fix) | pass |
+| control: a text file still yields its email | pass | pass |
+| **total** | **1 of 9** | **9 of 9** |
+
+---
+
+## REQ-CLI-HINTS-001 — the hint after a stored scan named a command `hse` does not have
+
+**Requirement.** Every command the CLI tells the operator to run exists, and
+does what the hint says.
+
+**Defect.** Three commands store a scan without running one: `hse import`,
+`hse ingest --auto-scan` and `hse investigate --auto-scan`. Each ends with the
+one summary `app::persist::PersistedBatch::summary_lines` writes, and that
+summary ended "view with `hse list`". There is no list command. On the build
+before this fix:
+
+```text
+$ hse import dossier.txt
+  Stored:    scan import-dossier-cfe013b9…4c7 (2 entities, 1 relations, 0 correlations) — view with `hse list`
+  …
+$ hse list
+error: unrecognized subcommand 'list'          (exit 2)
+```
+
+The help promised the same command: `hse ingest --help` and `hse investigate
+--help` said `--auto-scan` scans "show in `hse list`". `hse query --help`
+compared `query` to `hse search`, which does not exist either. Developer-facing
+texts carried the same drift: a comment in `cli::logging` named a `hse logs`
+command, and the docs of `persist_entities_as_scan`, `persist_import` and
+`cli::ingest` said a stored scan appears in `hse list`.
+
+**Fix.**
+
+- `app::persist::view_command(scan_id)` is the one hint:
+  `hse export -s <id> -f full`, the dossier of everything the scan holds.
+  `summary_lines` ends with it, so the three commands print it for the scan
+  they stored.
+- `hse ingest --auto-scan` prints its summary, hint included, to stderr. It
+  was a log event (`info!`, and `warn!` for an incomplete scan), so
+  `RUST_LOG=off` hid the stored scan's id, and by default it sat inside a JSON
+  log line. Stdout still carries only the extracted entities.
+- The `--auto-scan` help of `hse ingest` and `hse investigate` quotes the same
+  command. `hse query --help` compares itself to a scan's search-engine module
+  (`hse scan`), which is what builds the `site:`/`intext:` dorks it describes.
+- The `hse logs` comment names the web log endpoints instead, and those docs
+  name no list command.
+- Developer docs that wrote `hse export {id}` with a positional id now write
+  `hse export -s <id>`, and `docs/TROUBLESHOOTING.md`'s not-implemented banner
+  lists `hse scan --dry-run` with the other flags that do not exist.
+- `hse export --help` lists `events` among the formats, as the export's own
+  error message already did.
+- `hse investigate --auto-scan` prints a failure to store on stderr too, as
+  ingest does; it was a log event that `RUST_LOG=off` hid.
+
+**Review.** An independent review of the first draft found the hint named
+`-f report`, which leaves out relations (which the summary beside the hint
+counts) and infrastructure and candidate rows; it names `-f full`. A second
+review, of the re-port, found a test helper that would not compile (`Result`
+in `cli::tests` is the crate's one-parameter alias), a missed `hse export {id}`
+doc, `investigate`'s store failure left to the log, a help-quote test that
+passed if its pages were renamed, and gaps in the command checker: a
+positional id after a command that takes none passed, `--version` passed below
+the root, and `hse help …` and `[--yes]` would have been refused. All are
+fixed.
+
+This change was drafted before `main` (#649) was merged. #649 gathered the
+three summaries into `summary_lines`, so the hint moved there, and it had
+already fixed two things the draft also fixed: `persist_entities_as_scan`'s
+doc and return value, and `hse import`'s one-second scan ids.
+
+**Locks.**
+
+- `cli::tests::the_stored_scan_hint_reads_that_scan_back` parses the hint with
+  the CLI's own parser: it is `hse export` of that scan in the `full` format.
+- `cli::tests::every_command_the_help_names_exists` renders every help page from
+  the CLI definition, the root, hidden commands and nested subcommands included.
+  Each quoted `hse …` command is followed through its subcommands (names and
+  aliases); each flag it passes must be one that command takes, a flag that
+  takes a value takes the next word, and any other word is a positional
+  argument, which only a command that has one may take. A misspelt subcommand
+  of a command that is only a group (`hse keys lsit`) fails too. The test also
+  checks the checker: a phantom command, flag and nested subcommand, a
+  positional id `export` does not take and `--version` below the root are
+  refused; real ones, `--format=full`, `[--yes]` and `hse help keys set` pass.
+- `cli::tests::the_auto_scan_help_quotes_the_stored_scan_hint`: the two
+  `--auto-scan` help texts quote `view_command("<id>")` exactly.
+- `app::persist`'s summary test expects the new hint on a whole batch's line.
+- `tests/cli_seed_validation.rs` `every_stored_scan_hint_reads_that_scan_back`
+  runs the real binary three times, with logging off: `hse import` of a dossier,
+  `hse investigate --auto-scan` and `hse ingest --auto-scan`. Each time it runs
+  the command the hint names and reads the stored scan's id and entity count
+  from the dossier.
+
+**Not locked by a test: the store-failure lines.** `hse ingest --auto-scan`
+and `hse investigate --auto-scan` each print "could not store the extracted
+entities" on stderr when the store refuses the batch. No test reaches either
+line: making the store refuse from outside the process stops the command
+before it gets there. The binary test reaches only the stored-scan summary.
+
+### Mutations
+
+15 deliberate breakages, each applied alone to the finished change and run against the tests that own the behaviour. All 15 are caught; every file was restored byte for byte afterwards.
+
+| breakage | caught by |
+|---|---|
+| H1 the hint names the list command | `the_stored_scan_hint_reads_that_scan_back`, `the_auto_scan_help_quotes_the_stored_scan_hint` |
+| H1b the same, seen by the binary | `every_stored_scan_hint_reads_that_scan_back` |
+| H2 the hint drops the scan id | `the_stored_scan_hint_reads_that_scan_back`, `the_auto_scan_help_quotes_the_stored_scan_hint` |
+| H3 the hint names the report format | `the_stored_scan_hint_reads_that_scan_back`, `the_auto_scan_help_quotes_the_stored_scan_hint` |
+| H4 the summary names the list command | `an_import_summary_counts_the_batch_it_stored_and_states_a_skip_once` |
+| H4b the same, seen by the binary | `every_stored_scan_hint_reads_that_scan_back` |
+| H5 import rewrites the hint | `every_stored_scan_hint_reads_that_scan_back` |
+| H6 investigate rewrites the hint | `every_stored_scan_hint_reads_that_scan_back` |
+| H6b ingest rewrites the hint | `every_stored_scan_hint_reads_that_scan_back` |
+| H7 ingest logs its summary instead of printing it | `every_stored_scan_hint_reads_that_scan_back` |
+| H8 the query help names the search command | `every_command_the_help_names_exists` |
+| H9 a help example passes a flag export does not have | `the_auto_scan_help_quotes_the_stored_scan_hint`, `every_command_the_help_names_exists` |
+| H10 the help quotes another command than the hint | `the_auto_scan_help_quotes_the_stored_scan_hint` |
+| H11 the checker lets any command take a positional | `every_command_the_help_names_exists` |
+| H12 the checker reads a flag value as a positional | `every_command_the_help_names_exists` |
+
+### Runtime
+
+Run against a scratch `HOME` on the build before this fix (REQ-INGEST-001's)
+and this one. Each hint is run as the next command, in a new process, and must
+read back the scan the first command stored: its id, and at least one entity.
+
+| check | before | after |
+|---|---|---|
+| `hse import dossier.txt`: the hinted command reads the stored scan | fail (`hse list`, exit 2) | pass |
+| `hse investigate … --auto-scan`: the same | fail (`hse list`, exit 2) | pass |
+| `hse ingest -f notes.txt --auto-scan`: the same | fail (`hse list`, exit 2) | pass |
+| `hse ingest --help` quotes the command the hint prints | fail (`hse list`) | pass |
+| `hse investigate --help` quotes it | fail (`hse list`) | pass |
+| `hse query --help` names no `hse search` | fail | pass |
+| `hse export --help` lists the `events` format | fail | pass |
+| **total** | **0 of 7** | **7 of 7** |
+
+With `RUST_LOG=off`, `hse ingest -f notes.txt --auto-scan` on the build before
+stored a scan and printed nothing about it: stderr was empty. On this build it
+prints one line on stderr, the stored scan's id and the hint, and stdout
+carries the two extracted entities, as before.

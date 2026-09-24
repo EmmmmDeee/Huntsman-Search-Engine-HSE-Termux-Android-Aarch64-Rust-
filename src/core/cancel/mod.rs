@@ -42,7 +42,7 @@ impl CancelHandle {
 /// map IS the one plumbed through that scan's `ModuleContext`, so calling
 /// `.cancel()` on it stops the scan at the engine's next poll point.
 ///
-/// ONE registry, whichever path spawned the scan: `api::handlers::spawn_scan`
+/// ONE registry, whichever path spawned the scan: `api::handlers::queue_scan`
 /// installs an entry for a one-shot scan and `core::live`'s session loop
 /// installs one per live iteration, each held (via [`CancelRegistryGuard`])
 /// from before the engine starts until after its final status write.

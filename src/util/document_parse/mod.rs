@@ -1,7 +1,8 @@
 //! Document ingestion: parse images, PDFs, CSV, JSON into extractable text & structured data.
 //!
-//! Supports OCR (via system tesseract or pure-Rust fallback), PDF text extraction,
-//! CSV/JSON parsing, and image preprocessing. Gracefully degrades if OCR unavailable.
+//! Supports OCR (via the system `tesseract` binary), PDF text extraction,
+//! CSV/JSON parsing, and image preprocessing. OCR has no fallback: an image
+//! whose text cannot be read is an error that says why.
 
 pub mod csv_parse;
 pub mod image_geolocation;
@@ -67,10 +68,14 @@ impl DocumentFormat {
 /// Document parsing error.
 #[derive(Error, Debug)]
 pub enum DocumentParseError {
-    /// The binary genuinely is not there — the `which` probe failed, or the
-    /// spawn returned `ErrorKind::NotFound`. Nothing else, because the message
-    /// asserts "tesseract missing" and that must stay true wherever it is shown.
-    #[error("OCR not available (tesseract missing); image processing disabled")]
+    /// The binary is not there: spawning it failed with "not found", and no
+    /// file of that name is on `PATH`. Nothing else, because the message says
+    /// tesseract is not installed, and that must stay true wherever it is
+    /// shown. It also says how to install it.
+    #[error(
+        "OCR not available: tesseract is not installed, so no text can be read from an image \
+         (Termux: pkg install tesseract)"
+    )]
     OcrUnavailable,
     /// Distinct from [`Self::OcrUnavailable`] on purpose: "tesseract is not
     /// installed" and "tesseract ran and would not finish" are different facts
@@ -82,13 +87,24 @@ pub enum DocumentParseError {
     OcrTimeout { secs: u64 },
     /// Tesseract ran to completion and reported failure. Also distinct from
     /// "missing": the binary is installed and working, it rejected this input.
-    /// The exit code is carried rather than dropped — it is the only thing that
-    /// distinguishes one refusal from another.
-    #[error("OCR failed; tesseract exited with {}", match code {
+    /// The exit code and the end of its stderr, where it says why, are carried
+    /// rather than dropped.
+    #[error("OCR failed: tesseract exited with {}{}", match code {
         Some(c) => c.to_string(),
         None => "a signal".to_string(),
-    })]
-    OcrFailed { code: Option<i32> },
+    }, if stderr.is_empty() { String::new() } else { format!(": {stderr}") })]
+    OcrFailed {
+        /// Tesseract's exit code; `None` when a signal ended it.
+        code: Option<i32>,
+        /// The end of what tesseract wrote to stderr, on one line: its own
+        /// reason. Empty when it wrote nothing.
+        stderr: String,
+    },
+    /// Tesseract is there and could not be started: no permission to run it,
+    /// a missing script interpreter, too few resources. Distinct from
+    /// [`Self::OcrUnavailable`], because installing it again would not help.
+    #[error("OCR failed: tesseract is installed but could not be started ({0})")]
+    OcrStart(#[source] std::io::Error),
     #[error("PDF parsing error: {0}")]
     PdfError(String),
     #[error("CSV parsing error: {0}")]
