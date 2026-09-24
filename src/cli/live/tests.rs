@@ -30,9 +30,25 @@ use super::*;
             seeknow_scan_cap: None,
             expand_all_identities: false,
             gate_speculative: false,
+            name: None,
             radar: false,
             json: false,
         }
+    }
+
+    /// REQ-SCANNAME-001: `hse live --name` reaches every iteration's options,
+    /// checked like a request body's name.
+    #[test]
+    fn build_live_scan_options_carries_a_checked_name() {
+        let named = |name: &str| LiveCmd {
+            name: Some(name.to_string()),
+            ..cmd_with_defaults()
+        };
+        let opts = build_live_scan_options(&named("  Q3 audit ")).expect("a one-line name");
+        assert_eq!(opts.name.as_deref(), Some("Q3 audit"));
+        let err = build_live_scan_options(&named("two\nlines")).expect_err("a line break");
+        assert!(err.to_string().contains("--name"), "{err}");
+        assert_eq!(build_live_scan_options(&cmd_with_defaults()).unwrap().name, None);
     }
 
     #[test]

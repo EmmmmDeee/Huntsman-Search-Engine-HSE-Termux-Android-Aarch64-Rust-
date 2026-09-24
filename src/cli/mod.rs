@@ -91,6 +91,7 @@ async fn run_command(command: Command) -> Result<()> {
             expand_all_identities,
             gate_speculative,
             profile,
+            name,
             output,
             include_infra,
         } => {
@@ -144,6 +145,7 @@ async fn run_command(command: Command) -> Result<()> {
                 expand_all_identities: expand_all_identities || full,
                 gate_speculative,
                 profile,
+                name,
                 output,
                 // `--full` is the no-compromise preset: it also restores
                 // platform-infra entities, matching the flag's documented
@@ -274,6 +276,7 @@ async fn run_command(command: Command) -> Result<()> {
             seeknow_scan_cap,
             expand_all_identities,
             gate_speculative,
+            name,
             radar,
             json,
         } => {
@@ -306,6 +309,7 @@ async fn run_command(command: Command) -> Result<()> {
                 seeknow_scan_cap,
                 expand_all_identities,
                 gate_speculative,
+                name,
                 radar,
                 json,
             })

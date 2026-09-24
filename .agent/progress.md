@@ -172,9 +172,48 @@ state file now also carries `competitors`, `capability_gaps`, `clusters` and
   the JSON field `options.name`.
 - **Current cluster.** Scan name, server half and console half together.
 
+### Change 5: [DEFECT] A scan's name is stored as one visible line and titles the scan everywhere (REQ-SCANNAME-001)
+
+- **What.** `ScanOptions.name`, checked by `checked_for_request` at every
+  seam: a scan, a batch item and a live session over the API, and `--name`
+  on `hse scan` and `hse live`. Invisible and bidi characters are stripped,
+  a tab becomes a space, and a name is trimmed. A line break, another
+  control character or a name over 200 characters is refused, and the
+  typed `ScanNameError` names the fault and the fix. New Scan's two buttons
+  send the name through `buildWizardOptions`. wasm-ui's `scan_label` titles
+  a scan by its name, with the target beside it, in the scan table, Scan
+  Info, Compare and the Live page. The scan list's search moved into
+  wasm-ui as `scanMatches`.
+- **Why.** New Scan's Scan Name field was collected and never sent, and the
+  API refused a name as an unknown option.
+- **Review.** An independent review found no blocking defect and three
+  should-fix ones:
+  - Compare hid a named scan's target;
+  - the batch button dropped the name;
+  - invisible, bidi and line-separator characters passed the one-line rule.
+
+  All are fixed, as are the nits, except a top-level `"name"` being
+  ignored. Refusing it would change the public API, so it is recorded as an
+  open defect.
+- **Evidence.**
+  - Browser check: 4 of 18 before, 18 of 18 after, then 23 of 23 after the
+    review fixes.
+  - After a restart on the same database: 12 of 12. The upgrade: 6 of 6.
+    The previous build reads this build's database, ignoring the name: 4 of
+    4.
+  - `hse scan --name` runs end to end.
+  - Mutations: 29 of 29 caught, each applied alone.
+- **Fresh worktree.** Passed. The gate passed (doc coverage held at 1001).
+  The full suite ran twice with identical results: 8559 tests, 8532 passed,
+  27 ignored, 0 failed. Doctests: 85 passed, 3 ignored, twice.
+
 ## Next
 
-- **REQ-SCANNAME-001.** New Scan's "Scan Name" field is never sent, so the
-  name is not stored and not shown. In progress, as this run's first change.
-- **Then** the highest-scoring cluster, and the open defects this run found:
-  the CLI's `hse list` hint names a command that does not exist.
+- **REQ-INGEST-001.** `hse ingest` mines the "OCR unavailable for <path>"
+  stand-in for an image it could not read, so the file's path comes back as
+  findings. Drafted and reviewed; applied and verified on its own next.
+- **Then**, drafted and reviewed the same way: REQ-CLI-HINTS-001 (the hint
+  after a stored scan names `hse list`, which does not exist),
+  REQ-KEYPOOL-003 (a key pool file that will not load is destroyed) and
+  REQ-SETTINGS-001 (a `settings.json` that does not parse resets every
+  switch).

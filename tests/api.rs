@@ -506,6 +506,190 @@ async fn scan_create_rejects_unknown_module_names() {
     );
 }
 
+// ── 5a. Scan name (REQ-SCANNAME-001) ──────────────────────────────────────
+
+/// New Scan's "Scan Name" used to be collected and dropped: the form never
+/// sent it and `ScanOptions` had no field for it. It is now stored with the
+/// scan, cleaned, read back by the scan and the list, kept by a rerun (as
+/// SpiderFoot's rerun keeps it), and carried by every item of a batch.
+#[tokio::test]
+async fn a_scan_keeps_the_name_it_was_created_with() {
+    let app = test_app("scan_name");
+    let body = r#"{"kind":"email","value":"named@contoso.com","options":{"name":"  Q3 audit  ","depth":0}}"#;
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/v1/scans", body))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let id = body_json(resp).await["scan_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let scan = body_json(
+        app.clone()
+            .oneshot(get(&format!("/api/v1/scans/{id}")))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(scan["options"]["name"], "Q3 audit", "{scan}");
+    let list = body_json(app.clone().oneshot(get("/api/v1/scans")).await.unwrap()).await;
+    let row = list["scans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id.as_str())
+        .expect("the new scan is listed");
+    assert_eq!(row["options"]["name"], "Q3 audit");
+
+    wait_for_scan_to_finish(&app, &id).await;
+    let rerun = body_json(
+        app.clone()
+            .oneshot(post_json(&format!("/api/v1/scans/{id}/rerun"), "{}"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let rerun_id = rerun["scan_id"].as_str().expect("rerun queued");
+    let again = body_json(
+        app.clone()
+            .oneshot(get(&format!("/api/v1/scans/{rerun_id}")))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(again["options"]["name"], "Q3 audit", "{again}");
+
+    let batch = body_json(
+        app.clone()
+            .oneshot(post_json(
+                "/api/v1/scans/batch",
+                r#"[{"kind":"email","value":"one@contoso.com","options":{"name":"Q3 audit","depth":0}},
+                    {"kind":"email","value":"two@contoso.com","options":{"name":"Q3 audit","depth":0}}]"#,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let queued: Vec<&str> = batch["scans"]
+        .as_array()
+        .expect("batch results")
+        .iter()
+        .filter_map(|r| r["scan_id"].as_str())
+        .collect();
+    assert_eq!(queued.len(), 2, "{batch}");
+    for id in queued {
+        let scan = body_json(
+            app.clone()
+                .oneshot(get(&format!("/api/v1/scans/{id}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(scan["options"]["name"], "Q3 audit", "{scan}");
+    }
+}
+
+#[tokio::test]
+async fn a_blank_scan_name_is_no_name() {
+    let app = test_app("scan_name_blank");
+    // Spaces, and characters that draw nothing (zero-width space, word
+    // joiner, byte order mark), are no name: the list would show a blank title.
+    for name in ["   ", "\u{200B}\u{2060}\u{FEFF}"] {
+        let body = serde_json::json!({
+            "kind": "email", "value": "blank@contoso.com",
+            "options": { "name": name, "depth": 0 }
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(post_json("/api/v1/scans", &body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 202, "{name:?}");
+        let id = body_json(resp).await["scan_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let scan = body_json(
+            app.clone()
+                .oneshot(get(&format!("/api/v1/scans/{id}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(scan["options"]["name"].is_null(), "{name:?}: {scan}");
+    }
+}
+
+/// A name is a one-line title of at most 200 characters, on every path that
+/// takes one: a scan, a batch item and a live session.
+#[tokio::test]
+async fn a_scan_name_that_is_not_one_short_line_is_refused() {
+    let app = test_app("scan_name_bad");
+    let too_long = "n".repeat(201);
+    for (name, reason) in [
+        (too_long.as_str(), "name too long"),
+        ("two\nlines", "control characters"),
+        ("two\u{2028}lines", "line break"),
+    ] {
+        let body = serde_json::json!({
+            "kind": "email", "value": "bad@contoso.com", "options": { "name": name }
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(post_json("/api/v1/scans", &body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "scan with name {name:?}");
+        let err = body_json(resp).await["error"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(err.contains(reason), "{err}");
+
+        let batch = body_json(
+            app.clone()
+                .oneshot(post_json("/api/v1/scans/batch", &format!("[{body}]")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            batch["scans"][0]["error"]
+                .as_str()
+                .is_some_and(|e| e.contains(reason)),
+            "{batch}"
+        );
+
+        let resp = app
+            .clone()
+            .oneshot(post_json("/api/v1/live", &body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "live session with name {name:?}");
+        let err = body_json(resp).await["error"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(err.contains(reason), "live: {err}");
+    }
+    // Exactly the limit is a name.
+    let body = serde_json::json!({
+        "kind": "email", "value": "max@contoso.com",
+        "options": { "name": "n".repeat(200), "depth": 0 }
+    })
+    .to_string();
+    let resp = app
+        .oneshot(post_json("/api/v1/scans", &body))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+}
+
 // ── 5b. Live Signal Radar (button activation) ─────────────────────────────
 
 #[tokio::test]

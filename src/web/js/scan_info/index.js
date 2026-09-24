@@ -10,7 +10,7 @@ import { renderSummary } from '/static/js/scan_info/report.js';
 import { renderStealer } from '/static/js/scan_info/stealer.js';
 import { S } from '/static/js/state.js';
 import { clearScanTimer, pageHidden } from '/static/js/timers.js';
-import { scanIsActive, scanState } from '/static/hse_wasm_ui.js';
+import { scanIsActive, scanLabel, scanState } from '/static/hse_wasm_ui.js';
 import { render } from '/static/js/main.js';
 
 /* ═══════════ Page: SCANINFO (#/scaninfo?id=X[&tab=Y]) ═══════════ */
@@ -71,10 +71,12 @@ export async function renderScanInfo(v){
   const dur = scan.finished_at && scan.started_at ? scan.finished_at - scan.started_at
             : state==='running' ? nowSec() - (scan.started_at||nowSec()) : null;
 
+  // SpiderFoot titles a scan by its name; a named scan still shows its target.
+  const { title, target } = scanLabel(scan);
   v.innerHTML = `
-    <div class="crumbs"><a href="#/scans">Scans</a> &raquo; ${esc(scan.target?.value||id)}</div>
-    <h2>${esc(scan.target?.value||id)}
-        <small class="text-muted" style="margin-left:6px">${kindPill(scan.target?.kind)} ${statusPill(state)}</small>
+    <div class="crumbs"><a href="#/scans">Scans</a> &raquo; ${esc(title)}</div>
+    <h2>${esc(title)}
+        <small class="text-muted" style="margin-left:6px">${kindPill(scan.target?.kind)}${target ? ` ${esc(target)}` : ''} ${statusPill(state)}</small>
         <div class="pull-right">
           <button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button>
           ${active

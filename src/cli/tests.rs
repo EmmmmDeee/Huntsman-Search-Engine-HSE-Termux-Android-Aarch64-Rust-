@@ -259,6 +259,34 @@ use super::*;
 
     // ── `hse import --input-format` ─────────────────────────────────────────
 
+    /// REQ-SCANNAME-001: `hse scan --name` and `hse live --name` parse into
+    /// their commands, so a scan run from a terminal can be named as one
+    /// queued from the console can.
+    #[test]
+    fn scan_and_live_take_a_name() {
+        use super::command::{Cli, Command};
+        use clap::Parser;
+        let scan = Cli::try_parse_from(["hse", "scan", "-v", "a@b.com", "--name", "Q3 audit"])
+            .expect("scan --name");
+        match scan.command {
+            Command::Scan { name, .. } => assert_eq!(name.as_deref(), Some("Q3 audit")),
+            _ => panic!("parsed a different subcommand"),
+        }
+        let live = Cli::try_parse_from(["hse", "live", "-v", "a@b.com", "--name", "Q3 audit"])
+            .expect("live --name");
+        match live.command {
+            Command::Live { name, .. } => assert_eq!(name.as_deref(), Some("Q3 audit")),
+            _ => panic!("parsed a different subcommand"),
+        }
+        match Cli::try_parse_from(["hse", "scan", "-v", "a@b.com"])
+            .expect("no --name")
+            .command
+        {
+            Command::Scan { name, .. } => assert_eq!(name, None),
+            _ => panic!("parsed a different subcommand"),
+        }
+    }
+
     /// The flag parses straight into the shared `app::import::ImportFormat`
     /// (a clap `ValueEnum`), case-insensitively, and rejects an unknown name at
     /// parse time — so `cmd_import` can never receive a spelling the web

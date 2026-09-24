@@ -139,6 +139,7 @@ struct TargetView {
 /// own JS-matching fallback explicitly.
 #[derive(Deserialize, Default)]
 struct ScanOptionsView {
+    name: Option<String>,
     modules: Option<Vec<String>>,
     exclude_modules: Option<Vec<String>>,
     throttle_ms: Option<u64>,
@@ -210,6 +211,13 @@ fn scan_settings_html(scan: ScanView) -> String {
                 "<code>{}</code>",
                 escape_html(scan.id.as_deref().unwrap_or(""))
             ),
+        ),
+        (
+            "Scan name",
+            match opts.name.as_deref() {
+                Some(n) if !n.is_empty() => escape_html(n),
+                _ => NONE_MUTED.to_string(),
+            },
         ),
         (
             "Target type",
@@ -337,6 +345,25 @@ fn scan_settings_html(scan: ScanView) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ-SCANNAME-001: Scan Settings names the scan, escaped.
+    #[test]
+    fn scan_settings_shows_the_scans_name() {
+        let html = scan_settings_html(ScanView {
+            options: Some(ScanOptionsView {
+                name: Some("Q3 <audit>".into()),
+                ..ScanOptionsView::default()
+            }),
+            ..ScanView::default()
+        });
+        assert!(html.contains("Scan name"), "{html}");
+        assert!(html.contains("Q3 &lt;audit&gt;"), "{html}");
+        let unnamed = scan_settings_html(ScanView::default());
+        assert!(
+            unnamed.contains(&format!("Scan name</td><td>{NONE_MUTED}</td>")),
+            "{unnamed}"
+        );
+    }
 
     #[test]
     fn an_interrupted_scans_status_row_says_interrupted() {

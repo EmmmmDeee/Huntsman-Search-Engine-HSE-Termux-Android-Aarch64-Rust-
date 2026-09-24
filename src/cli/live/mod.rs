@@ -37,6 +37,9 @@ pub(super) struct LiveCmd {
     pub seeknow_scan_cap: Option<u32>,
     pub expand_all_identities: bool,
     pub gate_speculative: bool,
+    /// `--name`: every iteration's scan carries it, checked by
+    /// `ScanOptions::checked_for_request`.
+    pub name: Option<String>,
     /// Radar mode: persist the keyed-module dispatch ledger across iterations
     /// so paid APIs are never re-hit on already-covered seeds.
     pub radar: bool,
@@ -163,7 +166,7 @@ fn build_live_scan_options(cmd: &LiveCmd) -> Result<ScanOptions> {
         cmd.expansion_strategy.parse().map_err(|e: String| {
             crate::core::error::Error::Other(format!("--expansion-strategy: {e}"))
         })?;
-    Ok(ScanOptions {
+    ScanOptions {
         modules: split_csv(cmd.modules.clone()),
         exclude_modules: split_csv(cmd.exclude.clone()).unwrap_or_default(),
         throttle_ms: cmd.throttle_ms,
@@ -191,9 +194,13 @@ fn build_live_scan_options(cmd: &LiveCmd) -> Result<ScanOptions> {
         seeknow_scan_cap: cmd.seeknow_scan_cap,
         expand_all_identities: cmd.expand_all_identities,
         gate_speculative: cmd.gate_speculative,
+        name: cmd.name.clone(),
         ..Default::default()
     }
-    .clamp_depth())
+    .clamp_depth()
+    // `--name` is operator input, like a request body's name: the same check.
+    .checked_for_request()
+    .map_err(|e| crate::core::error::Error::Other(format!("--name: {e}")))
 }
 
 /// Render one live event as a human-readable, **fully unredacted** structured

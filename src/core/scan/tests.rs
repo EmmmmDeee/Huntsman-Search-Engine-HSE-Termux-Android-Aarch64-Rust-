@@ -2125,3 +2125,81 @@ fn person_surname_is_read_through_the_name_parser() {
     );
     assert_eq!(person_surname("Thorpey"), None);
 }
+
+/// REQ-SCANNAME-001: the request check counts characters, not bytes, and
+/// touches nothing but the name.
+#[test]
+fn a_request_name_is_measured_in_characters_and_nothing_else_changes() {
+    let named = |n: String| ScanOptions {
+        name: Some(n),
+        depth: 2,
+        notes: Some("context".into()),
+        ..ScanOptions::default()
+    };
+    // 200 two-byte characters are 400 bytes, and still a name.
+    let ok = named("é".repeat(MAX_SCAN_NAME_CHARS))
+        .checked_for_request()
+        .expect("200 characters is within the limit");
+    assert_eq!(
+        ok.name.as_deref().map(|n| n.chars().count()),
+        Some(MAX_SCAN_NAME_CHARS)
+    );
+    assert_eq!(ok.depth, 2);
+    assert_eq!(ok.notes.as_deref(), Some("context"));
+    assert_eq!(
+        named("é".repeat(MAX_SCAN_NAME_CHARS + 1))
+            .checked_for_request()
+            .err(),
+        Some(ScanNameError::TooLong {
+            chars: MAX_SCAN_NAME_CHARS + 1
+        })
+    );
+    // No name at all passes through as no name.
+    assert_eq!(
+        ScanOptions::default().checked_for_request().unwrap().name,
+        None
+    );
+}
+
+/// REQ-SCANNAME-001: a stored name is one visible line. Invisible formatting
+/// characters are removed as a typed target's are, so a name can neither
+/// look blank nor render reversed; a pasted tab becomes a space; any other
+/// control character or a line or paragraph separator is refused.
+#[test]
+fn a_request_name_is_one_visible_line() {
+    let name = |n: &str| {
+        ScanOptions {
+            name: Some(n.into()),
+            ..ScanOptions::default()
+        }
+        .checked_for_request()
+        .map(|o| o.name)
+    };
+    // Zero-width space, word joiner, BOM and soft hyphen alone are no name.
+    assert_eq!(name("\u{200B}\u{2060}\u{FEFF}\u{00AD}"), Ok(None));
+    // A right-to-left override would reverse the title and the text after it.
+    assert_eq!(name("Q3 \u{202E}tidua"), Ok(Some("Q3 tidua".into())));
+    assert_eq!(name("Q3\taudit"), Ok(Some("Q3 audit".into())));
+    for broken in [
+        "Q3\u{2028}audit",
+        "Q3\u{2029}audit",
+        "Q3\raudit",
+        "Q3\u{85}audit",
+        "Q3\u{7}",
+    ] {
+        assert_eq!(name(broken), Err(ScanNameError::NotOneLine), "{broken:?}");
+    }
+    // A break at either end is trimmed away, not refused.
+    assert_eq!(name("\nQ3 audit\n"), Ok(Some("Q3 audit".into())));
+    // The messages say what is wrong and what to do.
+    assert!(
+        ScanNameError::NotOneLine
+            .to_string()
+            .contains("one line of text")
+    );
+    assert!(
+        ScanNameError::TooLong { chars: 201 }
+            .to_string()
+            .contains("201 characters, over the 200-character limit")
+    );
+}

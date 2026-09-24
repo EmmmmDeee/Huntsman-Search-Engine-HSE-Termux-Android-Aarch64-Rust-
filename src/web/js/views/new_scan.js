@@ -132,7 +132,7 @@ export async function renderNewScan(v){
         <div class="col-sm-4" style="padding-bottom:10px">
           <label for="scanname">Scan Name</label>
           <div class="input-group" style="padding-bottom:10px">
-            <input class="form-control" type="text" id="scanname" value="${attr(W.name)}" placeholder="The name of this scan.">
+            <input class="form-control" type="text" id="scanname" value="${attr(W.name)}" placeholder="The name of this scan." maxlength="200">
           </div>
           <label for="scantarget">Scan Target</label>
           <div class="input-group" style="padding-bottom:6px">
@@ -512,6 +512,9 @@ export function buildWizardOptions(){
   if (tagsStr.trim()) opts.scan_tags = tagsStr.split(',').map(t=>t.trim()).filter(Boolean);
   const notesStr = ($('#w-notes')||{}).value||'';
   if (notesStr.trim()) opts.notes = notesStr.trim();
+  // The Scan Name travels with every scan this page queues, a batch's too;
+  // the server cleans and checks it (REQ-SCANNAME-001).
+  if ((W.name||'').trim()) opts.name = W.name;
   return opts;
 }
 

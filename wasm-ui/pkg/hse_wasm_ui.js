@@ -907,6 +907,52 @@ export function scanIsActive(scan_js) {
 }
 
 /**
+ * `scanLabel(scan)`: `{ title, target? }` for a scan or a live session, by
+ * the rule in [`crate::scan_label`]. The views escape both.
+ * @param {any} scan_js
+ * @returns {any}
+ */
+export function scanLabel(scan_js) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.scanLabel(retptr, addHeapObject(scan_js));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        if (r2) {
+            throw takeObject(r1);
+        }
+        return takeObject(r0);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * `scanMatches(scan, query)`: [`scan_matches`] for `scans.js`'s search box.
+ * @param {any} scan_js
+ * @param {string} query
+ * @returns {boolean}
+ */
+export function scanMatches(scan_js, query) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passStringToWasm0(query, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.scanMatches(retptr, addHeapObject(scan_js), ptr0, len0);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        if (r2) {
+            throw takeObject(r1);
+        }
+        return r0 !== 0;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * [`scan_state`] for the JS views: `scanState(scan)`.
  * @param {any} scan_js
  * @returns {string}
@@ -1191,6 +1237,10 @@ function __wbg_get_imports() {
             const ret = new Uint8Array(getObject(arg0));
             return addHeapObject(ret);
         },
+        __wbg_new_ebe3e0f6837f0879: function() {
+            const ret = new Object();
+            return addHeapObject(ret);
+        },
         __wbg_new_f9d6489212f3b2b3: function(arg0) {
             const ret = new Date(getObject(arg0));
             return addHeapObject(ret);
@@ -1216,6 +1266,9 @@ function __wbg_get_imports() {
         __wbg_setItem_b0bb6a578106db69: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             getObject(arg0).setItem(getStringFromWasm0(arg1, arg2), getStringFromWasm0(arg3, arg4));
         }, arguments); },
+        __wbg_set_6be42768c690e380: function(arg0, arg1, arg2) {
+            getObject(arg0)[takeObject(arg1)] = takeObject(arg2);
+        },
         __wbg_set_8155bb79a948541b: function() { return handleError(function (arg0, arg1, arg2) {
             const ret = Reflect.set(getObject(arg0), getObject(arg1), getObject(arg2));
             return ret;
@@ -1250,7 +1303,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 16, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_316);
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_325);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -1282,8 +1335,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_316(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_316(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_325(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_325(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

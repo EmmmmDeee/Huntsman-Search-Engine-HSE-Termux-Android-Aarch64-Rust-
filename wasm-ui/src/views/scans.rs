@@ -1,11 +1,13 @@
 //! Ports `src/web/js/views/scans.js`'s pure, DOM-free rendering helpers:
 //! `budgetBar`/`apiBudgetsPanel` (the dashboard's "API Budgets" panel) and
 //! `renderScansTable` (the per-row scan-list table, reused by both
-//! `scans.js`'s own `#/scans` page and `dash.js`'s "Recent Scans" panel).
-//! `renderScans` itself (the `#/scans` page's own live filter-input wiring)
-//! and `scanStats` (a plain tally with no HTML output at all — nothing here
-//! for a WASM port to buy) stay in JS, like every other view's interactive
-//! shell.
+//! `scans.js`'s own `#/scans` page and `dash.js`'s "Recent Scans" panel),
+//! plus the two per-scan rules other views share through the same row type:
+//! `scanLabel` (what a scan is called, [`crate::scan_label`]) and
+//! `scanMatches` (the scan list's search box). `renderScans` itself (the
+//! `#/scans` page's own live filter-input wiring) and `scanStats` (a plain
+//! tally with no HTML output at all — nothing here for a WASM port to buy)
+//! stay in JS, like every other view's interactive shell.
 //!
 //! `Budget`/`ScanTarget`/`ScanRow` are view-local response structs, not
 //! `hse_core` domain types: the real `crate::util::budget::BudgetSnapshot`
@@ -13,10 +15,11 @@
 //! binary crate, which this crate deliberately does not depend on (see this
 //! crate's own `Cargo.toml`).
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use crate::html::{escape_html, fmt_date, kind_pill};
+use crate::scan_label::{ScanLabel, scan_label};
 use crate::scan_state::{is_active, scan_state, status_pill};
 use crate::to_js_error;
 
@@ -194,6 +197,77 @@ struct ScanRow {
     started_at: Option<u64>,
     finished_at: Option<u64>,
     entity_count: Option<u64>,
+    /// A scan's `options`; a live session sends the same object as
+    /// `scan_options`, so the Live page labels its sessions by the same rule.
+    #[serde(alias = "scan_options")]
+    options: Option<RowOptions>,
+}
+
+/// The one option a row reads: the scan's name (REQ-SCANNAME-001).
+#[derive(Deserialize)]
+struct RowOptions {
+    name: Option<String>,
+}
+
+impl ScanRow {
+    fn label(&self) -> ScanLabel<'_> {
+        scan_label(
+            self.options.as_ref().and_then(|o| o.name.as_deref()),
+            self.target.as_ref().and_then(|t| t.value.as_deref()),
+            &self.id,
+        )
+    }
+}
+
+/// [`ScanLabel`] as the JS views receive it from `scanLabel(scan)`.
+#[derive(Serialize)]
+struct LabelOut {
+    title: String,
+    /// Absent when the target is the title, or there is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+}
+
+/// `scanLabel(scan)`: `{ title, target? }` for a scan or a live session, by
+/// the rule in [`crate::scan_label`]. The views escape both.
+#[wasm_bindgen(js_name = scanLabel)]
+pub fn scan_label_js(scan_js: JsValue) -> Result<JsValue, JsValue> {
+    let row: ScanRow = serde_wasm_bindgen::from_value(scan_js).map_err(to_js_error)?;
+    let label = row.label();
+    let out = LabelOut {
+        title: label.title.to_string(),
+        target: label.target.map(str::to_string),
+    };
+    serde_wasm_bindgen::to_value(&out).map_err(to_js_error)
+}
+
+/// Whether a row matches the scan list's search box: the query, trimmed and
+/// case-folded, appears in the scan's name, target, target kind, state (as
+/// the row shows it, `interrupted` included) or id. A blank query matches
+/// every row.
+fn scan_matches(row: &ScanRow, query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    let target = row.target.as_ref();
+    [
+        row.options.as_ref().and_then(|o| o.name.as_deref()),
+        target.and_then(|t| t.value.as_deref()),
+        target.and_then(|t| t.kind.as_deref()),
+        Some(scan_state(row.status.as_deref(), row.interrupted)),
+        Some(row.id.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|field| field.to_lowercase().contains(&q))
+}
+
+/// `scanMatches(scan, query)`: [`scan_matches`] for `scans.js`'s search box.
+#[wasm_bindgen(js_name = scanMatches)]
+pub fn scan_matches_js(scan_js: JsValue, query: &str) -> Result<bool, JsValue> {
+    let row: ScanRow = serde_wasm_bindgen::from_value(scan_js).map_err(to_js_error)?;
+    Ok(scan_matches(&row, query))
 }
 
 /// `helpers.js`'s `fmtDuration(secs)`.
@@ -246,12 +320,15 @@ fn scan_row_html(row: &ScanRow) -> String {
         .and_then(|t| t.kind.as_deref())
         .filter(|k| !k.is_empty())
         .unwrap_or("\u{2014}");
-    let value = row
-        .target
-        .as_ref()
-        .and_then(|t| t.value.as_deref())
-        .filter(|v| !v.is_empty())
-        .unwrap_or(&row.id);
+    let label = row.label();
+    // A named scan still shows what it scanned.
+    let target_line = match label.target {
+        Some(t) => format!(
+            "<div class=\"text-muted\" style=\"font-size:11px\">{}</div>",
+            escape_html(t)
+        ),
+        None => String::new(),
+    };
     let id = escape_html(&row.id);
     let state = scan_state(row.status.as_deref(), row.interrupted);
     let dur_secs = row_duration(row);
@@ -268,7 +345,7 @@ fn scan_row_html(row: &ScanRow) -> String {
     };
     format!(
         "<tr>\n      \
-         <td><a href=\"#/scaninfo?id={id}\" class=\"link\">{value}</a></td>\n      \
+         <td><a href=\"#/scaninfo?id={id}\" class=\"link\">{title}</a>{target_line}</td>\n      \
          <td>{kind_pill}</td>\n      \
          <td>{started}</td>\n      \
          <td>{dur}</td>\n      \
@@ -282,7 +359,7 @@ fn scan_row_html(row: &ScanRow) -> String {
          <button class=\"btn btn-danger btn-xs\" data-delete=\"{id}\" title=\"Delete\"><i class=\"glyphicon glyphicon-trash\"></i></button>\n      \
          </td>\n    \
          </tr>",
-        value = escape_html(value),
+        title = escape_html(label.title),
         kind_pill = kind_pill(kind),
         started = escape_html(&fmt_date(row.started_at.unwrap_or(0))),
         dur = escape_html(&fmt_duration(dur_secs)),
@@ -311,7 +388,7 @@ pub fn render_scans_table_html(scans_js: JsValue) -> Result<String, JsValue> {
     Ok(format!(
         "<div class=\"table-responsive\"><table class=\"table table-striped table-condensed tablesorter\" id=\"scans-table\">\n    \
          <thead><tr>\n      \
-         <th>Target</th><th>Type</th><th>Created</th><th>Duration</th>\n      \
+         <th>Scan</th><th>Type</th><th>Created</th><th>Duration</th>\n      \
          <th>Status</th><th class=\"text-right\">Entities</th>\n      \
          <th class=\"sorter-false\">Actions</th>\n    \
          </tr></thead><tbody>{rows}</tbody></table></div>"
@@ -336,6 +413,65 @@ mod tests {
             started_at: None,
             finished_at: None,
             entity_count: Some(3),
+            options: None,
+        }
+    }
+
+    /// REQ-SCANNAME-001: a named scan is listed by its name, with what it
+    /// scanned beneath it; an unnamed one by its target alone.
+    #[test]
+    fn a_named_row_shows_its_name_and_its_target() {
+        let mut r = row("complete", false);
+        r.options = Some(RowOptions {
+            name: Some("Q3 <audit>".to_string()),
+        });
+        let html = scan_row_html(&r);
+        assert!(
+            html.contains("class=\"link\">Q3 &lt;audit&gt;</a>"),
+            "{html}"
+        );
+        assert!(html.contains(">a@example.com</div>"), "{html}");
+
+        let html = scan_row_html(&row("complete", false));
+        assert!(html.contains("class=\"link\">a@example.com</a>"), "{html}");
+        assert!(!html.contains("</a><div"), "no second line: {html}");
+
+        // A target with stray whitespace is still one title, not the title
+        // and the same target again beneath it.
+        let mut r = row("complete", false);
+        r.target = Some(ScanTarget {
+            kind: Some("email".to_string()),
+            value: Some(" a@example.com ".to_string()),
+        });
+        let html = scan_row_html(&r);
+        assert!(
+            html.contains("class=\"link\">a@example.com</a></td>"),
+            "{html}"
+        );
+    }
+
+    /// REQ-SCANNAME-001: the search box finds a scan by its name, as by its
+    /// target, kind, shown state and id, ignoring case and padding.
+    #[test]
+    fn the_search_box_matches_what_the_row_shows() {
+        let mut r = row("running", true);
+        r.options = Some(RowOptions {
+            name: Some("Q3 Audit".to_string()),
+        });
+        for q in [
+            "q3 aud",
+            "  Q3  ",
+            "A@EXAMPLE",
+            "email",
+            "interrupted",
+            "abc1",
+            "",
+        ] {
+            assert!(scan_matches(&r, q), "{q:?}");
+        }
+        // The state searched is the one the row shows, not the stored one.
+        for q in ["running", "zzz"] {
+            assert!(!scan_matches(&r, q), "{q:?}");
         }
     }
 

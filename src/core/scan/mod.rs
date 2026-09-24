@@ -31,8 +31,8 @@ pub(crate) use options::default_scan_options;
 mod runner;
 pub use options::{
     DEFAULT_MAX_ENTITIES, DEFAULT_MIN_EXPAND_CONFIDENCE, DEFAULT_SCAN_DEPTH, ExpansionStrategy,
-    MAX_CONCURRENT, MAX_DEPTH, ScanOptions, THROTTLE_CEILING_MS, known_option_keys,
-    nearest_option_key, unknown_option_keys,
+    MAX_CONCURRENT, MAX_DEPTH, MAX_SCAN_NAME_CHARS, ScanNameError, ScanOptions,
+    THROTTLE_CEILING_MS, known_option_keys, nearest_option_key, unknown_option_keys,
 };
 pub use runner::ScanRunner;
 // Re-exported so external callers keep using `crate::core::scan::expansion_weight`

@@ -796,7 +796,7 @@ by looking for them rather than reading modules at random:**
    reason is believed.
 
    **A field that may always be absent cannot report its own misspelling.**
-   `ScanOptions`' 30 fields are every one absent-tolerant, and rightly so:
+   `ScanOptions`' fields are every one absent-tolerant, and rightly so:
    omitting a knob has to mean "no preference". But that makes an unknown key
    and an omitted key the same thing after deserialisation, and for six of those
    fields the "no preference" default is the PERMISSIVE value — so a one-character

@@ -9,10 +9,12 @@
 //!   `src/web/js/helpers.js`
 //! - [`scan_state`] — a scan's display state (`interrupted` included) and
 //!   the status pill: the one rule and the one markup every view uses
+//! - [`scan_label`] — what a scan is called (its name, else its target) and
+//!   the target shown beside a named scan: one rule for every view
 //! - [`scan_info`] — `src/web/js/scan_info/*.js`, one submodule per file
 //! - [`views`] — `src/web/js/views/*.js`'s pure, DOM-free rendering helpers
-//!   (dash.js's module-health panel; scans.js's budget panel and scan table;
-//!   diff.js's scan-comparison result rendering)
+//!   (dash.js's module-health panel; scans.js's budget panel, scan table and
+//!   search box; diff.js's scan-comparison result rendering)
 //!
 //! The compiled output is checked into `pkg/` and embedded into
 //! `src/api/routes/mod.rs`'s `APP_FILES` the same way every hand-written JS
@@ -54,6 +56,7 @@ pub mod confidence;
 pub mod entity_lookup;
 pub mod html;
 pub mod scan_info;
+pub mod scan_label;
 pub mod scan_state;
 pub mod theme;
 pub mod views;

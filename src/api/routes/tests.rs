@@ -1569,6 +1569,55 @@ use super::*;
         sources
     }
 
+    /// REQ-SCANNAME-001: New Scan's "Scan Name" field was collected and
+    /// dropped: the options a scan was queued with never held it. The name
+    /// must be in the options `buildWizardOptions` builds, which both of New
+    /// Scan's submit buttons (one scan, and a batch) send; the field must
+    /// stop at the server's length limit; and every page that titles a scan
+    /// or a live session, or searches scans, must do it through wasm-ui's one
+    /// rule for what a scan is called.
+    #[test]
+    fn new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it() {
+        let js = app_file("js/views/new_scan.js");
+        let body_of = |name: &str| -> &str {
+            let start = js
+                .find(&format!("function {name}("))
+                .unwrap_or_else(|| panic!("{name} is defined"));
+            let rest = &js[start..];
+            &rest[..rest.find("\n}\n").map_or(rest.len(), |i| i + 3)]
+        };
+        assert!(
+            body_of("buildWizardOptions").contains("opts.name = W.name"),
+            "buildWizardOptions must carry the form's name"
+        );
+        for submit in ["submitWizard", "submitBatch"] {
+            let body = body_of(submit);
+            assert!(
+                body.contains("const opts = buildWizardOptions();"),
+                "{submit} must send exactly the options buildWizardOptions builds"
+            );
+        }
+        let field = format!(
+            "maxlength=\"{}\"",
+            crate::core::scan::MAX_SCAN_NAME_CHARS
+        );
+        assert!(
+            js.contains("id=\"scanname\"") && js.contains(&field),
+            "the name field must stop at the server's limit ({field})"
+        );
+        for (file, rule) in [
+            ("js/scan_info/index.js", "scanLabel("),
+            ("js/views/diff.js", "scanLabel("),
+            ("js/views/live.js", "scanLabel("),
+            ("js/views/scans.js", "scanMatches("),
+        ] {
+            assert!(
+                app_file(file).contains(rule),
+                "{file} must use wasm-ui's {rule}…)"
+            );
+        }
+    }
+
     #[test]
     fn a_scan_states_pill_has_one_copy_of_its_markup() {
         // helpers.js's `statusPill` is wasm-ui's `status_pill`, so a state the

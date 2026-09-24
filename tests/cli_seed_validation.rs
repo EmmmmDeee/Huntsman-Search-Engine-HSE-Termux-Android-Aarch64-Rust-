@@ -30,6 +30,54 @@ fn run(args: &[&str]) -> (bool, String) {
     )
 }
 
+/// REQ-SCANNAME-001: `hse scan --name` stores the scan's name, cleaned as a
+/// request body's is, and a name that is not one line is refused before
+/// anything runs.
+#[test]
+fn scan_name_is_stored_cleaned_and_a_broken_one_refused() {
+    let dir = common::tmp_dir("scan-name");
+    let scan = |name: &str| {
+        Command::new(BIN)
+            .args([
+                "scan",
+                "-v",
+                "Jane Smith",
+                "-k",
+                "name",
+                "--modules",
+                "name_intel",
+                "--throttle",
+                "0",
+                "--name",
+                name,
+                "-o",
+                "json",
+            ])
+            .env("RUST_LOG", "off")
+            .env("HOME", &dir)
+            .output()
+            .expect("spawn hse scan")
+    };
+    let named = scan("  Q3\taudit ");
+    assert!(
+        named.status.success(),
+        "{}",
+        String::from_utf8_lossy(&named.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&named.stdout).expect("one JSON document on stdout");
+    assert_eq!(report["scan"]["options"]["name"], "Q3 audit", "{report}");
+
+    let broken = scan("two\nlines");
+    assert!(!broken.status.success(), "a two-line name must be refused");
+    let stderr = String::from_utf8_lossy(&broken.stderr);
+    assert!(
+        stderr.contains("--name: name contains control characters or a line break"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn diff_wiring_self_compare_is_rejected_with_diagnostic() {
     // The diff *logic* is unit-tested in core::diff; this guards the CLI WIRING a

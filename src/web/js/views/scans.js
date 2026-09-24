@@ -3,7 +3,7 @@ import { $, $$, toast } from '/static/js/helpers.js';
 import { nav } from '/static/js/router.js';
 import { S } from '/static/js/state.js';
 import { render } from '/static/js/main.js';
-import { renderScansTableHtml, scanIsActive, scanState } from '/static/hse_wasm_ui.js';
+import { renderScansTableHtml, scanIsActive, scanMatches, scanState } from '/static/hse_wasm_ui.js';
 
 /* ═══════════ Page: SCANLIST (#/scans) ═══════════ */
 export async function renderScans(v){
@@ -40,13 +40,8 @@ export async function renderScans(v){
   if (S.scans.length){ wireScansTable(); }
   const f = $('#scan-filter');
   if (f) f.addEventListener('input', ()=>{
-    const q = f.value.trim().toLowerCase();
-    const rows = q ? S.scans.filter(s =>
-      (s.target?.value||'').toLowerCase().includes(q)
-      || (s.target?.kind||'').includes(q)
-      || scanState(s).includes(q)
-      || (s.id||'').includes(q)
-    ) : S.scans;
+    // wasm-ui's scanMatches: name, target, kind, shown state or id.
+    const rows = S.scans.filter(s => scanMatches(s, f.value));
     $('#scans-table-host').innerHTML = renderScansTableHtml(rows);
     wireScansTable();
   });

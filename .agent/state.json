@@ -26,6 +26,12 @@
       "category": "DEFECT",
       "evidence": "Runtime, on sandboxed hse serve builds. 17 browser checks on a scan SIGKILLed mid-run: 3 of 17 before the change, 17 of 17 after (before: Stop and Abort offered, Scan Info re-fetching 18 times in 20 s, a live stream opened, the Running tally counting it). An independent review of the first draft found four should-fix defects and six nits, none blocking; all are fixed. The most serious was a regression: a scan another hse process runs (hse scan in a terminal) read as interrupted. API scenarios (a CLI-run scan, then the CLI SIGKILLed; 10 queued scans, then the server SIGKILLed and restarted; /stats; the log export): first draft 2 of 6, final 6 of 6. An open Log tab across a server SIGKILL and restart: first draft reads live again, final reads interrupted and stops. A positive control on a scan that really runs passes 10 of 10 on every build. Mutations: W1-W6 (wasm-ui) killed by the wasm-ui tests; J1-J5 (JS) killed by the route locks, which name each line; J6-J7 killed by the runtime check only; R1-R9 (server) each killed by a new Rust test. The Phase 1 shell check passes 51 of 51, the all-routes sweep's findings match the pre-fix build's, and no server panicked.",
       "fresh_worktree": "Passed. The gate (scripts/gate.sh --quick) passed in a fresh worktree of the commit, and the suite ran twice there: 8550 tests (8523 passed, 27 ignored, 0 failed) in both runs, identical test by test. Against the previous commit, 13 tests are new and one is renamed (a_running_row_with_no_handle_is_histogrammed_as_interrupted is now a_row_this_process_does_not_hold_is_histogrammed_as_interrupted); no other test differs. Doctests: 86 (83 passed, 3 ignored) twice, identical."
+    },
+    {
+      "contract": "A scan's name, from New Scan, a request's options.name or --name, is cleaned to one visible line by ScanOptions::checked_for_request at every request and CLI seam, stored with the scan, and titles it in every console view through wasm-ui's scan_label (REQ-SCANNAME-001)",
+      "category": "DEFECT",
+      "evidence": "Found: New Scan's Scan Name field was collected and never sent, ScanOptions had no field for it, and the API refused a name as an unknown option. Browser check on sandboxed hse serve builds, driving the real form: 4 of 18 before, 18 of 18 after; after the review fixes 23 of 23 (batch, Live page, tab, invisible and bidi cases added), 12 of 12 after a server restart on the same database, 6 of 6 opening a database the previous build wrote, and 4 of 4 with the previous build opening this build's database (every row loads, the name is ignored: the field is additive and absent-tolerant, so a downgrade stays usable rather than failing). hse scan --name stored the cleaned name; a two-line name exited 1 with the reason and stored nothing. No server panicked. An independent review found no blocking defect and three should-fix ones (Compare hid a named scan's target; the batch button dropped the name; invisible, bidi and line-separator characters passed the one-line rule) plus nits; all fixed except a top-level \"name\" being ignored, which is an API change and is recorded as an open defect. Mutations: 29 of 29 caught, each applied alone. Non-Rust edits: five console views are JavaScript today (new_scan.js, scans.js, diff.js, live.js, scan_info/index.js); the rules they use moved into wasm-ui (scan_label, scanMatches), and each view's port is recorded as an open defect because it is larger than one change.",
+      "fresh_worktree": "Passed in a fresh worktree of the committed tree: the gate passed (doc coverage held at 1001), and the full suite ran twice with identical results, 8559 tests (8532 passed, 27 ignored, 0 failed); doctests 85 passed, 3 ignored, twice."
     }
   ],
   "rejected": [
@@ -84,7 +90,7 @@
       "evidence": "Language rule: tooling in Rust (build.rs, xtask or a bin target). Cluster \"scripts [1]\" signals nonrust=3271 lines."
     }
   ],
-  "cycle": 4,
+  "cycle": 5,
   "competitors": [
     {
       "name": "SpiderFoot 4.0",
@@ -119,7 +125,7 @@
         "SpiderFoot"
       ],
       "source": "https://github.com/smicallef/spiderfoot/blob/v4.0/spiderfoot/templates/newscan.tmpl (scanname field); spiderfoot/static/js/spiderfoot.scanlist.js (Name column)",
-      "status": "dormant",
+      "status": "closed",
       "files": [
         "src/web/js/views/new_scan.js",
         "src/core/scan/options.rs",
@@ -461,7 +467,7 @@
         "src/cli/live/mod.rs",
         "tests/api.rs"
       ],
-      "status": "in_progress",
+      "status": "done",
       "score": null
     },
     {
@@ -476,7 +482,7 @@
         "src/web/js/views/live.js",
         "src/web/js/scan_info/index.js"
       ],
-      "status": "in_progress",
+      "status": "done",
       "score": null
     },
     {
@@ -4486,5 +4492,5 @@
       "score": 0.0
     }
   ],
-  "current_cluster": "scan-name/server: ScanOptions.name, its request and CLI seams"
+  "current_cluster": null
 }

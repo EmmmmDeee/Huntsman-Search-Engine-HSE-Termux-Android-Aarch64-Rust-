@@ -21286,3 +21286,181 @@ queued scans `pending` and not interrupted, bucketed them in `/stats` as
 pending, and ended the orphan's log with `live`. The Phase 1 shell check
 passed 51 of 51 on the final build, and the all-routes sweep's findings are
 identical to the pre-fix build's. No server panicked in any run.
+
+## REQ-SCANNAME-001 — New Scan collected a scan name and dropped it
+
+**Found** while rebuilding New Scan for the SpiderFoot 4.0 remake. SpiderFoot's
+New Scan asks for a Scan Name, and a scan is known by that name from then on:
+it titles the scan list's row and the scan's own page. HSE's form has the same
+field, and kept what the operator typed in `S.wizard.name`. Nothing read it:
+
+| where | what happened to the name |
+|---|---|
+| `submitWizard` and `submitBatch` (`new_scan.js`) | built the request from `buildWizardOptions()`, which never held the name; `submitWizard` then cleared the field |
+| `ScanOptions` | had no field for it, so no request could carry one |
+| the API | refused one: since REQ-SCANOPTS-001 an unknown `options` key is a 400 (`unrecognised options key(s): name`) |
+| `hse scan`, `hse live` | had no flag for it |
+| the scan list, Scan Info, Compare, the Live page | titled a scan by its target, the only label a scan had |
+
+So the field looked like it worked, and its value was thrown away.
+
+### Implemented
+
+- **Stored.** `ScanOptions.name` (`#[serde(default)]`). A scan's options are
+  its stored form, so the name is kept with the scan's row and survives a
+  restart. An older row reads back with no name, and the previous binary
+  reads a newer row and ignores the name. No migration.
+- **One visible line, checked where it enters.**
+  `ScanOptions::checked_for_request` cleans a name, then judges it:
+  - invisible formatting characters (zero-width characters, the byte order
+    mark, bidi overrides and isolates) are removed with the same
+    `core::validation::strip_invisible` a typed target goes through, so a
+    name can neither look blank nor render reversed;
+  - a tab, which a text field lets through from a paste, becomes a space;
+  - the name is trimmed, and a blank one is no name;
+  - any other control character, or a line or paragraph separator, is
+    refused (`ScanNameError::NotOneLine`), as is a name over
+    `MAX_SCAN_NAME_CHARS` (200) characters (`ScanNameError::TooLong`). Each
+    error's message says what is wrong and what to do.
+
+  It runs at every seam that takes a name: `scan_request_from_json` (a scan
+  and each batch item), `live_request_from_json`, and the CLI's `--name` on
+  `hse scan` and `hse live`. It is a seam check and not a serde rule for the
+  reason the unknown-key check is: `ScanOptions` is also the persisted form,
+  and a rule inside deserialisation would make a stored scan unreadable the
+  day it tightens.
+- **Sent.** `buildWizardOptions` carries the name, so both of New Scan's
+  buttons send it: one scan, and a batch, whose every item gets the name.
+  The field stops at 200 characters.
+- **Shown by one rule.** `wasm-ui/src/scan_label.rs`: `scan_label(name,
+  target, id)` titles a scan by its name, else its target, else its id, and
+  gives the target beside a named scan. The console reaches it as
+  `scanLabel(scan)`, which reads a scan or a live session (`scan_options`):
+  - the scan table (the scan list and the dashboard's Recent Scans), whose
+    first column is now headed Scan;
+  - Scan Info's header and crumbs;
+  - Compare's two pickers;
+  - the Live page's sessions.
+
+  Scan Settings has a Scan name row. The scan list's search box moved into
+  wasm-ui as `scanMatches(scan, query)`, which matches the name, target,
+  kind, shown state and id.
+- **Kept by a rerun**, which copies the options, as SpiderFoot's rerun keeps
+  the name.
+
+### Review
+
+An independent review found no blocking defect, three should-fix ones and
+some nits. Each was checked, and all but one are fixed here:
+
+1. Compare's pickers dropped the target of a named scan, so five subjects
+   each scanned as "Weekly check" gave ten options told apart only by date.
+   Fixed by `scan_label`'s target, which Compare now shows.
+2. The batch button still dropped the name. Fixed by moving the name into
+   `buildWizardOptions`, which both buttons send.
+3. Zero-width and bidi characters, and U+2028/U+2029, passed the one-line
+   rule: a name could show as blank, or reverse the text after it. Fixed by
+   the cleaning above.
+4. A pasted tab reached the server and came back as a 400. It now becomes a
+   space.
+5. Not fixed: a top-level `"name"` in a request body is ignored, because only
+   keys inside `options` are checked. Refusing unknown top-level keys changes
+   the public API, so it is recorded as an open defect that needs approval.
+6. Test gaps: a leftover 1.1 s sleep, a live refusal checked for its status
+   but not its reason, an assertion that always held, and no test of the
+   search box. All are fixed, and the search now has Rust tests.
+7. Docs: `ScanOptions`' "the engine respects every field" now excepts the
+   name, `docs/ROADMAP.md` no longer pins a field count that drifts, and
+   wasm-ui's module list names `scan_label`.
+8. `hse scan` had no `--name`, though its module doc promised every option,
+   and the Live page ignored a session's name. Both are fixed.
+
+### Locks
+
+- `core::scan`:
+  - `a_request_name_is_measured_in_characters_and_nothing_else_changes`;
+  - `a_request_name_is_one_visible_line`: invisible characters, bidi
+    overrides, tabs, U+2028/U+2029, CR, NEL and BEL, and the messages;
+  - the `checked_for_request` doctest.
+- `tests/api.rs`:
+  - `a_scan_keeps_the_name_it_was_created_with`: stored, cleaned, read back
+    by the scan and the list, kept by a rerun, carried by both items of a
+    batch;
+  - `a_blank_scan_name_is_no_name`: spaces, and invisible characters only;
+  - `a_scan_name_that_is_not_one_short_line_is_refused`: a scan, a batch
+    item and a live session each refuse, with the reason; exactly 200 is
+    taken.
+- CLI:
+  - `scan_and_live_take_a_name`: the flags parse;
+  - `build_live_scan_options_carries_a_checked_name`;
+  - `tests/cli_seed_validation.rs`
+    `scan_name_is_stored_cleaned_and_a_broken_one_refused`, which runs the
+    real binary: the JSON report carries the cleaned name, and a two-line
+    name exits non-zero with the reason.
+- wasm-ui:
+  - `scan_label`'s three tests;
+  - the scan table's `a_named_row_shows_its_name_and_its_target` and
+    `the_search_box_matches_what_the_row_shows`;
+  - Scan Settings' `scan_settings_shows_the_scans_name`.
+- `api::routes`: `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it`.
+  `buildWizardOptions` carries the name; both submit functions send exactly
+  its options; the field's `maxlength` is `MAX_SCAN_NAME_CHARS`; Scan Info,
+  Compare and Live use `scanLabel(`; and the scan list uses `scanMatches(`.
+
+### Mutations
+
+29 deliberate breakages, each applied alone to the finished change and run against the tests that own the behaviour. All 29 are caught.
+
+| breakage | caught by |
+|---|---|
+| N1 the scan seam does not check the name | `a_scan_keeps_the_name_it_was_created_with`, `a_blank_scan_name_is_no_name`, `a_scan_name_that_is_not_one_short_line_is_refused` |
+| N2 the live seam does not check the name | `a_scan_name_that_is_not_one_short_line_is_refused` |
+| N3 the name is not trimmed | `build_live_scan_options_carries_a_checked_name`, `a_request_name_is_one_visible_line` |
+| N4 the limit counts bytes | `a_request_name_is_measured_in_characters_and_nothing_else_changes` |
+| N5 control characters pass | `build_live_scan_options_carries_a_checked_name`, `a_request_name_is_one_visible_line` |
+| N6 line and paragraph separators pass | `a_request_name_is_one_visible_line` |
+| N7 the limit is off by one | `a_request_name_is_measured_in_characters_and_nothing_else_changes` |
+| N8 the name is never serialised | `a_scan_keeps_the_name_it_was_created_with`, `a_blank_scan_name_is_no_name`, `a_scan_name_that_is_not_one_short_line_is_refused` |
+| N9 a rerun drops the name | `a_scan_keeps_the_name_it_was_created_with` |
+| N10 invisible characters are kept | `a_request_name_is_one_visible_line` |
+| N11 a tab is refused, not a space | `a_request_name_is_one_visible_line` |
+| N12 hse scan drops --name | `scan_name_is_stored_cleaned_and_a_broken_one_refused` |
+| N13 hse scan does not check --name | `scan_name_is_stored_cleaned_and_a_broken_one_refused` |
+| N14 hse live drops --name | `build_live_scan_options_carries_a_checked_name` |
+| W1 the title ignores the name | `a_named_scan_is_called_by_its_name_and_shows_its_target`, `a_named_row_shows_its_name_and_its_target` |
+| W2 the name is not trimmed | `an_unnamed_scan_is_called_by_its_target_then_its_id` |
+| W3 the target repeats the title | `an_unnamed_scan_is_called_by_its_target_then_its_id`, `a_name_that_is_its_target_is_shown_once`, `a_named_row_shows_its_name_and_its_target` |
+| W4 a named row hides its target | `a_named_row_shows_its_name_and_its_target` |
+| W5 Scan Settings has no name row | `scan_settings_shows_the_scans_name` |
+| W6 Scan Settings does not escape the name | `scan_settings_shows_the_scans_name` |
+| W7 the search ignores the name | `the_search_box_matches_what_the_row_shows` |
+| W8 the search reads the stored status | `the_search_box_matches_what_the_row_shows` |
+| J1 the form drops the name | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+| J2 the field has no limit | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+| J3 the batch builds its own options | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+| J4 Scan Info titles by target | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+| J5 Compare titles by target | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+| J6 Live titles by target | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+| J7 the search box matches in JS | `new_scan_sends_the_name_it_collects_and_scans_are_titled_by_it` |
+
+### Runtime
+
+Every run uses a sandboxed `hse serve`, with no proxy and with auto-update,
+update notices and map tiles off. Scans run the offline `phone_intl` module
+only. The browser drives the real New Scan form. Its request is intercepted
+only to pin the module list, and the name is the form's own.
+
+| check | before | after |
+|---|---|---|
+| New Scan to list, Scan Info, Settings and Compare; the API's limits (18 browser checks) | 4 of 18 | 18 of 18 |
+| the same after the review, plus the batch, Live, tab, invisible and bidi cases (23) | not run | 23 of 23 |
+| the same database after a server restart | not run | 12 of 12 |
+| a database the previous build wrote, opened by this one | not run | 6 of 6 |
+| a database this build wrote, opened by the previous build | not run | 4 of 4: every row loads, the name is ignored |
+| `hse scan --name "  CLI<TAB><run>  "`, then a two-line name | not run | stored as `CLI <run>`; the second exits 1 with the reason and stores nothing |
+
+Before the fix the form never sent the name, and the API refused one as an
+unknown option key. The 4 checks that passed are the ones a nameless build
+also satisfies: the scan was queued, it still showed its target, the
+unnamed scan was titled by its target, and there were no page errors. No
+server panicked in any run.

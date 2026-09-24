@@ -3,6 +3,7 @@ import { $, $$, attr, esc, fmtClock, fmtDate, kindPill, saveShownRows, statusPil
 import { closeLiveSse, mapEvent, openLiveSse } from '/static/js/scan_info/log.js';
 import { S, TARGET_KINDS } from '/static/js/state.js';
 import { clearLiveTimer, pageHidden } from '/static/js/timers.js';
+import { scanLabel } from '/static/hse_wasm_ui.js';
 import { render } from '/static/js/main.js';
 
 export function wireLiveStops(){
@@ -74,8 +75,10 @@ export function renderLiveSessions(sessions){
       + '<p>Start one above to continuously re-scan a target on an interval — new '
       + 'entities and correlations accrue as they appear.</p></div>';
   }
+  // A session is called by its name, like its scans, with its target beside it.
+  const who = (s)=>{ const l = scanLabel(s); return l.target ? `${esc(l.title)} <code>${esc(l.target)}</code>` : `<code>${esc(l.title)}</code>`; };
   const rows = sessions.map(s=>`<tr>
-    <td>${kindPill(s.target&&s.target.kind)} <code>${esc((s.target&&s.target.value)||s.id)}</code>${(s.live_options&&s.live_options.radar)?' <span class="label label-info" title="Radar: paid APIs not re-queried on covered seeds">radar</span>':''}</td>
+    <td>${kindPill(s.target&&s.target.kind)} ${who(s)}${(s.live_options&&s.live_options.radar)?' <span class="label label-info" title="Radar: paid APIs not re-queried on covered seeds">radar</span>':''}</td>
     <td>${statusPill(s.status)}</td>
     <td class="text-right">${s.iteration||0}${(s.live_options&&s.live_options.iterations)?` / ${s.live_options.iterations}`:''}</td>
     <td class="text-right">${(s.live_options&&s.live_options.interval_secs)||'?'}s</td>
@@ -88,7 +91,7 @@ export function renderLiveSessions(sessions){
     </td>
   </tr>`).join('');
   return `<div class="table-responsive"><table class="table table-condensed table-striped">
-    <thead><tr><th>Target</th><th>Status</th><th class="text-right">Iter</th>
+    <thead><tr><th>Session</th><th>Status</th><th class="text-right">Iter</th>
       <th class="text-right">Interval</th><th>Started</th><th>Last run</th>
       <th class="text-right">Scans</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;

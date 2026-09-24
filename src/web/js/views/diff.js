@@ -2,7 +2,7 @@ import { API } from '/static/js/api.js';
 import { $, attr, esc, fmtDate } from '/static/js/helpers.js';
 import { nav } from '/static/js/router.js';
 import { S } from '/static/js/state.js';
-import { renderDiffResultHtml, scanState } from '/static/hse_wasm_ui.js';
+import { renderDiffResultHtml, scanLabel, scanState } from '/static/hse_wasm_ui.js';
 
 /* ═══════════ Page: DIFF (#/diff?a=X&b=Y) — temporal scan comparison ═══════════ */
 export async function renderDiff(v){
@@ -24,7 +24,9 @@ export async function renderDiff(v){
     const pair = pairOf(scans.filter(s=>scanState(s)==='complete')) || pairOf(scans);
     if (pair){ b = pair[0].id; a = pair[1].id; }
   }
-  const opt = (sel)=>scans.map(s=>`<option value="${attr(s.id)}"${s.id===sel?' selected':''}>${esc(s.target?.value||s.id)} — ${esc(fmtDate(s.started_at))} (${s.entity_count||0}${scanState(s)==='complete'?'':` · ${esc(scanState(s))}`})</option>`).join('');
+  // A scan is called by its name, and a named scan shows what it scanned.
+  const label = (s)=>{ const l = scanLabel(s); return l.target ? `${l.title} · ${l.target}` : l.title; };
+  const opt = (sel)=>scans.map(s=>`<option value="${attr(s.id)}"${s.id===sel?' selected':''}>${esc(label(s))} — ${esc(fmtDate(s.started_at))} (${s.entity_count||0}${scanState(s)==='complete'?'':` · ${esc(scanState(s))}`})</option>`).join('');
   v.innerHTML = `
     <div class="crumbs"><a href="#/scans">Scans</a> &raquo; Compare</div>
     <h2>Compare Scans <small class="text-muted">temporal diff — what changed between two runs</small></h2>

@@ -260,6 +260,11 @@ pub enum Command {
         /// Sets depth/free-only/budgets; `--modules`/`--exclude`/`--format` still apply.
         #[arg(long)]
         profile: Option<String>,
+        /// A name for the scan (SpiderFoot's "Scan Name"). The web console
+        /// titles the scan by it, with the target beside it. One line of at
+        /// most 200 characters; a blank name is no name.
+        #[arg(long)]
+        name: Option<String>,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(
             short = 'f',
@@ -802,6 +807,9 @@ pub enum Command {
         /// Same as `scan --gate-speculative`.
         #[arg(long)]
         gate_speculative: bool,
+        /// Same as `scan --name`: every iteration's scan carries it.
+        #[arg(long)]
+        name: Option<String>,
         /// Radar mode: persist the keyed-module dispatch ledger across
         /// iterations so paid APIs are never re-queried on a seed an earlier
         /// sweep already covered — each sweep spends quota only on NEW seeds.

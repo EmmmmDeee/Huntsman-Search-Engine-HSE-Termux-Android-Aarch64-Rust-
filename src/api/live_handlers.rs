@@ -43,7 +43,13 @@ fn live_request_from_json(
         "live",
         &crate::core::live::known_live_option_keys(),
     )?;
-    serde_json::from_value(raw).map_err(|e| format!("malformed live request: {e}"))
+    let mut req: crate::core::live::LiveRequest =
+        serde_json::from_value(raw).map_err(|e| format!("malformed live request: {e}"))?;
+    req.options = req
+        .options
+        .checked_for_request()
+        .map_err(|e| e.to_string())?;
+    Ok(req)
 }
 
 pub async fn live_create(
