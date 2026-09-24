@@ -16,6 +16,17 @@ pub(super) struct Feature {
     pub(super) properties: Option<Props>,
 }
 
+impl Feature {
+    /// The feature's own `(lat, lon)` — GeoJSON orders a point `[lon, lat]` —
+    /// or `None` without a two-number point.
+    pub(super) fn position(&self) -> Option<(f64, f64)> {
+        match self.geometry.as_ref()?.coordinates.as_slice() {
+            [lon, lat, ..] => Some((*lat, *lon)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub(super) struct Geometry {
     #[serde(default)]

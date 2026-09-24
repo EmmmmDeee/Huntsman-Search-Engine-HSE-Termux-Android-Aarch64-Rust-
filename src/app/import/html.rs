@@ -86,7 +86,7 @@ pub(super) async fn cmd_import_html(body: &str, output: &str) -> Result<()> {
     use crate::core::entity::EntityKind;
 
     note(output, "Importing OathNet HTML export...");
-    let sid = format!("import-html-{}", crate::core::entity::unix_now());
+    let sid = super::import_scan_id("html");
     let mut entities = parse_oathnet_html(body, &sid);
 
     deduplicate_by_uid(&mut entities);

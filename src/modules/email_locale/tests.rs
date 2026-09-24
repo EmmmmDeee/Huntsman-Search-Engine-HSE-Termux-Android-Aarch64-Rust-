@@ -266,3 +266,60 @@ use super::*;
             addr1.evidence
         );
     }
+
+    /// REQ-GEOLABEL-025: every coordinate this module mints is labelled with
+    /// the place its signal names, never the one country its stand-in
+    /// centroid sits in. A name pattern names a REGION ("Eastern Europe
+    /// (Ukraine/Russia/Serbia)", "Iberia/Latin America", "Scandinavia
+    /// (Sweden/Iceland)") at a single capital (Moscow, Lisbon, Stockholm), and
+    /// the label read the box country there: "Russia (approx.)", "Portugal
+    /// (approx.)", "Sweden (approx.)". The record now carries the region (and a
+    /// ccTLD record its country) for the label to name.
+    #[tokio::test]
+    async fn every_coordinate_is_labelled_with_the_place_its_signal_names() {
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        let ctx = ModuleContext {
+            scan_id: "s".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        for (email, named, never) in [
+            (
+                "ivan.shevchenko@example.com",
+                "Eastern Europe (Ukraine/Russia/Serbia)",
+                "Russia (approx.)",
+            ),
+            ("jose.garcia@example.com", "Iberia/Latin America", "Portugal"),
+            (
+                "erik.johansson@example.com",
+                "Scandinavia (Sweden/Iceland)",
+                "Sweden (approx.)",
+            ),
+            ("someone@firm.com.au", "Australia", "(approx.)"),
+        ] {
+            let r = EmailLocale
+                .process(&Target::new(TargetKind::Email, email), &ctx)
+                .await
+                .expect("should succeed");
+            let coords: Vec<_> = r
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Coordinates)
+                .collect();
+            assert_eq!(coords.len(), 1, "{email}: {:?}", r.entities);
+            let label = crate::core::place::describe(
+                coords[0],
+                &crate::core::place::PlaceContext::default(),
+            )
+            .expect("labelled");
+            assert_eq!(
+                label.fix_grain,
+                crate::core::place::FixGrain::Country,
+                "{email}: {label:?}"
+            );
+            assert!(label.text.starts_with(named), "{email}: {label:?}");
+            assert!(!label.text.contains(never), "{email}: {label:?}");
+        }
+    }

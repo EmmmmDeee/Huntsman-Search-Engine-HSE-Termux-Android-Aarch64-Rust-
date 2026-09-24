@@ -15,6 +15,12 @@
 //! rule, the breach-geo promotion pass) and the export's breach views key
 //! on, and a subject whose address merely appears in a password list has not
 //! been shown to be in any breach.
+//!
+//! Nor is it corroboration. The module only ever re-emits the string it was
+//! asked about, so its record ANNOTATES an entity the scan already holds: the
+//! source is non-corroborating (`hse_core::PASSWORD_CORPUS_SOURCE`) and the
+//! re-emission carries the confidence floor, so the engine's max-confidence
+//! merge can never raise the entity it annotates (REQ-CORE-018).
 
 use async_trait::async_trait;
 use sha1::{Digest, Sha1};
@@ -28,7 +34,9 @@ use crate::core::{
 };
 use crate::util::http::RequestBuilderExt;
 
-const SRC: &str = "pwned_passwords";
+/// The module's evidence source — the one name `hse_core` excludes from
+/// corroboration, so the two can never drift apart.
+const SRC: &str = crate::core::entity::PASSWORD_CORPUS_SOURCE;
 
 pub struct PwnedPasswords;
 
@@ -60,33 +68,26 @@ fn is_signal_free(value: &str) -> bool {
     crate::util::hashcat::is_common_password(value)
 }
 
-/// Confidence band for a pwned-password hit: the more times the exact string
-/// appears as a password in the corpus, the more certainly it is a known,
-/// reused password. A Username is capped at `HIGH_PLUS`: a bare handle is
-/// shared by many unrelated people, so its appearance in the password corpus
-/// says little about THIS subject, whereas an email address is specific to
-/// its owner. **Pure.**
-fn confidence_for(count: u64, kind: TargetKind) -> f64 {
-    let banded = if count >= 100 {
-        confidence::VERY_HIGH_PLUS
-    } else if count >= 10 {
-        confidence::HIGH_PLUSPLUS
-    } else {
-        confidence::HIGH_PLUS
-    };
-    match kind {
-        TargetKind::Username => banded.min(confidence::HIGH_PLUS),
-        _ => banded,
-    }
-}
-
 /// Map the k-Anonymity `count` (how many times the target string appears as a
 /// password in the corpus) for `target` to its entities. **Pure** (no
-/// network), so the count→confidence→tag→evidence mapping is unit-testable.
+/// network), so the count→tag→evidence mapping is unit-testable.
 ///
-/// Emits a single subject entity (the queried Email/Username) tagged
+/// Emits a single entity — the queried Email/Username itself — tagged
 /// `pwned-password` + `used-as-password` — never `breach`, see the module
-/// doc — carrying the occurrence count and the SHA-1 prefix as evidence.
+/// doc — carrying the occurrence count and the SHA-1 prefix as an annotation
+/// record ([`crate::core::entity::Evidence::as_annotation`]).
+///
+/// Its confidence is [`confidence::DERIVED_FLOOR`], whatever the count. It
+/// used to be banded by count up to `VERY_HIGH_PLUS` (0.90) for an Email and
+/// `HIGH_PLUS` (0.70) for a Username, and because `Entity::merge` keeps the
+/// higher confidence, a string-level hit lifted whatever entity it landed on:
+/// a 0.38 name-permuted guess that happened to be a common password became a
+/// 0.70 PROBABLE handle on "this string is a password" alone (REQ-CORE-018).
+/// How often the string is used as a password is still recorded, as the
+/// `password_occurrences` attribute; it says nothing about who owns the
+/// account. The engine exempts a module's re-emission of its own target from
+/// the `--min-confidence` floor, so the annotation is never dropped for
+/// carrying the floor.
 /// Returns an empty `Vec` when `count == 0` (the API's "not found" signal —
 /// padding rows report a zero count), so a non-hit produces nothing.
 fn build_entities(target: &Target, count: u64, prefix: &str, scan_id: &str) -> Vec<Entity> {
@@ -96,7 +97,7 @@ fn build_entities(target: &Target, count: u64, prefix: &str, scan_id: &str) -> V
     let mut entity = Entity::new(
         target.kind.to_entity_kind(),
         &target.value,
-        confidence_for(count, target.kind),
+        confidence::DERIVED_FLOOR,
         scan_id,
     );
     entity.tag("pwned-password");
@@ -109,7 +110,8 @@ fn build_entities(target: &Target, count: u64, prefix: &str, scan_id: &str) -> V
             ),
         )
         .with_attr("password_occurrences", count.to_string())
-        .with_attr("sha1_prefix", prefix),
+        .with_attr("sha1_prefix", prefix)
+        .as_annotation(),
     );
     vec![entity]
 }

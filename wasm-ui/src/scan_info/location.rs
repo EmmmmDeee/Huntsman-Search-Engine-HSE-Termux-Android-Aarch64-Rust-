@@ -30,6 +30,33 @@ struct BestLocation {
     source: Option<String>,
     rule_id: Option<String>,
     basis: Option<String>,
+    /// The fix's fused place label (`core::place::describe_fused`
+    /// server-side): offline, never finer than a locality, never a street or
+    /// a point of interest. Absent from an older server's response.
+    place_label: Option<PlaceLabelView>,
+}
+
+/// The fields of a `place_label` this panel uses.
+#[derive(Deserialize)]
+struct PlaceLabelView {
+    text: Option<String>,
+    label_grain: Option<String>,
+}
+
+/// The OpenStreetMap zoom that frames a place of `grain`: a doorway at 18, a
+/// street 16, a suburb 14, a locality 11, a region 7, a country 4 — so the map
+/// link never zooms the reader in tighter than the fix can support. `12` (the
+/// panel's historical fixed zoom) when the grain is unknown.
+fn osm_zoom(grain: Option<&str>) -> u8 {
+    match grain {
+        Some("point") => 18,
+        Some("street") => 16,
+        Some("suburb") => 14,
+        Some("locality") => 11,
+        Some("region") => 7,
+        Some("country") => 4,
+        _ => 12,
+    }
 }
 
 #[derive(Deserialize)]
@@ -57,14 +84,29 @@ pub fn render_location_html(data: JsValue) -> Result<String, JsValue> {
         return Ok(String::new());
     };
 
-    let place = [non_empty(&loc.locality), non_empty(&loc.state)]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(", ");
+    // The server's place label when it sent one (the one label every surface
+    // prints), else the historical locality / state join.
+    let label_text = loc
+        .place_label
+        .as_ref()
+        .and_then(|p| non_empty(&p.text))
+        .map(str::to_string);
+    let place = label_text.unwrap_or_else(|| {
+        [non_empty(&loc.locality), non_empty(&loc.state)]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
     let conf = loc.synergy_confidence.or(loc.confidence);
     let classes = loc.classes.unwrap_or_default();
-    let osm = format!("https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=12/{lat}/{lon}");
+    let zoom = osm_zoom(
+        loc.place_label
+            .as_ref()
+            .and_then(|p| p.label_grain.as_deref()),
+    );
+    let osm =
+        format!("https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map={zoom}/{lat}/{lon}");
 
     let mut rows = String::new();
     if !place.is_empty() {
@@ -114,4 +156,24 @@ pub fn render_location_html(data: JsValue) -> Result<String, JsValue> {
          </div>",
         osm_href = escape_html(&osm),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REQ-GEOLABEL-002: the map link never zooms tighter than the fix's own
+    /// grain — a city-grain fix frames the city, not a doorway — and a
+    /// response without a label keeps the historical zoom.
+    #[test]
+    fn osm_zoom_follows_the_label_grain() {
+        assert_eq!(osm_zoom(Some("point")), 18);
+        assert_eq!(osm_zoom(Some("street")), 16);
+        assert_eq!(osm_zoom(Some("suburb")), 14);
+        assert_eq!(osm_zoom(Some("locality")), 11);
+        assert_eq!(osm_zoom(Some("region")), 7);
+        assert_eq!(osm_zoom(Some("country")), 4);
+        assert_eq!(osm_zoom(None), 12);
+        assert_eq!(osm_zoom(Some("galaxy")), 12);
+    }
 }

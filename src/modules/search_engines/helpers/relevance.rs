@@ -35,6 +35,53 @@ pub(in crate::modules::search_engines) fn result_mentions_phone(
     hay_digits.contains(significant)
 }
 
+/// True if `hay` (a result's title + snippet + URL) carries the Australian
+/// business number `seed` — an 11-digit ABN or a 9-digit ACN — in ANY of the
+/// formats registers and pages print it: `"74 067 173 835"`, `"74067173835"`,
+/// `"067 173 835"`. The ABN/ACN-seed sibling of [`result_mentions_phone`].
+///
+/// A business number is a precise identifier, so a result names the seed only
+/// when the number itself appears; its formatting must not decide that. The
+/// generic single-term gate (`names_word_token` on the seed's last term) did
+/// let it decide: an unspaced seed `74067173835` was never a whole token of a
+/// snippet reading `"ABN 74 067 173 835"`, and a spaced seed's last term `835`
+/// never a token of the unspaced `74067173835` a registry title prints — so an
+/// ABN seed stopped mining the ACN on its own register page (REQ-SEARCH-015).
+///
+/// Each maximal run of digits and single-space group separators in `hay` is
+/// one printed number (the run grammar `extract_abn_acn_from_text` reads), and
+/// the seed is named iff some run's digits EQUAL the seed's digits — equality,
+/// not containment, so a longer number that merely embeds the digits (a phone
+/// number, another ABN's tail) never matches. `false` for a seed that is not
+/// 9 or 11 digits long. Pure; deterministic.
+pub(in crate::modules::search_engines) fn result_mentions_business_number(
+    hay: &str,
+    seed: &str,
+) -> bool {
+    let seed_digits = crate::util::str_util::ascii_digits(seed);
+    if !matches!(seed_digits.len(), 9 | 11) {
+        return false;
+    }
+    let mut run = String::new();
+    let mut last_was_space = false;
+    for c in hay.chars().chain(std::iter::once('\0')) {
+        if c.is_ascii_digit() {
+            run.push(c);
+            last_was_space = false;
+        } else if c == ' ' && !run.is_empty() && !last_was_space {
+            last_was_space = true;
+        } else {
+            if run == seed_digits {
+                return true;
+            }
+            // Anything else — a letter, a second space, the end — closes it.
+            run.clear();
+            last_was_space = false;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,6 +114,38 @@ mod tests {
         assert!(!result_mentions_phone(
             "Darwin office: (08) 8999 5511",
             SEED
+        ));
+    }
+
+    /// REQ-SEARCH-015: a business-number seed is named by its digits in any
+    /// grouping — never by how the seed or the page happens to space it.
+    #[test]
+    fn a_business_number_is_named_in_any_grouping_and_only_whole() {
+        let snippet = "ANZ BANKING GROUP LIMITED ABN 11 005 357 522 ACN 005 357 522";
+        let url = "https://abr.business.gov.au/ABN/View?id=11005357522";
+        for seed in ["11005357522", "11 005 357 522"] {
+            assert!(result_mentions_business_number(snippet, seed), "{seed}");
+            assert!(result_mentions_business_number(url, seed), "{seed}");
+        }
+        // The ACN seed is named by the ACN run; an ABN embedding its digits is
+        // a different printed number and never counts on its own.
+        assert!(result_mentions_business_number(snippet, "005357522"));
+        assert!(!result_mentions_business_number(url, "005 357 522"));
+        // A longer number that embeds the digits, a different number, and a
+        // seed that is no business number never match.
+        assert!(!result_mentions_business_number(
+            "call 0211005357522",
+            "11005357522"
+        ));
+        assert!(!result_mentions_business_number(
+            "ABN 53 004 085 616",
+            "11005357522"
+        ));
+        assert!(!result_mentions_business_number("id 12345", "12345"));
+        // Two numbers separated by more than one space are two numbers.
+        assert!(!result_mentions_business_number(
+            "11 005  357 522",
+            "11005357522"
         ));
     }
 

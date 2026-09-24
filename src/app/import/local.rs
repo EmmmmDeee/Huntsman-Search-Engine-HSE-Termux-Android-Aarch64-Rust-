@@ -188,7 +188,7 @@ pub(super) async fn import_local_dir_entities(
 /// file, so `hse import <dir>` ingests the whole installation's on-device data.
 pub(super) async fn cmd_import_local_dir(root: &str, output: &str) -> Result<()> {
     note(output, format!("Scraping local storage under {root} ..."));
-    let sid = format!("import-local-{}", crate::core::entity::unix_now());
+    let sid = super::import_scan_id("local");
     let (entities, scanned, imported, sightings) =
         import_local_dir_entities(std::path::Path::new(root), &sid).await;
     note(

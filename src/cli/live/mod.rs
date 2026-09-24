@@ -253,14 +253,29 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
             anchors,
             probes,
             dropped,
+            dispatched,
+            stopped,
         } => {
             let over = if *dropped > 0 {
                 format!(" ({dropped} over cap)")
             } else {
                 String::new()
             };
+            // Dispatched-of-planned, and why it stopped: a plan the scan
+            // budget cut to zero must not read as a sweep that went out.
+            let stop = stopped
+                .as_deref()
+                .map_or_else(String::new, |r| format!(" — stopped: {r}"));
+            // A legacy event never recorded its dispatch (`None`): render
+            // what it did record, never a zero it did not claim (REQ-SWEEP-006).
+            let sent = dispatched.map_or_else(String::new, |d| format!("{d}/"));
+            let verb = if dispatched.is_some() {
+                " dispatched"
+            } else {
+                ""
+            };
             format!(
-                "  breach sweep: {probes} probe{} from {anchors} anchor{}{over}",
+                "  breach sweep: {sent}{probes} probe{}{verb} from {anchors} anchor{}{over}{stop}",
                 plural2(*probes),
                 plural2(*anchors)
             )
@@ -288,17 +303,29 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
         E::ScanComplete {
             entity_count,
             status,
+            finalise_incomplete,
             ..
         } => match status {
             // Mirror `EventKind::log_summary` (core/event/mod.rs): a cancelled or
             // failed iteration still emits `ScanComplete`, so this
             // fully-unredacted live view must state what actually happened
-            // instead of printing the success line for every terminal state.
+            // instead of printing the success line for every terminal state —
+            // including a finalise that did not store or compute everything,
+            // which every export reads as partial (REQ-SCANSTATUS-015).
             crate::core::scan::ScanStatus::Aborted => format!(
-                "scan aborted — stopped early — {entity_count} entit{}",
-                plural(*entity_count)
+                "scan aborted — stopped early — {entity_count} entit{}{}",
+                plural(*entity_count),
+                if *finalise_incomplete {
+                    " — finalise incomplete"
+                } else {
+                    ""
+                }
             ),
             crate::core::scan::ScanStatus::Failed => "scan failed".to_string(),
+            _ if *finalise_incomplete => format!(
+                "scan complete but PARTIAL — finalise incomplete — {entity_count} entit{}",
+                plural(*entity_count)
+            ),
             _ => format!(
                 "scan complete — {entity_count} entit{}",
                 plural(*entity_count)

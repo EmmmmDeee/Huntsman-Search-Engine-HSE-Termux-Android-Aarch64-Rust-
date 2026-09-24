@@ -590,7 +590,10 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
         // `"breach_directory"` literal matching no real module. Deriving from
         // `source_family` means this can never drift from it again, and
         // `search_engines` (family "search") stays excluded for free — no
-        // special-case needed.
+        // special-case needed. `pwned_passwords` is classified "breach" too but
+        // never reaches this set: a password-list hit annotates a string, it is
+        // not a breach sighting of the account, so `corroborating_sources`
+        // drops it (`hse_core::PASSWORD_CORPUS_SOURCE`, REQ-CORE-018).
         let sources = e
             .corroborating_sources()
             .into_iter()

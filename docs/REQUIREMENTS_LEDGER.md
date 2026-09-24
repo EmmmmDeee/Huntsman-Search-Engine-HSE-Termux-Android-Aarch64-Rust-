@@ -304,7 +304,7 @@ covers.
 | REQ-CORE-005 | `Module::cost()` defaults to `Free`; drives the `--free-only` CLI/API filter. | none | `ModuleCost` | Filters dispatch set | none | `src/core/module/mod.rs:162-165,19-42` | `module_cost_as_str_matches_serde`, `module_cost_serializes_to_snake_case`, `module_info_reflects_trait_defaults` (`src/core/module/tests.rs`) | Ran `cargo test --lib core::module::tests` this pass — passed. | VERIFIED |
 | REQ-CORE-006 | `Module::is_passive()` defaults to `false`; drives `--passive-only`. Modules with genuinely no network dependency (device sensors) must override `true`. | none | `bool` | Filters dispatch set | A module that is actually passive but doesn't override reports as active (under-inclusive `--passive-only`) — not compiler-checked. | `src/core/module/mod.rs:167-171` | No architecture test cross-checks `is_passive()` against actual network calls (would require dynamic analysis). `module_info_reflects_trait_defaults` covers only the default value. | Read-only. | IMPLEMENTED_UNVERIFIED |
 | REQ-CORE-007 | `Module::max_timeout_ms()` bounds one `process()` call; every non-passive module MUST override it above `MODULE_TIMEOUT_MS` (3000ms), or the engine kills it mid-request on the default budget. | none | `u64` | Engine timeout wrapper | Under-budget non-passive module ⇒ premature `ModuleError{error:"timeout"}` on every call. | `src/core/module/mod.rs:173-185`; `crate::MODULE_TIMEOUT_MS = 3000` (`src/lib.rs:109`) | `non_passive_modules_budget_above_default` (`tests/architecture_parts/architecture_part3.rs:72`) | Ran `cargo test --test architecture non_passive_modules_budget_above_default` this pass — passed. | VERIFIED |
-| REQ-CORE-008 | `Module::constrained_timeout_ms()` (default = `max_timeout_ms()`) sets the per-module budget the engine applies on a resource-constrained device (Termux/Android, or any small/metered container) when the operator hasn't pinned `ScanOptions::module_timeout_ms`; the engine additionally clamps to a 45s cap unless the module is cap-exempt. | none | `u64` | Engine timeout resolution on a constrained device | An exempt module bypasses the cap and is bounded only by its own value (still finite). | `src/core/module/mod.rs:187-220`; engine consumer `src/core/engine/timeout/mod.rs` | `constrained_cap_bounds_long_modules_only_when_constrained_without_override`, `cap_exempt_module_keeps_its_full_constrained_budget`, `resolve_timeout_uses_constrained_budget_then_cap` (`src/core/engine/timeout/tests.rs`) | **Citations updated in Pass 10** (renamed by PR #576's `CORE LOGIC != PLATFORM LOGIC` fix — `termux_timeout_ms`→`constrained_timeout_ms` etc.; the underlying gating logic is unchanged, confirmed by that PR's own zero-diff-in-behavior verification). Ran `cargo test --lib core::engine::timeout::tests` this pass — all 3 cited tests passed under their new names. | VERIFIED |
+| REQ-CORE-008 | `Module::constrained_timeout_ms()` (default = `max_timeout_ms()`) sets the per-module budget the engine applies on a resource-constrained device (Termux/Android, or any small/metered container) when the operator hasn't pinned `ScanOptions::module_timeout_ms`; the engine additionally clamps to a 45s cap unless the module is cap-exempt. | none | `u64` | Engine timeout resolution on a constrained device | An exempt module bypasses the cap and is bounded only by its own value (still finite). Exempt: `see_know`, `social_probe` (REQ-SOCIAL-004, `modules::social_probe::tests::is_exempt_from_the_constrained_device_timeout_cap`). | `src/core/module/mod.rs:187-220`; engine consumer `src/core/engine/timeout/mod.rs` | `constrained_cap_bounds_long_modules_only_when_constrained_without_override`, `cap_exempt_module_keeps_its_full_constrained_budget`, `resolve_timeout_uses_constrained_budget_then_cap` (`src/core/engine/timeout/tests.rs`) | **Citations updated in Pass 10** (renamed by PR #576's `CORE LOGIC != PLATFORM LOGIC` fix — `termux_timeout_ms`→`constrained_timeout_ms` etc.; the underlying gating logic is unchanged, confirmed by that PR's own zero-diff-in-behavior verification). Ran `cargo test --lib core::engine::timeout::tests` this pass — all 3 cited tests passed under their new names. | VERIFIED |
 | REQ-CORE-009 | `Module::cache_ttl_secs()` (default 0 = no caching) lets the engine serve a prior result from the inter-scan entity cache instead of re-querying, for modules with stable, cacheable data. | none | `u64` (seconds) | Engine reads/writes an entity cache keyed on module+target when `ttl > 0` | `ttl == 0` ⇒ cache path is a no-op | `src/core/module/mod.rs:272-278`; consumers `src/core/engine/dispatch.rs:848,984,1106`; cache-hit contract documented at `src/core/port/mod.rs:139-155` | **Fixed this pass (Pass 2).** No dedicated unit test found exercising a cache HIT/MISS for a nonzero-TTL module end-to-end. Root cause: `core::test_support::InMemoryStore` (the standard engine-test double) inherited `StoragePort`'s no-op defaults for `archive_module_result`/`lookup_module_result_fresh` — a lookup could never return a hit, so the dispatch-level "cache hit skips `process()`" behavior was structurally untestable through it, independent of the storage layer's own coverage (`storage::archive_tests` already fully covers the SQLite-backed round-trip). | Gave `InMemoryStore` genuine in-memory cache semantics mirroring `Store`'s exact freshness predicate (`archived_at + ttl_secs > now`), then added `core::engine::tests::cache_hit_skips_reprocessing_a_later_scan_of_the_same_target`: dispatches a `cache_ttl_secs()`-overriding probe against the same target under two different scan_ids and asserts `process()` runs exactly once (the second dispatch replays from cache, `ModuleStats::cached == 1`), plus a third dispatch against a *different* target proves the cache is keyed per-target, not a blanket hit. Ran `cargo test --lib core::engine::tests::cache_hit_skips_reprocessing_a_later_scan_of_the_same_target` — passed. Updating `InMemoryStore` also broke a pre-existing test's premise (`core::port::tests::default_optional_methods_are_documented_no_ops` asserted `InMemoryStore` overrides none of the 7 default methods) — updated that test's assertions and comment to reflect the new, deliberate 5-no-op/2-real-cache split. Ran `cargo test --lib --features dep-cooldown` (6836 passed, 0 failed), `cargo test --test architecture` (55 passed), `cargo clippy --all-targets --features dep-cooldown -- -D warnings` (clean), `cargo fmt --all`. | VERIFIED |
 | REQ-CORE-010 | `Module::attack_techniques()` defaults from `category()` via `attack::techniques_for_category`; every registered module must declare at least one real MITRE ATT&CK Reconnaissance technique ID from the catalogue. | none | `&'static [&'static str]` | Tags emitted entities with `attack:<ID>` | A module whose category is `Other` (unmapped) and has no override reports zero techniques. | `src/core/module/mod.rs:280-293`; category map `src/core/attack/mod.rs` | `every_module_maps_to_valid_attack_reconnaissance_techniques` (`tests/architecture_parts/architecture_part2.rs:14`) | Ran `cargo test --test architecture` this pass — passed (part of the 55/55 run). | VERIFIED |
 | REQ-CORE-011 | `Module::produces()` (default empty) documents `EntityKind`s the module emits; every module that literally constructs an `Entity::new(EntityKind::X, ...)` must declare `X` in its `produces()`. | none | `&'static [EntityKind]` | Drives the UI pivot-chain / capability map | A module minting an undeclared kind under-represents its own output map (sound-but-incomplete check: only catches literal constructions, not dynamically-classified ones). | `src/core/module/mod.rs:268-270` | `every_literal_constructed_entity_kind_is_declared_in_produces` (`tests/architecture_parts/architecture_part5.rs:90`) | Ran `cargo test --test architecture` this pass — passed. | VERIFIED |
@@ -20076,7 +20076,11 @@ other — 12,319 of the export's 33,473 edges.
 untyped Wikidata item fell back to the seed's kind, so the venue "Ian Thorpe
 Aquatic and Fitness Centre" became a `Person`, tagged `exact-name-match`,
 and its P625 — emitted at HIGH, over the subject-fix floor — became the
-best AU location fix at 0.97. An untyped item carrying P625 is now a located
+best AU location fix at 0.97. *(Corrected by REQ-SEARCH-ADDR-002: `wikidata`
+is not an anchoring geo source, so its P625 could not have been that fix. The
+0.97 fix was Photon's geocode of the search-snippet Address "Ian Thorpe
+Aquatic Centre in Ultimo, New South Wales". The Wikidata fix here still
+stands on its own.)* An untyped item carrying P625 is now a located
 thing, not a person; a head that is not the seed's kind of thing is neither
 `exact-name-match` nor a source of the subject's coordinates.
 
@@ -20087,7 +20091,9 @@ as a city, so `spokeo.com/Ian-Thorpe/North-Carolina` became the Address
 different names to one arbitrary point. On a name scan
 `is_person_listing_locality` drops a multi-word "city" ending in the scanned
 surname unless a place word leads it; a one-word suburb that is the surname
-("Lawnton, QLD") is unaffected. Review of #645: the caller read the seed's
+("Lawnton, QLD") is unaffected. *(Widened by REQ-SEARCH-ADDR-002 to catch the
+surname anywhere after the first word, and renamed
+`city_names_a_surname_bearer`.)* Review of #645: the caller read the seed's
 surname as its last whitespace token, so `"Dr Ian Thorpe OAM"` searched for an
 "OAM"; it now uses the identity gate's own parser (`core::scan::person_surname`),
 locked by `a_name_scan_…` 's sibling
@@ -20619,6 +20625,2793 @@ control locks this.
 
 **Falsification (compiled):** 8 of 8 killed.
 
+## REQ-PHONEAU-002 / REQ-SEARCH-007 / REQ-SEARCH-008 / REQ-SEARCH-009 / REQ-SEARCH-010 / REQ-SEARCH-011 / REQ-GEO-007 — search-result extraction minted a namesake's page, a breadcrumb ID and a city centroid as the subject's
+
+**Found** in the second read of the same "Ian Thorpe" scan (7258fc07) after
+#645: seven faults that survived it, all in how `search_engines` turns a
+result into entities. Each was verified adversarially against the exports and
+the code before it was fixed.
+
+**REQ-PHONEAU-002 — a breadcrumb ID was an AU phone.** All six Phone entities
+of the scan were `+61` prefixed to a 9-digit ID from a Brave breadcrumb title
+(`findagrave.com › memorial › 282246704`, `…-email_392575227`). The free-text
+scanner `util::address_au::extract_phones` has an optional country code, an
+optional area code and no token boundary, so any run of six or more digits
+matched, and it handed each match to `normalise_phone`, whose bare-9-digit
+branch exists only for a STRUCTURED import column that dropped its leading
+`0` (REQ-PHONEAU-001: a marker-less national number "carries zero evidence
+of being Australian"). The scanner now keeps a match only when it is a whole
+token and carries its own AU marker (`+61`/`0061`/`61`, a trunk `0`, or
+`1300`/`1800`). `normalise_phone` is unchanged — the import paths rely on it.
+The three free-text consumers (`search_engines` result and recycled
+snippets, `employer_pivot`, which minted such a number at HIGH with
+`country:AU`) inherit the fix.
+
+**REQ-SEARCH-007 — ABN/ACN mining skipped the relevance gate.** Every other
+snippet miner sits inside `if result_names_the_subject`; the ABN/ACN loop ran
+after the block closed, on every result. It minted ANZ's own ABN off a bank
+support page and two ABNs from registry pages a "Sydney, Australia" location
+seed returned — breaking the documented rule that a location seed never mines
+snippet PII. The loop moved inside the gate. (Corrected by REQ-SEARCH-015: behind
+the gate an ABN/ACN seed fell to a formatting-dependent token match; it now
+matches by digits.)
+
+**REQ-SEARCH-008 — the surname alone named a person.** `names_the_subject`
+(behind the seed's re-affirmation and every snippet miner) and
+`url_matches_target` (behind every result/snippet `Url`) accepted a
+`FullName` subject on its surname alone, and a handle `ian_thorpe` on
+`thorpe` alone. Thirteen Spokeo pages for Bill, David, Ivan, Mark and other Thorpes were
+the subject's own `Url`s at 0.50, and "JAMIE THORPE PLUMBING PTY LTD" an
+organisation at generation 0. #645's name-structure rule reached only Person
+pivots. `core::scan::text_names_person` is the search-admission sibling of
+`person_names_compatible`, sharing its parser: the surname must carry a
+compatible given name directly before it, two before it across an initial or
+a space-separated middle name, or (surname-first) the full given name after
+it. (Corrected by REQ-SEARCH-012: the subject's OWN middle and given-name
+parts are read across any separator, so their `-`-separated slug is minted.)
+A mononym returns `None` and keeps the single-term check. A multi-part
+handle is named by all of its parts (`url_matches_handle_target`), the shape
+of the Organisation gate.
+
+**REQ-SEARCH-009 — a relative's social display name was HIGH.**
+`extract_display_names_from_titles` accepted any `<Caps words> (@h)` title
+containing a 4+-char seed term — for "Ian Thorpe" the surname — and minted it
+a `Person` at HIGH. `build_entities` emits the same name as a
+`demote_to_candidate`'d family lead; `Entity::merge` keeps the higher
+confidence and drops `candidate` when either side lacks it, so the HIGH copy
+undid the demotion and exported the namesake as PROBABLE. On a structured
+`FullName` seed the display name now goes through `person_names_compatible`:
+the subject keeps HIGH, a same-surname different person is a candidate
+`family-member` lead (the two copies merge as a candidate), and any other
+surname ("Ian Thorpe Aquatic Centre" parses as surname "centre") or a mononym
+is not minted.
+
+**REQ-SEARCH-010 — one title span, two glued organisations.** The org
+extractor scanned each suffix on its own pass, so ` Inc.` and ` Inc` both
+matched "Thorpedo Inc." and minted "Ian Thorpe - Thorpedo Inc" and "… Inc.";
+its backward walk never stopped at a title separator, so the person's name and
+"Email & Phone Number |" were glued onto the company, and the subject-term
+filter then passed on that glued name — admitting "Megan Thorpe - Covalent
+Lithium Pty Ltd" and three other namesakes' employers. Suffixes are now tried
+longest-first and an overlapping occurrence is the same span; the walk also
+stops at ` - `, ` – `, ` — `, ` | `, ` · `, `•`, `›` and at the previous
+organisation's end; the unchanged term filter then runs on the company name.
+(Corrected by REQ-SEARCH-013: snippet prose has no separator, so the name is
+now the run of capitalised words before the suffix, and the term filter
+matches at word starts, not as a substring.)
+
+**REQ-SEARCH-011 — HSE's own `site:` dork was "independent" evidence.**
+`score_username`'s business-slug gate caps a compound handle whose other parts
+are not the subject's name, unless "independently corroborated" — which
+counted `site_query_hit`. Every result of `build_queries_fullname`'s
+`… site:instagram.com OR site:github.com …` dork has it by construction, so
+the facility handle `ianthorpe_aquatic` reached PROBABLE and was searched as a
+handle, minting `ianthorpeaquaticcentre`. Only people-search provenance
+(Signal 2), where the host asserts the identity, now lifts the gate; the
+`site:` signal keeps its +1. This reverses the Cycle AM assertion that
+`smith_engineering` under `site:github.com john smith` is PROBABLE.
+
+**REQ-GEO-007 — a gazetteer centroid was pivoted as a precise point.**
+`util::city_coords` returns a city, suburb or postcode centroid, never a
+street point, but `search_engines`' known-city lookup, its recycled-snippet
+leg and the engine's `address_to_coords_pass` minted the result without
+`tags::COARSE`, the tag the engine's `coarse_geo_not_pivoted` gate reads. The
+Sydney CBD centroid was dispatched to reverse geocoders, Overpass and
+`au_geo`, and came back as "Kazan Dining, 25 Martin Place" at VERIFIED; in
+recalled data `390 Simpsons Road, Bardon` collapsed to the Brisbane CBD point
+and `qld_cadastre` attached a stranger's lot. All three now tag `COARSE`
+(`search-geocoded` became `tags::SEARCH_GEOCODED`). A centroid recalled from
+an earlier scan keeps its stored untagged tag set, so the pivot gate and the
+autonomous-seed gate share `engine::enrich::is_coarse_geo`, which also
+recognises a `Coordinates` by its minting signature (`search-geocoded`, or
+the `addr_entity_uid` evidence only `address_to_coords_pass` writes).
+(Extended by REQ-GEO-017: ~30 other modules minted untagged centroids, and the
+recycled-snippet leg had no legacy signature. The engine's enrichment now tags
+every gazetteer centroid by value, and `is_coarse_geo` also reads the
+`recycled` + `addr-derived` pair.)
+
+### Not fixed here (recorded)
+
+- **Other `city_coords` centroid sites.** About thirty modules
+  (`proxycurl`, `github_user`, `abn_lookup`, `whois`, `phone_geo`, …) mint a
+  `Coordinates` from `city_coords` tagged `addr-derived` but not `COARSE`.
+  `addr-derived` is also carried by precise geocoder fixes, so it cannot be the
+  engine's signal. Tagging each is the same one-line change, applied per module
+  with that module's tests; this batch covers the search and engine paths only.
+- **The `@mention` pivot in `extract_username_pivots`** has no score gate.
+  In the observed shape the path-segment block claims the handle first and the
+  fix above stops it; a `(@facility_slug)` title on a post URL would still be
+  pivoted.
+- **`extract_addresses_from_text`'s word path** locates the city with
+  `pre_comma.find(first_word)`, the FIRST occurrence in the text, so
+  "Brett Lawnton … Located in Lawnton, QLD" reads the city from the name and
+  drops the address. Found while re-fixturing the Lawnton cap tests.
+
+### Locks
+
+- `util::address_au::tests::free_text_phone_scan_ignores_bare_nine_digit_ids`;
+  `modules::search_engines::tests::a_breadcrumb_numeric_id_is_never_minted_as_a_phone`;
+- `modules::search_engines::tests::abn_in_a_result_not_naming_the_subject_is_not_mined`
+  (with the over-correction control);
+- `core::scan::tests::text_names_person_needs_a_compatible_given_name_beside_the_surname`;
+  `modules::search_engines::tests::a_surname_only_result_does_not_name_a_full_name_subject`;
+  `modules::search_engines::helpers::tests::url_matches_person_target_needs_the_given_name_beside_the_surname`.
+  The Lawnton cap tests and `court_record_hits_are_source_documents_never_pivots`
+  were re-fixtured to results that name the subject; the suburb-only pages now
+  assert that they mint no address;
+- `modules::search_engines::extract::tests::display_name_on_a_full_name_scan_is_high_only_for_the_subject`
+  (including the merge with the family lead);
+- `modules::search_engines::helpers::entity::tests::an_org_title_span_yields_one_bounded_org_without_the_person_or_boilerplate`;
+- `modules::search_engines::helpers::entity::tests::score_username_site_query_does_not_lift_business_slug_gate`,
+  the flipped `score_username_common_surname_without_independent_signal_stays_candidate`,
+  `modules::search_engines::extract::tests::a_facility_slug_from_hses_own_site_dork_is_not_pivoted`;
+- `modules::search_engines::tests::a_known_city_lookup_centroid_is_coarse_and_never_a_precise_pivot`,
+  `modules::search_engines::extract::tests::a_recycled_address_centroid_is_coarse`,
+  `core::engine::enrich::tests::an_offline_address_centroid_is_coarse`,
+  `core::engine::enrich::tests::is_coarse_geo_recognises_an_untagged_legacy_centroid`,
+  `core::engine::tests::a_legacy_untagged_centroid_is_never_pivoted` (through
+  `ScanEngine::run`, with the precise-fix control).
+
+### Falsified
+
+Each mutation restores the defect; the sources were restored byte-identical
+(`cmp` against a saved copy) after every run.
+
+| # | mutation | result |
+|---|---|---|
+| S1 | `extract_phones` without the token boundary and the bare-9 rejection | killed by `free_text_phone_scan_ignores_bare_nine_digit_ids`, `a_breadcrumb_numeric_id_is_never_minted_as_a_phone` |
+| S2 | the ABN/ACN loop moved back outside the relevance gate | killed by `abn_in_a_result_not_naming_the_subject_is_not_mined` |
+| S3 | `names_the_subject` / `url_names_target` back to the surname / last term | killed by `a_surname_only_result_does_not_name_a_full_name_subject` |
+| S4 | display names skip the identity decision | killed by `display_name_on_a_full_name_scan_is_high_only_for_the_subject` |
+| S5 | `site_query_hit` counts as independent again | killed by all three REQ-SEARCH-011 locks |
+| S6 | overlapping suffix spans, no separator or previous-org bound, no output dedup | killed by `an_org_title_span_yields_one_bounded_org_without_the_person_or_boilerplate` |
+| S7 | no `COARSE` on the three centroid sites, no legacy signature in `is_coarse_geo` | killed by all five REQ-GEO-007 locks |
+
+**7 of 7 killed.**
+
+## REQ-NAMESAKE-002 / REQ-EUROPEPMC-001 / REQ-SOCIAL-002 / REQ-SOCIAL-003 / REQ-SOCIAL-004 — a namesake's office, other people's papers and a platform's own domain filed as the subject's; a structural "cannot tell" and a normal sweep treated as faults
+
+**Found** in the second read of the "Ian Thorpe" scan (7258fc07) after #645:
+five faults in the people/identity modules. Each was adversarially verified
+against the exports and the code before it was fixed.
+
+**REQ-NAMESAKE-002 — an ambiguous namesake's PEP flag reached the subject.**
+Wikidata's first "Ian Thorpe" hit was Q61949509, a New Zealand soldier with a
+P39 position; the swimmer Q185044 was only a candidate. `wikidata`'s builder
+tagged the primary head `pep` / `politically-exposed`, `mark_shared_labels`
+marked it ambiguous, and the head fused into the seed anchor. REQ-NAMESAKE-001
+made the per-record `Unverified` mark the thing that survives that merge, but
+`util::namesake::mark_ambiguous` never touched tags. Tags are entity-level and
+`Entity::absorb` unions them, so the seed (0.82, VERIFIED) carried `pep` in
+every export, and AU-114 — gated on the tag and confidence ≥ 0.55 only — would
+have reported the soldier's office against the swimmer. `mark_ambiguous` now
+moves every `PARTY_DETERMINATION_TAGS` entry (`pep`, `politically-exposed`,
+`sanctioned`, `debarred`, `sanctions-linked`) off the entity and onto each of
+its evidence records as a sorted `unresolved_flags` attribute. The fix is at
+the namesake authority, so all five callers (ahpra, gleif_lei, opencorporates,
+wikidata, wikitree) get it. AU-114 is deliberately not taught to read
+`ambiguous-name`: one module's collision would then hide another module's
+genuine designation on the same anchor. (Corrected by REQ-NAMESAKE-003: the
+genuine designation is restored only when the key-gated `opensanctions`
+matches, so AU-114 now reports the unresolved flags as a LOW lead.) The same records' `birth_date` 1930 and
+`death_date` 2019 also reached the subject's timeline, because
+`core::timeline::reconstruct` ignored the verification status that
+`core::exposure` already honours. It now skips `Unverified` records.
+
+**REQ-EUROPEPMC-001 — free-text search filed every hit as the subject's
+literature.** `europepmc_search` sent the unfielded `query=<seed>` and decoded
+only `doi`/`pmid`, so every returned work became a Url at 0.60 whether or not
+the seed wrote it. On this scan the visible no-author hits came through the
+facility pivot "Ian Thorpe Aquatic Centre", which #645 now gates. The
+module-level defect still applied to every name and organisation seed: live
+2026-09-23, `query=Ada Lovelace` returned an essay about her, an unsigned
+editorial and a paper on NVIDIA's Ada Lovelace GPU. This is the defect
+`crossref_search` fixed as backlog #14. The module now mirrors it:
+`build_url` sends `AUTH:"<name>"`, or for an organisation `AFF:"<org>"` with
+`resultType=core`, the result type that carries the affiliation line.
+(Corrected by REQ-EUROPEPMC-002: that line is the first author's only; every
+author's affiliations are read.)
+`ResultItem` decodes `authorString`, `title` and `affiliation`. `attribution`
+splits each `Surname Initials` entry and gates it through crossref's own
+`author_matches` / `affiliation_matches` (widened to `pub(crate)`, so the two
+sources cannot drift), passing only the first initial. The generation-0 hits
+("Thorpe IF", "Thorpe I") still pass: they are namesake authors, which is a
+separate identity question.
+
+**REQ-SOCIAL-002 — the probed platform's own apex became a subject Domain.**
+`social_probe::emit_judged` emitted the host of each confirmed profile URL as a
+`Domain` unless `is_noncentral_domain` knew it. So `behance.net` [380] and
+`myspace.com` [381] were PROBABLE subject Domains, `derived_from` the username
+and queued for DNS/cert expansion. Sixteen more hosts in the module's own table
+would have leaked the same way. The fallback's premise — "a niche site that
+might be the subject's" — cannot hold: every probed URL comes from the
+module's `url_pattern` table with the handle in the path, so the host is always
+the platform's. The block is removed and `Domain` is dropped from `produces()`.
+No denylist was widened, because the next unlisted platform would leak the same way.
+
+**REQ-SOCIAL-003 — a structural people-directory verdict tripped the
+module-wide breaker.** The FullName table is two entries. facebook-public
+answers "present" for any name, and peekyou is walled, so every name target was
+inconclusive by construction and returned `Error::Module`. The breaker is keyed
+by module name alone. In this scan six name-sweep errors drove all three trips:
+one alone, and two combined with username-sweep timeouts. Together they benched
+the handle sweep for username targets that were answering (found 7, 3 and 2).
+`inconclusive_error` now types the verdict by table. A FullName sweep is an
+`Unavailable` skip, which is still a coverage gap, never a clean negative, and
+its reason keeps "not a confirmed absence". (Corrected by REQ-SOCIAL-005:
+a skip means "not queried", and coverage read the queried directories as
+`NotAttempted`; `finish_sweep` now returns a truncated answer.) A Username sweep stays the module
+error that benches a blocked egress. `streaming_probe` and `username_search`
+accept only Username and are unchanged.
+
+**REQ-SOCIAL-004 — the constrained-device cap killed normal sweeps.** On
+Termux, `social_probe`'s sequential 37-platform first wave plus the control
+wave takes 42–45 s. The completed sweeps in this scan took 43, 42, 45, 42 and
+43 s. The engine's 45 s constrained cap (`CONSTRAINED_MODULE_TIMEOUT_CAP_MS`,
+REQ-CORE-008) timed out the other three at exactly 45 s. Each timeout dropped
+every profile already confirmed and added a soft failure to the breaker. The
+cap's own doc still quoted a sandbox figure of ~36 s. `social_probe` is now
+`constrained_timeout_cap_exempt`, the second exempt module after see_know. It
+stays bounded by its own 60 s budget. The cap doc and the trait doc name it.
+
+### Locks
+
+- `util::namesake::tests::a_party_determination_is_moved_off_an_ambiguous_entity_onto_its_evidence`
+  (with idempotence and the no-determination control);
+  `modules::wikidata::tests::a_namesake_primary_s_pep_flag_does_not_reach_the_subject`
+  (primary + same-label candidate + seed anchor through `dedup_merge_entities`
+  and `correlate_entities`: no `pep`, the position kept, no AU-114); the
+  unambiguous `person_with_position_held_is_flagged_pep` control stays green;
+  `core::timeline::tests::reconstruct_skips_a_record_whose_ownership_was_never_established`.
+- `modules::europepmc_search::tests::a_work_with_no_author_matching_the_seed_is_not_the_subjects`,
+  `an_initials_author_string_matches_the_seed` ("Thorpe IF" kept, "Thorpe A"
+  and "van Dorst RM" not), `a_multi_word_family_name_is_read_whole`,
+  `the_name_query_is_author_fielded`,
+  `an_organisation_is_attributed_by_its_affiliation_line`; the loopback 404
+  test now drives the URL `build_url` builds.
+- `modules::social_probe::tests::a_confirmed_profile_never_files_the_platforms_own_host_as_a_domain`
+  (every entry of both platform tables).
+- `modules::social_probe::tests::an_inconclusive_people_directory_sweep_is_an_unavailable_skip_not_a_breaker_fault`;
+  `core::engine::tests::a_typed_unavailable_skip_never_feeds_the_circuit_breaker`
+  (the engine side: four typed skips leave the breaker closed, three module
+  errors open it).
+- `modules::social_probe::tests::is_exempt_from_the_constrained_device_timeout_cap`.
+
+### Falsified
+
+Each mutation restores the defect. After every run the sources were restored
+byte-identical, checked with `md5sum -c` against the saved copies.
+
+| # | mutation | result |
+|---|---|---|
+| P1 | `mark_ambiguous` without `strip_party_determinations` | killed by `a_party_determination_is_moved_off_an_ambiguous_entity_onto_its_evidence`, `a_namesake_primary_s_pep_flag_does_not_reach_the_subject` |
+| P2 | `reconstruct` without the `Unverified` skip | killed by `reconstruct_skips_a_record_whose_ownership_was_never_established` |
+| P3 | `build_entities` emits without the attribution `continue` | killed by `a_work_with_no_author_matching_the_seed_is_not_the_subjects`, `an_initials_author_string_matches_the_seed` |
+| P4 | `build_url` sends the unfielded value | killed by `the_name_query_is_author_fielded` |
+| P5 | the `is_noncentral_domain` Domain block restored in `emit_judged` | killed by `a_confirmed_profile_never_files_the_platforms_own_host_as_a_domain` |
+| P6 | `inconclusive_error` no longer skips a FullName verdict | killed by `an_inconclusive_people_directory_sweep_is_an_unavailable_skip_not_a_breaker_fault` |
+| P7 | `constrained_timeout_cap_exempt` back to `false` | killed by `is_exempt_from_the_constrained_device_timeout_cap` |
+
+**7 of 7 killed.** `a_typed_unavailable_skip_never_feeds_the_circuit_breaker`
+locks existing engine behaviour that the REQ-SOCIAL-003 fix relies on. It
+passed before the fix, and it is recorded as a lock, not as a falsification.
+
+## REQ-CORE-017 / REQ-CORE-018 / REQ-GEO-008 / REQ-REL-002 / REQ-IDENTITY-GATE-002 / REQ-REL-003 / REQ-RESOLVE-001 — corroboration counted what nobody observed; relation builders read a surname, a generator's guess and an edge underscore as identity
+
+**Found** in the second read of the "Ian Thorpe" scan (7258fc07) after #645:
+seven faults in how the engine decides that something is corroborated, and in
+how the relation builders decide that two things are one identity. Each was
+adversarially verified against the exports and the code before it was fixed.
+
+**REQ-CORE-017 — a name-only match counted as independent corroboration.**
+`Entity::source_count` and `corroborating_sources` filtered evidence only by
+source name. They never read `Evidence::verification`, so a record its producer
+marked `Unverified` still counted as a separate source. That mark exists for a
+match made on the name alone, where whose record it is, is exactly what is
+unknown. Entities merge by name uid, so any namesake's register row that landed
+on the subject was counted as independent confirmation of the subject. The seed
+[914] counted an OpenArch US death record (2012) and a Wikidata New Zealand
+soldier among its seven sources. Caroline Thorpe went VERIFIED on two WikiTree
+profiles born in 1748 and 1863. The same path defeated
+`namesake::AMBIGUOUS_CEILING`: two ambiguous rows capped at 0.45 from different
+registers reached c_eff 0.64, above the expansion floor. The fix adds
+`Evidence::is_non_corroborating` in `hse-core`, one per-record statement of the
+rule, and `source_count`, `corroborating_sources` and `corroborating_records`
+all read it. An `Unverified` record no longer corroborates. The duplicate-source
+scan in `source_count` now looks only at earlier countable records, so a source
+whose first record is a name-only match and whose second is a real sighting is
+still counted, once. Two producers matched on name alone without marking the
+record, and both now mark it: `openarch` (every register entry) and the
+`au_unclaimed` QLD owner Person. (Corrected by REQ-CORE-019: when two copies
+of one record merge, the marks fold commutatively, so an unmarked copy
+persisted before this cannot shadow the marked one.)
+
+**REQ-CORE-018 — a password-list hit was a corroborating source and a breach
+corpus.** REQ-CORE-016 took the `breach` tag off `pwned_passwords` but left
+every consumer that keys on the source name. Four handles (ian_thorpe, iant,
+ianthorpe, ianthorpe26) each gained a phantom extra source. Each also got a
+breach-consensus `single_source_elevated` flag ("attested by 1 breach corpus:
+pwned_passwords"), and those four flags were the scan's whole
+`PASS_WITH_CONCERNS` verdict. AU-001 would have fired CRITICAL on hibp +
+pwned_passwords as "2 breach sources". The module re-emitted its target at up
+to 0.90, so the max-merge could lift a 0.38 guess to PROBABLE on "this string is
+a password" alone. `hse_core::PASSWORD_CORPUS_SOURCE` is now in
+`is_non_corroborating_source` (not in `ENRICHMENT_ONLY_SOURCES`, which is pinned
+to `Module::is_derivation()`). The module re-emits its target at
+`confidence::DERIVED_FLOOR` as an annotation record. The count is kept as the
+`password_occurrences` attribute.
+
+**REQ-GEO-008 — point lookups echoed the queried coordinate as independent
+sources.** `au_geo` (0.85), `overpass` (0.70), `sunrise_sunset` (0.55),
+`qld_cadastre` (0.78) and `wigle` (0.85) each took a Coordinates target and
+re-emitted the same point with their own evidence. The max-merge raised a 0.72
+search-engine city centroid to 0.85. Each echo also counted as a source, so
+[353] -33.8688,151.2093 reached c_eff 1.00, VERIFIED, from one real source; the
+same happened to [327] and [328]. The verdict proposed a Coordinates-only
+source-name list. That was rejected because `wigle` is an anchoring geo source:
+its OTHER Coordinates (each wardriven network's own position) are genuine
+observations, and a source-level exclusion would have turned them into
+infrastructure geo. The exclusion is therefore per record. `Evidence` gains
+`is_annotation`, set with `Evidence::as_annotation`, and
+`Evidence::is_non_corroborating` excludes it. Each module marks only its echo of
+the queried point: the ASGS roll-up, the Overpass summary and breakdown, the
+solar record, the cadastral parcel, and the WiGLE density and SSID records on
+the point. Each emits that echo at `DERIVED_FLOOR`. `wigle`'s echo moved into a
+pure `query_point_annotation` so it can be tested. The engine's dispatch
+exempts a module's re-emission of its own dispatch target from
+`--min-confidence`, so the floor never drops the annotation. That floor is a
+question about new findings, and the target was already admitted.
+(Corrected by REQ-ENGINE-004: only an all-annotation re-emission of a target
+already in the entity map is exempt; a FullName seed has no pre-inserted
+anchor, so the uid alone exempted namesake rows.)
+
+Consumers that marked or counted corroboration by source string now read the
+record: the debug bundle and dossier "(non-corroborating)" markers, the web
+Browse marker, breach consensus's attesting corpora, AU-045's family diversity,
+AU-081's source label, and the audit's weak-corroboration share. The audit
+reads `AuditEntity::corroborating_sources` from a stored entity or from the
+CSV's `corroborating_sources` column. An older CSV that has only source names
+falls back to the source-level rule, which is all it can express.
+
+**REQ-REL-002 — surname kinship built an unbounded namesake clique.**
+`derive_kinship` paired every Person sharing a distinctive surname. A full-name
+scan on the subject's own surname returns every listed carrier of it, so ~200
+namesake Thorpes became a C(199,2) = 19,701-edge `AssociatedWith` clique, plus
+a 2,346-edge Thorley clique. Together that was 22,073 of the 30,093 relations,
+and 148 nodes (the subject and 147 strangers) shared the top GEXF coreness.
+A group of more than `KINSHIP_MAX_PER_SURNAME` (8, a household-sized bound)
+distinct identities is now skipped whole. Identities are counted by
+`identity_norm`, so two spellings of one person do not count twice. The same
+bound applies to `derive_regional_kinship`'s (surname, postcode) groups.
+
+**REQ-IDENTITY-GATE-002 — a shared surname was read as a shared identity.**
+Two places accepted a surname as identity evidence. The first was
+`derive_identity_ownership`'s fingerprint path: it bound to the subject every
+handle that shared a ≥4-character run with the subject's name. The surname
+always is such a run, so `aidan_thorpe` (`anthorpe`) and `tharleschorpe`
+(`horpe`) were bound to "Ian Thorpe". The second was co-reference. Its
+name-token tier used plain containment, so "Ian Thorpe" ↔ `damianthorpe`
+scored 0.62. Its substring tier plus three shared module names gave "Ian
+Thorpe" ↔ "Megan Thorpe" 0.811, which was promoted to `SameAs`. The new
+`core::scan::handle_names_person` sits beside `person_names_compatible` and
+shares its name parser. It reads a handle's alphabetic runs from a run start,
+so a match can never begin inside a word. It accepts the given name or its
+initial beside the surname, in either order, optionally across one middle
+initial. The fingerprint path now also requires it. `coref::string_signal`
+vetoes every string tier when two Persons' names are incompatible, or when a
+Person and a handle do not spell each other. `derive_coreferences` never
+promotes such a pair: shared-source alone reaches the 0.80 floor at five shared
+module names. Everything here only narrows. A mononym (`None`) keeps the old
+behaviour. Known conservative loss: a nickname handle, a prefixed handle, and a
+person known by a middle name are no longer linked on string alone.
+(Corrected by REQ-IDENTITY-GATE-003: names and handles are compared
+diacritic-folded, and a full middle name — the subject's own, or a foreign one
+as a whole separated run — is accepted.)
+
+**REQ-REL-003 — `AliasOf` joined generator guesses and different mailboxes.**
+`derive_handles` joined every Email and Username sharing a persona key. 2,966 of
+the scan's 2,992 `alias_of` edges had a `name_intel` / `username_variants`
+permutation at one end, or joined mailboxes at different domains. A generator's
+guesses share the key because the generator spelled them from one name, so the
+edge only restated the generator (`derive_name_lineage` already records it).
+Mailboxes at different domains are two accounts, which `coref::string_signal`
+already held. `derive_handles` now skips a pair with an unobserved guess at
+either end (`is_unobserved_guess`: an uncorroborated name permutation, or a
+`derived` value that no corroborating source has seen; `derived` is required so
+a seed identifier still aliases). It also skips two mailboxes at different
+domains, a rule that now lives once in `coref::mailboxes_at_different_domains`
+for both readers. `derive_coreferences` applies the same guess gate, because
+handle-equivalence alone (0.80) meets its promotion floor.
+
+**REQ-RESOLVE-001 — the handle canonicaliser trimmed edge underscores.**
+`resolve::canonical_handle` went through the person-name tokeniser. That
+tokeniser trims non-alphanumerics from each token's edges, so Instagram
+`_ianthorpe_` folded onto the subject's GitHub/Bluesky composite `ianthorpe`,
+and `derive_canonical_identities` fused them with an undamped 0.95 `SameAs`.
+The same happened to `carolathorpe` / `carolathorpe_` and `_caroline.thorpe` /
+`caroline.thorpe`. Edge `_` and `.` are registrable, account-distinguishing
+characters on those platforms. `canonical_handle` now folds only case and
+whitespace. The name tokeniser, `canonical_name`, AU-081 and
+`core::entity::canonical_handle` are unchanged.
+
+### Locks
+
+- `hse-core` `tests::an_unverified_ownership_record_does_not_corroborate`,
+  `two_ambiguous_rows_stay_under_the_ambiguity_ceiling`,
+  `a_source_counts_once_by_its_first_countable_record`;
+  `modules::openarch::tests::a_name_matched_register_entry_is_ownership_unverified`;
+  `modules::au_unclaimed::tests::qld::an_owner_person_is_a_name_only_match_and_never_corroborates`;
+  `audit::tests::weak_corroboration_reads_the_per_record_verdict_of_a_stored_entity`.
+- `hse-core` `tests::password_corpus_hit_is_not_a_corroborating_source`;
+  `core::breach_consensus::tests::a_password_list_hit_is_not_a_breach_corpus_attestation`;
+  `core::correlator::tests::au001_does_not_count_a_password_corpus_hit_as_a_breach_source`;
+  `modules::pwned_passwords::tests::a_password_corpus_hit_never_raises_or_corroborates_its_target`.
+- `hse-core` `tests::point_annotations_do_not_corroborate_the_point` (with the
+  per-record control: a wigle AP position still corroborates);
+  `the_queried_point_is_annotated_not_corroborated` (au_geo),
+  `the_summary_annotates_the_point_while_nodes_stay_observations` (overpass),
+  `the_parcel_lookup_annotates_the_point` (qld_cadastre),
+  `the_solar_record_annotates_the_point` (sunrise_sunset),
+  `the_queried_point_is_annotated_with_wifi_density_not_corroborated` (wigle),
+  all through `core::test_support::assert_point_annotation`;
+  `core::engine::tests::a_target_annotation_is_exempt_from_the_min_confidence_floor`.
+- `core::relation::tests::kinship_does_not_clique_a_same_surname_crowd`,
+  `regional_kinship_does_not_clique_a_town_crowd`.
+- `core::scan::tests::handle_names_person_needs_the_given_name_beside_the_surname`;
+  `core::relation::tests::identity_ownership_does_not_bind_surname_only_handles`,
+  `coreference_never_same_as_two_differently_named_people`;
+  `core::coref::tests::name_token_tier_respects_token_boundaries`.
+- `core::relation::tests::unobserved_name_permutations_never_alias`,
+  `mailboxes_at_different_domains_do_not_alias_but_observed_handles_do`;
+  `handles_alias_shared_persona_across_platforms` and
+  `role_mailboxes_do_not_alias_across_organisations` now expect no gmail ↔
+  outlook alias.
+- `core::resolve::tests::username_edge_separators_do_not_merge`;
+  `core::relation::tests::canonical_identities_does_not_same_as_edge_separated_handles`.
+
+### Falsified
+
+Each mutation restores the defect. After every run the sources were restored
+byte-identical, checked by md5 against the saved copies.
+
+| # | mutation | result |
+|---|---|---|
+| C1 | `Evidence::is_non_corroborating` without the `Unverified` clause; `openarch` / QLD owner records unmarked | killed by `an_unverified_ownership_record_does_not_corroborate`, `two_ambiguous_rows_stay_under_the_ambiguity_ceiling`, `a_name_matched_register_entry_is_ownership_unverified`, `an_owner_person_is_a_name_only_match_and_never_corroborates`, `weak_corroboration_reads_the_per_record_verdict_of_a_stored_entity` |
+| C2 | `source_count`'s duplicate scan over every earlier record, countable or not | killed by `a_source_counts_once_by_its_first_countable_record` |
+| C3 | `PASSWORD_CORPUS_SOURCE` out of `is_non_corroborating_source`; the banded 0.70/0.90 re-emission, unmarked | killed by `password_corpus_hit_is_not_a_corroborating_source`, `a_password_list_hit_is_not_a_breach_corpus_attestation`, `au001_does_not_count_a_password_corpus_hit_as_a_breach_source`, `a_password_corpus_hit_never_raises_or_corroborates_its_target` |
+| G1 | `is_annotation` out of `is_non_corroborating`; the five echoes at their old confidences; the dispatch exemption off | killed by `point_annotations_do_not_corroborate_the_point`, the five module annotation tests, `a_target_annotation_is_exempt_from_the_min_confidence_floor` |
+| R1 | no crowd bound in `derive_kinship` / `derive_regional_kinship` | killed by `kinship_does_not_clique_a_same_surname_crowd`, `regional_kinship_does_not_clique_a_town_crowd` |
+| I1 | fingerprint path without `handle_names_person`; `string_signal` without the person veto; `derive_coreferences` without the names gate | killed by `identity_ownership_does_not_bind_surname_only_handles`, `coreference_never_same_as_two_differently_named_people`, `name_token_tier_respects_token_boundaries` |
+| I2 | only `derive_coreferences`' names gate removed | killed by `coreference_never_same_as_two_differently_named_people` (five shared module names) |
+| A1 | `derive_handles` skipping only identical values; `derive_coreferences` without the guess gate | killed by `unobserved_name_permutations_never_alias`, `mailboxes_at_different_domains_do_not_alias_but_observed_handles_do`, `handles_alias_shared_persona_across_platforms` |
+| A2 | only `derive_coreferences`' guess gate removed | killed by `unobserved_name_permutations_never_alias` |
+| H1 | `canonical_handle` back through `canonical_word_tokens` | killed by `username_edge_separators_do_not_merge`, `canonical_identities_does_not_same_as_edge_separated_handles` |
+
+**10 of 10 killed.** `handle_names_person` is a new primitive. Its unit test
+pins the accept and reject lists. It has no pre-fix form to falsify against.
+
+`hse-core` changed, and `hse-core` is compiled into `wasm-ui/pkg/`. The
+committed bundle must be regenerated with the pinned toolchain
+(`scripts/wasm_ui_drift_check.sh --write`) before CI's sibling-crates drift
+check can pass.
+
+## REQ-SEARCH-ADDR-002 / REQ-GEO-009 / REQ-AUDIT-GEO-001 / REQ-GEO-FAMILY-002 / REQ-GEO-010 / REQ-GEO-011 / REQ-GEO-012 / REQ-GEO-013 — a venue, a geocode of a snippet and a city centroid were the subject's location
+
+**Found** in the second read of the "Ian Thorpe" scan (7258fc07) after #645.
+There were eight faults in how HSE decides where the subject is. Each was
+adversarially verified against the exports and the code before it was fixed.
+Two claims did not survive verification. The photon "fuzzy top hit" was a
+correct geocode of the wrong thing. The "forged provenance" of derived
+centroids is the intended REQ-CORRELATOR-005 convention. Both are corrected
+below, not changed.
+
+**REQ-SEARCH-ADDR-002 — a venue named after the subject was an address.** The
+headline fix (-33.8774,151.1989 ± 1.3 km, 0.97) was the Ian Thorpe Aquatic
+Centre. Photon's raw response held exactly one feature: the real pool at 458
+Harris Street, Ultimo, which is a correct house-grain geocode. The fault came
+one layer earlier. On a full-name scan, the LinkedIn job title "…Exercise
+Physiologist NSW, Ian Thorpe Aquatic Centre in Ultimo, New South Wales,
+Australia | LinkedIn" names the subject only because the venue does. The
+comma path of `extract_addresses_from_text` kept the whole segment as the
+city. #645's filter dropped a city only when its LAST word was the surname,
+and here the last word is "Ultimo". The 0.45 Address was pivoted, and Photon
+placed it at 40 m, which is a 5x fusion weight. AU-059's Weiszfeld median
+then landed on the pool. The filter is now `city_names_a_surname_bearer`. It
+rejects a multi-word "city" that has the surname as a whole word anywhere
+after its first word, unless a place word leads it. A city that starts with
+the surname ("Thorpe Bay") is a place, and a one-word suburb that is the
+surname ("Lawnton") is kept. Photon's feature selection and precision are
+unchanged. The ledger's REQ-WIKIDATA-003 wrongly credited the 0.97 fix to
+Wikidata's P625 and is corrected in place. Known conservative loss: on a scan
+whose surname is also a place word, a multi-word place with that word after
+its first word (e.g. "Albert Park Lake" on a "Park" scan) is dropped. The old
+last-word rule had the same class of loss. (Refined by REQ-SEARCH-ADDR-003:
+a surname followed only by place suffixes is a place, and `<Name> in <Place>`
+yields the place; `surname_bearer_locality` replaces the predicate.)
+
+**REQ-GEO-009 — a geocode of a snippet was a second independent method.**
+`distinct_geo_classes`, AU-059's per-point class count and `best_geo_class`
+classified a coordinate by the NAME of each source. `geocode` and `photon` run
+as pivots on an Address some other module reported. They stamp their own
+source name and keep the string only as `input_address`. So one snippet
+mention of "Sydney, Australia" was counted as two orthogonal classes: the
+search lookup (Search) and the geocoder's answer for the same string
+(Geocode). Every contributor to the scan's AU-059 fix traced back to
+search-snippet text. The gate saw {Geocode, Search}, and AU-059 reported the
+fix at 0.97. `effective_geo_classes` now reads each corroborating anchoring
+record. A geocoder record whose `input_address` resolves to an Address in the
+scan (through `AddressIndex`, by uid; corrected by REQ-GEO-014 to resolve by
+locality too, so a spelling the finalise consolidation folded away still
+resolves) takes the classes of that Address's own anchoring sources, one level
+deep. A geocoder record whose input cannot be
+traced stays `Geocode`: an operator seed, a reverse lookup, or a fixture with
+a bare `geocode` row. AU-059's gate, its coherent-group ranking, its per-point
+diversity bonus and `au_location_corroboration`'s `best_geo_class` all read
+it. Precision is untouched: the geocoder still sets its leg's grain.
+`GeoSourceClass` gains `Ord`, so every class set is a `BTreeSet`.
+
+**REQ-AUDIT-GEO-001 — the audit's consensus was a cloud of POIs.** The
+self-audit's `geo_consistency` admitted every non-candidate coordinate, so
+Overpass infrastructure nodes and `wiki_geosearch` / `wikidata` nearby-place
+POIs around one pivot formed the densest 50 km cluster. The subject's
+Brisbane and Perth fixes were reported as 730 km and 3,290 km outliers from
+that cluster. Its "13 source(s)" also counted `geo_normalize` and `recall`.
+The correlator already gated all of this, but its gate took `&Entity`, and an
+`AuditEntity` (possibly from a CSV) has only strings. The gate is now
+`core::correlator::is_infrastructure_geo_signals` over tags and corroborating
+source names. `is_infrastructure_geo` delegates to it, so there is one rule
+with two readers. The audit reads `AuditEntity::corroborating_source_names`,
+now shared with the weak-corroboration grade. `source_count` counts the
+admitted fixes' corroborating sources only. The divergence recommendation no
+longer tells the operator to drop datacenter fixes, since none can reach the
+comparison, and points at a namesake source instead. The three existing geo
+tests now give their coordinates an anchoring source (`fix()`).
+
+**REQ-GEO-FAMILY-002 — a city named in a result was the subject's confirmed
+location.** `subject_fixes` accepted any Coordinates at 0.60 or above that
+passed `is_infrastructure_geo`. That gate only asks for one source on the
+correlator's footprint allowlist, and the allowlist deliberately includes
+`search_engines` (the known-city lookup), `geocode` and `photon`. The scan
+anchored "the subject" at Sydney, Brisbane, Toowong, Perth and the pool.
+About 111 register addresses and 124 register persons within 150 km of those
+points gained `geo_corroboration` and were promoted to PROBABLE relatives. The
+same anchor also fed the breach re-promotion pass (25 km), the namesake flag
+and AU-061. The confidence arm now also requires `is_direct_subject_fix`: a
+corroborating record whose class observes the subject directly (device GPS,
+photo EXIF, Wi-Fi; `class_locates_subject_directly`) and that is not a record
+`address_to_coords_pass` copied onto a centroid (`ADDR_ENTITY_UID_ATTR`). The
+subject's own name-matched address still anchors at postcode grain.
+`ANCHORING_GEO_SOURCES` is unchanged, and its stale "geo_family has no such
+gate" comment is corrected. (Corrected by REQ-GEO-FAMILY-003: only an address
+WITH a postcode still anchored; a postcode-less one lost its only route, the
+forward geocode. The Address arm now falls back to the tabulated place the
+address names.)
+
+**REQ-GEO-010 — a reverse geocode was a restaurant at VERIFIED.**
+`geocode::build_reverse_entity` used Nominatim's `display_name` as the Address.
+At `zoom=18` that string leads with the object at the point, so the value
+began "Kazan Dining, 25, Martin Place, …". It was rated STRONG (0.78), which
+is VERIFIED from one lookup on a search-snippet city centroid. The address
+parser then read "Kazan Dining" as the city. Photon's `build_reverse` put the
+POI name first by design, and the "Nina Armando" clothes shop became a city
+the same way. `reverse_address_value` now builds the value from structured
+fields: street (the one `street_line` rule, shared with
+`fold_address_attrs`), locality, state, postcode, country. It returns `None`
+when neither a road nor a locality resolved, instead of falling back to
+`display_name` or `"-"`. Confidence is HIGH_PLUS in Australia. Photon uses the
+feature's name only when the feature IS an address component (a `highway` as
+the street, a `place` as the locality). Both tag `nearest-address` and keep the
+POI as `nearest_feature`. `reverse-geocoded` is kept for its readers.
+
+**REQ-GEO-011 — an offline centroid was weighed as a rooftop.**
+`address_to_coords_pass` carries the Address's own sources onto the city
+centroid, as REQ-CORRELATOR-005 intends. When one of those sources is
+`geocode` or `photon`, the correlator weighed that leg at its class default of
+40 m. `declared_geocode_grain_m` reads only `place_type`, and the pass wrote
+none. The scan's Bardon street address became the Brisbane CBD at 40 m: a 5x
+fusion weight and a 0.04 km radius floor. That address was itself a reverse
+geocode of a coordinate already in the map. The pass now skips a
+`reverse-geocoded` Address. Every carried record declares the grain that
+`city_coords_with_grain` matched (`city` for a tabulated name, whether capital
+or suburb, since the table does not say which; `postcode`; `region`). The
+source names are unchanged, and the carried sources are now written in sorted
+order, not HashSet order. Residual: a registry or directory leg carried onto a
+centroid still keeps its class radius (500 m / 2 km), because only the geocode
+class reads `place_type`.
+
+**REQ-GEO-012 — a lookup of a point was more certain than the point.**
+`au_geo` emits each ASGS region at a fixed 0.85–0.90. On the 0.72
+search-snippet Sydney centroid, which `search_engines` deliberately caps below
+Verified, it produced nine single-source VERIFIED facts about the subject:
+postcode, suburb, LGA, both electorates, remoteness, SA2/SA4 and land use.
+`ModuleContext` carries no parent confidence, so the module cannot bound
+itself. `Module::derives_from_target` (`au_geo`, `qld_cadastre`) now declares
+that every finding is a function of the target. `finalise_module_result`
+applies `cap_to_parent` before admission and before the durable emit. A
+finding is capped at `confidence::derived_from(parent)`, and a re-emission of
+the target is capped at the parent's own base confidence, so it can never
+raise it. The seed dispatch is exempt, as decided by
+`dispatch_target_is_seed`, which `rescope_subject_claims` now shares. The
+module's admission profile travels as `ModuleAdmission` (ATT&CK techniques
+plus this flag), including through the concurrent join. The REQ-GEO-008
+annotation had already stopped the echo raising the parent; this caps the
+regions. Recall still re-injects rows stored by earlier scans at their old
+confidences; only fresh data is capped.
+
+**REQ-GEO-013 — the offline box contradicted the provider.**
+`timezone_for` mapped Australia to three longitude bands. As a result every
+QLD point was `Australia/Sydney` (an hour wrong from October to April), VIC
+and TAS were Sydney, Darwin and Mount Isa were Adelaide, and the SA/NT strip
+was Perth. It now maps by state through `util::geo::au_state_for_coords`,
+with a Broken Hill box, and keeps the bands only outside that partition.
+`enrich_geospatial` always tagged the box's country and timezone. The US box
+is declared before CA and covers southern New Brunswick, so Fredericton
+carried photon's `country:CA` plus the box's `country:US` and
+`tz:America/New_York`. A provider's `country_code` (or a `country:` tag that
+disagrees with the box) now suppresses the box country tag, and the box
+answer is kept as `country_iso_box`. A provider's `timezone` wins, and a box
+country that disagrees with the provider emits no timezone. The choice is by
+`(source, value)` order, not evidence order. `Entity::merge` unions tags, so
+the function is idempotent: it retracts its own previous record and the tags
+that record lists. The dispatcher re-runs it on a merged Coordinates entity.
+(Corrected by REQ-GEO-015 — the provider's country is tagged, not merely
+left alone — and REQ-GEO-016 — the event-log recovery re-runs it too.)
+
+### Locks
+
+- `modules::search_engines::helpers::entity::tests::a_venue_named_after_a_surname_bearer_is_not_a_locality`;
+  `modules::search_engines::tests::a_name_scan_emits_no_address_for_a_venue_named_after_the_subject`.
+- `core::correlator::rules::location::tests::a_geocoder_leg_inherits_the_class_of_the_address_it_geocoded`
+  (AU-059, the rule, and `au_location_corroboration`, with a registry-Address
+  control and an untraceable-input control).
+- `audit::tests::self_audit_geo_consensus_ignores_nearby_poi_and_infrastructure`
+  (with a geocoder-fix control).
+- `core::geo_family::tests::a_search_snippet_city_or_forward_geocode_is_not_a_subject_fix`;
+  `core::engine::tests::promote_geo_corroborated_family_ignores_snippet_city_anchors`.
+- `modules::geocode::tests::reverse_geocode_is_the_nearest_proper_address_not_the_poi_and_never_verified_from_one_lookup`,
+  `reverse_in_australia_by_country_code_is_on_region_but_not_verified`;
+  `modules::photon::tests::build_reverse_value_never_carries_the_poi_name`,
+  `build_reverse_is_the_address_not_the_landmark_and_dedupes_against_city`.
+- `core::engine::enrich::tests::a_reverse_geocoded_address_is_not_re_derived_to_a_centroid`,
+  `a_derived_centroid_declares_its_grain` (through AU-059's radius).
+- `core::engine::tests::a_target_derived_modules_findings_are_capped_one_step_below_their_parent`,
+  `a_target_derived_module_on_the_seed_is_not_capped` (both through
+  `dispatch_target`); `modules::au_geo::tests::au_geo_declares_its_findings_derive_from_the_target`,
+  `modules::qld_cadastre::tests::qld_cadastre_declares_its_findings_derive_from_the_target`.
+- `util::geohash::tests::timezone_for_splits_eastern_australia_by_state`;
+  `core::engine::enrich::tests::enrich_geospatial_defers_to_provider_country_and_timezone`,
+  `enrich_geospatial_reconciles_a_later_provider_answer_idempotently`;
+  `core::engine::tests::a_later_provider_country_replaces_the_box_answer_on_merge`.
+
+### Falsified
+
+Each mutation restores the defect. The fixed sources were saved first and
+restored after each run, and the restore was checked against `git diff`.
+
+| # | mutation | result |
+|---|---|---|
+| S1 | `city_names_a_surname_bearer` tests only the last word | killed by `a_venue_named_after_a_surname_bearer_is_not_a_locality`, `a_name_scan_emits_no_address_for_a_venue_named_after_the_subject` |
+| C1 | `record_geo_classes` keeps a geocoder record's own class | killed by `a_geocoder_leg_inherits_the_class_of_the_address_it_geocoded` |
+| C2 | only `best_geo_class` back to the source-name class | killed by the same test's `au_location_corroboration` assertion |
+| A1 | `geo_consistency` without the person-anchor gate; `srcs` from every source | killed by `self_audit_geo_consensus_ignores_nearby_poi_and_infrastructure` |
+| F1 | `subject_fixes` without `is_direct_subject_fix` | killed by `a_search_snippet_city_or_forward_geocode_is_not_a_subject_fix`, `promote_geo_corroborated_family_ignores_snippet_city_anchors` |
+| F2 | `is_direct_subject_fix` without the `addr_entity_uid` exclusion | killed by `a_search_snippet_city_or_forward_geocode_is_not_a_subject_fix` |
+| R1 | geocode reverse value from `display_name` at STRONG; photon name first | killed by the four reverse tests above, plus `reverse_without_country_code_falls_back_to_the_bounding_box` |
+| D1 | `address_to_coords_pass` re-derives a reverse-geocoded Address and writes no `place_type` | killed by `a_reverse_geocoded_address_is_not_re_derived_to_a_centroid`, `a_derived_centroid_declares_its_grain` |
+| P1 | `finalise_module_result` never calls `cap_to_parent` | killed by `a_target_derived_modules_findings_are_capped_one_step_below_their_parent` |
+| T1 | `timezone_for` on the old bands; `enrich_geospatial` ignoring provider answers | killed by `timezone_for_splits_eastern_australia_by_state`, `enrich_geospatial_defers_to_provider_country_and_timezone`, `enrich_geospatial_reconciles_a_later_provider_answer_idempotently` |
+| T2 | `enrich_geospatial` without retracting its own earlier record | killed by `enrich_geospatial_reconciles_a_later_provider_answer_idempotently` |
+| T3 | the dispatcher does not re-enrich a merged Coordinates entity | killed by `a_later_provider_country_replaces_the_box_answer_on_merge` |
+
+**12 of 12 killed.** The two `derives_from_target` declaration tests pin a
+switch and have no separate pre-fix form. `hse-core` is untouched, so
+`wasm-ui/pkg` needs no regeneration.
+
+## REQ-EXPORT-004 / REQ-KEYS-009 / REQ-ENGINE-003 / REQ-SWEEP-004 / REQ-GEXF-001 / REQ-GEXF-002 / REQ-GEXF-003 / REQ-SCANSTATUS-002 — the exports described a scan that did not happen: a synergy fix as single-signal, placeholders as keys, opt-outs as runs, a budget-cut sweep as dispatched, templates as shared records, namesakes as the victim, and a half-finalised scan as complete
+
+**Found** in the exports of the "Ian Thorpe" scan (7258fc07): the debug
+bundle, CSV, GEXF and events log. There were eight faults in how HSE accounts
+for a scan in its exports. Seven were adversarially verified against the
+exports and the code, and the eighth (the lifecycle order) was verified by
+reading the finalise path. Two verdicts were narrowed on re-reading the
+current code. The `au_geo` roll-up is already an annotation (REQ-GEO-008), so
+it no longer draws a co-occurrence edge and its summary is left alone. The
+proposed attribute-keyed GEXF edge was rejected. It would drop genuine joint
+records and keep templated ones, and a guard test now pins that.
+
+**REQ-EXPORT-004 — a recomputed synergy fix was labelled single-signal.** The
+bundle printed `BEST AU LOCATION FIX (single-signal)` directly above
+`basis=multi-source cross-class synergy · confidence=0.97`. No AU-059
+correlation had been persisted (`CORRELATIONS (0)`, see REQ-SCANSTATUS-002), so
+`extract_au_location_fix` fell back to `best_au_location_estimate`. Rung 1 of
+that ladder is the same `au059_synergy_fix` computation. The fallback stamped
+`"source": "single-signal"` unconditionally, and report.json's
+`best_location` and `GET /scans/{id}/location` carried the same label. The
+rung-1 basis is now one constant, `correlator::SYNERGY_BASIS`, and the
+fallback's `source` is read from the rung: `"synergy-recomputed"` for rung 1,
+`"single-signal"` for every coarser rung. The bundle header follows it:
+`(multi-source synergy, recomputed — AU-059 not persisted)`. The fallback still
+carries no `severity`, `rank` or `rule_id`, because no correlation was emitted
+to take them from. The CLI dossier appendix already labelled this correctly
+and is unchanged.
+
+**REQ-KEYS-009 — template placeholders were listed as present keys.** The
+bundle's ENVIRONMENT listed SEEKNOW, DEHASHED, INTELX, EXA, OATHNET and a dozen
+more under `keys_present` with `keys_absent : 0`, while its own SCAN SEQUENCE
+held 247 "needs API key" skips across 17 of those names.
+`render_environment` decided presence by the NAME being in the env file.
+`hse provision` writes a full template of `insert_..._here` slots, and modules
+reject those through `resolve_key` → `is_configured_value`. The inventory is
+now the pure `key_inventory`. A key is present only when
+`is_configured_value` accepts its value, absent otherwise (missing, blank or
+placeholder), and both lists are sorted. `keys_absent` also says how many
+absent slots are "provisioned but unfilled". The line prefixes are unchanged,
+so `strip_ambient_env_keys` still strips them. `selftest`'s `keys.load` had the
+same name-only count and now reports configured keys out of loaded slots.
+
+**REQ-ENGINE-003 — an opted-out module was counted as run and as skipped.**
+The header read `1003 run, 23 errored, 3 timed out, 349 skipped`. Pairing the
+SCAN SEQUENCE's events gives 730 done + 26 errored/timed out + 247 opted out
+after dispatch = 1003. `finalise_module_result` bumped `stats.run` for every
+non-cached dispatch before matching the result, and the `MissingKey` and
+`Error::Skipped` arms then bumped `skipped` as well. The dossier's dead-scan
+hint then told the operator that modules "ran and found nothing" when every
+one had opted out. `run` now counts only real executions (done, errored or
+timed out), so `run` and `skipped` partition the non-cached dispatches.
+`errored` and `timed_out` stay subsets of `run`, and a cache replay is still
+neither. The CLI's modules line is gated on `run + skipped`, so a scan whose
+every module opted out still prints its skip count. `ModuleStats::run` and
+`Scan::modules_run` document the partition.
+
+**REQ-SWEEP-004 — a budget-cut breach sweep reported probes it never sent.**
+The log read `expansion_stop max_entities=2500 reached`, then 21 s later
+`breach_sweep {"anchors":18,"probes":64,"dropped":51}`, then nothing. No sweep
+module ever started. `run_breach_sweep` checked only cancellation before the
+snapshot and compile, emitted the plan's shape before its dispatch loop, and
+the loop's budget guard broke on probe 0. The stop was recorded only in
+tracing. The sweep now checks the budget before compiling. If the budget is
+spent, it emits `BreachSweep { probes: 0, dispatched: 0, stopped:
+Some("max_entities=… reached") }` and returns. Otherwise it emits once after
+the loop, with `dispatched` (probes actually sent) and `stopped` (the
+`StopReason::label` of a budget cut or a cancel, `None` when the plan ran out).
+The persisted log line, the event summary (`{dispatched}/{probes} probes
+dispatched · stopped: …`) and the live CLI all carry both fields (and, after
+REQ-SWEEP-005, the web console's Log tab). Both fields
+are `serde(default)`, so an event persisted before this still deserialises. An
+empty plan still emits (`stopped: None`), so "ran with nothing to ask" stays
+distinct from "never ran".
+
+**REQ-GEXF-001 — templated summaries made distinct findings one shared
+record.** An evidence record's identity is `(source, summary)`. `Entity::absorb`
+de-duplicates on it, and the GEXF co-occurrence edge keys on it. Six emitters
+wrote one summary for distinct findings and kept the identifying value only in
+attributes, so the graph wired distinct findings into false cliques:
+
+| emitter | old summary | edges in 7258fc07 |
+|---|---|---|
+| `social_probe` | `Profile found on {platform}` | twitter `/ianthorpe`, `/ianthorpe26`, `/ianthorpe91` |
+| `europepmc_search` | `Europe PMC work by '{author}'` | 72 |
+| `crossref_search` | `Crossref work by '{author}'` | 18 |
+| `overpass` | `OSM {category} near {centre}` | 9 |
+| `qld_unclaimed` | `QLD unclaimed money: {owner}` | 27 |
+| `wikidata` truncation note | `Wikidata name search matched N item(s); …` | the Ian ↔ John Thorpe namesake edge |
+
+Each summary now names its record: the profile URL, the DOI or PMID, the DOI
+(or URL when a work has none), the node (its own coordinate; corrected by
+REQ-EXPORT-005 to its OSM identity, which the redaction pass cannot leak), the row's register
+reference (or postcode), and the searched name. The GEXF key is unchanged.
+Its doc now states the contract it depends on, and why attributes are not
+part of the key: `absorb` merges a record's attributes, and modules add
+per-entity ones. Replaying an attribute key over the scan's entities dropped 6
+genuine joint edges (4 `search_engines` username ↔ URL pairs, 2
+`huggingface_user` person ↔ profile pairs) and kept the Wikidata namesake edge.
+Evidence counts are unaffected, because corroboration counts sources, not
+records.
+
+**REQ-GEXF-002 — every identity node was exported as the victim.** The GEXF's
+`diamond_vertex` for person 254, username 324, email 237, organisation 57,
+abn_acn 8 and phone 6 was `victim`, which the module defines as "an identity
+facet of the subject". That set included a stranger's Instagram handle, a
+WikiTree relative and "Ian Thorpe Aquatic Centre". `write_node` exported
+`kind.diamond_vertex()`, a pure function of kind, so the one-click partition by
+attribution role merged strangers into the subject. The per-kind taxonomy is
+unchanged (the `/diamond` breakdown and `tests/api.rs` pin it). The node
+attribute is now `diamond::scoped_vertex_label`. An identity-kind node is
+`victim` only when it carries a subject claim, otherwise `unattributed`, and
+every other vertex is the kind's own. The subject-claim tags are now one
+constant, `core::scan::SUBJECT_CLAIM_TAGS`, read by the engine's
+`rescope_subject_claims`, `geo_family::subject_surname` and the export, so the
+three cannot drift. It lives in the main crate, not `hse_core::tags`, so
+`wasm-ui/pkg` is untouched.
+
+**REQ-GEXF-003 — two edge families on two weight scales, with no type.** The
+GEXF declared only node attributes. A typed relation (weight = confidence, at
+most 0.95) and a co-occurrence (weight = raw shared-record count, 1.0, 2.0, …)
+shared one `weight` attribute and could be told apart only by guessing which
+labels are relation kinds. So one shared search snippet outranked any
+verified relation in Gephi's weighted degree and modularity. About 276
+co-occurrence edges sat at 1.0 or more beside about 21,000 relations. Edges now
+carry an `edge_type` attribute (`relation` / `co_occurrence`), and a
+co-occurrence carries `shared_records` (the raw count). Its weight is `1 −
+0.7^count` (0.300, 0.510, 0.657, …), which is `coref::shared_evidence_weight`,
+now the single definition the co-reference scorer also uses. Every weight is on
+one `[0, 1]` scale. The byte-exact golden test is updated.
+
+**REQ-SCANSTATUS-002 — a scan read Complete before its exports' artefacts were
+stored.** The bundle said `status: Complete` and `CORRELATIONS (0)`, and its
+8190-event sequence had no `scan_complete`. `finalise_scan` wrote the terminal
+status before deriving relations, before the correlation pass and the
+cross-scan and boost phases, and before emitting `ScanComplete`. Events reach
+the store asynchronously through the DB-writer actor. Every export classifies
+a scan by its stored status (`partial_export_reason`: `Running` → "live"), so
+an export taken in that window was branded whole. The same window let an API
+client polling for `complete` read the correlations before they existed. The
+blocking phase now decides the terminal status but does not write it. After
+it, the engine drains the writer (`flush`) and then writes the scan row, which
+is the last write of the scan. The Failed path follows the same order, and its
+write stays best-effort and logged. The two import paths had the same order
+(`app::persist::persist_entities_as_scan` and the web upload in
+`api::scan_handlers::core`). They wrote `Complete` before storing entities,
+relations and correlations. They now write the row `Pending` first and
+`Complete` last, on every exit. `is_interrupted` reads only `Running`, so an
+import in flight is not reported as interrupted. (Corrected by
+REQ-SCANSTATUS-005: that same rule left a failed or killed import `pending`
+forever; imports now write `Running` through `ImportScanRow`. And by
+REQ-SCANSTATUS-004: `scan_complete` was still broadcast before the row write.)
+
+### Locks
+
+- `app::export::tests::debug_bundle_recomputed_synergy_without_persisted_au059_is_not_labelled_single_signal`
+  (the existing AU-059 and lone-coordinate tests still pass unchanged).
+- `app::export::tests::environment_key_inventory_treats_template_placeholders_as_absent`.
+- `core::engine::tests::a_module_that_opts_out_in_band_is_skipped_not_run`
+  (MissingKey and Skipped are skipped, not run; an error is run and errored; a
+  completion is run; a cache replay is neither).
+- `core::engine::tests::a_budget_exhausted_breach_sweep_reports_zero_dispatched`;
+  `core::event::tests::a_budget_cut_breach_sweep_logs_what_it_dispatched_and_why_it_stopped`
+  (log line, summary, legacy deserialisation);
+  `a_scan_runs_the_final_breach_sweep_and_then_audits_it` now also asserts an
+  unbudgeted sweep dispatches its whole plan with `stopped: None`.
+- `modules::social_probe::tests::distinct_profiles_on_one_platform_carry_distinct_records`,
+  `modules::europepmc_search::tests::distinct_papers_carry_distinct_records`,
+  `modules::crossref_search::tests::distinct_works_carry_distinct_records`,
+  `modules::overpass::tests::distinct_nodes_of_one_category_carry_distinct_records`,
+  `modules::au_unclaimed::tests::qld::distinct_rows_of_one_owner_carry_distinct_records`,
+  `modules::wikidata::tests::truncation_notes_for_different_searches_are_distinct_records`
+  (each through `entities_to_gexf`: no edge); guard against the attribute key:
+  `core::gexf::tests::a_joint_record_links_despite_per_entity_attributes`.
+- `core::gexf::tests::a_namesake_identity_is_not_exported_as_victim`;
+  `gexf_exports_the_diamond_vertex_per_kind` now tags its email `seed`.
+- `core::gexf::tests::co_occurrence_weight_is_bounded_and_typed`;
+  `gexf_golden_output_is_byte_stable` (edge attributes, typed edges, crtsh at
+  0.300).
+- `core::engine::tests::a_scan_is_marked_complete_only_after_its_exported_artefacts_are_durable`.
+  `InMemoryStore` records a `TerminalWitness` of what it held when a scan row
+  first turned terminal.
+
+### Falsified
+
+Each mutation restores the defect. The fixed sources were saved first and
+restored after each run, and `git diff` was checked to be byte-identical
+(md5) before and after all fifteen runs.
+
+| # | mutation | result |
+|---|---|---|
+| E1 | fallback `source` back to the constant `"single-signal"` | killed by `debug_bundle_recomputed_synergy_without_persisted_au059_is_not_labelled_single_signal` |
+| K1 | `key_inventory` by name only (present = every `HUNTSMAN_*`, absent = name missing) | killed by `environment_key_inventory_treats_template_placeholders_as_absent` |
+| N1 | `run += 1` for every non-cached dispatch | killed by `a_module_that_opts_out_in_band_is_skipped_not_run` |
+| S1 | no pre-compile budget check | killed by `a_budget_exhausted_breach_sweep_reports_zero_dispatched` (a plan was compiled and announced) |
+| S2 | S1, and the event reports `dispatched = plan.len()`, `stopped = None` (the old claim) | killed by the same test |
+| S3 | `dispatched` / `stopped` dropped from the log line | killed by `a_budget_cut_breach_sweep_logs_what_it_dispatched_and_why_it_stopped` |
+| G1–G6 | each emitter's summary back to its template | each killed by its own `distinct_…_carry_distinct_records` test |
+| V1 | `write_node` back to `kind.diamond_vertex()` | killed by `a_namesake_identity_is_not_exported_as_victim` |
+| W1 | co-occurrence weight back to the raw count | killed by `co_occurrence_weight_is_bounded_and_typed` |
+| L1 | terminal status written before relations/correlations/`ScanComplete` | killed by `a_scan_is_marked_complete_only_after_its_exported_artefacts_are_durable` |
+
+**15 of 15 killed.** The import-path reordering (`app::persist`,
+`api::scan_handlers::core`) has no ordering lock of its own. Both write through
+the concrete SQLite store at `default_db_path`, which offers no seam to observe
+the order. The reorder applies the invariant REQ-SCANSTATUS-002's engine lock
+pins, and `tests/api.rs`'s import tests pass unchanged. `hse-core` is untouched,
+so `wasm-ui/pkg` needs no regeneration.
+
+## REQ-SEARCH-012 / REQ-SEARCH-013 / REQ-EUROPEPMC-002 / REQ-NAMESAKE-003 / REQ-IDENTITY-GATE-003 / REQ-ENGINE-004 / REQ-CORE-019 / REQ-GEO-014 / REQ-GEO-015 / REQ-GEO-016 / REQ-SWEEP-005 / REQ-EXPORT-005 — review round on the round-2 batches
+
+**Found** by adversarial review of the five round-2 commits (search,
+people, identity, geo, exports; scan 7258fc07, "Ian Thorpe"). Thirteen
+findings were raised. Each was checked against the current code before it was
+fixed, and all thirteen were real. Two of them (the accented-name fold and the
+full middle name) share one requirement, so there are twelve ids. One finding
+is fixed only in part, and the residual is stated under REQ-GEO-014.
+
+**REQ-SEARCH-012 — the subject's own slug with a middle name was not their
+name.** `text_names_person` accepted a full middle name between the given
+name and the surname only when whitespace came before the surname. That rule
+exists for "Ian Symes-Thorpe", a double-barrelled surname. But a URL path has
+only `-` separators, so `/in/ian-james-thorpe-1234` did not name "Ian James
+Thorpe" and `/in/mary-jane-smith` did not name "Mary-Jane Smith". The
+subject's own profile was no longer minted as a `Url`. `person_name_parts` now
+returns the middle tokens too (`NameParts`). The subject's own name run before
+the surname is accepted across any separator: every given-name part then
+every middle name, every given-name part alone, or the first given-name part
+then every middle name. A token the subject's name does not carry still needs
+the whitespace, so `ian-symes-thorpe` stays a Symes-Thorpe.
+
+**REQ-SEARCH-013 — snippet prose glued the person onto the company.**
+REQ-SEARCH-010 bounded the organisation name at a title separator or at
+punctuation, and in doing so dropped the old 60-byte cap. Snippet prose has
+no separator. So `"Ian Thorpe | LinkedIn Ian Thorpe is the managing director
+of Harbour Holdings Pty Ltd"` produced `"LinkedIn Ian Thorpe is the managing
+director of Harbour Holdings Pty Ltd"`, which is longer than before, crosses
+the title/snippet join, and was admitted on the person's own name. The term
+filter also used a substring test, so the given name `"ian"` admitted
+`"Australian Unity Limited"`. The name is now the run of name words directly
+before the suffix: capitalised or digit-led words, `&`, and the connectors
+`and`/`of`/`the`/`for` between them (`Bank of Queensland Limited`), with a
+leading connector trimmed. Lowercase prose ends the run. A separator,
+punctuation, the previous organisation's end and a 60-byte floor still bound
+it, and a word the floor cuts through is not taken. The term filter matches at
+the start of a word of that name. It is a word-start match rather than a
+whole-word match, because a company named after its founder keeps the name as
+a word stem (`Thorpedo Inc.`, which REQ-SEARCH-010's test pins).
+
+**REQ-EUROPEPMC-002 — an organisation's co-author papers were dropped.** The
+Organisation gate read only the top-level `affiliation` of a
+`resultType=core` record. That field holds the first author's affiliation
+only, and some records have it null. The server-side `AFF:` query matches any
+author. A live check on 2026-09-23 of `AFF:"University of Wollongong"` found
+that all 25 hits name Wollongong for some author, and 4 of them would have
+been dropped: two with a null top-level line (one whose only Wollongong author
+is Braunack-Mayer A), plus 10.1111/inm.70283 and 10.3389/frhs.2026.1963260.
+`ResultItem` now decodes
+`authorList.author[].authorAffiliationDetailsList.authorAffiliation[].affiliation`.
+`attribution` reads the top-level line first, then each author's affiliations
+in the record's order. That is the same walk `crossref_search` makes over
+`author[].affiliation[]`.
+
+**REQ-NAMESAKE-003 — an unresolved party flag was invisible.** REQ-NAMESAKE-002
+moves `pep`, `sanctioned` and the other party flags off an ambiguous entity
+and onto its evidence as `unresolved_flags`. Its doc said a genuine
+designation "is not lost", because `opensanctions` restores it. But
+`opensanctions` is key-gated (`HUNTSMAN_OPENSANCTIONS_KEY`), and nothing read
+`unresolved_flags`. So on a keyless install, a subject who really holds office
+and has a same-named Wikidata item lost the scan's only PEP signal, and
+nothing said so. AU-114 now reports an entity that carries no determination
+tag but has evidence with unresolved flags. It is a LOW lead: "a record
+sharing the name … is flagged (pep, politically-exposed; source: wikidata) …
+attribution unresolved, NOT asserted about the subject". The lead lists the
+flags and sources sorted. It never doubles a resolved determination on the
+same entity. `util::namesake::UNRESOLVED_FLAGS_ATTR` is the key both the writer
+and AU-114 name, and it is allow-listed in
+`core_does_not_import_util_directly` as a single const. The `mark_ambiguous`
+doc now says the loss is restored only when `opensanctions` is configured and
+matches. The wikidata namesake test now expects exactly this lead and no
+determination.
+
+**REQ-IDENTITY-GATE-003 — accented names and full middle names were "not the
+person".** The name side kept `ễ` and `é` (`is_alphabetic`), while handles are
+ASCII, and `name_intel` derives its handles through
+`util::str_util::fold_ascii_lower`. So `handle_names_person("Nguyễn Văn An",
+"nguyenvanan")` and `("José García", "jose.garcia")` were `Some(false)`, and
+`person_names_compatible("Nguyễn Văn An", "Nguyen Van An")` judged two people.
+The fingerprint ownership path, the co-reference string tiers and
+co-reference promotion all vetoed those links, and Vietnam is HSE's primary
+jurisdiction. `core::scan::fold_name_text` now reads every name, handle and
+search text through the same fold, one character at a time, with NFD
+combining marks dropped. It works per character because `fold_ascii_lower`
+deletes what it cannot fold, and a Cyrillic name must stay a name rather than
+become an empty mononym. `person_surname` returns the folded surname, and
+`search_engines::city_names_a_surname_bearer` folds both sides. `fold_ascii_lower`
+is allow-listed in `core_does_not_import_util_directly` as a single function.
+Separately, `handle_names_person` accepted only a middle INITIAL, so
+`ian.james.thorpe` did not spell "Ian James Thorpe" (or "Ian Thorpe"). It now
+also accepts the subject's own middle name(s), written together or singly,
+with or without separators. It also accepts one foreign middle name that is a
+whole run between separators, when no `-` stands before the surname, which
+reads as a double-barrelled surname in a handle just as in text. The doc lists
+the losses that remain: a nickname, a prefix, and a foreign middle name run
+into its neighbours (`ianjamesthorpe` for "Ian Thorpe").
+
+**REQ-ENGINE-004 — `--min-confidence` exempted namesake rows of the seed.**
+REQ-GEO-008 exempted every entity whose uid equals the dispatch target, on the
+premise that the target was already admitted. For a FullName seed that premise
+is false: `seed_anchor_entity` returns `None` for a name, so no anchor is
+pre-inserted. Under `--min-confidence 0.5`, a Wikidata ambiguous-name row
+(0.45), an OpenArch death-register entry and a QLD unclaimed-money owner
+re-emitting "Ian Thorpe" all passed the operator's floor. When one landed
+before `name_intel`'s anchor, it founded the subject node. The exemption is now
+`dispatch::min_confidence_exempt`, and it requires three things: the entity is
+the target, the target is already in the entity map, and every evidence
+record is an annotation (at least one).
+
+**REQ-CORE-019 — a stale record shadowed its marked copy.** When two evidence
+records share `(source, summary)`, `absorb` merges them through
+`merge_evidence_attrs`, which merged attributes only. Whichever copy arrived
+first kept its `is_annotation` and `verification`. A record persisted before
+REQ-CORE-017 or REQ-GEO-008 (an `au_geo` point, an `openarch` entry, or one
+replayed from `openarch`'s 24 h cache) and then recalled into a re-scan
+therefore shadowed the fresh, marked copy. It kept corroborating, was
+re-persisted, and never healed. The flags now fold commutatively.
+`is_annotation` and `is_inferred` are OR-ed. An `Unverified` status on either
+side wins. Otherwise a status set on one side is kept, and two differing
+established statuses resolve by the fixed `verification_rank`. The result is
+the same in either merge order. `hse-core` changed, so `wasm-ui/pkg` must be
+regenerated (`scripts/wasm_ui_drift_check.sh --write`) before CI's
+sibling-crates drift check can pass.
+
+**REQ-GEO-014 — the finalise pass re-created the synergy REQ-GEO-009
+removed.** Finalise runs the correlator over the stored set after
+`consolidate_address_localities` has folded `"Sydney, NSW"` into `"Sydney, New
+South Wales"` (one `locality_key`) and removed the shorter spelling. A geocode
+leg whose `input_address` is the folded spelling found nothing in
+`AddressIndex`, which looked up by uid. It fell back to an independent
+`Geocode` class, and AU-059 fired on {Geocode, Search} at up to 0.97. That
+firing was not in `emitted_corr`, so it was emitted and persisted, and the
+export's `best_au_location_estimate` read the same consolidated set.
+`AddressIndex` now resolves an input by its locality group, which is the key
+consolidation groups by, and falls back to the exact uid. The live slice and
+the finalised slice therefore read the same classes. When one input of a
+folded multi-input record traces and another does not, the leg takes the
+traced classes only. **Residual:** an input Address tagged `candidate` is
+still removed from the rule slice by `confirmed_only`, so its geocode leg
+still counts as `Geocode`. Closing that means giving the lineage lookup the
+unquarantined set, a new parameter on `au059_synergy_fix` and its renderer
+and dossier callers. That is left for its own change.
+
+**REQ-GEO-015 — an agreeing provider's country was tagged by nobody.** When a
+provider's `country_code` agreed with the box, `enrich_geospatial` added no
+`country:` tag, on the assumption that the provider had tagged it. `geocode`'s
+forward results and `open_meteo_geo` carry `country_code` only as an
+attribute. So every forward-geocoded point lost the `country:AU` it used to
+have, and the Florida geocodes lost `country:US`. The retraction pass could
+also remove a recalled photon point's own `country:AU`, because an old engine
+record listed the same string. The provider's country is now the tag, whether
+the box agrees, disagrees or has no answer, just as the provider's timezone is
+the `tz:` tag. It is recorded as `country_provider`, which a re-run never
+retracts.
+
+**REQ-GEO-016 — a recovered scan kept both countries.** The dispatcher re-runs
+`enrich_geospatial` on a merged Coordinates entity, but only on the in-memory
+map, after the durable `EntityFound` emit. `Store::entities_from_events`
+merges the raw events and ran no enrichment. So a scan killed before finalise
+(routine on Termux) recovered Fredericton as `country:US` + `country:CA` +
+`tz:America/New_York`, which is the contradiction REQ-GEO-013 removed from the
+live scan. The rebuild now re-runs the same idempotent function on each
+merged point (`engine::enrich_geospatial` is crate-visible for this). A follow-up
+event could not have fixed it, because the replay unions tags.
+
+**REQ-SWEEP-005 — the web log still misreported a budget-cut sweep.**
+REQ-SWEEP-004 updated `EventKind::log_summary` and the live CLI, but not the
+SPA's `scan_info/log.js`. That file still printed `breach sweep: 64 probes
+from 18 anchors` for a sweep that sent 3. It printed `0 probes from 0
+anchors` both for a sweep the budget never let start and for one with nothing
+to ask. It now renders `{dispatched}/{probes} probes dispatched …` and `—
+stopped: {reason}` at warn level. A legacy event without `dispatched` reads 0,
+as serde's default does, so the screen and the downloaded log agree.
+(Corrected by REQ-SWEEP-006: a legacy event's dispatch is unknown, not 0; all
+three renderers print its original line.)
+
+**REQ-EXPORT-005 — the Overpass record leaked the node's position past
+redaction.** REQ-GEXF-001 named each Overpass node record `OSM {category} at
+{node_coords} near {centre}`. The shareable redaction pass coarsens a
+Coordinates value and its coordinate attributes, but not summaries. So a
+redacted CSV/JSON still carried the node's 6-decimal position in its
+`evidence` column. The record is now named by its OSM identity
+(`OSM {category} node/123 near {centre}`). An element without an id is named
+by its position in the response (`element #2`), which is deterministic and
+contains no coordinate. The queried centre in "near …" is a separate,
+pre-existing exposure and is unchanged.
+
+### Locks
+
+- `core::scan::tests::text_names_person_reads_the_subjects_own_middle_and_given_parts_across_any_separator`.
+- `modules::search_engines::helpers::entity::tests::an_org_in_snippet_prose_is_its_capitalised_name_run_matched_at_word_starts`
+  (the existing REQ-SEARCH-010 title test passes unchanged).
+- `modules::europepmc_search::tests::an_organisation_is_attributed_through_any_authors_affiliation`
+  (the live `resultType=core` shape, decoded).
+- `core::correlator::tests::au114_reports_an_unresolved_namesake_flag_as_a_low_lead_not_a_determination`;
+  `modules::wikidata::tests::a_namesake_primary_s_pep_flag_does_not_reach_the_subject`
+  now expects the one LOW lead.
+- `core::scan::tests::person_name_gates_fold_diacritics_on_both_sides`,
+  `core::scan::tests::handle_names_person_reads_a_full_middle_name`;
+  `a_people_search_listing_title_is_not_a_locality` gains a folded-surname case.
+- `core::engine::tests::a_below_floor_re_emission_of_the_target_that_is_no_annotation_is_refused`,
+  `core::engine::tests::only_an_all_annotation_re_emission_of_an_admitted_target_is_exempt_from_the_floor`
+  (`a_target_annotation_is_exempt_from_the_min_confidence_floor` passes
+  unchanged).
+- `hse-core` `tests::a_stale_unmarked_copy_never_shadows_the_marked_copy_of_one_record`
+  (both orders, both marks, and two established statuses).
+- `core::engine::tests::a_geocode_leg_keeps_its_lineage_after_its_input_spelling_is_consolidated`.
+- `core::engine::enrich::tests::a_provider_country_the_box_agrees_with_is_still_tagged`.
+- `storage::tests::a_recovered_scan_reconciles_a_merged_points_country_like_the_live_one`.
+- `api::routes::tests::the_log_view_renders_a_breach_sweeps_dispatch_and_stop_like_the_log_summary`.
+- `modules::overpass::tests::a_node_record_is_named_by_its_osm_identity_never_its_position`
+  (through `redact_entities`).
+
+### Falsified
+
+Each mutation restores the defect. The fixed file was saved first and
+restored after each run, and its md5 was checked to be identical before and
+after.
+
+| # | mutation | result |
+|---|---|---|
+| S1 | `own_name_before` disabled in `text_names_person` | killed by `text_names_person_reads_the_subjects_own_middle_and_given_parts_across_any_separator` |
+| S2 | org term filter back to substring `contains` | killed by `an_org_in_snippet_prose_is_its_capitalised_name_run_matched_at_word_starts` (the "Australian" case) |
+| S3 | name walk takes every word (no name-word stop) | killed by the same test (the glued-prose case) |
+| P1 | author-list affiliations ignored | killed by `an_organisation_is_attributed_through_any_authors_affiliation` |
+| N1 | AU-114 without the unresolved-flags lead | killed by `au114_reports_an_unresolved_namesake_flag_as_a_low_lead_not_a_determination` |
+| I1 | `fold_name_text` folds nothing | killed by `person_name_gates_fold_diacritics_on_both_sides` |
+| I2 | `city_names_a_surname_bearer` compares raw words | killed by `a_people_search_listing_title_is_not_a_locality` |
+| I3 | own-middle and foreign-middle-run arms disabled | killed by `handle_names_person_reads_a_full_middle_name` |
+| E1 | exemption by uid alone | killed by `a_below_floor_re_emission_of_the_target_that_is_no_annotation_is_refused` |
+| C1 | `merge_evidence_attrs` keeps the first copy's flags | killed by `a_stale_unmarked_copy_never_shadows_the_marked_copy_of_one_record` |
+| G1 | `AddressIndex` by uid only | killed by `a_geocode_leg_keeps_its_lineage_after_its_input_spelling_is_consolidated` |
+| G2 | provider country not tagged | killed by `a_provider_country_the_box_agrees_with_is_still_tagged` |
+| G3 | recovery without the reconciliation | killed by `a_recovered_scan_reconciles_a_merged_points_country_like_the_live_one` |
+| W1 | `log.js`'s old `breach_sweep` line | killed by `the_log_view_renders_a_breach_sweeps_dispatch_and_stop_like_the_log_summary` |
+| X1 | Overpass summary back to `at {node_coords}` | killed by `a_node_record_is_named_by_its_osm_identity_never_its_position` |
+
+**15 of 15 killed.** `min_confidence_exempt`'s unit test pins each of its
+three conditions separately. `hse-core` changed, so `wasm-ui/pkg` must be
+regenerated.
+
+## REQ-SCANSTATUS-003 / REQ-REL-004 / REQ-AUDIT-GEO-002 / REQ-PHONEAU-003 / REQ-CORRELATOR-008 / REQ-TIMELINE-001 / REQ-WIKIDATA-004 / REQ-AU-UNCLAIMED-004 — review round on #649
+
+**Found** by Copilot review of #649 (five threads, C1–C5) and by the lead's
+follow-up review of the same PR (C6–C9). Every finding was checked against
+the code at `d4cae90b` before it was fixed, and all nine were real. C1 and C2
+are one defect on two paths, so there are eight ids. A second commit closed
+the three gaps the first recorded as not fixed (a correlator pass that failed
+outright, the address-fold detach and the corroboration-boost re-persist),
+plus two failed reads of the same kind found while fixing them, all under
+REQ-SCANSTATUS-003.
+
+**REQ-SCANSTATUS-003 (C1, C2) — a scan read complete while records it
+produced failed to persist.** REQ-SCANSTATUS-002 made the terminal status the
+last write. It did not make the status honest about what failed. On all three
+paths that finalise a scan (the live engine, `hse import` / `hse ingest
+--auto-scan`, the web upload), a relation or correlation the store refused
+was only logged or counted with `.is_ok()`. The scan was then written
+`Complete` with `error: None`. `Correlator::run` persisted inside the pass and
+returned `Err` on the first refused write, so the panic guard read the whole
+pass as "no correlations" and nothing was counted. Only the live engine's
+entity shortfall reached `scan.error`, and the export classifier
+(`partial_export_reason`) never read `error`. The web upload also answered
+with a hardcoded `"status": "complete"`. The fix has one authority.
+`core::scan::FinaliseTally` counts attempted and failed writes per artefact
+(entities, relations, correlations) and keeps the first error. Its
+`message()` is the deterministic `scan.error` text, for example `"2/40
+relations, 1/9 correlations failed to persist: <first error>"`. For an
+entity-only shortfall that text is the old wording, word for word. Every
+persist site counts into it. `core::engine::persist_relations` is the shared
+batch-then-fallback relation step. `core::engine::correlate_and_persist` runs
+the new `Correlator::evaluate` (no writes) under the panic guard and stores
+each firing on its own. Both are used by all three paths, and the AU-065 /
+AU-066 upserts count too. The terminal write stores `tally.message()` and
+keeps the status `Complete` or `Aborted`, because the scan did run.
+`partial_export_reason` returns `finalise-incomplete` for a `Complete` scan
+with `error` set. It checks this before the budget test, because records the
+scan produced being gone is the stronger statement. The dossier header,
+debug-bundle header and events `export_snapshot` all pick it up, and the
+dossier header now also prints the `error` line. `Scan::completeness_caveat`
+reads the same field in the same order, so `hse export`, `audit` and the
+dossier frontmatter agree with the export headers. The web response says
+`"status": "partial"` with a `finalise_error` field (null when whole), and the
+upload view shows it. When this merged with REQ-SCANSTATUS-005, both import
+paths began writing their row through `app::persist::ImportScanRow`, and its
+`finish(status, &tally)` is now where the terminal status and `tally.message()`
+are written together. It is the one terminal write, so a finalise shortfall
+never becomes a second write, and an exit before `finish` still ends `Failed`.
+The web response keeps REQ-SCANSTATUS-005's committed status (`aborted` on a
+cancel) and answers `partial` only for a `Complete` row with a shortfall.
+`finalise_error` is reported on any terminal status. On the live engine,
+`scan.error` is set from the tally before `ScanComplete` is recorded. The row
+that the commit step writes, which a subscriber re-reads on REQ-SCANSTATUS-004's
+post-commit broadcast, therefore carries it. The CLI summaries of `hse import`, `hse investigate
+--auto-scan` and `hse ingest --auto-scan` print it, carried by the new
+`app::persist::PersistedBatch`.
+
+*Second round — what a finalise did not complete, not only what it failed to
+write.* Three gaps were left open by the first commit, and each let an export
+show something other than what the scan produced. First, a correlator pass
+that failed outright (a store read error, or a panicking rule) still became
+"no correlations" in `guarded_correlation_pass`, with nothing on the scan.
+Second, a refused `detach_scan_observations` after the address-locality fold
+was only logged, so every export repeated the address spellings the fold had
+removed. Third, a refused corroboration-boost re-persist was only logged, so
+the stored entities lacked the boost the scan computed. While fixing these,
+two more silent reads of the same kind turned up. The cross-scan route
+learning skipped AU-065 / AU-066 on a failed graph read (`if let (Ok, Ok)`)
+or a failed route count (`unwrap_or(0)`). The boost pass skipped the
+multipath boost on a failed relations read.
+
+The tally is now `FinaliseTally`, and its message is the one authority for
+all of these. `FinaliseWrite` adds `AddressFolds` and `CorroborationBoosts`
+to the write kinds. The boost re-persist goes through the same per-entity
+fallback as the main entity persist. `FinalisePass` (`Correlation`,
+`CrossScanRoutes`, `CorroborationBoosts`) records a pass that produced
+nothing because it failed. The message is the write clause, then one
+`"<pass> failed: <reason>"` clause per failed pass, joined by `"; "`.
+
+`guarded_correlation_pass` now returns `Err(reason)` instead of `None`.
+`correlate_and_persist` records that reason on all three finalise paths. A
+panic's reason is the fixed `CORRELATION_PASS_PANICKED` (`"panicked"`), never
+the payload, which can carry an address and would break the debug bundle's
+byte-identical contract. The payload is logged instead. The fold handling
+moved into `apply_address_folds`, which counts the detach.
+
+The export reason was renamed from `persist-incomplete` to
+`finalise-incomplete`, the response field from `persist_error` to
+`finalise_error`, and the tally from `PersistTally` to `FinaliseTally`. A
+pass that never produced its result has nothing to persist, so "persist" no
+longer described every case. All three names are new in this PR, so no
+released client reads them.
+
+**REQ-REL-004 (C3) — the relation layer folded the separators the resolver
+keeps.** REQ-RESOLVE-001 stopped the resolver from fusing Instagram
+`_ianthorpe_` with GitHub `ianthorpe`. `builders::persona_key` still keyed on
+`identity_norm`, which keeps only alphanumerics, so `derive_handles` asserted
+a full-confidence `AliasOf` between those two accounts, and between
+`carolathorpe` / `carolathorpe_` and `_caroline.thorpe` / `caroline.thorpe`.
+Co-reference had the same fold. `string_signal`'s handle-equivalence tier
+compared `identity_norm` forms and scored 0.80, which is exactly
+`COREF_PROMOTE_MIN_SCORE`, so `derive_coreferences` re-emitted the same
+`AliasOf`. One account-key authority now lives in `util::canonical`, which
+`core` may already import. `username_account_key` is the resolver's former
+private `canonical_handle`, moved (lowercase, whitespace collapsed, every
+separator kept). `email_account_keys` returns the literal local part, with a
+`+tag` stripped only for a `PLUS_ADDRESSING_DOMAINS` provider, and for Gmail
+also the dot-free form. It shares its routing with `canonical_email_mailbox`
+through one private helper. `coref::account_keys` maps an entity onto them.
+`persona_keys` groups on those keys and keeps the length, all-digit and
+`is_generic_handle` gates on the folded form. Between two account handles,
+handle-equivalence now needs a shared key. A separator-only difference falls
+to the substring tier (0.45): it is still a lead in the read-only view, but it
+is below the promotion floor unless sources corroborate it. With a Person or a
+Phone on either side, `identity_norm` equality stands, because a name has no
+separators and a phone's separators are notation. So `ian.thorpe@gmail.com`
+aliases both `ian.thorpe` (literal key) and `ianthorpe` (Gmail key), and those
+two usernames do not alias each other. `ian.thorpe@outlook.com` does not alias
+`ianthorpe@outlook.com`. The existing coref test
+`same_domain_mailboxes_keep_the_full_string_ladder` asserted handle-equivalence
+for `j.smith@acme.com` ↔ `jsmith@acme.com`. That is the same separator fold,
+and it contradicts `canonical_email_mailbox`'s own stance that dots are
+significant off Gmail. The test now pins a Gmail pair as equivalent and the
+acme pair as a substring lead.
+
+**REQ-AUDIT-GEO-002 (C4) — an outlier example named sources that did not
+vote.** `geo_consistency` admitted a fix on its corroborating sources
+(REQ-AUDIT-GEO-001) but stored `e.sources` for the example text. So an
+outlier printed `[recall,photon,geo_normalize,geocode]`, which names the
+annotator and the recall pass as if they disagreed about the subject's
+location. It now stores the corroborating set, sorted and de-duplicated.
+
+**REQ-PHONEAU-003 (C5) — a word glued to `+` or `(` passed the whole-token
+rule.** `extract_phones` checked the byte before a match only when the match
+opened on a word byte. `foo+61 2 8224 6704` and `foo(02) 8224 6704` were
+therefore scanned as phones, although `id_0410959140x` was not. The byte
+before the match must now never be a word byte, whatever the match opens on.
+`Call +61 …`, `Ph: (02) …`, `tel:+61…` and a number at the start of the text
+still scan.
+
+**REQ-CORRELATOR-008 (C6) — AU-088 counted a name-only register row as the
+subject's confirmation.** The rule walked every evidence record. With a
+FullName seed "David Smith", `ahpra` returns two same-name practitioners,
+`mark_ambiguous` stamps them `Unverified`, and they merge onto the seed
+anchor by value. AU-088 then fired High, "Subject corroborated by 1
+authoritative Australian public register(s)". It went Critical when a real
+`abn_lookup` hit was also present. It now skips `Evidence::is_non_corroborating`
+records (name-only, annotation, or a non-corroborating source), which is the
+one per-record statement of that rule.
+
+**REQ-TIMELINE-001 (C7) — an annotation's date was the subject's latest
+activity.** `timeline::reconstruct` skipped `Unverified` records only.
+`sunrise_sunset` stamps `date = <the day the scan ran>` on the point it was
+asked about, as an annotation. The key `date` classifies as a generic event,
+so `online_tenure` ended on the run day and `footprint_recency` read
+"Active", and both depended on the day the scan ran. A new per-record gate,
+`records_subject_activity`, skips `Unverified`, annotation (`is_annotation`)
+and inferred (`is_inferred`, whose doc says "rather than a direct
+observation") records. It is deliberately narrower than
+`is_non_corroborating`. That predicate also excludes whole sources (recall,
+the cross-scan bridge) whose records restate an earlier genuine observation,
+and their dates are still the subject's.
+
+**REQ-WIKIDATA-004 (C8) — the truncation note stayed countable on an
+ambiguous head, and shared labels were judged on the surfaced six only.**
+`process` ran `mark_shared_labels`, which runs `mark_ambiguous` and stamps
+every record the head carries at that moment `Unverified`. Only afterwards did
+`mark_candidate_truncation` append its note, with no ownership status. That
+breaks `mark_ambiguous`'s "call after the evidence is attached" contract.
+In scan 7258fc07 ("Ian Thorpe", more than six matches, the NZ-soldier head)
+the note was the one countable record on the ambiguous head. The head fused
+onto the seed, and `wikidata` counted as a corroborating source of the
+swimmer. There are two fixes. The note is now `.as_annotation()`: it is a
+fact about the search, so it never corroborates, in any order. The
+post-processing also moved into a pure `finish_answer` that attaches the note
+first, so the contract holds anyway. The collision labels were built from the
+first `MAX_CANDIDATES`, so a same-label item ranked 7th–10th left the primary
+unmarked, and its `pep` tag and records reached the subject. They are now
+built from every name-matched hit.
+
+**REQ-AU-UNCLAIMED-004 (C9) — one owner's rows pooled into one record.** The
+QLD owner Person record's summary was `"QLD unclaimed money owner: {person}"`.
+`absorb` de-duplicates on `(source, summary)`, so N rows naming one owner
+collapsed into one record with pooled single-valued attributes: `postcode =
+"4555; 4557"`, which `geo_family::au_postcode` (exactly 4 digits) cannot read,
+and `co_owner = "A; B"`, which names no Person in
+`derive_declared_associations`. The owner record now carries the row id that
+the round-2 row record uses (`ClientId_ActNo`, else the postcode, else the
+CKAN `_id`). The row record also gained the `_id` fallback, so two rows with
+neither a reference nor a postcode no longer pool their amounts. Two small
+reader changes make several single-valued records read deterministically.
+`au_postcode`'s evidence path anchors only when the records name ONE
+distinct postcode, because rows lodged in two towns give no single town. It
+used to take the first in evidence order. It reads every value through
+`attr_values`, so a pooled attribute is judged the same way.
+`derive_declared_associations` reads each value of an association attribute
+through `attr_values`, not the whole joined string.
+
+### Locks
+
+- `core::scan::tests::finalise_tally_message_lists_each_short_write_in_finalise_order`,
+  `core::scan::tests::finalise_tally_message_names_failed_passes_and_every_write_kind`,
+  `core::scan::tests::a_complete_scan_missing_stored_records_is_caveated`.
+- `core::engine::tests::a_live_scan_whose_store_refuses_relations_records_the_shortfall`,
+  `core::engine::tests::correlate_and_persist_counts_every_refused_firing`
+  (through `core::test_support::RefusingStore`, which forwards every
+  `StoragePort` method and refuses relation and/or correlation writes).
+- Second round, through `RefusingStore`'s new modes (refused or panicking
+  relation reads, refused detach, refused entity writes, refused route
+  counts):
+  `core::engine::tests::correlate_and_persist_records_a_pass_that_failed_outright`
+  (a refused read, and a panic whose payload carries an address that must
+  not leak), `core::engine::tests::a_live_scan_whose_correlation_pass_fails_records_it`,
+  `core::engine::tests::a_refused_address_fold_detach_is_counted`,
+  `core::engine::tests::a_refused_boost_re_persist_and_an_unreadable_boost_pass_are_recorded`,
+  `core::engine::tests::an_unreadable_cross_scan_route_pass_is_recorded`,
+  `core::engine::tests::finalise_correlation_pass_survives_a_panicking_rule`
+  (now pins the stable reasons),
+  `app::persist::tests::a_batch_whose_correlation_pass_fails_records_it`,
+  `api::scan_handlers::tests::scan_import_reports_a_failed_correlation_pass_as_partial`.
+- `app::persist::tests::a_batch_whose_store_refuses_its_graph_records_the_shortfall`
+  (`persist_entities_as_scan`'s store-facing body is now the injectable
+  `persist_batch_into`).
+- `api::scan_handlers::tests::scan_import_reports_a_refused_graph_as_partial`
+  (over `api::test_state_with_store`); `tests/api.rs`'s
+  `dossier_upload_*` tests still read `"status": "complete"` on a whole store.
+- `app::export::renderers::tests::a_complete_scan_with_a_finalise_shortfall_is_a_partial_export`
+  (now with a pass-failure case),
+  `app::export::renderers::tests::every_export_header_brands_a_finalise_shortfall_partial`.
+- `core::relation::tests::handles_that_differ_only_by_a_separator_never_alias`,
+  `core::relation::tests::mailbox_handles_alias_by_their_account_keys`;
+  `core::coref::tests::separator_variants_are_a_lead_not_handle_equivalent`,
+  `core::coref::tests::mailbox_and_username_are_handle_equivalent_by_account_key`,
+  `core::coref::tests::same_domain_mailboxes_keep_the_full_string_ladder`
+  (rewritten, see REQ-REL-004); `util::canonical::tests::username_account_key_keeps_every_separator`,
+  `util::canonical::tests::email_account_keys_follow_the_provider_rules` and
+  the two functions' doc-tests. The four existing handle tests
+  (`handles_alias_shared_persona_across_platforms`,
+  `role_mailboxes_do_not_alias_across_organisations`,
+  `unobserved_name_permutations_never_alias`,
+  `mailboxes_at_different_domains_do_not_alias_but_observed_handles_do`) and
+  the resolver's `username_edge_separators_do_not_merge` pass unchanged.
+- `audit::tests::geo_outlier_example_names_only_its_corroborating_sources`.
+- `util::address_au::tests::free_text_phone_scan_rejects_a_word_glued_to_the_plus_or_paren`.
+- `core::correlator::tests::au088_a_name_only_register_row_is_not_a_confirmation`
+  (with a verified-AHPRA positive control).
+- `core::timeline::tests::annotation_and_inferred_dates_are_not_subject_activity`.
+- `modules::wikidata::tests::a_truncation_note_on_an_ambiguous_head_does_not_corroborate_the_subject`
+  (pins the annotation and the ordering separately),
+  `modules::wikidata::tests::a_label_shared_beyond_the_candidate_cap_still_marks_the_primary`.
+- `modules::au_unclaimed::tests::qld::one_owner_across_rows_keeps_each_rows_postcode_and_co_owner`,
+  `modules::au_unclaimed::tests::qld::rows_without_reference_or_postcode_are_named_by_their_row_id`,
+  `core::geo_family::tests::au_postcode_anchors_only_on_a_single_distinct_postcode`,
+  `core::relation::tests::declared_associations_read_every_value_of_a_pooled_attribute`.
+
+### Falsified
+
+Each mutation restores the defect. The fixed files were saved first. After
+each mutation build (three in the first round, two in the second) they were
+copied back, checked against their saved md5 sums, and `git diff` was
+compared byte for byte with the pre-mutation diff.
+
+| # | mutation | result |
+|---|---|---|
+| S1 | `partial_export_reason` without the `finalise-incomplete` arm | killed by `a_complete_scan_with_a_finalise_shortfall_is_a_partial_export` and `every_export_header_brands_a_finalise_shortfall_partial` |
+| S2 | `completeness_caveat` without the `error` arm | killed by `a_complete_scan_missing_stored_records_is_caveated` |
+| S3 | `persist_relations`' fallback back to `.is_ok()` (a refused edge uncounted) | killed by `a_live_scan_whose_store_refuses_relations_records_the_shortfall`, `a_batch_whose_store_refuses_its_graph_records_the_shortfall` and `scan_import_reports_a_refused_graph_as_partial` |
+| S4 | `correlate_and_persist` back to the fail-fast `Correlator::run` | killed by `correlate_and_persist_counts_every_refused_firing` and `a_batch_whose_store_refuses_its_graph_records_the_shortfall` |
+| S5 | live finalise records only an entity shortfall (the old `scan.error`) | killed by `a_live_scan_whose_store_refuses_relations_records_the_shortfall` |
+| S6 | `persist_batch_into` never sets `scan.error` | killed by `a_batch_whose_store_refuses_its_graph_records_the_shortfall` |
+| S7 | web upload never sets `scan.error` | killed by `scan_import_reports_a_refused_graph_as_partial` |
+| S8 | web response `"status": "complete"` hardcoded | killed by `scan_import_reports_a_refused_graph_as_partial` |
+| R1 | `persona_keys` back to the one `identity_norm` key | killed by `handles_that_differ_only_by_a_separator_never_alias` and `mailbox_handles_alias_by_their_account_keys` |
+| R2 | handle-equivalence between two handles back to `identity_norm` equality | killed by `separator_variants_are_a_lead_not_handle_equivalent` and `handles_that_differ_only_by_a_separator_never_alias` (the promoted `AliasOf`) |
+| A1 | outlier example prints `e.sources` | killed by `geo_outlier_example_names_only_its_corroborating_sources` |
+| P1 | glued-before check only when the match opens on a word byte | killed by `free_text_phone_scan_rejects_a_word_glued_to_the_plus_or_paren` |
+| C1 | AU-088 walks every record | killed by `au088_a_name_only_register_row_is_not_a_confirmation` |
+| T1 | timeline skips `Unverified` only | killed by `annotation_and_inferred_dates_are_not_subject_activity` |
+| W1 | truncation note without `.as_annotation()` | killed by `a_truncation_note_on_an_ambiguous_head_does_not_corroborate_the_subject` |
+| W2 | truncation note attached after `mark_shared_labels` | killed by the same test (the note is not `Unverified`) |
+| W3 | collision labels from the first `MAX_CANDIDATES` hits | killed by `a_label_shared_beyond_the_candidate_cap_still_marks_the_primary` |
+| U1 | owner record summary without the row id, and no `_id` fallback | killed by `one_owner_across_rows_keeps_each_rows_postcode_and_co_owner` and `rows_without_reference_or_postcode_are_named_by_their_row_id` |
+| U2 | `au_postcode` back to the first valid record | killed by `au_postcode_anchors_only_on_a_single_distinct_postcode` |
+| U3 | declared associations read an attribute whole | killed by `declared_associations_read_every_value_of_a_pooled_attribute` |
+| F1 | `correlate_and_persist` drops the pass failure | killed by `correlate_and_persist_records_a_pass_that_failed_outright`, `a_live_scan_whose_correlation_pass_fails_records_it`, `a_batch_whose_correlation_pass_fails_records_it` and `scan_import_reports_a_failed_correlation_pass_as_partial` |
+| F2 | a panic's reason is its payload | killed by `finalise_correlation_pass_survives_a_panicking_rule` (the payload's `0x…` address reached the reason) |
+| F3 | `apply_address_folds` counts a refused detach as kept | killed by `a_refused_address_fold_detach_is_counted` |
+| F4 | the boost re-persist counts no refusals | killed by `a_refused_boost_re_persist_and_an_unreadable_boost_pass_are_recorded` |
+| F5 | the boost pass's failed relations read not recorded | killed by the same test (its second case) |
+| F6 | the route pass's failed graph read not recorded | killed by `an_unreadable_cross_scan_route_pass_is_recorded` |
+| F7 | a failed route count read as 0 silently | killed by the same test (its second case) |
+| F8 | `FinaliseTally::message` drops the pass clauses | killed by `finalise_tally_message_names_failed_passes_and_every_write_kind` |
+
+**28 of 28 killed.** The second round ran in two mutation builds. F1 and F8
+touch the same assertions, so F1 was re-run in the second build without F8,
+where it was killed by all four of its tests on its own.
+
+### Not fixed here (recorded)
+
+- The live incremental correlation pass only logs a refused write. The
+  finalise pass re-persists every firing it finds and counts that, so a
+  streamed correlation the finalise re-finds is covered. One it does not
+  re-find is not. Its own pass failure is not recorded either: the finalise
+  pass supersedes it.
+- `record_pathway_template`, which stores this scan's routes for FUTURE scans,
+  is now logged on failure rather than ignored (`let _`). It is not tallied,
+  because it changes nothing this scan exports.
+
+## REQ-SEARCH-014 / REQ-SEARCH-015 / REQ-GEO-017 / REQ-SOCIAL-005 / REQ-EUROPEPMC-003 / REQ-IDENTITY-GATE-004 / REQ-SEARCH-ADDR-003 / REQ-GEO-FAMILY-003 / REQ-SWEEP-006 / REQ-SCANSTATUS-004 / REQ-SCANSTATUS-005 / REQ-ENGINE-005 — the fifteen low-severity review findings on the round-2 commits
+
+**Found** by adversarial review of this branch's round-2 commits. The operator
+treats every defect or mismatch as blocking, so each of the fifteen was
+re-verified against the current code. All fifteen were real. Twelve were
+behaviour defects and are fixed with regression tests. Three were doc comments
+that did not say what the code does, and those comments now do. Two of the
+twelve also had doc errors, which were corrected with them.
+
+**REQ-SEARCH-014 — the article and the pronoun were given-name initials.**
+`text_names_person` accepted any one-letter token before the surname as the
+given name's initial. The English article "a" and the pronoun "I" are
+one-letter tokens, so "Find a Baker near you" named Andrew Baker and "He was a
+Thorpe by birth" named Alice Thorpe. For every subject whose given name starts
+with A or I, the surname alone again passed the REQ-SEARCH-008 gate, and
+snippet emails, phones, organisations, ABNs and addresses were mined from those
+pages. The two letters now count as an initial only when a `.` follows them
+("A. Baker", "Dr. I. Thorpe"). In a URL slug they count when they open a
+`-`-joined run with no whitespace around them (`/i-thorpe`, `/people/a-baker`).
+An article inside a slug (`find-a-baker`) is joined to the word before it, so
+it stays a word. Every other letter is unaffected. Known conservative loss: an
+unpunctuated "I Thorpe" in prose no longer names Ian Thorpe.
+
+**REQ-SEARCH-015 — an ABN seed's own register page failed its gate.**
+REQ-SEARCH-007 put the ABN/ACN loop behind `names_the_subject`. For an `AbnAcn`
+seed that predicate fell to `last_term()`, a whole-token match that depends
+on how the number is spaced. An unspaced seed `74067173835` was never a
+token of a snippet reading "ABN 74 067 173 835". A spaced seed's last term
+`835` was never a token of the unspaced number a registry title prints. So an
+ABN seed stopped mining the ACN on its own page. `names_the_subject` now has an
+`AbnAcn` branch, `result_mentions_business_number`, the sibling of the phone
+branch. It reads each run of digits and single spaces in the title, snippet and
+URL as one printed number. The seed is named when a run's digits equal the
+seed's. The test is equality, not containment, so a longer number that embeds
+the digits never matches.
+
+**REQ-GEO-017 — most gazetteer centroids were never tagged `coarse`.**
+REQ-GEO-007 tagged `COARSE` at three minting sites, and the `tags::COARSE` doc
+said every `util::city_coords` centroid carries it. About thirty other modules
+also mint a `Coordinates` from `city_coords` (asic_persons, abn_lookup,
+opencorporates, whois, employer_pivot, github_user, proxycurl, …). They tagged
+it only `addr-derived`/`geoint`, so those centroids were still pivoted into
+reverse geocoders and cadastre lookups. The claim is now made true by one
+authority instead of thirty call sites.
+`util::city_coords::is_gazetteer_centroid` tests a point against every value
+`city_coords` can return: tabulated names, tabulated postcodes and
+leading-digit regions. It compares at the 4-decimal grain every caller formats
+with. The engine's `enrich_geospatial` tags a matching `Coordinates` `coarse`
+before the emit, whichever module minted it. It also tags a point that a
+geocoder itself declared to be a city, suburb, postcode, region or country
+centroid through its `place_type`. That reading is
+`correlator::declares_area_grain`, which uses the correlator's own grain table. A
+Nominatim city centroid for a city-only Address had been one hop from the same
+reverse-geocode defect. Separately, `is_coarse_geo`'s legacy-signature check
+covered only two of the three REQ-GEO-007 sites. A pre-fix recycled-snippet
+centroid carried neither signature, so it was still pivoted. The check now also
+reads that leg's `recycled` + `addr-derived` pair, which no other path mints on
+a `Coordinates`, and it reads the gazetteer value. `is_gazetteer_centroid` is a
+pure leaf over the same tables and is allow-listed in `tests/architecture.rs`.
+Two engine tests had used the Sydney CBD centroid value as a "precise fix"
+control. They now use an off-table point, because the tabulated value is
+coarse by definition. Residual: a Nominatim hit typed `administrative` (a
+boundary relation) is not in the grain table, so it is not tagged.
+
+**REQ-SOCIAL-005 — an inconclusive name sweep was a skip although it queried.**
+REQ-SOCIAL-003 returned `Error::Skipped { Unavailable }` for an inconclusive
+FullName sweep. That variant's documented contract is a module that did not
+query the provider. `core::coverage` reads it as `NotAttempted` ("never
+queried"), but the sweep had fetched both people-directory URLs in both waves.
+Its test also called the helper directly, so reverting the call site in
+`process` still passed every test. The contract that fits is an incomplete
+answer.
+`core::coverage` reads zero findings with a truncation caveat as `Truncated`:
+queried and answered, `settles_absence` false, never a clean negative. The
+dispatch counts as a run and records a breaker success. That is true, because
+a directory did answer. `finish_sweep` is now the one tested step between the
+probes and what `process` returns. A FullName sweep that some platform answered
+is `Ok` and marked truncated. A handle sweep stays the module error the breaker
+should count. So does a name sweep that nothing answered, which is the
+blocked-egress shape. A source check pins that `process` returns through
+`finish_sweep` and builds no verdict of its own. The old doc said the trips
+happened "twice with name-sweep errors supplying the streak". That contradicted
+the ledger's own timeline, in which all three trips were fed by name-sweep
+errors. The doc now gives the ledger's account.
+
+**REQ-EUROPEPMC-003 — a generational suffix became the family name.**
+`split_author` recognised the initials only as the LAST token. Europe PMC keeps
+PubMed's suffix after the initials ("Smith J Jr", "Smith JA III", "Smith J
+2nd"), so the whole entry became the family name "Smith J Jr", and no seed
+could match it. A trailing Jr, Sr, II, III, IV, 2nd, 3rd or 4th is now dropped
+first. It is dropped only when an initials token stands before it, because a
+roman numeral is also a pair of initials: "Petrov IV" is Ivan V. Petrov.
+
+**REQ-IDENTITY-GATE-004 — the promotion veto's rationale was narrower than the
+rule.** `derive_coreferences` refuses `IdentifiedBy` from a Person to any
+Email/Username that does not spell the name. Its comment justified that only by
+"a shared surname is not a shared identity". That suggested the veto was meant
+for surname-bearing handles, and that it over-reached on an unrelated one
+(`swimfan82`). Re-examined, the wider rule is the right one. Such a pair can
+reach the 0.80 floor only through shared-source, with five shared module names,
+and those are no identity evidence for any handle. A relative's handle that
+spells nothing of the name (`megfan77`) co-occurs in the same people-search
+sweeps as one that carries the surname. The reviewer's targeted veto would have
+re-admitted it. The behaviour is kept. The comment and doc now state the real
+rule and its known conservative loss, and a lock test pins both halves: the
+unrelated handle is not promoted on co-occurrence, and a record naming its owner
+still binds it through `derive_identity_ownership`'s evidence path. This lock
+passes on the pre-change code, because no behaviour changed. Residual: a Phone
+carries no name to test, so it can still be promoted on shared module names
+alone.
+
+**`Entity::corroborating_records` doc (hse-core).** The doc still said the
+filter was by source. It is by record, through `Evidence::is_non_corroborating`,
+which also drops annotation and name-only (`Unverified`) records. The doc now
+says so, and says that none of those draws a GEXF co-occurrence edge. There is
+no behaviour change.
+
+**REQ-SEARCH-ADDR-003 — the venue rule dropped real suburbs.**
+REQ-SEARCH-ADDR-002 dropped every multi-word "city" with the scanned surname
+anywhere after its first word. That lost "Box Hill North, Victoria" on a scan
+for a Hill. It also lost "Ian Thorpe in Ultimo", which states where the subject
+is. `city_names_a_surname_bearer` is replaced by `surname_bearer_locality`,
+which returns the locality to keep. What follows the surname decides:
+
+- Nothing follows it. This is a listing title, and it is dropped.
+- Only place suffixes follow it (North, South, Heights, Bay, Lake, …). This is
+  a place, and it is kept.
+- A bare `in <Place>` follows it. This locates the bearer, so the place is kept
+  ("Ultimo, New South Wales").
+- Anything else follows it. This is a venue or business named after a
+  surname-bearer ("Aquatic Centre in Ultimo", "Plumbing"), and it is dropped
+  wholesale.
+
+The caller keeps each recovered place once, in order. "Albert Park Lake" on a
+"Park" scan, a loss REQ-SEARCH-ADDR-002 recorded, is now kept. Known
+conservative loss, unchanged: a two-word suburb ending in the surname ("Box
+Hill" for a Hill) reads exactly like a listing title and is dropped.
+
+**REQ-GEO-FAMILY-003 — a postcode-less name-matched address lost its anchor.**
+REQ-GEO-FAMILY-002 stopped counting a forward geocode as a subject fix. Its doc
+said nothing useful was lost, because the `exact-name-match` Address arm still
+anchors. That arm resolved only an AU postcode. A name-matched "12 Foo St,
+Toowong QLD" without one had no anchor left, so the family-geo passes and
+AU-061 silently did nothing. The arm now falls back to the tabulated place the
+address names (`city_coords` on the value), after the postcode. The doc states
+the remaining loss: an address with neither a postcode nor a tabulated place
+does not anchor.
+
+**REQ-SWEEP-006 — a legacy sweep read as one that dispatched nothing.**
+`BreachSweep.dispatched` was `#[serde(default)] usize`, so every event
+persisted before the field existed decoded as 0. It rendered "0/12 probes
+dispatched", the mirror image of the misreport REQ-SWEEP-004 fixed, and
+asserted a number the old record never held. It is now `Option<usize>`, and
+every new emission is `Some`. A legacy `None` renders its original "12 probes
+from 3 anchors" line in `EventKind::log_summary`, the live CLI's `render_event`
+and the SPA's `log.js`. The persisted log line carries `"dispatched":null`.
+
+**REQ-SCANSTATUS-005 — a failed or killed import stayed pending forever.**
+REQ-SCANSTATUS-002 had both import paths write the row `Pending` first. Any
+exit other than the success commit left it there: an error from `?` after the
+first write, a panic, or a kill during enrichment. `is_interrupted` reads only
+`Running`, by design ("pending" means never started), so nothing ever reported
+such a row as interrupted. The scan list counted it as running, `/stats`
+counted it as in progress, and `prune_events` exempted it.
+`app::persist::ImportScanRow` is now the one lifecycle both paths use:
+
+- `begin` writes `Running`.
+- `finish` writes the terminal status. Since the merge with REQ-SCANSTATUS-003
+  it takes the import's `FinaliseTally`, so the same write records what the
+  finalise did not complete in `error`. It is the row's one terminal write.
+- A drop without `finish` records `Failed` with an error. This covers an error
+  return and a panic.
+
+A kill leaves `Running`, which the web process reads as interrupted once the
+import is no longer in its in-flight registry. The web upload now holds the
+import in that registry from before its first write to after its last. As a
+result:
+
+- It is not reported interrupted while it runs.
+- `DELETE` refuses it mid-write.
+- `POST /scans/{id}/cancel` is honoured at the two enrichment boundaries. The
+  row then reads `Aborted`, and it keeps the entities and whatever enrichment
+  finished.
+
+The response's `status` is the committed one, except that a `Complete` row
+whose finalise did not complete answers `partial` (REQ-SCANSTATUS-003). A CLI
+import runs in its own
+process, so a server reads its `Running` row as interrupted while it runs. A
+concurrent CLI scan already follows the same per-process rule. (The id was
+chosen as 005 because a parallel review round on #649 uses
+REQ-SCANSTATUS-003.)
+
+**REQ-SCANSTATUS-004 — `scan_complete` reached SSE before the row was
+terminal.** REQ-SCANSTATUS-002 moved the terminal row write to the end, but
+`ScanComplete` was still emitted inside the blocking finalise.
+`EventEmitter::emit` both enqueues to the writer and broadcasts on the bus, so
+subscribers heard `scan_complete` while the stored row read `running`.
+`radar.js` re-fetches on it, on the documented promise that "the engine writes
+the row before it emits the event". `emit` is now `record` (the writer) plus
+`broadcast` (the bus). Finalise records `ScanComplete` inside the blocking
+phase, so the event is durable before the row, as REQ-SCANSTATUS-002 requires.
+It broadcasts only after the commit, and a commit that fails outright announces
+no completion. The in-memory store's terminal witness can now watch the bus.
+
+**REQ-ENGINE-005 — `modules_run` said "executed against their provider".**
+The REQ-ENGINE-003 docs defined `run` as modules that executed against their
+provider, and said an in-band skip "declined to query". hackertarget ("error
+invalid host") and whois (the IANA bootstrap) return `Error::Skipped
+{NotApplicable}` after contacting a provider. Until this round, so did
+social_probe's name sweep. The counting is right: none of these obtained an
+answer about the target, and `run` + `skipped` must partition the dispatches.
+The definitions were wrong. These docs now say what the code does:
+`ModuleStats::run`, `Scan::modules_run`, the dispatch comments, the
+`Error::Skipped` / `Error::skipped` contract and `SkipClass::NotApplicable`.
+
+- `run` is a dispatch that returned a result, an error or a timeout.
+- A skip obtained no answer about the target. Either the module did not ask,
+  or the provider's own reply put the target outside what it answers.
+- An answer that cannot settle the question is a truncated result, never a
+  skip.
+
+Every `Unavailable` skip in the tree is decided before any query.
+
+### Locks
+
+- `core::scan::tests::the_article_and_the_pronoun_are_not_given_name_initials`.
+- `modules::search_engines::helpers::relevance::tests::a_business_number_is_named_in_any_grouping_and_only_whole`;
+  `modules::search_engines::tests::an_abn_seed_names_its_register_page_in_any_digit_grouping`.
+- `core::engine::enrich::tests::is_coarse_geo_recognises_a_legacy_recycled_centroid_and_any_gazetteer_value`;
+  `core::engine::enrich::tests::enrichment_tags_every_gazetteer_and_declared_area_centroid_coarse`;
+  `util::city_coords::tests::every_city_coords_answer_is_a_gazetteer_centroid`.
+- `modules::social_probe::tests::an_inconclusive_people_directory_sweep_is_an_incomplete_answer_not_a_skip_or_a_fault`
+  (through `provider_coverage_from_events`);
+  `modules::social_probe::tests::process_returns_its_sweep_verdict_through_finish_sweep`.
+- `modules::europepmc_search::tests::a_generational_suffix_after_the_initials_is_not_the_family_name`.
+- `core::relation::tests::an_unrelated_handle_is_bound_by_a_naming_record_never_by_co_occurrence`
+  (a lock on kept behaviour).
+- `modules::search_engines::helpers::entity::tests::a_suburb_carrying_the_surname_and_a_located_bearer_are_localities`;
+  `modules::search_engines::tests::a_name_scan_keeps_the_place_its_subject_is_located_in`
+  (the REQ-SEARCH-ADDR-001/002 tests pass, adapted to the new signature).
+- `core::geo_family::tests::a_postcode_less_name_matched_address_still_anchors_at_its_named_place`.
+- `core::event::tests::a_legacy_breach_sweep_never_reads_as_one_that_dispatched_nothing`;
+  `cli::live::tests::render_event_reads_a_legacy_breach_sweep_as_unknown_dispatch`;
+  `api::routes::tests::the_log_view_renders_a_breach_sweeps_dispatch_and_stop_like_the_log_summary`
+  (extended).
+- `app::persist::tests::an_import_row_never_outlives_its_import_in_progress`;
+  `api::scan_handlers::tests::scan_import_commits_its_row_and_leaves_the_in_flight_registry`.
+- `core::engine::tests::scan_complete_reaches_live_subscribers_only_after_the_row_is_terminal`.
+
+### Falsified
+
+Each mutation restores the defect. For L5 and L8 it re-creates the shape the
+review warned of instead. The fixed file was saved first and restored after
+each run, and its md5 was checked to be identical before and after.
+
+| # | mutation | result |
+|---|---|---|
+| L1 | `compatible` without `may_be_given` (any one-letter token is an initial) | killed by `the_article_and_the_pronoun_are_not_given_name_initials` |
+| L2 | `AbnAcn` branch of `names_the_subject` disabled | killed by `an_abn_seed_names_its_register_page_in_any_digit_grouping` |
+| L3 | `is_coarse_geo` without the `recycled` + `addr-derived` signature | killed by `is_coarse_geo_recognises_a_legacy_recycled_centroid_and_any_gazetteer_value` |
+| L4a | enrichment never tags `coarse` | killed by `enrichment_tags_every_gazetteer_and_declared_area_centroid_coarse` |
+| L4b | enrichment ignores a geocoder's declared area grain | killed by the same test (the Nominatim city case) |
+| L5 | `process` decides an inline `Error::module` verdict beside `finish_sweep` | killed by `process_returns_its_sweep_verdict_through_finish_sweep` |
+| L6a | FullName inconclusive sweep back to an error | killed by `an_inconclusive_people_directory_sweep_is_an_incomplete_answer_not_a_skip_or_a_fault` |
+| L6b | a name sweep nothing answered treated as answered | killed by the same test |
+| L7 | generational suffix not dropped | killed by `a_generational_suffix_after_the_initials_is_not_the_family_name` |
+| L8 | promotion veto narrowed to surname-bearing handles (the reviewer's proposal) | killed by `an_unrelated_handle_is_bound_by_a_naming_record_never_by_co_occurrence` |
+| L10a | place-suffix arm removed | killed by `a_suburb_carrying_the_surname_and_a_located_bearer_are_localities` |
+| L10b | `in <Place>` recovery removed | killed by the same test |
+| L10c | caller keeps the raw segment instead of the recovered place | killed by `a_name_scan_keeps_the_place_its_subject_is_located_in` |
+| L11 | no place-name fallback for a postcode-less address | killed by `a_postcode_less_name_matched_address_still_anchors_at_its_named_place` |
+| L12a | `log_summary` renders a legacy sweep as `0/N` | killed by `a_legacy_breach_sweep_never_reads_as_one_that_dispatched_nothing` |
+| L12b | live CLI renders a legacy sweep as `0/N` | killed by `render_event_reads_a_legacy_breach_sweep_as_unknown_dispatch` |
+| L12c | `log.js` back to `dispatched ?? 0` | killed by `the_log_view_renders_a_breach_sweeps_dispatch_and_stop_like_the_log_summary` |
+| L13a | `ImportScanRow::begin` leaves the row `Pending` | killed by `an_import_row_never_outlives_its_import_in_progress` |
+| L13b | `ImportScanRow` drop never records `Failed` | killed by the same test |
+| L14 | `record` also broadcasts (the pre-fix order) | killed by `scan_complete_reaches_live_subscribers_only_after_the_row_is_terminal` |
+
+**20 of 20 killed.** The two doc-only corrections, REQ-ENGINE-005 and the
+`corroborating_records` doc, change no behaviour and have nothing to falsify.
+REQ-IDENTITY-GATE-004's lock guards kept behaviour, and L8 shows it would catch
+the proposed narrowing. `hse-core` changed, in the `tags::COARSE` and
+`corroborating_records` docs only, so `wasm-ui/pkg` must be regenerated.
+
+## REQ-GEOLABEL-001 / REQ-GEOLABEL-005 / REQ-GEOLABEL-006 / REQ-GEOLABEL-007 / REQ-OPENMETEO-002 — a coordinate's six decimals were read as its precision
+
+**Found** while designing the default nearest-place label for every
+`Coordinates` entity. The operator's example was `-27.4698,153.0251 → 123
+Adelaide St… (~30 m)`, and that value is the tabulated Brisbane centroid
+(`util::city_coords` `brisbane`, `util::geo` anchor "Brisbane", postcode
+4000's offline centroid). A street label on it would name whatever street
+contains the centre of a city. Nothing in the codebase could say how precise
+a coordinate was: the pivot gate, the fusion radius and the admission tag each
+used their own partial reading, and all three read that value wrongly in some
+shape scan 7258fc07 stored. This is part F1 of the label feature: the
+precision authority and the collection-side corrections. The labeller and the
+output surfaces are separate work (REQ-GEOLABEL-002..004).
+
+**REQ-GEOLABEL-001 — one precision authority, graded from provenance.**
+`core::place::grain::assess(&Entity) -> FixPrecision` grades a coordinate on
+a fixed ladder (`FixGrain`: point ≤ 50 m, street ≤ 300 m, suburb ≤ 5 km,
+locality ≤ 30 km, region ≤ 150 km, country). It also returns the basis
+(`FixBasis`), what a centroid stands for (`StandsFor`), and whether any
+account gave positive evidence of an area.
+
+- **Only originating records set precision.** `is_annotator_row` skips
+  records flagged `is_annotation`, the engine's own records (the enrichment,
+  recall, cross-scan, consensus and `*_corroboration` promotions, but not the
+  seed), and the legacy shapes of the coordinate-target annotators. The
+  legacy shapes are an ASGS roll-up, solar phases, a cadastral parcel without
+  `addr_entity_uid`, Overpass `node_count` / `categories`, and WiGLE
+  `density`. The roles live in `COORDINATE_TARGET_MODULES`, and a registry
+  test keeps that table equal to the modules that consume a `Coordinates`
+  target.
+- **The coarsest account wins.** Identical values from different origins are
+  one datum, and a centroid explanation is what makes them identical. Each
+  account is taken by the first rule that applies: the seed; an
+  `address_to_coords_pass` record (its declared `place_type`, a city before
+  it declared one); a known-city lookup; a register postcode; a stated
+  accuracy or range; a GeoNames `feature_code`; a declared `place_type` or
+  `osm_value`; otherwise the class default.
+- **A forward geocode is capped at the grain its input names**
+  (`util::place_grain::place_naming`). An ambiguous hit is one rung coarser.
+  A `place_name` that is not a whole-word phrase of an input naming no street
+  is a fragment match, and only the input's administrative grain stands.
+  "Ian Thorpe, North Carolina" → "Thorpe-Abbotts Lane" grades Region. A
+  Photon `house` hit under a non-address `osm_key` is a mapped feature, never
+  a street address.
+- **Floors.** A `fix-grain:` stamp, `coarse`, `postcode-centroid`, and the
+  legacy `search-geocoded` and `recycled` + `addr-derived` signatures each set
+  a minimum grain. A value equal at 4 decimals to a tabulated centroid
+  (`util::city_coords::tabulated_centroid_at`, the one authority, extended
+  to the `util::geo` AU anchors; the `is_gazetteer_centroid` predicate that
+  wrapped it was removed in review round 1, REQ-GEOLABEL-018)
+  is graded at the grain of what it stands for and names it. The value's own
+  printed decimals set a quantisation floor: a one-decimal value is at least
+  5.5 km.
+- **The measurement exemption.** When a measured account good to a street or
+  better sits on the entity (device GPS, EXIF, a Wi-Fi or cell survey),
+  neither a coarser non-measured account nor the gazetteer coincidence
+  overrides it. The operator's typed seed is not a measurement.
+- **Unknown provenance is never evidence of an area.** It grades at the 30 km
+  default, but `positive_coarse` stays false, so an unclassified precise
+  emitter keeps its pivots.
+
+**REQ-GEOLABEL-005 (R1) — admission stamps the grain.** `enrich_geospatial`
+stamped `coarse` only on a gazetteer value or a declared area `place_type`
+(REQ-GEO-017). It now reads `assess`: every emission with positive area
+evidence gets `coarse` plus exactly one `fix-grain:<grain>` tag, before the
+emit, so the event log and recovery carry both. A re-run re-decides the stamp
+from the same evidence and reads the earlier stamp as a floor, so a merged
+point carries one grain and it only coarsens. Three shapes were missed before:
+a known-city lookup off the tables, the capped North Carolina street hit, and
+the GeoNames headland. `is_coarse_geo` (the pivot and autonomous-seed gates)
+now delegates to the same `assess`. A geocode of a city-only input is a
+centroid, and a measured fix on a centroid value is not demoted.
+`address_to_coords_pass` marks its records `is_inferred`, since the
+coordinate was calculated from an address. The tag prefix is
+`core::place::grain::FIX_GRAIN_TAG_PREFIX`. `hse-core` is unchanged apart from
+the `tags::COARSE` doc.
+
+**REQ-GEOLABEL-006 (R2, residual) — a reverse geocode's record is inferred.**
+REQ-GEO-010 had already made the reverse-geocode value honest: structured
+fields only, no POI, HIGH_PLUS, `None` when nothing resolves. The one gap
+left was the evidence flag. `geocode::build_reverse_entity` and
+`photon::build_reverse` now mark their record `is_inferred`, which renders as
+"(inferred)" in the dossier and the debug bundle. The design's shared
+User-Agent and pacer were for the dropped network pass and are not part of
+this work.
+
+**REQ-GEOLABEL-007 (R3) — the fusion radius is coarsen-only against the
+authority.** `best_precision_radius_m` and `geocode_grain_radius_m` moved from
+`correlator::rules::location` into `core::place::grain`, and the correlator
+re-exports them. The radius is now the finest anchoring class radius,
+maxed with `assess(e).radius_m`. `declared_geocode_grain_m` and
+`declares_area_grain` are gone, because `assess` reads the same grain table
+with the input cap. The Brisbane centroid carried under `geocode` had read
+40 m, and it now reads the city's 8 km. The grain table gains `street` /
+`road` / highway classes (a street, 300 m) and `administrative` (at least a
+city).
+
+**REQ-OPENMETEO-002 — a fuzzy neighbour is not the geocode of the query.**
+Open-Meteo answered "Sydney, Australia" with "Sydney Heads", a headland
+(feature code MT) near Isaac, Queensland, about 1,400 km away. It became the
+anchor. `build_entities` now skips any hit whose name is not a whole-word
+phrase of the query (`util::place_grain::is_whole_word_phrase`, diacritic-
+and case-folded) before it takes the anchor slot or `RESULT_LIMIT` budget, so
+the real match behind it anchors. Known conservative loss: an exonym or a
+renamed place ("Saigon") no longer geocodes through this module. The two
+street geocoders still answer it. (REQ-OPENMETEO-003 later forgave how ONE
+name is written: word breaks, "Mt"/"Mount", a trailing "City".)
+
+### Deliberate test updates
+
+- `correlator::rules::location::tests::a_house_grain_match_keeps_the_class_default`
+  and `an_unrecorded_or_unknown_grain_keeps_the_class_default` used the
+  tabulated Sydney centroid as a "precise" fixture. They now use an off-table
+  value, and on the centroid the same record is the city.
+- `the_grain_table_can_only_ever_coarsen` lists `street` and `road` as
+  recognised (coarser than the class default) instead of absent.
+- `correlator::tests::best_location_uses_a_single_confirmed_coordinate` pinned
+  the operator's example centroid at ≤ 2 km. It now uses an off-table value
+  for that claim and asserts the centroid reads ≥ 5 km.
+- `open_meteo_geo::tests::a_row_skipped_for_a_missing_component_does_not_consume_the_cap`
+  names its fixture rows after the query, which the new name check requires.
+
+### Locks
+
+- `core::place::tests::*`: the Sydney and Brisbane 7258fc07 centroids
+  (including the operator's seed and the measured contrast), a carried
+  address record off the tables, a register postcode point, the forward input
+  cap, the Photon POI, GeoNames feature codes, annotators, the unclassified
+  emitter, order independence, a 300-set monotonicity sweep, the quantisation
+  floor, legacy floors, the ladder, the grain table, the fusion radius, the
+  role-table registry test and determinism.
+- `core::engine::enrich::tests::admission_stamps_coarse_and_the_fix_grain_on_positive_evidence_only`;
+  `a_derived_centroid_records_are_inferred`; `is_coarse_geo_reads_the_grain_authority`.
+- `modules::geocode::tests::reverse_geocode_evidence_is_inferred`;
+  `modules::photon::tests::build_reverse_evidence_is_inferred`.
+- `modules::open_meteo_geo::tests::a_fuzzy_neighbour_of_the_query_is_not_its_geocode`.
+- `util::city_coords::tests::tabulated_centroid_at_names_what_a_centroid_stands_for`;
+  `the_gazetteer_predicate_is_the_lookup`;
+  `util::place_grain::city_grain_tests::place_naming_reads_the_finest_component`;
+  `whole_word_phrase_matching`;
+  `util::geo::tests::au_locality_anchor_at_matches_only_the_anchor_value`.
+
+### Falsified
+
+Each mutation restores the defect, or removes the rule under test. The fixed
+file was held in memory, restored after each run, and its md5 was checked to
+be identical before and after.
+
+| # | mutation | result |
+|---|---|---|
+| G1 | admission stamp back to the value-only gazetteer condition | killed by `admission_stamps_coarse_and_the_fix_grain_on_positive_evidence_only` |
+| G2 | `is_coarse_geo` back to the gazetteer value alone | killed by `is_coarse_geo_reads_the_grain_authority` |
+| G3 | `address_to_coords_pass` records not inferred | killed by `a_derived_centroid_records_are_inferred` |
+| G4 | fusion radius without the `assess` floor | killed by `the_fusion_radius_honours_the_grain_authority` |
+| G5 | the same mutation, read through the estimate ladder | killed by `best_location_uses_a_single_confirmed_coordinate` |
+| G6 | measurement exemption removed | killed by `brisbane_centroid_is_not_a_street` |
+| G7 | forward-geocode input cap removed | killed by `a_forward_geocode_is_capped_at_its_input` |
+| G8 | Photon POI rule removed | killed by `a_photon_house_poi_is_a_mapped_feature` |
+| G9 | quantisation floor removed | killed by `quantisation_floor_caps_a_one_decimal_value` |
+| G10 | WiGLE `density` annotation signature removed | killed by `annotators_never_set_precision` |
+| G11 | a row dropped from `COORDINATE_TARGET_MODULES` | killed by `every_coordinate_target_module_has_a_role` |
+| G12 | Open-Meteo whole-word name check removed | killed by `a_fuzzy_neighbour_of_the_query_is_not_its_geocode` |
+| G13 | `geocode` reverse record not inferred | killed by `reverse_geocode_evidence_is_inferred` |
+| G14 | `photon` reverse record not inferred | killed by `build_reverse_evidence_is_inferred` |
+| G15 | AU anchors left out of the centroid table | killed by `the_gazetteer_predicate_is_the_lookup` (after its fixture was moved to an anchor that no other table holds; the first fixture, Sunshine Coast, is also a CITIES row and let the mutation survive) |
+
+**15 of 15 killed.** `hse-core` changed in the `tags::COARSE` doc only, so
+`wasm-ui/pkg` should be regenerated by the lead with the pinned toolchain.
+`wasm-ui/src` is untouched.
+
+## REQ-GEOLABEL-002 / REQ-GEOLABEL-003 / REQ-GEOLABEL-004 / REQ-GEOLABEL-008 — every coordinate gets a precision-honest nearest-place label
+
+**Asked** for every `Coordinates` entity to be shown with its nearest address
+by default. The operator's example was `-27.4698,153.0251 → 123 Adelaide St…
+(~30 m)`. That value is the tabulated Brisbane centroid (REQ-GEOLABEL-001), so
+naming the street that contains it would manufacture a street-level address
+nobody observed. This is part F2 of the label feature: the labeller and every
+output surface, built on F1's precision authority
+(`core::place::grain::assess`). The lead decision dropped the design's
+scan-time reverse-geocode pass. Labels come only from data the scan already
+holds, no network call is made for a label, and `hse-core` is unchanged.
+
+**REQ-GEOLABEL-002 — one label, never finer than the fix.**
+`core::place::label::describe(&Entity, &PlaceContext) -> Option<PlaceLabel>`
+returns the label's text, its grain, the fix's grain and radius, the offset of
+a matched address, and which tier produced it. `describe_fused(lat, lon,
+radius_km, kind)` does the same for a best-location fix, worded "fused" or
+"single-signal" by its `FixKind` (REQ-GEOLABEL-017). The label's grain is never finer
+than `assess`'s grade of the fix (P1), and its radius is shown rounded up. The
+tiers are tried in this order:
+
+- **Centroid.** A gazetteer-coincident value names what it stands for:
+  `Brisbane, QLD (city centroid — not a street location)`, or `Postcode 4820
+  area, QLD (postcode centroid, ±4 km)`. It never names the street, parcel,
+  ASGS area or shop that contains the centroid. **The operator's own example
+  renders as the Brisbane city centroid, deliberately.**
+- **T0, mapped feature.** A point that IS a Wikipedia, Wikidata or OSM feature
+  gets that feature's stored name, worded "mapped place … not an address of
+  the subject". This applies only while the value still carries the feature's
+  own decimals, so a redacted value never names the feature. The `wikidata`
+  corpus source now grades as a mapped feature: `wikidata_geo` writes its
+  records under that name, so its role never matched them.
+- **T1, stored reverse observation.** This applies to a measured or operator
+  fix good to a street. `PlaceContext::for_scan` indexes the reverse geocodes
+  THIS scan made (`geocode` / `photon` records on a `reverse-geocoded`
+  Address, keyed by the exact queried point). It excludes quarantined
+  answers, and it excludes other scans' recalled rows by `Evidence::scan_id`.
+  Only structured parts are used, never `nearest_feature`, `place_name` or
+  `display_name`. The P5 rules apply:
+  - a house number needs a doorway-grain fix, an address-point object
+    (Nominatim `place_rank` ≥ 28, or a Photon house number), and an object
+    within `max(2r, 50 m)`;
+  - a road needs a street-grain fix and an object within `max(3r, 150 m)`;
+  - an object more than 2 km away leaves only the locality;
+  - providers that disagree on the road cap the label at the suburb, and
+    disagreement on the suburb caps it at the locality;
+  - a merge-spliced `"a; b"` value names nothing;
+  - an observation with no recorded object position can name a suburb but
+    never a street.
+- **T2, forward-geocode self-answer.** The fix's own stored structured answer,
+  clipped to its (input-capped) grain. A Photon POI never lends its name. An
+  answer naming only a country falls through.
+- **T3, `au_geo`.** The suburb when the fix radius is ≤ 5 km, the postcode
+  only at ≤ 1.5 km, and the LGA at ≤ 30 km. Never used on a centroid.
+- **T4, offline gazetteer.** In order: the AU anchors, Vietnam's six
+  centrally-run cities (new `util::geo::nearest_vn_locality`, bounded to
+  50 km so Vientiane is not "near Hà Nội"), and the tabulated cities (new
+  `util::city_coords::nearest_tabulated_city`, 30 km). Distance and an 8-point
+  bearing are worded only when they exceed both 3 km and the fix's radius.
+  Past that comes "remote QLD — nearest centre …", then the state
+  (`util::address_au::state_name`), then the country.
+- **Infrastructure.** Hosting, registrant and `infra:` points are prefixed
+  `infrastructure:`, using the tag half of the correlator's gate.
+
+Every surface prints this one label:
+
+- **JSON.** `app::export::augment_entity_json` adds `place_label` to a
+  Coordinates object only. `render_json`, `build_scan_report` and the API
+  `/entities` and `/entities/filter` listings all use it. The filter builds
+  its context from the whole scan, since a kind filter drops the Address.
+- **CSV.** Appended `place_label,place_grain` columns (and, since
+  REQ-GEOLABEL-014, a `fix_radius_m` column that is not a label).
+- **GEXF.** Node attribute 9, and the Coordinates node label becomes
+  `{place} [{value}]`.
+- **Full dossier and debug bundle.** A `place:` line under each coordinate,
+  with one legend.
+- **Best location.** `extract_au_location_fix` adds `place_label` to the
+  AU-059, ladder and corroboration objects. The debug bundle prints it under
+  BEST AU LOCATION FIX.
+- **CLI dossier.** The findings get a place line and a legend, and both
+  best-location branches of the geo appendix print the fused place.
+- **Web UI.** The Browse and Residency panes are rendered by `wasm-ui`, which
+  `src/web/js` calls. Browse reads `place_label.text` in a second pass, so
+  `Entity`'s raw `kind` shape is untouched. The Residency map link zooms to
+  the label's grain. The served bundle, `wasm-ui/pkg`, carries it since
+  06fc31f5 regenerated it with the pinned toolchain (wasm-bindgen 0.2.127,
+  binaryen 108); before that commit the web panes rendered as before.
+
+**REQ-GEOLABEL-003 — deterministic, offline.** A label is a pure function of
+the stored records and compiled-in tables. Selections use total orders:
+provider rank, then the bucketed offset, then the summary, then every part of
+the answer itself (so two differing answers one leg gave for one point, stored
+on two `Address` entities, are not picked by the order the store returned
+them in); feature names by source then name. The JSON numbers are integers: the radius is rounded up to
+one significant figure and the offset to a bucket. The bearing comes from an
+integer sector, and `-0` never appears. No renderer is given an HTTP client.
+
+**REQ-GEOLABEL-004 — a label is never data.** It is not an entity, tag, value
+or evidence record, so it cannot be merged, recalled, counted or pivoted on.
+The CSV importer resolves columns by name and ignores both new ones, and serde
+ignores the JSON field.
+
+**Redaction.** A shareable export runs `redact_entities` first, which cuts a
+coordinate to one decimal, and the label is computed on what is left. The
+quantisation floor then grades the value at ≥ 5.5 km, so its label is a
+locality at best. It names no street, no house number and no mapped feature,
+and the coarsened value no longer keys this scan's reverse observation.
+Out of scope, and noted for a follow-up: `redact_entities` coarsens
+`Coordinates` entities only. The reverse leg's `Address` entity (its value and
+its precise `latitude` / `longitude`) is exported unchanged, as it was before
+this change.
+
+**REQ-GEOLABEL-008 — the reverse legs record what the offset rules need.**
+`geocode::build_reverse_entity` now records `matched_lat` / `matched_lon`
+from `jsonv2`'s `lat`/`lon` (string or number) and `place_rank`.
+`photon::build_reverse` records the feature's GeoJSON point. Both record
+`house_number` and `road` separately; for `geocode` this happens in
+`fold_address_attrs`, so its forward records carry them too. None of these
+keys had a reader before, so nothing else moves.
+
+### Deliberate test updates
+
+- `gexf_golden_output_is_byte_stable` declares attribute 9 and adds an empty
+  attvalue 9 per node. The schema addition is appended, so no existing id
+  moves.
+- `entities_to_csv_assembles_header_and_escaped_rows` expects the header to
+  end `,place_label,place_grain` and a non-coordinate row to end `,,`.
+  `entities_to_csv` takes the scan id, and its five callers in tests were
+  updated.
+- `debug_bundle_labels_a_true_au059_synergy_fix_distinctly_from_single_signal`
+  sliced a fixed 300-byte window after the header, which now ends inside a
+  `─` of the following section. It reads the header and fix line by line
+  instead, with the same assertions.
+- The photon `build_reverse` test calls pass the new `matched` argument
+  (`None`).
+- `debug_bundle_is_deterministic` and `export_formats_determinism_audit` are
+  extended, not changed. They add a legacy centroid, a mapped feature, a
+  stored-reverse fix and the fused fix those points produce.
+
+### Locks
+
+- `core::place::tests`:
+  `the_sydney_centroid_is_labelled_the_city_never_the_street_containing_it`;
+  `the_operators_brisbane_example_renders_as_the_city_centroid`;
+  `a_postcode_centroid_names_its_postcode_area`;
+  `a_measured_fix_takes_this_scans_reverse_observation_within_its_error_bar`;
+  `disagreement_splices_and_unrecorded_offsets_coarsen_the_nearest_address`;
+  `only_this_scans_confirmed_observation_of_the_exact_point_is_read`;
+  `a_mapped_feature_labels_itself_as_a_mapped_place`;
+  `a_forward_geocode_labels_itself_at_its_input_grain`;
+  `a_statistical_area_is_read_only_at_the_grain_it_supports`;
+  `redacted_values_never_label_finer_than_a_locality`;
+  `a_fused_fix_is_a_locality_and_says_so`;
+  `the_offline_gazetteer_words_distance_bearing_and_remoteness`;
+  `rounding_and_bearing_tables`;
+  `labels_are_independent_of_record_and_entity_order`;
+  `a_tie_between_two_answers_is_broken_by_the_answer_not_the_order`;
+  `only_real_coordinates_are_labelled`.
+- `app::export::tests`:
+  `json_and_report_carry_the_place_label_on_coordinates_only`;
+  `csv_and_gexf_carry_the_place_label`;
+  `full_dossier_and_debug_bundle_print_place_lines_and_the_fused_place`;
+  `every_best_location_object_carries_a_fused_place_label`;
+  `a_redacted_export_labels_no_finer_than_a_locality` (JSON, CSV place cells,
+  GEXF coordinate nodes and attribute 9);
+  `place_labels_survive_a_store_round_trip_byte_for_byte`; and the two
+  extended determinism tests.
+- `app::import::tests::a_reimported_csv_export_ignores_the_place_columns`;
+  `cli::scan::dossier::tests::a_coordinate_finding_prints_its_place_line`;
+  `a_best_location_estimate_prints_its_fused_place`.
+- `tests/api.rs::entity_listings_and_location_carry_the_place_label`.
+- `modules::geocode::tests::reverse_geocode_records_the_matched_object_rank_and_parts`;
+  `modules::photon::tests::build_reverse_records_the_matched_feature_position_and_parts`.
+- `wasm-ui`: `scan_info::browse::tests::place_line_is_escaped_and_absent_without_a_label`;
+  `scan_info::location::tests::osm_zoom_follows_the_label_grain`.
+
+### Falsified
+
+Each mutation restores a defect or removes the rule under test. The script
+held the original file in memory, restored it after each run, and checked its
+md5 against the original.
+
+| # | mutation | result |
+|---|---|---|
+| P1 | centroid tier disabled (`if false && …stands_for`) | killed by `the_operators_brisbane_example_renders_as_the_city_centroid` |
+| P2 | road offset rule removed (`&& true`) | killed by `a_measured_fix_takes_this_scans_reverse_observation_within_its_error_bar` |
+| P3 | Nominatim `place_rank ≥ 28` house-number rule removed | killed by `a_measured_fix_takes_this_scans_reverse_observation_within_its_error_bar` |
+| P4 | `Evidence::scan_id` filter removed (recalled rows read) | killed by `only_this_scans_confirmed_observation_of_the_exact_point_is_read` |
+| P5 | quarantined (`candidate`) Address read | killed by `only_this_scans_confirmed_observation_of_the_exact_point_is_read` |
+| P6 | suburb disagreement no longer drops the street | killed by `disagreement_splices_and_unrecorded_offsets_coarsen_the_nearest_address` |
+| P7 | merge-splice (`"a; b"`) rejection removed | killed by `disagreement_splices_and_unrecorded_offsets_coarsen_the_nearest_address` |
+| P8 | mapped-feature quantisation guard removed | killed by `redacted_values_never_label_finer_than_a_locality` |
+| P9 | forward-geocode answer not clipped to the fix grain | killed by `a_forward_geocode_labels_itself_at_its_input_grain` |
+| P10 | radius rounded to nearest instead of up | killed by `rounding_and_bearing_tables` |
+| P11 | offset within the fix radius still worded | killed by `the_offline_gazetteer_words_distance_bearing_and_remoteness` |
+| P12 | Vietnam anchor 50 km bound removed | killed by `the_offline_gazetteer_words_distance_bearing_and_remoteness` |
+| P13 | `wikidata` corpus source not a mapped feature | killed by `a_mapped_feature_labels_itself_as_a_mapped_place` |
+| P14 | `augment_entity_json` omits `place_label` | killed by `json_and_report_carry_the_place_label_on_coordinates_only` |
+| P15 | CSV `place_label` cell emptied | killed by `csv_and_gexf_carry_the_place_label` |
+| P16 | GEXF coordinate node label back to the bare value | killed by `csv_and_gexf_carry_the_place_label` |
+| P17 | estimate-ladder fix without `place_label` | killed by `every_best_location_object_carries_a_fused_place_label` |
+| P18 | `geocode` reverse leg does not record `matched_lat` | killed by `reverse_geocode_records_the_matched_object_rank_and_parts` |
+| P19 | `/entities/filter` builds its context from the filtered rows | killed by tests/api.rs `entity_listings_and_location_carry_the_place_label` |
+| P20 | full dossier drops the `place:` line | killed by `full_dossier_and_debug_bundle_print_place_lines_and_the_fused_place` |
+| P21 | content tie-break removed from both the observation sort and the pick | killed by `a_tie_between_two_answers_is_broken_by_the_answer_not_the_order` |
+| P22 | mapped-feature quantisation guard removed (export level) | killed by `a_redacted_export_labels_no_finer_than_a_locality` |
+
+**22 of 22 killed.**
+
+`hse-core` is unchanged. `wasm-ui/src` changed (`scan_info/browse.rs`,
+`scan_info/location.rs`), so `wasm-ui/pkg` must be regenerated by the lead
+with the pinned toolchain.
+
+## REQ-GEOLABEL-009 / REQ-GEOLABEL-010 / REQ-GEOLABEL-011 / REQ-GEOLABEL-012 / REQ-GEOLABEL-013 / REQ-GEOLABEL-014 / REQ-GEOLABEL-015 / REQ-GEOLABEL-016 / REQ-GEOLABEL-017 / REQ-GEOLABEL-018 / REQ-GEO-018 / REQ-GEO-FAMILY-004 / REQ-OPENMETEO-003 — review round 1 on the precision authority and the place label
+
+**Found** by adversarial review of the three commits that built the precision
+authority (REQ-GEOLABEL-001) and the nearest-place label (REQ-GEOLABEL-002).
+Each finding was checked against the branch head before it was fixed. Every
+fix is at the layer that owns the rule, and every one has a regression test
+that fails on the code before it.
+
+**REQ-GEOLABEL-009 — a country-grain signal is the country.** `geo_intel`'s
+phone-prefix pass mints a country centroid (`+64` → `-41.2865,174.7762`,
+Wellington's row; `+61` → the continent's centre) and `email_locale` mints a
+locale centroid (a `.au` domain → Sydney's row). Both sources are
+`GeoSourceClass::Other`, so `assess` graded them at the 30 km unknown default,
+the gazetteer coincidence named the city, and the label read "Wellington
+(city centroid — not a street location)" or "remote NT — nearest centre Alice
+Springs (locality-level fix, ±30 km)" for a signal that names only a country.
+`grain::is_country_signal` now gives a country-grain Provider account to any
+record with `method=e164-prefix` and to every `email_locale` record. The tags
+those modules stamp (`phone-prefix`, `cctld-inferred`, `locale-inferred`,
+`COUNTRY_SIGNAL_TAGS`) are a country floor, so a copy that lost its
+attributes is still read correctly. Both yield to a fine measurement on the
+same value, like every other non-measured account. The label then comes from
+the offline tier at country grain: "New Zealand (country-level fix, ±300 km)".
+(Narrowed by REQ-GEOLABEL-019: the signal yields to ANY other record that
+explains the value, not only a fine measurement. REQ-GEOLABEL-020 removed the
+300 km disc: the label now reads "New Zealand (country-level signal — no
+position within the country)".)
+
+**REQ-GEOLABEL-010 — one street recogniser, in every form the jurisdictions
+write.** `place_naming` knew only English street types that FOLLOW a name.
+So a Nominatim house hit for "12 Đường Láng, Hà Nội", "123 Nguyễn Huệ, Quận 1"
+or "12 Oak Grove, Toowong" was capped at locality, stamped `coarse` and
+`fix-grain:locality`, withheld from every pivot, and labelled at locality. The
+Vietnamese composer in the label could never be reached from a forward
+geocode. `util::place_grain` now reads a street per comma segment in four
+ways:
+- a trailing type, with the list extended by Grove/Gr, Rise, Mews, Walk,
+  Loop, Link, Parkway/Pkwy, Promenade, Row, Circle/Cir, Trail/Trl, Plaza,
+  Alley, Track, Freeway/Fwy, Motorway and Av;
+- a leading type (`LEADING_STREET_TYPES`): the Vietnamese Đường, Phố, Ngõ,
+  Ngách, Hẻm, Kiệt and Đại lộ, where only a number BEFORE the type is a house
+  number, and the Romance rue, calle, via, avenida, rua and carrer, where the
+  number may come either side;
+- a fused type (`COMPOUND_STREET_SUFFIXES`: -straße, -strasse, -straat,
+  -gasse, and "…str.");
+- on the first segment of a multi-segment string, a 1–3 digit house number
+  followed by a name, which is the Vietnamese form with no type word.
+
+The Vietnamese types are matched with their diacritics, never folded, because
+"Đường" (street) and "Dương" (a common surname) fold to the same `duong`. A
+leading type must start the street line, so "Brisbane via Toowoomba" is a
+route. A four-digit number is a postcode, not a house ("4066 Toowong"). The
+list stays a deliberate superset of `address_au`'s extraction pattern: that
+pattern mints addresses out of prose and needs to be narrow, while this one
+reads a string already known to be a place.
+
+**REQ-GEO-018 / REQ-GEO-FAMILY-004 — an address resolves on its locality.**
+`city_coords` matched a tabulated name anywhere in the string, so "45 Sydney
+Road, Brunswick VIC" resolved to the Sydney centroid about 700 km away,
+"Hobart Rd, Kings Meadows TAS" to Hobart and "120 Geelong Rd, Footscray" to
+Geelong. The reviewer found this through `geo_family`'s postcode-less
+fallback, which anchored the subject there. The root is the lookup itself,
+which every register, directory and WHOIS leg calls with a full address, so
+the fix is there. `city_coords_with_grain` matches the tabulated names against
+`place_grain::locality_part` of the address: the same recogniser drops the
+street, keeping only the words that follow a trailing type in its own
+segment ("45 Sydney Road Brunswick" gives "Brunswick"). The postcode fallback
+still reads the whole string. A registry test holds that no `CITIES` row or
+AU anchor is itself read as a street, so no locality name can be dropped.
+
+**REQ-GEOLABEL-011 — a positive radius never shows as zero.**
+`radius_display_m` rounded the final value to the nearest metre, so the
+operator's seed typed to six decimals, good to about 0.06 m, showed "±0 m" and
+`fix_radius_m: 0`. The whole-metre step now rounds up.
+
+**REQ-GEOLABEL-012 — a cut value is not a table row.** The 4-decimal gazetteer
+coincidence ran on redacted one-decimal values. Nineteen REGIONS rows and the
+Footscray anchor are aligned to one decimal, so a redacted Parramatta geocode
+(`-33.8,151.0`) became "Postcode 21xx region" at ±100 km, and a redacted
+inner-west Melbourne point became "Footscray (city centroid)". The coincidence
+is now skipped when the value has fewer printed decimals than the table key
+(`cut_below_table_key`). It tests printed width, not significant digits: a
+normalised `-33.800000,151.000000` that a module really minted still is the
+row. (REQ-GEOLABEL-021: the width is read from `raw_value` too, because
+`Entity::new` hides a cut value's width there.)
+
+**REQ-GEOLABEL-013 — equal redactions grade alike.** `quantisation_radius_m`
+stripped trailing zeros, so the redactor's `-28.0,153.0` counted 0 decimals
+(±55.7 km, region) while `-27.9,153.0` counted 1 (±5.6 km, locality). A
+component printed with exactly one decimal now counts one decimal: only a
+one-decimal formatter prints that shape. Zeros of a wider component are still
+stripped, because the 6-decimal normalisation pad cannot be told from a real
+zero.
+
+**REQ-GEOLABEL-014 — a CSV round trip never sharpens a point.** The CSV keeps
+each record's `[source] summary` but not its attributes. So a re-imported
+beaconDB fix at `accuracy_m=1500` (suburb, ±2 km) was graded by the Wi-Fi
+class default (75 m), a forward geocode capped at a city-only input came back
+as a 40 m rooftop, and the reverse legs lost the parts T1 reads. The CSV
+appends a `fix_radius_m` column: the `assess` radius rounded up to a whole
+metre (`place::fix_radius_ceil_m`). It is not the display rounding, which
+keeps a rung floor such as `5000.000…1` on "5 km" and would re-import a
+locality as a suburb. The importer writes it as a `fix-radius:<m>m` tag
+(`grain::FIX_RADIUS_TAG_PREFIX`), and `assess` reads that tag as a radius
+floor that raises the radius and leaves the basis alone. A re-import can lose
+precision it cannot reconstruct, but it never gains any. This column is the
+fix's grade, not a label, so REQ-GEOLABEL-004 (a label is never data) still
+holds.
+
+**REQ-GEOLABEL-015 — a recalled observation re-made live is this scan's.**
+With `feature.recall` on, the prior scan's reverse-geocode Address arrives
+first. The new scan's live leg re-observes the same point with an identical
+`(source, summary)`, and `merge_evidence_attrs` kept the first copy's
+`scan_id`. So `PlaceContext::for_scan` skipped the new scan's own
+observation as another scan's, and the label depended on recall history.
+`hse_core::merge_evidence_attrs` now takes the owning entity's `scan_id`. When
+the two copies name different scans and either names the owner, the owner
+wins, whichever copy arrives first. A pair naming neither keeps the existing
+id, as before. Only `core::place::label` reads `Evidence::scan_id`, so no
+other reader changes. The shared store row keeps its first scan as owner,
+exactly as before, and a scan's own copy takes the scan's id.
+
+**REQ-GEOLABEL-016 — one point, one grain stamp.** The store's merge unions
+tags, so a point checkpointed at `fix-grain:locality` and re-stamped
+`fix-grain:region` in memory was written back with both, in the shared row and
+in the scan's copy. A recovered scan showed one. `grain::collapse_fix_grain_tags`
+keeps the coarsest stamp, and `merge_and_persist_entity` calls it after both
+merges. The seed-round and per-round `address_to_coords_pass` merges in
+`engine::mod` now re-run `enrich_geospatial` on the merged point, as the
+dispatch merge does.
+
+**REQ-GEOLABEL-017 — a single signal is not fused.** `describe_fused` always
+wrote "(fused fix ±N)" with basis `fused`, including under the estimate
+ladder's single-signal rung. The debug bundle printed it under "BEST AU
+LOCATION FIX (single-signal)", the CLI dossier under "— single-signal fix",
+and `/location` beside `source: single-signal`. `describe_fused` now takes a
+`FixKind` (Synergy, Corroboration or SingleSignal). A single-signal fix reads
+"(single-signal fix ±N)" with basis `single_signal` and keeps the locality
+cap. `FixKind::of_estimate_basis` is the one reading of a ladder estimate, and
+the JSON `source`, the dossier's basis line and the label all use it.
+
+**REQ-OPENMETEO-003 — the queried place, written another way.** The
+REQ-OPENMETEO-002 check compared the hit's English name with the query token
+by token. Queried live on 2026-09-23, "Ho Chi Minh, Vietnam" returns "Ho Chi
+Minh City", so Vietnam's largest city lost its Open-Meteo coordinate. (The
+API returns nothing at all for "Hà Nội, Việt Nam", "Hai Phong" or "Mt Isa".
+The reviewer's Hanoi/Mt Isa scenarios therefore cannot occur through this
+module, but the rule now covers them anyway.) The check is now
+`place_grain::is_name_of_queried_place`, and the forward-geocode fragment
+check in `grain` reads the same predicate. The name's words, joined without
+spaces, must equal a joined run of the query's words, with Mt/St/Pt/Ft read
+as full words and a trailing "City" dropped from the name. The "City" is kept
+when the rest names a state or a country, so "Kansas City" is not "Kansas" and
+"Mexico City" is not "Mexico". "Sydney Heads" is still not "Sydney".
+
+**REQ-GEOLABEL-018 — the architecture guard names only real dependencies.**
+The allowlist entry for `util::city_coords::is_gazetteer_centroid` said the
+enrichment and pivot gate used it. Since the precision authority, they read
+`core::place::assess`, and core used the predicate only in tests. The entry is
+gone, the predicate is removed, its tests use `tabulated_centroid_at`, and the
+`tabulated_centroid_at` entry now says it is the one centroid authority those
+paths reach through `assess`. `the_gazetteer_predicate_is_the_lookup` became
+`the_curated_au_anchors_are_centroids`, which keeps its Lismore anchor
+assertion.
+
+**Not fixed here: `wasm-ui/pkg`.** The reviewer is right that the committed
+bundle predates 043bceff's `wasm-ui/src` changes, so the served web panes do
+not yet show the label. Under this round's rules only the lead regenerates
+`wasm-ui/pkg`, with the pinned toolchain. The CHANGELOG, the ROADMAP and
+REQ-GEOLABEL-002 above now say that the panes wait on that regeneration.
+`hse-core` changed in this round (REQ-GEOLABEL-015), and `wasm-ui` depends on
+it, so it needs the same regeneration. `wasm-ui/src` is untouched. (Since
+done: 06fc31f5 regenerated `wasm-ui/pkg` with the pinned toolchain, and the
+served panes show the label — see the final-review correction round 1
+section.)
+
+### Deliberate test updates
+
+- `csv_and_gexf_carry_the_place_label`, `entities_to_csv_assembles_header_and_escaped_rows`:
+  the header ends `,fix_radius_m`, and a non-coordinate row ends with three
+  empty cells.
+- `full_dossier_and_debug_bundle_print_place_lines_and_the_fused_place` and
+  tests/api.rs `entity_listings_and_location_carry_the_place_label`: their
+  fixture's best-location fix is a single-signal rung, and each asserted
+  "(fused fix ±". That assertion was the REQ-GEOLABEL-017 defect, so both now
+  assert "(single-signal fix ±", and the api test also asserts the
+  `single-signal` source. `debug_bundle_is_deterministic` accepts either kind.
+- `a_best_location_estimate_prints_its_fused_place` and the place tests pass a
+  `FixKind`.
+- `util::place_grain::whole_word_phrase_matching` became
+  `a_matched_name_must_be_the_queried_place`, with the same cases against the
+  new predicate.
+- `util::city_coords` tests use `tabulated_centroid_at(..).is_some()` in place
+  of the removed predicate.
+
+### Locks
+
+- `core::place::tests`: `a_country_signal_is_labelled_the_country_never_a_city`;
+  `a_sub_metre_radius_shows_as_one_metre_never_zero`;
+  `a_redacted_value_is_not_the_table_row_it_lands_on`;
+  `redactions_of_equal_precision_grade_alike`;
+  `a_recalled_observation_re_made_live_is_this_scans`;
+  `a_point_keeps_one_grain_stamp_the_coarsest`.
+- `util::place_grain::city_grain_tests::place_naming_reads_streets_in_every_form_the_jurisdictions_write`;
+  `the_locality_part_drops_the_street_and_keeps_the_place`;
+  `a_matched_name_must_be_the_queried_place`.
+- `util::city_coords::tests::a_place_named_in_the_street_is_not_the_address_locality`;
+  `no_tabulated_locality_name_reads_as_a_street`.
+- `core::geo_family::tests::a_place_named_in_the_street_never_anchors_the_subject`.
+- `core::engine::enrich::tests::admission_stamps_coarse_and_the_fix_grain_on_positive_evidence_only`
+  (VN, Grove and Circle house hits).
+- `modules::open_meteo_geo::tests::a_name_written_another_way_is_still_the_queried_place`.
+- `app::import::tests::a_reimported_coordinate_is_never_finer_than_its_export`.
+- `storage::tests::a_stored_point_keeps_one_grain_stamp_the_coarsest`.
+- `app::export::tests::every_best_location_object_carries_a_fused_place_label`
+  (single-signal case); `cli::scan::dossier::tests::a_best_location_estimate_prints_its_fused_place`.
+- `hse-core` `tests::a_merged_record_names_the_owning_scan_when_either_copy_does`.
+
+### Falsified
+
+Each mutation restores a defect, or removes the rule under test. A script
+held the fixed file in memory, ran the named tests, restored the file, and
+checked its md5 against the original. After the whole run, every changed
+file's md5 was checked against a snapshot taken before it.
+
+| # | mutation | result |
+|---|---|---|
+| R1 | `is_country_signal` record rule disabled | killed by `a_country_signal_is_labelled_the_country_never_a_city` |
+| R2 | country-signal tag floor disabled | killed by `a_country_signal_is_labelled_the_country_never_a_city` |
+| R3 | leading street types disabled | killed by `place_naming_reads_streets_in_every_form_the_jurisdictions_write` |
+| R4 | first-line "number + name" rule disabled | killed by `place_naming_reads_streets_in_every_form_the_jurisdictions_write` and `admission_stamps_coarse_and_the_fix_grain_on_positive_evidence_only` |
+| R5 | `grove` dropped from the trailing types | killed by `place_naming_reads_streets_in_every_form_the_jurisdictions_write`. On the first run it survived, because the only Grove case, "12 Oak Grove, Toowong", is also a first-line "number + name" street. The unnumbered "Oak Grove, Toowong QLD" and the single-segment "12 Oak Grove Toowong" were added, and the rerun killed it |
+| R6 | `city_coords` matches the whole address again | killed by `a_place_named_in_the_street_is_not_the_address_locality` and `a_place_named_in_the_street_never_anchors_the_subject` |
+| R7 | display radius rounded to the nearest metre | killed by `a_sub_metre_radius_shows_as_one_metre_never_zero` |
+| R8 | `cut_below_table_key` gate removed | killed by `a_redacted_value_is_not_the_table_row_it_lands_on` |
+| R9 | one printed decimal stripped again | killed by `redactions_of_equal_precision_grade_alike` |
+| R10 | name compared word by word, not joined | killed by `a_name_written_another_way_is_still_the_queried_place` |
+| R11 | trailing "City" not dropped | killed by `a_name_written_another_way_is_still_the_queried_place` |
+| R12 | importer does not write the `fix-radius:` tag | killed by `a_reimported_coordinate_is_never_finer_than_its_export` |
+| R13 | `assess` ignores the `fix-radius:` tag | killed by `a_reimported_coordinate_is_never_finer_than_its_export` |
+| R14 | `hse_core` owner-scan preference removed | killed by `a_recalled_observation_re_made_live_is_this_scans` |
+| R15 | shared-row grain collapse removed | killed by `a_stored_point_keeps_one_grain_stamp_the_coarsest` |
+| R16 | scan-copy grain collapse removed | killed by `a_stored_point_keeps_one_grain_stamp_the_coarsest` |
+| R17 | single-signal label worded "fused" again | killed by `a_best_location_estimate_prints_its_fused_place` and `every_best_location_object_carries_a_fused_place_label` |
+| R18 | collapse keeps the finest stamp | killed by `a_point_keeps_one_grain_stamp_the_coarsest` |
+
+**18 of 18 killed.** One change has no regression test: the seed-round and
+per-round `enrich_geospatial` re-run after the two `address_to_coords_pass`
+merges in `engine::mod`. Those merges happen inside a scan's run and cannot be reached
+from a unit test. The store-side collapse (R15/R16) is the rule that decides
+what a stored point carries, so an in-memory stale stamp cannot reach an
+export either way. The allowlist cleanup (REQ-GEOLABEL-018) is not
+behavioural; `tests/architecture.rs` passes without the removed entry.
+`hse-core` changed (REQ-GEOLABEL-015), so `wasm-ui/pkg` must be regenerated
+by the lead. `wasm-ui/src` is unchanged.
+
+## REQ-GEOLABEL-019 / REQ-GEOLABEL-020 / REQ-GEOLABEL-021 / REQ-GEOLABEL-022 / REQ-GEOLABEL-023 / REQ-GEO-019 — review round 2 on the precision authority and the place label
+
+**Found** by adversarial review of 7f0828de (review round 1). Eleven findings
+were raised. Each was checked against the branch head, and all eleven were
+real. Four of them are one defect reported from different angles
+(REQ-GEOLABEL-021), and two are another (REQ-GEOLABEL-019). Every fix is at
+the layer that owns the rule, and every one has a regression test that fails
+on the code before it.
+
+**REQ-GEOLABEL-019 — a country signal never erases a finding of its
+stand-in city.** REQ-GEOLABEL-009 gave `email_locale`'s and `geo_intel`'s
+country points a country-grain account (300 km) and a country floor from
+their tags. Their points are stand-ins on real city rows: `.au` / `en-au` is
+Sydney's `-33.8688,151.2093` and `+64` is Wellington's `-41.2865,174.7762`.
+Those are exactly the values `city_coords` gives for a Sydney ABN or ASIC
+address, or for a `+64 4` landline's area code. The two entities have the
+same uid and merge, `assess` keeps the coarsest account, and the tag floor
+applied unless a fine measurement was present. So a register-confirmed
+Sydney address read "Australia (country-level fix, ±300 km)", its CSV
+`fix_radius_m` read 300000, and the correlator weighed it at 300 km. The
+reviewers' Wellington example goes through `phone_area_geo`, whose own
+account is 100 km (region grain), so that point never read "Wellington (city
+centroid)". But its grade did change from region to country, and a
+Wellington register address takes the same path at city grain.
+
+The rule is now in `assess`, step 2. A country signal (the record rule, or
+the `COUNTRY_SIGNAL_TAGS` floor) is read only when no other account explains
+the value, meaning every other account is a country signal or an
+unclassified record. An unclassified record explains nothing, and a CSV
+round trip turns a country signal's own `geo_intel` record into one when it
+strips `method`. Otherwise the signal is set aside like an annotator. When
+the signal does decide the grade, the gazetteer coincidence is skipped too,
+because the row it lands on is its stand-in and nobody reported that place.
+
+That alone was not enough. The engine stamps `fix-grain:<grain>` on
+admission, and `assess` reads that stamp back as a floor that only ever
+coarsens. A `.au` point admitted FIRST was therefore stamped
+`fix-grain:country`, and the Sydney address that merged onto it later was
+pinned at country grain by the stamp. `enrich_geospatial` now writes no
+grain stamp for a country-signal grade (`FixBasis::CountrySignal`, new). The
+signal's own records and tags already carry that grade wherever the point
+goes, and unlike a stamp they yield. `coarse` is still stamped.
+
+**REQ-GEOLABEL-020 — a country signal claims no disc.** The country account
+used the geocoder table's 300 km "country" radius around a stand-in point.
+A `.au` email at Sydney ±300 km put Melbourne (~710 km), Brisbane (~730 km)
+and Perth (~3,300 km) outside the circle its label stated. `+64` at
+Wellington ±300 km did the same to Auckland (~490 km), and `+61` at the
+continent's centre did it to every capital. The radius is now
+`COUNTRY_SIGNAL_RADIUS_M = f64::INFINITY`, and every surface renders it as
+no radius:
+- the label reads "Australia (country-level signal — no position within the
+  country)", with no `±`;
+- `PlaceLabel::to_json` writes `"fix_radius_m": null`, never `0`;
+- `detail()` reads "fix=country, no radius";
+- `fix_radius_ceil_m` returns `None`, so the CSV cell is empty. The importer
+  still reads the point as the country, because the row keeps its tags.
+
+The correlator never weighs such a point, because `geo_intel` and
+`email_locale` are not anchoring sources, and under REQ-GEOLABEL-019 an
+anchoring record on the same value sets the signal aside. (Review round 3
+showed this did not hold: a record from an anchoring source can be no
+account of the point at all, such as a legacy `wigle` density row, and it
+set nothing aside while passing the person-anchor gate. REQ-GEOLABEL-026
+makes it hold.) A geocoder's
+declared `country` hit keeps the table's 300 km. That is a different fact
+(the geocoder matched a country's polygon), and the finding did not cover
+it.
+
+**REQ-GEOLABEL-021 — a normalised redaction keeps its printed width.**
+`Entity::new` normalises every `Coordinates` value to six decimals and keeps
+what it was given only in `raw_value`. HSE's CSV importer builds each row
+that way, so a redacted `-33.8,151.0` came back as value
+`-33.800000,151.000000` with raw value `-33.8,151.0`. This broke two rules:
+- `cut_below_table_key` read `value` alone. The re-imported Parramatta point
+  became the REGIONS row "21" again ("New South Wales (region-level fix)",
+  `coarse`, withheld from pivots), and a redacted inner-west Melbourne fix
+  became "Footscray (city centroid)". This is REQ-GEOLABEL-012's defect on
+  the import surface.
+- `quantisation_radius_m` took `min(value, raw_value)`. The normalisation's
+  zeros strip to nothing, so `-28.0,153.0` graded 0 decimals (±55.7 km,
+  region) while `-27.9,153.2` graded 1 (±5.6 km, locality). This is
+  REQ-GEOLABEL-013's parity split, back again.
+
+Both now read the PRINTED form (`grain::printed_form`): `raw_value` when it
+is a coordinate pair, else `value`. The cut gate fires when either `value` or
+the printed form is cut. The redactor rewrites both fields in place, so
+`value` stays checked. The decimal count is capped by the value's own
+printed width, so a raw value printed wider than the six decimals kept can
+never grade the point finer than the value it is. Only `email_locale`
+prints a coordinate with Rust's `{}` (and so may print fewer than four
+decimals), and a country signal's point never takes a coincidence anyway.
+
+**REQ-GEOLABEL-022 — an unnumbered street naming is held to the street it
+names.** REQ-GEOLABEL-010 widened the street vocabulary. "Grove" ends real
+localities (Kelvin Grove and Ferny Grove QLD, Golden Grove SA, Elk Grove),
+"Kiệt" is a common Vietnamese given name, and "Phố" begins town names (Phố
+Châu, Phố Lu). So "Kelvin Grove, QLD" became the street "Kelvin Grove", and
+the cap on a geocode of it rose from region to street. A Photon or Nominatim
+hit on "Kelvin Grove Road" then graded Street. The fragment rule could not
+catch this. It fired only when the input named no street, and in that case
+the cap is the administrative grain anyway, so the rule was a no-op.
+
+It now fires for any input that names no NUMBERED street. The hit's names
+are read from the road it lies on (`road`, Nominatim) or its own name
+(`place_name`, Photon and Open-Meteo), and one of them must be the queried
+place (`is_name_of_queried_place`). If none is, only the input's
+administrative grain stands. So "Kelvin Grove Road" for "Kelvin Grove, QLD"
+and "Nguyễn Trãi" for "Kiệt Nguyễn, Hà Nội" are fragments. "Oak Grove" for
+"Oak Grove, Toowong" and "Đường Láng" for "Đường Láng, Hà Nội" still keep
+the street cap. To make "Smith Street" count as the "Smith St" asked about,
+`is_name_of_queried_place` reads street-type spellings as one word
+(`PLACE_WORD_FORMS`, which replaces `PLACE_WORD_ABBREVIATIONS`). "st" shares
+one group with "saint" and "street", and a test holds that every
+street-type spelling there is in `STREET_TYPES`. A numbered street is
+specific enough to stand on its own, so it is not held to the hit's road
+name.
+
+**REQ-GEO-019 — a typed street line keeps its suburb.** In the first
+segment of a multi-segment string, the "number + name" street-line rule
+claimed the whole segment (`rest_from = words.len()`). For equal grains,
+`found` keeps the larger `rest_from`, so the rule replaced a trailing type's
+match. As a result `locality_part("12 Smith St Toowong, QLD")` was "QLD", and
+`city_coords` found no locality for a tabulated suburb. The rule is now a
+fallback that applies only when no type word placed the street.
+
+**REQ-GEOLABEL-023 — a lone corroboration is not fused.**
+`au_location_corroboration` returns a point for a single signal too
+(`signal_count: 1`), but the export always labelled it with
+`FixKind::Corroboration`. So the corroboration object attached to a
+single-signal fix read "(fused fix ±8 km)" beside its own count of one.
+`FixKind::of_corroboration(signal_count)` now chooses Corroboration for two
+or more signals and SingleSignal otherwise.
+
+**Wording corrected.** The CHANGELOG entry for REQ-GEOLABEL-016 and that
+section's closing note said "finalise-side" merges. The two
+`address_to_coords_pass` merges that re-run the enrichment are the
+seed-round and per-round ones in `engine::mod`, as the REQ-GEOLABEL-016
+paragraph itself says. Both texts now say so. The REQ-GEOLABEL-009 and
+REQ-GEOLABEL-012 paragraphs and CHANGELOG entries now point to the rules
+that narrowed them. (The 7f0828de commit message cannot be changed, because
+history is not rewritten.)
+
+### Deliberate test updates
+
+- `core::place::tests::assert_honest`: a point with no radius must show
+  `fix_radius_m: null`. Every other point still shows an integer no smaller
+  than its radius.
+
+### Locks
+
+- `core::place::tests`: `a_country_signal_never_erases_a_city_finding_on_its_stand_in`;
+  `a_country_signal_claims_no_disc`; `a_normalised_redaction_keeps_its_printed_width`;
+  `an_unnumbered_street_naming_is_held_to_the_street_it_names`.
+- `core::engine::enrich::tests::a_country_signal_admitted_first_never_pins_a_later_city_finding`.
+- `app::import::tests::a_redacted_export_re_imports_at_its_exported_grade`;
+  `a_country_signal_re_imports_as_the_country_with_no_radius`.
+- `util::place_grain::city_grain_tests::a_typed_street_line_keeps_the_suburb_after_its_type`;
+  `a_street_named_either_way_is_the_queried_street`.
+- `util::city_coords::tests::a_place_named_in_the_street_is_not_the_address_locality`
+  (extended with "12 Smith St Toowong, QLD").
+- `app::export::tests::every_best_location_object_carries_a_fused_place_label`
+  (extended to the single-signal fix's corroboration object).
+- `util::place_grain::city_grain_tests::a_street_named_either_way_is_the_queried_street`
+  also checks every `PLACE_WORD_FORMS` group in both directions.
+
+### Falsified
+
+Each mutation restores a defect, or removes the rule under test. A script
+applied each one to the fixed file in memory, ran the named tests, restored
+the file, and checked its md5 against a snapshot taken before the run. After
+the whole run, every touched file's md5 matched again.
+
+| # | mutation | result |
+|---|---|---|
+| M1 | a country signal never yields to another account | killed by `a_country_signal_never_erases_a_city_finding_on_its_stand_in` |
+| M2 | country tag floor gated only by a fine measurement (the round-1 rule) | killed by `a_country_signal_never_erases_a_city_finding_on_its_stand_in` |
+| M3 | enrichment stamps `fix-grain:` on a country-signal grade | killed by `a_country_signal_admitted_first_never_pins_a_later_city_finding` |
+| M4 | country-signal radius back to 300 km | killed by `a_country_signal_claims_no_disc` and `a_country_signal_re_imports_as_the_country_with_no_radius` |
+| M5 | country label keeps "±" | killed by `a_country_signal_claims_no_disc` |
+| M6 | JSON `fix_radius_m` is `0` for no radius | killed by `a_country_signal_claims_no_disc` |
+| M7 | CSV `fix_radius_m` written for no radius | killed by `a_country_signal_claims_no_disc` and `a_country_signal_re_imports_as_the_country_with_no_radius` |
+| M8 | cut gate reads `value` only | killed by `a_normalised_redaction_keeps_its_printed_width` and `a_redacted_export_re_imports_at_its_exported_grade` |
+| M9 | quantisation takes `min(value, raw_value)` again | killed by `a_normalised_redaction_keeps_its_printed_width` and `a_redacted_export_re_imports_at_its_exported_grade` |
+| M10 | raw decimals not capped by the value's width | killed by `a_normalised_redaction_keeps_its_printed_width` |
+| M11 | fragment rule only for an input naming no street | killed by `an_unnumbered_street_naming_is_held_to_the_street_it_names` |
+| M12 | "rd" dropped from the "road" spelling group | killed by `a_street_named_either_way_is_the_queried_street`. It survived the first run, because no test compared "Rd" with "Road". The both-directions check over every group was added, and the rerun killed it |
+| M12b | "street" dropped from the "st" group | killed by `a_street_named_either_way_is_the_queried_street` and `an_unnumbered_street_naming_is_held_to_the_street_it_names` |
+| M13 | street-line rule overrides a typed street | killed by `a_typed_street_line_keeps_the_suburb_after_its_type` and `a_place_named_in_the_street_is_not_the_address_locality` |
+| M14 | corroboration always labelled fused | killed by `every_best_location_object_carries_a_fused_place_label` |
+| M15 | `detail()` prints a radius for no radius | killed by `a_country_signal_claims_no_disc` |
+| M16 | gazetteer coincidence taken on a country signal's point | killed by `a_country_signal_never_erases_a_city_finding_on_its_stand_in` |
+| M17 | fragment rule ignores Nominatim's `road` | killed by `an_unnumbered_street_naming_is_held_to_the_street_it_names` |
+
+**18 of 18 killed** (M12 on the second run). `hse-core` and `wasm-ui/src`
+are unchanged in this round, so this round adds nothing to regenerate in
+`wasm-ui/pkg`. REQ-GEOLABEL-015 still needs that regeneration, and it
+remains the lead's step.
+
+## REQ-GEOLABEL-024 / REQ-GEOLABEL-025 / REQ-GEOLABEL-026 / REQ-GEOLABEL-027 / REQ-GEOLABEL-028 — review round 3 on country signals
+
+**Found** by adversarial review of c3818c45 (review round 2). Seven findings
+were raised. Each was checked against the branch head, and all seven were
+real. Two of them are one defect (REQ-GEOLABEL-024), and one is a stale
+contract text (hse-core's `COARSE` doc). One worked example does not reach
+its defect: the `breach_timezone` path of REQ-GEOLABEL-026. That defect is
+real on another path, which its test uses. Every fix is at the layer that owns
+the rule, and every behavioural fix has a regression test that fails on the
+code before it.
+
+**REQ-GEOLABEL-024 — an unclassified city finding is not erased by a
+country signal.** REQ-GEOLABEL-019 set a country signal aside only when
+another account "explained" the value, and it counted every
+`FixBasis::Unknown` account (every `GeoSourceClass::Other` source) as
+explaining nothing. It also skipped the gazetteer coincidence whenever the
+signal was read. Most `city_coords` callers are unclassified:
+`profile_kit::location_coordinates` (gitlab_user, stackoverflow_user,
+codeberg_user, gitea_user, steam_profile, dockerhub_user, devto,
+codewars_user), numverify, asic_persons, whois, employer_pivot, gravatar,
+mastodon_user and urlscan. So a GitLab profile's "Sydney", a NumVerify
+line's "Wellington, New Zealand" or an ASIC register's Sydney address, each
+on the exact row the `.au` or `+64` stand-in sits on, merged with the signal
+and read "Australia" or "New Zealand (country-level signal)". Each read as
+its city alone. The round-2 test used only classified sources.
+
+The rule now asks whether a record is the SIGNAL, not whether its source is
+classified. Every account explains the value (`Account::explains`), except
+a country signal and the signal's own attribute-less CSV copy
+(`is_stripped_country_signal`: a record from `email_locale` or `geo_intel`
+with no attributes, the shape the CSV importer rebuilds, in which
+`geo_intel`'s `method` is lost). A live record of either module always
+carries attributes, so `geo_intel`'s IP geolocation is not mistaken for
+the stripped copy. Nothing lands on a city's row to six decimals except by
+looking that city up, and the gazetteer coincidence (no longer skipped,
+because the signal is set aside) names the city.
+
+**REQ-GEOLABEL-025 — a country signal is named in its own words.** The
+label named a country-signal point by its stored `country_code`, else the
+country box its stand-in falls in. Several signals name more than one
+country. `geo_intel` maps every NANP `+1` number, Canada included, to
+("United States/Canada", "US", US centroid), so a Toronto `+1 416` number
+read "United States (country-level signal …)". `+7` named only "Russia",
+though Kazakhstan shares it. `email_locale`'s name patterns name regions
+("Eastern Europe (Ukraine/Russia/Serbia)", "Iberia/Latin America",
+"Scandinavia (Sweden/Iceland)") at single capitals, so the labels read
+"Russia (approx.)", "Portugal (approx.)" and "Sweden (approx.)".
+
+`grain::country_signal_place` now reads the signal records' own `country`,
+else `region`. Several names on one stand-in are all given, sorted and
+joined with "or". `email_locale` writes `country` on its ccTLD record and
+`region` on its name-pattern record. `geo_intel` names `+7`
+"Russia/Kazakhstan", matching `phone_intl`'s "Russia / Kazakhstan". The
+reader goes over every signal record, not only the originating ones:
+`email_locale` is a derivation module, so `is_annotator_row` skips its
+records, but its record is still the one that says which place it meant.
+Only a signal whose records name nothing (a CSV copy) falls back to the
+stored country or the box. Not taken: the reviewers' alternative of not
+grading name-pattern locales as a country. Ungraded, the Moscow or Lisbon
+stand-in would take its gazetteer coincidence and read as that city, which
+is finer and worse. The `country:US` / `country:RU` tag `geo_intel` writes
+for `+1` / `+7` is unchanged, because the finding did not cover it.
+
+**REQ-GEOLABEL-026 — a country signal never reaches the correlator as a
+position.** A country-graded point has radius `COUNTRY_SIGNAL_RADIUS_M =
+inf`. When an anchoring record on it explained nothing, the point passed the
+person-anchor gate and `best_precision_radius_m` returned
+`Some(max(class, inf)) = Some(inf)`. The best-location rung 2 then set
+`radius_km = inf`. report.json and the JSON export wrote `"radius_km": null`
+and `place_label: null`, the debug bundle's `unwrap_or(0.0)` printed
+"± 0.0 km" (a claim of exact precision), and the CLI dossier printed
+"± inf km". The reviewers' path does not reach this.
+`breach_timezone` is listed in `ANCHORING_GEO_SOURCES`, but it is an
+`ENRICHMENT_ONLY_SOURCES` derivation. `corroborating_sources` drops it, and
+its record is an engine-side row (`is_annotator_row`), so a `.au` point
+carrying it is still gated out as having no anchoring source, and
+`best_precision_radius_m` returns `None`. A test keeps this as a control.
+The defect is real on another path: an anchoring source whose record is
+no account of the point. A legacy `wigle` density row, written before the
+annotation flag existed, is recognised by its shape as an annotation, so it
+sets nothing aside. It still names `wigle`, an anchoring source, so the
+country-graded point passed the gate with an infinite radius.
+
+Three changes:
+- `correlator::is_infrastructure_geo` now also excludes a `Coordinates`
+  that `grain::claims_no_position` grades a country signal. A stand-in is no
+  vertex of a footprint, no weight in a median and no best-location fix.
+  This check is on the entity only, like the radar-sentinel check, because
+  the grade needs the records and the string reader
+  (`is_infrastructure_geo_signals`) does not hold them. `claims_no_position`
+  runs `assess` only when a record or tag could make the point a signal.
+- `best_precision_radius_m` is always finite. It returns `None` for a point
+  graded with no radius.
+- `place::fix_radius_km_text` is the one formatter the debug bundle and the
+  CLI dossier use. It prints "± N.N km", or "(no radius)" for a null or
+  non-finite radius, never "± 0.0 km" or "± inf km".
+
+**REQ-GEOLABEL-027 — a city address merges onto a country signal's
+stand-in.** `address_to_coords_pass` skipped any Address whose centroid uid
+was already in the map. Seed `x@firm.com.au` and "10 Smith St, Sydney NSW
+2000". `email_locale` puts the `.au` point on Sydney's row in the seed round.
+The pass then found that uid present and yielded nothing, so the
+`existing.merge(derived)` branch that REQ-GEOLABEL-019's fix relied on was
+never reached, and the point kept reading "Australia". The round-2 engine
+test passed only because it built a map holding the Address alone and
+merged by hand. The pass now skips an existing point unless
+`assess(existing)` is a country signal. In that case it emits the centroid,
+and both scan-loop callers merge it and re-run the enrichment. Once merged,
+the point is the city's, so a later round skips it as before, and no point
+is re-emitted every round. The third caller, `engine::enrich_offline_geo`
+(the `hse import` and web-upload path), appended new uids only. It now merges
+an emitted centroid onto the existing point and re-enriches it.
+
+**REQ-GEOLABEL-028 — a carried grade is an explanation.** HSE's CSV keeps
+records' sources and summaries, not their attributes. A point a scan read as
+Sydney (an unclassified module's Address centroid merged with a `.au`
+point) came back with that record bare: it lost `addr_entity_uid`, and the
+signal was read again. A `geo_intel` IP geolocation on a `+64` stand-in came
+back as a record identical to the prefix record's stripped copy. The
+signal's infinite floor then beat the row's own `fix-grain:locality` stamp
+and its `fix-radius:` tag, and it also skipped the coincidence. The
+re-import read "Australia" or "New Zealand", and its `fix_radius_m` exported
+empty. REQ-GEOLABEL-024 closes the first case, because a bare unclassified
+record now explains. For the second, `assess` counts any `fix-grain:` stamp
+or finite `fix-radius:` tag as an explanation. Neither is ever written for
+a country signal: `enrich_geospatial` does not stamp a `CountrySignal`
+grade, and `fix_radius_ceil_m` writes no cell for one. So either tag means
+the exporting scan read the point as something finer.
+
+**Wording corrected.**
+- hse-core's `tags::COARSE` doc said every area point gets a `fix-grain:`
+  stamp beside `coarse`. A country signal gets `coarse` but no stamp, and
+  its grade is carried by its records and tags. The doc says so now.
+- The REQ-GEOLABEL-005 CHANGELOG entry makes the same claim. It now says
+  "unless it is a country signal".
+- The REQ-GEOLABEL-020 paragraph above said the correlator never weighs a
+  country signal. It now notes that this did not hold until
+  REQ-GEOLABEL-024 and REQ-GEOLABEL-026.
+- (The c3818c45 commit message cannot be changed, because history is not
+  rewritten.)
+
+**Observed, not changed.** `breach_timezone` mints its UTC-offset zone
+("Australia Eastern (Sydney/Melbourne)") through `city_coords` onto
+Sydney's row. Its record is an engine-side row, so ALONE the point has no
+account, and the gazetteer coincidence grades it as the Sydney city
+centroid (±30 km). That is a zone read as a city. It is independent of the
+country-signal rules (merged with a `.au` point it reads as the country,
+since neither record explains the value), and it is left for a separate
+change.
+
+### Deliberate test updates
+
+- `core::place::tests::a_country_signal_never_erases_a_city_finding_on_its_stand_in`:
+  the control that an unclassified record (`some_new_module`) leaves the
+  signal standing is inverted by REQ-GEOLABEL-024. The control now uses the
+  signal's own stripped copies (`geo_intel` and `email_locale` records with
+  no attributes), which still leave it standing.
+- `core::engine::enrich::tests::a_country_signal_admitted_first_never_pins_a_later_city_finding`:
+  the pass now runs over a map that already holds the signal point, as the
+  scan's map does. It asserts that the centroid is emitted, merges it
+  exactly as the callers do, and asserts that a later pass skips the merged
+  point.
+
+### Locks
+
+- `core::place::tests`: `an_unclassified_city_finding_is_never_erased_by_a_country_signal`;
+  `a_country_signal_is_named_in_its_own_words`;
+  `a_country_signal_is_never_a_best_location_candidate`.
+- `core::engine::tests::enrich_offline_geo_merges_a_city_address_onto_a_country_signal`.
+- `core::engine::enrich::tests::a_country_signal_admitted_first_never_pins_a_later_city_finding`
+  (rewritten, above).
+- `app::import::tests::a_city_read_under_a_country_signal_re_imports_as_the_city`.
+- `modules::email_locale::tests::every_coordinate_is_labelled_with_the_place_its_signal_names`.
+- `modules::geo_intel::tests::a_shared_prefix_is_labelled_with_every_country_it_names`.
+
+### Falsified
+
+Each mutation restores a defect or removes the rule under test. A script
+applied each one to the fixed file, ran the named tests, restored the file,
+and checked its md5 against a snapshot taken before the run. After the whole
+run, every touched file's md5 matched again.
+
+| # | mutation | result |
+|---|---|---|
+| M1 | unclassified accounts explain nothing (the round-2 rule) | killed by `an_unclassified_city_finding_is_never_erased_by_a_country_signal` and `a_city_read_under_a_country_signal_re_imports_as_the_city` |
+| M2 | a signal's stripped CSV copy explains the value | killed by `a_country_signal_never_erases_a_city_finding_on_its_stand_in` and `a_country_signal_is_labelled_the_country_never_a_city` |
+| M3 | a carried `fix-grain:` / `fix-radius:` grade is no explanation | killed by `a_city_read_under_a_country_signal_re_imports_as_the_city` |
+| M4 | `country_signal_place` never names anything | killed by `a_country_signal_is_named_in_its_own_words`, `every_coordinate_is_labelled_with_the_place_its_signal_names` and `a_shared_prefix_is_labelled_with_every_country_it_names` |
+| M5 | `email_locale`'s name-pattern record carries no `region` | killed by `every_coordinate_is_labelled_with_the_place_its_signal_names` |
+| M6 | `email_locale`'s ccTLD record carries no `country` | killed by `every_coordinate_is_labelled_with_the_place_its_signal_names` |
+| M7 | `+7` named "Russia" only | killed by `a_shared_prefix_is_labelled_with_every_country_it_names` |
+| M8 | signal names read from originating rows only (skips `email_locale`) | killed by `every_coordinate_is_labelled_with_the_place_its_signal_names` |
+| M9 | signal names left unsorted | killed by `a_country_signal_is_named_in_its_own_words` |
+| M10 | address pass skips every existing uid | killed by `a_country_signal_admitted_first_never_pins_a_later_city_finding` and `enrich_offline_geo_merges_a_city_address_onto_a_country_signal` |
+| M11 | import path appends new uids only | killed by `enrich_offline_geo_merges_a_city_address_onto_a_country_signal` |
+| M12 | person-anchor gate admits a country signal | killed by `a_country_signal_is_never_a_best_location_candidate` |
+| M13 | fusion radius may be infinite | killed by `a_country_signal_is_never_a_best_location_candidate` |
+| M14 | radius formatter prints a missing radius as "± 0.0 km" | killed by `a_country_signal_is_never_a_best_location_candidate` |
+| M15 | label names the stand-in's country, not the signal's place | killed by `a_country_signal_is_named_in_its_own_words`, `every_coordinate_is_labelled_with_the_place_its_signal_names` and `a_shared_prefix_is_labelled_with_every_country_it_names` |
+
+**15 of 15 killed.** Two changes have no regression test of their own. The
+first is the two call sites that now use `fix_radius_km_text` (the debug
+bundle's best-fix lines and the CLI dossier's `print_geo`). The formatter is
+tested (M14), and after M12/M13 the correlator hands those sites no
+non-finite radius. The second is the documentation corrections. `hse-core`
+changed (a doc comment on `tags::COARSE` only), so `wasm-ui/pkg` is left for
+the lead to regenerate. `wasm-ui/src` is unchanged.
 ## REQ-CERTINTEL-002 — a certificate's issuer organisation and subject were read from the wrong field
 
 **Found** as a residual REQ-RESILIENCE-003 recorded against itself: the crate
@@ -20892,3 +23685,1319 @@ runs it, which also catches a guard dropped before the engine starts.
 `core::cancel::tests::a_guards_scan_id_is_registered_for_as_long_as_it_can_be_read`
 pins the accessor the structure depends on: it returns the registered key,
 and the key stays registered while the guard lives.
+
+## REQ-GEOLABEL-029 / REQ-GEOLABEL-030 / REQ-SCANSTATUS-006 / REQ-SCANSTATUS-007 — final review, correction round 1
+
+**Found** by the final review of PR #649, which raised six findings. Each
+was checked against the branch head (06fc31f5), and all six were real: four
+behaviour defects and two documentation defects. Each behaviour fix is made
+where its rule lives and has a regression test that fails on the code
+before it. Each fix was then undone in place, the test was seen to fail, and
+the file was restored byte-identically (table below).
+
+**REQ-GEOLABEL-029 — a cell tower's MCC centroid is a country signal.**
+With no OpenCelliD key, `cell_intel` places each tower at the centroid of
+the country its Mobile Country Code names. MCC 530's point,
+`-41.2865,174.7762`, is exactly Wellington's `CITIES` row, and MCC 505's is
+the continent's centre. Those are the stand-ins `+64` and `+61` use.
+`is_country_signal` did not know the record. `cell_intel` is `Measures` in
+`COORDINATE_TARGET_MODULES`, so the record graded as a 30 km MEASURED fix
+that explained the value. The gazetteer coincidence then named the city, so
+every NZ tower read "Wellington (city centroid — not a street location)"
+and every AU tower read "remote NT — nearest centre Alice Springs". A `+64`
+point merged onto it read as Wellington city too. `claims_no_position` was
+false, so the point stayed a person-anchor candidate.
+
+The record now names itself as a country signal. The minting moved into
+`cell_intel::mcc_centroid_point`, which writes three things:
+`source=mcc-centroid` (`MCC_CENTROID_METHOD`), read by `is_country_signal`; the
+`MCC_INFERRED_TAG` (`mcc-inferred`), added to `COUNTRY_SIGNAL_TAGS` so a
+CSV copy still reads as the country; and `cell_intel`, added to
+`COUNTRY_SIGNAL_SOURCES` so an attribute-less copy explains nothing.
+`cell_intel` records no other `Coordinates` under its own name: a tower
+OpenCelliD locates is recorded under `opencellid`. The record also carries
+the country in words (`country`, which `country_signal_place` names) and its
+ISO code (`country_code`), as `geo_intel`'s prefix record does. It no longer
+carries an `au-state:` tag. The MCC names no state, and the NT tag that MCC
+505's point earned described the stand-in, not the tower.
+
+**REQ-GEOLABEL-030 — a coarse fix is never named after a capital's
+suburb.** The T4 offline gazetteer named a point after its nearest AU anchor
+and stamped the label with locality grain, whatever the anchor was. The
+anchors include metro suburbs. A redacted `-37.8,144.9` sits exactly on the
+Footscray anchor, and it read "Footscray, VIC (locality-level fix, ±6 km)",
+which names the very suburb the redaction withheld. An unclassified ±30 km
+point by the Bondi anchor read "Bondi, NSW". `util::geo` now lists the
+anchors that are a capital's suburb (`AU_METRO_SUBURB_ANCHORS`). These are
+the metro-block anchors that lie within the 30 km locality radius of their
+capital's anchor. Anchors 30 km or more out, each a city in its own right,
+are not listed: Penrith, Blacktown, Campbelltown, Frankston, Ipswich,
+Rockingham and Mandurah. For a fix coarser than a suburb, `offline_phrase`
+asks `nearest_au_town`, which skips the listed suburbs. A suburb-grade fix
+still gets the suburb. `tests/architecture.rs` allow-lists
+`nearest_au_town` beside `nearest_au_locality`, since both are pure scans of
+the same compiled-in table. `describe_fused` always passes locality grain or
+coarser, so a fused label never names a suburb either. That matches its doc,
+which says a fused label is never finer than a locality.
+
+**REQ-SCANSTATUS-006 — an import stays in flight while its blocking work
+runs.** The web upload's registry guard and semaphore permit lived in the
+handler's future. The import itself runs under `spawn_blocking`, which keeps
+going after that future is dropped, and hyper drops an in-flight handler
+when its client goes away. The guard then left the registry mid-import, with
+three effects. The `Running` row read as interrupted. `DELETE` passed its
+in-flight check and cascaded, and the import's `finish` then brought the row
+back as `Complete` with its entities gone. `POST /scans/{id}/cancel`
+answered 404. Now both the guard and the permit are moved into the blocking
+closure. The permit comes from `acquire_owned`. Both are declared before the
+row, so they drop after its terminal write, or after the `Failed` write that
+the row's Drop makes on an early exit.
+
+**REQ-SCANSTATUS-007 — a lost Failed row is not announced.** The commit
+step's comment said no completion was announced for a row that never became
+terminal. That held only on the strict path. On the best-effort path, the
+Failed record of a scan whose every entity write failed, a failed
+`upsert_scan` was logged and returned `Ok`, and `scan_complete` was still
+broadcast for a row reading `running`. The commit now reports whether it
+wrote the row, and the completion is broadcast only when it did. The event
+stays in the durable log.
+
+**Documentation.** Row S1 of the REQ-SCANSTATUS-003 mutation table named two
+tests that be1ff546 had renamed. It now names
+`a_complete_scan_with_a_finalise_shortfall_is_a_partial_export` and
+`every_export_header_brands_a_finalise_shortfall_partial`. The CHANGELOG,
+the ROADMAP and REQ-GEOLABEL-002 said the served `wasm-ui/pkg` would show the
+place label only once it was regenerated. 06fc31f5 did regenerate it with
+the pinned toolchain (wasm-bindgen 0.2.127, binaryen 108), and the served
+`.wasm` contains the Browse tooltip text and `label_grain`. All three now
+say so. The round-2 "Not fixed here" note is kept as history, with a pointer
+to this section.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `is_country_signal` without the `cell_intel` clause, `COUNTRY_SIGNAL_TAGS` without `mcc-inferred`, `COUNTRY_SIGNAL_SOURCES` without `cell_intel` | killed by `core::place::tests::a_cell_tower_mcc_centroid_is_the_country_never_its_stand_in_city` (530 graded `Centroid`, "Wellington") |
+| M1a | only `cell_intel` dropped from `COUNTRY_SIGNAL_SOURCES` | killed by the same test (the attribute-less copy graded `Centroid`) |
+| M1b | only `mcc-inferred` dropped from `COUNTRY_SIGNAL_TAGS` | killed by the same test (the same line) |
+| M2 | `offline_phrase` asks `nearest_au_locality` at every grain | killed by `a_coarse_fix_is_never_named_after_a_capital_suburb` and `a_redacted_value_is_not_the_table_row_it_lands_on` ("Footscray, VIC (locality-level fix, ±6 km)") |
+| M3 | the registry guard and the permit held in the handler, as before | killed by `api::scan_handlers::tests::an_import_whose_client_went_away_stays_in_flight_until_it_commits` ("the import is still in flight: []") |
+| M3a | only the permit held in the handler | killed by the same test ("the import still holds its permit": 8 vs 7) |
+| M4 | the completion broadcast whether or not the row was written | killed by `core::engine::tests::a_failed_scan_whose_row_was_not_written_is_not_announced` (1 announcement, not 0) |
+
+**7 of 7 caught.** `util::geo::tests::suburb_anchors_belong_to_their_capital_and_are_skipped_for_towns`
+keeps the suburb list honest. Every listed suburb is an anchor, in its
+capital's state, within 30 km of its capital's anchor, and never itself a
+capital. Blacktown, at 30.009 km, was dropped from the draft list by this
+test. `cell_intel::tests::the_mcc_fallback_point_is_a_country_signal` pins
+the record's shape. The import test holds the import inside its entity
+write through `RefusingStore::pausing_entity_batch`, drops the request
+future, and checks the registry, the row and the permit. The engine test
+uses `RefusingStore::refusing_terminal_scan_writes` and has a control run
+in which the Failed row is written and announced once.
+
+## REQ-GEOLABEL-031 / REQ-GEOLABEL-032 / REQ-GEOLABEL-033 / REQ-SCANSTATUS-008 / REQ-SCANSTATUS-009 — final review, correction round 2
+
+**Found** by the second correction round of the final review of PR #649,
+which raised eight findings against 01172758. Each was checked against that
+head, and all eight were real. Two pairs describe one defect each (the
+best-location `locality`, and the web upload's missing enrichment), so there
+are five behaviour defects and one documentation defect. Each behaviour fix
+is made where its rule lives and has a regression test that fails on the code
+before it. Each fix was then undone in place, the test was seen to fail, and
+the file was restored byte-identically (table below).
+
+**REQ-GEOLABEL-031 — every name for a fix is chosen at the fix's grain.**
+REQ-GEOLABEL-030 changed only `core::place::label::offline_phrase`. The
+best-location estimate's `locality` (`best_au_location_estimate`, every
+rung) and the corroboration's (`au_location_corroboration`) still asked
+`util::geo::nearest_au_locality`, whatever the fix's radius. The CLI dossier
+prints that value as ", near {locality}" on the headline line above the
+`place:` line, and report.json and `/location` write it as `locality` beside
+`place_label`. A person-anchored coordinate stored redacted as `-37.8,144.9`
+wins rung 2 at ±5.6 km (the quantisation floor), so the dossier read "near
+Footscray" above "place: … Melbourne, VIC", and report.json carried
+`"locality":"Footscray"` beside a label naming Melbourne. The choice now has
+one authority, `core::place::nearest_au_anchor(lat, lon, grain)`: a grain
+coarser than a suburb asks `nearest_au_town`, anything finer
+`nearest_au_locality`. `offline_phrase` calls it with the label's grain. A
+best-location fix's name goes through `core::place::fused_au_locality`,
+which calls it at `fused_name_grain(radius_km)`, the grain `describe_fused`
+also names at: the radius's grade, never finer than a locality. The
+correlator's `au_locality_name` reads `fused_au_locality` for every rung
+and for the corroboration, so a fix's `locality` is the anchor its
+`place_label` names, and one fix has one name. A fix good to metres on the
+Footscray anchor now reads "Melbourne" in both places, as its label already
+did. The postcode rungs' 8 km radius is named once
+(`POSTCODE_RUNG_RADIUS_KM`), so the rung and its locality cannot disagree.
+The correlator narratives that name each stored coordinate's nearest anchor
+with its distance (AU-057, AU-099, the device profile, the state-consensus
+note) are outside this rule. They word a coordinate, not a best-location
+fix, and print the distance beside the name.
+
+**REQ-GEOLABEL-032 — every MCC stand-in lies in its own country.**
+`cell_intel`'s MCC table gave MCC 216 (Hungary) the coordinates
+`41.0082,28.9784`, which is Istanbul, and MCC 219 (Croatia)
+`44.0165,21.0059`, which is central Serbia. REQ-GEOLABEL-029 made the record
+name its country in words, so a device camped on a Hungarian network read
+"Hungary" while its pin, geohash and timezone put it in Turkey. The rows now
+read `47.1625,19.5033` and `45.1000,15.2000`. The `match` is now a table,
+`MCC_CENTROIDS`, so a test can visit every row. The oracle is containment in
+the named country's OWN offline box (`util::geohash::country::country_box`,
+test-only), not `reverse_country_iso`. That function answers the first
+matching box, so it reads right points in shadowed boxes as the neighbour:
+Belgium as France, Portugal as Spain, Ukraine as Russia, and ten more. The
+three MCC countries the offline table does not box (HR, IR, TZ) get a box in
+the test, so a new row with no box fails until it is given one.
+
+**REQ-GEOLABEL-033 — the web upload prepares its entities as `hse import`
+does.** `persist_entities_as_scan` (the CLI's `hse import`, `ingest` and
+`investigate`) ran `engine::enrich_offline_geo` and the strongest-first
+ranking before storing. The web upload (`api::scan_handlers::core::scan_import`)
+stored the parsed set as it was. So the same file imported through the two
+surfaces was stored as two different scans. The web upload got no Address
+parsing, no geohash, country or timezone tags, no admission grain stamps,
+no Coordinates derived from addresses, and none of REQ-GEOLABEL-027's
+city-onto-country-signal merge, and its relations, correlations, place
+labels, CSV `fix_radius_m`/`place_grain` columns and GEXF labels all
+differed. The REQ-GEOLABEL-027 entry and `enrich_offline_geo`'s doc already
+named the web upload as a caller. Both paths now call one function,
+`app::persist::prepare_import_batch`, which runs the enrichment and then the
+ranking. The web upload runs it inside its blocking closure, before the row's
+first write, and counts the batch afterwards, because derived Coordinates are
+appended. Those two entries are now accurate as written.
+
+**REQ-SCANSTATUS-008 — a failed scan is announced `failed` even when its
+row was lost.** REQ-SCANSTATUS-007 withheld the `ScanComplete` broadcast
+when the best-effort Failed row could not be written, and broadcast nothing
+in its place. Two subscribers read the event only for its `status`:
+`hse live`, which prints "scan failed" from it, and the web scan log, whose
+`onTerminal` sets the failed pill and closes the stream. With the broadcast
+withheld, `hse live` printed nothing for that iteration. The log's pill stayed
+"live" until the SSE idle timeout. The reconnect then found the `Running`
+start row and answered 200, so the pill cycled indefinitely. This happened in
+exactly the case, a store refusing writes, where the operator most needs
+telling. The event's `status: failed` is true whether or not the row landed,
+so the Failed branch broadcasts it again. The strict path is unchanged: a
+commit that fails outright returns before the broadcast. The radar was the
+subscriber REQ-SCANSTATUS-007 protected, but it re-reads only the sweep's
+readings, which a refusing store never held. It now takes the sweep's outcome
+from the event and says "sweep failed" for one that failed. REQ-SCANSTATUS-007
+is superseded, and its CHANGELOG bullet is withdrawn.
+
+**REQ-SCANSTATUS-009 — an import row claims only the entities it stored.**
+Both import paths set `scan.entity_count` to the parsed count before
+`ImportScanRow::begin`. So the `Running` row claimed every entity before any
+was stored. A batch the store refused (one transaction, rolled back whole)
+left a `Failed` row claiming them all while `entities_for_scan` returned
+none, and `/stats` summed them into `total_entities`. The live engine's
+Failed branch zeroes the count for this reason. `begin` now writes the count
+as 0. The batch goes through `ImportScanRow::store_entities`, which records
+the count only once the batch is stored, for the terminal write (`finish`, or
+Drop's `Failed`). A failure after the batch committed still reports the
+stored entities.
+
+**Documentation.** The ROADMAP's layer headers kept the branch's counts
+through the merge of origin/main (8f55cc1c). They now read `src/util/` (217
+files) and `src/core/` (213 files), which `find … -name '*.rs' | wc -l`
+confirms.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `au_locality_name` asks `nearest_au_locality` at every radius | killed by `core::correlator::rules::location::tests::a_best_locations_locality_names_what_its_place_label_names` (`Some("Footscray")` for the ±5.6 km fix) |
+| M1a | `fused_au_locality` grades the radius without `describe_fused`'s locality floor | killed by the same test (`Some("Footscray")` for the metre-grade fix whose label names Melbourne) |
+| M2 | MCC 216 back on Istanbul's row | killed by `modules::cell_intel::tests::every_mcc_stand_in_lies_in_its_own_country` ("MCC [\"216\"] (41.0082,28.9784) is not in HU") |
+| M2a | MCC 219 back on central Serbia's row | killed by the same test ("MCC [\"219\"] (44.0165,21.0059) is not in HR") |
+| M3 | the web upload stores its entities without `prepare_import_batch` | killed by `api::scan_handlers::tests::scan_import_enriches_like_the_cli_import` (the stored set lacks what the enrichment adds) |
+| M4 | `store_entities` records the count before the batch | killed by `app::persist::tests::an_import_row_claims_only_the_entities_it_stored` and `api::scan_handlers::tests::a_web_import_whose_entities_were_refused_claims_none` (a `Failed` row claiming every parsed entity) |
+| M5 | `begin` keeps the caller's count | killed by `an_import_row_claims_only_the_entities_it_stored` (the `Running` row claims 7) |
+| M6 | the engine's commit step as at 01172758 (Failed broadcast withheld when its row was lost) | killed by `core::engine::tests::a_failed_scan_whose_row_was_not_written_is_still_announced_failed` (`[]`, not `[Failed]`) |
+
+**8 of 8 caught.** The engine test replaces REQ-SCANSTATUS-007's
+`a_failed_scan_whose_row_was_not_written_is_not_announced`, which pinned the
+withdrawn behaviour. Its control run still checks that a written Failed row
+is announced exactly once.
+
+## REQ-SEARCH-ADDR-004 / REQ-GEOLABEL-034 / REQ-GEOLABEL-035 / REQ-GEOLABEL-036 / REQ-SCANSTATUS-010 / REQ-SCANSTATUS-011 / REQ-SCANSTATUS-012 — final review, correction round 3
+
+**Found** by the third correction round of the final review of PR #649,
+which raised eight findings against 4ca197dd. Each was checked against that
+head, and all eight were real. Two of them (the `fused_au_locality` grain,
+raised under the accuracy and the integration lens) are one defect, so there
+are seven. Each fix is made where its rule lives and has a regression test
+that fails on the code before it. Each fix was then undone in place, the test
+was seen to fail, and the file was restored byte-identically (table below).
+
+**REQ-SEARCH-ADDR-004 — a relative located in a place does not locate the
+subject.** REQ-SEARCH-ADDR-003 let `surname_bearer_locality` recover the
+place from `"<Given> <Surname> in <Place>"`, but the function received only
+the surname. A people-search snippet that names "Ian Thorpe" passes the
+per-result gate and can still list his relatives: `"Ian Thorpe, age 45 -
+relatives, Carol Thorpe in Mosman, NSW"` yields the comma-path segment
+`"Carol Thorpe in Mosman, NSW"`, which became the Address "Mosman, NSW" on
+Ian's scan. That was then forward-geocoded and could anchor AU-059 or the
+best location. REQ-SEARCH-ADDR-002 had dropped the whole segment. The
+function now takes the subject's full name and reads the surname through
+`person_surname` itself. The `in` branch recovers the place only when the
+name ending at the surname (`bearer_name`: the run of capitalised,
+non-possessive name words directly before it) names the subject by the
+identity gate's own reading, `text_names_person`. So "Carol Thorpe in
+Mosman", "Ian Thorpe's sister Carol Thorpe in Mosman", "Ian and Carol
+Thorpe in Mosman" and "Mr Thorpe in Mosman" return `None`, and "Contact Ian
+Thorpe in Mosman", "I. Thorpe in Mosman" and "Ian James Thorpe in Mosman"
+(for that subject) return "Mosman, NSW". A mononym subject keeps every
+address, as before. The caller in `search_engines::build` passes the target
+value.
+
+**REQ-GEOLABEL-034 — a best-location fix coarser than a locality names no
+town.** REQ-GEOLABEL-031 made `fused_au_locality` pick its anchor with the
+label's grain, but it returned the nearest town at every radius, while
+`offline_phrase` names the state at Region grain, the country at Country
+grain, and "remote … — nearest centre X" beyond `NEAR_CENTRE_KM`. So a Sydney
+landline's rung-6 fix (±650 km) printed "near Sydney" above `place:
+Australia (approx.)`, and a mobile login IP's rung-5 fix (±50 km) printed
+"near Melbourne" above `place: Victoria, Australia`, with report.json and
+`/location` carrying that `locality` beside the label. One rule now decides
+both: `core::place::label::au_named_anchor(lat, lon, grain)` returns the
+anchor a phrase at that grain names, or `None` outside Australia, at Region
+grain or coarser, or beyond `NEAR_CENTRE_KM`. `offline_phrase` words the
+anchor it returns, and `fused_au_locality` reports it. Every rung and the
+corroboration read `fused_au_locality`, so none can name a finer place than
+its label.
+
+**REQ-GEOLABEL-035 — every MCC row names the country the ITU assigns.**
+`MCC_CENTROIDS` mapped `620` to Tanzania. 620 is Ghana and 640 is
+Tanzania, so a Ghanaian network was tagged `country:TZ` and pinned in
+Tanzania, and a Tanzanian one resolved to nothing. The REQ-GEOLABEL-032
+test checks only that a row's point lies in the country its own row names,
+so the wrong row passed. The table now has `620` → Ghana (7.9465, -1.0232)
+and `640` → Tanzania, and a new test pins a sample of the ITU-T E.212
+assignments, including every code easily confused with a neighbour.
+`country_name_for_iso` had no name for HR, IR or TZ, so the MCC 219 record's
+`country` attribute, and its label, read "HR". It now names every ISO a
+country-signal emitter writes: each MCC row's and each dialling-prefix row's
+(Croatia, Ghana, Tanzania, Kazakhstan, Iran and 21 more). The test checks
+every MCC row has a name.
+
+**REQ-GEOLABEL-036 — a CSV copy of a country signal is named by its own
+country tags.** A CSV re-import keeps tags but not attributes, so
+`country_signal_place` found no `country`/`region` words and the label fell
+back to `stored_country` (which reads evidence only) and then the box. The
+box answers the first matching country, so MCC 206 Belgium read "France
+(approx.)", 219 Croatia "Italy (approx.)", 255 Ukraine "Russia (approx.)" and
+268 Portugal "Spain (approx.)", while the point still carried the right
+`country:` tag. `country_signal_place` now falls back to those tags
+(`country_signal_tagged_place`), named in words and joined with "or", before
+any box. The offline enrichment tags the box's own country on a point no
+provider named, which is every `email_locale` point, so a tag the box would
+also have written is not trusted: it is left to the box reading, which marks
+itself "(approx.)". A `.pt` email's copy still reads "Spain (approx.)",
+never a sure "Spain". The `+1` Toronto case needed the emitter too:
+`geo_intel` tagged `+1` only `country:US` and `+7` only `country:RU`.
+`prefix_country_isos` now tags every country a shared prefix covers (`US`
+and `CA`, `RU` and `KZ`), so a `+1` copy reads "Canada or United States". A
+`+1` point stored before this change still carries only `country:US`, which
+the box also answers, so it keeps reading "United States (approx.)".
+
+**REQ-SCANSTATUS-010 — an import over the enrichment cap is stored
+partial.** Both import paths skip relations and correlations over 5,000
+entities, and then wrote the scan `Complete` with `error: None`. The skip
+showed only in the caller's `enriched=false`, so every export of a
+6,000-row breach import read "complete" with CORRELATIONS (0): a correlator
+that never ran, read as one that found nothing. A new
+`FinalisePass::ImportEnrichment` records it. `app::persist::skip_enrichment_over_cap`
+is the one cap check both paths make: `enrich_persisted_batch` (the CLI) and
+`scan_import` (the web upload, which drops its own copy of the constant). It
+records "skipped — N entities exceed the 5000-entity import enrichment cap",
+so the scan's `error` carries it, exports read "partial,
+finalise-incomplete", and the web response answers `partial`.
+
+**REQ-SCANSTATUS-011 — a scan whose start row is refused is announced
+failed.** REQ-SCANSTATUS-008 announces the Failed branch even when its row
+is lost, but a store refusing writes from the start fails the scan at
+`run_with_ledger_inner`'s first `upsert_scan`, before any module runs and
+before the finalise. That `?` returned the error with no `ScanComplete`, so
+the radar kept reading "sweep #N running…" and `hse live` printed nothing.
+The engine now records and broadcasts `ScanComplete { status: Failed,
+entity_count: 0 }` there before returning the error. `RefusingStore` gains
+`refusing_scan_writes`, which refuses the start row too, and the radar's
+comment names both cases. A panic contained by `run_panic_safe` is still not
+announced. That is outside this finding.
+
+**REQ-SCANSTATUS-012 — a cancelled web upload reads as cancelled.** Since
+REQ-SCANSTATUS-005 the web upload can commit `aborted`, answering
+`"status":"aborted"` with `finalise_error: null`. `uploadDossier` checked
+only `finalise_error`, so it showed "Imported N entities." with a success
+toast. It now branches on `r.status === 'aborted'` first and says the import
+was cancelled, its entities kept and its relations and correlations not
+finished, with a warning toast. A route test pins that branch ahead of the
+success toast.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | the `in` branch recovers the place whatever the bearer's given name | killed by `modules::search_engines::helpers::entity::tests::a_relative_located_in_a_place_does_not_locate_the_subject` |
+| M2 | `fused_au_locality` asks `nearest_au_anchor` (as at 4ca197dd) | killed by `core::correlator::rules::location::tests::a_coarse_best_location_names_no_town` (`locality: Some("Sydney")` beside "Australia (approx.)") |
+| M3 | MCC `620` back on Tanzania's row | killed by `modules::cell_intel::tests::every_mcc_row_names_the_country_the_itu_assigns_it` ("MCC 620") |
+| M3a | `country_name_for_iso` without Croatia | killed by the same test ("MCC [\"219\"]: HR has no country name") |
+| M4 | `country_signal_place` never reads the tags | killed by `core::place::tests::a_csv_copy_of_a_country_signal_is_named_by_its_own_country_tags` ("France (approx.)" for MCC 206) |
+| M4a | `prefix_country_isos` tags only the row ISO | killed by `modules::geo_intel::tests::a_shared_prefix_tags_every_country_it_covers` (`["country:US"]` for `+1`) |
+| M5 | `skip_enrichment_over_cap` records nothing | killed by `app::persist::tests::a_batch_over_the_enrichment_cap_is_stored_partial` and `tests/api.rs::dossier_upload_flags_enrichment_skipped_above_the_entity_cap` (`status: complete`) |
+| M6 | the refused start row returns without the announcement | killed by `core::engine::tests::a_scan_whose_start_row_is_refused_is_announced_failed` (`[]`, not `[Failed]`) |
+| M7 | `uploadDossier` as at 4ca197dd | killed by `api::routes::tests::embedded_spa_reports_a_cancelled_upload_as_cancelled` |
+
+**9 of 9 caught.**
+
+## REQ-GEOLABEL-037 / REQ-SCANSTATUS-013 / REQ-SCANSTATUS-014 / REQ-SCANSTATUS-015 / REQ-SCANSTATUS-016 / REQ-SCANSTATUS-017 — final review, correction round 4
+
+**Found** by the fourth correction round of the final review of PR #649,
+which raised eight findings against 9c92f431. Each was checked against that
+head, and all eight were real. Two pairs describe one defect each, raised
+under two lenses: the `provider_geo` reading of a `+1` / `+7` point's tags
+(accuracy and integration) and the CLI import summary's stale count
+(accuracy and integration). That leaves six defects. Each fix is made where
+its rule lives and has a regression test that fails on the code before it.
+Each fix was then undone in place, the test was seen to fail, and the file
+was restored byte-identically (table below).
+
+**REQ-GEOLABEL-037 — a point tagged with several countries carries no
+provider answer.** REQ-GEOLABEL-036 tagged a `+1` point `country:US` and
+`country:CA`, and a `+7` point `country:RU` and `country:KZ`.
+`engine::enrich::provider_geo` read a point's country from a `country:` tag
+that differs from the offline box when no record carried a `country_code`
+attribute, and picked the lowest such tag. A CSV re-import keeps tags but no
+attributes, and `prepare_import_batch` → `enrich_offline_geo` re-enriches
+the copy. So the copy of a `+1` point at the US stand-in (box `US`) got
+`country_provider: CA`, `country_name: Canada` and `country_iso_box: US`,
+and lost its timezone because the box "disagreed". A `+7` copy got
+`country_provider: KZ` ("Kazakhstan"). No provider gave either answer. The
+tag fallback now reads an answer only when the point carries exactly one
+`country:` tag and it differs from the box: a provider's answer that an
+earlier run tagged. A point tagged with several countries names candidates,
+not an answer, so no provider answer is read and the box stays the hint it
+is. The REQ-GEOLABEL-036 test built its CSV copy but never re-enriched it.
+The new test runs the real import step (`enrich_offline_geo`) on the bare
+copy. The `+1` copy now carries no `country_provider` and keeps its `tz:`
+tag, the `+7` copy names no Kazakhstan, and a lone provider tag (photon's
+Canada on a point the US box covers) is still read as the provider's answer.
+
+**REQ-SCANSTATUS-013 — an import's summary counts what it stored and states
+a size skip once.** `prepare_import_batch` appends the Coordinates it
+derives from addresses. The enrichment cap, the stored row and the skip that
+REQ-SCANSTATUS-010 records all count the batch after that step. The CLI
+summaries counted it before. `hse import` printed "Stored: scan … (4990
+entities …)", then the recorded skip "Warning: … 5001 entities exceed the
+5000-entity import enrichment cap", then its own "Note: relations/correlations
+skipped — 4990 entities exceeds the 5000-entity enrichment cap". That is two
+counts for one skip, and the second is false: 4990 does not exceed 5000.
+`hse investigate --auto-scan` and `hse ingest --auto-scan` did the same.
+`PersistedBatch` now carries `entities`, the stored count.
+`PersistedBatch::summary_lines` is the one summary: the stored scan with
+that count, then the recorded shortfall when there is one. All three
+surfaces print it under their own prefixes, and the separate "skipped" note
+is gone, because the recorded skip states it with the right count.
+`investigate --output json` reads the same batch. `ingest`'s
+`run_auto_scan` returns the batch in place of its own count.
+
+**REQ-SCANSTATUS-014 — a strict-path commit the store refuses is announced
+failed.** On the Complete/Aborted path, a refused terminal `upsert_scan`
+returned the error after `scan_complete {status: complete}` was recorded and
+flushed, and before it was broadcast. The row stayed `Running` (and read
+`interrupted` once the web guard dropped) under a durable completion that no
+live subscriber heard. `hse live` printed nothing, the radar stayed on
+"sweep #N running…", and the web scan log's pill stayed "live" and cycled
+through reconnects against the stored `Running` row. That is the gap
+REQ-SCANSTATUS-008 closed for the Failed branch only. The refusal now fails
+the scan the same way the Failed branch does. The engine records a
+`scan_complete {status: failed}` and flushes it. It then writes the row
+`Failed`, best-effort, with the error "the terminal status write failed: …"
+after any recorded shortfall. It broadcasts the failed event and returns the
+refusal. The `complete` event recorded before the commit stays in the
+history, because the event log is append-only and no store method removes a
+single event. The failed event follows it, so the history's last word on
+the scan is `failed`. A store that takes the next write also stores the row
+`Failed`. The event is made durable before the fallback row, so the
+REQ-SCANSTATUS-004 invariant holds: a row reads terminal only once its
+`scan_complete` is durable. `RefusingStore::refusing_scan_writes_in(status)`
+refuses one status only, which stands in for a transient refusal.
+
+**REQ-SCANSTATUS-015 — a completion whose finalise recorded a shortfall is
+announced partial.** A scan whose `FinaliseTally` recorded a shortfall is
+written `Complete` with `error` set, and every export classifies it
+"partial, finalise-incomplete". But `scan_complete` carried only
+`status: complete`, so `hse live` printed "scan complete", the web scan log
+showed a "complete" pill and the radar showed "sweep done". The event now
+carries `finalise_incomplete` (`serde(default)`, omitted when false, so a
+clean completion's wire form and every legacy row are unchanged), set from
+the row's `error`. `EventKind::log_summary` renders it "◐ scan complete but
+PARTIAL — finalise incomplete", `log_level` gives `warn`, and `log_fields`
+adds the flag. `cli::live::render_event`, the scan log's line (`mapEvent`)
+and pill (`onTerminal`, "partial"), and the radar's status line all read it.
+
+**REQ-SCANSTATUS-016 — a scan whose start row is refused is stored failed
+once the store takes a write.** REQ-SCANSTATUS-011 announced the refusal but
+never wrote the row. A web one-shot scan's handler has already written it
+`Pending` (`scan_create` / `scan_rerun`). After a transient refusal, that
+row read `pending` for good: in progress to `/scans` and `/stats`, and
+ignored by the `interrupted` derivation, all under an event that said
+`failed`. The run also returned before the writer flush, so whether the
+event persisted depended on timing. The engine now records the failed event
+and flushes it. It then writes the row `Failed`, best-effort, with the error
+"the scan-start write failed: …" and `finished_at`, as
+`force_fail_panicked_scan` does for a panic. Then it broadcasts and returns
+the error. A store refusing every write still stores nothing, and the
+REQ-SCANSTATUS-011 test still passes.
+
+**REQ-SCANSTATUS-017 — an import skipped for size is not told to re-run.**
+`Scan::completeness_caveat` ended every finalise shortfall with "re-run the
+scan to rebuild it". For an import over the enrichment cap, a re-run cannot
+rebuild it. `/scans/{id}/rerun` starts a live network scan of the import's
+label, such as an email string read as a full name, which neither enriches
+the stored entities nor lifts the cap, and re-importing the same data hits
+the same cap. The skip clause now has one writer,
+`FinaliseTally::import_enrichment_skipped` (which `skip_enrichment_over_cap`
+calls), and one reader, `FinaliseTally::records_import_enrichment_skip`. The
+caveat reads the clause and names the remedy that works: import the data in
+smaller batches, each within the cap. Every other shortfall keeps the
+re-run advice, and a failed correlation pass is not mistaken for the
+import's pass.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `provider_geo`'s tag fallback reads the lowest non-box tag (as at 9c92f431) | killed by `core::engine::tests::a_csv_copy_of_a_multi_country_signal_claims_no_provider_country` (`country_provider: "CA"`) |
+| M2 | `summary_lines` also prints the size-skip note when `!enriched` | killed by `app::persist::tests::an_import_summary_counts_the_batch_it_stored_and_states_a_skip_once` (the cap stated twice) |
+| M2a | `import_summary_lines` appends the "Note: … skipped" line (as at 9c92f431) | killed by `app::import::tests::an_import_summary_states_a_size_skip_once` |
+| M3 | a refused strict commit returns the error at once (as at 9c92f431) | killed by `core::engine::tests::a_scan_whose_terminal_write_is_refused_is_announced_failed` (`heard: []`) |
+| M4 | a refused start row writes no Failed row (as at 9c92f431) | killed by `core::engine::tests::a_scan_whose_start_row_is_refused_is_stored_failed` (`status: Pending`) |
+| M5 | the engine sets `finalise_incomplete: false` | killed by `core::engine::tests::a_complete_scan_with_a_finalise_shortfall_is_announced_partial` |
+| M5a | `log_summary` without the partial arm | killed by `core::event::tests::a_scan_complete_with_a_finalise_shortfall_reads_partial` |
+| M5b | `render_event` without the partial arm | killed by `cli::live::tests::render_event_scan_complete_reflects_terminal_status` |
+| M5c | `log.js` `onTerminal` as at 9c92f431 | killed by `api::routes::tests::embedded_spa_reads_a_finalise_incomplete_completion_as_partial` |
+| M6 | `completeness_caveat` without the import-skip remedy | killed by `core::scan::tests::an_import_skipped_for_size_is_not_told_to_re_run` |
+
+**10 of 10 caught.**
+
+## REQ-SCANSTATUS-018 / REQ-SCANSTATUS-019 / REQ-SCANSTATUS-020 — final review, correction round 5
+
+**Found** by the fifth correction round of the final review of PR #649,
+which raised nine findings against 11fb8fbc. Each was checked against that
+head, and all nine were real. Findings 1 and 8 describe one defect (the
+webhook), and findings 4 and 7 describe another (the `scan_import`
+comments). Findings 2 and 9 are wording errors in round 4's CHANGELOG
+entries, and finding 3 is a wording error in round 4's caveat. That leaves
+five code defects and three corrected texts. Each code fix is made where its
+rule lives and has a regression test that fails on the code before it.
+Each fix was then undone in place, the test was seen to fail, and the file
+was restored byte-identically (table below).
+
+**One way to fail a scan.** The failure paths had each grown their own copy
+of "record `scan_complete {failed}`, flush, write the row `Failed`,
+broadcast": the refused start row (REQ-SCANSTATUS-016), the refused strict
+commit (REQ-SCANSTATUS-014), and a partial copy in
+`force_fail_panicked_scan` that wrote the row only. They now all call
+`ScanEngine::conclude_failed`. It records the failed event and flushes the
+writer, so the event is durable before the row may read terminal. It then
+writes the row `Failed` (best-effort, logged), broadcasts the event, and
+posts the webhook. The fixes below are what that one path does and the
+copies did not.
+
+**REQ-SCANSTATUS-018 — the webhook hears every outcome.** The webhook block
+said it "Fires for every terminal state (complete / aborted / failed)". But
+the refused-commit and refused-start paths returned `Err` before reaching
+it, so with `HUNTSMAN_WEBHOOK_URL` set, a scan that `hse live`, the radar
+and the web scan log all heard as `failed` posted nothing. A completion
+whose `FinaliseTally` recorded a shortfall was posted as
+`"status":"complete"` with no partial flag, although every export reads it
+"partial, finalise-incomplete" and REQ-SCANSTATUS-015 announces it partial.
+The POST is now `ScanEngine::notify_completion_webhook`. The normal commit
+path and `conclude_failed` both call it, so every terminal path posts.
+`WebhookPayload` gains `finalise_incomplete`, which is always sent. It is
+read from `Scan::finalise_incomplete`: `Complete` or `Aborted` with `error`
+set. The same method now sets the `scan_complete` event's flag, so the
+event and the webhook cannot disagree.
+
+**REQ-SCANSTATUS-019 — a finalise that panics is failed and announced.**
+Only the correlator runs under `guarded_correlation_pass`. A panic in any
+other pass of the finalise's `spawn_blocking` closure (the cross-scan route
+pass, the relation derivation, the corroboration promotion) reached the
+engine as a `JoinError`. `.map_err(Error::Other)??` turned it into a plain
+error, which skipped the commit and the broadcast. `run_panic_safe`'s
+`catch_unwind` never saw it, so `force_fail_panicked_scan` never ran. The
+row stayed at the `Running` start row and no `scan_complete` was recorded.
+The web scan log stayed "live", the radar showed "sweep #N running…", and
+`hse live` printed nothing. The engine now joins the phase and, on a panic
+(or an `Err`), concludes the scan it held before the phase through
+`conclude_failed`, with the fixed reason "the finalise panicked". A panic
+payload can carry run-specific detail, the reason
+`guarded_correlation_pass` records a panic the same way. The commit's own
+`spawn_blocking` is joined the same way (`blocking_failure`), and a panic
+there is a refused commit. `force_fail_panicked_scan` wrote the row only,
+so a scan that panicked on its own task was never announced either. It now
+concludes through `conclude_failed`, reading the payload before any await
+(it is `Send`, not `Sync`). The `run_panic_safe` doc no longer claims to
+cover panics that never unwind to it.
+
+**REQ-SCANSTATUS-020 — no shortfall on an import is sent to a re-run.**
+REQ-SCANSTATUS-017 changed the remedy only when the error held the size-skip
+clause. An import whose store refused 2 of 40 relation writes was still
+told to "re-run the scan to rebuild it". `scan_rerun` copies the row's
+target into a live network scan of the import's label, which rebuilds none
+of the import's relations. The round-4 test locked this in: its control
+asserted that such a shortfall "is rebuilt by a re-run". The scan row now
+records where its entities came from: `Scan::origin`, a `ScanOrigin` that
+is `Live` by default (`serde(default)`, omitted from the JSON when `Live`,
+so a live scan's row and wire form are unchanged). `ImportScanRow::begin`,
+where every import's row is first written (the CLI's
+`persist_entities_as_scan` and the web upload), sets it to `Import`.
+`completeness_caveat` picks the remedy from it. For an import shortfall the
+remedy is "re-import the data to rebuild it". A size skip keeps its batch
+remedy, and the skip clause still identifies an import row written before
+the field existed. The round-4 control now runs on a live scan's row only.
+
+**Corrected texts.**
+- Finding 3: the size-skip remedy said importing in smaller batches recovers
+  the dossier's "relations and correlations". `enrich_persisted_batch`
+  derives relations and runs the correlator over one scan's batch, so no
+  link between entities in different batches is ever derived. The caveat now
+  says that importing in smaller batches "enriches each batch on its own;
+  links between entities in different batches are not derived". The
+  CHANGELOG says the same.
+- Findings 4 and 7: `scan_import`'s cap comment and its
+  `enrichment_skipped` response-field comment gave `/scans/{id}/rerun` as
+  the remedy for an over-cap upload. They now give the REQ-SCANSTATUS-017
+  remedy: re-import in batches under `PERSIST_ENRICH_MAX_ENTITIES`, with
+  cross-batch links not derived.
+- Finding 2: the REQ-SCANSTATUS-014 CHANGELOG entry implied that the event
+  log no longer says "scan complete". It does. The `complete` event must be
+  durable before the row may read terminal (REQ-SCANSTATUS-004), so it is
+  recorded before the commit. The log is append-only, so the event stays
+  when the commit is refused, and the `failed` event follows it. The entry
+  now says so. Round 4's ledger text was already accurate.
+- Finding 9: the REQ-SCANSTATUS-016 CHANGELOG entry promised the row is
+  stored failed "once the store takes a write again". The engine makes one
+  Failed write, right after the refusal, and nothing retries it later. The
+  entry now says what the code does.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `conclude_failed` does not post the webhook | killed by `core::engine::tests::the_webhook_hears_refused_and_partial_scans_as_they_are` ("the refused commit is posted") |
+| M2 | the webhook posts `finalise_incomplete: false` | killed by `core::engine::tests::the_webhook_hears_refused_and_partial_scans_as_they_are` (the partial case) |
+| M3 | a finalise failure is returned without `conclude_failed` (as at 11fb8fbc) | killed by `core::engine::tests::a_scan_whose_finalise_panics_is_failed_and_announced` (`heard: []`) |
+| M4 | `force_fail_panicked_scan` writes the row only (as at 11fb8fbc) | killed by `core::engine::tests::run_panic_safe_force_fails_a_scan_that_panics_outside_process` ("the failure is heard", 0) |
+| M5 | `ImportScanRow::begin` leaves `origin` `Live` | killed by `app::persist::tests::an_import_rows_terminal_write_carries_the_finalise_record` (`left: Live`) |
+| M6 | `completeness_caveat` ignores `origin` | killed by `core::scan::tests::an_import_shortfall_is_not_told_to_re_run` and `app::persist::tests::an_import_rows_terminal_write_carries_the_finalise_record` |
+| M7 | the size-skip remedy as at 11fb8fbc | killed by `core::scan::tests::an_import_skipped_for_size_is_not_told_to_re_run` |
+
+**7 of 7 caught.**
+
+## REQ-SCANSTATUS-021 / REQ-SCANSTATUS-022 / REQ-SCANSTATUS-023 / REQ-SCANSTATUS-024 / REQ-GEOLABEL-038 — final review, correction round 6
+
+**Found** by the sixth correction round of the final review of PR #649,
+which raised eight findings against 2fcf2360. Each was checked against that
+head, and all eight were real. Findings 2, 4 and 7 describe one defect (a
+panicked finalise concluded from a stale copy of the scan). Findings 5 and 8
+describe another (the `Aborted` caveat ignored `error`). Finding 8 also
+named two doc comments that claimed an export classification the code does
+not make. That leaves five code defects. Each fix is made where its rule
+lives and has a regression test that fails on the code before it. Each fix
+was then undone in place, the test was seen to fail, and the file was
+restored byte-identically (table below).
+
+**REQ-SCANSTATUS-021 — an import whose correlator panicked is not told to
+re-import.** REQ-SCANSTATUS-020 gave every non-size-skip shortfall on an
+import the remedy "re-import the data to rebuild it". The import pipeline is
+deterministic over the same data: `prepare_import_batch` enriches offline,
+and the correlator reads the same stored batch. So a rule that panicked on
+the import (`correlation pass failed: panicked`, the case
+`guarded_correlation_pass` exists for) panics again on a re-import. The
+round-5 test locked the wrong remedy in: its loop asserted that exact error
+ends "re-import the data to rebuild it". `CORRELATION_PASS_PANICKED` now
+lives in `core::scan`, beside its readers
+`FinaliseTally::records_correlation_panic` and
+`records_only_correlation_panic`, and the engine re-exports it for
+`guarded_correlation_pass`. The remedy now depends on what failed as well as
+where the scan came from, in the new `Scan::finalise_shortfall`. An import
+whose only shortfall is the panic is told that neither a re-run nor a
+re-import can rebuild it. An import that also lost writes is told that a
+re-import rebuilds those but not its correlations. A refused write, or a
+correlation pass that failed on a store read, keeps "re-import the data to
+rebuild it". The round-5 test now uses a store-read failure. A live scan
+keeps "re-run the scan", because a re-run collects its data again.
+
+**REQ-SCANSTATUS-022 — an aborted scan names its shortfall.**
+`Scan::finalise_incomplete` is true for an `Aborted` scan with `error` set.
+The event, the webhook, `hse live` and the web log therefore announce it as
+partial. But `completeness_caveat`'s `Aborted` arm never read `error`, and
+said the entities "are final". So `hse scan`, `hse export`/audit/gap/diff
+and the dossier never named the shortfall. That arm now uses the same
+`finalise_shortfall` clause and remedy as the `Complete` arm. An abort with
+no shortfall keeps its wording. The doc comments on
+`Scan::finalise_incomplete` and `WebhookPayload::finalise_incomplete` said
+such a scan's exports read "partial, finalise-incomplete". That is true only
+for a `Complete` scan. They now say that an `Aborted` one reads "partial,
+aborted" and that the caveat names the shortfall for both.
+
+**REQ-SCANSTATUS-023 — a panicked finalise claims what was stored and
+run.** REQ-SCANSTATUS-019 concluded a panicked finalise from
+`before_finalise`, the copy taken before the blocking phase. The closure
+set the module counters and `stop_reason`, and the entity count was set only
+after the batch persist. So the `Failed` row, its `scan_complete` event and
+the webhook reported 0 entities, 0 modules and no stop reason, even when the
+panic came after every entity was stored. The round-5 test hit exactly this
+case (`panicking_on_relation_reads` panics in the cross-scan route pass) and
+asserted none of it. The module counters and `stop_reason` are known before
+the phase, so they are now set on the scan before `before_finalise` is
+taken. `conclude_failed` is the one way a scan is failed, and it now sets
+`entity_count` from what the store holds for the scan
+(`stored_entity_count`, best-effort: a failed read keeps the scan's own
+count). That keeps the REQ-SCANSTATUS-009 rule, that a row claims what was
+stored, on every failure path, including a panic mid-run after checkpoints.
+
+**REQ-SCANSTATUS-024 — a derivation cut short by its budget is recorded.**
+The live finalise, `hse import` and the web upload all call
+`derive_all_within` under `DERIVE_BUDGET`. When the deadline stopped the
+pass chain, the only record was a `warn!`. The scan was stored `Complete`
+with `error: None` over a thinner graph and a correlation that depended on
+how busy the device was. `derive_all_within` now returns `DerivedRelations`,
+whose `cut_after` names the last pass that completed. All three finalise
+paths now go through the new `engine::derive_finalise_relations`, which
+records a cut with `FinaliseTally::derivation_cut`. The new
+`FinalisePass::RelationDerivation` is placed between an import's size skip
+and the correlator. It writes "relation derivation failed: stopped at its
+time budget after the <pass> pass", so the scan reads "partial,
+finalise-incomplete". The mid-scan gap-fill probe derivation takes
+`.relations` and records nothing, because its edges are probe inputs, not
+the stored graph. A cut result is now collapsed to one edge per id at its
+strongest confidence, the same as a full run. Before, a cut returned the
+raw list, so the weakest duplicate won the first-write-wins upsert.
+
+**REQ-GEOLABEL-038 — a Palestinian network is placed in Palestine.** The
+MCC fallback read the MCC alone, so a tower on Jawwal (425-05) or Ooredoo
+Palestine (425-06) with no OpenCelliD fix was tagged `country:IL` and
+labelled "Israel". A new table, `MNC_CENTROIDS`, lists the networks whose
+MCC is shared with another country. `mcc_to_centroid(mcc, mnc)` reads it
+first and compares MNCs as numbers, so `5` and `05` match. Palestine's
+stand-in point lies inside the West Bank. `mcc_centroid_point` takes the MNC
+and records it as evidence. `country_name_for_iso` names "PS" "Palestine".
+Every other MNC under 425 stays Israel.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `finalise_shortfall` ignores a correlation panic | killed by `core::scan::tests::an_import_whose_correlator_panicked_is_not_told_to_re_import` |
+| M2 | the `Aborted` arm ignores `error` (as at 2fcf2360) | killed by `core::scan::tests::an_aborted_scan_with_a_shortfall_names_it` |
+| M3 | `conclude_failed` does not count the stored entities | killed by `core::engine::tests::a_scan_whose_finalise_panics_is_failed_and_announced` |
+| M4 | `modules_run` is not set before the blocking phase | killed by `core::engine::tests::a_scan_whose_finalise_panics_is_failed_and_announced` |
+| M5 | `derive_relations_within` drops the cut | killed by `core::engine::tests::a_derivation_the_budget_cut_short_is_recorded` |
+| M6 | `derive_all_within` never reports a cut | killed by `core::relation::tests::derive_all_within_budget_stops_starting_new_passes_past_the_deadline` |
+| M7 | `mcc_to_centroid` ignores `MNC_CENTROIDS` | killed by `modules::cell_intel::tests::a_palestinian_network_under_mcc_425_is_placed_in_palestine` |
+
+**7 of 7 caught.**
+
+## REQ-SCANSTATUS-025 / REQ-SCANSTATUS-026 / REQ-SCANSTATUS-027 / REQ-SCANSTATUS-022 — final review, correction round 7
+
+**Found** by the seventh correction round of the final review of PR #649,
+which raised seven findings against c0171718. Each was checked against that
+head, and all seven were real. Findings 1, 4 and 6 describe one defect (the
+finalise's own Failed branch). Findings 2 and 5 describe another (an
+unrecorded correlator budget cut). Finding 3 is a caveat that claimed a
+certainty the pipeline does not have. Finding 7 is a doc comment. That leaves
+three code defects and one doc defect. Each code fix is made where its rule
+lives and has a regression test that fails on the code before it. Each fix
+was then undone in place, the test was seen to fail, and the file was
+restored (table below).
+
+**REQ-SCANSTATUS-025 — a finalise whose entity writes were all refused
+claims what the checkpoints stored.** REQ-SCANSTATUS-023 made
+`conclude_failed` count the entities the store holds, and said that kept the
+REQ-SCANSTATUS-009 rule "on every failure path". The finalise's own Failed
+branch (`persisted == 0 && first_err.is_some()`) did not go through
+`conclude_failed`. It hard-coded `entity_count = 0` on the row and on
+`ScanComplete`, and the webhook read the row. But the seed round always
+checkpoints, and so does every productive round, so a store that filled or
+locked between the checkpoints and the finalise batch left the scan's
+entities stored. `entities_for_scan`, `/scans/{id}/entities` and every
+export listed them under a row and an event that said 0. The blocking phase
+now returns a `FinalisePhase`. `Finalised(scan, event)` goes to the commit
+step as before. `EntitiesRefused(scan)` carries the first refusal in `error`
+and is concluded by `conclude_failed` after the phase, which records and
+flushes the `failed` event, writes the row best-effort, broadcasts, and tells
+the webhook, as the branch did, but with the stored count. A count the store
+cannot read keeps `Scan::new`'s 0. The run still returns the failed scan as
+`Ok`. The commit step's best-effort flag is gone, because no path reaches the
+commit with a `Failed` scan any more. The `ImportScanRow::store_entities` doc
+said "the live engine's Failed branch zeroes the count for exactly this
+reason", which was never true of a checkpointed live scan. It now points to
+`conclude_failed`. `RefusingStore::refusing_entity_writes_after(n)` takes
+the first `n` entity batches, then refuses every entity write.
+
+**REQ-SCANSTATUS-026 — a correlator cut short by its budget is recorded.**
+REQ-SCANSTATUS-024 recorded a derivation budget cut because a result that
+depended on how busy the device was must not read whole. The correlator's own
+`CORRELATOR_BUDGET` (120 s) has the same property. `evaluate_rules_on` and
+`evaluate_relation_rules_on` stopped at the deadline with a `warn!` and
+returned the partial firings, and `Correlator::evaluate` returned them as a
+plain `Ok`. So `correlate_and_persist` recorded nothing, and the scan was
+written `Complete` with `error: None`. Each pass now returns a `RulePass`
+(firings, how many rules ran, whether it was cut). `evaluate` returns an
+`Evaluation`, whose `cut` is a `RulesCut { ran, total }` when the budget
+stopped it. `total` is every entity rule, plus every relation rule when the
+scan has relations. `evaluate_within(scan_id, budget)` lets a test use a zero
+budget. `correlate_and_persist` (through `correlate_and_persist_with`, which
+takes the evaluation) records a cut with the new
+`FinaliseTally::correlation_cut`. It writes "correlation pass failed: stopped
+at its time budget after N of its M rules", so all three finalise paths
+(the live engine, `hse import`, the web upload) mark the scan "partial,
+finalise-incomplete". The clause is not the panic clause, so
+`records_correlation_panic` does not match it, and an import keeps the
+remedy "re-import the data to rebuild it". `guarded_correlation_pass` is now
+generic over the pass's result. `Correlator::run` (the storage self-test)
+drops the cut along with the rest of the evaluation.
+
+**REQ-SCANSTATUS-027 — a correlation panic over an incomplete graph is not
+called certain to recur.** `finalise_shortfall` told an import whose error
+recorded a correlation panic alongside other clauses that re-importing
+rebuilds "the rest of it but not its correlations", because "a re-import of
+the same data runs the same pass over the same data and panics again". The
+correlator reads the scan's stored entities and relations. On an import, the
+only other clauses that can be recorded beside a panic are a relation write
+the store refused and a derivation its budget cut. The import paths run no
+cross-scan or boost pass, a size skip runs no correlator, and a panic stores
+no correlation to refuse. Both of those clauses mean the relations the pass
+read were incomplete, so a re-import that stores the whole graph runs the
+pass over different data. That pass may finish or may panic again. The mixed
+wording now says a re-import "may or may not rebuild its correlations". An
+error that records the panic alone keeps "neither re-running nor re-importing
+can rebuild it", since that pass ran over the whole graph. It now adds that a
+time budget may stop the pass first, which also leaves the correlations
+incomplete. The REQ-SCANSTATUS-021 CHANGELOG entry now makes the same
+distinction.
+
+**REQ-SCANSTATUS-022 (doc) — the `scan_complete` event names the aborted
+classification.** Round 6 corrected the `finalise_incomplete` doc on
+`Scan` and on `WebhookPayload`, but not the one on
+`EventKind::ScanComplete`. That doc still said an `Aborted` scan with a
+shortfall is classified "partial, finalise-incomplete" by every export.
+`partial_export_reason` returns "aborted" for it. The doc now reads the same
+way as the webhook's: "partial, finalise-incomplete" when `Complete`,
+"partial, aborted" when `Aborted`, with the shortfall named in the
+completeness caveat for both. It also lists the derivation and correlator
+budget cuts among the causes.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | the Failed branch records `entity_count: 0` and commits itself (as at c0171718) | killed by `core::engine::tests::a_finalise_whose_entity_writes_are_refused_claims_the_checkpointed_entities` |
+| M2 | `correlate_and_persist` ignores `Evaluation::cut` | killed by `core::engine::tests::a_correlator_the_budget_cut_short_is_recorded` |
+| M3 | `evaluate_rules_on` reports a deadline stop as uncut | killed by `core::correlator::tests::correlator_budget_stops_starting_new_rules_past_the_deadline` and `core::engine::tests::a_correlator_the_budget_cut_short_is_recorded` |
+| M4 | the mixed-clause caveat says the panic recurs (as at c0171718) | killed by `core::scan::tests::a_correlation_panic_over_an_incomplete_graph_is_not_called_certain` |
+
+**4 of 4 caught.**
+
+## REQ-SCANSTATUS-028 / REQ-SCANSTATUS-026 / REQ-SCANSTATUS-025 (doc) — final review, correction round 8
+
+**Found** by the eighth correction round of the final review of PR #649,
+which raised four findings against e726b524. Each was checked against that
+head, and all four were real. Findings 1 and 3 describe one stale doc
+comment (`notify_completion_webhook`). Finding 2 is a code defect. Finding 4
+is a pair of stale comments. The code fix is made where its rule lives and
+has a regression test that fails on the code before it. The fix was then
+undone in place, the test was seen to fail, and the file was restored byte
+for byte (table below).
+
+**REQ-SCANSTATUS-028 — a finalise whose store refused some of its entity
+writes claims what the store holds.** REQ-SCANSTATUS-009, -023 and -025 say a
+concluded scan's row claims the entities the store holds for it, but round 7
+applied that only where every finalise entity write was refused. When the
+batch persist rolled back and the per-entity fallback had k of N writes
+refused, the scan was committed `Complete` with `entity_count = N - k`, on
+the row, on the `scan_complete` event and on the webhook (and so in the
+`/stats` sum). The seed round and every productive round checkpoint the
+scan's entities before the finalise, so a refused entity keeps the row its
+checkpoint stored, and `entities_for_scan`, `/scans/{id}/entities` and every
+export listed all N. A refused address-fold detach has the same shape: the
+folded spelling stays stored and exported but was left out of the count.
+The count now has one authority, `stored_entity_count_in`, which reads
+`entities_for_scan`. The Finalised path takes its `entity_count` from it
+right after the persist, falling back to the finalise's own count when the
+store cannot be read, and `conclude_failed` (through the async
+`stored_entity_count`) reads the same function. The same read covers the
+refused-detach case; there is no separate end-to-end test for it, because
+no stub scan in the suite produces an address fold, and the unit test
+`a_refused_address_fold_detach_is_counted` already shows the victim stays
+listed by `entities_for_scan`. The completeness caveat also said what a
+finalise did not store is "absent from every view and export". That is not
+true of a refused entity re-write or detach, so it now says the shortfall is
+absent "or there only as the scan stored it before its finalise (an entity
+whose finalise write was refused lacks the finalise's enrichment; an address
+whose fold was refused is listed twice)".
+`RefusingStore::refusing_one_entity_write_after(n)` takes the first `n`
+entity batches, then refuses every entity batch and the first single re-write
+of an entity the wrapped store already holds for its scan. The test
+`a_finalise_whose_store_refused_one_entity_write_claims_what_the_store_holds`
+runs a scan through it and checks that the row, the returned scan, the event
+and `entities_for_scan().len()` agree (20, where the row used to say 19), and
+that the caveat says the refused entity lacks the finalise's enrichment.
+
+**REQ-SCANSTATUS-025 (doc) — the webhook doc names where a Failed webhook
+comes from.** The `notify_completion_webhook` doc still listed "the
+best-effort failed record" among the commit step's outcomes, which round 7
+removed. It now reads: the normal commit (complete / aborted) and
+`conclude_failed` (every failure, including a finalise whose entity writes
+were all refused).
+
+**REQ-SCANSTATUS-026 (comments) — the web upload's `partial` causes name the
+correlator budget.** The comment on the web upload's `status: "partial"` in
+`api::scan_handlers::core` and the matching one in
+`src/web/js/views/new_scan.js` listed a derivation budget cut but not a
+correlator budget cut, which REQ-SCANSTATUS-026 also records. Both now list
+it.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | the Finalised path's `entity_count` is the finalise's own `persisted` (as at e726b524) | killed by `core::engine::tests::a_finalise_whose_store_refused_one_entity_write_claims_what_the_store_holds` (19 vs 20) |
+| M2 | the caveat says every shortfall is "absent from every view and export" (as at e726b524) | killed by `core::engine::tests::a_finalise_whose_store_refused_one_entity_write_claims_what_the_store_holds` |
+
+**2 of 2 caught.**
+
+## REQ-OPENMETEO-004 / REQ-SCANSTATUS-029 / REQ-SCANSTATUS-030 — final review, correction round 9
+
+**Found** by the ninth correction round of the final review of PR #649,
+which raised three findings against 9d061efc. Each was checked against that
+head, and all three were real. Each fix is made where its rule lives and has
+a regression test that fails on the code before it. Each fix was then undone
+in place, its tests were seen to fail, and the file was restored byte for
+byte (table below).
+
+**REQ-OPENMETEO-004 — a street named after a place is not that place.**
+`util::place_grain::is_name_of_queried_place` accepted a geocoder hit whose
+name was any consecutive run of the query's words, including the name of a
+street the query names. Streets are named after other places, so for the
+address `"Adelaide St, Brisbane City QLD"` (a Brisbane CBD street) a hit on
+the capital "Adelaide" passed as "the place asked about". GeoNames ranks a
+whole-address query by population, so this hit is a likely first answer; that
+was not confirmed against the live API. `open_meteo_geo::build_entities`
+relies on this check (REQ-OPENMETEO-002), so it would anchor the Brisbane
+address in South Australia at HIGH_PLUS, tagged `au-state:SA`, about
+1,600 km away. In `core::place::grain::forward_geocode_account`
+(REQ-GEOLABEL-022), a street hit named only "Adelaide" was not treated as a
+fragment, so it kept the street-grain cap. The same applies to
+`"Sydney Rd, Brunswick VIC"` → "Sydney" and `"12 Phố Huế, Hà Nội"` → "Huế".
+`SegmentStreet` now records which words of a segment are the street's
+**name** and which are its **type**:
+
+* a trailing type: the name is the words before it;
+* a leading type: the name is the words after it, up to a house number that
+  may follow it;
+* a compound word such as `"Hauptstraße"`: the one word is both name and
+  type, so there is no separate name;
+* a type-less numbered street (`"123 Nguyễn Huệ"`): the name is the words
+  after the house number, and there is no type.
+
+`is_name_of_queried_place` now accepts a run that reaches into a street's
+name only if the run also carries that street's type. So "Adelaide Street" is
+still the `"Adelaide St"` that was asked about, but "Adelaide" is not. A
+type-less numbered street has no type to carry, so no hit name can match its
+words. Places the query names outside the street ("Brisbane", "Brunswick",
+"Hà Nội") match as before. Tests:
+`util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place`,
+`modules::open_meteo_geo::tests::a_city_a_street_is_named_after_is_not_the_streets_geocode`
+(the Brisbane hit behind the Adelaide one now anchors), and a new case in
+`core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names`
+(a street hit named "Adelaide" is held to the input's administrative grain).
+
+**REQ-SCANSTATUS-029 — a failed scan counts the entities its queued events
+found.** `ScanEngine::conclude_failed` counted the scan's stored entities
+(`stored_entity_count` → `entities_for_scan`) before it flushed the DB
+writer. A scan with no entity rows is rebuilt from its `EntityFound` events
+(`Store::entities_for_scan`'s event-log fallback). Those events reach the
+store asynchronously through the writer. So a scan that panicked in the seed
+round, before its first checkpoint, claimed only the events persisted so far.
+Its row, `scan_complete {status: failed}` event and webhook under-reported
+the scan, while `/scans/{id}/entities` and every export listed every entity
+once the queue drained. `conclude_failed` now flushes the writer before it
+counts, and flushes again after it records the `scan_complete`, as before.
+`InMemoryStore::entities_for_scan` did not mirror the event-log fallback,
+which is why no test saw this. It now mirrors it: with no stored copies, the
+scan's `EntityFound` events are folded by uid through `Entity::merge`.
+`RefusingStore::delaying_event_writes` holds each event write for a set
+delay. Test:
+`core::engine::tests::a_failed_scan_counts_the_entities_its_queued_events_found`
+emits three `EntityFound` events, concludes the scan failed, and checks that
+the returned scan, the row and the `scan_complete` event all claim 3, where
+they used to claim 0.
+
+**REQ-SCANSTATUS-030 — every scan row view calls a partial scan partial.**
+Several views chose their status pill from the row's `status` alone:
+
+* the web scan list (`#/scans` and the dashboard's Recent Scans), in
+  `wasm-ui/src/views/scans.rs`;
+* the scan-info Status row, in `wasm-ui/src/scan_info/info.rs`;
+* the scan-info header and the radar sweep list, through the JS helper
+  `statusPill`.
+
+So a scan stored `Complete` with a finalise shortfall in `error` showed a
+green `complete` pill. Its exports, its `scan_complete` event, the webhook,
+the upload response and the live log pill all called it partial
+(REQ-SCANSTATUS-015/022). `api::handlers::scan_json` derived only
+`interrupted`, so the row views had no partial flag to read. It now also
+derives `finalise_incomplete` (`Scan::finalise_incomplete`). `GET
+/radar/history` now serves its sweep rows through `scan_json` as well, so the
+radar sweep list gets both derived flags; it used to read an `interrupted`
+the endpoint never sent. The two wasm `status_pill` copies are replaced by
+one, `wasm-ui::html::status_pill(status, partial)`. It renders a warning
+`s-partial` pill reading `partial`, or `aborted · partial` for an aborted
+scan, the same words the live log pill uses. `helpers.js`'s `statusPill(s,
+partial)` mirrors it, and `app.css` gains `.s-partial`. `wasm-ui/pkg` was
+regenerated. Tests:
+`api::handlers::tests::a_scan_row_says_whether_its_finalise_was_cut_short`,
+`wasm-ui` `html::tests::a_scan_whose_finalise_was_cut_short_reads_partial`,
+and `views::scans::tests::a_partial_scan_row_reads_partial`.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `is_name_of_queried_place` ignores the street-name check (as at 9d061efc) | killed by `util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place`, `modules::open_meteo_geo::tests::a_city_a_street_is_named_after_is_not_the_streets_geocode` and `core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names` (grain Street, not Locality) |
+| M2 | `conclude_failed` counts before it flushes (as at 9d061efc) | killed by `core::engine::tests::a_failed_scan_counts_the_entities_its_queued_events_found` (0 vs 3) |
+| M3 | `scan_json` always sends `finalise_incomplete: false` | killed by `api::handlers::tests::a_scan_row_says_whether_its_finalise_was_cut_short` |
+| M4 | `wasm-ui::html::status_pill` ignores `partial` | killed by `html::tests::a_scan_whose_finalise_was_cut_short_reads_partial` |
+
+**4 of 4 caught.**
+
+## REQ-OPENMETEO-004 / REQ-SCANSTATUS-030 / REQ-SCANSTATUS-031 / REQ-SCANSTATUS-032 — final review, correction round 10
+
+**Found** by the tenth correction round of the final review of PR #649,
+which raised four findings against 9a4c2132. Each was checked against that
+head, and all four were real. Each fix is made where its rule lives and has
+a regression test that fails on the code before it. Each fix was then undone
+in place, its tests were seen to fail, and the file was restored byte for
+byte (table below).
+
+**REQ-OPENMETEO-004 — a street's words match only as the whole street.**
+Round 9 let a run of the query's words that reaches into a street's name
+match only if it also carries the street's type. It did not require the run
+to carry the rest of the name. For `"Great Western Hwy, Blaxland NSW"`, the
+hit "Western Highway" joins to the run *western highway*: it touches the
+name and holds the type, so `is_name_of_queried_place` accepted it. The
+Western Highway is a different road, in Victoria. In
+`core::place::grain::forward_geocode_account` a Nominatim `road` or Photon
+`place_name` of "Western Highway" therefore kept the street cap for the NSW
+address. "Northern Road" / `"Old Northern Rd"` and "Pacific Highway" /
+`"Old Pacific Hwy"` behaved the same. A run that reaches into a street,
+meaning its name or its type, must now carry the whole street: every name
+word and the type. A trailing-type street's name now starts after the last
+house-number word before the type (`is_house_number`). So "Sydney Road" is
+still the `"45 Sydney Road Brunswick"` that was asked about, and "Smith
+Street" is still `"Unit 5 12 Smith St"`. Before this, the name began at the
+segment's first word, and a whole-name rule would have rejected them. A
+type-less numbered street still has no type to carry, so no run that reaches
+it matches. Tests: new negative cases (the three above, with and without a
+house number) and controls ("Great Western Highway", "Smith Street",
+"Calle Mayor") in
+`util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place`;
+a "Western Highway" road hit, held to the input's administrative grain, and
+a "Great Western Highway" control, which keeps street grain, in
+`core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names`.
+
+**REQ-SCANSTATUS-031 — an import announces how it ended.** Since
+REQ-SCANSTATUS-005, an import's row reads `running` while it works. The web
+scan log (`log.js` `renderLog`) therefore tails it as live. The import is in
+the in-flight registry, so its SSE stream is accepted, and the log waits for
+a `scan_complete`. No import sent one: neither `scan_import` nor
+`app::persist` touched the event bus. So the log of an import opened
+mid-run read `live` until the stream's 120 s idle timeout, then
+`disconnected`, and never `complete` or `partial`. `ImportScanRow`, the one
+lifecycle both import paths share, now ends every terminal write with the
+announcement a live scan makes: `finish`, and the `Failed` its Drop records.
+It builds a `scan_complete` carrying the terminal status, the stored entity
+count and `Scan::finalise_incomplete`. It records the event in the scan's
+event log (best-effort, logged), then broadcasts it on the bus that
+`ImportScanRow::announce_on` names. This happens after the row write, so a
+subscriber that re-reads the row on the event reads it terminal, the same
+order the engine uses. The web upload passes the app's bus. The CLI import
+has none and only records the event. Drop announces even when its `Failed`
+write fails, as `conclude_failed` does. Tests:
+`api::scan_handlers::tests::a_web_import_announces_its_completion_to_the_scan_log`
+(the bus hears a `scan_complete` matching the committed row, and the event
+log holds it) and
+`app::persist::tests::every_import_exit_announces_how_it_ended` (a finish
+with a shortfall, broadcast and recorded as `complete` + partial; a CLI
+finish with no bus, recorded; a drop, recorded as `failed`).
+
+**REQ-SCANSTATUS-030 — the round-9 changes that had no test.** Round 9's
+ledger said every fix in that round had a regression test that failed on
+the code before it. That was not true of two changes: `GET /radar/history`
+serving its rows through `scan_json`, and the `partial` branch of the JS
+`statusPill`. Either could be reverted with every test still passing. The
+only test that called `/radar/history` checked for a 401, and nothing read
+`helpers.js`. Both now have tests:
+`api::scan_handlers::tests::radar_history_rows_carry_what_the_sweep_pill_reads`
+(a stored sweep that is `Complete` with an `error` is listed as
+`finalise_incomplete: true`, a stored `Running` sweep that is not in flight
+as `interrupted: true`, and a clean sweep with neither) and
+`api::routes::tests::embedded_spa_reads_a_finalise_incomplete_row_as_partial`
+(the embedded `statusPill` decides `partial` before its status map).
+
+**REQ-SCANSTATUS-032 — the scan list's tiles and filter read a partial scan
+as its pill does.** REQ-SCANSTATUS-030 made a scan list row show a partial
+scan as `partial`. Two other readers of the same rows on `#/scans` were not
+updated. `scanStats` bucketed on `status === 'complete'` alone, so the green
+Complete tile counted a partial scan. The filter box matched only the stored
+`status`, so typing "partial" found none of the rows whose pill said it.
+`scanStats` now counts a `complete` row with `finalise_incomplete === true`
+as `partial`, outside the green total. The Complete tile's sub-line names
+the partial count beside the aborted and failed counts. An aborted partial
+scan stays with the aborted. The filter matches "partial" on a row with
+`finalise_incomplete === true`. Test: the same
+`embedded_spa_reads_a_finalise_incomplete_row_as_partial` (the partial
+bucket comes before the complete one, the tile names it, and the filter
+reads it).
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `names_a_street_whole` checks only the type and the name touch (as at 9a4c2132) | killed by `util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place` and `core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names` |
+| M2 | a trailing-type street's name starts at the segment's first word (house number included) | killed by `util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place` and `a_street_named_either_way_is_the_queried_street` (`"Oak Gr"` / `"12 Oak Grove, Toowong"`) |
+| M3 | `ImportScanRow` does not announce (as at 9a4c2132) | killed by `app::persist::tests::every_import_exit_announces_how_it_ended` and `api::scan_handlers::tests::a_web_import_announces_its_completion_to_the_scan_log` |
+| M4 | the web upload does not pass the app's bus | killed by `api::scan_handlers::tests::a_web_import_announces_its_completion_to_the_scan_log` |
+| M5 | `/radar/history` lists raw rows (`ok_list("sweeps", scans)`, as before round 9) | killed by `api::scan_handlers::tests::radar_history_rows_carry_what_the_sweep_pill_reads` |
+| M6 | `statusPill` loses its `partial` branch | killed by `api::routes::tests::embedded_spa_reads_a_finalise_incomplete_row_as_partial` |
+| M7 | `scanStats` has no partial bucket (as at 9a4c2132) | killed by `api::routes::tests::embedded_spa_reads_a_finalise_incomplete_row_as_partial` |
+| M8 | the filter does not match "partial" (as at 9a4c2132) | killed by `api::routes::tests::embedded_spa_reads_a_finalise_incomplete_row_as_partial` |
+
+**8 of 8 caught.**
+
+## REQ-OPENMETEO-005 / REQ-SCANSTATUS-033 / REQ-SCANSTATUS-034 / REQ-SCANSTATUS-035 — final review, correction round 11
+
+**Found** by the eleventh correction round of the final review of PR #649,
+which raised six findings against 4ee46e53. Two pairs were the same defect
+reported twice (findings 1 and 6: the corner address; findings 3 and 5: the
+dashboard tally), so there were four distinct defects. Each was checked
+against that head, and all four were real. Each fix is made where its rule
+lives and has a regression test that fails on the code before it. The fixes
+were undone together in place (the tests kept), every new test was seen to
+fail, and the files were restored byte for byte (table below).
+
+**REQ-OPENMETEO-005 — either street of a corner is the queried street.**
+Round 10 (REQ-OPENMETEO-004) required a run that reaches into a street to
+cover the whole street, `name.start..kind.end`. But `segment_street` started
+a trailing-type street's name at the segment's first word unless a house
+number came first, and it kept only the LAST street of a segment. For
+`"Cnr George St & Smith St, Brisbane City QLD"` the street read as the name
+"Cnr George St & Smith" plus the type "St", so no geocoder road could cover
+it: `is_name_of_queried_place("Smith Street", …)` returned false, and
+`core::place::grain::forward_geocode_account`, which applies the fragment
+test to every input with no numbered street, capped a correct "Smith
+Street" hit at the Brisbane locality grain. At 9a4c2132 the same hit kept
+street grain. A trailing-type street's name now starts after the last word
+that `starts_a_street_name` accepts: a house number, a corner word (`cnr`,
+`corner`), or a `&` / `and` that follows a street type (the join between a
+corner's two streets). A join that follows a name word stays inside the
+name (`"Smith and Jones Rd"`), and a type word at the segment's start is a
+saint, as before. `SegmentStreet` now carries every street its segment
+names (`StreetWords`), not only the one its grain and `rest_from` describe.
+So "George Street" and "Smith Street" both match the corner, and "Smith" or
+"George" alone still touches a street without covering it and does not. The
+grain and `locality_part` read the same street as before. A street led by a
+business or building name (`"Westfield Chermside Gympie Rd"`) is NOT
+changed. Nothing in the words tells "Westfield Chermside" (not part of the
+road's name) from "Great" in `"Great Western Hwy"` (part of it), and
+reading such a prefix as not part of the name would again accept "Western
+Highway", the Victorian road, as the NSW one. So such a hit keeps the
+locality cap: a coarser grain, never a false street. Tests: corner cases
+(positive "Smith Street", "George Street", "Oak Avenue", "Smith and Jones
+Road"; negative "Smith", "George", "Jones Road") in
+`util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place`;
+"King Street" / `"Cnr George St & King St, Sydney NSW"` in
+`a_street_named_either_way_is_the_queried_street`; a Nominatim `road` and a
+Photon `place_name` hit on a corner, both keeping street grain, in
+`core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names`.
+
+**REQ-SCANSTATUS-033 — an import's row reads terminal only once its
+`scan_complete` is logged.** REQ-SCANSTATUS-031 wrote the import's terminal
+row first and recorded its `scan_complete` after, and its doc claimed that
+was the engine's order. It is not. The engine's commit step records the
+event, flushes it, and only then writes the row, because "a scan reads
+terminal only once … every event through `ScanComplete` — is durable"; its
+own comment traces scan 7258fc07's bundle ("status: Complete" with no
+`scan_complete`) to breaking that. An import broke it two ways: an export or
+event-log download between the row write and `insert_event` read a finished
+import with no `scan_complete`, and an `insert_event` refused after the row
+commit (a full disk, `SQLITE_BUSY`) was only logged, leaving a `complete`
+row with no word in its log of how it ended. `ImportScanRow` now records
+the `scan_complete` for the row it is about to write
+(`record_completion`), then writes the row, then broadcasts the event
+(`broadcast`), in `finish` and in its `Drop` alike. If `finish`'s row write
+is refused, `Drop` records the `Failed` row and a second `scan_complete
+{failed}`, the "complete then failed" sequence REQ-SCANSTATUS-014 accepts
+for the engine, and subscribers hear only the failure. The `Failed` row
+says why, as the engine's refused commit does: the shortfall `finish`
+carried, then "the terminal status write failed: …" (it said "import failed
+before its terminal write" before). Test:
+`app::persist::tests::an_import_row_reads_terminal_only_once_its_completion_is_logged`
+(the `InMemoryStore` terminal witness sees the `scan_complete` already in
+the log for both `finish` and `Drop`; a store refusing the `Complete` write
+leaves `[complete, failed]` in the log, a `Failed` row naming the refusal
+after the shortfall, and one broadcast, `failed`).
+
+**REQ-SCANSTATUS-034 — the dashboard tallies a partial scan as partial.**
+`aggregate_scan_stats` (`/stats` `scans_by_status`) bucketed a scan by its
+stored status alone, so a `Complete` scan whose finalise fell short
+(`Scan::finalise_incomplete`) counted under `complete`, and the dashboard's
+Scan Status panel (`dash.js`) pilled that bucket green, next to its Recent
+Scans table, which read the same row `partial`. REQ-SCANSTATUS-030/032 had
+fixed every other reader of scan rows. `aggregate_scan_stats` now buckets
+such a scan as `partial` (a `Complete` one) or `aborted_partial` (an
+`Aborted` one), just as `interrupted` is split out of `running`. `dash.js`
+pills the buckets through `dashStatusPill`, which renders those two keys as
+`statusPill('complete', true)` / `statusPill('aborted', true)` (`partial`,
+`aborted · partial`). The dashboard is the only consumer of
+`scans_by_status`. Tests:
+`api::handlers::tests::a_partial_scan_is_histogrammed_apart_from_complete`
+(a complete, a partial complete, an aborted, a partial aborted and a failed
+scan with an `error` land in five buckets, the failure never partial) and
+`api::routes::tests::embedded_spa_dashboard_pills_a_partial_bucket_as_partial`.
+
+**REQ-SCANSTATUS-035 — the radar reads an aborted sweep as stopped early.**
+The radar's `onLiveEvent` named only `failed` and a partial finish in its
+`scan_complete` line, so a sweep that ended `aborted` (the per-iteration
+wall-time watchdog, a cancel by scan id, a session stop forwarded into the
+iteration) read "sweep done", where `hse live` prints "scan aborted —
+stopped early" and the web scan log `aborted`. It now reads "continuous
+radar · sweep stopped early at HH:MM", with "(partial — finalise
+incomplete)" when `finalise_incomplete` is true, matching the scan log's
+`aborted · partial`. Test:
+`api::routes::tests::embedded_spa_radar_reads_an_aborted_sweep_as_stopped_early`.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `segment_street` / `is_name_of_queried_place` as at 4ee46e53 (name from the last house number only, one street per segment) | killed by `util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place`, `a_street_named_either_way_is_the_queried_street` and `core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names` (grain Locality, not Street) |
+| M2 | `ImportScanRow` writes the row before it records the event (as at 4ee46e53) | killed by `app::persist::tests::an_import_row_reads_terminal_only_once_its_completion_is_logged` |
+| M3 | `aggregate_scan_stats` buckets by stored status alone (as at 4ee46e53) | killed by `api::handlers::tests::a_partial_scan_is_histogrammed_apart_from_complete` |
+| M4 | `dash.js` pills every bucket with `statusPill(k)` (as at 4ee46e53) | killed by `api::routes::tests::embedded_spa_dashboard_pills_a_partial_bucket_as_partial` |
+| M5 | `onLiveEvent` has no `aborted` branch (as at 4ee46e53) | killed by `api::routes::tests::embedded_spa_radar_reads_an_aborted_sweep_as_stopped_early` |
+
+**5 of 5 caught.**
+
+## REQ-OPENMETEO-006 / REQ-SCANSTATUS-036 / REQ-GEOLABEL-039 / REQ-SCANSTATUS-037 — final review, correction round 12
+
+**Found** by the twelfth correction round of the final review of PR #649,
+which raised four findings against c089f3a6. Each was checked against that
+head, and all four were real. Each fix is made where its rule lives and has
+a regression test that fails on the code before it. The fixes were undone
+together in place (the tests kept), every new test was seen to fail, and the
+files were restored byte for byte (table below).
+
+**REQ-OPENMETEO-006 — the first street of a corner is the queried street,
+however the corner is written.** Round 11 (REQ-OPENMETEO-005) started a
+trailing-type street's name after a house number, a bare corner word, or a
+`&` / `and` that follows a street type. Two common corner forms were still
+misread. In `"Corner of George St and Smith St"` the first street's name
+started after `Corner` and took in `of`, so the whole street read as
+[of, george, st]. In `"George St / Smith St"` the `/` was no break, so the
+second street's name ran [george, st, smith]. `names_a_street_whole` rejects
+any run that touches a street without containing all of it, so a Nominatim
+`road` or Photon `place_name` of "George Street" failed
+`is_name_of_queried_place` on both queries. `forward_geocode_account` then
+capped a correct street-grain hit at the Brisbane locality. "Smith Street"
+was rejected too on the `/` form. `starts_a_street_name` now also breaks
+after the `of` that follows a corner word (`cnr` / `corner`), and treats a
+standalone `/` or `at` that follows a street type as a join, as it does
+`&` / `and`. An `of` inside a name is still part of the street (`"Bay of
+Islands Rd"`: "Islands Road" is not that street). Tests: first- and
+second-street controls for the `Corner of`, `/` and `at` forms, and
+negatives "George" (`Corner of`), "Smith" (`/`) and "Islands Road", in
+`util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place`;
+a Nominatim `road` and a Photon `place_name` "George Street" hit keeping
+street grain in
+`core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names`.
+
+**REQ-SCANSTATUS-036 — each `hse import` owns its own scan.** `hse import`
+named its scan `import-{tag}-{unix_now()}` (`run_import`, and
+`import-html-…`, `import-local-…` and the OathNet-JSON arm's `import-…`), at
+one-second resolution. Two imports started in the same second shared one
+scan. This is the loop an operator writes to follow the over-cap caveat's
+remedy, "import the data in smaller batches" (`for f in part*.csv; do hse
+import $f; done`). The second `ImportScanRow::begin` rewrote the first's
+finished row back to `Running`, stored its batch into the same scan, and its
+`finish` claimed only its own entity count and replaced the first's
+recorded shortfall with its own tally, which breaks REQ-SCANSTATUS-009 ("a
+row claims what the store holds"). `hse ingest --auto-scan` and `hse
+investigate --auto-scan` had already moved to `util::uid::scan_id` for this
+collision. Every CLI import now mints its id through one helper,
+`app::import::import_scan_id(tag)`, which returns
+`import-{tag}-{uid::scan_id("import", tag)}`. That id mixes in a
+process-wide counter and the sub-second clock. The OathNet-JSON arm's id
+now carries its tag too (`import-json-…`). Test:
+`app::import::tests::two_imports_started_in_one_second_own_two_scans`.
+
+**REQ-GEOLABEL-039 — a recalled point carries one grain.**
+`recall_prior_entities` folded the copies up to eight prior scans stored of
+one uid with a plain `Entity::merge`, which unions tags, and the engine
+injected the result into the working set with another plain merge. Neither
+step re-decided the point's grain, as every other in-memory merge has done
+since REQ-GEOLABEL-005. A point stored at `fix-grain:locality` by one prior
+scan and at `fix-grain:region` by another came back carrying both. The
+store collapses the stamps only on its merge branches, and a uid new to
+this scan is written as the incoming entity. So this scan's own copy,
+`entities_for_scan`, every export's tag column and the debug bundle showed
+two grains for one point. Grading was unaffected, because `assess` reads
+both stamps as floors. Both recall merges now go through `fold_recalled`,
+which merges and then runs `enrich_geospatial`, the re-decision the other
+merges run. The injection loop is `inject_recalled`. Test:
+`core::engine::tests::a_recalled_point_carries_one_grain` (two prior scans
+at locality and region recall one `fix-grain:region`; a recalled point
+folded into a working set that holds it at locality carries one too).
+
+**REQ-SCANSTATUS-037 — a refused `scan_complete` write is a refused
+commit.** REQ-SCANSTATUS-033 said an import's row reads terminal only once
+its `scan_complete` is in the log. But `ImportScanRow::record_completion`
+only logged a refused `insert_event`, and `finish` then wrote the row
+anyway. A store that refused the new event row (a nearly full disk,
+`SQLITE_BUSY` behind a live scan's writer) but took the `UPDATE` of the
+existing row left a `complete` import whose event log never said how it
+ended. Round 11's test used a store whose event writes always succeed, so
+it could not see this. `record_completion` now returns whether the store
+took the event. `finish` treats a refusal as a refused commit: it writes no
+terminal row and leaves the row to `Drop`, whose `Failed` row names the
+refused write after the shortfall ("…; the scan_complete event write
+failed: …"). The `Failed` row of `Drop` is written even when the store
+refuses its own event too, because a row must not read in progress forever.
+Its error then says that the event write failed, unless it already does, so
+the row itself tells an export what its log lacks. Live subscribers still
+hear the failure. The claim is now exact: a row reads `complete` or
+`aborted` only once its `scan_complete` is logged. The `ImportScanRow` doc
+says so. Test:
+`app::persist::tests::an_import_whose_completion_event_is_refused_never_reads_complete`,
+with a new `RefusingStore::refusing_event_writes` mode. The one terminal
+write is `Failed`, and the row's error names the shortfall and the refused
+event write. No event is stored, one `failed` is broadcast, and an import
+dropped before `finish` is written `Failed`, saying its log lacks the
+event.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `starts_a_street_name` as at c089f3a6 (no `of` after a corner word, no `/` / `at` join) | killed by `util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place` and `core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names` |
+| M2 | `import_scan_id` mints `import-{tag}-{unix_now()}` (as at c089f3a6) | killed by `app::import::tests::two_imports_started_in_one_second_own_two_scans` |
+| M3 | `fold_recalled` merges without `enrich_geospatial` | killed by `core::engine::tests::a_recalled_point_carries_one_grain` (the prior-scan fold) |
+| M3b | `inject_recalled` merges with a plain `Entity::merge` | killed by `core::engine::tests::a_recalled_point_carries_one_grain` (the working-set fold) |
+| M4 | `finish` ignores a refused event write and `Drop` never names one (as at c089f3a6) | killed by `app::persist::tests::an_import_whose_completion_event_is_refused_never_reads_complete` |
+
+**5 of 5 caught.**

@@ -202,6 +202,29 @@ const STATE_NAMES: &[(&str, &str)] = &[
     ("victoria", "VIC"),
 ];
 
+/// The full name of an AU state/territory code (`"QLD"` → `"Queensland"`,
+/// case-insensitive), read from the same [`STATE_NAMES`] table [`state_code`]
+/// matches against, so the two directions can never disagree. `None` for
+/// anything that is not one of the eight codes. Pure.
+#[must_use]
+pub fn state_name(code: &str) -> Option<String> {
+    let code = code.trim();
+    let (name, _) = STATE_NAMES
+        .iter()
+        .find(|(_, c)| c.eq_ignore_ascii_case(code))?;
+    Some(
+        name.split(' ')
+            .map(|w| {
+                let mut chars = w.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_uppercase().chain(chars).collect::<String>()
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
 /// One-time compiled automaton over `STATE_NAMES` patterns (ASCII-CI).
 /// Replaces the 8-way `lower.contains(name)` loop in [`state_code`] step 2
 /// with a single Teddy/SIMD pass; `find_id` returns the pattern index so the
@@ -779,6 +802,18 @@ pub fn locality_key(addr: &str) -> String {
 
 /// Crude AU phone scanner — pulls all plausible numbers out of a text
 /// blob, returning normalised E.164 forms (deduplicated).
+///
+/// Free text needs an explicit AU marker. A match is kept only when it is a
+/// whole token (no letter, digit or `_` glued to either end — otherwise it is
+/// a fragment of a longer ID or slug such as `email_392575227` or a 13-digit
+/// run) AND it carries its own Australian evidence: a `+61`/`0061`/`61`
+/// country code, a trunk `0`, or a `1300`/`1800` service prefix. A bare
+/// 9-digit national number carries zero evidence of being Australian
+/// (REQ-PHONEAU-001); [`normalise_phone`] still accepts it, deliberately, for a
+/// STRUCTURED import column that dropped the leading `0`, but a free-text
+/// scanner that reached that branch turned the numeric IDs in a SERP
+/// breadcrumb (`findagrave.com › memorial › 282246704`) into `+61282246704`
+/// phone numbers — six of them in one "Ian Thorpe" scan (REQ-PHONEAU-002).
 pub fn extract_phones(text: &str) -> Vec<String> {
     static R: OnceLock<Regex> = OnceLock::new();
     let re = R.get_or_init(|| {
@@ -793,7 +828,30 @@ pub fn extract_phones(text: &str) -> Vec<String> {
     });
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let bytes = text.as_bytes();
+    let is_word_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     for m in re.find_iter(text) {
+        // Token boundary. The regex has no anchors, so it matches any run of
+        // six or more digits wherever it sits. The byte before the match must
+        // never be a word byte, WHATEVER the match opens on: a `+` or `(` is
+        // not a delimiter when a word is glued to it (`foo+61 2 8224 6704`,
+        // `ref(02) 8224 6704` are fragments of a longer token, not a phone).
+        // Only a match opening on a digit used to be checked, so those two
+        // shapes passed the whole-token rule the doc above promises. A match
+        // always closes on a digit, so the byte after it must never be a word
+        // byte either. `tel:+61…` and `Ph: (02) …` still scan: `:` and space
+        // are not word bytes.
+        let glued_before = m.start() > 0 && is_word_byte(bytes[m.start() - 1]);
+        let glued_after = bytes.get(m.end()).copied().is_some_and(is_word_byte);
+        if glued_before || glued_after {
+            continue;
+        }
+        // AU evidence. In the digits-and-plus form a 9-character match has no
+        // country code, no trunk `0` and no service prefix: it is a bare
+        // national number, which only a structured field may read as AU.
+        if crate::util::str_util::ascii_digits_and_plus(m.as_str()).len() == 9 {
+            continue;
+        }
         if let Some(n) = normalise_phone(m.as_str())
             && seen.insert(n.clone())
         {

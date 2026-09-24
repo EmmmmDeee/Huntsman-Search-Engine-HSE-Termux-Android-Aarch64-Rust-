@@ -23,7 +23,6 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 
-use crate::core::confidence;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -32,7 +31,8 @@ use crate::core::{
 };
 use crate::modules::termux_sensor;
 
-use helpers::{accuracy_to_confidence, build_tower_device, mcc_to_centroid, query_opencellid};
+pub(crate) use helpers::mcc_centroid_point;
+use helpers::{accuracy_to_confidence, build_tower_device, query_opencellid};
 use types::TowerKey;
 
 const OPENCELLID_KEY_ENV: &str = "HUNTSMAN_OPENCELLID_KEY";
@@ -168,35 +168,9 @@ impl Module for CellIntel {
                 continue;
             }
 
-            // Fallback: MCC -> country centroid (coarse but free, offline)
-            if let Some((lat, lon, country)) = mcc_to_centroid(&key.mcc) {
-                let coords = format!("{lat:.4},{lon:.4}");
-                let mut e = Entity::new(
-                    EntityKind::Coordinates,
-                    &coords,
-                    confidence::VERY_LOW,
-                    &ctx.scan_id,
-                );
-                e.tag("geoint");
-                e.tag(crate::core::tags::CELL_TOWER);
-                e.tag(crate::core::tags::COARSE);
-                e.tag(format!("country:{country}"));
-                if country == "AU"
-                    && let Some(state) = crate::util::geo::au_state_for_coords(lat, lon)
-                {
-                    e.tag(format!("au-state:{state}"));
-                }
-                e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Cell tower MCC {} -> {country} (country centroid)", key.mcc),
-                    )
-                    .with_attr("tower_id", &key.tower_id)
-                    .with_attr("mcc", key.mcc.as_ref())
-                    .with_attr("country", country)
-                    .with_attr("source", "mcc-centroid")
-                    .with_attr("accuracy", "country-level"),
-                );
+            // Fallback: MCC -> country centroid (coarse but free, offline).
+            // A COUNTRY signal, not a measurement — see `mcc_centroid_point`.
+            if let Some(e) = mcc_centroid_point(&key.mcc, &key.mnc, &key.tower_id, &ctx.scan_id) {
                 result.push(e);
             }
         }

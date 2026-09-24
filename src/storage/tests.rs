@@ -3797,3 +3797,101 @@ fn radar_history_finds_a_sweep_by_its_sentinel_columns() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// REQ-GEO-016: the live dispatch re-decides a merged point's country and
+/// timezone after the merge; the event log holds the two un-reconciled
+/// emissions. A scan rebuilt from its events must reach the same one answer,
+/// or a recovered scan (routine on Termux) keeps the box's `country:US` +
+/// `tz:America/New_York` beside photon's `country:CA` — the contradiction the
+/// finalised scan no longer has.
+#[test]
+fn a_recovered_scan_reconciles_a_merged_points_country_like_the_live_one() {
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "scan-geo-recover");
+    // Event 1: a provider-less sighting, enriched before its emit — the box.
+    let mut boxed = Entity::new(
+        EntityKind::Coordinates,
+        "45.956872,-66.630394",
+        0.55,
+        "scan-geo-recover",
+    );
+    boxed.add_evidence(Evidence::new("search_engines", "a sighting"));
+    crate::core::engine::enrich_geospatial(&mut boxed);
+    assert!(boxed.has_tag("country:US"), "sanity: the box answer");
+    // Event 2: photon's answer for the same point, enriched alone.
+    let mut photon = Entity::new(
+        EntityKind::Coordinates,
+        "45.956872,-66.630394",
+        0.40,
+        "scan-geo-recover",
+    );
+    photon.add_evidence(Evidence::new("photon", "reverse").with_attr("country_code", "CA"));
+    photon.tag("country:CA");
+    crate::core::engine::enrich_geospatial(&mut photon);
+    for (i, entity) in [boxed, photon].into_iter().enumerate() {
+        let mut ev = Event::new("scan-geo-recover", EventKind::EntityFound { entity });
+        ev.ts = 5000 + i as u64;
+        store.insert_event(&ev).expect("should succeed");
+    }
+    let recovered = store
+        .entities_from_events("scan-geo-recover")
+        .expect("should succeed");
+    assert_eq!(recovered.len(), 1);
+    let cs: Vec<&String> = recovered[0]
+        .tags
+        .iter()
+        .filter(|t| t.starts_with("country:"))
+        .collect();
+    assert_eq!(cs, vec!["country:CA"], "{:?}", recovered[0].tags);
+    assert!(!recovered[0].has_tag("tz:America/New_York"));
+}
+
+/// REQ-GEOLABEL-016: a stored point carries ONE grain stamp, the coarsest.
+/// The engine re-stamps a point coarser in memory when a later round merges a
+/// coarser account onto it, but the store's merge unioned tags, so the shared
+/// row and the scan's own copy both kept the earlier, finer stamp beside the
+/// new one — two contradictory grains in every export's tag column.
+#[test]
+fn a_stored_point_keeps_one_grain_stamp_the_coarsest() {
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "scan-t");
+    insert_scan(&store, "scan-s");
+    let stamped = |scan: &str, grain: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.6, scan);
+        e.add_evidence(Evidence::new("search_engines", format!("lookup {grain}")));
+        e.tag("coarse");
+        e.tag(format!("fix-grain:{grain}"));
+        e
+    };
+    // Another scan touches the uid first, so scan-s's copy takes the copy
+    // merge path, not the shared row's.
+    store
+        .upsert_entity(&stamped("scan-t", "suburb"))
+        .expect("t");
+    store
+        .upsert_entity(&stamped("scan-s", "locality"))
+        .expect("s1");
+    store
+        .upsert_entity(&stamped("scan-s", "region"))
+        .expect("s2");
+    let grains = |e: &Entity| -> Vec<String> {
+        e.tags
+            .iter()
+            .filter(|t| t.starts_with("fix-grain:"))
+            .cloned()
+            .collect()
+    };
+    let uid = stamped("scan-s", "region").uid;
+    let shared = store.get_entity(&uid).expect("read").expect("row");
+    assert_eq!(grains(&shared), ["fix-grain:region"], "{:?}", shared.tags);
+    let copy = store
+        .entities_for_scan("scan-s")
+        .expect("read")
+        .into_iter()
+        .find(|e| e.uid == uid)
+        .expect("scan-s's copy");
+    assert_eq!(grains(&copy), ["fix-grain:region"], "{:?}", copy.tags);
+    let _ = std::fs::remove_file(&path);
+}

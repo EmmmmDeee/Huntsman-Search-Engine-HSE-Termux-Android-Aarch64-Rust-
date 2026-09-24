@@ -77,7 +77,7 @@ fn strong_corroborating_families(e: &Entity) -> std::collections::BTreeSet<&'sta
     let mut strong_by_source: BTreeMap<&str, bool> = BTreeMap::new();
     for ev in &e.evidence {
         let src = ev.source.as_str();
-        if crate::core::entity::is_non_corroborating_source(src) {
+        if ev.is_non_corroborating() {
             continue;
         }
         let status_only = ev.attributes.get("detection").map(String::as_str) == Some("status-only");

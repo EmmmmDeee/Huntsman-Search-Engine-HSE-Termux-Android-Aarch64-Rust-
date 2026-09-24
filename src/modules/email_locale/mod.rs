@@ -93,7 +93,12 @@ impl Module for EmailLocale {
                 ),
             )
             .with_attr("cctld", domain.rsplit('.').next().unwrap_or(""))
-            .with_attr("locale", locale_code);
+            .with_attr("locale", locale_code)
+            // The place the signal names, in its own words: the label of the
+            // coordinate below names this, never the country its stand-in
+            // centroid happens to fall in (`core::place::grain::
+            // country_signal_place`).
+            .with_attr("country", country);
             let mut ae = Entity::new(EntityKind::Address, country, confidence::LOW, &ctx.scan_id);
             ae.tag("geoint");
             ae.tag(crate::core::tags::COARSE);
@@ -158,7 +163,14 @@ impl Module for EmailLocale {
                 ),
             )
             .with_attr("locale", geo.locale)
-            .with_attr("pattern", geo.pattern);
+            .with_attr("pattern", geo.pattern)
+            // The region the pattern names — often several countries
+            // ("Eastern Europe (Ukraine/Russia/Serbia)", "Iberia/Latin
+            // America") while its centroid sits in one (Moscow, Lisbon). The
+            // coordinate's label reads this, so it never narrows the region
+            // to the stand-in's country (`core::place::grain::
+            // country_signal_place`).
+            .with_attr("region", geo.region);
 
             let mut e = Entity::new(
                 EntityKind::Address,

@@ -19,7 +19,11 @@ export function fmtDuration(secs){
   return `${h}h ${mm}m`;
 }
 export function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
-export function statusPill(s){const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending',aborted:'s-aborted'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
+// `partial` is the scan row's derived `finalise_incomplete`: a complete or
+// aborted scan whose finalise recorded a shortfall reads partial, as its
+// exports and its live log pill do (REQ-SCANSTATUS-030). Mirrors wasm-ui's
+// `html::status_pill`.
+export function statusPill(s, partial){if(partial===true&&(s==='complete'||s==='aborted'))return `<span class="status-pill s-partial">${s==='aborted'?'aborted \u00b7 partial':'partial'}</span>`;const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending',aborted:'s-aborted'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
 export function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
 // Render a per-service pool's mean health for a table cell, honestly. The
 // backend sends `avg_health: null` when a service has NO tested key yet (every

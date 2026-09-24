@@ -139,14 +139,23 @@ fn au108_reports_breach_cross_platform_footprint() {
 #[test]
 fn best_location_uses_a_single_confirmed_coordinate() {
     use super::best_au_location_estimate;
-    // One person-anchored AU coordinate (geocode source makes it person-anchored).
-    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.7, "s");
+    // One person-anchored AU coordinate (geocode source makes it person-anchored),
+    // off every gazetteer table so the geocode's own precision stands.
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4766,153.0166", 0.7, "s");
     coord.add_evidence(Evidence::new("geocode", "Brisbane fix"));
     let est = best_au_location_estimate(&[coord]).expect("a single AU coord yields a fix");
     assert_eq!(est.basis, "confirmed coordinate");
     assert_eq!(est.state, Some("QLD"));
     assert_eq!(est.locality.as_deref(), Some("Brisbane"));
     assert!(est.radius_km <= 2.0);
+
+    // REQ-GEOLABEL-007: the same record ON the tabulated Brisbane centroid —
+    // the operator's own example value — is the city it stands for, not a
+    // 40 m fix: this rung used to report it at ≤ 2 km.
+    let mut centroid = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.7, "s");
+    centroid.add_evidence(Evidence::new("geocode", "Brisbane fix"));
+    let est = best_au_location_estimate(&[centroid]).expect("the centroid still locates");
+    assert!(est.radius_km >= 5.0, "a city centroid, got {} km", est.radius_km);
 }
 
 #[test]

@@ -433,13 +433,159 @@ pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 /// ```
 #[must_use]
 pub fn nearest_au_locality(lat: f64, lon: f64) -> Option<(&'static str, &'static str, f64)> {
+    nearest_au_anchor(lat, lon, |_| true)
+}
+
+/// The nearest AU anchor to `(lat, lon)` among those `keep` admits — ties
+/// break on table order. `None` outside Australia or when `keep` admits none.
+fn nearest_au_anchor(
+    lat: f64,
+    lon: f64,
+    keep: impl Fn(&str) -> bool,
+) -> Option<(&'static str, &'static str, f64)> {
     if !is_in_australia(lat, lon) {
         return None;
     }
     AU_LOCALITY_ANCHORS
         .iter()
+        .filter(|&&(name, _, _, _)| keep(name))
         .map(|&(name, state, alat, alon)| (name, state, haversine_km(lat, lon, alat, alon)))
         .min_by(|a, b| a.2.total_cmp(&b.2))
+}
+
+/// The anchors in [`AU_LOCALITY_ANCHORS`] that name a SUBURB of a capital
+/// city rather than a town or city of its own: the inner metro anchors, each
+/// inside the locality radius (30 km) of its capital's anchor, which is named
+/// beside it. Penrith, Blacktown, Campbelltown, Frankston, Ipswich,
+/// Rockingham and Mandurah — the metro-block anchors 30 km or more out, each
+/// a city in its own right — are not here.
+///
+/// A suburb name states a position to a suburb (a few km). A point graded
+/// coarser than that — a locality-level fix good to ±5–30 km, a redacted
+/// one-decimal value — cannot honestly be named after one, however close its
+/// value lies to the anchor: `-37.8,144.9`, an inner-west Melbourne geocode
+/// redacted to a 0.1° cell, sits exactly on the Footscray anchor and read
+/// "Footscray, VIC (locality-level fix, ±6 km)", naming the very suburb the
+/// redaction was meant to withhold. [`nearest_au_town`] skips these.
+const AU_METRO_SUBURB_ANCHORS: &[(&str, &str)] = &[
+    ("Parramatta", "Sydney"),
+    ("Liverpool", "Sydney"),
+    ("Bondi", "Sydney"),
+    ("Chatswood", "Sydney"),
+    ("Hornsby", "Sydney"),
+    ("Cronulla", "Sydney"),
+    ("Bankstown", "Sydney"),
+    ("Dandenong", "Melbourne"),
+    ("Box Hill", "Melbourne"),
+    ("Footscray", "Melbourne"),
+    ("Werribee", "Melbourne"),
+    ("Ringwood", "Melbourne"),
+    ("Sunshine", "Melbourne"),
+    ("Logan Central", "Brisbane"),
+    ("Redcliffe", "Brisbane"),
+    ("Chermside", "Brisbane"),
+    ("Mount Gravatt", "Brisbane"),
+    ("Joondalup", "Perth"),
+    ("Fremantle", "Perth"),
+    ("Elizabeth", "Adelaide"),
+    ("Noarlunga", "Adelaide"),
+    ("Salisbury", "Adelaide"),
+];
+
+/// The capital a suburb anchor ([`AU_METRO_SUBURB_ANCHORS`]) belongs to, or
+/// `None` for an anchor that names a town or city of its own.
+#[must_use]
+pub(crate) fn au_metro_suburb_parent(name: &str) -> Option<&'static str> {
+    AU_METRO_SUBURB_ANCHORS
+        .iter()
+        .find(|&&(suburb, _)| suburb == name)
+        .map(|&(_, parent)| parent)
+}
+
+/// [`nearest_au_locality`] for a point graded coarser than a suburb: the
+/// nearest anchor that names a town or city, never a capital's suburb
+/// ([`AU_METRO_SUBURB_ANCHORS`]). Pure; ties break on table order.
+#[must_use]
+pub(crate) fn nearest_au_town(lat: f64, lon: f64) -> Option<(&'static str, &'static str, f64)> {
+    nearest_au_anchor(lat, lon, |name| au_metro_suburb_parent(name).is_none())
+}
+
+/// The curated AU locality anchor `(lat, lon)` IS, as `(locality, state)`,
+/// compared at the 4-decimal grain the anchors are tabulated at — `None` for a
+/// point that is not exactly an anchor. [`nearest_au_locality`] answers "which
+/// centre is closest"; this answers "is this value that centre", which is what
+/// `util::city_coords::tabulated_centroid_at` needs to name a centroid in the
+/// anchor's own spelling ("Brisbane", "QLD"). Pure.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)] // |lat|,|lon| ≤ 180 → ≤ 1.8e6.
+pub(crate) fn au_locality_anchor_at(lat: f64, lon: f64) -> Option<(&'static str, &'static str)> {
+    let cell = |a: f64| (a * 1e4).round() as i64;
+    AU_LOCALITY_ANCHORS
+        .iter()
+        .find(|&&(_, _, alat, alon)| cell(alat) == cell(lat) && cell(alon) == cell(lon))
+        .map(|&(name, state, _, _)| (name, state))
+}
+
+/// Vietnam's centrally-run cities (thành phố trực thuộc trung ương) after the
+/// 2025 administrative reform — Hà Nội, TP. Hồ Chí Minh, Hải Phòng, Đà Nẵng,
+/// Cần Thơ and Huế — as `(name, lat, lon)` at their city centres, in the
+/// official Vietnamese spelling. HSE operates from Vietnam
+/// (`docs/OPERATING_JURISDICTION.md`), so a coordinate there deserves a place
+/// name exactly as an Australian one gets [`nearest_au_locality`]'s. The list
+/// is deliberately short: these are the six first-tier centres, each a
+/// well-known, stable point, and [`nearest_vn_locality`] only answers within
+/// [`VN_ANCHOR_RADIUS_KM`] of one — the rest of the country is labelled at
+/// country grain rather than as "near" a city hundreds of kilometres away.
+const VN_LOCALITY_ANCHORS: &[(&str, f64, f64)] = &[
+    ("Hà Nội", 21.0285, 105.8542),
+    ("TP. Hồ Chí Minh", 10.7769, 106.7009),
+    ("Hải Phòng", 20.8449, 106.6881),
+    ("Đà Nẵng", 16.0544, 108.2022),
+    ("Cần Thơ", 10.0452, 105.7469),
+    ("Huế", 16.4637, 107.5909),
+];
+
+/// How far (km) from a [`VN_LOCALITY_ANCHORS`] centre [`nearest_vn_locality`]
+/// still names it. Vietnam has no state partition in this crate (unlike
+/// [`au_state_for_coords`]), and the country's bounding box
+/// (`util::geohash::reverse_country_iso`) overlaps Laos and Cambodia, so an
+/// unbounded "nearest centre" would call Vientiane "near Hà Nội". Within 50 km
+/// of a first-tier city centre a point is in that city's orbit whatever the
+/// box says.
+pub const VN_ANCHOR_RADIUS_KM: f64 = 50.0;
+
+/// Offline reverse geocode for Vietnam: the nearest centrally-run city
+/// ([`VN_LOCALITY_ANCHORS`]) to `(lat, lon)` as `(name, (centre_lat,
+/// centre_lon), distance_km)`, or `None` when no centre is within
+/// [`VN_ANCHOR_RADIUS_KM`]. The centre is returned so a caller can word the
+/// point's bearing from it. Pure; ties break on table order.
+///
+/// ```
+/// use huntsman_search_engine::util::geo::nearest_vn_locality;
+///
+/// let (name, _, km) = nearest_vn_locality(21.03, 105.85).expect("central Hà Nội");
+/// assert_eq!(name, "Hà Nội");
+/// assert!(km < 1.0);
+/// assert!(nearest_vn_locality(17.97, 102.63).is_none()); // Vientiane, Laos
+/// ```
+#[must_use]
+pub fn nearest_vn_locality(lat: f64, lon: f64) -> Option<(&'static str, (f64, f64), f64)> {
+    if !is_valid_coords(lat, lon) {
+        return None;
+    }
+    VN_LOCALITY_ANCHORS
+        .iter()
+        .map(|&(name, alat, alon)| (name, (alat, alon), haversine_km(lat, lon, alat, alon)))
+        .filter(|&(_, _, km)| km <= VN_ANCHOR_RADIUS_KM)
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+}
+
+/// Every curated AU locality anchor as `(locality, state, lat, lon)`, in table
+/// order — so `util::city_coords::tabulated_centroid_at` can recognise an
+/// anchor's value as the centroid it is without a second copy of the table.
+pub(crate) fn au_locality_anchors() -> impl Iterator<Item = (&'static str, &'static str, f64, f64)>
+{
+    AU_LOCALITY_ANCHORS.iter().copied()
 }
 
 /// Tag `entity` with its Australian state and `country:AU` when `(lat, lon)`

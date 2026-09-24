@@ -129,7 +129,11 @@ fn classify_element(tags: &std::collections::HashMap<String, String>) -> &'stati
 
 /// Build the entities for an Overpass response. **Pure** (no network/IO): emits a
 /// summary `Coordinates` entity for the queried point (carrying the node count
-/// and a per-category breakdown), then one `Coordinates` entity per located
+/// and a per-category breakdown) — an ANNOTATION of the point, at the
+/// confidence floor and marked `Evidence::as_annotation`, because what lies
+/// within 500 m of a point is not a sighting of the subject there and must
+/// neither corroborate nor raise it (it used to carry `HIGH_PLUS` as an
+/// independent source; REQ-GEO-008) — then one `Coordinates` entity per located
 /// infrastructure node (capped at [`MAX_NODES`], classified via
 /// [`classify_element`], with name/operator/osm_id evidence). Caller guarantees
 /// `elements` is non-empty.
@@ -139,7 +143,7 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
     let mut summary = Entity::new(
         EntityKind::Coordinates,
         coord,
-        confidence::HIGH_PLUS,
+        confidence::DERIVED_FLOOR,
         scan_id,
     );
     summary.tag("overpass");
@@ -159,7 +163,8 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
                 elements.len()
             ),
         )
-        .with_attr("node_count", elements.len().to_string()),
+        .with_attr("node_count", elements.len().to_string())
+        .as_annotation(),
     );
     out.push(summary);
 
@@ -180,7 +185,7 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
     // complete category breakdown are already surfaced on the summary above, so
     // this bound loses no aggregate information — only the individual far-node
     // points beyond the cap.
-    for elem in elements.iter().take(MAX_NODES) {
+    for (index, elem) in elements.iter().take(MAX_NODES).enumerate() {
         let Some(tags) = &elem.tags else {
             continue;
         };
@@ -202,7 +207,27 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
                 ce.tag(format!("osm:{ty}"));
             }
             crate::util::geo::tag_au_state(&mut ce, nlat, nlon);
-            let mut ev = Evidence::new(SRC, format!("OSM {category} near {coord}"))
+            // The summary names the NODE, not only the category and the
+            // queried centre: an evidence record's identity is `(source,
+            // summary)`, which the GEXF co-occurrence edge keys on, so "OSM
+            // cafe near X" on every cafe around X read as one record naming
+            // them all and wired them into a false clique.
+            //
+            // It names the node by its OSM IDENTITY (`node/123`), never by its
+            // position: the shareable redaction pass coarsens a Coordinates
+            // entity's value and its coordinate attributes but not free-text
+            // summaries, so "OSM cafe at -27.470123,153.021456" carried the
+            // precise fix the redaction hid straight into a shared CSV/JSON
+            // (REQ-EXPORT-005). An element without an id (Overpass always
+            // sends one; a hand-built response may not) is named by its
+            // position in the response — deterministic for one response, and
+            // still no coordinate.
+            let identity = match (elem.osm_type.as_deref().filter(|s| !s.is_empty()), elem.id) {
+                (Some(ty), Some(id)) => format!("{ty}/{id}"),
+                (None, Some(id)) => format!("id {id}"),
+                (_, None) => format!("element #{index}"),
+            };
+            let mut ev = Evidence::new(SRC, format!("OSM {category} {identity} near {coord}"))
                 .with_attr("category", category);
             if let Some(ty) = elem.osm_type.as_deref().filter(|s| !s.is_empty()) {
                 ev = ev.with_attr("osm_type", ty);
@@ -221,6 +246,7 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
         }
     }
 
+    // `out[0]` is the summary — the breakdown annotates the queried point too.
     if let Some(first) = out.first_mut() {
         let breakdown: String = categories
             .iter()
@@ -229,7 +255,8 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
             .join(", ");
         first.add_evidence(
             Evidence::new(SRC, format!("Infrastructure breakdown: {breakdown}"))
-                .with_attr("categories", breakdown),
+                .with_attr("categories", breakdown)
+                .as_annotation(),
         );
     }
 

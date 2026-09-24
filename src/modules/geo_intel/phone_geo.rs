@@ -42,7 +42,9 @@ pub(super) async fn process_phone_prefix_only(
             e.tag("geoint");
             e.tag("phone-prefix");
             e.tag(crate::core::tags::COARSE);
-            e.tag(format!("country:{cc}"));
+            for iso in prefix_country_isos(cc) {
+                e.tag(format!("country:{iso}"));
+            }
             e.add_evidence(
                 Evidence::new(
                     SRC,
@@ -60,6 +62,21 @@ pub(super) async fn process_phone_prefix_only(
 }
 
 // ─── Phone prefix -> country ────────────────────────────────────────────────
+
+/// Every country a dialling-prefix row stands for, by the ISO
+/// [`phone_prefix_to_country`] returns: `+1` (row ISO `US`) is the US and
+/// Canada, `+7` (row ISO `RU`) Russia and Kazakhstan, every other row its one
+/// country. The point's `country:` tags are these, so a copy of it that lost
+/// its records' words (a CSV re-import keeps tags, not attributes) still
+/// names what the prefix does — a Toronto `+1 416` number read "United
+/// States" there from a lone `country:US` tag (REQ-GEOLABEL-036).
+pub(super) fn prefix_country_isos(row_iso: &'static str) -> Vec<&'static str> {
+    match row_iso {
+        "US" => vec!["US", "CA"],
+        "RU" => vec!["RU", "KZ"],
+        other => vec![other],
+    }
+}
 
 /// Resolve an E.164 phone number's dialling prefix to a country-centroid fix:
 /// `(country_name, ISO-3166, lat, lon)`, or `None` when no prefix matches. Scans
@@ -96,7 +113,10 @@ pub(super) fn phone_prefix_to_country(
             if let Some(result) = match prefix {
                 // 1-digit
                 "1" => Some(("United States/Canada", "US", 39.8283, -98.5795)),
-                "7" => Some(("Russia", "RU", 61.5240, 105.3188)),
+                // `+7` is shared by Russia and Kazakhstan (as `+1` is by the
+                // US and Canada, above), so the name says both; the place
+                // label names a phone-prefix point by this name.
+                "7" => Some(("Russia/Kazakhstan", "RU", 61.5240, 105.3188)),
                 // 2-digit
                 "20" => Some(("Egypt", "EG", 26.8206, 30.8025)),
                 "27" => Some(("South Africa", "ZA", -30.5595, 22.9375)),

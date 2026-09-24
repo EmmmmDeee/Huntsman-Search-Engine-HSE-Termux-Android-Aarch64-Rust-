@@ -24,7 +24,7 @@ export async function renderScans(v){
     <div class="row">
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Total</div><div class="val">${stats.total}</div></div></div>
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Running</div><div class="val" style="color:${stats.running?'#31708f':'#888'}">${stats.running}</div></div></div>
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Complete</div><div class="val" style="color:${stats.complete?'#3c763d':'#888'}">${stats.complete}</div>${(stats.aborted||stats.failed)?`<div class="text-muted" style="font-size:10px">${stats.aborted?`${stats.aborted} aborted`:''}${stats.aborted&&stats.failed?' · ':''}${stats.failed?`${stats.failed} failed`:''}</div>`:''}</div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Complete</div><div class="val" style="color:${stats.complete?'#3c763d':'#888'}">${stats.complete}</div>${stats.partial||stats.aborted||stats.failed?`<div class="text-muted" style="font-size:10px">${[stats.partial?`${stats.partial} partial`:'',stats.aborted?`${stats.aborted} aborted`:'',stats.failed?`${stats.failed} failed`:''].filter(Boolean).join(' · ')}</div>`:''}</div></div>
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Entities found</div><div class="val">${stats.entities}</div></div></div>
     </div>
 
@@ -41,10 +41,14 @@ export async function renderScans(v){
   const f = $('#scan-filter');
   if (f) f.addEventListener('input', ()=>{
     const q = f.value.trim().toLowerCase();
+    // A row is found by what its pill says: a scan whose finalise fell short
+    // reads `partial` (`statusPill`), so it matches "partial" as well as its
+    // stored status (REQ-SCANSTATUS-032).
     const rows = q ? S.scans.filter(s =>
       (s.target?.value||'').toLowerCase().includes(q)
       || (s.target?.kind||'').includes(q)
       || (s.status||'').includes(q)
+      || (s.finalise_incomplete===true && 'partial'.includes(q))
       || (s.id||'').includes(q)
     ) : S.scans;
     $('#scans-table-host').innerHTML = renderScansTableHtml(rows);
@@ -52,9 +56,13 @@ export async function renderScans(v){
   });
 }
 export function scanStats(scans){
-  let running=0,complete=0,aborted=0,failed=0,entities=0;
+  let running=0,complete=0,partial=0,aborted=0,failed=0,entities=0;
   for(const s of scans){
     if (s.status==='running'||s.status==='pending') running++;
+    // A `complete` row whose finalise fell short (`finalise_incomplete`,
+    // REQ-SCANSTATUS-030) is the `partial` its row pill says, not a green
+    // complete one; an aborted one stays with the aborted (REQ-SCANSTATUS-032).
+    else if (s.status==='complete' && s.finalise_incomplete===true) partial++;
     else if (s.status==='complete') complete++;
     // `aborted` is a distinct terminal state (operator-stopped, data kept) —
     // without its own bucket it matched no branch and vanished from the tallies
@@ -63,7 +71,7 @@ export function scanStats(scans){
     else if (s.status==='failed') failed++;
     entities += s.entity_count||0;
   }
-  return {total:scans.length,running,complete,aborted,failed,entities};
+  return {total:scans.length,running,complete,partial,aborted,failed,entities};
 }
 export function wireScansTable(){
   if (window.jQuery && jQuery.fn.tablesorter) {

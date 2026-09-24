@@ -208,6 +208,29 @@ pub trait Module: Send + Sync {
         false
     }
 
+    /// Default: `false`. Override `true` for a module whose every finding is a
+    /// deterministic function of its dispatch TARGET's value — a point-in-
+    /// polygon or parcel lookup of a coordinate (`au_geo`, `qld_cadastre`) —
+    /// and observes nothing about the subject beyond what the target already
+    /// claims.
+    ///
+    /// Such a finding can be no more certain than the target it was computed
+    /// from ("the derived thing is only ever as good as its parent, and strictly
+    /// weaker" — `confidence::derived_from`). The module cannot apply that
+    /// itself, because `ModuleContext` does not carry the target's confidence;
+    /// the engine does, when the target is an expansion pivot rather than the
+    /// operator's seed (`dispatch::finalise_module_result`). Without it,
+    /// `au_geo` on a 0.72 search-snippet city centroid emitted nine single-
+    /// source VERIFIED "facts" — the subject's electorate, suburb, land use —
+    /// at 0.85-0.90 (REQ-GEO-012).
+    ///
+    /// Distinct from [`Self::is_derivation`]: a derivation's evidence never
+    /// corroborates at all; a target-derived lookup's evidence is a real
+    /// external answer, just one bounded by what it was asked about.
+    fn derives_from_target(&self) -> bool {
+        false
+    }
+
     /// Default: `false`. Override true for the heaviest paid/key-gated
     /// modules whose per-query cost and low-specificity fan-out risk make
     /// speculative firing on every freshly-discovered entity wasteful (see
@@ -275,7 +298,10 @@ pub trait Module: Send + Sync {
     /// zero-data timeout on every constrained-device run rather than reclaim
     /// waste. The canonical case is `see_know`: its `/search` endpoint has a
     /// ~55 s server-side processing cap and routinely answers in 50–60 s, so a
-    /// 45 s clamp kills it before the upstream ever responds. An exempt module
+    /// 45 s clamp kills it before the upstream ever responds. `social_probe` is
+    /// the other: its sequential 37-platform sweep takes 42–45 s on a phone,
+    /// so the cap cut off normal runs and discarded every profile they had
+    /// confirmed (REQ-SOCIAL-004). An exempt module
     /// is bounded by its own
     /// [`constrained_timeout_ms`](Module::constrained_timeout_ms) instead
     /// (still finite — never unbounded).

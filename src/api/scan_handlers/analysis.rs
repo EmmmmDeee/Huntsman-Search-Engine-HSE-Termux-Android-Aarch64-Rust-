@@ -43,16 +43,26 @@ pub async fn scan_entities(
         Ok(v) => v,
         Err(resp) => return resp,
     };
+    // The place labels read the whole scan's stored records, before the view
+    // gate narrows the rows, so a label never depends on the filter the
+    // browser happened to ask for (REQ-GEOLABEL-002).
+    let place_ctx = crate::core::place::PlaceContext::for_scan(&entities, &id);
     let gate = super::EntityViewGate::from_params(&params);
     gate.apply_to_entity_set(&mut entities);
     let total = entities.len();
 
-    // Paginate: slice the result set to [offset, offset+limit).
-    let paginated = entities
-        .into_iter()
+    // Paginate: slice the result set to [offset, offset+limit), then attach
+    // each coordinate's `place_label` through the export's one JSON helper.
+    let paginated = match entities
+        .iter()
         .skip(offset)
         .take(limit)
-        .collect::<Vec<_>>();
+        .map(|e| crate::app::export::augment_entity_json(e, &place_ctx))
+        .collect::<crate::core::error::Result<Vec<_>>>()
+    {
+        Ok(v) => v,
+        Err(e) => return super::super::handlers::internal_error(&e),
+    };
 
     ok_paginated_list("entities", paginated, total, offset, limit)
 }
@@ -364,7 +374,31 @@ pub async fn scan_entities_filter(
     // filtered view can't route around the candidate quarantine the other
     // entity-listing endpoints enforce — see `apply_candidate_gate`.
     super::apply_candidate_gate(&mut entities, &params);
-    ok_list("entities", entities)
+    // A coordinate's place label may read the scan's reverse geocodes, which a
+    // kind / value filter has just dropped from `entities`, so the context is
+    // built from the whole scan — fetched only when a coordinate is listed.
+    let place_ctx = if entities
+        .iter()
+        .any(|e| e.kind == crate::core::entity::EntityKind::Coordinates)
+    {
+        let store = std::sync::Arc::clone(&s.store);
+        let id3 = id.clone();
+        match super::offload_store(move || store.entities_for_scan(&id3)).await {
+            Ok(all) => crate::core::place::PlaceContext::for_scan(&all, &id),
+            Err(resp) => return resp,
+        }
+    } else {
+        crate::core::place::PlaceContext::default()
+    };
+    let rows = match entities
+        .iter()
+        .map(|e| crate::app::export::augment_entity_json(e, &place_ctx))
+        .collect::<crate::core::error::Result<Vec<_>>>()
+    {
+        Ok(v) => v,
+        Err(e) => return super::super::handlers::internal_error(&e),
+    };
+    ok_list("entities", rows)
 }
 
 pub async fn scan_entities_facets(

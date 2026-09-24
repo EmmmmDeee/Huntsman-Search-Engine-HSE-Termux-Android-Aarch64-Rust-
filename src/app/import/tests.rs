@@ -3125,3 +3125,325 @@ fn dehashed_csv_detector_recognises_synonym_identity_columns() {
         "id,email_address,notes\n1,jane@example.org,hello\n"
     ));
 }
+
+/// REQ-GEOLABEL-004: the export's appended `place_label` / `place_grain`
+/// columns are never read back in as data. HSE's own CSV importer resolves
+/// columns by name, so a re-imported export yields exactly the exported
+/// entities — the street a label names mints no `Address`, and the label text
+/// lands in no value, tag or evidence record.
+#[test]
+fn a_reimported_csv_export_ignores_the_place_columns() {
+    use crate::core::entity::{Entity, Evidence};
+    let mut gps = Entity::new(EntityKind::Coordinates, "-27.481234,153.012345", 0.9, "s");
+    gps.add_evidence(Evidence::new("signal_radar", "GNSS fix").with_attr("accuracy_m", "8"));
+    let mut reverse = Entity::new(EntityKind::Address, "12 Smith Street, Toowong", 0.7, "s");
+    reverse.tag("reverse-geocoded");
+    reverse.add_evidence(
+        Evidence::new("geocode", "Reverse geocode for -27.481234,153.012345")
+            .with_attr("latitude", "-27.481234")
+            .with_attr("longitude", "153.012345")
+            .with_attr("house_number", "12")
+            .with_attr("road", "Smith Street")
+            .with_attr("suburb", "Toowong")
+            .with_attr("state", "Queensland")
+            .with_attr("postcode", "4066")
+            .with_attr("country_code", "AU")
+            .with_attr("matched_lat", "-27.481100")
+            .with_attr("matched_lon", "153.012345")
+            .with_attr("place_rank", "30"),
+    );
+    let csv = crate::app::export::entities_to_csv(&[gps, reverse], "s");
+    let label = "≈ 12 Smith Street, Toowong QLD 4066";
+    assert!(
+        csv.contains(label),
+        "the fixture must carry a street label: {csv}"
+    );
+    assert!(looks_like_hse_csv(&csv), "the sniffed prefix is unchanged");
+
+    let (ents, _stats) = parse_hse_csv(&csv, "s2");
+    assert_eq!(ents.len(), 2, "exactly the exported entities: {ents:?}");
+    assert_eq!(
+        ents.iter()
+            .filter(|e| e.kind == EntityKind::Address)
+            .count(),
+        1,
+        "no Address minted from the label"
+    );
+    for e in &ents {
+        assert!(!e.value.contains("QLD 4066"), "{e:?}");
+        assert!(!e.tags.iter().any(|t| t.contains("Toowong QLD")), "{e:?}");
+        assert!(
+            !e.evidence.iter().any(|ev| ev.summary.contains("QLD 4066")
+                || ev.attributes.values().any(|v| v.contains("QLD 4066"))),
+            "{e:?}"
+        );
+    }
+}
+
+/// REQ-GEOLABEL-014: a coordinate never re-imports finer than the scan that
+/// found it graded it. The CSV keeps each record's source and summary but not
+/// its attributes, so a beaconDB fix recorded at `accuracy_m=1500` (a suburb,
+/// ±2 km) came back graded by the Wi-Fi class default — a street, ±80 m — and
+/// a forward geocode capped at a city-only input came back a 40 m rooftop. The
+/// export's `fix_radius_m` column is carried back as a radius floor.
+#[test]
+fn a_reimported_coordinate_is_never_finer_than_its_export() {
+    use crate::core::entity::{Entity, Evidence};
+    use crate::core::place::{FixGrain, assess};
+    let mut wifi = Entity::new(EntityKind::Coordinates, "-27.481234,153.012345", 0.8, "s");
+    wifi.add_evidence(
+        Evidence::new("beacondb", "beaconDB Wi-Fi position").with_attr("accuracy_m", "1500"),
+    );
+    let mut capped = Entity::new(EntityKind::Coordinates, "-27.391234,153.112345", 0.6, "s");
+    capped.add_evidence(
+        Evidence::new("geocode", "Geocoded \"Toowong\"")
+            .with_attr("input_address", "Toowong")
+            .with_attr("place_type", "house"),
+    );
+    let originals = [wifi, capped];
+    let csv = crate::app::export::entities_to_csv(&originals, "s");
+    assert!(
+        csv.lines()
+            .next()
+            .is_some_and(|h| h.ends_with(",fix_radius_m")),
+        "{csv}"
+    );
+    let (ents, _stats) = parse_hse_csv(&csv, "s2");
+    assert_eq!(ents.len(), originals.len());
+    for original in &originals {
+        let back = ents
+            .iter()
+            .find(|e| e.value == original.value)
+            .expect("re-imported");
+        let (was, now) = (assess(original), assess(back));
+        assert!(now.radius_m >= was.radius_m, "{was:?} -> {now:?}");
+        assert!(now.grain >= was.grain, "{was:?} -> {now:?}");
+        assert!(now.grain >= FixGrain::Suburb, "{now:?}");
+        // And the round trip is stable: exporting the re-import carries the
+        // same radius again.
+        let again = crate::app::export::entities_to_csv(std::slice::from_ref(back), "s2");
+        let (ents2, _) = parse_hse_csv(&again, "s3");
+        assert_eq!(assess(&ents2[0]).radius_m, now.radius_m);
+    }
+}
+
+/// REQ-GEOLABEL-021: a REDACTED CSV export re-imports at the grade it was
+/// exported at. The importer rebuilds each row with `Entity::new`, which
+/// normalises a redacted `-33.8,151.0` to `-33.800000,151.000000` and keeps
+/// the printed form only in `raw_value`. The table-key gate read `value`
+/// alone, so the Parramatta geocode came back as the REGIONS row "21" ("New
+/// South Wales (region-level fix)") and an inner-west Melbourne fix as the
+/// Footscray anchor; and the precision floor's `min(value, raw_value)` let
+/// the normalisation's stripped zeros grade `-28.0,153.0` a region beside
+/// `-27.9,153.2` at a locality.
+#[test]
+fn a_redacted_export_re_imports_at_its_exported_grade() {
+    use crate::core::entity::{Entity, Evidence};
+    use crate::core::place::{FixGrain, assess, describe};
+    let geocode = |value: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, value, 0.7, "s");
+        e.add_evidence(
+            Evidence::new("geocode", "Geocoded \"12 Church St, Parramatta NSW 2150\"")
+                .with_attr("input_address", "12 Church St, Parramatta NSW 2150")
+                .with_attr("place_type", "house"),
+        );
+        e
+    };
+    // Parramatta → -33.8,151.0 (REGIONS "21"); inner-west Melbourne →
+    // -37.8,144.9 (the Footscray anchor); and the parity pair.
+    let mut originals = vec![
+        geocode("-33.815678,151.003456"),
+        geocode("-37.812345,144.891234"),
+        geocode("-27.960000,153.040000"),
+        geocode("-27.912345,153.212345"),
+    ];
+    crate::util::redact::redact_entities(&mut originals);
+    let printed: Vec<&str> = originals.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(
+        printed,
+        ["-33.8,151.0", "-37.8,144.9", "-28.0,153.0", "-27.9,153.2"]
+    );
+    let csv = crate::app::export::entities_to_csv(&originals, "s");
+    let (back, _stats) = parse_hse_csv(&csv, "s2");
+    assert_eq!(back.len(), originals.len());
+    for (original, back) in originals.iter().zip(&back) {
+        assert_ne!(back.value, original.value, "Entity::new normalised it");
+        let (was, now) = (assess(original), assess(back));
+        assert_eq!(
+            now.grain, was.grain,
+            "{} : {was:?} -> {now:?}",
+            original.value
+        );
+        assert_eq!(now.grain, FixGrain::Locality, "{now:?}");
+        assert_eq!(now.stands_for, None, "{}: {now:?}", original.value);
+        let ctx = crate::core::place::PlaceContext::default();
+        let label = describe(back, &ctx).expect("labelled").text;
+        assert!(
+            !label.contains("region-level") && !label.contains("city centroid"),
+            "{}: {label}",
+            original.value
+        );
+    }
+    assert_eq!(assess(&back[2]).radius_m, assess(&back[3]).radius_m);
+}
+
+/// REQ-GEOLABEL-020: a country signal's CSV row claims no radius — the
+/// `fix_radius_m` cell is empty, never a disc — and re-imports as the country
+/// through the tags the row keeps.
+#[test]
+fn a_country_signal_re_imports_as_the_country_with_no_radius() {
+    use crate::core::entity::{Entity, Evidence};
+    use crate::core::place::{FixGrain, assess};
+    let mut e = Entity::new(EntityKind::Coordinates, "-41.2865,174.7762", 0.5, "s");
+    for t in ["geoint", "phone-prefix", "coarse", "country:NZ"] {
+        e.tag(t);
+    }
+    e.add_evidence(
+        Evidence::new("geo_intel", "Phone prefix -> New Zealand for +6444990000")
+            .with_attr("country_code", "NZ")
+            .with_attr("method", "e164-prefix"),
+    );
+    let csv = crate::app::export::entities_to_csv(std::slice::from_ref(&e), "s");
+    let row = csv.lines().nth(1).expect("a row");
+    assert!(row.ends_with(','), "the fix_radius_m cell is empty: {row}");
+    let (back, _stats) = parse_hse_csv(&csv, "s2");
+    let p = assess(&back[0]);
+    assert_eq!(p.grain, FixGrain::Country, "{p:?}");
+    assert!(p.radius_m.is_infinite(), "{p:?}");
+    assert!(!back[0].tags.iter().any(|t| t.starts_with("fix-radius:")));
+}
+
+/// REQ-GEOLABEL-028: a point a scan read as a CITY re-imports as that city,
+/// though a country signal sits on it too. The CSV keeps records' sources and
+/// summaries, not their attributes, so the record that explained the value
+/// comes back bare: an unclassified module's Address centroid loses the
+/// `addr_entity_uid` that made it a centroid, and a `geo_intel` IP
+/// geolocation loses every attribute and becomes indistinguishable from the
+/// prefix record's own stripped copy. Either way the country signal was read
+/// again, overriding the row's `fix-grain:locality` stamp and its
+/// `fix_radius_m`, and "Sydney (city centroid)" / "Wellington" re-imported
+/// as "Australia" / "New Zealand (country-level signal)". A grade the
+/// exporting scan wrote is itself an explanation: neither the stamp nor the
+/// radius cell is ever written for a country signal.
+#[test]
+fn a_city_read_under_a_country_signal_re_imports_as_the_city() {
+    use crate::core::entity::{Entity, Evidence};
+    use crate::core::place::{FixBasis, FixGrain, assess};
+    let with = |value: &str, tags: &[&str], records: Vec<Evidence>| {
+        let mut e = Entity::new(EntityKind::Coordinates, value, 0.6, "s");
+        for t in tags {
+            e.tag(*t);
+        }
+        for r in records {
+            e.add_evidence(r);
+        }
+        crate::core::engine::enrich_geospatial(&mut e);
+        e
+    };
+    // An `asic_persons` register address carried onto Sydney's row by the
+    // address pass, merged with a `.au` email's ccTLD point.
+    let sydney = with(
+        "-33.8688,151.2093",
+        &["geoint", "coarse", "cctld-inferred", "addr-derived"],
+        vec![
+            Evidence::new(
+                "asic_persons",
+                "Inline geocode of address '10 Smith St, Sydney NSW 2000' → -33.8688,151.2093",
+            )
+            .with_attr("addr_entity_uid", "a1")
+            .with_attr("place_type", "city"),
+            Evidence::new("email_locale", "Email domain ccTLD .au indicates Australia")
+                .with_attr("cctld", "au")
+                .with_attr("locale", "en-au")
+                .with_attr("country", "Australia"),
+        ],
+    );
+    // A `geo_intel` IP geolocation on Wellington's row, merged with a `+64`
+    // prefix point.
+    let wellington = with(
+        "-41.2865,174.7762",
+        &["geoint", "phone-prefix", "coarse", "country:NZ"],
+        vec![
+            Evidence::new("geo_intel", "IP geo for 203.0.113.9 via ipapi.co")
+                .with_attr("ip", "203.0.113.9")
+                .with_attr("city", "Wellington")
+                .with_attr("source", "ipapi.co"),
+            Evidence::new("geo_intel", "Phone prefix -> New Zealand for +6444990000")
+                .with_attr("country", "New Zealand")
+                .with_attr("country_code", "NZ")
+                .with_attr("method", "e164-prefix"),
+        ],
+    );
+    let originals = [sydney, wellington];
+    for e in &originals {
+        let p = assess(e);
+        assert_eq!(p.grain, FixGrain::Locality, "{} before: {p:?}", e.value);
+        assert!(e.has_tag("fix-grain:locality"), "{:?}", e.tags);
+    }
+    let csv = crate::app::export::entities_to_csv(&originals, "s");
+    let (back, _stats) = parse_hse_csv(&csv, "s2");
+    assert_eq!(back.len(), originals.len());
+    for (original, back) in originals.iter().zip(&back) {
+        let (was, now) = (assess(original), assess(back));
+        assert_ne!(now.basis, FixBasis::CountrySignal, "{now:?}");
+        assert_eq!(
+            now.grain, was.grain,
+            "{}: {was:?} -> {now:?}",
+            original.value
+        );
+        assert_eq!(now.stands_for, was.stands_for, "{now:?}");
+        assert!(now.radius_m.is_finite(), "{now:?}");
+        let ctx = crate::core::place::PlaceContext::default();
+        let label = crate::core::place::describe(back, &ctx)
+            .expect("labelled")
+            .text;
+        assert!(!label.contains("country-level"), "{label}");
+    }
+}
+
+/// REQ-SCANSTATUS-013: `hse import`'s summary of a batch skipped for size is
+/// the stored line and the recorded skip — no separate "Note: … skipped"
+/// line counting the file before preparation beside it.
+#[test]
+fn an_import_summary_states_a_size_skip_once() {
+    let batch = crate::app::persist::PersistedBatch {
+        entities: 5001,
+        relations: 0,
+        correlations: 0,
+        enriched: false,
+        finalise_error: Some(
+            "relation and correlation pass failed: skipped — 5001 entities exceed the \
+             5000-entity import enrichment cap"
+                .into(),
+        ),
+    };
+    let lines = super::import_summary_lines("imp", &batch);
+    assert_eq!(lines.len(), 2, "{lines:#?}");
+    assert!(
+        lines[0].starts_with("  Stored:    scan imp (5001 entities,"),
+        "{lines:#?}"
+    );
+    assert!(
+        lines[1].starts_with("  Warning:   the scan is stored but INCOMPLETE"),
+        "{lines:#?}"
+    );
+    assert!(lines.iter().all(|l| !l.contains("Note:")), "{lines:#?}");
+}
+
+/// REQ-SCANSTATUS-036: each `hse import` owns its own scan. The id was
+/// `import-{tag}-{unix_now()}`, so two imports started in the same second —
+/// a `for f in part*.csv; do hse import $f; done` loop over small parts —
+/// shared one scan row: the second rewrote the first's finished row back to
+/// `Running`, stored its batch into the same scan, and claimed only its own
+/// count and shortfall.
+#[test]
+fn two_imports_started_in_one_second_own_two_scans() {
+    for tag in ["json", "html", "local", "hsecsv", "combolist"] {
+        let first = super::import_scan_id(tag);
+        let second = super::import_scan_id(tag);
+        assert_ne!(first, second, "{tag}: one scan id for two imports");
+        for sid in [&first, &second] {
+            assert!(sid.starts_with(&format!("import-{tag}-")), "{sid}");
+        }
+    }
+}

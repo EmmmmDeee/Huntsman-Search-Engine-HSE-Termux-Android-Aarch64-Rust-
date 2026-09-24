@@ -277,6 +277,10 @@ impl super::Store {
             if already_observed_by_this_scan {
                 merged.corroboration = stored_corr.max(incoming_corr).max(1);
             }
+            // The merge unions tags, so a point stored at one grain and
+            // re-stamped coarser since would carry both stamps; one point has
+            // one grain, the coarsest (REQ-GEOLABEL-005).
+            crate::core::place::grain::collapse_fix_grain_tags(&mut merged.tags);
             // `merge`'s evidence/tag Vecs are appended in whatever order the two
             // sides happened to be in (see `Entity::absorb`) — that order depends
             // on which of the two same-uid entities reached storage first, so
@@ -348,6 +352,7 @@ impl super::Store {
                     let prior_corr = copy.corroboration;
                     copy.merge(entity.clone());
                     copy.corroboration = prior_corr.max(incoming_corr).max(1);
+                    crate::core::place::grain::collapse_fix_grain_tags(&mut copy.tags);
                     copy.canonicalize_order();
                     serde_json::to_string(&copy)?
                 });
@@ -465,7 +470,19 @@ impl super::Store {
         for ev in self.events_for_scan(scan_id)? {
             if let crate::core::event::EventKind::EntityFound { entity } = ev.kind {
                 match map.get_mut(&entity.uid) {
-                    Some(existing) => existing.merge(entity),
+                    Some(existing) => {
+                        existing.merge(entity);
+                        // The live dispatch re-decides a merged point's
+                        // country/timezone after the merge (the merge unions
+                        // tags, so a box answer and a later provider answer
+                        // would otherwise both stand); the events hold the
+                        // un-reconciled emissions, so the rebuild must make the
+                        // same decision or a recovered scan contradicts the
+                        // finalised one (REQ-GEO-016). Same function, idempotent.
+                        if existing.kind == crate::core::entity::EntityKind::Coordinates {
+                            crate::core::engine::enrich_geospatial(existing);
+                        }
+                    }
                     None => {
                         map.insert(entity.uid.clone(), entity);
                     }

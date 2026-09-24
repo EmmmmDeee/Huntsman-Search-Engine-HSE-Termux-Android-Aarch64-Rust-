@@ -166,7 +166,8 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
     }
     println!();
 
-    findings::print(&by_kind, plan.letter(Appendix::Hints));
+    let places = crate::core::place::PlaceContext::for_scan(entities, &scan.id);
+    findings::print(&by_kind, plan.letter(Appendix::Hints), &places);
 
     if !plan.analysis.is_empty() {
         linkage.print(correlations, &Labeller::new(entities));

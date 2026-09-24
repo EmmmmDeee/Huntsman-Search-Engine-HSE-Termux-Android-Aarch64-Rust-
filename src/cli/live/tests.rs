@@ -238,6 +238,7 @@ use super::*;
             scan_id: "s".into(),
             entity_count: 5,
             status,
+            finalise_incomplete: false,
         };
         // A clean finish keeps the success line; an aborted or failed sweep must
         // NOT read as success in this fully-unredacted live view (same defect
@@ -249,4 +250,36 @@ use super::*;
         let failed = render_event(&ev(ScanStatus::Failed));
         assert!(failed.contains("failed"), "got: {failed}");
         assert!(!failed.contains("scan complete"));
+        // REQ-SCANSTATUS-015: a completion whose finalise recorded a shortfall
+        // reads partial here, as every export of it does.
+        let partial = render_event(&EventKind::ScanComplete {
+            scan_id: "s".into(),
+            entity_count: 5,
+            status: ScanStatus::Complete,
+            finalise_incomplete: true,
+        });
+        assert!(partial.contains("PARTIAL"), "got: {partial}");
+        assert!(partial.contains("finalise incomplete"), "got: {partial}");
+    }
+
+    /// REQ-SWEEP-006: a BreachSweep persisted before `dispatched` existed renders
+    /// what it recorded, never "0/N dispatched" for a sweep that ran.
+    #[test]
+    fn render_event_reads_a_legacy_breach_sweep_as_unknown_dispatch() {
+        let legacy = render_event(&EventKind::BreachSweep {
+            anchors: 3,
+            probes: 12,
+            dropped: 0,
+            dispatched: None,
+            stopped: None,
+        });
+        assert_eq!(legacy, "  breach sweep: 12 probes from 3 anchors");
+        let recorded = render_event(&EventKind::BreachSweep {
+            anchors: 3,
+            probes: 12,
+            dropped: 0,
+            dispatched: Some(0),
+            stopped: Some("max_entities=2500 reached".into()),
+        });
+        assert!(recorded.contains("0/12 probes dispatched"), "{recorded}");
     }

@@ -233,6 +233,8 @@ fn no_string_tier_survives_for_cross_domain_mailboxes() {
             "jstewart@navy.mil",
             "jstewart",
             "jstewart",
+            Some(&["jstewart".to_string()]),
+            Some(&["jstewart".to_string()]),
             false,
             false,
         )
@@ -270,19 +272,35 @@ fn corroboration_still_links_mailboxes_at_different_domains() {
 }
 
 /// Two addresses at the SAME domain are not the cross-domain case and keep the
-/// full ladder — `j.smith@acme.com` and `jsmith@acme.com` are one mail system's
-/// aliases for, very likely, one person.
+/// full ladder. Where the provider documents the two spellings as ONE mailbox
+/// — Gmail ignores dots — they share an account key and are
+/// handle-equivalent. Elsewhere a dot is part of the mailbox's name
+/// (`canonical_email_mailbox` keeps it for exactly this reason), so
+/// `j.smith@acme.com` and `jsmith@acme.com` are two accounts: still a lead on
+/// the substring tier, never "equivalent" (Copilot review of #649 — this test
+/// used to assert handle-equivalence for that pair, which is the same
+/// separator fold that fused `_ianthorpe_` with `ianthorpe`).
 #[test]
 fn same_domain_mailboxes_keep_the_full_string_ladder() {
-    let a = Entity::new(EntityKind::Email, "j.smith@acme.com", 0.7, "s");
-    let b = Entity::new(EntityKind::Email, "jsmith@ACME.com", 0.7, "s");
+    let a = Entity::new(EntityKind::Email, "j.smith@gmail.com", 0.7, "s");
+    let b = Entity::new(EntityKind::Email, "jsmith@GMAIL.com", 0.7, "s");
     let out = resolve_coreferences(&[a, b], DEFAULT_MIN_SCORE, 50);
-    assert_eq!(out.len(), 1, "same-domain aliases still co-refer");
+    assert_eq!(out.len(), 1, "one Gmail account's two spellings co-refer");
     assert!(
         out[0].signals.contains(&"handle-equivalence"),
         "domain comparison is case-insensitive: {:?}",
         out[0].signals
     );
+
+    let a = Entity::new(EntityKind::Email, "j.smith@acme.com", 0.7, "s");
+    let b = Entity::new(EntityKind::Email, "jsmith@ACME.com", 0.7, "s");
+    let out = resolve_coreferences(&[a, b], 0.0, 50);
+    assert_eq!(
+        out.len(),
+        1,
+        "not suppressed like a cross-domain pair — a lead"
+    );
+    assert_eq!(out[0].signals, vec!["substring-overlap"], "{out:?}");
 }
 
 /// The cross-KIND tie handle-equivalence was designed for is untouched — the
@@ -364,4 +382,105 @@ fn the_observed_false_positive_cluster_collapses_completely() {
          source; got {former}"
     );
     assert!(former > DEFAULT_MIN_SCORE);
+}
+
+/// REQ-IDENTITY-GATE-002 (scan 7258fc07, target "Ian Thorpe"): the name-token
+/// tier was plain containment, so "Ian Thorpe" ↔ `damianthorpe` scored a 0.62
+/// match with no corroboration; the substring tier tied "Ian Thorpe" to
+/// "Megan Thorpe" on `anthorpe`. A shared surname is not a shared identity.
+#[test]
+fn name_token_tier_respects_token_boundaries() {
+    let person = Entity::new(EntityKind::Person, "Ian Thorpe", 0.7, "s");
+    for h in ["damianthorpe", "brianthorpe", "christianthorpe", "aidan_thorpe"] {
+        let user = Entity::new(EntityKind::Username, h, 0.7, "s");
+        let out = resolve_coreferences(&[person.clone(), user], DEFAULT_MIN_SCORE, 50);
+        assert!(out.is_empty(), "{h} does not spell Ian Thorpe: {out:?}");
+    }
+    // Two differently named people get no string tier.
+    assert!(
+        string_signal(
+            "Ian Thorpe",
+            "Megan Thorpe",
+            "ianthorpe",
+            "meganthorpe",
+            None,
+            None,
+            true,
+            true
+        )
+        .is_none()
+    );
+    // A handle that does spell the name keeps its tier.
+    let user = Entity::new(EntityKind::Username, "ian_thorpe_au", 0.7, "s");
+    let out = resolve_coreferences(&[person, user], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].signals.contains(&"name-token-match"));
+}
+
+/// Copilot review of #649: between two account handles, handle-equivalence
+/// compared `identity_norm` forms (alphanumerics only), so Instagram
+/// `_ianthorpe_` and GitHub `ianthorpe` scored 0.80 "equivalent" — exactly the
+/// graph-promotion floor, so `derive_coreferences` asserted `AliasOf` between
+/// two accounts the resolver keeps apart (REQ-RESOLVE-001). The tier now
+/// requires a shared account key; a separator-only difference falls to the
+/// substring tier, still reported as a lead in this read-only view but below
+/// the promotion floor.
+#[test]
+fn separator_variants_are_a_lead_not_handle_equivalent() {
+    const PROMOTE_FLOOR: f64 = 0.80; // relation::builders::COREF_PROMOTE_MIN_SCORE
+    let ig = Entity::new(EntityKind::Username, "_ianthorpe_", 0.8, "s");
+    let gh = Entity::new(EntityKind::Username, "ianthorpe", 0.8, "s");
+    let out = resolve_coreferences(&[ig, gh], 0.0, 50);
+    assert_eq!(out.len(), 1, "still surfaced as a lead: {out:?}");
+    assert_eq!(out[0].signals, vec!["substring-overlap"], "{out:?}");
+    assert!(out[0].score < PROMOTE_FLOOR, "below promotion: {out:?}");
+
+    // A Person keeps `identity_norm` equality — a name has no separators to
+    // preserve — so the subject still reaches their own handle.
+    let person = Entity::new(EntityKind::Person, "Ian Thorpe", 0.8, "s");
+    let handle = Entity::new(EntityKind::Username, "ianthorpe", 0.8, "s");
+    let out = resolve_coreferences(&[person, handle], 0.0, 50);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].signals.contains(&"handle-equivalence"), "{out:?}");
+}
+
+/// The account keys keep the cross-kind links that ARE one account: a mailbox
+/// to the same-spelled username (literal key), and a Gmail mailbox to its
+/// dot-free spelling (Gmail ignores dots) — but not an Outlook one.
+#[test]
+fn mailbox_and_username_are_handle_equivalent_by_account_key() {
+    let signals = |a: (EntityKind, &str), b: (EntityKind, &str)| {
+        let out = resolve_coreferences(
+            &[
+                Entity::new(a.0, a.1, 0.8, "s"),
+                Entity::new(b.0, b.1, 0.8, "s"),
+            ],
+            0.0,
+            50,
+        );
+        out.first().map(|c| c.signals.clone()).unwrap_or_default()
+    };
+    let eq = vec!["handle-equivalence"];
+    assert_eq!(
+        signals(
+            (EntityKind::Email, "ian.thorpe@gmail.com"),
+            (EntityKind::Username, "ian.thorpe")
+        ),
+        eq
+    );
+    assert_eq!(
+        signals(
+            (EntityKind::Email, "ian.thorpe@gmail.com"),
+            (EntityKind::Username, "ianthorpe")
+        ),
+        eq
+    );
+    assert_ne!(
+        signals(
+            (EntityKind::Email, "ian.thorpe@outlook.com"),
+            (EntityKind::Email, "ianthorpe@outlook.com")
+        ),
+        eq,
+        "off Gmail a dot distinguishes two mailboxes"
+    );
 }

@@ -624,14 +624,54 @@ pub(in crate::modules::search_engines) fn url_matches_target(url: &str, terms: &
         // at 0.50 (REQ-SEARCH-004, the URL-path sibling of REQ-SEARCH-003's
         // snippet gate). `/mike`, `/mike-smith`, `/users/mike` still match.
         Some((only, [])) => names_word_token(&path, only),
-        // A multi-part name: the LAST significant token is the surname — the
-        // distinctive anchor. A common FIRST name alone cross-attributes
-        // different people (a "Cindy He" UNSW staff page matched "Cindy
-        // Haynes"), so require the surname in the path; given names corroborate
-        // but cannot stand in for it. As a whole token: the surname `haynes`
-        // names `/cindy-haynes` and `/c-haynes`, never `/haynesville`.
+        // A multi-part term set (an email local part `alice.smith`, a mononym
+        // `FullName` the person parser could not split): the LAST significant
+        // token is the distinctive anchor. A common FIRST token alone
+        // cross-attributes different people (a "Cindy He" UNSW staff page
+        // matched "Cindy Haynes"), so require the last one in the path. As a
+        // whole token: `haynes` names `/cindy-haynes`, never `/haynesville`.
+        // A structured person name goes through [`url_matches_person_target`]
+        // and a multi-part handle through [`url_matches_handle_target`], which
+        // require the given name / every handle part as well.
         Some((surname, _given)) => names_word_token(&path, surname),
     }
+}
+
+/// Check whether a URL's path names a **person** `full_name` target: the
+/// surname with a compatible given name beside it, read by the identity gate's
+/// own parser ([`crate::core::scan::text_names_person`]) — `/in/ian-thorpe-4b0`,
+/// `/i-thorpe` and `/thorpe-ian` name "Ian Thorpe"; `/Bill-Thorpe/Florida` and
+/// `/Mark-Thorpe` do not. The surname alone is every relative's and
+/// namesake's: a live "Ian Thorpe" scan minted thirteen Spokeo pages for Bill,
+/// David, Ivan, Mark and other Thorpes as the subject's own `Url`s at 0.50 on
+/// it (REQ-SEARCH-008). A mononym, which has no given/surname structure, falls
+/// back to [`url_matches_target`].
+pub(in crate::modules::search_engines) fn url_matches_person_target(
+    url: &str,
+    full_name: &str,
+    terms: &[String],
+) -> bool {
+    match crate::core::scan::text_names_person(&url_path_lower(url), full_name) {
+        Some(named) => named,
+        None => url_matches_target(url, terms),
+    }
+}
+
+/// Check whether a URL's path names a **username** target. A handle of two or
+/// more parts (`ian_thorpe` → `ian`, `thorpe`) is named only by the conjunction
+/// of its parts as whole path tokens — the same shape as the Organisation gate
+/// ([`url_matches_org_target`]): one part alone is a different handle
+/// (`/thorpe`, `/mark.thorpe.9`), REQ-SEARCH-008. A single-part handle IS its
+/// own anchor and keeps [`url_matches_target`].
+pub(in crate::modules::search_engines) fn url_matches_handle_target(
+    url: &str,
+    terms: &[String],
+) -> bool {
+    if terms.len() < 2 {
+        return url_matches_target(url, terms);
+    }
+    let path = url_path_lower(url);
+    terms.iter().all(|t| names_word_token(&path, t))
 }
 
 /// Check whether a URL's path names an **organisation** target. An org's

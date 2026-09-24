@@ -1751,6 +1751,401 @@ fn a_truncated_complete_scan_is_caveated_and_an_exhaustive_one_is_not() {
     }
 }
 
+/// `FinaliseTally` is the one authority for the `scan.error` a finalise writes
+/// when the store refused some of what the scan produced (Copilot review of
+/// #649). Its message lists only the artefacts that lost a write, in finalise
+/// order, with the FIRST error — and keeps the entity-only wording the live
+/// engine wrote before the tally existed.
+#[test]
+fn finalise_tally_message_lists_each_short_write_in_finalise_order() {
+    let clean = FinaliseTally::default();
+    assert_eq!(clean.message(), None, "nothing attempted, nothing lost");
+
+    let mut all_ok = FinaliseTally::default();
+    all_ok.add(FinaliseWrite::Entities, 40, 0, None);
+    all_ok.add(FinaliseWrite::Relations, 12, 0, None);
+    assert!(all_ok.record(FinaliseWrite::Correlations, Ok::<(), &str>(())));
+    assert_eq!(all_ok.message(), None, "every write persisted");
+    assert_eq!(all_ok.persisted(FinaliseWrite::Relations), 12);
+
+    // Entity-only: the pre-tally live-engine wording, word for word.
+    let mut ents = FinaliseTally::default();
+    ents.add(FinaliseWrite::Entities, 50, 3, Some("disk full".into()));
+    assert_eq!(
+        ents.message().as_deref(),
+        Some("3/50 entities failed to persist: disk full")
+    );
+
+    // Relations then correlations, recorded out of order: listed in finalise
+    // order, the first RECORDED error kept.
+    let mut t = FinaliseTally::default();
+    assert!(!t.record(FinaliseWrite::Correlations, Err::<(), _>("locked")));
+    for i in 0..40 {
+        let outcome: Result<(), &str> = if i < 2 { Err("busy") } else { Ok(()) };
+        t.record(FinaliseWrite::Relations, outcome);
+    }
+    for _ in 0..8 {
+        t.record(FinaliseWrite::Correlations, Ok::<(), &str>(()));
+    }
+    assert_eq!(
+        t.message().as_deref(),
+        Some("2/40 relations, 1/9 correlations failed to persist: locked")
+    );
+    assert_eq!(t.failed(FinaliseWrite::Relations), 2);
+    assert_eq!(t.persisted(FinaliseWrite::Correlations), 8);
+    // Deterministic: the same tally renders the same text.
+    assert_eq!(t.message(), t.clone().message());
+}
+
+/// The rest of what a finalise can fail to complete (review of #649, second
+/// round): a pass that failed outright — the correlator on a store read error
+/// or a panic, the cross-scan route learning, the boost pass — and the two
+/// writes that used to be log lines, the address-fold detach and the
+/// corroboration-boost re-persist. One message, deterministic: the write
+/// clause first, then one clause per failed pass, in finalise order.
+#[test]
+fn finalise_tally_message_names_failed_passes_and_every_write_kind() {
+    let mut passes = FinaliseTally::default();
+    passes.pass_failed(FinalisePass::CorroborationBoosts, "locked");
+    passes.pass_failed(
+        FinalisePass::Correlation,
+        crate::core::engine::CORRELATION_PASS_PANICKED,
+    );
+    // The first reason per pass is kept.
+    passes.pass_failed(FinalisePass::Correlation, "a later reason");
+    assert_eq!(
+        passes.message().as_deref(),
+        Some("correlation pass failed: panicked; corroboration boost pass failed: locked"),
+        "passes alone, in finalise order"
+    );
+    // An import's size skip leads: it precedes every other pass.
+    passes.pass_failed(FinalisePass::ImportEnrichment, "skipped");
+    assert!(
+        passes
+            .message()
+            .is_some_and(|m| m.starts_with("relation and correlation pass failed: skipped; ")),
+        "{:?}",
+        passes.message()
+    );
+    assert_eq!(
+        passes.pass_failure(FinalisePass::Correlation),
+        Some(crate::core::engine::CORRELATION_PASS_PANICKED)
+    );
+
+    let mut t = FinaliseTally::default();
+    t.add(
+        FinaliseWrite::CorroborationBoosts,
+        3,
+        3,
+        Some("full".into()),
+    );
+    t.add(FinaliseWrite::AddressFolds, 2, 2, Some("busy".into()));
+    t.add(FinaliseWrite::Entities, 40, 0, None);
+    t.pass_failed(FinalisePass::CrossScanRoutes, "unreadable");
+    assert_eq!(
+        t.message().as_deref(),
+        Some(
+            "2/2 address folds, 3/3 corroboration boosts failed to persist: full; \
+             cross-scan route pass failed: unreadable"
+        ),
+        "writes in finalise order with the first RECORDED error, then the pass"
+    );
+}
+
+/// A `Complete` scan whose finalise recorded a persistence shortfall is not a
+/// complete answer: `completeness_caveat` says so, ahead of any truncation —
+/// the same classification (and order) the export headers use.
+#[test]
+fn a_complete_scan_missing_stored_records_is_caveated() {
+    let mut s = scan_for(ScanStatus::Complete, Some(StopReason::NoMoreCandidates));
+    s.error = Some("2/40 relations failed to persist: disk full".into());
+    let caveat = s
+        .completeness_caveat("this scan")
+        .expect("a scan missing stored records must be caveated");
+    assert!(caveat.starts_with("this scan finished"), "{caveat}");
+    assert!(
+        caveat.contains("2/40 relations"),
+        "names the loss: {caveat}"
+    );
+    assert!(caveat.contains("not a finding"), "{caveat}");
+
+    // Ahead of a truncation: the stronger statement wins.
+    s.stop_reason = Some(StopReason::MaxEntities(500));
+    let caveat = s.completeness_caveat("this scan").expect("still caveated");
+    assert!(caveat.contains("its finalise did not complete"), "{caveat}");
+
+    // …and a whole scan stays silent.
+    s.error = None;
+    s.stop_reason = Some(StopReason::NoMoreCandidates);
+    assert_eq!(s.completeness_caveat("this scan"), None);
+}
+
+/// REQ-SCANSTATUS-017: an import stored partial because its relation and
+/// correlation pass was skipped for size is not told to "re-run the scan".
+/// A re-run of an import is a live scan of its label — it neither enriches
+/// the stored entities nor lifts the cap — and a re-import of the same data
+/// hits the same cap. The caveat names the remedy that works, without
+/// promising the links between batches it cannot derive; every other
+/// shortfall on a live scan keeps the re-run advice (an import's is
+/// REQ-SCANSTATUS-020's).
+#[test]
+fn an_import_skipped_for_size_is_not_told_to_re_run() {
+    let mut tally = FinaliseTally::default();
+    tally.import_enrichment_skipped(6000, 5000);
+    let err = tally.message().expect("the skip is recorded");
+    assert!(FinaliseTally::records_import_enrichment_skip(&err), "{err}");
+    let mut s = scan_for(ScanStatus::Complete, None);
+    s.error = Some(err);
+    let caveat = s.completeness_caveat("the import").expect("caveated");
+    assert!(!caveat.contains("re-run the scan"), "{caveat}");
+    assert!(caveat.contains("smaller batches"), "{caveat}");
+    assert!(caveat.contains("6000 entities exceed"), "{caveat}");
+    // The batch remedy does not promise the whole dossier's graph: each
+    // batch is enriched on its own, so cross-batch links are never derived.
+    assert!(!caveat.contains("to get its relations"), "{caveat}");
+    assert!(
+        caveat.ends_with("links between entities in different batches are not derived"),
+        "{caveat}"
+    );
+
+    // Behind a write shortfall, the skip still decides the remedy.
+    let mut both = FinaliseTally::default();
+    both.add(FinaliseWrite::Entities, 3, 1, Some("busy".into()));
+    both.import_enrichment_skipped(6000, 5000);
+    assert!(FinaliseTally::records_import_enrichment_skip(
+        &both.message().expect("recorded")
+    ));
+
+    // Control: on a LIVE scan's row any other shortfall is rebuilt by a
+    // re-run, and says so — a correlation pass that failed is not mistaken
+    // for the import's pass.
+    assert_eq!(s.origin, ScanOrigin::Live, "fixture: a live scan's row");
+    for other in [
+        "2/40 relations failed to persist: disk full",
+        "correlation pass failed: panicked",
+    ] {
+        assert!(
+            !FinaliseTally::records_import_enrichment_skip(other),
+            "{other}"
+        );
+        s.error = Some(other.into());
+        let caveat = s.completeness_caveat("this scan").expect("caveated");
+        assert!(
+            caveat.ends_with("re-run the scan to rebuild it"),
+            "{caveat}"
+        );
+    }
+}
+
+/// REQ-SCANSTATUS-020: no shortfall on an import is sent to a re-run. The
+/// store refusing 2 of 40 relation writes on a web upload left the row
+/// `Complete` with that shortfall, and the caveat said "re-run the scan to
+/// rebuild it": `/scans/{id}/rerun` is a live network scan of the import's
+/// label, which rebuilds none of the import's relations. The remedy now
+/// follows the row's origin, which the import's row lifecycle records.
+#[test]
+fn an_import_shortfall_is_not_told_to_re_run() {
+    let mut import = scan_for(ScanStatus::Complete, None);
+    import.origin = ScanOrigin::Import;
+    // A refused write and a pass that failed on a store read; a pass that
+    // panicked is `an_import_whose_correlator_panicked_is_not_told_to_re_import`.
+    for shortfall in [
+        "2/40 relations failed to persist: busy",
+        "correlation pass failed: database is locked",
+    ] {
+        import.error = Some(shortfall.into());
+        let caveat = import.completeness_caveat("the import").expect("caveated");
+        assert!(!caveat.contains("re-run the scan"), "{caveat}");
+        assert!(caveat.contains("a re-run is a live scan"), "{caveat}");
+        assert!(
+            caveat.ends_with("re-import the data to rebuild it"),
+            "{caveat}"
+        );
+    }
+
+    // The origin survives the store's JSON round trip, and a live scan's
+    // row is written exactly as before the field existed.
+    let json = serde_json::to_string(&import).expect("serialises");
+    let back: Scan = serde_json::from_str(&json).expect("round-trips");
+    assert_eq!(back.origin, ScanOrigin::Import);
+    let live = scan_for(ScanStatus::Complete, None);
+    let json = serde_json::to_string(&live).expect("serialises");
+    assert!(!json.contains("origin"), "{json}");
+}
+
+/// REQ-SCANSTATUS-021: the import pipeline is deterministic over the same
+/// data, so a correlation pass that panicked on an import panics again on a
+/// re-import of it. The caveat told the operator to "re-import the data to
+/// rebuild it", and a re-import gave the same partial scan. A panic is now
+/// told apart from a refused write or a failed store read: re-importing
+/// rebuilds the rest of a shortfall, never the correlations.
+#[test]
+fn an_import_whose_correlator_panicked_is_not_told_to_re_import() {
+    let mut import = scan_for(ScanStatus::Complete, None);
+    import.origin = ScanOrigin::Import;
+    let mut tally = FinaliseTally::default();
+    tally.pass_failed(FinalisePass::Correlation, CORRELATION_PASS_PANICKED);
+    let panicked = tally.message().expect("recorded");
+    assert!(FinaliseTally::records_correlation_panic(&panicked));
+    assert!(FinaliseTally::records_only_correlation_panic(&panicked));
+
+    import.error = Some(panicked.clone());
+    let caveat = import.completeness_caveat("the import").expect("caveated");
+    assert!(
+        !caveat.contains("re-import the data to rebuild it"),
+        "{caveat}"
+    );
+    assert!(!caveat.contains("re-run the scan"), "{caveat}");
+    assert!(
+        caveat.contains("neither re-running nor re-importing can rebuild it"),
+        "{caveat}"
+    );
+
+    // Beside a refused write, re-importing rebuilds that write; whether it
+    // rebuilds the correlations is not known (REQ-SCANSTATUS-027, below).
+    tally.add(FinaliseWrite::Relations, 40, 2, Some("busy".into()));
+    let both = tally.message().expect("recorded");
+    assert!(FinaliseTally::records_correlation_panic(&both));
+    assert!(!FinaliseTally::records_only_correlation_panic(&both));
+    import.error = Some(both);
+    let caveat = import.completeness_caveat("the import").expect("caveated");
+    assert!(
+        caveat.contains("re-importing the data rebuilds the rest of it"),
+        "{caveat}"
+    );
+    assert!(
+        !caveat.contains("re-import the data to rebuild it"),
+        "{caveat}"
+    );
+
+    // A store read the correlator failed on is not a panic.
+    assert!(!FinaliseTally::records_correlation_panic(
+        "correlation pass failed: database is locked"
+    ));
+    // A live scan re-collects its data, so its remedy is unchanged.
+    let mut live = scan_for(ScanStatus::Complete, None);
+    live.error = Some(panicked);
+    let caveat = live.completeness_caveat("the scan").expect("caveated");
+    assert!(
+        caveat.ends_with("re-run the scan to rebuild it"),
+        "{caveat}"
+    );
+}
+
+/// REQ-SCANSTATUS-027: a correlation panic recurs on a re-import only when
+/// the pass reads the same data. The correlator reads the scan's stored
+/// relations, and every other clause an import records beside a panic — a
+/// relation write the store refused, a derivation its time budget cut —
+/// means those relations were incomplete. The caveat asserted, as fact, that
+/// a re-import "panics again" and cannot rebuild the correlations, which a
+/// re-import that stores the whole graph can. It now says it may or may not,
+/// and keeps the certain wording for a panic over the whole graph.
+#[test]
+fn a_correlation_panic_over_an_incomplete_graph_is_not_called_certain() {
+    let mut import = scan_for(ScanStatus::Complete, None);
+    import.origin = ScanOrigin::Import;
+    let thinned: [fn(&mut FinaliseTally); 2] = [
+        |t| t.derivation_cut("structural"),
+        |t| t.add(FinaliseWrite::Relations, 40, 2, Some("busy".into())),
+    ];
+    for thin in thinned {
+        let mut tally = FinaliseTally::default();
+        thin(&mut tally);
+        tally.pass_failed(FinalisePass::Correlation, CORRELATION_PASS_PANICKED);
+        let err = tally.message().expect("recorded");
+        import.error = Some(err.clone());
+        let caveat = import.completeness_caveat("the import").expect("caveated");
+        assert!(!caveat.contains("panics again"), "{caveat}");
+        assert!(!caveat.contains("not its correlations"), "{caveat}");
+        assert!(
+            caveat.contains("may or may not rebuild its correlations"),
+            "{err}: {caveat}"
+        );
+    }
+
+    // Over the whole graph, the pass meets the same panic on the same data.
+    let mut tally = FinaliseTally::default();
+    tally.pass_failed(FinalisePass::Correlation, CORRELATION_PASS_PANICKED);
+    import.error = tally.message();
+    let caveat = import.completeness_caveat("the import").expect("caveated");
+    assert!(
+        caveat.contains("neither re-running nor re-importing can rebuild it"),
+        "{caveat}"
+    );
+    assert!(caveat.contains("meets the same panic"), "{caveat}");
+
+    // A correlator its budget cut is not a panic: a re-import can finish it.
+    let mut tally = FinaliseTally::default();
+    tally.correlation_cut(12, 40);
+    let err = tally.message().expect("recorded");
+    assert_eq!(
+        err,
+        "correlation pass failed: stopped at its time budget after 12 of its 40 rules"
+    );
+    import.error = Some(err);
+    let caveat = import.completeness_caveat("the import").expect("caveated");
+    assert!(
+        caveat.ends_with("re-import the data to rebuild it"),
+        "{caveat}"
+    );
+}
+
+/// REQ-SCANSTATUS-022: an aborted scan's finalise still runs and still
+/// records its shortfall, which the event, the webhook, `hse live` and the
+/// web log announce as partial. The caveat never read `error` on an abort
+/// and called its entities "final", so `hse scan`, `hse export` and the
+/// dossier never named the shortfall.
+#[test]
+fn an_aborted_scan_with_a_shortfall_names_it() {
+    let mut aborted = scan_for(ScanStatus::Aborted, None);
+    let whole = aborted.completeness_caveat("the scan").expect("caveated");
+    assert!(whole.contains("are final"), "{whole}");
+    assert!(!aborted.finalise_incomplete());
+
+    aborted.error = Some("5/40 relations failed to persist: busy".into());
+    assert!(aborted.finalise_incomplete());
+    let caveat = aborted.completeness_caveat("the scan").expect("caveated");
+    assert!(caveat.contains("(aborted)"), "{caveat}");
+    assert!(
+        caveat.contains("its finalise did not complete (5/40 relations failed to persist: busy)"),
+        "{caveat}"
+    );
+    assert!(!caveat.contains("are final"), "{caveat}");
+    assert!(caveat.contains("re-run the scan to rebuild it"), "{caveat}");
+    assert!(
+        caveat.ends_with("no further data will arrive for this scan"),
+        "{caveat}"
+    );
+    // The remedy follows the origin, as on a complete scan: a web upload
+    // cancelled at its second boundary is an import.
+    aborted.origin = ScanOrigin::Import;
+    let caveat = aborted.completeness_caveat("the upload").expect("caveated");
+    assert!(
+        caveat.contains("re-import the data to rebuild it"),
+        "{caveat}"
+    );
+}
+
+/// REQ-SCANSTATUS-024: a relation derivation its time budget cut short is
+/// recorded, between an import's size skip and the correlation pass, in fixed
+/// words around the last pass that completed.
+#[test]
+fn a_derivation_cut_is_recorded_in_finalise_order() {
+    let mut t = FinaliseTally::default();
+    t.pass_failed(FinalisePass::Correlation, "locked");
+    t.derivation_cut("resolution");
+    assert_eq!(
+        t.message().as_deref(),
+        Some(
+            "relation derivation failed: stopped at its time budget after the resolution \
+             pass; correlation pass failed: locked"
+        )
+    );
+    assert!(!FinaliseTally::records_import_enrichment_skip(
+        &t.message().expect("recorded")
+    ));
+}
+
 #[test]
 fn completeness_caveat_names_the_subject_it_was_given() {
     // Callers refer to the scan differently ("scan latest", "scan a1b2", "this
@@ -2072,6 +2467,51 @@ fn person_names_compatible_reads_given_and_surname_positions() {
     assert_eq!(person_names_compatible(seed, "Mr Thorpe"), None);
 }
 
+/// REQ-SEARCH-008: a search result names the subject only when the surname
+/// carries a compatible given name — the surname alone is every relative's and
+/// namesake's, and a live "Ian Thorpe" scan minted the Spokeo `Bill-Thorpe`
+/// page and "JAMIE THORPE PLUMBING PTY LTD" as the subject's own on it.
+#[test]
+fn text_names_person_needs_a_compatible_given_name_beside_the_surname() {
+    let seed = "Ian Thorpe";
+    for named in [
+        "Ian Thorpe - Commercial Portfolio Management Pty Ltd | LinkedIn",
+        "/in/ian-thorpe-4b080523/",
+        "/i-thorpe",
+        "/thorpe-ian",
+        "thorpe, ian",
+        "THORPE IAN J",
+        "Ian J Thorpe",
+        "Ian James Thorpe, director",
+        "Dr. I. Thorpe OAM",
+    ] {
+        assert_eq!(text_names_person(named, seed), Some(true), "{named:?}");
+    }
+    for other in [
+        "bill thorpe florida",
+        "https://www.spokeo.com/Mark-Thorpe",
+        "JAMIE THORPE PLUMBING PTY LTD - ABN 74067173835",
+        "Thorpe said the club would appeal",
+        "Mark Thorpe I think",
+        "Ian Symes-Thorpe",
+        "ianthorpe",
+        "Ian and the Thorpe family",
+    ] {
+        assert_eq!(text_names_person(other, seed), Some(false), "{other:?}");
+    }
+    // A mononym subject has no structure to test: the caller decides.
+    assert_eq!(text_names_person("x", "Cher"), None);
+    // A double-barrelled subject surname is matched as its sub-token run.
+    assert_eq!(
+        text_names_person("ian-symes-thorpe", "Ian Symes-Thorpe"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("ian thorpe", "Ian Symes-Thorpe"),
+        Some(false)
+    );
+}
+
 #[test]
 fn only_a_person_structurally_unlike_the_subject_is_another_named_person() {
     use crate::core::entity::EntityKind;
@@ -2124,4 +2564,254 @@ fn person_surname_is_read_through_the_name_parser() {
         Some("thorpe")
     );
     assert_eq!(person_surname("Thorpey"), None);
+}
+
+#[test]
+fn handle_names_person_needs_the_given_name_beside_the_surname() {
+    // REQ-IDENTITY-GATE-002 (scan 7258fc07, target "Ian Thorpe"): a ≥4-char
+    // substring bound every surname-bearing handle to the subject.
+    let subject = "Ian Thorpe";
+    for handle in [
+        "ianthorpe",
+        "ian.thorpe",
+        "_ianthorpe_",
+        "ianthorpe26",
+        "ianthorpeofficial",
+        "ian.thorpe@gmail.com",
+        "ianjthorpe",
+        "ian_j_thorpe",
+        "i.thorpe",
+        "ithorpe",
+        "thorpe_ian",
+        "thorpeian",
+        "thorpe_i",
+        "thorpei",
+        "iant",
+    ] {
+        assert_eq!(
+            handle_names_person(subject, handle),
+            Some(true),
+            "{handle} spells {subject}"
+        );
+    }
+    for handle in [
+        "carolthorpe70",
+        "megthorpeart",
+        "aidan_thorpe",
+        "damianthorpe",
+        "brianthorpe",
+        "christianthorpe",
+        "tharleschorpe",
+        "thorpe",
+        "thorpedo_m",
+        "jack_thorpe",
+        "john.thorpe@yahoo.com",
+        "thorpe_ivan",
+        "ithorpedo",
+    ] {
+        assert_eq!(
+            handle_names_person(subject, handle),
+            Some(false),
+            "{handle} does not spell {subject}"
+        );
+    }
+    // Initial forms and a compound/apostrophised surname.
+    assert_eq!(
+        handle_names_person("Kyle Diegmann", "kdiegmann"),
+        Some(true)
+    );
+    assert_eq!(handle_names_person("Haigen Bamford", "haigenb"), Some(true));
+    assert_eq!(
+        handle_names_person("Ian O'Neill", "ian.o.neill"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("Ian Symes-Thorpe", "ian_symes_thorpe"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("John Smith", "johnsmith_au"),
+        Some(true)
+    );
+    // A mononym has no structure to test.
+    assert_eq!(handle_names_person("Thorpey", "thorpey"), None);
+}
+
+/// REQ-SEARCH-012: a URL path has only `-` separators, so the subject's own
+/// slug carrying their middle name, or every part of a hyphenated given name,
+/// failed the "a middle name must be space-separated" rule and the subject's
+/// own profile URL was not minted. Tokens the subject's name does not carry
+/// still need whitespace.
+#[test]
+fn text_names_person_reads_the_subjects_own_middle_and_given_parts_across_any_separator() {
+    assert_eq!(
+        text_names_person("/in/ian-james-thorpe-1234", "Ian James Thorpe"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("/in/mary-jane-smith", "Mary-Jane Smith"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("/in/john-paul-george-smith", "John Paul George Smith"),
+        Some(true)
+    );
+    // A foreign middle token on a slug is still a double-barrelled surname …
+    assert_eq!(
+        text_names_person("/in/ian-symes-thorpe", "Ian James Thorpe"),
+        Some(false)
+    );
+    assert_eq!(
+        text_names_person("ian-symes-thorpe", "Ian Thorpe"),
+        Some(false)
+    );
+    // … and a slug of only the subject's middle name + surname names nobody.
+    assert_eq!(
+        text_names_person("/in/james-thorpe", "Ian James Thorpe"),
+        Some(false)
+    );
+}
+
+/// REQ-IDENTITY-GATE-003: a handle may spell the subject's full middle name —
+/// their own, run together or separated, or a foreign one as a whole run
+/// between separators — where a `-` before the surname still reads as a
+/// double-barrelled surname.
+#[test]
+fn handle_names_person_reads_a_full_middle_name() {
+    for handle in ["ian.james.thorpe", "ianjamesthorpe", "ian_james_thorpe_88"] {
+        assert_eq!(
+            handle_names_person("Ian James Thorpe", handle),
+            Some(true),
+            "{handle}"
+        );
+    }
+    assert_eq!(
+        handle_names_person("John Paul George Smith", "johnpaulgeorgesmith"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("John Paul George Smith", "john.george.smith"),
+        Some(true)
+    );
+    // A foreign middle name as its own run between separators.
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "ian.james.thorpe"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("Mary Jones", "mary.anne.jones"),
+        Some(true)
+    );
+    // Documented losses / refusals: a foreign middle run into its neighbours,
+    // a hyphen before the surname (a double-barrelled surname), a middle-name
+    // handle that does not start at the given name.
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "ianjamesthorpe"),
+        Some(false)
+    );
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "ian.symes-thorpe"),
+        Some(false)
+    );
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "brian.james.thorpe"),
+        Some(false)
+    );
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "ian.and.meg.thorpe"),
+        Some(false)
+    );
+}
+
+/// REQ-IDENTITY-GATE-003: names and handles are compared in one alphabet.
+/// Handles are ASCII, so an unfolded accented name judged every handle of a
+/// Vietnamese or Spanish subject "does not spell it", and its unaccented record
+/// "a different person" — vetoing ownership and co-reference for HSE's primary
+/// jurisdiction.
+#[test]
+fn person_name_gates_fold_diacritics_on_both_sides() {
+    assert_eq!(
+        handle_names_person("Nguyễn Văn An", "nguyenvanan"),
+        Some(true)
+    );
+    // NFD input (combining marks) folds the same as NFC.
+    assert_eq!(
+        handle_names_person("Nguye\u{0302}\u{0303}n Va\u{0306}n An", "nguyen.van.an"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("José García", "jose.garcia"),
+        Some(true)
+    );
+    assert_eq!(handle_names_person("José García", "josegarcia"), Some(true));
+    assert_eq!(
+        person_names_compatible("Nguyễn Văn An", "Nguyen Van An"),
+        Some(true)
+    );
+    assert_eq!(
+        person_names_compatible("José García", "Jose Garcia"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("/in/nguyen-van-an-12", "Nguyễn Văn An"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("Nguyễn Văn An - Giám đốc", "Nguyen Van An"),
+        Some(true)
+    );
+    // The fold is per character: a non-Latin name is kept, not emptied into a
+    // mononym, and still tells two people apart.
+    assert_eq!(
+        person_names_compatible("Иван Петров", "Иван Петров"),
+        Some(true)
+    );
+    assert_eq!(
+        person_names_compatible("Иван Петров", "Мария Петрова"),
+        Some(false)
+    );
+    assert_eq!(person_surname("Nguyễn Văn Ân").as_deref(), Some("an"));
+    // A different accented person stays different.
+    assert_eq!(
+        person_names_compatible("Nguyễn Văn An", "Trần Văn An"),
+        Some(false)
+    );
+}
+
+/// REQ-SEARCH-014: the one-letter tokens `a` and `i` are the English article
+/// and pronoun before they are initials. Read as initials in prose, `"Find a
+/// Baker near you"` named every Andrew Baker on the surname alone — the
+/// REQ-SEARCH-008 bypass reopened for every subject whose given name starts
+/// with A or I. A `.` (`"A. Baker"`) or a slug position (`/i-thorpe`) still
+/// marks them as initials, and every other letter is unaffected.
+#[test]
+fn the_article_and_the_pronoun_are_not_given_name_initials() {
+    for (text, seed) in [
+        ("Find a Baker near you", "Andrew Baker"),
+        ("He was a Thorpe by birth", "Alice Thorpe"),
+        ("Why I Thorpe-proofed my pool", "Ian Thorpe"),
+        ("Could I Thorpe", "Ian Thorpe"),
+        ("https://example.com/find-a-baker-near-you", "Andrew Baker"),
+        ("A Baker and a Thorpe walk into a bar", "Andrew Baker"),
+    ] {
+        assert_eq!(
+            text_names_person(text, seed),
+            Some(false),
+            "{text:?} / {seed:?}"
+        );
+    }
+    for (text, seed) in [
+        ("A. Baker, pastry chef", "Andrew Baker"),
+        ("Dr. I. Thorpe OAM", "Ian Thorpe"),
+        ("/i-thorpe", "Ian Thorpe"),
+        ("https://example.com/people/a-baker", "Andrew Baker"),
+        ("J Baker, Sydney", "John Baker"),
+        ("Andrew Baker", "Andrew Baker"),
+    ] {
+        assert_eq!(
+            text_names_person(text, seed),
+            Some(true),
+            "{text:?} / {seed:?}"
+        );
+    }
 }

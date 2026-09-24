@@ -139,13 +139,13 @@ fn forward_geocode_prefers_the_authoritative_country_code_over_the_crude_box() {
 }
 
 #[test]
-fn reverse_in_australia_by_country_code_is_a_strong_anchor() {
+fn reverse_in_australia_by_country_code_is_on_region_but_not_verified() {
     let data = resp(serde_json::json!({
         "display_name": "Brisbane City, QLD, Australia",
         "address": { "city": "Brisbane", "state": "Queensland", "country_code": "au" }
     }));
-    let e = build_reverse_entity(-27.4766, 153.0166, &data, "scan");
-    assert!((e.confidence - confidence::STRONG).abs() < 1e-9);
+    let e = build_reverse_entity(-27.4766, 153.0166, &data, "scan").expect("resolves");
+    assert!((e.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
     assert!(e.has_tag("au-relevant"));
     assert!(e.has_tag("country:AU"));
     assert!(e.has_tag("au-state:QLD"));
@@ -158,7 +158,7 @@ fn reverse_off_region_by_country_code_is_a_candidate() {
         "display_name": "Manhattan, New York, USA",
         "address": { "city": "New York", "country_code": "us" }
     }));
-    let e = build_reverse_entity(40.7128, -74.0060, &data, "scan");
+    let e = build_reverse_entity(40.7128, -74.0060, &data, "scan").expect("resolves");
     assert!((e.confidence - confidence::LOW).abs() < 1e-9);
     assert!(e.has_tag("candidate"));
     assert!(e.has_tag("country:US"));
@@ -169,12 +169,20 @@ fn reverse_off_region_by_country_code_is_a_candidate() {
 fn reverse_without_country_code_falls_back_to_the_bounding_box() {
     // No country code: an AU coordinate is still recognised on-region via
     // the offline bounding box, while a foreign one stays Unknown (neutral).
-    let bare = resp(serde_json::json!({ "display_name": "somewhere" }));
-    let au = build_reverse_entity(-33.8688, 151.2093, &bare, "scan");
-    assert!((au.confidence - confidence::STRONG).abs() < 1e-9);
+    let bare = resp(serde_json::json!({
+        "display_name": "somewhere",
+        "address": { "road": "Main Street", "city": "Somewhere" }
+    }));
+    let au = build_reverse_entity(-33.8688, 151.2093, &bare, "scan").expect("resolves");
+    assert!((au.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
     assert!(au.has_tag("au-relevant"));
 
-    let foreign = build_reverse_entity(48.8566, 2.3522, &bare, "scan");
+    // With no address components at all, nothing resolved: no Address (never
+    // a display-name string or a "-" placeholder).
+    let nothing = resp(serde_json::json!({ "display_name": "somewhere" }));
+    assert!(build_reverse_entity(-33.8688, 151.2093, &nothing, "scan").is_none());
+
+    let foreign = build_reverse_entity(48.8566, 2.3522, &bare, "scan").expect("resolves");
     assert!((foreign.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
     assert!(!foreign.has_tag("au-relevant"));
     assert!(!foreign.has_tag("candidate"));
@@ -410,4 +418,101 @@ fn the_fallback_decoder_returns_none_for_a_non_answer() {
 fn the_fallback_decoder_returns_some_for_a_real_result() {
     let body = r#"[{"lat":"-33.8688","lon":"151.2093","display_name":"Sydney NSW"}]"#;
     assert_eq!(super::decode_forward_body(body).expect("decodes").len(), 1);
+}
+
+/// REQ-GEO-010: a reverse geocode is the nearest proper address, built from
+/// Nominatim's structured fields — never its `display_name`, which at zoom 18
+/// leads with the business at the point — and one lookup is never Verified.
+/// Scan 7258fc07 minted "Kazan Dining, 25, Martin Place, …" at 0.78 (VERIFIED,
+/// single source) from a search snippet's Sydney city centroid, and the
+/// address parser then read "Kazan Dining" as the city.
+#[test]
+fn reverse_geocode_is_the_nearest_proper_address_not_the_poi_and_never_verified_from_one_lookup() {
+    let data = resp(serde_json::json!({
+        "name": "Kazan Dining",
+        "display_name": "Kazan Dining, 25, Martin Place, Wynyard, Sydney, New South Wales, 2000, Australia",
+        "address": {"house_number":"25","road":"Martin Place","suburb":"Sydney","city":"Sydney",
+                    "state":"New South Wales","postcode":"2000","country":"Australia","country_code":"au"}
+    }));
+    let e = build_reverse_entity(-33.8688, 151.2093, &data, "s").expect("resolves");
+    assert_eq!(
+        e.value,
+        "25 Martin Place, Sydney, New South Wales, 2000, Australia"
+    );
+    assert!(!e.value.contains("Kazan"));
+    assert!(e.c_effective() < crate::core::entity::Classification::VERIFIED_MIN);
+    assert!(e.has_tag("nearest-address") && e.has_tag("reverse-geocoded"));
+    assert_eq!(
+        e.evidence[0]
+            .attributes
+            .get("nearest_feature")
+            .map(String::as_str),
+        Some("Kazan Dining")
+    );
+    let p = crate::util::geohash::parse_address(&e.value);
+    assert_eq!(p.city.as_deref(), Some("Sydney"));
+    assert_eq!(p.street.as_deref(), Some("25 Martin Place"));
+    assert_eq!(p.postal_code.as_deref(), Some("2000"));
+    // Nothing resolvable -> no Address, never "-" or a POI name.
+    assert!(
+        build_reverse_entity(
+            -33.8688,
+            151.2093,
+            &resp(serde_json::json!({"name": "Kazan Dining", "display_name": "Kazan Dining"})),
+            "s"
+        )
+        .is_none()
+    );
+}
+
+/// REQ-GEOLABEL-006: the nearest address to a point is a lookup BY the point,
+/// not an observation of anyone there — its record is marked inferred (shown
+/// "(inferred)" in the dossier and the debug bundle).
+#[test]
+fn reverse_geocode_evidence_is_inferred() {
+    let data = resp(serde_json::json!({
+        "name": "Kazan Dining",
+        "address": {"house_number":"25","road":"Martin Place","city":"Sydney",
+                    "state":"New South Wales","postcode":"2000","country_code":"au"}
+    }));
+    let e = build_reverse_entity(-33.8676, 151.2099, &data, "s").expect("resolves");
+    assert!(!e.evidence.is_empty());
+    assert!(
+        e.evidence.iter().all(|ev| ev.is_inferred),
+        "{:?}",
+        e.evidence
+    );
+}
+
+/// REQ-GEOLABEL-002: the reverse leg records where the matched OSM object lies
+/// (`jsonv2` sends `lat`/`lon` as strings), its `place_rank`, and the house
+/// number and road SEPARATELY — what the place label needs to decide whether
+/// the nearest address is close enough to name a street or a house. Without
+/// them every observation is an unknown distance away and names a suburb at
+/// best.
+#[test]
+fn reverse_geocode_records_the_matched_object_rank_and_parts() {
+    let data = resp(serde_json::json!({
+        "name": "Kazan Dining",
+        "lat": "-33.8676123",
+        "lon": 151.2099,
+        "place_rank": 30,
+        "address": {"house_number":"25","road":"Martin Place","city":"Sydney",
+                    "state":"New South Wales","postcode":"2000","country_code":"au"}
+    }));
+    let e = build_reverse_entity(-33.8676, 151.2099, &data, "s").expect("resolves");
+    let a = &e.evidence[0].attributes;
+    let get = |k: &str| a.get(k).map(String::as_str);
+    assert_eq!(get("matched_lat"), Some("-33.867612"));
+    assert_eq!(get("matched_lon"), Some("151.209900"));
+    assert_eq!(get("place_rank"), Some("30"));
+    assert_eq!(get("house_number"), Some("25"));
+    assert_eq!(get("road"), Some("Martin Place"));
+    // An answer without them records nothing rather than a guess.
+    let bare = resp(serde_json::json!({"address": {"road": "Martin Place", "city": "Sydney"}}));
+    let e = build_reverse_entity(-33.8676, 151.2099, &bare, "s").expect("resolves");
+    let a = &e.evidence[0].attributes;
+    for k in ["matched_lat", "matched_lon", "place_rank", "house_number"] {
+        assert!(!a.contains_key(k), "{k} must be absent: {a:?}");
+    }
 }

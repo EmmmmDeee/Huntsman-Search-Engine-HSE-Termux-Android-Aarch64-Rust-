@@ -81,7 +81,7 @@ pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
             // len>=4 exists to reject, and this rule's blast radius spans
             // independent secrets (cross-corpus), unlike AU-047/AU-106's
             // single-secret co-occurrence. Delegates to the canonical guard
-            // (core::relation::builders::persona_key uses the same one) so the
+            // (core::relation::builders::persona_keys uses the same one) so the
             // two can't drift; the all-digit check stays explicit since
             // is_anchorable_handle doesn't apply it ("10001" is length-5,
             // non-generic, and would otherwise pass).
@@ -323,7 +323,7 @@ mod tests {
         // handle is "cj" (2 chars) instead of "bobby" (5) — short enough that
         // two unrelated people plausibly picked it independently on unrelated
         // sites. Must NOT fire: is_pivotable requires is_anchorable_handle's
-        // len>=4 floor, the same guard persona_key applies for identical
+        // len>=4 floor, the same guard persona_keys applies for identical
         // reasons, so a coincidental short-handle collision across two
         // independent secrets no longer fabricates a Critical cross-identity
         // link between strangers.

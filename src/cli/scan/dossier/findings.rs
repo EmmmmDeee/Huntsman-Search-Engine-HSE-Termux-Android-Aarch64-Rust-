@@ -107,7 +107,13 @@ pub(super) fn group_by_kind(entities: &[Entity]) -> BTreeMap<String, Vec<&Entity
 /// `hints_letter` is the letter the optimisation-hints appendix will print
 /// under, taken from the same plan that letters the back matter — so the
 /// empty-set cross-reference below points at a section that provably exists.
-pub(super) fn print(by_kind: &BTreeMap<String, Vec<&Entity>>, hints_letter: Option<char>) {
+/// `places` is the scan's own stored records a coordinate's place label may
+/// read (`core::place::PlaceContext::for_scan`).
+pub(super) fn print(
+    by_kind: &BTreeMap<String, Vec<&Entity>>,
+    hints_letter: Option<char>,
+    places: &crate::core::place::PlaceContext,
+) {
     println!("━━━ PART I — FINDINGS BY ENTITY TYPE ━━━");
     println!();
 
@@ -124,10 +130,15 @@ pub(super) fn print(by_kind: &BTreeMap<String, Vec<&Entity>>, hints_letter: Opti
     for kind_name in order_dossier_kinds(by_kind) {
         let group = &by_kind[kind_name];
         println!("━━━ {} ({}) ━━━", kind_heading(kind_name), group.len());
+        // Once per section, above the first place line: what a place label is
+        // and — as importantly — what it is not (REQ-GEOLABEL-002).
+        if kind_name == "coordinates" {
+            println!("  ({})", crate::core::place::PLACE_LEGEND);
+        }
         println!();
 
         for e in &sort_findings(group) {
-            print_finding(e);
+            print_finding(e, places);
         }
     }
 }
@@ -153,9 +164,18 @@ pub(super) fn sort_findings<'a>(group: &[&'a Entity]) -> Vec<&'a Entity> {
     sorted
 }
 
+/// The `place:` line printed under a coordinate's value — its nearest-place
+/// label, the fix's grain and radius, and the tier that named it — or `None`
+/// for any other kind or a point no tier can name. Pure, so the dossier line
+/// is tested without capturing stdout.
+pub(super) fn place_line(e: &Entity, places: &crate::core::place::PlaceContext) -> Option<String> {
+    crate::core::place::describe(e, places)
+        .map(|p| format!("    place: {}  {}", p.text, p.detail()))
+}
+
 /// One finding: the value, how well it is believed, its tags, the collection
 /// technique(s) that produced it, and every piece of evidence behind it.
-fn print_finding(e: &Entity) {
+fn print_finding(e: &Entity, places: &crate::core::place::PlaceContext) {
     println!(
         "  {} [{}]  conf={:.2}  c_eff={:.2}  corr={}",
         e.value,
@@ -164,6 +184,9 @@ fn print_finding(e: &Entity) {
         e.c_effective(),
         e.corroboration
     );
+    if let Some(line) = place_line(e, places) {
+        println!("{line}");
+    }
 
     if !e.tags.is_empty() {
         println!("    tags: {}", e.tags.join(", "));
@@ -194,11 +217,13 @@ fn print_finding(e: &Entity) {
         // dossier was the one consumer rendering all evidence as if it were
         // equal, direct observation:
         //   * non-corroborating — a self-enrichment/recall/cross-scan/consensus
-        //     pass that attaches real detail but never counts toward
-        //     `source_count`, so it must not read as independent confirmation;
+        //     pass, an annotation of the value, or a name-only match: real
+        //     detail that never counts toward `source_count`
+        //     (`Evidence::is_non_corroborating`, the same per-record test), so
+        //     it must not read as independent confirmation;
         //   * inferred — a derivation (name permuted from a username,
         //     coordinates computed from an address), not an observation.
-        let marker = if crate::core::entity::is_non_corroborating_source(&ev.source) {
+        let marker = if ev.is_non_corroborating() {
             "  (non-corroborating)"
         } else {
             ""

@@ -83,6 +83,13 @@ pub(super) fn primary_entities(
         // On either, flag the person for elevated due diligence and lead priority,
         // keeping the position Q-IDs for resolution. An OSINT SIGNAL for an analyst
         // to verify, never a sanctions determination.
+        //
+        // The flag stands only on an UNAMBIGUOUS item. When the search answer
+        // holds this label more than once, `mark_shared_labels` runs
+        // `util::namesake::mark_ambiguous`, which moves `pep` /
+        // `politically-exposed` off the head and into the evidence's
+        // `unresolved_flags` — the office belongs to one holder of the name,
+        // and the head fuses into the subject's anchor (REQ-NAMESAKE-002).
         let positions = claim_entity_ids(entity, "P39");
         let is_politician = occ.iter().any(|q| q == "Q82955");
         if !positions.is_empty() || is_politician {

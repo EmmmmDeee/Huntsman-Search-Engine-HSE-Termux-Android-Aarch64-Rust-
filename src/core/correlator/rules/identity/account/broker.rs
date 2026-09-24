@@ -208,7 +208,11 @@ fn au_register_authority(source: &str) -> Option<&'static str> {
 ///
 /// Operates on the already-quarantine-filtered confirmed set (the caller drops
 /// `candidate`s), so a namesake's speculative register hit can't manufacture a
-/// false confirmation. The ASIC sub-feeds collapse to one authority (see
+/// false confirmation — and, within that set, counts only records that
+/// corroborate the entity they sit on
+/// ([`Evidence::is_non_corroborating`](crate::core::entity::Evidence::is_non_corroborating)), so
+/// a register row matched by name alone (`Unverified`, merged onto the seed by
+/// value) cannot either. The ASIC sub-feeds collapse to one authority (see
 /// [`AUTHORITATIVE_AU_REGISTERS`]). Deterministic: authorities and linked uids
 /// are emitted in sorted (`BTreeSet`) order.
 pub(in crate::core::correlator) fn rule_au_088_authoritative_register_confirmation(
@@ -221,7 +225,17 @@ pub(in crate::core::correlator) fn rule_au_088_authoritative_register_confirmati
     let mut authorities: BTreeSet<&'static str> = BTreeSet::new();
     let mut uids: BTreeSet<String> = BTreeSet::new();
     for e in entities {
-        for ev in &e.evidence {
+        // Only a record that corroborates the entity it sits on can confirm
+        // the subject (`Evidence::is_non_corroborating`, the one per-record
+        // statement of that rule). A register that returned several
+        // same-name rows — two AHPRA practitioners called "David Smith" — has
+        // proved only that the NAME is registered: `mark_ambiguous` stamps
+        // each row `Unverified`, the rows merge by value onto the seed
+        // Person, and counting them here fired a High "Subject corroborated
+        // by 1 authoritative Australian public register" on a namesake's
+        // record (Critical beside one real register hit). An annotation of
+        // the value is likewise not a register's answer about the subject.
+        for ev in e.evidence.iter().filter(|ev| !ev.is_non_corroborating()) {
             if let Some(authority) = au_register_authority(ev.source.as_str()) {
                 authorities.insert(authority);
                 uids.insert(e.uid.clone());

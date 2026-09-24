@@ -264,3 +264,24 @@ async fn au_geo_live_resolves_sydney() {
             .any(|e| e.kind == EntityKind::Other("au-postcode".into()) && e.value == "2000")
     );
 }
+
+#[test]
+fn the_queried_point_is_annotated_not_corroborated() {
+    // REQ-GEO-008 (scan 7258fc07): the roll-up re-emitted the point at 0.85 as
+    // an independent source and graded a 0.72 city centroid VERIFIED.
+    let mut r = ModuleResult::new();
+    assemble("-33.8568,151.2153", &full_resolution(), "scan", &mut r);
+    let echo = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("the queried point");
+    crate::core::test_support::assert_point_annotation(echo);
+}
+
+/// REQ-GEO-012: every ASGS region is a lookup of the queried point, so the
+/// engine caps it to that point's confidence; the declaration is the switch.
+#[test]
+fn au_geo_declares_its_findings_derive_from_the_target() {
+    assert!(AuGeo.derives_from_target());
+}

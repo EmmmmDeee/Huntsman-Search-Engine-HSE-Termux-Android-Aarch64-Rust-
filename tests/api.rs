@@ -1346,7 +1346,7 @@ async fn dossier_upload_derives_and_persists_entity_relations() {
 #[tokio::test]
 async fn dossier_upload_reports_relation_count_as_a_true_zero_within_the_enrichment_cap() {
     // A dossier with no relatable entities (one bare email, no shared
-    // domain/URL to link) is well within `IMPORT_ENRICH_MAX_ENTITIES`, so
+    // domain/URL to link) is well within the import enrichment cap, so
     // enrichment actually runs and the reported zero is a REAL zero — not the
     // size-skip zero the over-cap case below also reports as `0`.
     let app = test_app("import-real-zero");
@@ -1369,11 +1369,12 @@ async fn dossier_upload_reports_relation_count_as_a_true_zero_within_the_enrichm
 
 #[tokio::test]
 async fn dossier_upload_flags_enrichment_skipped_above_the_entity_cap() {
-    // Above `IMPORT_ENRICH_MAX_ENTITIES` (5,000) the O(n²) relation/correlator
+    // Above the import enrichment cap (5,000) the O(n²) relation/correlator
     // pass is skipped for device safety — every entity is still persisted, but
     // the response must say so rather than reporting the SAME `relation_count:
     // 0` / `correlation_count: 0` a genuinely relation-free small dossier
-    // (the sibling test above) also reports.
+    // (the sibling test above) also reports. And the stored scan must not read
+    // whole (REQ-SCANSTATUS-010): it answers `partial`, with the skip named.
     let app = test_app("import-enrich-cap");
     let mut dossier = String::with_capacity(500_000);
     for i in 0..5_100u32 {
@@ -1402,6 +1403,13 @@ async fn dossier_upload_flags_enrichment_skipped_above_the_entity_cap() {
     );
     assert_eq!(json["relation_count"], 0);
     assert_eq!(json["correlation_count"], 0);
+    assert_eq!(json["status"], "partial", "{json}");
+    let err = json["finalise_error"].as_str().unwrap_or_default();
+    assert!(
+        err.starts_with("relation and correlation pass failed: skipped")
+            && err.contains("5000-entity import enrichment cap"),
+        "{json}"
+    );
 }
 
 #[tokio::test]
@@ -5946,5 +5954,89 @@ async fn forced_stealerlogs_upload_persists_paired_rows_detection_would_lose() {
             && r["password"] == "Hunter2pass"
             && r["pwned_at"] == "2026-05-20T21:00:00Z"),
         "login+password+pwned_at must survive paired: {rows:?}"
+    );
+}
+
+// ── Nearest-place labels on the API (REQ-GEOLABEL-002) ──────────────────
+
+/// The web Browse reads `/entities` and `/entities/filter`; both carry each
+/// coordinate's `place_label` through the export's one JSON helper, and the
+/// filtered view reads the WHOLE scan's reverse geocodes — a `kind=coordinates`
+/// filter has dropped the Address the label needs, and must not change it.
+/// `/location` carries the fused fix's label.
+#[tokio::test]
+async fn entity_listings_and_location_carry_the_place_label() {
+    use huntsman_search_engine::core::entity::Evidence;
+    let (app, store) = test_app_with_store("place_label");
+    let sid = "s-place";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::Email, "place@real.example"),
+        ))
+        .unwrap();
+    let mut gps = Entity::new(EntityKind::Coordinates, "-27.481234,153.012345", 0.9, sid);
+    gps.tag("au-state:QLD");
+    gps.tag("country:AU");
+    gps.add_evidence(Evidence::new("signal_radar", "GNSS fix").with_attr("accuracy_m", "8"));
+    let mut reverse = Entity::new(EntityKind::Address, "12 Smith Street, Toowong", 0.7, sid);
+    reverse.tag("reverse-geocoded");
+    reverse.add_evidence(
+        Evidence::new("geocode", "Reverse geocode for -27.481234,153.012345")
+            .with_attr("latitude", "-27.481234")
+            .with_attr("longitude", "153.012345")
+            .with_attr("house_number", "12")
+            .with_attr("road", "Smith Street")
+            .with_attr("suburb", "Toowong")
+            .with_attr("state", "Queensland")
+            .with_attr("postcode", "4066")
+            .with_attr("country_code", "AU")
+            .with_attr("matched_lat", "-27.480964")
+            .with_attr("matched_lon", "153.012345")
+            .with_attr("place_rank", "30"),
+    );
+    store.upsert_entity(&gps).unwrap();
+    store.upsert_entity(&reverse).unwrap();
+    let want =
+        "≈ 12 Smith Street, Toowong QLD 4066 (nearest address, ~30 m from the fix; fix ±8 m)";
+
+    for uri in [
+        format!("/api/v1/scans/{sid}/entities"),
+        format!("/api/v1/scans/{sid}/entities/filter?kind=coordinates"),
+    ] {
+        let resp = app.clone().oneshot(get(&uri)).await.unwrap();
+        assert_eq!(resp.status(), 200, "{uri}");
+        let json = body_json(resp).await;
+        let rows = json["entities"].as_array().expect("entities");
+        let coord = rows
+            .iter()
+            .find(|e| e["kind"] == "coordinates")
+            .unwrap_or_else(|| panic!("{uri}: no coordinate in {json}"));
+        assert_eq!(coord["place_label"]["text"], want, "{uri}");
+        assert_eq!(coord["place_label"]["label_grain"], "point", "{uri}");
+        // The entity's own wire shape is untouched (the web client
+        // deserialises these rows into `hse_core::Entity`).
+        assert_eq!(coord["value"], "-27.481234,153.012345");
+        for e in rows.iter().filter(|e| e["kind"] != "coordinates") {
+            assert!(e.get("place_label").is_none(), "{uri}: {e}");
+        }
+    }
+
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/location")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let text = json["best_location"]["place_label"]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no best-location label: {json}"));
+    // One GPS sighting: the ladder's single-signal rung, and the label names
+    // that kind of fix, never "fused" (REQ-GEOLABEL-017).
+    assert_eq!(json["best_location"]["source"], "single-signal", "{json}");
+    assert!(text.contains("(single-signal fix ±"), "{text}");
+    assert!(
+        !text.contains("Smith"),
+        "a best-location fix never names a street: {text}"
     );
 }

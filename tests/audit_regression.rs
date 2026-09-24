@@ -20,6 +20,7 @@ fn ent(kind: &str, value: &str, c_eff: f64, corroboration: u32, tags: &[&str]) -
         c_effective: c_eff,
         corroboration,
         sources: vec!["fixture".into()],
+        corroborating_sources: None,
         tags: tags.iter().map(|s| (*s).to_string()).collect(),
     }
 }
