@@ -358,7 +358,7 @@ function renderSweepHistory(sweeps){
     const cur = view.data && view.data.scan_id === sw.id;
     return `<tr${cur ? ' class="active"' : ''}>
       <td>${esc(fmtDate(sw.started_at))}</td>
-      <td>${statusPill(sw.status)}${sw.interrupted ? ' <span class="label label-warning">interrupted</span>' : ''}</td>
+      <td>${statusPill(sw.status, sw.finalise_incomplete)}${sw.interrupted ? ' <span class="label label-warning">interrupted</span>' : ''}</td>
       <td class="text-right">${dur == null ? '<span class="text-muted">—</span>' : (dur + 's')}</td>
       <td class="text-right">${sw.entity_count || 0}</td>
       <td class="text-right">

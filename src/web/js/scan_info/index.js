@@ -68,7 +68,7 @@ export async function renderScanInfo(v){
   v.innerHTML = `
     <div class="crumbs"><a href="#/scans">Scans</a> &raquo; ${esc(scan.target?.value||id)}</div>
     <h2>${esc(scan.target?.value||id)}
-        <small class="text-muted" style="margin-left:6px">${kindPill(scan.target?.kind)} ${statusPill(scan.status)}</small>
+        <small class="text-muted" style="margin-left:6px">${kindPill(scan.target?.kind)} ${statusPill(scan.status, scan.finalise_incomplete)}</small>
         <div class="pull-right">
           <button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button>
           ${(scan.status==='running'||scan.status==='pending')

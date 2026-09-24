@@ -319,6 +319,31 @@ fn a_fuzzy_neighbour_of_the_query_is_not_its_geocode() {
     assert_eq!(build_entities(&[hanoi], "ha noi, vietnam", "s").len(), 1);
 }
 
+/// REQ-OPENMETEO-004: a street named after a city is not that city. GeoNames
+/// ranks a whole-address query by population, so "Adelaide St, Brisbane City
+/// QLD" (a Brisbane CBD street) can come back as the capital "Adelaide",
+/// 1,600 km away — and "Adelaide" was a run of the query's words, so it
+/// anchored the Brisbane address in South Australia. A street's name matches
+/// only with its type; the Brisbane hit behind it anchors.
+#[test]
+fn a_city_a_street_is_named_after_is_not_the_streets_geocode() {
+    let adelaide = || res("Adelaide", -34.9285, 138.6007, "AU");
+    let brisbane = res("Brisbane", -27.4679, 153.0281, "AU");
+    let ents = build_entities(
+        &[adelaide(), brisbane],
+        "Adelaide St, Brisbane City QLD",
+        "s",
+    );
+    assert_eq!(ents.len(), 1, "{ents:?}");
+    assert_eq!(ents[0].value, "-27.467900,153.028100");
+    assert!(
+        build_entities(&[adelaide()], "Adelaide St, Brisbane City QLD", "s").is_empty(),
+        "the city the street is named after is not its geocode"
+    );
+    let sydney = res("Sydney", -33.8688, 151.2093, "AU");
+    assert!(build_entities(&[sydney], "Sydney Rd, Brunswick VIC", "s").is_empty());
+}
+
 /// REQ-OPENMETEO-003: the name check forgives how ONE name is written, so the
 /// operating jurisdiction's own place names still geocode. Queried live
 /// (2026-09-23): `"Ho Chi Minh, Vietnam"` returns GeoNames' English name

@@ -80,6 +80,32 @@ use crate::app::export::csv_escape;
     /// process is a scan nobody is running. Pre-fix it was histogrammed as
     /// `running`, so `/stats` reported a hard-killed scan as in progress
     /// forever — observed on `ff4d63c` after `kill -9` + restart.
+    /// REQ-SCANSTATUS-030: a scan row carries its derived
+    /// `finalise_incomplete`, so the web views that read rows (the scan list,
+    /// the scan-info Status row, the radar sweep list) can call a `Complete`
+    /// scan with a finalise shortfall partial, as its exports do. Pre-fix
+    /// only `interrupted` was derived, and every row view showed it green.
+    #[test]
+    fn a_scan_row_says_whether_its_finalise_was_cut_short() {
+        use super::scan_json;
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+
+        let mk = |status: ScanStatus, error: Option<&str>| {
+            let mut s = Scan::new("s", Target::new(TargetKind::Domain, "cloudflare.com"));
+            s.status = status;
+            s.error = error.map(str::to_string);
+            s
+        };
+        let in_flight = std::collections::HashSet::new();
+        let flag = |scan: &Scan| scan_json(scan, &in_flight)["finalise_incomplete"].clone();
+        let cut = "1/20 entities failed to persist: disk full";
+        assert_eq!(flag(&mk(ScanStatus::Complete, Some(cut))), serde_json::json!(true));
+        assert_eq!(flag(&mk(ScanStatus::Aborted, Some(cut))), serde_json::json!(true));
+        // Controls: a clean finish, and a failure (never "partial").
+        assert_eq!(flag(&mk(ScanStatus::Complete, None)), serde_json::json!(false));
+        assert_eq!(flag(&mk(ScanStatus::Failed, Some(cut))), serde_json::json!(false));
+    }
+
     #[test]
     fn a_running_row_with_no_handle_is_histogrammed_as_interrupted() {
         use super::{aggregate_scan_stats, is_interrupted};

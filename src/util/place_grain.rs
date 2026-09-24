@@ -459,12 +459,24 @@ fn is_house_number(w: &str) -> bool {
     !w.is_empty() && w.split('/').all(one)
 }
 
-/// A street found in one comma-separated segment: its grain, and the index of
+/// A street found in one comma-separated segment: its grain, the index of
 /// the first word AFTER it (the locality that shares the segment, as in
-/// `"45 Sydney Road Brunswick"`).
+/// `"45 Sydney Road Brunswick"`), and which of the segment's words are the
+/// street's NAME and which its TYPE — so a comparison can tell the place a
+/// street is named after (`"Adelaide"` of `"Adelaide St"`) from the street.
 struct SegmentStreet {
     grain: StreetGrain,
     rest_from: usize,
+    /// The words that name the street and are not its type: the words before
+    /// a trailing type (`"Adelaide"` of `"Adelaide St"`), after a leading one
+    /// up to a house number (`"Mayor"` of `"Calle Mayor 5"`), after the house
+    /// number of a type-less numbered street (`"Nguyễn Huệ"` of `"123 Nguyễn
+    /// Huệ"`). Empty for a compound word (`"Hauptstraße"`), whose one word is
+    /// name and type at once.
+    name: std::ops::Range<usize>,
+    /// The street's type word(s); empty when none was written (the type-less
+    /// numbered street).
+    kind: std::ops::Range<usize>,
 }
 
 /// The street one comma-separated segment names, if any.
@@ -485,13 +497,13 @@ fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
         .collect();
     let has_digit = |w: &&str| w.chars().any(|c| c.is_ascii_digit());
     let mut best: Option<SegmentStreet> = None;
-    let mut found = |grain: StreetGrain, rest_from: usize| {
+    let mut found = |street: SegmentStreet| {
         let keep = best.as_ref().is_none_or(|b| {
-            (grain == StreetGrain::House && b.grain == StreetGrain::Street)
-                || (grain == b.grain && rest_from > b.rest_from)
+            (street.grain == StreetGrain::House && b.grain == StreetGrain::Street)
+                || (street.grain == b.grain && street.rest_from > b.rest_from)
         });
         if keep {
-            best = Some(SegmentStreet { grain, rest_from });
+            best = Some(street);
         }
     };
     let numbered = |yes: bool| {
@@ -505,7 +517,12 @@ fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
         // A trailing type FOLLOWS a name word, so the `St` of `"St Kilda"` is a
         // saint, not a street.
         if i > 0 && STREET_TYPES.contains(&w.as_str()) {
-            found(numbered(words[..i].iter().any(has_digit)), i + 1);
+            found(SegmentStreet {
+                grain: numbered(words[..i].iter().any(has_digit)),
+                rest_from: i + 1,
+                name: 0..i,
+                kind: i..i + 1,
+            });
         }
         // A leading type STARTS the street line — first, or after only the
         // house number (`"12 Đường Láng"`) — and a name must follow it, so
@@ -520,8 +537,17 @@ fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
                         .eq(phrase.iter().copied())
                 {
                     let before = i > 0;
-                    let after = number_may_follow && words[end..].iter().any(has_digit);
-                    found(numbered(before || after), words.len());
+                    let number_at = words[end..]
+                        .iter()
+                        .position(has_digit)
+                        .filter(|_| number_may_follow)
+                        .map(|k| end + k);
+                    found(SegmentStreet {
+                        grain: numbered(before || number_at.is_some()),
+                        rest_from: words.len(),
+                        name: end..number_at.unwrap_or(words.len()),
+                        kind: i..end,
+                    });
                 }
             }
         }
@@ -534,7 +560,12 @@ fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
                 .iter()
                 .enumerate()
                 .any(|(j, o)| j != i && has_digit(o));
-            found(numbered(others), words.len());
+            found(SegmentStreet {
+                grain: numbered(others),
+                rest_from: words.len(),
+                name: i..i,
+                kind: i..i + 1,
+            });
         }
     }
     // Only when no type word placed the street: the rule claims the WHOLE
@@ -553,6 +584,8 @@ fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
         best = Some(SegmentStreet {
             grain: StreetGrain::House,
             rest_from: words.len(),
+            name: 1..words.len(),
+            kind: 0..0,
         });
     }
     best
@@ -734,6 +767,15 @@ fn place_tokens(s: &str) -> Vec<String> {
 ///   Vietnam"` — unless the name without it is a state or a country ("Kansas
 ///   City" is not Kansas, "Mexico City" not Mexico).
 ///
+/// A street is named after places, so the words of a street the query names
+/// ([`place_naming`]) match only together with the street's type:
+/// `"Adelaide Street"` is the `"Adelaide St, Brisbane City QLD"` asked about,
+/// but `"Adelaide"` — the South Australian capital, 1,600 km away — is not,
+/// nor is `"Sydney"` the place of `"Sydney Rd, Brunswick VIC"` or `"Huế"` of
+/// `"12 Phố Huế, Hà Nội"`. A numbered street written with no type word
+/// (`"123 Nguyễn Huệ, Quận 1"`) has no type to carry, so no name matches
+/// its words.
+///
 /// An empty `name` is the place of nothing.
 #[must_use]
 pub fn is_name_of_queried_place(name: &str, query: &str) -> bool {
@@ -755,13 +797,37 @@ pub fn is_name_of_queried_place(name: &str, query: &str) -> bool {
     if joined.is_empty() {
         return false;
     }
-    let have = place_tokens(query);
+    // The query's tokens, and for each street a segment names the token spans
+    // of its name and of its type (`SegmentStreet`).
+    let mut have: Vec<String> = Vec::new();
+    let mut streets = Vec::new();
+    for (words, street) in segments_with_streets(query) {
+        let mut starts = Vec::with_capacity(words.len() + 1);
+        for w in &words {
+            starts.push(have.len());
+            have.extend(place_tokens(w));
+        }
+        starts.push(have.len());
+        if let Some(st) = street {
+            let span = |r: std::ops::Range<usize>| starts[r.start]..starts[r.end];
+            streets.push((span(st.name), span(st.kind)));
+        }
+    }
+    // A run that reaches into a street's name is that street only when it
+    // also carries the street's type: `"Adelaide Street"` is the `"Adelaide
+    // St"` asked about, `"Adelaide"` is the city the street is named after.
+    let names_a_street_whole = |run: std::ops::Range<usize>| {
+        streets.iter().all(|(name, kind)| {
+            let touches = run.start < name.end && name.start < run.end;
+            !touches || (!kind.is_empty() && run.start <= kind.start && kind.end <= run.end)
+        })
+    };
     (0..have.len()).any(|i| {
         let mut run = String::new();
-        for t in &have[i..] {
+        for (j, t) in have.iter().enumerate().skip(i) {
             run.push_str(t);
             if run.len() >= joined.len() {
-                return run == joined;
+                return run == joined && names_a_street_whole(i..j + 1);
             }
         }
         false
@@ -1092,5 +1158,42 @@ mod city_grain_tests {
             "Ian Thorpe, North Carolina"
         ));
         assert!(!is_name_of_queried_place("", "anything"));
+    }
+
+    /// REQ-OPENMETEO-004: a street is named after places, and the place it is
+    /// named after is not the address. GeoNames answers a whole address by
+    /// population, so `"Adelaide St, Brisbane City QLD"` — a Brisbane CBD
+    /// street — can come back as the capital "Adelaide", 1,600 km away, and
+    /// its name was a run of the query's words. A street's name words match
+    /// only with its type.
+    #[test]
+    fn a_street_named_after_a_place_is_not_that_place() {
+        for (hit, query) in [
+            ("Adelaide", "Adelaide St, Brisbane City QLD"),
+            ("Sydney", "Sydney Rd, Brunswick VIC"),
+            ("Sydney", "45 Sydney Road Brunswick, VIC"),
+            ("St Kilda", "St Kilda Rd, Melbourne VIC"),
+            ("Huế", "12 Phố Huế, Hà Nội"),
+            ("Mayor", "Calle Mayor 5, Madrid"),
+            ("Nguyễn Huệ", "123 Nguyễn Huệ, Quận 1, Hồ Chí Minh"),
+        ] {
+            assert!(!is_name_of_queried_place(hit, query), "{hit} / {query}");
+        }
+        // Controls: the street itself, however its type is spelled, and a
+        // place the query names outside the street.
+        for (hit, query) in [
+            ("Adelaide Street", "Adelaide St, Brisbane City QLD"),
+            ("Brisbane", "Adelaide St, Brisbane City QLD"),
+            ("Sydney Road", "Sydney Rd, Brunswick VIC"),
+            ("Brunswick", "Sydney Rd, Brunswick VIC"),
+            ("Brunswick", "45 Sydney Road Brunswick, VIC"),
+            ("Madrid", "Calle Mayor 5, Madrid"),
+            ("Kelvin Grove", "Kelvin Grove, QLD"),
+            ("Hà Nội", "12 Phố Huế, Hà Nội"),
+            ("Phố Huế", "12 Phố Huế, Hà Nội"),
+            ("Hauptstraße", "Hauptstraße 12, Berlin"),
+        ] {
+            assert!(is_name_of_queried_place(hit, query), "{hit} / {query}");
+        }
     }
 }

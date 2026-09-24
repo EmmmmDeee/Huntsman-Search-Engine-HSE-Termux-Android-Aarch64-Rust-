@@ -1101,7 +1101,17 @@ pub async fn radar_history(
         .clamp(1, 1000);
     let store = Arc::clone(&s.store);
     match super::offload_store(move || store.radar_history(limit)).await {
-        Ok(scans) => ok_list("sweeps", scans),
+        // Each sweep is a scan row, so it goes out as every other scan row
+        // does (`handlers::scan_json`): with the derived `interrupted` and
+        // `finalise_incomplete` the sweep list's status pill reads.
+        Ok(scans) => {
+            let in_flight = super::super::handlers::in_flight_scan_ids(&s.cancellations);
+            let rows: Vec<serde_json::Value> = scans
+                .iter()
+                .map(|sc| super::super::handlers::scan_json(sc, &in_flight))
+                .collect();
+            ok_list("sweeps", rows)
+        }
         Err(resp) => resp,
     }
 }

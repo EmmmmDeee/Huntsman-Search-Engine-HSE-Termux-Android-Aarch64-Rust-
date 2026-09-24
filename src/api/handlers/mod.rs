@@ -334,8 +334,16 @@ pub(crate) fn is_interrupted(
 }
 
 /// The one way a `Scan` becomes API JSON: its serialised fields plus the
-/// derived, non-persisted `interrupted` flag. `GET /scans` and
-/// `GET /scans/{id}` both route through here so the two cannot disagree.
+/// derived, non-persisted `interrupted` and `finalise_incomplete` flags.
+/// `GET /scans`, `GET /scans/{id}` and `GET /radar/history` all route through
+/// here so they cannot disagree.
+///
+/// `finalise_incomplete` is [`crate::core::scan::Scan::finalise_incomplete`]:
+/// a `complete` or `aborted` row whose finalise recorded a shortfall is
+/// partial, as every export of it reads it and as its `scan_complete` event
+/// says. The web scan list, the scan-info Status row and the radar sweep
+/// list read it for their status pill, which otherwise showed such a scan as
+/// a green `complete` (REQ-SCANSTATUS-030).
 pub(crate) fn scan_json(
     scan: &crate::core::scan::Scan,
     in_flight: &std::collections::HashSet<String>,
@@ -348,6 +356,10 @@ pub(crate) fn scan_json(
         map.insert(
             "interrupted".to_string(),
             Value::Bool(is_interrupted(scan, in_flight)),
+        );
+        map.insert(
+            "finalise_incomplete".to_string(),
+            Value::Bool(scan.finalise_incomplete()),
         );
     }
     v

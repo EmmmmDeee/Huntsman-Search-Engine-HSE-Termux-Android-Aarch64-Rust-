@@ -147,7 +147,9 @@ fn build_entities(results: &[GeoResult], query: &str, scan_id: &str) -> Vec<Enti
         // is not the named place is not a geocode of the query at all; it is
         // skipped like an invalid-coordinate row (no anchor slot, no
         // `RESULT_LIMIT` budget), so the real match behind it still anchors
-        // (REQ-OPENMETEO-002). How ONE name is written is forgiven — word
+        // (REQ-OPENMETEO-002). The city a queried street is named after is
+        // not the place asked about either: "Adelaide" is not a geocode of
+        // "Adelaide St, Brisbane City QLD" (REQ-OPENMETEO-004). How ONE name is written is forgiven — word
         // boundaries ("Hanoi" / "Ha Noi"), "Mt"/"Mount", and the trailing
         // "City" of GeoNames' English "Ho Chi Minh City", which a Vietnamese
         // query "Ho Chi Minh, Vietnam" omits — but an exonym or a renamed

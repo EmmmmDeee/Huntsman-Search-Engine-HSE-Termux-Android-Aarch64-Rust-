@@ -1473,9 +1473,15 @@ impl ScanEngine {
     /// checkpoints — each reaches here with `Scan::new`'s 0 while the scan's
     /// entities are stored and exported.
     /// Best-effort: a count the store cannot read keeps the scan's own
-    /// (REQ-SCANSTATUS-023).
+    /// (REQ-SCANSTATUS-023). The writer is flushed BEFORE the count: a scan
+    /// with no entity rows yet is counted from its `EntityFound` events
+    /// (`Store::entities_for_scan`'s event-log fallback), which reach the
+    /// store through the writer, so a count taken with events still queued
+    /// claimed fewer entities than every export read once they landed
+    /// (REQ-SCANSTATUS-029).
     async fn conclude_failed(&self, mut scan: Scan, http: &reqwest::Client) -> Scan {
         scan.status = ScanStatus::Failed;
+        self.writer.flush().await;
         if let Some(stored) = self.stored_entity_count(&scan.id).await {
             scan.entity_count = stored;
         }

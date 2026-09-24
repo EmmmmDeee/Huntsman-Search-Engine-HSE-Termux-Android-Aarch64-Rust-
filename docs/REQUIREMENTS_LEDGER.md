@@ -24570,3 +24570,108 @@ it.
 | M2 | the caveat says every shortfall is "absent from every view and export" (as at e726b524) | killed by `core::engine::tests::a_finalise_whose_store_refused_one_entity_write_claims_what_the_store_holds` |
 
 **2 of 2 caught.**
+
+## REQ-OPENMETEO-004 / REQ-SCANSTATUS-029 / REQ-SCANSTATUS-030 — final review, correction round 9
+
+**Found** by the ninth correction round of the final review of PR #649,
+which raised three findings against 9d061efc. Each was checked against that
+head, and all three were real. Each fix is made where its rule lives and has
+a regression test that fails on the code before it. Each fix was then undone
+in place, its tests were seen to fail, and the file was restored byte for
+byte (table below).
+
+**REQ-OPENMETEO-004 — a street named after a place is not that place.**
+`util::place_grain::is_name_of_queried_place` accepted a geocoder hit whose
+name was any consecutive run of the query's words, including the name of a
+street the query names. Streets are named after other places, so for the
+address `"Adelaide St, Brisbane City QLD"` (a Brisbane CBD street) a hit on
+the capital "Adelaide" passed as "the place asked about". GeoNames ranks a
+whole-address query by population, so this hit is a likely first answer; that
+was not confirmed against the live API. `open_meteo_geo::build_entities`
+relies on this check (REQ-OPENMETEO-002), so it would anchor the Brisbane
+address in South Australia at HIGH_PLUS, tagged `au-state:SA`, about
+1,600 km away. In `core::place::grain::forward_geocode_account`
+(REQ-GEOLABEL-022), a street hit named only "Adelaide" was not treated as a
+fragment, so it kept the street-grain cap. The same applies to
+`"Sydney Rd, Brunswick VIC"` → "Sydney" and `"12 Phố Huế, Hà Nội"` → "Huế".
+`SegmentStreet` now records which words of a segment are the street's
+**name** and which are its **type**:
+
+* a trailing type: the name is the words before it;
+* a leading type: the name is the words after it, up to a house number that
+  may follow it;
+* a compound word such as `"Hauptstraße"`: the one word is both name and
+  type, so there is no separate name;
+* a type-less numbered street (`"123 Nguyễn Huệ"`): the name is the words
+  after the house number, and there is no type.
+
+`is_name_of_queried_place` now accepts a run that reaches into a street's
+name only if the run also carries that street's type. So "Adelaide Street" is
+still the `"Adelaide St"` that was asked about, but "Adelaide" is not. A
+type-less numbered street has no type to carry, so no hit name can match its
+words. Places the query names outside the street ("Brisbane", "Brunswick",
+"Hà Nội") match as before. Tests:
+`util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place`,
+`modules::open_meteo_geo::tests::a_city_a_street_is_named_after_is_not_the_streets_geocode`
+(the Brisbane hit behind the Adelaide one now anchors), and a new case in
+`core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names`
+(a street hit named "Adelaide" is held to the input's administrative grain).
+
+**REQ-SCANSTATUS-029 — a failed scan counts the entities its queued events
+found.** `ScanEngine::conclude_failed` counted the scan's stored entities
+(`stored_entity_count` → `entities_for_scan`) before it flushed the DB
+writer. A scan with no entity rows is rebuilt from its `EntityFound` events
+(`Store::entities_for_scan`'s event-log fallback). Those events reach the
+store asynchronously through the writer. So a scan that panicked in the seed
+round, before its first checkpoint, claimed only the events persisted so far.
+Its row, `scan_complete {status: failed}` event and webhook under-reported
+the scan, while `/scans/{id}/entities` and every export listed every entity
+once the queue drained. `conclude_failed` now flushes the writer before it
+counts, and flushes again after it records the `scan_complete`, as before.
+`InMemoryStore::entities_for_scan` did not mirror the event-log fallback,
+which is why no test saw this. It now mirrors it: with no stored copies, the
+scan's `EntityFound` events are folded by uid through `Entity::merge`.
+`RefusingStore::delaying_event_writes` holds each event write for a set
+delay. Test:
+`core::engine::tests::a_failed_scan_counts_the_entities_its_queued_events_found`
+emits three `EntityFound` events, concludes the scan failed, and checks that
+the returned scan, the row and the `scan_complete` event all claim 3, where
+they used to claim 0.
+
+**REQ-SCANSTATUS-030 — every scan row view calls a partial scan partial.**
+Several views chose their status pill from the row's `status` alone:
+
+* the web scan list (`#/scans` and the dashboard's Recent Scans), in
+  `wasm-ui/src/views/scans.rs`;
+* the scan-info Status row, in `wasm-ui/src/scan_info/info.rs`;
+* the scan-info header and the radar sweep list, through the JS helper
+  `statusPill`.
+
+So a scan stored `Complete` with a finalise shortfall in `error` showed a
+green `complete` pill. Its exports, its `scan_complete` event, the webhook,
+the upload response and the live log pill all called it partial
+(REQ-SCANSTATUS-015/022). `api::handlers::scan_json` derived only
+`interrupted`, so the row views had no partial flag to read. It now also
+derives `finalise_incomplete` (`Scan::finalise_incomplete`). `GET
+/radar/history` now serves its sweep rows through `scan_json` as well, so the
+radar sweep list gets both derived flags; it used to read an `interrupted`
+the endpoint never sent. The two wasm `status_pill` copies are replaced by
+one, `wasm-ui::html::status_pill(status, partial)`. It renders a warning
+`s-partial` pill reading `partial`, or `aborted · partial` for an aborted
+scan, the same words the live log pill uses. `helpers.js`'s `statusPill(s,
+partial)` mirrors it, and `app.css` gains `.s-partial`. `wasm-ui/pkg` was
+regenerated. Tests:
+`api::handlers::tests::a_scan_row_says_whether_its_finalise_was_cut_short`,
+`wasm-ui` `html::tests::a_scan_whose_finalise_was_cut_short_reads_partial`,
+and `views::scans::tests::a_partial_scan_row_reads_partial`.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `is_name_of_queried_place` ignores the street-name check (as at 9d061efc) | killed by `util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place`, `modules::open_meteo_geo::tests::a_city_a_street_is_named_after_is_not_the_streets_geocode` and `core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names` (grain Street, not Locality) |
+| M2 | `conclude_failed` counts before it flushes (as at 9d061efc) | killed by `core::engine::tests::a_failed_scan_counts_the_entities_its_queued_events_found` (0 vs 3) |
+| M3 | `scan_json` always sends `finalise_incomplete: false` | killed by `api::handlers::tests::a_scan_row_says_whether_its_finalise_was_cut_short` |
+| M4 | `wasm-ui::html::status_pill` ignores `partial` | killed by `html::tests::a_scan_whose_finalise_was_cut_short_reads_partial` |
+
+**4 of 4 caught.**

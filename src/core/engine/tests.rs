@@ -9673,3 +9673,57 @@ fn a_derivation_the_budget_cut_short_is_recorded() {
         "a small set is derived within budget"
     );
 }
+
+/// REQ-SCANSTATUS-029: a scan concluded `Failed` before any of its entities
+/// were written counts the `EntityFound` events its writer still holds. With
+/// no entity rows, `entities_for_scan` is rebuilt from the event log, which
+/// the DB-writer fills asynchronously; `conclude_failed` counted before it
+/// flushed, so a panic in the seed round claimed the events stored so far —
+/// here none — on the row, the `scan_complete` event and the webhook, while
+/// `/scans/{id}/entities` and every export listed all of them once the queue
+/// drained.
+#[tokio::test]
+async fn a_failed_scan_counts_the_entities_its_queued_events_found() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::test_support::{InMemoryStore, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> = Arc::new(
+        RefusingStore::new(inner.clone())
+            .delaying_event_writes(std::time::Duration::from_millis(300)),
+    );
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store, bus);
+    let target = Target::new(TargetKind::Username, "queued");
+    let mut scan = Scan::new(crate::core::entity::scan_id("username", "queued"), target);
+    scan.error = Some("the scan panicked".to_string());
+    for v in ["a.example", "b.example", "c.example"] {
+        let entity = Entity::new(EntityKind::Domain, v, 0.7, &scan.id);
+        engine
+            .emitter
+            .emit(&scan.id, EventKind::EntityFound { entity });
+    }
+
+    let done = engine
+        .conclude_failed(scan, &crate::util::http::build_client())
+        .await;
+    assert_eq!(done.status, ScanStatus::Failed, "{done:?}");
+    let stored = inner.entities_for_scan(&done.id).expect("readable").len();
+    assert_eq!(stored, 3, "the event log lists every entity found");
+    assert_eq!(done.entity_count, stored, "{done:?}");
+    let row = inner
+        .get_scan(&done.id)
+        .expect("readable")
+        .expect("the row exists");
+    assert_eq!(row.entity_count, stored, "{row:?}");
+    let announced: Vec<usize> = inner
+        .events_for_scan(&done.id)
+        .expect("readable")
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            EventKind::ScanComplete { entity_count, .. } => Some(entity_count),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced, vec![stored], "the event claims what is stored");
+}

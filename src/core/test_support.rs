@@ -260,7 +260,31 @@ impl StoragePort for InMemoryStore {
         // scan's id in that field, so filtering on it hid the entity from every
         // later scan that also observed it. And return the scan's own copy, not
         // the shared entry, which carries every other scan's evidence too.
-        let mut ents: Vec<Entity> = self.inner.lock().scan_copies(scan_id).cloned().collect();
+        //
+        // And mirror its recovery fallback: a scan with no stored copies is
+        // rebuilt from its `EntityFound` events, folded by uid through
+        // `Entity::merge` (`Store::entities_from_events`) — what a scan
+        // interrupted before its first entity write lists, and what a count
+        // taken before the event writer drained misses (REQ-SCANSTATUS-029).
+        let g = self.inner.lock();
+        let mut ents: Vec<Entity> = g.scan_copies(scan_id).cloned().collect();
+        if ents.is_empty() {
+            let mut folded: HashMap<String, Entity> = HashMap::new();
+            for ev in g.events.iter().filter(|e| e.scan_id == scan_id) {
+                if let crate::core::event::EventKind::EntityFound { entity } = &ev.kind {
+                    match folded.get_mut(&entity.uid) {
+                        Some(existing) => existing.merge(entity.clone()),
+                        None => {
+                            folded.insert(entity.uid.clone(), entity.clone());
+                        }
+                    }
+                }
+            }
+            ents = folded.into_values().collect();
+            for e in &mut ents {
+                e.canonicalize_order();
+            }
+        }
         sort_like_store(&mut ents);
         Ok(ents)
     }
@@ -484,6 +508,7 @@ pub struct RefusingStore {
     refuse_scan_writes: bool,
     refuse_scan_writes_in: Option<crate::core::scan::ScanStatus>,
     entity_batch_gate: Option<EntityBatchGate>,
+    event_write_delay: Option<std::time::Duration>,
 }
 
 /// The store side of [`RefusingStore::pausing_entity_batch`]: announces each
@@ -678,6 +703,15 @@ impl RefusingStore {
         )
     }
 
+    /// Hold every event write for `delay` before forwarding it — a store
+    /// slow enough that events the engine submitted are still queued in its
+    /// writer when it reads what the scan holds.
+    #[must_use]
+    pub fn delaying_event_writes(mut self, delay: std::time::Duration) -> Self {
+        self.event_write_delay = Some(delay);
+        self
+    }
+
     /// Refuse every relation write.
     #[must_use]
     pub fn refusing_relations(mut self) -> Self {
@@ -812,9 +846,15 @@ impl StoragePort for RefusingStore {
         self.inner().relations_for_scan(scan_id)
     }
     fn insert_event(&self, event: &Event) -> Result<()> {
+        if let Some(delay) = self.event_write_delay {
+            std::thread::sleep(delay);
+        }
         self.inner().insert_event(event)
     }
     fn insert_events_batch(&self, events: &[Event]) -> Result<usize> {
+        if let Some(delay) = self.event_write_delay {
+            std::thread::sleep(delay);
+        }
         self.inner().insert_events_batch(events)
     }
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {

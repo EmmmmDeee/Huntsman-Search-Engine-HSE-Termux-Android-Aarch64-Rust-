@@ -17,7 +17,7 @@
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use crate::html::{escape_html, fmt_date, kind_pill};
+use crate::html::{escape_html, fmt_date, kind_pill, status_pill};
 use crate::to_js_error;
 
 /// The subset of `crate::core::exposure::ExposureComponent`'s fields this
@@ -169,6 +169,9 @@ struct ScanView {
     entity_count: Option<u64>,
     error: Option<String>,
     options: Option<ScanOptionsView>,
+    /// `scan_json`'s derived `Scan::finalise_incomplete`.
+    #[serde(default)]
+    finalise_incomplete: bool,
 }
 
 const ALL_DEFAULT: &str = "<span class=\"text-muted\">all (default)</span>";
@@ -184,30 +187,6 @@ fn fmt_list(xs: Option<&[String]>) -> String {
             .join(" "),
         _ => ALL_DEFAULT.to_string(),
     }
-}
-
-/// `helpers.js`'s `statusPill()`. `s` is `None` when `scan.status` itself is
-/// absent (a bare `{}` caller) — matching `statusPill(undefined)`'s own
-/// `s-pending`/"pending" fallback exactly, distinct from `s` being present
-/// but an unrecognized value (which keeps its own text, just the `s-pending`
-/// class).
-fn status_pill(s: Option<&str>) -> String {
-    let cls = match s {
-        Some("complete") => "s-complete",
-        Some("running") => "s-running",
-        Some("failed") => "s-failed",
-        Some("pending") => "s-pending",
-        Some("aborted") => "s-aborted",
-        _ => "s-pending",
-    };
-    let text = match s {
-        Some(v) if !v.is_empty() => v,
-        _ => "pending",
-    };
-    format!(
-        "<span class=\"status-pill {cls}\">{}</span>",
-        escape_html(text)
-    )
 }
 
 /// Builds the "Scan settings" panel fragment. `scan_js` is the JS side's
@@ -240,7 +219,10 @@ pub fn render_scan_settings_html(scan_js: JsValue) -> Result<String, JsValue> {
                 escape_html(target.value.as_deref().unwrap_or(""))
             ),
         ),
-        ("Status", status_pill(scan.status.as_deref())),
+        (
+            "Status",
+            status_pill(scan.status.as_deref(), scan.finalise_incomplete),
+        ),
         ("Started", fmt_date(scan.started_at.unwrap_or(0))),
         ("Finished", fmt_date(scan.finished_at.unwrap_or(0))),
         (

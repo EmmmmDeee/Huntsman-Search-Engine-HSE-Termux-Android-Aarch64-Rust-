@@ -1876,6 +1876,18 @@ fn an_unnumbered_street_naming_is_held_to_the_street_it_names() {
             "Kiệt Nguyễn, Hà Nội",
             &[("place_type", "residential"), ("road", "Nguyễn Trãi")][..],
         ),
+        // REQ-OPENMETEO-004: the city a street is named after is not the
+        // street — a street hit named only "Adelaide" for a Brisbane CBD
+        // street is not the "Adelaide St" asked about.
+        (
+            "photon",
+            "Adelaide St, Brisbane City QLD",
+            &[
+                ("place_type", "street"),
+                ("osm_key", "highway"),
+                ("place_name", "Adelaide"),
+            ][..],
+        ),
     ] {
         let p = geocoded(source, input, attrs);
         assert!(p.grain >= FixGrain::Locality, "{input} {attrs:?}: {p:?}");
