@@ -136,7 +136,7 @@ pub async fn cmd_import(path: &str, output: &str, forced: Option<ImportFormat>) 
                 output,
                 format!("Importing OathNet JSON export: query=\"{query}\", date={date}"),
             );
-            let sid = format!("import-{}", crate::core::entity::unix_now());
+            let sid = import_scan_id("json");
             let (mut entities, stats) = parse_oathnet_json(&doc, &sid).await;
             deduplicate_by_uid(&mut entities);
             print_import_stats(&stats, entities.len(), output);
@@ -1147,6 +1147,26 @@ impl ParsedImport {
     }
 }
 
+/// A fresh scan id for one `hse import` of the `tag` format — every CLI
+/// import's id, from this one place.
+///
+/// Each import owns ONE scan row ([`crate::app::persist::ImportScanRow`]),
+/// so two imports must never share an id. The id was
+/// `import-{tag}-{unix_now()}`, at one-second resolution: two imports started
+/// in the same second — the loop `for f in part*.csv; do hse import $f;
+/// done` that the over-cap caveat's "import the data in smaller batches"
+/// invites — shared one scan. The second `ImportScanRow::begin` rewrote the
+/// first's finished row back to `Running`, both batches were stored into it,
+/// and the second's `finish` claimed only its own entity count and replaced
+/// the first's recorded shortfall with its own tally (REQ-SCANSTATUS-036).
+/// [`crate::util::uid::scan_id`] mixes in a process-wide counter and the
+/// sub-second clock, as `hse ingest --auto-scan` and `hse investigate
+/// --auto-scan` already mint theirs; the `import-{tag}-` prefix keeps the
+/// scan attributable to its format.
+fn import_scan_id(tag: &str) -> String {
+    format!("import-{tag}-{}", crate::util::uid::scan_id("import", tag))
+}
+
 /// The one CLI import lifecycle every simple per-format runner shares: announce
 /// the format, mint the scan id, parse (the `parse` closure receives that freshly
 /// minted sid), then dedupe → print stats → optionally save/announce the key
@@ -1163,7 +1183,7 @@ async fn run_import(
     parse: impl FnOnce(&str) -> ParsedImport,
 ) -> Result<()> {
     note(output, banner);
-    let sid = format!("import-{tag}-{}", crate::core::entity::unix_now());
+    let sid = import_scan_id(tag);
     let ParsedImport {
         mut entities,
         stats,

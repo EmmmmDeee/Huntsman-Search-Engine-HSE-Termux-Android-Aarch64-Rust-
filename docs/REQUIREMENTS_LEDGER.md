@@ -24893,3 +24893,111 @@ incomplete)" when `finalise_incomplete` is true, matching the scan log's
 | M5 | `onLiveEvent` has no `aborted` branch (as at 4ee46e53) | killed by `api::routes::tests::embedded_spa_radar_reads_an_aborted_sweep_as_stopped_early` |
 
 **5 of 5 caught.**
+
+## REQ-OPENMETEO-006 / REQ-SCANSTATUS-036 / REQ-GEOLABEL-039 / REQ-SCANSTATUS-037 — final review, correction round 12
+
+**Found** by the twelfth correction round of the final review of PR #649,
+which raised four findings against c089f3a6. Each was checked against that
+head, and all four were real. Each fix is made where its rule lives and has
+a regression test that fails on the code before it. The fixes were undone
+together in place (the tests kept), every new test was seen to fail, and the
+files were restored byte for byte (table below).
+
+**REQ-OPENMETEO-006 — the first street of a corner is the queried street,
+however the corner is written.** Round 11 (REQ-OPENMETEO-005) started a
+trailing-type street's name after a house number, a bare corner word, or a
+`&` / `and` that follows a street type. Two common corner forms were still
+misread. In `"Corner of George St and Smith St"` the first street's name
+started after `Corner` and took in `of`, so the whole street read as
+[of, george, st]. In `"George St / Smith St"` the `/` was no break, so the
+second street's name ran [george, st, smith]. `names_a_street_whole` rejects
+any run that touches a street without containing all of it, so a Nominatim
+`road` or Photon `place_name` of "George Street" failed
+`is_name_of_queried_place` on both queries. `forward_geocode_account` then
+capped a correct street-grain hit at the Brisbane locality. "Smith Street"
+was rejected too on the `/` form. `starts_a_street_name` now also breaks
+after the `of` that follows a corner word (`cnr` / `corner`), and treats a
+standalone `/` or `at` that follows a street type as a join, as it does
+`&` / `and`. An `of` inside a name is still part of the street (`"Bay of
+Islands Rd"`: "Islands Road" is not that street). Tests: first- and
+second-street controls for the `Corner of`, `/` and `at` forms, and
+negatives "George" (`Corner of`), "Smith" (`/`) and "Islands Road", in
+`util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place`;
+a Nominatim `road` and a Photon `place_name` "George Street" hit keeping
+street grain in
+`core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names`.
+
+**REQ-SCANSTATUS-036 — each `hse import` owns its own scan.** `hse import`
+named its scan `import-{tag}-{unix_now()}` (`run_import`, and
+`import-html-…`, `import-local-…` and the OathNet-JSON arm's `import-…`), at
+one-second resolution. Two imports started in the same second shared one
+scan. This is the loop an operator writes to follow the over-cap caveat's
+remedy, "import the data in smaller batches" (`for f in part*.csv; do hse
+import $f; done`). The second `ImportScanRow::begin` rewrote the first's
+finished row back to `Running`, stored its batch into the same scan, and its
+`finish` claimed only its own entity count and replaced the first's
+recorded shortfall with its own tally, which breaks REQ-SCANSTATUS-009 ("a
+row claims what the store holds"). `hse ingest --auto-scan` and `hse
+investigate --auto-scan` had already moved to `util::uid::scan_id` for this
+collision. Every CLI import now mints its id through one helper,
+`app::import::import_scan_id(tag)`, which returns
+`import-{tag}-{uid::scan_id("import", tag)}`. That id mixes in a
+process-wide counter and the sub-second clock. The OathNet-JSON arm's id
+now carries its tag too (`import-json-…`). Test:
+`app::import::tests::two_imports_started_in_one_second_own_two_scans`.
+
+**REQ-GEOLABEL-039 — a recalled point carries one grain.**
+`recall_prior_entities` folded the copies up to eight prior scans stored of
+one uid with a plain `Entity::merge`, which unions tags, and the engine
+injected the result into the working set with another plain merge. Neither
+step re-decided the point's grain, as every other in-memory merge has done
+since REQ-GEOLABEL-005. A point stored at `fix-grain:locality` by one prior
+scan and at `fix-grain:region` by another came back carrying both. The
+store collapses the stamps only on its merge branches, and a uid new to
+this scan is written as the incoming entity. So this scan's own copy,
+`entities_for_scan`, every export's tag column and the debug bundle showed
+two grains for one point. Grading was unaffected, because `assess` reads
+both stamps as floors. Both recall merges now go through `fold_recalled`,
+which merges and then runs `enrich_geospatial`, the re-decision the other
+merges run. The injection loop is `inject_recalled`. Test:
+`core::engine::tests::a_recalled_point_carries_one_grain` (two prior scans
+at locality and region recall one `fix-grain:region`; a recalled point
+folded into a working set that holds it at locality carries one too).
+
+**REQ-SCANSTATUS-037 — a refused `scan_complete` write is a refused
+commit.** REQ-SCANSTATUS-033 said an import's row reads terminal only once
+its `scan_complete` is in the log. But `ImportScanRow::record_completion`
+only logged a refused `insert_event`, and `finish` then wrote the row
+anyway. A store that refused the new event row (a nearly full disk,
+`SQLITE_BUSY` behind a live scan's writer) but took the `UPDATE` of the
+existing row left a `complete` import whose event log never said how it
+ended. Round 11's test used a store whose event writes always succeed, so
+it could not see this. `record_completion` now returns whether the store
+took the event. `finish` treats a refusal as a refused commit: it writes no
+terminal row and leaves the row to `Drop`, whose `Failed` row names the
+refused write after the shortfall ("…; the scan_complete event write
+failed: …"). The `Failed` row of `Drop` is written even when the store
+refuses its own event too, because a row must not read in progress forever.
+Its error then says that the event write failed, unless it already does, so
+the row itself tells an export what its log lacks. Live subscribers still
+hear the failure. The claim is now exact: a row reads `complete` or
+`aborted` only once its `scan_complete` is logged. The `ImportScanRow` doc
+says so. Test:
+`app::persist::tests::an_import_whose_completion_event_is_refused_never_reads_complete`,
+with a new `RefusingStore::refusing_event_writes` mode. The one terminal
+write is `Failed`, and the row's error names the shortfall and the refused
+event write. No event is stored, one `failed` is broadcast, and an import
+dropped before `finish` is written `Failed`, saying its log lacks the
+event.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `starts_a_street_name` as at c089f3a6 (no `of` after a corner word, no `/` / `at` join) | killed by `util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place` and `core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names` |
+| M2 | `import_scan_id` mints `import-{tag}-{unix_now()}` (as at c089f3a6) | killed by `app::import::tests::two_imports_started_in_one_second_own_two_scans` |
+| M3 | `fold_recalled` merges without `enrich_geospatial` | killed by `core::engine::tests::a_recalled_point_carries_one_grain` (the prior-scan fold) |
+| M3b | `inject_recalled` merges with a plain `Entity::merge` | killed by `core::engine::tests::a_recalled_point_carries_one_grain` (the working-set fold) |
+| M4 | `finish` ignores a refused event write and `Drop` never names one (as at c089f3a6) | killed by `app::persist::tests::an_import_whose_completion_event_is_refused_never_reads_complete` |
+
+**5 of 5 caught.**

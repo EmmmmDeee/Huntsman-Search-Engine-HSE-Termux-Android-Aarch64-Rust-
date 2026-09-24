@@ -509,6 +509,7 @@ pub struct RefusingStore {
     refuse_scan_writes_in: Option<crate::core::scan::ScanStatus>,
     entity_batch_gate: Option<EntityBatchGate>,
     event_write_delay: Option<std::time::Duration>,
+    refuse_event_writes: bool,
 }
 
 /// The store side of [`RefusingStore::pausing_entity_batch`]: announces each
@@ -542,6 +543,8 @@ pub const REFUSED_TEMPLATE_COUNT: &str = "injected template count failure";
 pub const REFUSED_TERMINAL_SCAN: &str = "injected terminal scan write failure";
 /// The error text [`RefusingStore`] returns for any refused scan write.
 pub const REFUSED_SCAN: &str = "injected scan write failure";
+/// The error text [`RefusingStore`] returns for a refused event write.
+pub const REFUSED_EVENT: &str = "injected event write failure";
 
 fn injected(text: &str) -> crate::core::error::Error {
     crate::core::error::Error::Other(text.to_string())
@@ -712,6 +715,15 @@ impl RefusingStore {
         self
     }
 
+    /// Refuse every event write, single and batch — a store that takes an
+    /// `UPDATE` of an existing row but not a new event row (a nearly full
+    /// disk), or whose event insert meets `SQLITE_BUSY`.
+    #[must_use]
+    pub fn refusing_event_writes(mut self) -> Self {
+        self.refuse_event_writes = true;
+        self
+    }
+
     /// Refuse every relation write.
     #[must_use]
     pub fn refusing_relations(mut self) -> Self {
@@ -846,12 +858,18 @@ impl StoragePort for RefusingStore {
         self.inner().relations_for_scan(scan_id)
     }
     fn insert_event(&self, event: &Event) -> Result<()> {
+        if self.refuse_event_writes {
+            return Err(injected(REFUSED_EVENT));
+        }
         if let Some(delay) = self.event_write_delay {
             std::thread::sleep(delay);
         }
         self.inner().insert_event(event)
     }
     fn insert_events_batch(&self, events: &[Event]) -> Result<usize> {
+        if self.refuse_event_writes {
+            return Err(injected(REFUSED_EVENT));
+        }
         if let Some(delay) = self.event_write_delay {
             std::thread::sleep(delay);
         }

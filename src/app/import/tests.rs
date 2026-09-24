@@ -3429,3 +3429,21 @@ fn an_import_summary_states_a_size_skip_once() {
     );
     assert!(lines.iter().all(|l| !l.contains("Note:")), "{lines:#?}");
 }
+
+/// REQ-SCANSTATUS-036: each `hse import` owns its own scan. The id was
+/// `import-{tag}-{unix_now()}`, so two imports started in the same second —
+/// a `for f in part*.csv; do hse import $f; done` loop over small parts —
+/// shared one scan row: the second rewrote the first's finished row back to
+/// `Running`, stored its batch into the same scan, and claimed only its own
+/// count and shortfall.
+#[test]
+fn two_imports_started_in_one_second_own_two_scans() {
+    for tag in ["json", "html", "local", "hsecsv", "combolist"] {
+        let first = super::import_scan_id(tag);
+        let second = super::import_scan_id(tag);
+        assert_ne!(first, second, "{tag}: one scan id for two imports");
+        for sid in [&first, &second] {
+            assert!(sid.starts_with(&format!("import-{tag}-")), "{sid}");
+        }
+    }
+}

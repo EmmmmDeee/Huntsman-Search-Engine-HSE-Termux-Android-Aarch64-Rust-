@@ -335,6 +335,34 @@ impl std::ops::Deref for TrackedEntityMap {
     }
 }
 
+/// Fold a recalled copy of `existing`'s uid into it, and re-decide the merged
+/// point's grain stamp and country answer ([`enrich_geospatial`]) as every
+/// other in-memory merge does (REQ-GEOLABEL-005).
+///
+/// `Entity::merge` unions tags. Recall folds the copies up to eight prior
+/// scans stored of one uid, then folds the result into this scan's working
+/// set, and with a plain merge a point stored at `fix-grain:locality` by one
+/// prior scan and at `fix-grain:region` by another came back carrying both:
+/// this scan's own copy (written as the incoming entity when the uid is new
+/// to the scan), `entities_for_scan`, every export's tag column and the debug
+/// bundle showed two grains for one point (REQ-GEOLABEL-039).
+fn fold_recalled(existing: &mut Entity, recalled: Entity) {
+    existing.merge(recalled);
+    enrich_geospatial(existing);
+}
+
+/// Inject recall's entities into the scan's working set, folding one that is
+/// already there by [`fold_recalled`].
+fn inject_recalled(entity_map: &mut TrackedEntityMap, recalled: Vec<Entity>) {
+    for entity in recalled {
+        if let Some(existing) = entity_map.get_mut(&entity.uid) {
+            fold_recalled(existing, entity);
+        } else {
+            entity_map.insert(entity.uid.clone(), entity);
+        }
+    }
+}
+
 /// Upper bound on the working set for the per-round reconsideration pass
 /// ([`reconsider_working_set`]).
 ///
@@ -947,13 +975,7 @@ impl ScanEngine {
             let recalled =
                 self.recall_prior_entities(&target, &scan.id, scan.options.allow_live_sensors);
             let n = recalled.len();
-            for entity in recalled {
-                if let Some(existing) = entity_map.get_mut(&entity.uid) {
-                    existing.merge(entity);
-                } else {
-                    entity_map.insert(entity.uid.clone(), entity);
-                }
-            }
+            inject_recalled(&mut entity_map, recalled);
             if n > 0 {
                 info!(scan_id = %scan.id, recalled = n, "recall: injected prior-scan entities from the local database");
                 self.emit(
@@ -1839,7 +1861,7 @@ impl ScanEngine {
                     "Recalled from the local intelligence database (prior scan)",
                 ));
                 if let Some(existing) = merged.get_mut(&e.uid) {
-                    existing.merge(e);
+                    fold_recalled(existing, e);
                 } else {
                     merged.insert(e.uid.clone(), e);
                 }

@@ -9727,3 +9727,65 @@ async fn a_failed_scan_counts_the_entities_its_queued_events_found() {
         .collect();
     assert_eq!(announced, vec![stored], "the event claims what is stored");
 }
+
+/// REQ-GEOLABEL-039: recall re-decides a merged point's grain, as every other
+/// in-memory merge does (REQ-GEOLABEL-005). It folded the copies prior scans
+/// stored of one uid, and then folded the result into the working set, with a
+/// plain `Entity::merge`, which unions tags: a point stored at
+/// `fix-grain:locality` by one prior scan and at `fix-grain:region` by another
+/// came back carrying both, and this scan's own copy and every export showed
+/// two grains for one point.
+#[tokio::test]
+async fn a_recalled_point_carries_one_grain() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+    let stamps = |e: &Entity| -> Vec<String> {
+        e.tags
+            .iter()
+            .filter(|t| t.starts_with("fix-grain:"))
+            .cloned()
+            .collect()
+    };
+    let point = |scan: &str, grain: &str| {
+        let mut p = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, scan);
+        p.tag(crate::core::tags::COARSE);
+        p.tag(format!("fix-grain:{grain}"));
+        p.add_evidence(Evidence::new("plant", "a point an earlier scan found"));
+        p
+    };
+
+    // Two prior scans of one target stored the same point at two grains.
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    for (scan, grain) in [("scan-a", "locality"), ("scan-b", "region")] {
+        let mut seed = Entity::new(EntityKind::Username, "recallgrain", 0.9, scan);
+        seed.add_evidence(Evidence::new("anchor", "seed"));
+        store.upsert_entity(&seed).expect("should succeed");
+        store
+            .upsert_entity(&point(scan, grain))
+            .expect("should succeed");
+    }
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store_port, bus);
+    let target = Target::new(TargetKind::Username, "recallgrain");
+    let recalled = engine.recall_prior_entities(&target, "current-scan", true);
+    let got = recalled
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("recall surfaces the prior point");
+    assert_eq!(stamps(got), vec!["fix-grain:region".to_string()], "{got:?}");
+
+    // Folded into a working set that already holds the point at a finer
+    // grain, it still carries one.
+    let mut map = TrackedEntityMap::new();
+    let held = point("current-scan", "locality");
+    map.insert(held.uid.clone(), held);
+    inject_recalled(&mut map, vec![point("current-scan", "region")]);
+    let merged = map.values().next().expect("the point");
+    assert_eq!(map.len(), 1);
+    assert_eq!(
+        stamps(merged),
+        vec!["fix-grain:region".to_string()],
+        "{merged:?}"
+    );
+}

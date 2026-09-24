@@ -1942,6 +1942,22 @@ fn an_unnumbered_street_naming_is_held_to_the_street_it_names() {
                 ("place_name", "King Street"),
             ][..],
         ),
+        // ... and so is its FIRST street, whatever joins the two
+        // (REQ-OPENMETEO-006).
+        (
+            "geocode",
+            "Corner of George St and Smith St, Brisbane City QLD",
+            &[("place_type", "road"), ("road", "George Street")][..],
+        ),
+        (
+            "photon",
+            "George St / Smith St, Brisbane City QLD",
+            &[
+                ("place_type", "street"),
+                ("osm_key", "highway"),
+                ("place_name", "George Street"),
+            ][..],
+        ),
     ] {
         let p = geocoded(source, input, attrs);
         assert_eq!(p.grain, FixGrain::Street, "{input}: {p:?}");

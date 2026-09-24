@@ -494,18 +494,23 @@ struct StreetWords {
 
 /// Whether a trailing-type street's name starts AFTER word `k` of a segment:
 /// a house number (`"45 Sydney Road"`: a number is where the street is, not
-/// what it is called), a corner word (`"Cnr"`, `"Corner"`), or a `"&"` /
-/// `"and"` that follows a street type — the join between the two streets of
-/// a corner (`"Cnr George St & Smith St"`, `"Main St and Oak Ave"`). A join
-/// that follows a name word is inside one street's name (`"Smith and Jones
-/// Rd"`), and a type word at the segment's start is a saint (`"St & ..."`).
+/// what it is called), a corner word (`"Cnr"`, `"Corner"`) or the `"of"` that
+/// follows one (`"Corner of George St and Smith St"`), or a join that follows
+/// a street type — the `"&"`, `"and"`, `"/"` or `"at"` between the two
+/// streets of a corner (`"Cnr George St & Smith St"`, `"Main St and Oak
+/// Ave"`, `"George St / Smith St"`, `"George St at Smith St"`). A join that
+/// follows a name word is inside one street's name (`"Smith and Jones Rd"`),
+/// and a type word at the segment's start is a saint (`"St & ..."`).
 ///
 /// `words` are the segment's words as written, `lower` the same words trimmed
-/// of punctuation and lowercased.
+/// of punctuation and lowercased (so a standalone `"&"` or `"/"` is empty in
+/// `lower` and is read from `words`).
 fn starts_a_street_name(words: &[&str], lower: &[String], k: usize) -> bool {
-    let joins = words[k] == "&" || lower[k] == "and";
+    let corner_word = |w: &str| matches!(w, "cnr" | "corner");
+    let joins = matches!(words[k], "&" | "/") || matches!(lower[k].as_str(), "and" | "at");
     is_house_number(words[k])
-        || matches!(lower[k].as_str(), "cnr" | "corner")
+        || corner_word(&lower[k])
+        || (lower[k] == "of" && k >= 1 && corner_word(&lower[k - 1]))
         || (joins && k >= 2 && STREET_TYPES.contains(&lower[k - 1].as_str()))
 }
 
@@ -826,7 +831,9 @@ fn place_tokens(s: &str) -> Vec<String> {
 /// Victoria) of `"Great Western Hwy, Blaxland NSW"`. A house number is not
 /// part of the name (`"Sydney Road"` is the `"45 Sydney Road"` asked about),
 /// nor is a corner's other street (`"Smith Street"` is a `"Cnr George St &
-/// Smith St"` asked about, as is `"George Street"`; `"Smith"` is neither). A
+/// Smith St"` asked about, as is `"George Street"`, however the corner is
+/// written — `"Corner of George St and Smith St"`, `"George St / Smith St"`;
+/// `"Smith"` is neither). A
 /// numbered street written with no type word (`"123 Nguyễn Huệ, Quận 1"`) has
 /// no type to carry, so no name matches its words.
 ///
@@ -1254,6 +1261,14 @@ mod city_grain_tests {
             // Either street of a corner is named after a place too.
             ("Smith", "Cnr George St & Smith St, Brisbane City QLD"),
             ("George", "Cnr George St & Smith St, Brisbane City QLD"),
+            (
+                "George",
+                "Corner of George St and Smith St, Brisbane City QLD",
+            ),
+            ("Smith", "George St / Smith St, Brisbane City QLD"),
+            // `of` is a break only after a corner word: inside a name it
+            // stays part of the street.
+            ("Islands Road", "Bay of Islands Rd, Kerikeri"),
             // A join after a NAME word is inside one street's name.
             ("Jones Road", "Smith and Jones Rd, Toowong QLD"),
         ] {
@@ -1292,6 +1307,21 @@ mod city_grain_tests {
             ),
             ("Oak Avenue", "Corner Main St and Oak Ave, Toowong QLD"),
             ("Smith and Jones Road", "Smith and Jones Rd, Toowong QLD"),
+            // The FIRST street of a corner, whatever joins the two: the `of`
+            // after a corner word and a `/` or `at` between the streets are
+            // not part of either street's name.
+            (
+                "George Street",
+                "Corner of George St and Smith St, Brisbane City QLD",
+            ),
+            (
+                "Smith Street",
+                "Corner of George St and Smith St, Brisbane City QLD",
+            ),
+            ("George Street", "George St / Smith St, Brisbane City QLD"),
+            ("Smith Street", "George St / Smith St, Brisbane City QLD"),
+            ("George Street", "George St at Smith St, Brisbane City QLD"),
+            ("Smith Street", "George St at Smith St, Brisbane City QLD"),
         ] {
             assert!(is_name_of_queried_place(hit, query), "{hit} / {query}");
         }
