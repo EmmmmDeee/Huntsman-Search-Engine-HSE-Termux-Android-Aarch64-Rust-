@@ -258,8 +258,10 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     // A slot holding the unedited placeholder is UNSET, not set. Testing only
     // `contains_key` meant a freshly provisioned device — where every one of
     // these names is present as a template slot — had this entire section
-    // suppressed, so the operator was shown no keys to acquire at all.
-    let missing = rank_unset_keys(|k| key_slot_is_filled(&loaded, k));
+    // suppressed, so the operator was shown no keys to acquire at all. The
+    // predicate is the shared `keys::is_configured_slot`, the same one the web
+    // Settings page's acquisition list ranks by (REQ-KEYREG-002).
+    let missing = rank_unset_keys(|k| keys::is_configured_slot(&loaded, k));
     if !missing.is_empty() {
         println!(
             "\nUnset keys ({}), ranked by acquisition value — modules needing \
@@ -324,10 +326,7 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
                 // problem, and one otherwise reconstructed by hand across two
                 // separate sections. Grounded in what real scans observed, so it
                 // never mis-reports a working key the way a synthetic probe would.
-                let rejected: Vec<_> = crate::util::key_health::auth_failing_sources(&health)
-                    .into_iter()
-                    .filter(|i| i.likely_env_var.is_some_and(|e| loaded.contains_key(e)))
-                    .collect();
+                let rejected = crate::util::key_health::configured_key_rejections(&health, &loaded);
                 if rejected.is_empty() {
                     println!("  no configured key is being rejected by its upstream");
                 } else {
@@ -614,27 +613,6 @@ fn seeknow_unreachable_guidance(detail: &str) -> String {
     }
 }
 
-/// The loaded `HUNTSMAN_*` key names, sorted for stable, run-to-run-identical
-/// output — `loaded` is a `HashMap`, so an unsorted iteration would print a
-/// different order on every invocation against the identical environment
-/// (the standing "no HashMap-iteration-order leaks into output" rule),
-/// exactly the class of bug `rank_unset_keys` just below already guards
-/// against for the unset-keys listing.
-///
-/// Pure over the loaded map so it is unit-testable without touching the real
-/// environment.
-/// Whether `loaded` holds a USABLE credential for `k` — the predicate the
-/// unset-keys listing ranks by.
-///
-/// Named rather than inline so the production call site and its regression test
-/// exercise the same code. As a closure at the call site it read
-/// `loaded.contains_key(k)`, i.e. name presence, and since every one of these
-/// names ships in the env template that suppressed the entire remediation
-/// section on any freshly provisioned device.
-fn key_slot_is_filled(loaded: &std::collections::HashMap<String, String>, k: &str) -> bool {
-    loaded.get(k).is_some_and(|v| keys::is_configured_value(v))
-}
-
 /// What to say when the reactive module-health tracker is empty.
 ///
 /// Empty means one of two very different things and the code said the same
@@ -660,6 +638,15 @@ fn empty_module_health_line(observed: usize) -> &'static str {
     }
 }
 
+/// The loaded `HUNTSMAN_*` key names, sorted for stable, run-to-run-identical
+/// output — `loaded` is a `HashMap`, so an unsorted iteration would print a
+/// different order on every invocation against the identical environment
+/// (the standing "no HashMap-iteration-order leaks into output" rule),
+/// exactly the class of bug `rank_unset_keys` just below already guards
+/// against for the unset-keys listing.
+///
+/// Pure over the loaded map so it is unit-testable without touching the real
+/// environment.
 fn sorted_huntsman_keys(loaded: &std::collections::HashMap<String, String>) -> Vec<&str> {
     let mut keys: Vec<&str> = loaded
         .iter()

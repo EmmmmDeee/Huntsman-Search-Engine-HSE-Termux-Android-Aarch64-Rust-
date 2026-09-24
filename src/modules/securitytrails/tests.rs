@@ -105,3 +105,84 @@ use super::*;
         let es2 = associated_entities(&records, None, "1.2.3.4", "s");
         assert!(es2.iter().all(|e| ev_attr(e, "total_associated") == Some("40")));
     }
+
+    fn assoc_body(hosts: &[&str], record_count: Option<u64>) -> AssociatedResp {
+        let recs: Vec<String> = hosts
+            .iter()
+            .map(|h| format!(r#"{{"hostname":"{h}"}}"#))
+            .collect();
+        let count = record_count.map_or(String::new(), |n| format!(r#","record_count":{n}"#));
+        serde_json::from_str(&format!(r#"{{"records":[{}]{count}}}"#, recs.join(",")))
+            .expect("should succeed")
+    }
+
+    fn hosts(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("h{i}.example.com")).collect()
+    }
+
+    #[test]
+    fn a_paged_reverse_ip_answer_is_declared_truncated() {
+        // 40 records back, SecurityTrails reports 5000: 30 of 5000 must not
+        // read as a complete answer to coverage (REQ-SECURITYTRAILS-001).
+        let hs = hosts(40);
+        let refs: Vec<&str> = hs.iter().map(String::as_str).collect();
+        let r = reverse_ip_result(&assoc_body(&refs, Some(5000)), "1.2.3.4", "s");
+        assert_eq!(r.entities.len(), MAX_REVERSE_RECORDS, "premise: fan-out capped");
+        let t = r.truncation.expect("30 of 5000 must not read as complete");
+        assert!(t.contains("30 of 5000"), "{t}");
+    }
+
+    #[test]
+    fn a_reverse_ip_answer_over_the_cap_without_a_count_is_declared_truncated_with_no_total() {
+        let hs = hosts(40);
+        let refs: Vec<&str> = hs.iter().map(String::as_str).collect();
+        let r = reverse_ip_result(&assoc_body(&refs, None), "1.2.3.4", "s");
+        let t = r.truncation.expect("the client-side cap dropped 10 records");
+        assert!(t.contains("did not report how many exist"), "{t}");
+    }
+
+    #[test]
+    fn a_complete_reverse_ip_answer_with_a_rejected_record_stays_complete() {
+        // Over-correction guard: the IP-literal PTR was retrieved and rejected,
+        // not left unread, so 2 of 2 is complete even though 1 entity results.
+        let r = reverse_ip_result(
+            &assoc_body(&["a.example.com", "1.2.3.4"], Some(2)),
+            "1.2.3.4",
+            "s",
+        );
+        assert_eq!(r.entities.len(), 1, "premise: the IP literal is rejected");
+        assert!(r.truncation.is_none(), "{:?}", r.truncation);
+        // And a short answer with no count at all stays complete.
+        let r = reverse_ip_result(&assoc_body(&["a.example.com"], None), "1.2.3.4", "s");
+        assert!(r.truncation.is_none(), "{:?}", r.truncation);
+    }
+
+    #[test]
+    fn a_reverse_ip_answer_of_exactly_the_cap_with_a_matching_count_stays_complete() {
+        let hs = hosts(MAX_REVERSE_RECORDS);
+        let refs: Vec<&str> = hs.iter().map(String::as_str).collect();
+        let r = reverse_ip_result(&assoc_body(&refs, Some(MAX_REVERSE_RECORDS as u64)), "1.2.3.4", "s");
+        assert!(r.truncation.is_none(), "{:?}", r.truncation);
+    }
+
+    #[test]
+    fn a_subdomain_list_short_of_the_reported_count_is_declared_truncated() {
+        let body: SubdomainResp =
+            serde_json::from_str(r#"{"subdomains":["mail","www"],"subdomain_count":9}"#)
+                .expect("should succeed");
+        let r = subdomain_result(&body, "example.com", "s");
+        let t = r.truncation.expect("2 of 9 must not read as complete");
+        assert!(t.contains("2 of 9"), "{t}");
+    }
+
+    #[test]
+    fn a_complete_subdomain_list_with_a_www_echo_stays_complete() {
+        // Over-correction guard: "www" is dropped as an apex echo, so 1 entity
+        // results from 2 labels, yet the list is complete (count 2).
+        let body: SubdomainResp =
+            serde_json::from_str(r#"{"subdomains":["mail","www"],"subdomain_count":2}"#)
+                .expect("should succeed");
+        let r = subdomain_result(&body, "example.com", "s");
+        assert_eq!(r.entities.len(), 1, "premise: www is an apex echo");
+        assert!(r.truncation.is_none(), "{:?}", r.truncation);
+    }

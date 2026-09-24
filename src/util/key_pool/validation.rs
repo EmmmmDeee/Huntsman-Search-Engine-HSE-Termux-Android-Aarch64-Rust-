@@ -196,7 +196,45 @@ pub(crate) enum ProbeOutcome {
     Indeterminate,
 }
 
+/// The curl arguments that place `key` and address the probe endpoint for
+/// `sdef` — everything after the fixed transport flags — or `None` when the
+/// def is registered with [`crate::util::service_defs::NO_PROBE`].
+///
+/// `None` is the whole "never probe" contract: [`validate_against_endpoint`]
+/// returns `Indeterminate` without spawning curl, so validating an OathNet,
+/// AusPost or Stolen.tax key spends none of the operator's quota and never
+/// condemns a key on an endpoint the vendor did not document for this
+/// (REQ-KEYREG-001). Pure so that contract, and each [`KeyPlacement`]'s
+/// shape, is testable without a network round-trip.
+fn probe_request_args(sdef: &ServiceDef, key: &str) -> Option<Vec<String>> {
+    let test_url = sdef.probe_url()?;
+    let with_header = |h: String| vec!["-H".to_string(), h, "--".into(), test_url.into()];
+    Some(match sdef.key_header {
+        KeyPlacement::QueryParam(param) => {
+            let url = if test_url.contains('?') {
+                if test_url.ends_with('=') {
+                    format!("{test_url}{key}")
+                } else {
+                    format!("{test_url}&{param}={key}")
+                }
+            } else {
+                format!("{test_url}?{param}={key}")
+            };
+            vec!["--".into(), url]
+        }
+        KeyPlacement::Header(header) => with_header(format!("{header}: {key}")),
+        KeyPlacement::BasicAuth => vec!["-u".into(), key.into(), "--".into(), test_url.into()],
+        KeyPlacement::BearerAuth => with_header(format!("Authorization: bearer {key}")),
+        KeyPlacement::HeaderPrefixed(header, prefix) => {
+            with_header(format!("{header}: {prefix}{key}"))
+        }
+    })
+}
+
 async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> ProbeOutcome {
+    let Some(request) = probe_request_args(sdef, key) else {
+        return ProbeOutcome::Indeterminate;
+    };
     let timeout_ms = 10_000u64;
     let secs = (timeout_ms / 1000).to_string();
 
@@ -216,36 +254,7 @@ async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> ProbeOutcome
         "--max-filesize",
         crate::util::curl::CURL_MAX_DOWNLOAD_BYTES,
     ]);
-
-    match sdef.key_header {
-        KeyPlacement::QueryParam(param) => {
-            let url = if sdef.test_url.contains('?') {
-                if sdef.test_url.ends_with('=') {
-                    format!("{}{}", sdef.test_url, key)
-                } else {
-                    format!("{}&{}={}", sdef.test_url, param, key)
-                }
-            } else {
-                format!("{}?{}={}", sdef.test_url, param, key)
-            };
-            cmd.args(["--", &url]);
-        }
-        KeyPlacement::Header(header) => {
-            let h = format!("{header}: {key}");
-            cmd.args(["-H", &h, "--", sdef.test_url]);
-        }
-        KeyPlacement::BasicAuth => {
-            cmd.args(["-u", key, "--", sdef.test_url]);
-        }
-        KeyPlacement::BearerAuth => {
-            let h = format!("Authorization: bearer {key}");
-            cmd.args(["-H", &h, "--", sdef.test_url]);
-        }
-        KeyPlacement::HeaderPrefixed(header, prefix) => {
-            let h = format!("{header}: {prefix}{key}");
-            cmd.args(["-H", &h, "--", sdef.test_url]);
-        }
-    }
+    cmd.args(&request);
 
     cmd.kill_on_drop(true);
 
@@ -547,6 +556,104 @@ mod tests {
         assert_eq!(
             classify_probe_response("criminal_ip", "not json", "200"),
             ProbeOutcome::Valid
+        );
+    }
+
+    // ── REQ-KEYREG-001: a billed provider is never probed ──
+    //
+    // OathNet, AusPost and Stolen.tax were given `ServiceDef`s so their keys
+    // pool and rotate. The validator must not spend their quota to do it:
+    // their defs carry `NO_PROBE`, and the probe builds no request for them.
+
+    fn def(name: &str) -> &'static ServiceDef {
+        find_service(name).unwrap_or_else(|| panic!("{name} is registered"))
+    }
+
+    /// REQ-KEYREG-001. No curl argv exists for a probe-less provider, so
+    /// `validate_against_endpoint` returns `Indeterminate` without spawning
+    /// curl or sending a request.
+    #[test]
+    fn a_probe_less_provider_gets_no_probe_request() {
+        for name in ["oathnet", "auspost", "stolen_tax"] {
+            assert_eq!(
+                probe_request_args(def(name), "operator-key"),
+                None,
+                "{name}: validating a key must not spend a billed lookup"
+            );
+        }
+    }
+
+    /// REQ-KEYREG-001. The end-to-end verdict for a probe-less provider is
+    /// `None` (Indeterminate): the key stays `Untested` rather than being
+    /// marked valid or invalid on no evidence.
+    #[tokio::test]
+    async fn validating_a_probe_less_key_is_indeterminate() {
+        for name in ["oathnet", "auspost", "stolen_tax"] {
+            assert_eq!(validate_key(name, "operator-key").await, None, "{name}");
+        }
+    }
+
+    /// REQ-KEYREG-001. OTX's probe is the vendor's documented key check, with
+    /// the key in the header `ip_reputation` sends — never in the URL.
+    #[test]
+    fn the_otx_probe_sends_the_key_as_x_otx_api_key_to_users_me() {
+        assert_eq!(
+            probe_request_args(def("alienvault_otx"), "otx-key"),
+            Some(vec![
+                "-H".to_string(),
+                "X-OTX-API-KEY: otx-key".to_string(),
+                "--".to_string(),
+                "https://otx.alienvault.com/api/v1/users/me".to_string(),
+            ])
+        );
+    }
+
+    /// REQ-KEYREG-001, over-correction guard: every other placement still
+    /// builds the request it built before `NO_PROBE` existed.
+    #[test]
+    fn probed_providers_keep_their_request_shapes() {
+        let args = |name: &str| probe_request_args(def(name), "k").expect("probed");
+        assert_eq!(
+            args("shodan"),
+            ["--", "https://api.shodan.io/api-info?key=k"]
+        );
+        assert_eq!(
+            args("europeana"),
+            [
+                "--",
+                "https://api.europeana.eu/record/v2/search.json?query=test&rows=0&wskey=k"
+            ]
+        );
+        assert_eq!(
+            args("fofa"),
+            ["--", "https://fofa.info/api/v1/info/my?key=k"]
+        );
+        assert_eq!(
+            args("censys"),
+            [
+                "-u",
+                "k",
+                "--",
+                "https://search.censys.io/api/v2/hosts/1.1.1.1"
+            ]
+        );
+        assert_eq!(
+            args("github"),
+            [
+                "-H",
+                "Authorization: bearer k",
+                "--",
+                "https://api.github.com/user"
+            ]
+        );
+        assert_eq!(
+            args("opensanctions"),
+            [
+                "-H",
+                "Authorization: ApiKey k",
+                "--",
+                "https://api.opensanctions.org/statements"
+            ]
         );
     }
 

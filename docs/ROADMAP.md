@@ -79,7 +79,10 @@ depends on it; it depends on nothing in-repo.
 The reusable primitives every module leans on. Key sub-areas:
 - `util/http/` — the shared client, `send_tagged`, `read_body_capped_or_fail`
   (fail-closed body reads), `http_status_error` (typed 404/429/BotChallenge/…),
-  `json_body_error` (credential-redacting), the DNS-level `SsrfResolver`, url
+  `json_body_error` (credential-redacting), `transport_error_message` (a reqwest
+  error rendered for an operator-visible sink — URL stripped, cause chain kept,
+  credential-redacted; `send_tagged` and the tile proxy's `502` use it,
+  REQ-CRED-003), the DNS-level `SsrfResolver`, url
   encoders. **The single outbound-request authority.** The outage discipline
   lives here too: `breaker_gate` (refuse before dialling a tripped endpoint) and
   `record_breaker_outcome` (the typed `BreakerOutcome::{RateLimited, Failure,
@@ -106,6 +109,23 @@ The reusable primitives every module leans on. Key sub-areas:
   (`discovered_by.is_some()`), `next_key_excluding` (the auth chokepoint that
   keeps harvested/breach-sourced credentials out of HSE's own requests),
   `add_and_validate` (provenance-stamped).
+- `util/service_defs/` — the credential registry, one `ServiceDef` per
+  credential HSE reads. It is what can pool, rotate, CSV-split, hot-inject,
+  validate and be marked exhausted, so `KNOWN_KEYS` (what the operator is asked
+  for), the code's reads and the def `env_var`s are held to one set by
+  `credential_registry_views_are_one_set` (lock L1). `service_for_env` is the
+  **pool-name authority** for the shared keyed helpers in `util/http`
+  (`fetch_keyed_json`, `keyed_cascade*` take `key_env` and resolve the pool
+  themselves; `module` only labels errors). A provider whose every endpoint
+  bills is registered with `NO_PROBE`: pooled, never probed (REQ-KEYREG-001).
+- `util/keys/` — the env-file key store (`load`, `load_from_file_only`,
+  `write_keys_at`) and the **one answer to "is this key set?"**:
+  `is_configured_value` over a value, `is_configured_slot` over a loaded map. A
+  slot holding the `hse provision` placeholder is unset. `hse doctor`, the web
+  key grid and its acquisition list, the rejected-key diagnosis
+  (`key_health::configured_key_rejections`) and the debug bundle's key
+  inventory all ask it. A surface that tests `contains_key` instead reports
+  every provisioned slot as a key (REQ-KEYREG-002).
 - `util/namesake/` — whether one provider's own answer proves a name is held by
   more than one party, plus the ceiling and the marking rule for when it does
   (`AMBIGUOUS_CEILING`, `mark_ambiguous`). Keyed on `derive_uid`/`normalise`
@@ -232,6 +252,11 @@ Breach/Stealer, Threat-Intel, Registry (AU/VN gov), Crypto, Archive, Presence,
 Search. Each module: `accepts` only the kinds its provider indexes; fails
 closed on non-2xx; emits entities with graded confidence + contract-checked
 tags; ships a falsified unit-test suite pinning found/clean/error paths.
+A keyed provider call has one owning module, and no module that reads an
+operator's key builds a plaintext URL. `contact_enrich` used to run a second
+Numverify caller that resent the key over plaintext; phone validation is now
+`numverify`'s alone, and `tests/architecture.rs` refuses a plaintext `http://`
+URL in any module that reads a credential (REQ-CRED-001).
 
 **Synergy is the point.** A module's value is the *pivots it opens*: `pgp`
 email→name→alternate-address feeds the identity correlator; `opensanctions`

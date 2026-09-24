@@ -33,7 +33,7 @@ fn live_shape_deserializes_and_yields_a_person_and_a_source_per_record() {
     assert_eq!(response.number_found, Some(9539));
     assert_eq!(response.docs.len(), 3);
 
-    let res = build_entities("John Smith", 9539, &response.docs, "scan");
+    let res = build_entities("John Smith", response.number_found, &response.docs, "scan");
     let persons: Vec<_> = res
         .entities
         .iter()
@@ -87,7 +87,7 @@ fn live_shape_deserializes_and_yields_a_person_and_a_source_per_record() {
 #[test]
 fn an_empty_index_yields_nothing_and_a_fuzzy_partial_match_is_demoted() {
     assert!(
-        build_entities("John Smith", 0, &[], "scan")
+        build_entities("John Smith", Some(0), &[], "scan")
             .entities
             .is_empty()
     );
@@ -105,7 +105,7 @@ fn an_empty_index_yields_nothing_and_a_fuzzy_partial_match_is_demoted() {
     };
     assert!(!recorded_name_covers_seed("Johanna Smit", "John Smith"));
     assert!(recorded_name_covers_seed("Aaron John Smith", "John Smith"));
-    let res = build_entities("John Smith", 1, &[partial], "scan");
+    let res = build_entities("John Smith", Some(1), &[partial], "scan");
     let p = res
         .entities
         .iter()
@@ -130,7 +130,7 @@ fn duplicate_record_urls_collapse_to_one_source() {
         url: Some("https://www.openarchieven.nl/x:1/en".into()),
         ..OaDoc::default()
     };
-    let res = build_entities("John Smith", 2, &[d.clone(), d], "scan");
+    let res = build_entities("John Smith", Some(2), &[d.clone(), d], "scan");
     assert_eq!(
         res.entities
             .iter()
@@ -149,7 +149,7 @@ fn a_missing_number_found_still_yields_the_returned_docs() {
         url: Some("https://www.openarchieven.nl/x:1/en".into()),
         ..OaDoc::default()
     };
-    let res = build_entities("John Smith", 0, &[doc], "scan");
+    let res = build_entities("John Smith", None, &[doc], "scan");
     let p = res
         .entities
         .iter()
@@ -177,7 +177,7 @@ fn a_name_matched_register_entry_is_ownership_unverified() {
         url: Some("https://www.openarchieven.nl/rtr:1/en".into()),
         ..OaDoc::default()
     };
-    let res = build_entities("Ian Thorpe", 1, &[doc], "s");
+    let res = build_entities("Ian Thorpe", Some(1), &[doc], "s");
     for e in &res.entities {
         assert!(
             e.evidence
@@ -202,4 +202,93 @@ fn a_name_matched_register_entry_is_ownership_unverified() {
     anchor.merge(person);
     assert_eq!(anchor.source_count(), 1);
     assert!((anchor.c_effective() - 0.6).abs() < 1e-9);
+}
+
+/// Live response captured 2026-09-23 for a name no register holds, exactly as
+/// served: `number_found` is zero and `docs` is omitted altogether.
+const LIVE_NO_MATCH: &str = r#"{"query":{"name":"Jatise Mekego","only_results_with_scans":false,"start":0,"number_show":10,"sort":1,"language":"en"},"response":{"number_found":0}}"#;
+
+/// `n` register entries under distinct recorded names, each with its own
+/// record URL.
+fn page(n: usize) -> Vec<OaDoc> {
+    (0..n)
+        .map(|i| OaDoc {
+            personname: Some(format!("John Smith {i}")),
+            url: Some(format!("https://www.openarchieven.nl/x:{i}/en")),
+            ..OaDoc::default()
+        })
+        .collect()
+}
+
+#[test]
+fn a_page_short_of_the_index_total_is_declared_truncated() {
+    // REQ-OPENARCH-001: FAILS when `number_found` is only the per-record
+    // `index_total` attribute — 3 of 9539 "John Smith" register entries came
+    // back as a complete answer.
+    let body: OaResp = serde_json::from_str(LIVE).expect("live shape parses");
+    let response = body.response.expect("response present");
+    let res = build_entities("John Smith", response.number_found, &response.docs, "scan");
+    let cut = res.truncation.as_deref().expect("declared");
+    assert!(cut.contains("3 of 9539"), "{cut}");
+    // A page longer than was asked for is read, and counted, only to the cap.
+    let over = build_entities("John Smith", Some(11), &page(11), "scan");
+    let cut = over.truncation.as_deref().expect("declared");
+    assert!(cut.contains("10 of 11"), "{cut}");
+}
+
+#[test]
+fn a_page_holding_the_whole_index_total_is_complete() {
+    // Over-correction guard: the index's own total met by the page — a short
+    // one, or a full one — is a whole answer.
+    for n in [3, 10] {
+        let res = build_entities("John Smith", Some(n as u64), &page(n), "scan");
+        assert!(res.truncation.is_none(), "{n}: {:?}", res.truncation);
+    }
+}
+
+#[test]
+fn with_no_index_total_a_full_page_is_declared_and_a_short_one_is_not() {
+    let full = build_entities("John Smith", None, &page(10), "scan");
+    assert!(
+        full.truncation.is_some(),
+        "a full page is bounded by the page, not the data"
+    );
+    // A zero `number_found` beside returned rows is no total at all.
+    let zero = build_entities("John Smith", Some(0), &page(10), "scan");
+    assert!(zero.truncation.is_some());
+    let short = build_entities("John Smith", None, &page(9), "scan");
+    assert!(short.truncation.is_none());
+}
+
+#[test]
+fn an_empty_page_under_a_positive_index_total_is_declared_not_a_clean_negative() {
+    // The index reporting 9539 entries and sending none holds entries it did
+    // not send; an empty-page return ahead of the verdict read that as "Open
+    // Archives holds nothing".
+    let res = build_entities("John Smith", Some(9539), &[], "scan");
+    assert!(res.entities.is_empty());
+    let cut = res.truncation.as_deref().expect("declared");
+    assert!(cut.contains("0 of 9539"), "{cut}");
+}
+
+#[test]
+fn the_index_answering_no_match_is_a_clean_negative() {
+    // Over-correction guard, on the live no-match shape.
+    let body: OaResp = serde_json::from_str(LIVE_NO_MATCH).expect("live no-match shape parses");
+    let response = body.response.expect("response present");
+    assert_eq!(response.number_found, Some(0));
+    let res = build_entities(
+        "Jatise Mekego",
+        response.number_found,
+        &response.docs,
+        "scan",
+    );
+    assert!(res.entities.is_empty());
+    assert!(res.truncation.is_none(), "{:?}", res.truncation);
+    // No total and no rows: equally a genuine empty answer.
+    assert!(
+        build_entities("John Smith", None, &[], "scan")
+            .truncation
+            .is_none()
+    );
 }

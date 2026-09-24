@@ -13,7 +13,9 @@
 //! "eventdate":{"day":16,"month":9,"year":2018},"eventplace":["Usa"],
 //! "sourcetype":"Dossier","url":"https://www.openarchieven.nl/rtr:ad5284dd-…/en"},…]}}`.
 //! The localised duplicates (`_relationtype`, `_eventtype`) are ignored;
-//! `eventdate` parts are absent when the register did not record them.
+//! `eventdate` parts are absent when the register did not record them. A name
+//! no register holds is answered `{"query":{…},"response":{"number_found":0}}`,
+//! with `docs` omitted (live 2026-09-23).
 //!
 //! What it yields for a full-name seed: one `Person` per distinct person name
 //! the registers record (the engine merges same-name entities, so each
@@ -25,6 +27,10 @@
 //! — so every entity carries `needs-identity-verification` and a sub-medium
 //! confidence; a hit whose recorded name does not even share the seed's
 //! whole-word tokens is demoted further.
+//!
+//! One page of [`ROWS`] entries is read. The index's own `number_found` beyond
+//! it (9539 for "John Smith") is declared to the coverage layer, so a common
+//! name's sample is never read as the whole register (REQ-OPENARCH-001).
 //!
 //! MITRE ATT&CK: People-category default — T1589.003 / T1591.004; a birth,
 //! marriage or death register entry is identity information.
@@ -46,7 +52,8 @@ use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "openarch";
 /// Records requested per search — a common name has thousands of register
-/// entries; ten is a reviewable sample, and the total is reported alongside.
+/// entries; ten is a reviewable sample, and its cut against the index's own
+/// `number_found` is declared to the coverage layer.
 const ROWS: usize = 10;
 
 /// Open Archives genealogy collector — see the module docs for the wire format
@@ -165,7 +172,7 @@ impl Module for OpenArch {
         };
         Ok(build_entities(
             name,
-            response.number_found.unwrap_or(0),
+            response.number_found,
             &response.docs,
             &ctx.scan_id,
         ))
@@ -182,26 +189,38 @@ pub(super) fn recorded_name_covers_seed(recorded: &str, seed: &str) -> bool {
 }
 
 /// One `Person` per distinct recorded name (each register entry as its own
-/// evidence) plus one `Url` source per entry. Pure (no I/O) so the extraction
-/// is unit-tested directly; empty when the index found nothing.
+/// evidence) plus one `Url` source per entry. The page's cut against the
+/// index's own `number_found` is declared. Pure (no I/O) so the extraction is
+/// unit-tested directly; empty when the index found nothing.
 pub(super) fn build_entities(
     seed: &str,
-    number_found: u64,
+    number_found: Option<u64>,
     docs: &[OaDoc],
     scan_id: &str,
 ) -> ModuleResult {
     let mut result = ModuleResult::new();
+    // A zero `number_found` is no total: beside returned docs it is false, and
+    // without them it says nothing an empty page does not.
+    let number_found = number_found.filter(|n| *n > 0);
+    // The cut is judged before the empty-page return: a page with no rows under
+    // a `number_found` above zero is the index holding entries it did not send,
+    // not a clean negative.
+    let returned = docs.len().min(ROWS);
+    let cause = format!("Open Archives' `number_show={ROWS}` page");
+    match number_found {
+        Some(total) if u128::from(total) > returned as u128 => {
+            result.mark_truncated_of(returned, u128::from(total), &cause);
+        }
+        Some(_) => {}
+        None => result.mark_truncated_if_capped(returned, ROWS, &cause),
+    }
     if docs.is_empty() {
         return result;
     }
     // `number_found` is optional: if it is ever absent/renamed, the returned
     // docs are still valid and must not be dropped. Fall back to the count
     // actually returned.
-    let number_found = if number_found > 0 {
-        number_found
-    } else {
-        docs.len() as u64
-    };
+    let index_total = number_found.unwrap_or(docs.len() as u64);
     let mut seen_urls = std::collections::HashSet::new();
     for doc in docs.iter().take(ROWS) {
         let Some(personname) = doc
@@ -234,7 +253,7 @@ pub(super) fn build_entities(
         );
         let mut ev = Evidence::new(SRC, summary.clone())
             .with_attr("recorded_name", personname)
-            .with_attr("index_total", number_found.to_string());
+            .with_attr("index_total", index_total.to_string());
         if let Some(role) = &doc.relationtype {
             ev = ev.with_attr("role_in_record", role);
         }

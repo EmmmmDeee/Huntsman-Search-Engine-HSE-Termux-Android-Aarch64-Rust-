@@ -1,5 +1,7 @@
 
-use super::{bank_row, char_prefix, mask_key, run_prune, run_tsv_import, validation_label};
+use super::{
+    bank_row, char_prefix, has_validator, mask_key, run_prune, run_tsv_import, validation_label,
+};
 
     fn vault_entry(service: &str, key: &str, count: u32) -> crate::util::key_vault::VaultEntry {
         crate::util::key_vault::VaultEntry {
@@ -180,4 +182,28 @@ use super::{bank_row, char_prefix, mask_key, run_prune, run_tsv_import, validati
             validation_label(false, None),
             "UNKNOWN (no validator for service)"
         );
+    }
+
+    /// REQ-KEYREG-001. A provider registered with `NO_PROBE` is pooled but
+    /// never probed, so `hse keys validate` must report it as having no
+    /// validator — not as a probe that ran and hit a transport fault. The
+    /// probed control (`shodan`, `alienvault_otx`) keeps the "inconclusive"
+    /// reading a real probe earns, and an unregistered name stays validator-less.
+    #[test]
+    fn a_probe_less_service_reads_as_having_no_validator() {
+        for service in ["oathnet", "auspost", "stolen_tax"] {
+            assert!(
+                crate::util::service_defs::find_service(service).is_some(),
+                "fixture: {service} is a registered pool service"
+            );
+            assert!(!has_validator(service), "{service} has no probe endpoint");
+            assert_eq!(
+                validation_label(has_validator(service), None),
+                "UNKNOWN (no validator for service)"
+            );
+        }
+        for service in ["shodan", "alienvault_otx"] {
+            assert!(has_validator(service), "{service} is probed");
+        }
+        assert!(!has_validator("not_a_service"));
     }

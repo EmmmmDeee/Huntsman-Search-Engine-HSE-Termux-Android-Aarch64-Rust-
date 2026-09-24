@@ -407,11 +407,12 @@ impl Module for Pulsedive {
         // thin/`unknown` record, which `build_entities`'s internal gate handles,
         // and a malformed indicator answers 200 with an `error` body, handled
         // below.
-        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, initial_key, &[404], |key| {
-            ctx.http
-                .get(format!("{url}&key={}", crate::util::http::urlencode(key)))
-        })
-        .await?
+        let Some(resp) =
+            crate::util::http::keyed_cascade(ctx, SRC, KEY_ENV, initial_key, &[404], |key| {
+                ctx.http
+                    .get(format!("{url}&key={}", crate::util::http::urlencode(key)))
+            })
+            .await?
         else {
             return Ok(ModuleResult::new());
         };

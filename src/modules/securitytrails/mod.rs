@@ -4,8 +4,10 @@
 //! IP path:     `GET https://api.securitytrails.com/v1/ips/list?ipAddresses={ip}` (associated domains)
 //! Auth:        `APIKEY` request header
 //!
-//! Both response→entity mappings are pure ([`build_subdomain_entity`],
-//! [`build_associated_entity`]) so they are unit-tested without a live key.
+//! Both response→result mappings are pure ([`subdomain_result`],
+//! [`reverse_ip_result`], over [`build_subdomain_entity`] /
+//! [`build_associated_entity`]) so they — including the truncation
+//! declaration — are unit-tested without a live key.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -55,7 +57,8 @@ struct AssociatedRecord {
 /// **count** is never hidden — it is surfaced on every emitted entity as the
 /// `total_associated` evidence attribute (mirroring the subdomain path's
 /// `total_subdomains`), so an analyst always sees how shared the host is even
-/// when only the first records become entities.
+/// when only the first records become entities. A cut answer is also declared
+/// partial via [`ModuleResult::mark_truncated`] in [`reverse_ip_result`].
 const MAX_REVERSE_RECORDS: usize = 30;
 
 /// Build the `Domain` entity for one enumerated subdomain label under `domain`.
@@ -157,6 +160,75 @@ fn associated_entities(
         .collect()
 }
 
+/// The reverse-IP [`ModuleResult`] for one decoded response. **Pure** (no
+/// network/IO) so the truncation declaration is unit-tested without a key.
+///
+/// The answer is partial when SecurityTrails reports more associated domains
+/// than the records this module processed — the API pages, and the client-side
+/// [`MAX_REVERSE_RECORDS`] cap drops everything past it. That is declared
+/// through [`ModuleResult::mark_truncated`], the one channel coverage reads;
+/// the `total_associated` attribute alone reached nothing (REQ-COVERAGE-001).
+///
+/// `processed` counts records RETRIEVED, before `build_associated_entity`
+/// rejects blank / IP-literal / dotless hostnames: a rejected record was read,
+/// not left unread, so a complete answer containing one stays complete. With
+/// no reported `record_count`, a response longer than the cap is still cut,
+/// but its length is only a lower bound, so no total is claimed.
+fn reverse_ip_result(body: &AssociatedResp, ip: &str, scan_id: &str) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    result.extend(associated_entities(
+        &body.records,
+        body.record_count,
+        ip,
+        scan_id,
+    ));
+    let processed = body.records.len().min(MAX_REVERSE_RECORDS);
+    let cause = format!(
+        "SecurityTrails' paged reverse-IP answer and the client-side cap of \
+         {MAX_REVERSE_RECORDS} co-tenant pivots"
+    );
+    match body
+        .record_count
+        .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+    {
+        Some(total) if total > processed => result.mark_truncated(processed, Some(total), &cause),
+        _ if body.records.len() > processed => result.mark_truncated(processed, None, &cause),
+        _ => {}
+    }
+    result
+}
+
+/// The subdomain [`ModuleResult`] for one decoded response. **Pure** (no
+/// network/IO). When SecurityTrails' `subdomain_count` exceeds the labels it
+/// returned, the list is partial and is declared so through
+/// [`ModuleResult::mark_truncated`]. The comparison uses the RAW label count,
+/// so labels dropped by `build_subdomain_entity` (blank, the "www" apex echo)
+/// were retrieved and never make a complete list read as partial.
+fn subdomain_result(body: &SubdomainResp, domain: &str, scan_id: &str) -> ModuleResult {
+    let returned = body.subdomains.len();
+    let total = body.subdomain_count.unwrap_or(returned as u64);
+    let total_str = total.to_string();
+    let mut result = ModuleResult::with_capacity(returned);
+    result.extend(
+        body.subdomains
+            .iter()
+            .filter_map(|sub| build_subdomain_entity(domain, sub, &total_str, scan_id)),
+    );
+    let reported = body
+        .subdomain_count
+        .map(|n| usize::try_from(n).unwrap_or(usize::MAX));
+    if let Some(reported) = reported
+        && reported > returned
+    {
+        result.mark_truncated(
+            returned,
+            Some(reported),
+            "SecurityTrails' capped subdomain list",
+        );
+    }
+    result
+}
+
 pub struct SecurityTrails;
 
 #[async_trait]
@@ -225,15 +297,7 @@ impl SecurityTrails {
             return Ok(ModuleResult::new());
         };
 
-        let total = body.subdomain_count.unwrap_or(body.subdomains.len() as u64);
-        let total_str = total.to_string();
-        let mut result = ModuleResult::with_capacity(body.subdomains.len());
-        result.extend(
-            body.subdomains
-                .iter()
-                .filter_map(|sub| build_subdomain_entity(&domain, sub, &total_str, &ctx.scan_id)),
-        );
-        Ok(result)
+        Ok(subdomain_result(&body, &domain, &ctx.scan_id))
     }
 
     async fn reverse_ip(
@@ -257,14 +321,7 @@ impl SecurityTrails {
             return Ok(ModuleResult::new());
         };
 
-        let mut result = ModuleResult::new();
-        result.extend(associated_entities(
-            &body.records,
-            body.record_count,
-            ip,
-            &ctx.scan_id,
-        ));
-        Ok(result)
+        Ok(reverse_ip_result(&body, ip, &ctx.scan_id))
     }
 
     /// Fetch and decode one SecurityTrails endpoint through the shared cascade
@@ -286,13 +343,14 @@ impl SecurityTrails {
         absent_statuses: &[u16],
         ctx: &ModuleContext,
     ) -> Result<Option<T>> {
-        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, key, absent_statuses, |k| {
-            ctx.http
-                .get(url)
-                .header("APIKEY", k)
-                .header("Accept", "application/json")
-        })
-        .await?
+        let Some(resp) =
+            crate::util::http::keyed_cascade(ctx, SRC, KEY_ENV, key, absent_statuses, |k| {
+                ctx.http
+                    .get(url)
+                    .header("APIKEY", k)
+                    .header("Accept", "application/json")
+            })
+            .await?
         else {
             return Ok(None);
         };

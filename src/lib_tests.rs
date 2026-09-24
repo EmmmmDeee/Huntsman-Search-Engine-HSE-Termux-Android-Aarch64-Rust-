@@ -61,6 +61,113 @@ use super::*;
     }
 
     #[test]
+    fn logic_fingerprint_is_the_hash_of_the_module_logic_on_disk() {
+        // REQ-CACHE-002: the inter-scan cache keys on `LOGIC_FINGERPRINT`, so it
+        // must be exactly the hash of the logic this binary runs. Re-derived here
+        // independently of build.rs, from the spec: FNV-1a 64 over the sorted
+        // (path, NUL, u64-LE length, contents) of every file under `src/` and
+        // `hse-core/src/` that is neither test material nor the browser UI, plus
+        // `Cargo.lock`. A build.rs that hashed test code (every
+        // test edit would cool every cache), skipped contents, `hse-core`, the
+        // embedded data or the lock file (a fix there would replay stale
+        // answers), or depended on `read_dir` order disagrees with this value.
+        use std::path::{Path, PathBuf};
+
+        const OFFSET: u64 = 14_695_981_039_346_656_037;
+        const PRIME: u64 = 1_099_511_628_211;
+        fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
+            for &b in bytes {
+                h = (h ^ u64::from(b)).wrapping_mul(PRIME);
+            }
+            h
+        }
+        fn fingerprinted(rel: &str) -> bool {
+            let name = rel.rsplit('/').next().unwrap_or(rel);
+            let in_test_dir = rel
+                .split('/')
+                .rev()
+                .skip(1)
+                .any(|d| matches!(d, "tests" | "testdata"));
+            !(in_test_dir
+                || rel.starts_with("src/web/")
+                || name.starts_with("test_")
+                || name == "tests.rs"
+                || name.ends_with("_tests.rs"))
+        }
+        fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
+            let entries = std::fs::read_dir(dir)
+                .unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()));
+            for entry in entries {
+                let path = entry.expect("directory entry").path();
+                if path.is_dir() {
+                    walk(root, &path, out);
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(root)
+                    .expect("walked path is under the root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if fingerprinted(&rel) {
+                    out.push((rel, path));
+                }
+            }
+        }
+
+        // The reference hash is itself pinned to the published FNV-1a 64
+        // vectors (draft-eastlake-fnv), so agreement below is agreement with
+        // FNV-1a, not with a shared mistake.
+        assert_eq!(fnv1a(OFFSET, b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a(OFFSET, b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a(OFFSET, b"foobar"), 0x8594_4171_f739_67e8);
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        for sub in ["src", "hse-core/src"] {
+            walk(root, &root.join(sub), &mut files);
+        }
+        let lock = root.join("Cargo.lock");
+        if lock.is_file() {
+            files.push(("Cargo.lock".to_string(), lock));
+        }
+        files.sort();
+
+        // The walk's premises, so a broken walk cannot pass vacuously.
+        let has = |p: &str| files.iter().any(|(rel, _)| rel == p);
+        assert!(has("src/core/engine/dispatch.rs"), "module logic is in");
+        assert!(has("hse-core/src/lib.rs"), "the entity model is in");
+        assert!(
+            has("src/util/domains/public_suffix_list.dat") && has("src/util/oui/ieee.bin"),
+            "the data modules embed is in"
+        );
+        assert!(
+            !has("src/lib_tests.rs") && !has("src/core/engine/tests.rs"),
+            "test code is out"
+        );
+        assert!(!has("src/core/test_support.rs"), "test support is out");
+        assert!(
+            !files.iter().any(|(rel, _)| rel.starts_with("src/web/")),
+            "the browser UI is out"
+        );
+
+        let mut h = OFFSET;
+        for (rel, path) in &files {
+            let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {rel}: {e}"));
+            h = fnv1a(h, rel.as_bytes());
+            h = fnv1a(h, &[0]);
+            h = fnv1a(h, &(bytes.len() as u64).to_le_bytes());
+            h = fnv1a(h, &bytes);
+        }
+        assert_eq!(
+            crate::source_manifest::LOGIC_FINGERPRINT,
+            format!("{h:016x}"),
+            "LOGIC_FINGERPRINT is not the hash of the module logic on disk — \
+             build.rs's fingerprint drifted from its spec, or went stale \
+             (a rerun-if-changed gap)"
+        );
+    }
+
+    #[test]
     fn architecture_constants_are_correct() {
         assert_eq!(DEFAULT_BIND, "127.0.0.1:8080");
         assert_eq!(MODULE_TIMEOUT_MS, 3000);

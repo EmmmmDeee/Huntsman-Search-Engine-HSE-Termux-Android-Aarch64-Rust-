@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -174,6 +174,90 @@ fn build_reputation_entity(
     entity
 }
 
+/// What a 200 body means to the key cascade: `success:false` with a key/quota
+/// message burns the key and rotates; ANY other `success:false` — whatever its
+/// text, or none — is accepted and then failed by [`accepted`], so a backend
+/// fault, a suspended account or a plan restriction is never read as "IPQS
+/// holds nothing" (the stolen_tax backlog #40 shape, REQ-SUCCESSFLAG-001).
+/// It used to be a clean miss, every time (REQ-IPQS-001). **Pure.**
+///
+/// No refusal text is treated as a clean miss. IPQS's response-parameter docs
+/// describe `message` only as "generally success, but may contain … some form
+/// of an error notice", and name no invalid-target wording to trust; an
+/// invalid email or phone is answered `success:true` with `valid:false`.
+fn body_verdict(parsed: &Common) -> crate::util::http::BodyVerdict {
+    if parsed.success != Some(false) {
+        return crate::util::http::BodyVerdict::Accept;
+    }
+    let msg = parsed.message.as_deref().unwrap_or_default();
+    if crate::util::http::is_key_or_quota_message(msg) {
+        // Carry IPQS's own message through: it is the only thing that
+        // distinguishes quota exhaustion from a bad key from a plan limit,
+        // and the operator needs that to act.
+        return crate::util::http::BodyVerdict::KeyFailure {
+            code: 401,
+            detail: Some(msg.to_string()),
+        };
+    }
+    crate::util::http::BodyVerdict::Accept
+}
+
+/// A `success:false` body that reached this far is not key-shaped: the
+/// provider failed the query. Fail closed with its own words. **Pure.**
+fn accepted(body: Common) -> Result<Common> {
+    if body.success != Some(false) {
+        return Ok(body);
+    }
+    Err(Error::module(
+        SRC,
+        format!(
+            "IPQS answered success=false: {}",
+            body.message.as_deref().unwrap_or("no message")
+        ),
+    ))
+}
+
+/// IPQS's JSON API root; `{endpoint}/{key}/{value}` follows.
+const API_BASE: &str = "https://www.ipqualityscore.com/api/json";
+
+/// One IPQS lookup against `api_base`: the key cascade and the body verdict,
+/// then [`accepted`]. `Ok(None)` is a genuine miss (`404`); a dead or exhausted
+/// key rotates to the next pooled key (IPQS reports one in-body, on an HTTP
+/// 200, as `success:false` with a key/quota message); any other
+/// `success:false` is an error in IPQS's own words, never "holds nothing"
+/// (REQ-IPQS-001). The key rides in the URL path, so the builder re-renders
+/// the URL per key.
+async fn query(
+    ctx: &ModuleContext,
+    client: &reqwest::Client,
+    api_base: &str,
+    endpoint: &str,
+    value: &str,
+    initial_key: &str,
+) -> Result<Option<Common>> {
+    let Some(body): Option<Common> = crate::util::http::keyed_cascade_json(
+        ctx,
+        SRC,
+        KEY_ENV,
+        initial_key,
+        // 404 = unknown selector, a clean miss rather than a failure.
+        &[404],
+        |key| {
+            client.get(format!(
+                "{api_base}/{endpoint}/{}/{}",
+                urlencode(key),
+                urlencode(value)
+            ))
+        },
+        body_verdict,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    accepted(body).map(Some)
+}
+
 pub struct IpQs;
 
 #[async_trait]
@@ -258,52 +342,9 @@ impl Module for IpQs {
         if value.is_empty() {
             return Ok(ModuleResult::new());
         }
-        // Key cascade: begin on the hot-injected key and, on a terminal key
-        // failure — an HTTP 401/403/429 OR an in-body `success:false` key/quota
-        // message (IPQS reports a dead key that way on an HTTP 200) — rotate to
-        // the next usable pooled key and retry, so one process() call spends every
-        // credential the pool holds before it fails. The key rides in the URL
-        // path, so the URL is rebuilt per cascade iteration. `tried` stops a
-        // burned key being re-handed.
-        // Key cascade via the shared primitive. IPQS embeds the key in the URL
-        // PATH, so the request builder closure re-renders the URL per key —
-        // rotation changes the URL, not just a header. `success: false` is
-        // EITHER a dead/exhausted key OR a genuinely invalid target, so the
-        // body verdict distinguishes them: a key/quota message rotates (and, if
-        // no untried key remains, surfaces an Err so a paid vendor's dead key is
-        // never silently swallowed); a bad-target message is a clean miss.
-        let Some(body): Option<Common> = crate::util::http::keyed_cascade_json(
-            ctx,
-            SRC,
-            initial_key,
-            // 404 = unknown selector, a clean miss rather than a failure.
-            &[404],
-            |key| {
-                let url = format!(
-                    "https://www.ipqualityscore.com/api/json/{endpoint}/{}/{}",
-                    urlencode(key),
-                    urlencode(value),
-                );
-                ctx.http.get(url)
-            },
-            |parsed: &Common| {
-                if parsed.success == Some(false) {
-                    let msg = parsed.message.as_deref().unwrap_or_default();
-                    if crate::util::http::is_key_or_quota_message(msg) {
-                        // Carry IPQS's own message through: it is the only thing
-                        // that distinguishes quota exhaustion from a bad key
-                        // from a plan limit, and the operator needs that to act.
-                        return crate::util::http::BodyVerdict::KeyFailure {
-                            code: 401,
-                            detail: Some(msg.to_string()),
-                        };
-                    }
-                    return crate::util::http::BodyVerdict::Absent;
-                }
-                crate::util::http::BodyVerdict::Accept
-            },
-        )
-        .await?
+        // The whole request path — key cascade, body verdict, fail-closed
+        // acceptance — is `query`, so a loopback test runs it for real.
+        let Some(body) = query(ctx, &ctx.http, API_BASE, endpoint, value, initial_key).await?
         else {
             return Ok(ModuleResult::new());
         };

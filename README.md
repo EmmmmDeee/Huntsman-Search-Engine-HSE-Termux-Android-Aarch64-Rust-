@@ -366,7 +366,7 @@ HSE's engine.
 |------|------|---------|---------|
 | Email | `--kind email` | `user@example.com` | 44 |
 | Username | `--kind username` | `johndoe` | 50 |
-| Phone | `--kind phone` | `+61400000000` | 18 |
+| Phone | `--kind phone` | `+61400000000` | 17 |
 | Full Name | `--kind name` | `Jordan Leigh Meyers` | 27 |
 | IP Address | `--kind ip` | `1.1.1.1` | 41 |
 | Domain | `--kind domain` | `example.com` | 61 |

@@ -203,6 +203,14 @@ pub struct AppState {
     /// env var, the data directory and the guarded HTTP client; a test hands
     /// the handler a stand-in upstream and a scratch directory instead.
     pub tiles: Arc<tiles::TileSource>,
+    /// The env file the Settings key surface reports and edits: `settings/keys`
+    /// GET reads its slots and PUT writes them. `hse serve` sets it to
+    /// [`crate::util::keys::env_path`] (`$HOME/.huntsman.env`), so production
+    /// reads and writes the same file it always did. The field exists so a test
+    /// can point the key grid at a scratch env file, such as a freshly
+    /// provisioned template full of placeholders (REQ-KEYREG-002). Before it,
+    /// testing what the grid reports meant writing the developer's real key file.
+    pub key_file: std::path::PathBuf,
 }
 
 /// The shared in-memory `AppState` every handler's router test builds on.
@@ -296,7 +304,18 @@ fn test_state_from_parts(
         update_info: Arc::new(std::sync::Mutex::new(UpdateInfo::default())),
         cells_import: Arc::new(std::sync::Mutex::new(CellsImportPhase::default())),
         tiles: Arc::new(tiles),
+        key_file: test_key_file(),
     })
+}
+
+/// The env file every handler test's key grid reads unless it brings its own:
+/// `.huntsman.env` beside the test home's `.huntsman`, the layout
+/// `keys::env_path` gives a real `$HOME`. Nothing writes it (the test state
+/// refuses key writes), so a handler test never reads the developer's real key
+/// file.
+#[cfg(test)]
+pub(crate) fn test_key_file() -> std::path::PathBuf {
+    crate::util::paths::huntsman_dir_path().with_file_name(".huntsman.env")
 }
 
 #[cfg(test)]

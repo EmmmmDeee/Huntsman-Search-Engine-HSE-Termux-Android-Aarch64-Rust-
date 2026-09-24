@@ -1,13 +1,79 @@
 use super::*;
-use crate::core::confidence;
 
+/// REQ-CRED-001. Email only: a `Phone` is the `numverify` module's, which asks
+/// the HTTPS gateway with the key in a header, once per target.
 #[test]
-fn accepts_phone_and_email() {
+fn accepts_email_only() {
     let m = ContactEnrich;
-    assert!(m.accepts(&Target::new(TargetKind::Phone, "+1")));
     assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+    assert!(!m.accepts(&Target::new(TargetKind::Phone, "+61412345678")));
     assert!(!m.accepts(&Target::new(TargetKind::Username, "x")));
     assert!(!m.accepts(&Target::new(TargetKind::Domain, "x")));
+    assert!(
+        !m.produces().contains(&EntityKind::Phone),
+        "the validated Phone is minted by `numverify` now"
+    );
+}
+
+/// A context whose client sends every request through a recording loopback
+/// proxy with no answers queued, so any request is both seen and refused. It
+/// carries a Numverify key, as an operator who configured one would.
+async fn proxied_ctx_with_a_numverify_key()
+-> (ModuleContext, crate::util::http::test_server::Requests) {
+    use crate::util::http::test_server::serve_recording;
+    let (proxy, requests) = serve_recording(Vec::new()).await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(&proxy).expect("proxy url"))
+            .build()
+            .expect("client"),
+        keys: std::collections::HashMap::from([(
+            "HUNTSMAN_NUMVERIFY_KEY".to_string(),
+            "nv-real-looking-key".to_string(),
+        )]),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    (ctx, requests)
+}
+
+/// REQ-CRED-001. Even handed a `Phone` directly, with a Numverify key
+/// configured, this module sends nothing anywhere. Its old leg put the key in
+/// the query string, resent it over plaintext `http://` on any failure, and
+/// could mark the shared pool key Invalid on the legacy host's `success:false`.
+/// The email control below proves the proxy does see this module's requests.
+#[tokio::test]
+async fn a_phone_target_sends_no_request_even_with_a_numverify_key() {
+    let (ctx, requests) = proxied_ctx_with_a_numverify_key().await;
+    let result = ContactEnrich
+        .process(&Target::new(TargetKind::Phone, "+61412345678"), &ctx)
+        .await
+        .expect("a Phone is not this module's to fail on");
+    assert!(result.entities.is_empty(), "{:?}", result.entities);
+    let heads = requests.lock().expect("request log").clone();
+    assert!(
+        heads.is_empty(),
+        "no request may leave for a Phone: {heads:?}"
+    );
+}
+
+/// REQ-CRED-001, the control and the over-correction guard. The same context
+/// DOES see an `Email` lookup: exactly one request, to Gravatar, and no
+/// Numverify key in it. Without this, the test above would also pass for a
+/// proxy that records nothing, or for a module that stopped asking anyone.
+#[tokio::test]
+async fn an_email_target_still_asks_gravatar_and_carries_no_key() {
+    let (ctx, requests) = proxied_ctx_with_a_numverify_key().await;
+    ContactEnrich
+        .process(&Target::new(TargetKind::Email, "x@example.com"), &ctx)
+        .await
+        .expect_err("the proxy refuses every request");
+    let heads = requests.lock().expect("request log").clone();
+    assert_eq!(heads.len(), 1, "one Gravatar lookup: {heads:?}");
+    assert!(heads[0].contains("www.gravatar.com"), "{}", heads[0]);
+    assert!(!heads[0].contains("nv-real-looking-key"), "{}", heads[0]);
 }
 
 #[test]
@@ -20,72 +86,6 @@ fn priority_and_timeout() {
     let m = ContactEnrich;
     assert_eq!(m.priority(), 85);
     assert_eq!(m.max_timeout_ms(), 6_000);
-}
-
-#[test]
-fn parse_numverify_response() {
-    let raw = r#"{
-      "valid": true,
-      "number": "14158586273",
-      "local_format": "4158586273",
-      "international_format": "+14158586273",
-      "country_prefix": "+1",
-      "country_code": "US",
-      "country_name": "United States of America",
-      "location": "Novato",
-      "carrier": "AT&T Mobility LLC",
-      "line_type": "mobile"
-    }"#;
-    let r: NumverifyResp = serde_json::from_str(raw).expect("should succeed");
-    assert_eq!(r.valid, Some(true));
-    assert_eq!(r.country_code.as_deref(), Some("US"));
-    assert_eq!(r.carrier.as_deref(), Some("AT&T Mobility LLC"));
-    assert_eq!(r.line_type.as_deref(), Some("mobile"));
-}
-
-#[test]
-fn a_normal_validation_result_is_never_a_key_error() {
-    // valid:true and valid:false are both apilayer.net's ordinary answers
-    // ("this is/isn't a real phone number") and carry no success/error field —
-    // neither may be misread as a dead-key signal.
-    assert!(numverify_key_error_detail(&numverify(r#"{"valid": true}"#)).is_none());
-    assert!(numverify_key_error_detail(&numverify(r#"{"valid": false}"#)).is_none());
-}
-
-#[test]
-fn an_in_body_200_error_envelope_is_classified_as_a_key_error_with_its_detail() {
-    // This is the bug: apilayer.net answers an invalid/expired access_key, a
-    // plan/scope restriction, or an exhausted quota with HTTP 200 and
-    // {"success":false,"error":{...}} — never a 401/403/429 — so the status
-    // check alone can't see it. Before this fix the whole envelope
-    // deserialized to an all-None NumverifyResp and build_phone_entities
-    // silently returned empty, indistinguishable from a real "not a valid
-    // number" answer, forever, with no signal the key needed attention.
-    let body = numverify(
-        r#"{"success": false, "error": {"code": 101, "type": "invalid_access_key", "info": "You have not supplied a valid API Access Key."}}"#,
-    );
-    assert_eq!(
-        body.valid, None,
-        "the error envelope carries no valid field"
-    );
-    let detail =
-        numverify_key_error_detail(&body).expect("success:false must classify as a key error");
-    assert!(detail.contains("You have not supplied a valid API Access Key."));
-    assert!(detail.contains("101"));
-}
-
-#[test]
-fn an_in_body_200_error_with_no_message_still_classifies_as_a_key_error() {
-    let body = numverify(r#"{"success": false}"#);
-    assert_eq!(
-        numverify_key_error_detail(&body).as_deref(),
-        Some("api error")
-    );
-    let body_empty_error = numverify(r#"{"success": false, "error": {}}"#);
-    assert_eq!(
-        numverify_key_error_detail(&body_empty_error).as_deref(),
-        Some("api error")
-    );
 }
 
 #[test]
@@ -106,97 +106,6 @@ fn parse_gravatar_response() {
     let e = &r.entry[0];
     assert_eq!(e.display_name.as_deref(), Some("John Doe"));
     assert_eq!(e.current_location.as_deref(), Some("NYC"));
-}
-
-// ── build_phone_entities (pure extraction) ─────────────────────────
-
-fn numverify(json: &str) -> NumverifyResp {
-    serde_json::from_str(json).expect("fixture is valid NumverifyResp JSON")
-}
-fn phone_target(v: &str) -> Target {
-    Target::new(TargetKind::Phone, v)
-}
-
-#[test]
-fn valid_phone_yields_tagged_entity_with_evidence() {
-    let body = numverify(
-        r#"{
-            "valid": true, "number": "14158586273", "local_format": "4158586273",
-            "international_format": "+14158586273", "country_prefix": "+1",
-            "country_code": "us", "country_name": "United States of America",
-            "location": "Novato", "carrier": "AT&T Mobility LLC", "line_type": "mobile"
-        }"#,
-    );
-    let ents = build_phone_entities(&body, &phone_target("+14158586273"), "https", "s");
-    // Now 2: the subject Phone plus the Numverify `location` promoted to an
-    // Address entity ("Novato" is 6 chars, meeting the >=3 guard).
-    assert_eq!(ents.len(), 2);
-    let e = &ents[0];
-    assert_eq!(e.kind, EntityKind::Phone);
-    assert!(e.has_tag("numverify") && e.has_tag("validated"));
-    assert!(e.has_tag("transport:https"));
-    assert!(e.has_tag("country:US"), "country code is uppercased");
-    assert!(e.has_tag("line:mobile"));
-
-    let attr = |k: &str| e.evidence[0].attributes.get(k).map(String::as_str);
-    assert_eq!(attr("transport"), Some("https"));
-    assert_eq!(attr("normalised"), Some("14158586273"));
-    assert_eq!(attr("international"), Some("+14158586273"));
-    assert_eq!(attr("country"), Some("United States of America"));
-    assert_eq!(attr("carrier"), Some("AT&T Mobility LLC"));
-    assert_eq!(attr("line_type"), Some("mobile"));
-
-    let addr = &ents[1];
-    assert_eq!(addr.kind, EntityKind::Address);
-    assert_eq!(addr.value, "Novato");
-    assert!(
-        addr.confidence < confidence::MEDIUM_HIGH,
-        "below the Gravatar Address confidence"
-    );
-    assert!(
-        addr.has_tag("numverify") && addr.has_tag("geoint") && addr.has_tag("phone-registration")
-    );
-    assert_eq!(
-        addr.evidence[0].summary,
-        "Numverify location for +14158586273"
-    );
-}
-
-#[test]
-fn invalid_phone_yields_nothing() {
-    assert!(
-        build_phone_entities(
-            &numverify(r#"{"valid":false}"#),
-            &phone_target("+1"),
-            "https",
-            "s"
-        )
-        .is_empty()
-    );
-    // A missing `valid` field is also not a confirmed-valid number.
-    assert!(build_phone_entities(&numverify(r#"{}"#), &phone_target("+1"), "http", "s").is_empty());
-}
-
-#[test]
-fn phone_blank_fields_skipped_and_transport_recorded() {
-    // Blank country_code/line_type add no tags; blank evidence fields skipped;
-    // the transport reflects the http fallback.
-    let body =
-        numverify(r#"{ "valid": true, "country_code": "", "line_type": "", "carrier": "" }"#);
-    let e = &build_phone_entities(&body, &phone_target("+61400000000"), "http", "s")[0];
-    assert!(!e.tags.iter().any(|t| t.starts_with("country:")));
-    assert!(!e.tags.iter().any(|t| t.starts_with("line:")));
-    assert!(e.has_tag("transport:http"));
-    // Only the transport attribute survives; blank optional fields are dropped.
-    assert_eq!(
-        e.evidence[0]
-            .attributes
-            .get("transport")
-            .map(String::as_str),
-        Some("http")
-    );
-    assert!(!e.evidence[0].attributes.contains_key("carrier"));
-    assert!(!e.evidence[0].attributes.contains_key("line_type"));
 }
 
 // ── build_email_entities (pure extraction) ─────────────────────────
@@ -366,32 +275,6 @@ fn gravatar_derived_entities_are_attributed_to_the_gravatar_corpus() {
                 ev.source,
                 crate::modules::gravatar::SRC,
                 "{:?} {} carries evidence attributed to `{}` — a Gravatar row must name Gravatar",
-                e.kind,
-                e.value,
-                ev.source
-            );
-        }
-    }
-}
-
-#[test]
-fn numverify_derived_entities_are_attributed_to_the_numverify_corpus() {
-    // Same rule for the phone path: the `numverify` module queries the same
-    // validation service, so a Numverify answer must carry Numverify's name.
-    let body = numverify(
-        r#"{"valid":true,"number":"61400000000","local_format":"0400000000",
-            "international_format":"+61400000000","country_prefix":"+61",
-            "country_code":"AU","country_name":"Australia","location":"Sydney",
-            "carrier":"Telstra","line_type":"mobile"}"#,
-    );
-    let ents = build_phone_entities(&body, &phone_target("+61400000000"), "https", "s");
-    assert!(!ents.is_empty());
-    for e in &ents {
-        for ev in &e.evidence {
-            assert_eq!(
-                ev.source,
-                crate::modules::numverify::SRC,
-                "{:?} {} carries evidence attributed to `{}` — a Numverify answer must name Numverify",
                 e.kind,
                 e.value,
                 ev.source

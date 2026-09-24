@@ -94,6 +94,8 @@ pub fn build_id() -> &'static str {
 /// `build.rs` (sorted, deterministic). Lets the debug bundle report the complete
 /// file manifest the binary was built from (`SOURCE_FILES`, `SOURCE_TOTAL_LINES`)
 /// — a build fingerprint that accounts for every file, not just runtime modules.
+/// `LOGIC_FINGERPRINT` is the content hash of the module logic itself, the
+/// prefix of every inter-scan cache key (REQ-CACHE-002).
 pub mod source_manifest {
     include!(concat!(env!("OUT_DIR"), "/source_manifest.rs"));
 }

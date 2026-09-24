@@ -145,7 +145,7 @@ async fn query_ip(target: &Target, initial_key: &str, ctx: &ModuleContext) -> Re
     // `absent_statuses: &[404]` — BinaryEdge's documented "Page not found"
     // for an unindexed target (`docs.sand.binaryedge.io/errors/`), a clean
     // miss rather than an error.
-    let Some(resp) = keyed_cascade(ctx, SRC, initial_key, &[404], |key| {
+    let Some(resp) = keyed_cascade(ctx, SRC, KEY_ENV, initial_key, &[404], |key| {
         ctx.http
             .get(&url)
             .header("X-Key", key)
@@ -178,7 +178,7 @@ async fn query_subdomains(
         "https://api.binaryedge.io/v2/query/domains/subdomain/{}",
         urlencode(domain)
     );
-    let Some(resp) = keyed_cascade(ctx, SRC, initial_key, &[404], |key| {
+    let Some(resp) = keyed_cascade(ctx, SRC, KEY_ENV, initial_key, &[404], |key| {
         ctx.http
             .get(&url)
             .header("X-Key", key)

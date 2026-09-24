@@ -180,7 +180,7 @@ impl Module for C99 {
         // C99's one generic key-or-parameter error, caught by the shared
         // `is_auth_failure_400_body` classifier this primitive already
         // applies (its body always contains "Invalid API key").
-        let Some(resp) = keyed_cascade(ctx, SRC, initial_key, &[], |key| {
+        let Some(resp) = keyed_cascade(ctx, SRC, KEY_ENV, initial_key, &[], |key| {
             ctx.http.get(format!(
                 "https://api.c99.nl/subdomainfinder?key={}&domain={domain_enc}&json=true",
                 urlencode(key)

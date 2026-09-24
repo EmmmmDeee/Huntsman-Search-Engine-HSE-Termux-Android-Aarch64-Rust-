@@ -354,7 +354,7 @@ impl Module for FullHunt {
         // `absent_statuses: &[404]` — FullHunt's documented "querying for a
         // domain or host that does not exist" response, a clean miss rather
         // than an error.
-        let Some(resp) = keyed_cascade(ctx, SRC, initial_key, &[404], |key| {
+        let Some(resp) = keyed_cascade(ctx, SRC, KEY_ENV, initial_key, &[404], |key| {
             ctx.http
                 .get(&url)
                 .header("X-API-KEY", key)

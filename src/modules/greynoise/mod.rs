@@ -19,7 +19,13 @@
 //! (benign / malicious / unknown).
 //!
 //! Only one path runs per IP (paid supersedes free — same policy as the
-//! Shodan module's InternetDB/host-API split).
+//! Shodan module's InternetDB/host-API split), with one exception: when
+//! GreyNoise refuses the key itself (`401`/`403` — live, `v3/ip` answers a bad
+//! key `401 {"message":"unauthorized"}`), the refusal is reported to the key
+//! pool and the module answers from the keyless Community endpoint. An
+//! optional key must never leave the module worse than keyless; before this, a
+//! refused key turned a working Community lookup into a module error
+//! (REQ-KEYFLOOR-001).
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -34,6 +40,11 @@ use crate::core::{
 use crate::util::http::{fetch_json_or_404, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_GREYNOISE_KEY";
+
+/// The API root both tiers share (`{base}/v3/ip/{ip}` keyed,
+/// `{base}/v3/community/{ip}` keyless). A parameter of [`GreyNoise::lookup`]
+/// so the keyed → keyless fallback runs against a loopback server in tests.
+const API_BASE: &str = "https://api.greynoise.io";
 
 // ── Response types ────────────────────────────────────────────────
 
@@ -324,12 +335,28 @@ impl Module for GreyNoise {
         if ip.is_empty() {
             return Ok(ModuleResult::new());
         }
+        self.lookup(API_BASE, ip, ctx).await
+    }
+}
 
+impl GreyNoise {
+    /// The module's whole request path, with the API root injectable.
+    ///
+    /// Keyed: the paid `v3/ip` record — the same classification fields plus a
+    /// confirmed `seen` flag — so the Community endpoint is not also asked.
+    /// But the key is optional and the Community endpoint needs none
+    /// ("available to unauthenticated users", GreyNoise's Community API docs),
+    /// so a key GreyNoise REFUSES must not cost the operator the keyless
+    /// answer: the refusal is already reported to the pool by
+    /// [`crate::util::http::keyed_answer`] (the key reads `Invalid` and the
+    /// next scan rotates past it), logged here, and the lookup continues on
+    /// the Community endpoint (REQ-KEYFLOOR-001). Only the refusal falls back:
+    /// a throttle or an outage on `v3/ip` stays the module's error, and the
+    /// refusal is never read as "GreyNoise never observed this IP".
+    async fn lookup(&self, base: &str, ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
+        use crate::util::http::KeyedAnswer;
         if let Some(key) = ctx.key_opt(KEY_ENV) {
-            // Paid v3/ip lookup returns the same classification fields plus a
-            // confirmed `seen` flag — skip the free path (same policy as the
-            // Shodan module's InternetDB/host-API split).
-            let url = format!("https://api.greynoise.io/v3/ip/{}", urlencode(ip));
+            let url = format!("{base}/v3/ip/{}", urlencode(ip));
             let resp = ctx
                 .http
                 .get(&url)
@@ -337,17 +364,24 @@ impl Module for GreyNoise {
                 .send()
                 .await
                 .map_err(|e| crate::core::error::Error::module(SRC, e.without_url().to_string()))?;
-            let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
-                return Ok(ModuleResult::new());
-            };
-            let data: PaidResp = crate::util::http::json_decode(SRC, resp).await?;
-            recognised(&data)?;
-            let mut result = ModuleResult::new();
-            result.entities = build_paid_entities(&data, ip, &ctx.scan_id);
-            return Ok(result);
+            match crate::util::http::keyed_answer(SRC, key, ctx, resp).await? {
+                KeyedAnswer::Found(resp) => {
+                    let data: PaidResp = crate::util::http::json_decode(SRC, resp).await?;
+                    recognised(&data)?;
+                    let mut result = ModuleResult::new();
+                    result.entities = build_paid_entities(&data, ip, &ctx.scan_id);
+                    return Ok(result);
+                }
+                KeyedAnswer::Absent => return Ok(ModuleResult::new()),
+                KeyedAnswer::KeyRejected { status, .. } => tracing::warn!(
+                    target: "huntsman::greynoise",
+                    status,
+                    "GreyNoise refused the configured key; answering from the keyless Community API (REQ-KEYFLOOR-001)"
+                ),
+            }
         }
 
-        let url = format!("https://api.greynoise.io/v3/community/{}", urlencode(ip));
+        let url = format!("{base}/v3/community/{}", urlencode(ip));
 
         let Some(data): Option<CommunityResp> = fetch_json_or_404(&ctx.http, SRC, &url).await?
         else {

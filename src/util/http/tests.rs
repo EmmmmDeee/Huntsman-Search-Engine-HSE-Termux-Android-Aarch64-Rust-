@@ -1,9 +1,9 @@
 use super::client::{build_client, build_client_with_timeout, build_client_with_trace};
 use super::fetch::{
-    JSON_BODY_CAP, fetch_json, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
-    is_keyed_error_status, key_tail, keyed_cascade, keyed_cascade_json, keyed_ok_or_404,
-    ok_or_absent, parse_retry_after_secs, read_body_capped, read_body_capped_or_fail,
-    retry_after_secs,
+    JSON_BODY_CAP, KeyedAnswer, fetch_json, fetch_json_or_404, fetch_json_or_absent,
+    fetch_json_probe, is_keyed_error_status, key_tail, keyed_answer, keyed_cascade,
+    keyed_cascade_json, keyed_ok_or_404, ok_or_absent, parse_retry_after_secs, read_body_capped,
+    read_body_capped_or_fail, retry_after_secs,
 };
 use super::redact::{pool_secret_values, redact_credentials, redact_literal_secrets};
 use super::ssrf::{
@@ -1088,6 +1088,19 @@ fn redact_strips_apikey_camel_case() {
     assert!(r.contains("apiKey=***"));
 }
 
+/// REQ-CRED-002: all-lowercase `apikey=` (Thunderforest's documented query
+/// parameter) is masked — the case-sensitive `apiKey=` entry does not fold it,
+/// and the bare `key=` entry cannot reach it past the `i` boundary. A mid-word
+/// `xapikey=` still does not trip.
+#[test]
+fn redact_strips_lowercase_apikey() {
+    let s = "tile https://tile.example.invalid/1/2/3.png?apikey=0123abcd4567ef89 failed";
+    let r = redact_credentials(s);
+    assert!(!r.contains("0123abcd4567ef89"), "got: {r}");
+    assert!(r.contains("?apikey=*** failed"), "got: {r}");
+    assert_eq!(redact_credentials("xapikey=visible"), "xapikey=visible");
+}
+
 #[test]
 fn redact_strips_token_and_secret() {
     let s = "?token=THEACTUALTOKEN&secret=ALSOSECRET&other=keep";
@@ -1169,6 +1182,41 @@ fn key_scan_tokeniser_bounds_query_string_keys_cleanly() {
     assert_eq!(csv_tokens, vec!["AKIAJK28SLQQV61MNG9X"]);
 }
 
+/// REQ-CRED-003: a credential parameter's name matches in any ASCII case.
+/// Thunderforest's documented tile template ends `?apikey={apikey}`: the
+/// case-exact `apiKey=` entry did not match it, and `key=` cannot see inside
+/// it (no boundary before the `k`), so the operator's tile key in reqwest's
+/// ` for url (…)` suffix passed through intact. The boundary still holds in any
+/// case — `monKEY=` is a word, not a parameter.
+#[test]
+fn redact_masks_a_credential_name_in_any_case() {
+    let r = redact_credentials(
+        "error sending request for url (https://api.thunderforest.com/cycle/4/1/1.png?apikey=TFKEY0123456789)",
+    );
+    assert!(!r.contains("TFKEY0123456789"), "got: {r}");
+    assert!(r.ends_with(".png?apikey=***"), "got: {r}");
+
+    let r = redact_credentials(
+        "?APIKEY=V1&ApiKey=V2&API_KEY=V3&Access_Token=V4&AccessToken=V5&Token=V6&Secret=V7&AUTH=V8&Key=V9&page=2",
+    );
+    for v in ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9"] {
+        assert!(!r.contains(v), "{v} survived: {r}");
+    }
+    // The name is kept as the text spelled it; only the value is masked.
+    assert!(
+        r.starts_with("?APIKEY=***&ApiKey=***&API_KEY=***"),
+        "got: {r}"
+    );
+    assert!(r.ends_with("&page=2"), "got: {r}");
+
+    let s = "monKEY=banana MonKey=plantain";
+    assert_eq!(
+        redact_credentials(s),
+        s,
+        "a mid-word match is not a parameter"
+    );
+}
+
 #[test]
 fn redact_over_masks_bare_key_param_after_boundary() {
     let r = redact_credentials("?key=sortorder&page=2");
@@ -1195,6 +1243,11 @@ async fn read_text_reads_body_with_module_tagged_errors() {
 
 // ── keyed_cascade — the general-request-shape cascade `onyphe`/`threatfox`
 // migrated onto in place of their own hand-rolled 'cascade loop. ──────────
+
+/// An env var no `ServiceDef` owns, for the cascade tests that exercise the
+/// request loop rather than the pool: nothing is pooled under it, so
+/// `next_pooled_key` answers `None` exactly as it does for a single-key setup.
+const UNREGISTERED_KEY_ENV: &str = "HUNTSMAN_TEST_KEY";
 
 fn cascade_ctx(http: reqwest::Client) -> crate::core::module::ModuleContext {
     let (bus, _rx) = tokio::sync::broadcast::channel(1);
@@ -1230,9 +1283,14 @@ async fn keyed_cascade_returns_the_response_on_success() {
 
     let ctx = cascade_ctx(build_client());
     let url = format!("http://{addr}/");
-    let resp = keyed_cascade(&ctx, "test_cascade_ok", "k1", &[], |key| {
-        ctx.http.get(&url).header("X-Key", key)
-    })
+    let resp = keyed_cascade(
+        &ctx,
+        "test_cascade_ok",
+        UNREGISTERED_KEY_ENV,
+        "k1",
+        &[],
+        |key| ctx.http.get(&url).header("X-Key", key),
+    )
     .await
     .expect("must not error")
     .expect("a 2xx response must come back Some");
@@ -1264,9 +1322,14 @@ async fn keyed_cascade_maps_a_listed_status_to_absent_but_errors_on_an_unlisted_
     let ctx = cascade_ctx(build_client());
     let addr = serve_404().await;
     let url = format!("http://{addr}/");
-    let absent = keyed_cascade(&ctx, "test_cascade_absent", "k1", &[404], |key| {
-        ctx.http.get(&url).header("X-Key", key)
-    })
+    let absent = keyed_cascade(
+        &ctx,
+        "test_cascade_absent",
+        UNREGISTERED_KEY_ENV,
+        "k1",
+        &[404],
+        |key| ctx.http.get(&url).header("X-Key", key),
+    )
     .await
     .expect("a listed absent status must not be an error");
     assert!(absent.is_none(), "404 in absent_statuses must map to None");
@@ -1276,9 +1339,14 @@ async fn keyed_cascade_maps_a_listed_status_to_absent_but_errors_on_an_unlisted_
     // still be a hard error, not silently swallowed into None.
     let addr2 = serve_404().await;
     let url2 = format!("http://{addr2}/");
-    let errored = keyed_cascade(&ctx, "test_cascade_no_absent", "k1", &[], |key| {
-        ctx.http.get(&url2).header("X-Key", key)
-    })
+    let errored = keyed_cascade(
+        &ctx,
+        "test_cascade_no_absent",
+        UNREGISTERED_KEY_ENV,
+        "k1",
+        &[],
+        |key| ctx.http.get(&url2).header("X-Key", key),
+    )
     .await;
     assert!(
         errored.is_err(),
@@ -1312,9 +1380,14 @@ async fn keyed_cascade_gives_up_cleanly_on_401_with_no_extra_pooled_key() {
     // (and now this primitive) falls back to.
     let ctx = cascade_ctx(build_client());
     let url = format!("http://{addr}/");
-    let result = keyed_cascade(&ctx, "test_cascade_401_noextra", "only-key", &[], |key| {
-        ctx.http.get(&url).header("X-Key", key)
-    })
+    let result = keyed_cascade(
+        &ctx,
+        "test_cascade_401_noextra",
+        UNREGISTERED_KEY_ENV,
+        "only-key",
+        &[],
+        |key| ctx.http.get(&url).header("X-Key", key),
+    )
     .await;
     assert!(
         result.is_err(),
@@ -1370,9 +1443,14 @@ async fn keyed_cascade_retries_the_same_key_once_on_429_before_succeeding() {
 
     let ctx = cascade_ctx(build_client());
     let url = format!("http://{addr}/");
-    let resp = keyed_cascade(&ctx, "test_cascade_429_retry", "same-key", &[], |key| {
-        ctx.http.get(&url).header("X-Key", key)
-    })
+    let resp = keyed_cascade(
+        &ctx,
+        "test_cascade_429_retry",
+        UNREGISTERED_KEY_ENV,
+        "same-key",
+        &[],
+        |key| ctx.http.get(&url).header("X-Key", key),
+    )
     .await
     .expect("must recover on the in-place retry")
     .expect("the retried request must succeed");
@@ -1392,9 +1470,14 @@ async fn keyed_cascade_stops_before_any_request_when_already_cancelled() {
     // the network attempt rather than merely happening to return early.
     let ctx = cascade_ctx(build_client());
     ctx.cancel.cancel();
-    let result = keyed_cascade(&ctx, "test_cascade_cancelled", "k1", &[], |key| {
-        ctx.http.get("http://127.0.0.1:1/").header("X-Key", key)
-    })
+    let result = keyed_cascade(
+        &ctx,
+        "test_cascade_cancelled",
+        UNREGISTERED_KEY_ENV,
+        "k1",
+        &[],
+        |key| ctx.http.get("http://127.0.0.1:1/").header("X-Key", key),
+    )
     .await
     .expect("a cancelled scan must not surface as an error");
     assert!(result.is_none(), "cancellation must short-circuit to None");
@@ -1440,6 +1523,7 @@ async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
     let out: Option<Body> = keyed_cascade_json(
         &ctx,
         "test_verdict_accept",
+        UNREGISTERED_KEY_ENV,
         "k1",
         &[],
         |key| ctx.http.get(&url).header("X-Key", key),
@@ -1464,6 +1548,7 @@ async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
     let failed: Result<Option<Body>, _> = keyed_cascade_json(
         &ctx,
         "test_verdict_keyfail",
+        UNREGISTERED_KEY_ENV,
         "k1",
         &[],
         |key| ctx.http.get(&url).header("X-Key", key),
@@ -1493,6 +1578,7 @@ async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
     let absent: Option<Body> = keyed_cascade_json(
         &ctx,
         "test_verdict_absent",
+        UNREGISTERED_KEY_ENV,
         "k1",
         &[],
         |key| ctx.http.get(&url).header("X-Key", key),
@@ -1508,6 +1594,230 @@ async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
     .await
     .expect("a genuine in-body miss must not error");
     assert!(absent.is_none(), "Absent verdict must yield Ok(None)");
+}
+
+// ── REQ-KEYREG-001: a burned key reaches the pool its env var names ─────────
+//
+// The shared keyed helpers used their `module` argument as the pool's service
+// name. For `ip_reputation` (whose OTX key pools as `alienvault_otx`), and for
+// every caller of a def-less credential, each `report_key_exhausted` was a
+// silent no-op and `next_pooled_key` always answered `None`: a burned key
+// never changed state and never rotated. These drive the real request path
+// against a loopback server with keys pooled in the process-global pool, and
+// assert where the burn landed. Each test owns one pool service no other test
+// touches, and its key values carry the pid and thread, so no parallel test
+// can hand the cascade a key of its own.
+
+/// A context whose client reaches the loopback server directly, holding
+/// `first` under `key_env` — the hot-injected key a module starts on.
+fn pooled_ctx(key_env: &str, first: &str) -> crate::core::module::ModuleContext {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("client");
+    let mut ctx = cascade_ctx(client);
+    ctx.keys.insert(key_env.to_string(), first.to_string());
+    ctx
+}
+
+/// Pool `n` fresh usable keys under `service` and return them in order.
+fn pool_keys(service: &str, n: usize) -> Vec<String> {
+    let pool = crate::util::key_pool::global_pool();
+    let tag = format!("{}-{:?}", std::process::id(), std::thread::current().id());
+    (0..n)
+        .map(|i| {
+            let k = format!("keyreg-{service}-{i}-{tag}");
+            assert!(
+                pool.add(service, crate::util::key_pool::KeyEntry::new(k.clone())),
+                "fixture: `{service}` must be a poolable service and {k} new"
+            );
+            k
+        })
+        .collect()
+}
+
+fn pool_status(service: &str, key: &str) -> Option<crate::util::key_pool::KeyStatus> {
+    crate::util::key_pool::global_pool().entry_status(service, key)
+}
+
+/// REQ-KEYREG-001. `ip_reputation` calls `fetch_keyed_json` with its own name,
+/// and its OTX key pools as `alienvault_otx`. A rejected key must be marked
+/// in THAT pool and the call must rotate to the next pooled key. Once every
+/// key is burned, the error still names the module, not the pool: the pool
+/// name is resolved for the pool alone and never relabels an operator-facing
+/// error.
+#[tokio::test]
+async fn fetch_keyed_json_burns_and_rotates_in_the_pool_its_key_env_names() {
+    use crate::util::http::test_server::{Canned, serve_recording};
+    use crate::util::key_pool::KeyStatus;
+    const ENV: &str = "HUNTSMAN_ALIENVAULT_KEY";
+    let keys = pool_keys("alienvault_otx", 2);
+    let (base, requests) = serve_recording(vec![
+        Canned::json(403, r#"{"detail": "Authentication required"}"#),
+        Canned::json(200, r#"{"ok":true}"#),
+        Canned::json(401, "{}"),
+        Canned::json(401, "{}"),
+    ])
+    .await;
+    let ctx = pooled_ctx(ENV, &keys[0]);
+    let url = format!("{base}/api/v1/indicators/IPv4/192.0.2.1/general");
+
+    let body: Option<serde_json::Value> =
+        super::fetch::fetch_keyed_json(&ctx, "ip_reputation", &url, ENV, "X-OTX-API-KEY")
+            .await
+            .expect("the cascade must recover on the second pooled key");
+    assert_eq!(
+        pool_status("alienvault_otx", &keys[0]),
+        Some(KeyStatus::Invalid),
+        "the refused key must be marked in the pool its env var names"
+    );
+    assert_eq!(body, Some(serde_json::json!({ "ok": true })));
+    {
+        let heads = requests.lock().expect("request log");
+        assert_eq!(heads.len(), 2, "one refusal, one rotation");
+        assert!(
+            heads[1].contains(&format!("x-otx-api-key: {}", keys[1])),
+            "the retry must carry the pooled second key: {}",
+            heads[1]
+        );
+    }
+
+    // Both keys refused: the call fails, and says which module failed.
+    let err = super::fetch::fetch_keyed_json::<serde_json::Value>(
+        &ctx,
+        "ip_reputation",
+        &url,
+        ENV,
+        "X-OTX-API-KEY",
+    )
+    .await
+    .expect_err("no usable key remains");
+    assert_eq!(
+        pool_status("alienvault_otx", &keys[1]),
+        Some(KeyStatus::Invalid)
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ip_reputation"),
+        "the error names the module: {msg}"
+    );
+    assert!(!msg.contains("alienvault_otx"), "never the pool: {msg}");
+}
+
+/// REQ-KEYREG-001. The status cascade (`keyed_cascade` over
+/// `keyed_cascade_with_key` and `attempt_with_key`) takes `key_env` and burns
+/// into that pool on every path: an auth-shaped 400 (the cascade's own burn)
+/// and a 401 (`handle_keyed_error`'s). `module` is a label that owns no pool,
+/// so only the env var can have named `oathnet`.
+#[tokio::test]
+async fn keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names() {
+    use crate::util::http::test_server::{Canned, serve_recording};
+    use crate::util::key_pool::KeyStatus;
+    let keys = pool_keys("oathnet", 3);
+    let (base, requests) = serve_recording(vec![
+        Canned::json(400, r#"{"error":"Invalid API key"}"#),
+        Canned::json(401, "{}"),
+        Canned::json(200, r#"{"ok":true}"#),
+    ])
+    .await;
+    let ctx = pooled_ctx("HUNTSMAN_OATHNET_KEY", &keys[0]);
+    let url = format!("{base}/service/v2/breach/search");
+
+    let resp = keyed_cascade(
+        &ctx,
+        "keyreg_label_owns_no_pool",
+        "HUNTSMAN_OATHNET_KEY",
+        &keys[0],
+        &[],
+        |key| ctx.http.get(&url).header("x-api-key", key),
+    )
+    .await
+    .expect("the third pooled key is served")
+    .expect("a 2xx");
+    // The pool picks the rotation order, so read which key each request sent.
+    let sent: Vec<String> = requests
+        .lock()
+        .expect("request log")
+        .iter()
+        .map(|head| {
+            head.lines()
+                .find_map(|l| l.strip_prefix("x-api-key: "))
+                .expect("every attempt carries a key")
+                .trim()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(sent.len(), 3, "two refusals, then a third key");
+    assert_eq!(sent[0], keys[0], "the cascade starts on the injected key");
+    assert_eq!(
+        pool_status("oathnet", &sent[0]),
+        Some(KeyStatus::Invalid),
+        "400 burn"
+    );
+    assert_eq!(
+        pool_status("oathnet", &sent[1]),
+        Some(KeyStatus::Invalid),
+        "401 burn"
+    );
+    let served = pool_status("oathnet", &sent[2]);
+    assert!(
+        served.is_some() && served != Some(KeyStatus::Invalid),
+        "the key that answered is a pooled key left usable: {served:?}"
+    );
+    assert!(resp.status().is_success());
+}
+
+/// REQ-KEYREG-001. `keyed_cascade_json`'s in-body verdict — Stolen.tax's
+/// `success:false` shape, whose module comment promised a burned key would
+/// "rotat[e] to the next pooled credential" — burns into the `stolen_tax`
+/// pool its env var names, and the rotation draws the next key from it.
+#[tokio::test]
+async fn keyed_cascade_json_burns_an_in_body_failure_in_the_pool_its_key_env_names() {
+    use crate::util::http::test_server::{Canned, serve_recording};
+    use crate::util::key_pool::KeyStatus;
+    #[derive(serde::Deserialize, Debug)]
+    struct Body {
+        status: Option<i64>,
+    }
+    let keys = pool_keys("stolen_tax", 2);
+    let (base, requests) = serve_recording(vec![
+        Canned::json(200, r#"{"status":401}"#),
+        Canned::json(200, r#"{"status":200}"#),
+    ])
+    .await;
+    let ctx = pooled_ctx("HUNTSMAN_STOLEN_TAX_KEY", &keys[0]);
+    let url = format!("{base}/api/v1/search/email?query=a%40b.example");
+
+    let out: Option<Body> = keyed_cascade_json(
+        &ctx,
+        "keyreg_label_owns_no_pool",
+        "HUNTSMAN_STOLEN_TAX_KEY",
+        &keys[0],
+        &[],
+        |key| ctx.http.get(&url).header("Api-Key", key),
+        |b: &Body| match b.status {
+            Some(401) => super::fetch::BodyVerdict::KeyFailure {
+                code: 401,
+                detail: None,
+            },
+            _ => super::fetch::BodyVerdict::Accept,
+        },
+    )
+    .await
+    .expect("the second pooled key is served");
+    assert_eq!(
+        pool_status("stolen_tax", &keys[0]),
+        Some(KeyStatus::Invalid),
+        "the in-body key failure must be marked in the stolen_tax pool"
+    );
+    assert_eq!(out.and_then(|b| b.status), Some(200));
+    let heads = requests.lock().expect("request log");
+    assert_eq!(heads.len(), 2);
+    assert!(
+        heads[1].contains(&format!("api-key: {}", keys[1])),
+        "{}",
+        heads[1]
+    );
 }
 
 // ── Error-message quality: what the operator and the DB actually receive ─────
@@ -2356,4 +2666,86 @@ fn a_fallback_with_no_answer_is_a_failure_never_absent() {
         }),
     );
     assert_eq!(ok.expect("decoded").expect("some").results, ["a"]);
+}
+
+/// REQ-KEYFLOOR-001. `keyed_answer` keeps the provider's refusal of the
+/// CREDENTIAL apart from every other failure, so a module with a keyless path
+/// can fall back on it and on nothing else: `401`, `403` and Netlas' documented
+/// auth-shaped `400` are `KeyRejected` and burn the key `Invalid` in the pool;
+/// a `429` is still an `Err` (typed `RateLimited`) and still burns
+/// `RateLimited`; a `500` and a bad-query `400` are an `Err` and burn nothing.
+#[tokio::test]
+async fn keyed_answer_separates_a_key_refusal_from_every_other_failure() {
+    use super::test_server::{Canned, serve};
+    use crate::util::key_pool::KeyStatus;
+    let ctx = keyed_test_ctx();
+    let keys = pool_keys("shodan", 6);
+    let refused = [
+        (401, r#"{"message":"unauthorized"}"#),
+        (403, r#"{"error":"Access denied"}"#),
+        (
+            400,
+            r#"{"detail":"Request had invalid authorization credentials: API key not found"}"#,
+        ),
+    ];
+    for (i, (code, body)) in refused.into_iter().enumerate() {
+        let key = &keys[i];
+        let base = serve(vec![Canned::json(code, body)]).await;
+        let resp = reqwest::Client::new()
+            .get(&base)
+            .send()
+            .await
+            .expect("loopback");
+        match keyed_answer("shodan", key, &ctx, resp).await {
+            Ok(KeyedAnswer::KeyRejected { status, .. }) => assert_eq!(status, code),
+            other => panic!("case {i}: {code} is a key refusal, got {other:?}"),
+        }
+        assert_eq!(
+            pool_status("shodan", key),
+            Some(KeyStatus::Invalid),
+            "{code} burns"
+        );
+    }
+
+    let key = &keys[3];
+    let base = serve(vec![Canned::json(429, r#"{"error":"rate limit"}"#)]).await;
+    let resp = reqwest::Client::new()
+        .get(&base)
+        .send()
+        .await
+        .expect("loopback");
+    let err = keyed_answer("shodan", key, &ctx, resp)
+        .await
+        .expect_err("a throttle is not a key refusal");
+    assert!(
+        matches!(err, crate::core::error::Error::RateLimited(_)),
+        "{err:?}"
+    );
+    assert_eq!(pool_status("shodan", key), Some(KeyStatus::RateLimited));
+
+    for (key, (code, body)) in keys[4..]
+        .iter()
+        .zip([(500, r#"{"error":"boom"}"#), (400, r#"{"error":"bad ip"}"#)])
+    {
+        let base = serve(vec![Canned::json(code, body)]).await;
+        let resp = reqwest::Client::new()
+            .get(&base)
+            .send()
+            .await
+            .expect("loopback");
+        assert!(
+            keyed_answer("shodan", key, &ctx, resp).await.is_err(),
+            "{code} is an error, not a refusal"
+        );
+        assert_ne!(
+            pool_status("shodan", key),
+            Some(KeyStatus::Invalid),
+            "{code} burns nothing"
+        );
+        assert_ne!(
+            pool_status("shodan", key),
+            Some(KeyStatus::RateLimited),
+            "{code} burns nothing"
+        );
+    }
 }

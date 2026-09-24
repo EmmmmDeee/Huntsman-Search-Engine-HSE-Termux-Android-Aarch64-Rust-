@@ -168,6 +168,94 @@ fn extract_still_trusts_a_response_with_no_subject_at_all() {
 }
 
 #[test]
+fn an_oidc_issuer_webfinger_is_not_a_fediverse_account() {
+    // OpenID Connect Discovery 1.0 §2: the issuer lookup answers the same
+    // WebFinger endpoint and echoes the queried subject, but its only link is
+    // the issuer — no profile page, no ActivityPub actor. No account exists.
+    const OIDC: &str = r#"{
+      "subject": "acct:joe@example.com",
+      "links": [
+        { "rel": "http://openid.net/specs/connect/1.0/issuer", "href": "https://server.example.com" }
+      ]
+    }"#;
+    let wf: WebFinger = serde_json::from_str(OIDC).expect("valid JRD");
+    let mut result = ModuleResult::new();
+    extract_webfinger(&wf, "joe@example.com", "example.com", "scan", &mut result);
+    assert!(
+        result.entities.is_empty(),
+        "a non-ActivityPub WebFinger must not mint a fediverse identity: {:?}",
+        result.entities
+    );
+}
+
+#[test]
+fn a_webfinger_with_only_untyped_aliases_is_not_a_fediverse_account() {
+    const ALIASES_ONLY: &str = r#"{
+      "subject": "acct:joe@example.com",
+      "aliases": ["https://example.com/joe"]
+    }"#;
+    let wf: WebFinger = serde_json::from_str(ALIASES_ONLY).expect("valid JRD");
+    let mut result = ModuleResult::new();
+    extract_webfinger(&wf, "joe@example.com", "example.com", "scan", &mut result);
+    assert!(result.entities.is_empty(), "{:?}", result.entities);
+}
+
+#[test]
+fn a_profile_page_with_a_non_http_href_is_not_proof_of_an_account() {
+    const NON_HTTP: &str = r#"{
+      "subject": "acct:joe@example.com",
+      "links": [
+        { "rel": "http://webfinger.net/rel/profile-page", "href": "mailto:joe@example.com" }
+      ]
+    }"#;
+    let wf: WebFinger = serde_json::from_str(NON_HTTP).expect("valid JRD");
+    let mut result = ModuleResult::new();
+    extract_webfinger(&wf, "joe@example.com", "example.com", "scan", &mut result);
+    assert!(result.entities.is_empty(), "{:?}", result.entities);
+}
+
+#[test]
+fn an_actor_only_webfinger_is_still_a_fediverse_account() {
+    // Over-correction guard: a server that publishes only the ActivityPub actor
+    // (no profile page) — including the ld+json activitystreams form — is a
+    // real account and must still mint the seed and username.
+    for typ in [
+        "application/activity+json",
+        r#"application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""#,
+    ] {
+        let doc = format!(
+            r#"{{"subject":"acct:alice@example.social","links":[{{"rel":"self","type":"{typ}","href":"https://example.social/users/alice"}}]}}"#
+        );
+        let wf: WebFinger = serde_json::from_str(&doc).expect("valid JRD");
+        let mut result = ModuleResult::new();
+        extract_webfinger(
+            &wf,
+            "alice@example.social",
+            "example.social",
+            "scan",
+            &mut result,
+        );
+        let e = &result.entities;
+        assert!(
+            e.iter()
+                .any(|x| x.kind == EntityKind::Url
+                    && x.value == "https://example.social/users/alice"),
+            "{typ}: actor URL expected: {e:?}"
+        );
+        assert!(
+            e.iter()
+                .any(|x| x.kind == EntityKind::Email && x.has_tag("fediverse")),
+            "{typ}: seed email expected: {e:?}"
+        );
+        assert!(
+            e.iter()
+                .any(|x| x.kind == EntityKind::Username && x.value == "alice"),
+            "{typ}: username expected: {e:?}"
+        );
+    }
+}
+
+#[test]
 fn freemail_domains_are_skipped_custom_domains_probed() {
     // Freemail providers run no WebFinger server → a certain 404, so they are not
     // probed (saves the guaranteed-miss request).

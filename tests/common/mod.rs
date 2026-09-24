@@ -675,6 +675,37 @@ pub fn test_app_with_modules_and_state(
     modules: Vec<Arc<dyn Module>>,
     suffix: &str,
 ) -> (axum::Router, Arc<Store>, Arc<AppState>) {
+    // `.huntsman.env` beside the isolated `.huntsman`, the layout a real `$HOME`
+    // has. Nothing writes it (key writes are off), so the Settings key grid of
+    // every default test app reads an absent file, never the developer's own.
+    let key_file = isolate_home().with_file_name(".huntsman.env");
+    build_test_app(modules, suffix, key_file, false)
+}
+
+/// A test app whose Settings key surface (`settings/keys` GET and PUT) reads and
+/// writes `key_file` instead of the operator's `~/.huntsman.env`, with key writes
+/// on or off. For tests of what the key grid reports for a given env file, such
+/// as a freshly provisioned template (REQ-KEYREG-002).
+pub fn test_app_with_key_file(
+    suffix: &str,
+    key_file: std::path::PathBuf,
+    allow_key_write: bool,
+) -> axum::Router {
+    build_test_app(
+        vec![Arc::new(SyntheticModule)],
+        suffix,
+        key_file,
+        allow_key_write,
+    )
+    .0
+}
+
+fn build_test_app(
+    modules: Vec<Arc<dyn Module>>,
+    suffix: &str,
+    key_file: std::path::PathBuf,
+    allow_key_write: bool,
+) -> (axum::Router, Arc<Store>, Arc<AppState>) {
     let path = tmp_db_for_api(suffix);
     let store = Arc::new(Store::open(&path).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
@@ -699,7 +730,7 @@ pub fn test_app_with_modules_and_state(
         bus,
         live,
         http: reqwest::Client::new(),
-        allow_key_write: false,
+        allow_key_write,
         cancellations,
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
             huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
@@ -720,6 +751,7 @@ pub fn test_app_with_modules_and_state(
                 .build()
                 .expect("test client"),
         )),
+        key_file,
     });
     // Loopback bind + no token: the auth gate is not installed, so every
     // existing API test exercises the same unauthenticated path it always has.

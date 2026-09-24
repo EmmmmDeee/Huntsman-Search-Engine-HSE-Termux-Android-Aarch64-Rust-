@@ -1,21 +1,28 @@
-//! Merged contact-enrichment module: phone validation via Numverify
-//! and email profile lookup via Gravatar.
+//! Contact enrichment: email profile lookup via Gravatar.
 //!
-//! `Phone` targets are dispatched to the Numverify API (key-gated,
-//! env `HUNTSMAN_NUMVERIFY_KEY`, gracefully skipped when absent).
 //! `Email` targets are dispatched to Gravatar (free, no key).
-//!
-//! Numverify endpoint:
-//!   `GET https://apilayer.net/api/validate?access_key={KEY}&number={E164}`
 //!
 //! Gravatar endpoint:
 //!   `GET https://www.gravatar.com/{md5}.json`
+//!
+//! **No phone leg (REQ-CRED-001).** This module used to validate `Phone`
+//! targets against Numverify's legacy `apilayer.net` host itself. It sent the
+//! key in the query string (`?access_key=`), and on ANY failure resent the
+//! same URL over plaintext `http://`, so the key and the subject's number
+//! crossed the network in cleartext. It marked the shared `numverify` pool key
+//! Invalid whenever the legacy host answered `200 {"success":false}`. That is
+//! the legacy host's answer to a key it does not recognise, while the key the
+//! `numverify` `ServiceDef` validates is the APILayer gateway's. Whether the
+//! legacy host recognises a gateway key is unverified; where it does not,
+//! every `Phone` target invalidated a working key. And it ran beside the
+//! `numverify` module on the same target, so every `Phone` cost two calls of
+//! the free tier. Phone validation, and the validated-`Phone` entity this
+//! module used to mint, now belong to the `numverify` module alone.
 
 #[cfg(test)]
 mod tests;
 
 use async_trait::async_trait;
-use serde::Deserialize;
 
 use crate::core::{
     confidence,
@@ -32,66 +39,12 @@ use crate::core::{
 // name, so importing them would be an unused import.
 use crate::util::gravatar::{Entry as ProfileEntry, Profile as ProfileResp, hash as gravatar_hash};
 use crate::util::http::RequestBuilderExt;
-use crate::util::http::urlencode;
 
 // ---------------------------------------------------------------------------
 // Public module struct
 // ---------------------------------------------------------------------------
 
 pub struct ContactEnrich;
-
-// ---------------------------------------------------------------------------
-// Numverify response type
-// ---------------------------------------------------------------------------
-
-pub(super) const NUMVERIFY_KEY_ENV: &str = "HUNTSMAN_NUMVERIFY_KEY";
-
-#[derive(Deserialize)]
-pub(super) struct NumverifyError {
-    #[serde(default)]
-    pub(super) code: Option<i64>,
-    #[serde(rename = "type", default)]
-    pub(super) kind: Option<String>,
-    #[serde(default)]
-    pub(super) info: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct NumverifyResp {
-    #[serde(default)]
-    pub(super) valid: Option<bool>,
-    /// apilayer.net's SHARED error envelope, common to every API on that
-    /// platform: an invalid/expired access_key, a plan/scope restriction, or
-    /// an exhausted monthly quota all answer with HTTP 200 and
-    /// `{"success":false,"error":{...}}` — never a 401/403/429, so the status
-    /// check in `try_url` cannot see it. Distinct from `valid:false`, which is
-    /// the API's NORMAL answer for "this is not a real phone number" and
-    /// carries no `success`/`error` field at all. Capture so a dead/exhausted
-    /// key is reported to the pool instead of silently reading as "no phone
-    /// metadata" forever.
-    #[serde(default)]
-    pub(super) success: Option<bool>,
-    #[serde(default)]
-    pub(super) error: Option<NumverifyError>,
-    #[serde(default)]
-    pub(super) number: Option<String>,
-    #[serde(default)]
-    pub(super) local_format: Option<String>,
-    #[serde(default)]
-    pub(super) international_format: Option<String>,
-    #[serde(default)]
-    pub(super) country_prefix: Option<String>,
-    #[serde(default)]
-    pub(super) country_code: Option<String>,
-    #[serde(default)]
-    pub(super) country_name: Option<String>,
-    #[serde(default)]
-    pub(super) location: Option<String>,
-    #[serde(default)]
-    pub(super) carrier: Option<String>,
-    #[serde(default)]
-    pub(super) line_type: Option<String>,
-}
 
 // The Gravatar response types (`ProfileResp`/`ProfileEntry` and the nested
 // name/url/photo shapes) are the shared `util::gravatar` contract, imported
@@ -103,12 +56,11 @@ pub(super) struct NumverifyResp {
 
 /// This module's name — on its HTTP requests and its errors only. Every
 /// entity it mints comes from a corpus another registered module also serves
-/// (Gravatar's profile document, Numverify's validation answer), so the
-/// EVIDENCE is attributed to that provider's `SRC`: stamping `contact_enrich`
-/// on a Gravatar row let the same record, fetched by both modules, merge into
-/// one entity carrying two "independent" sources (SOURCE COUNT ≠ SOURCE
-/// INDEPENDENCE — the class `tests/architecture_parts/architecture_part7.rs`
-/// guards).
+/// (Gravatar's profile document), so the EVIDENCE is attributed to that
+/// provider's `SRC`: stamping `contact_enrich` on a Gravatar row let the same
+/// record, fetched by both modules, merge into one entity carrying two
+/// "independent" sources (SOURCE COUNT ≠ SOURCE INDEPENDENCE — the class
+/// `tests/architecture_parts/architecture_part7.rs` guards).
 pub(super) const SRC: &str = "contact_enrich";
 
 // ---------------------------------------------------------------------------
@@ -122,7 +74,7 @@ impl Module for ContactEnrich {
     }
 
     fn description(&self) -> &'static str {
-        "Contact validation recon — verifies phone via Numverify and email via Gravatar"
+        "Contact enrichment recon — resolves an email's public Gravatar profile"
     }
 
     fn priority(&self) -> u8 {
@@ -134,7 +86,8 @@ impl Module for ContactEnrich {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Phone | TargetKind::Email)
+        // Email only. A `Phone` is the `numverify` module's (REQ-CRED-001).
+        matches!(t.kind, TargetKind::Email)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -146,16 +99,15 @@ impl Module for ContactEnrich {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Contact validation/enrichment: the People default (T1589.003 Employee
-        // Names + T1591.004 Identify Roles) plus T1591.001 (Physical Locations)
-        // for the Numverify/Gravatar location → Address output. Superset of the
-        // default — coverage cannot regress.
+        // Contact enrichment: the People default (T1589.003 Employee Names +
+        // T1591.004 Identify Roles) plus T1591.001 (Physical Locations) for the
+        // Gravatar location → Address output. Superset of the default —
+        // coverage cannot regress.
         &["T1589.003", "T1591.004", "T1591.001"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
-            EntityKind::Phone,
             EntityKind::Email,
             EntityKind::Person,
             EntityKind::Username,
@@ -168,216 +120,10 @@ impl Module for ContactEnrich {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         match target.kind {
-            TargetKind::Phone => process_phone(target, ctx).await,
             TargetKind::Email => process_email(target, ctx).await,
             _ => Ok(ModuleResult::new()),
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Phone path: Numverify (key-gated, graceful skip)
-// ---------------------------------------------------------------------------
-
-async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-    // No key → `Error::MissingKey`, which dispatch renders as a "needs API
-    // key" skip and coverage reads as NotAttempted. Returning `Ok(empty)` here
-    // recorded the provider as queried-and-empty: a clean negative for a
-    // source that was never asked (see `modules::keyed_tests`).
-    let key = ctx.key(NUMVERIFY_KEY_ENV)?;
-
-    let phone = crate::util::str_util::ascii_digits_and_plus(&target.value);
-    if phone.is_empty() {
-        return Ok(ModuleResult::new());
-    }
-    // Numverify accepts both formats; strip leading '+' since their
-    // examples use E.164 without it.
-    let q = phone.trim_start_matches('+');
-    if q.is_empty() {
-        return Ok(ModuleResult::new());
-    }
-    let qs = format!(
-        "/api/validate?access_key={}&number={}",
-        urlencode(key),
-        urlencode(q),
-    );
-
-    // HTTPS first. If the call fails outright (free-tier rejection,
-    // TLS refusal), fall back to HTTP and remember the transport
-    // we ended up using.
-    let try_url = |url: String| async move {
-        let resp = ctx.http.get(&url).send_tagged(SRC).await?;
-        let status = resp.status();
-        if status.as_u16() == 404 {
-            return Ok(None);
-        }
-        if !status.is_success() {
-            let code = status.as_u16();
-            // Only mark the key exhausted for 401/403/429 — a 500 server error
-            // must not evict the key from the pool.
-            if crate::util::http::is_keyed_error_status(code) {
-                crate::util::http::note_keyed_error(code, "numverify", key, ctx);
-            }
-            return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
-        }
-        let data: NumverifyResp = crate::util::http::json_decode(SRC, resp).await?;
-        // apilayer.net's shared error envelope (see NumverifyResp::success's doc):
-        // never the "not a valid number" answer, always a dead/plan-restricted/
-        // exhausted key. Report it exactly like whoisxml/hunter_io's identical
-        // in-body-200 pattern, instead of falling through to the `valid !=
-        // Some(true)` empty-result path below.
-        if let Some(detail) = numverify_key_error_detail(&data) {
-            ctx.report_key_exhausted("numverify", key, 200);
-            return Err(crate::core::error::Error::module(
-                SRC,
-                format!("api 200 error: {detail}"),
-            ));
-        }
-        Ok(Some(data))
-    };
-
-    let https = format!("https://apilayer.net{qs}");
-    let (body_opt, transport): (Option<NumverifyResp>, &'static str) = match try_url(https).await {
-        Ok(b) => (b, "https"),
-        Err(_) => {
-            let http = format!("http://apilayer.net{qs}");
-            (try_url(http).await?, "http")
-        }
-    };
-
-    let Some(body) = body_opt else {
-        return Ok(ModuleResult::new());
-    };
-
-    let mut result = ModuleResult::new();
-    result.entities = build_phone_entities(&body, target, transport, &ctx.scan_id);
-    Ok(result)
-}
-
-/// Classify a decoded Numverify response for apilayer.net's shared in-body-200
-/// error envelope (see [`NumverifyResp::success`]'s doc): `None` for a normal
-/// validation result (`valid: true` or `valid: false`), `Some(detail)` when
-/// `success == false` — always a dead/expired/plan-restricted/exhausted key,
-/// never a "not a real phone number" answer. **Pure**, so the classification
-/// is unit-tested directly off JSON fixtures without a network call.
-pub(super) fn numverify_key_error_detail(body: &NumverifyResp) -> Option<String> {
-    if body.success != Some(false) {
-        return None;
-    }
-    Some(body.error.as_ref().map_or_else(
-        || "api error".to_string(),
-        |e| match (e.info.as_deref().or(e.kind.as_deref()), e.code) {
-            (Some(msg), Some(code)) => format!("{msg} (code {code})"),
-            (Some(msg), None) => msg.to_string(),
-            (None, Some(code)) => format!("code {code}"),
-            (None, None) => "api error".to_string(),
-        },
-    ))
-}
-
-/// Map a decoded Numverify validation to its entities. **Pure** (no
-/// network/IO), so the validity gate, tags, and evidence folding are
-/// unit-testable directly off JSON fixtures.
-///
-/// Returns empty unless the number is `valid`; the subject `Phone` carries the
-/// `numverify`/`validated`/`transport:`/`country:`/`line:` tags and folds the
-/// present optional fields into one evidence record. `transport` is the scheme
-/// the caller's request actually succeeded over (https/http fallback).
-pub(super) fn build_phone_entities(
-    body: &NumverifyResp,
-    target: &Target,
-    transport: &'static str,
-    scan_id: &str,
-) -> Vec<Entity> {
-    if body.valid != Some(true) {
-        return Vec::new();
-    }
-
-    // EXPERT matches this same file's Gravatar path below, and the crate-wide
-    // convention for "a third-party API confirmed the target is valid"
-    // (epieos/whois/see_know/oathnet_pro use HIGH_PLUSPLUS_PLUS;
-    // criminal_ip also uses EXPERT) — a bare 0.92 scored the identical claim a
-    // full tier above every sibling for no documented reason.
-    let mut entity = target.to_entity(confidence::EXPERT, scan_id);
-    entity.tag("numverify");
-    entity.tag("validated");
-    entity.tag(format!("transport:{transport}"));
-    // Skip a blank country code (no `country:` tag for an empty string).
-    if let Some(c) = body.country_code.as_deref().filter(|c| !c.is_empty()) {
-        entity.tag(format!("country:{}", c.to_uppercase()));
-    }
-    if let Some(lt) = body.line_type.as_deref()
-        && !lt.is_empty()
-    {
-        entity.tag(format!("line:{lt}"));
-    }
-
-    // Fold the present optional fields into the evidence in one pass.
-    let ev = [
-        ("normalised", body.number.as_deref()),
-        ("international", body.international_format.as_deref()),
-        ("local", body.local_format.as_deref()),
-        ("country_prefix", body.country_prefix.as_deref()),
-        ("country", body.country_name.as_deref()),
-        ("location", body.location.as_deref()),
-        ("carrier", body.carrier.as_deref()),
-        ("line_type", body.line_type.as_deref()),
-    ]
-    .into_iter()
-    // Skip blank/empty evidence attributes (dead-field hygiene).
-    .filter_map(|(k, v)| v.filter(|val| !val.is_empty()).map(|val| (k, val)))
-    .fold(
-        Evidence::new(
-            crate::modules::numverify::SRC,
-            format!("Numverify confirmed valid phone {}", target.value),
-        )
-        .with_attr("transport", transport),
-        |ev, (k, val)| ev.with_attr(k, val),
-    );
-    entity.add_evidence(ev);
-
-    let mut result = vec![entity];
-
-    // A Numverify `location` reflects the phone's registration/porting
-    // record, not necessarily the subject's current physical location —
-    // tagged distinctly and at a lower confidence than the Gravatar
-    // `current_location` -> Address promotion below.
-    if let Some(loc) = body.location.as_deref()
-        && loc.trim().len() >= 3
-    {
-        let mut ae = Entity::new(EntityKind::Address, loc, confidence::LOW, scan_id);
-        ae.tag("numverify");
-        ae.tag("geoint");
-        ae.tag("phone-registration");
-        if let Some(sc) = crate::util::address_au::single_state_code(loc) {
-            ae.tag(format!("au-state:{sc}"));
-            ae.tag("country:AU");
-        }
-        ae.add_evidence(Evidence::new(
-            crate::modules::numverify::SRC,
-            format!("Numverify location for {}", target.value),
-        ));
-        if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
-            let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(
-                EntityKind::Coordinates,
-                &coord_val,
-                confidence::TENTATIVE,
-                scan_id,
-            );
-            c.tag("numverify");
-            c.tag("addr-derived");
-            c.tag("geoint");
-            c.add_evidence(Evidence::new(
-                crate::modules::numverify::SRC,
-                format!("Geocode of Numverify location for {}", target.value),
-            ));
-            result.push(c);
-        }
-        result.push(ae);
-    }
-
-    result
 }
 
 // ---------------------------------------------------------------------------

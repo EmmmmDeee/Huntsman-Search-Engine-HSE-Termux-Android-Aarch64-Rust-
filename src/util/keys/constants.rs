@@ -3,6 +3,14 @@
 /// Names of HUNTSMAN_* keys recognised by current/planned modules. Drives
 /// the Settings UI so users see a populated grid before they've configured
 /// anything. Matches the template comments in `install.sh`.
+///
+/// Exactly the credentials some code reads, and exactly the `env_var`s of
+/// [`crate::util::service_defs::service_defs`] — a key listed here but read by
+/// nothing asks the operator to buy something inert (the sunset Proxycurl key
+/// ranked 44th of 55 in `hse doctor`), and one read but unregistered can never
+/// pool, rotate or be marked exhausted. `credential_registry_views_are_one_set`
+/// (tests/architecture_parts/architecture_part3.rs) holds all three views to
+/// one set (REQ-KEYREG-001).
 pub const KNOWN_KEYS: &[&str] = &[
     // Identity / breach
     "HUNTSMAN_OATHNET_KEY",
@@ -12,7 +20,6 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_STOLEN_TAX_KEY",
     "HUNTSMAN_DEHASHED_KEY",
     "HUNTSMAN_HUNTER_KEY",
-    "HUNTSMAN_PROXYCURL_KEY",
     "HUNTSMAN_INTELX_KEY",
     // Infrastructure / threat intel
     "HUNTSMAN_SHODAN_KEY",
@@ -93,12 +100,6 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
             "SecurityTrails — free tier at https://securitytrails.com/app/signup"
         }
         "HUNTSMAN_HUNTER_KEY" => "Hunter.io — free tier at https://hunter.io/users/sign_up",
-        // No free tier, unlike most of this list: proxycurl is `ModuleCost::Paid`
-        // and bills per credit, so the hint points at pricing rather than a
-        // signup that would imply the key costs nothing.
-        "HUNTSMAN_PROXYCURL_KEY" => {
-            "Proxycurl — paid, per-credit; see https://nubela.co/proxycurl/pricing"
-        }
         "HUNTSMAN_GREYNOISE_KEY" => "GreyNoise — free key at https://viz.greynoise.io/signup",
         "HUNTSMAN_URLSCAN_KEY" => "urlscan.io — free key at https://urlscan.io/user/signup",
         "HUNTSMAN_LEAKIX_KEY" => "LeakIX — free key at https://leakix.net/auth/register",
@@ -361,6 +362,29 @@ pub fn resolve_key(ctx_key: Option<&str>) -> Option<&str> {
 #[must_use]
 pub fn is_configured_value(value: &str) -> bool {
     !value.trim().is_empty() && !is_template_placeholder(value)
+}
+
+/// True when the loaded key map holds a usable credential for `name`: the slot
+/// is present AND its value passes [`is_configured_value`].
+///
+/// This is the question every surface that reports keys actually asks: "is
+/// this key set?" The obvious spelling, `loaded.contains_key(name)`, answers
+/// a different question. It asks only whether the NAME is present, and
+/// `hse provision` writes all 62 template slots uncommented as
+/// `insert_..._here`. So on a freshly provisioned device every such surface
+/// counted every key as configured. `hse doctor` fixed its own copy (it
+/// suppressed the whole unset-keys section). The web Settings page kept the
+/// name test. Its key grid showed every row `set`, and its acquisition list,
+/// the one place that tells a web operator which keys to register, came back
+/// empty. The debug bundle listed every placeholder under `keys_present`.
+///
+/// One predicate over the map, built on the one predicate over the value, so
+/// the doctor listing, the Settings grid and its acquisition list, the
+/// rejected-key diagnosis and the debug bundle's key inventory cannot give
+/// different answers for the same slot (REQ-KEYREG-002).
+#[must_use]
+pub fn is_configured_slot(loaded: &std::collections::HashMap<String, String>, name: &str) -> bool {
+    loaded.get(name).is_some_and(|v| is_configured_value(v))
 }
 
 /// Resolve the WiGLE HTTP-Basic credentials (API name + token) from the module

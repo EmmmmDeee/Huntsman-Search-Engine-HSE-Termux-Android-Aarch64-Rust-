@@ -20368,20 +20368,20 @@ Separately, the AppView's `resolveHandle` "does not necessarily bi-directionally
 
 | # | mutation | result |
 |---|---|---|
-| P1 | **baseline**: a tombstone keeps the current handle | see apply log |
-| P2 | **baseline**: a tombstone keeps the current PDS | see apply log |
-| P3 | **baseline**: an empty `alsoKnownAs` keeps the previous handle current | see apply log |
-| P4 | **baseline**: a missing `services` keeps the previous PDS current | see apply log |
-| P5 | over-correction: a reverted (nullified) tombstone still clears the present | see apply log |
-| P6 | over-correction: a tombstone erases the handle/PDS history | see apply log |
-| W1 | **baseline**: a did:web seed confirms itself (no document read) | see apply log |
-| W2 | **baseline**: the document is read but not checked | see apply log |
-| W3 | **baseline**: did:web handle claim not checked | see apply log |
-| W4 | **baseline**: did:plc handle claim not checked | see apply log |
-| W5 | over-correction: a did:plc claim must be the *current* handle | see apply log |
-| W6 | over-correction: did:web demands a handle claim even for a DID seed | see apply log |
-| W7 | over-correction: document `id` compared case-sensitively | see apply log |
-| W8 | over-correction: handle claim compared case-sensitively | see apply log |
+| P1 | **baseline**: a tombstone keeps the current handle | killed |
+| P2 | **baseline**: a tombstone keeps the current PDS | killed |
+| P3 | **baseline**: an empty `alsoKnownAs` keeps the previous handle current | killed |
+| P4 | **baseline**: a missing `services` keeps the previous PDS current | killed |
+| P5 | over-correction: a reverted (nullified) tombstone still clears the present | killed |
+| P6 | over-correction: a tombstone erases the handle/PDS history | killed |
+| W1 | **baseline**: a did:web seed confirms itself (no document read) | killed |
+| W2 | **baseline**: the document is read but not checked | killed |
+| W3 | **baseline**: did:web handle claim not checked | killed |
+| W4 | **baseline**: did:plc handle claim not checked | killed |
+| W5 | over-correction: a did:plc claim must be the *current* handle | killed |
+| W6 | over-correction: did:web demands a handle claim even for a DID seed | killed |
+| W7 | over-correction: document `id` compared case-sensitively | killed |
+| W8 | over-correction: handle claim compared case-sensitively | killed |
 
 ### Residual
 
@@ -20471,29 +20471,29 @@ Two pieces of network glue are not unit-locked: `blocklist_check`'s `tokio::join
 
 | # | mutation | result |
 |---|---|---|
-| Q1 | **baseline**: Quad9's filtered service (`9.9.9.9`) back in the pool | see apply log |
-| Q2 | over-correction: Quad9 dropped from the pool | see apply log |
-| Q3 | over-correction: no member's NXDOMAIN trusted | see apply log |
-| B1 | **baseline**: Spamhaus's `127.255.255.x` errors read as values | see apply log |
-| B2 | **baseline**: a value outside `127/8` is a listing | see apply log |
-| B3 | **baseline**: an unknown ZEN value is a clean check | see apply log |
-| B4 | an answer with no A value counts as an answer | see apply log |
-| B5 | **baseline**: the RFC 5782 test entries not checked | see apply log |
-| B6 | the unlisted test entry need only resolve | see apply log |
-| B7 | **baseline**: an unresolved zone counted as answered | see apply log |
-| B8 | **baseline**: ZEN's XBL-allocated codes read as policy | see apply log |
-| B9 | over-correction: every `127/8` value unresolved | see apply log |
-| B10 | over-correction: PBL unresolved | see apply log |
-| B11 | over-correction: NXDOMAIN unresolved | see apply log |
-| W1 | **baseline**: two canaries with different sets read as no wildcard | see apply log |
-| W2 | **baseline**: a failed canary read as no wildcard | see apply log |
-| W3 | **baseline**: an unstable wildcard's hits reported | see apply log |
-| W4 | **baseline**: no majority backstop | see apply log |
-| W5 | over-correction: a catch-all withholds every hit | see apply log |
-| W6 | over-correction: the backstop overrides proven absence | see apply log |
-| W7 | **baseline**: the withheld pass is silent | see apply log |
-| W8 | regression: the stable catch-all's fingerprint lost | see apply log |
-| W9 | over-correction: one canary's sample withholds everything | see apply log |
+| Q1 | **baseline**: Quad9's filtered service (`9.9.9.9`) back in the pool | killed |
+| Q2 | over-correction: Quad9 dropped from the pool | killed |
+| Q3 | over-correction: no member's NXDOMAIN trusted | killed |
+| B1 | **baseline**: Spamhaus's `127.255.255.x` errors read as values | killed |
+| B2 | **baseline**: a value outside `127/8` is a listing | killed |
+| B3 | **baseline**: an unknown ZEN value is a clean check | killed |
+| B4 | an answer with no A value counts as an answer | killed |
+| B5 | **baseline**: the RFC 5782 test entries not checked | killed |
+| B6 | the unlisted test entry need only resolve | killed |
+| B7 | **baseline**: an unresolved zone counted as answered | killed |
+| B8 | **baseline**: ZEN's XBL-allocated codes read as policy | killed |
+| B9 | over-correction: every `127/8` value unresolved | killed |
+| B10 | over-correction: PBL unresolved | killed |
+| B11 | over-correction: NXDOMAIN unresolved | killed |
+| W1 | **baseline**: two canaries with different sets read as no wildcard | killed |
+| W2 | **baseline**: a failed canary read as no wildcard | killed |
+| W3 | **baseline**: an unstable wildcard's hits reported | killed |
+| W4 | **baseline**: no majority backstop | killed |
+| W5 | over-correction: a catch-all withholds every hit | killed |
+| W6 | over-correction: the backstop overrides proven absence | killed |
+| W7 | **baseline**: the withheld pass is silent | killed |
+| W8 | regression: the stable catch-all's fingerprint lost | killed |
+| W9 | over-correction: one canary's sample withholds everything | killed |
 
 **Falsification (compiled):** 23 of 23 killed.
 
@@ -20623,16 +20623,308 @@ control locks this.
 
 | # | mutation | result |
 |---|---|---|
-| CW-M1 | **baseline**: `username` defaulted again | see apply log |
-| CW-M2 | **baseline**: a blank `username` falls through to the mismatch | see apply log |
-| CW-W1 | the blank check does not trim | see apply log |
-| CW-O1 | over-correction: another account's record is a failure | see apply log |
-| CW-O2 | another account's record is minted as the handle's | see apply log |
-| CW-O3 | over-correction: the 404 is a failure | see apply log |
-| CW-O4 | over-correction: `deny_unknown_fields` | see apply log |
-| CW-P1 | the production path drifts | see apply log |
+| CW-M1 | **baseline**: `username` defaulted again | killed |
+| CW-M2 | **baseline**: a blank `username` falls through to the mismatch | killed |
+| CW-W1 | the blank check does not trim | killed |
+| CW-O1 | over-correction: another account's record is a failure | killed |
+| CW-O2 | another account's record is minted as the handle's | killed |
+| CW-O3 | over-correction: the 404 is a failure | killed |
+| CW-O4 | over-correction: `deny_unknown_fields` | killed |
+| CW-P1 | the production path drifts | killed |
 
 **Falsification (compiled):** 8 of 8 killed.
+
+## REQ-IPQS-001 — an IPQS failure that was not about the key read as "IPQS holds nothing"
+
+**Found** by the adversarially verified module audit (`ipqs`) and re-verified
+on the current tree before anything was designed.
+
+`ipqs` hands its body verdict to the shared key cascade
+(`util::http::keyed_cascade_json`). The verdict separated `success:false`
+bodies in two: a key/quota message became `KeyFailure`, so the key burned and
+the next pooled key was tried, and **everything else** became
+`BodyVerdict::Absent`. The cascade reads `Absent` as a genuine miss, so
+`process` returned `Ok(empty)`. Dispatch records that as
+`ModuleDone { found: 0 }`, and `core::coverage` aggregates it as
+`CleanNegative`: "IPQS holds nothing on this IP / email / phone". But the
+branch was taken for an internal error, a suspended account, a plan
+restriction, or any wording `is_key_or_quota_message` does not recognise.
+This is the `success:false`-as-clean-miss shape REQ-SUCCESSFLAG-001 closed in
+`breachdirectory` and `c99`, reached here through the verdict closure rather
+than a fused `if`.
+
+**The audit's design was narrowed on re-verification.** It kept a clean miss
+for `success:false` bodies whose `message` began with an "invalid target"
+prefix. That prefix list could not be verified. IPQS's response-parameter
+reference describes `message` only as "generally success, but may contain …
+some form of an error notice", and names no invalid-target wording. It also
+answers an invalid email or phone with `success:true` and `valid:false`, which
+already reaches `build_reputation_entity` as an answer. The allow-list was
+dropped: no refusal text is trusted as "IPQS holds nothing".
+
+### Implemented
+
+- `body_verdict(&Common) -> BodyVerdict` is the module's verdict, now a named,
+  pure function. `success:false` with a key/quota message is `KeyFailure`,
+  carrying IPQS's own message, so rotation is unchanged. Every other body is
+  `Accept`.
+- `accepted(Common) -> Result<Common>` fails an accepted `success:false` body
+  closed with IPQS's own words: `IPQS answered success=false: <message>`. A
+  body with no `success` flag is an answer, not a failure. That is the
+  weakest condition that still rejects a provider-declared failure, the same
+  trade REQ-FOFA-001 and REQ-SUCCESSFLAG-001 made.
+- `query(ctx, client, api_base, endpoint, value, initial_key)` is the whole
+  request path: cascade, verdict, acceptance. `process` calls it with the
+  production `API_BASE`, so a loopback test runs the real path. A `404` is
+  still the clean miss.
+
+### Locks
+
+`modules::ipqs::tests`:
+- `a_non_key_provider_failure_is_never_a_clean_miss` covers a bare
+  `success:false`, an internal error and a plan restriction. None is `Absent`,
+  and each fails closed.
+- `an_unverified_refusal_text_fails_closed_and_a_dead_key_is_still_key_shaped`:
+  - invalid-target-looking wording fails closed with IPQS's own text;
+  - `Invalid API Key.` is still `KeyFailure`;
+  - `success:true`, and a body with no flag, are still answers.
+- `a_provider_failure_on_the_real_request_path_is_an_error_not_a_miss`: over
+  `util::http::test_server`, a `success:false` internal error is an `Err`
+  carrying IPQS's message, and the next `success:true` answer is `Some`.
+- `a_dead_key_on_the_real_request_path_rotates_to_the_next_pooled_key`
+  (review round on #646): over the loopback, an in-body `Invalid API Key.`
+  retires the key in the pool, and the next pooled key's answer is returned.
+  The classifier test alone could not show that the cascade acts on it.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| I1 | **baseline**: a non-key `success:false` is `Absent` again | killed by 3 |
+| I2 | wiring: `query` returns the body without `accepted` | killed by 1 |
+| I3 | over-correction: `accepted` fails every answer | killed by 2 |
+| I4 | a key/quota message no longer burns the key | killed by 2, including the request-path rotation lock |
+
+## REQ-DISCORDSNOWFLAKE-002 — An offline decode annotates a Discord handle; it never raises its confidence or releases it from quarantine
+
+**Found:** audit F3. `discord_snowflake` re-emitted the target's own `discord:<id>` Username at `confidence::HIGH_PLUSPLUS` (0.80) with no candidate tag. The engine merges by uid, and `Entity::absorb` takes the max confidence and drops `candidate` when the incoming side is not a candidate. The breach extractors mint these handles lower: oathnet_pro at 0.55, see_know at 0.60, and non-matching rows are quarantined at 0.25. The decode therefore promoted a Probable attribution to Verified (c_eff 0.74 to 0.87 at n=2) and released quarantined strangers' IDs, all from arithmetic that proves only that the number is Discord's.
+
+**Implemented:** the annotation is passed through the shared `Entity::demote_to_candidate()`, which caps it at the candidate rung (below `SEED_PRESENT_RUNG`, following the disposable_check / REQ-CANARY-003 precedent) and stamps `candidate`. It is constructed inline at `confidence::VERY_LOW`, and the demotion is the rung's only authority (see the note after the falsification table). The creation-date evidence and the discord/account-age tags still merge. The confidence and the quarantine state of the upstream handle are unchanged.
+
+**Locks:** `the_decode_annotates_but_never_raises_the_handle`, `the_decode_never_releases_a_quarantined_handle` (src/modules/discord_snowflake/tests.rs).
+
+**Falsified:**
+
+| mutation | expected | result |
+|---|---|---|
+| baseline-rung (VERY_LOW -> HIGH_PLUSPLUS) | both locks fail | survived: equivalent, see below |
+| baseline-candidate-tag (drop demote_to_candidate) | quarantine lock fails | killed |
+| overcorrect-drop-emission | both locks fail (premise) | killed |
+| overcorrect-drop-date-evidence | annotate lock fails | killed |
+
+**Falsification (compiled):** 3 of 4 killed.
+
+**The survivor was redundant code, and it was removed.** `baseline-rung`
+(the constant back at `HIGH_PLUSPLUS`) survived because
+`Entity::demote_to_candidate` caps the confidence at `CANDIDATE_CONF` (0.25)
+whatever it was constructed at, and `confidence::VERY_LOW` is also 0.25. The
+module had two authorities for one rung. `DISCORD_ID_CONF` is deleted. The
+reasoning moved to the construction site, which names the shared demotion as
+the rung's only authority. The construction value is immaterial by design, so
+a mutation of it is equivalent. `baseline-candidate-tag` (dropping the
+demotion, the real baseline) is killed. That demotion now carries the whole
+invariant.
+
+## REQ-KEYSKIP-003 — PassiveTotal: a malformed `username:api_key` credential is refused, not a clean negative
+
+**Found:** In `src/modules/passivetotal/mod.rs`, when `HUNTSMAN_PASSIVETOTAL_KEY` was set but had no `:` or had a blank half (for example the bare api_key, `alice:` or `:key`), `process` returned `Ok(ModuleResult::new())` before sending any request. Dispatch recorded this as `ModuleDone{found:0}`, which coverage reads as `CleanNegative`, so a paid provider that was never asked was counted as a sweep. The REQ-KEYSKIP-001 comment eight lines above already states the rule this arm broke. The REQ-KEYSKIP-002 sweep did not cover it because the value was present but could not be split.
+
+**Implemented:** The two arms are now one `split_once(':').filter(both halves non-blank)` let-else. It returns `Error::MissingKey(KEY_ENV)`, the same authority the `None` arm uses, and logs a `tracing::warn!` that names the expected format. The plain `KEY_ENV` keeps dispatch's signup hint and releases the paid dedup entry.
+
+**Locks:** `modules::passivetotal::tests::a_malformed_credential_is_refused_not_a_clean_negative` and the over-correction guard `a_well_formed_credential_is_not_refused`.
+
+| Mutation | Expected failing test | Result |
+|---|---|---|
+| baseline (return Ok(empty)) | a_malformed_credential_is_refused_not_a_clean_negative | killed |
+| baseline-blank-half (filter always true) | a_malformed_credential_is_refused_not_a_clean_negative | killed |
+| overcorrect-refuse-all | a_well_formed_credential_is_not_refused | killed |
+| overcorrect-username-only | a_malformed_credential_is_refused_not_a_clean_negative | killed |
+
+**Falsification (compiled):** 4 of 4 killed.
+
+## REQ-XON-001 — an "unknown" password risk is not a credential exposure
+
+**Found:** At `src/modules/xposed_or_not/build.rs:101`, `PASSWORD_AT_RISK` was set whenever any breach's `password_risk` was not `"none"` or empty. XposedOrNot never sends `"none"`; its vocabulary is plaintext / easytocrack / hardtocrack / unknown, and `"unknown"` labels password-less breaches such as Apollo. So nearly every breached email was marked as having its password exposed, which violates the tag's contract in hse-core/src/tags.rs.
+
+**Implemented:** `exposes_a_password(&BreachDetail)` is an allowlist. It returns true when `password_risk` is one of plaintext, easytocrack or hardtocrack (trimmed, case-insensitive), or when `xposed_data` split on `;` contains exactly `Passwords` (so `Password hints` does not count). Anything else fails closed. A test fixture that used the fictitious `"none"` now uses `"easytocrack"`.
+
+**Locks:** `an_unknown_password_risk_on_a_passwordless_breach_is_not_password_at_risk`, `a_password_hints_class_is_not_a_password`, `a_rated_password_risk_is_password_at_risk`, `a_passwords_data_class_is_password_at_risk_even_when_the_risk_is_unknown`.
+
+**Falsified:**
+
+| Mutation | Expected failing test | Result |
+|---|---|---|
+| baseline (restore denylist) | an_unknown_password_risk_on_a_passwordless_breach_is_not_password_at_risk | killed |
+| unknown-allowlisted | an_unknown_password_risk_on_a_passwordless_breach_is_not_password_at_risk | killed |
+| substring-password-class | a_password_hints_class_is_not_a_password | killed |
+| drop-data-class-clause | a_passwords_data_class_is_password_at_risk_even_when_the_risk_is_unknown | killed |
+| drop-rated-clause | a_rated_password_risk_is_password_at_risk | killed |
+| case-sensitive-trimless-label | a_rated_password_risk_is_password_at_risk | killed |
+
+**Falsification (compiled):** 6 of 6 killed. In the loop, 4 of 6 ran. The
+spec for `substring-password-class` and `case-sensitive-trimless-label` quoted
+the pre-`cargo fmt` single-line text, and the harness refused it (`old occurs
+0x`) rather than report a vacuous survivor. Both were re-specified against the
+formatted source and run on the integrated branch. Each was killed, by
+`a_password_hints_class_is_not_a_password` and
+`a_rated_password_risk_is_password_at_risk` respectively.
+
+**Vendor vocabulary, verified live** (`GET https://api.xposedornot.com/v1/breaches`,
+2026-09-23, 783 breaches). `passwordRisk` takes exactly four values: `unknown`
+(333), `easytocrack` (210), `hardtocrack` (156) and `plaintext` (84). `none`
+never occurs. Apollo is `unknown`, and its `exposedData` has no password class.
+Of the 333 `unknown` breaches, 74 list `Passwords` in `exposedData`, which is
+why the data-class clause is load-bearing and not redundant with the
+allowlist.
+
+## REQ-SECURITYTRAILS-001 — reverse-IP and subdomain answers cut by paging and the 30-record cap were reported as complete
+
+**Requirement.** When SecurityTrails reports more associated domains or subdomains than the module processed, or when the client-side `MAX_REVERSE_RECORDS` cap drops records, the result must be declared partial through `ModuleResult::mark_truncated`. A partial answer must never reach coverage as `Observed`.
+
+### Found
+
+`reverse_ip` (mod.rs:260-267) and `subdomain_search` (:228-236) put the provider total only into the `total_associated` and `total_subdomains` evidence attributes, which have no reader. `truncation` was never set. For a shared host, 30 of 5000 co-tenants therefore read as a complete answer, and `settles_absence()` treated it as settled. This was the open residual listed under REQ-COVERAGE-001/002.
+
+### Implemented
+
+The mapping moves into pure seams `reverse_ip_result` and `subdomain_result`, which call the shared `mark_truncated`:
+- Reverse-IP compares `record_count` against records processed (`records.len().min(MAX_REVERSE_RECORDS)`, 30), counted before hostname rejection. With no count and more than 30 records, it marks the result with an unknown total.
+- Subdomain compares `subdomain_count` against the raw label count.
+
+### Locks
+
+- `a_paged_reverse_ip_answer_is_declared_truncated`
+- `a_reverse_ip_answer_over_the_cap_without_a_count_is_declared_truncated_with_no_total`
+- `a_subdomain_list_short_of_the_reported_count_is_declared_truncated`
+- `a_complete_reverse_ip_answer_with_a_rejected_record_stays_complete`
+- `a_reverse_ip_answer_of_exactly_the_cap_with_a_matching_count_stays_complete`
+- `a_complete_subdomain_list_with_a_www_echo_stays_complete`
+
+### Falsified
+
+| Mutation | Expected killer | Result |
+|---|---|---|
+| baseline-reverse-known-total | a_paged_reverse_ip_answer_is_declared_truncated | killed by 1 |
+| baseline-reverse-no-count-cap | a_reverse_ip_answer_over_the_cap_without_a_count_is_declared_truncated_with_no_total | killed by 1 |
+| baseline-subdomain | a_subdomain_list_short_of_the_reported_count_is_declared_truncated | killed by 1 |
+| overcorrect-reverse-counts-emitted-entities | a_complete_reverse_ip_answer_with_a_rejected_record_stays_complete | killed by 1 |
+| overcorrect-reverse-marks-full-page | a_reverse_ip_answer_of_exactly_the_cap_with_a_matching_count_stays_complete | killed by 2 |
+| overcorrect-subdomain-counts-entities | a_complete_subdomain_list_with_a_www_echo_stays_complete | killed by 1 |
+
+**Falsification (compiled):** 6 of 6 killed. The design's patch no longer
+applied verbatim, because the surrounding code had moved on. It was applied with
+fuzz and reviewed. The reverse-IP cause string names `MAX_REVERSE_RECORDS`
+instead of repeating the literal `30`.
+**Falsification (compiled):** 4 of 6 killed.
+
+## REQ-PROFILEKIT-001 — A self-reported profile location earns an AU postcode centroid only when it names Australia
+
+**Found:** `profile_kit::location_coordinates` sent worldwide profile locations (gitlab, codeberg, gitea, stackoverflow, devto, dockerhub, codewars, steam, keybase) to `util::city_coords::city_coords`. That function has two postcode fallbacks meant for AU data: a bare 4-digit string (`is_shaped`, shape-only) and an embedded trailing run (`au_postcode_in`). Neither requires the text to name Australia. So `"1010"` (Vienna or Auckland) became Sydney, `"8001"` (Zürich) became Melbourne, and `"localhost:3000"` and `"1010 Wien"` became Melbourne CBD and Sydney. Keybase emits the result at `confidence::MEDIUM` and is an anchoring geo source, so the fabricated fix entered AU-052/053.
+
+**Implemented:** A new `util::city_coords::self_reported_city_coords` shares the body of `city_coords` through `resolve_city_coords(addr, postcodes_need_au_evidence)`. When no tabulated city matches, it permits the postcode fallbacks only if the existing `names_au_locality` holds (the word australia, or an AU postcode plus an explicit AU state). This is the same rule, "an AU postcode alone is not proof of Australia", that the file already applies on the homonym gate. `location_coordinates` now uses it. `city_coords` is unchanged for breach and search callers.
+
+**Locks:** `a_bare_or_embedded_4_digit_code_on_a_global_profile_is_not_an_australian_fix`, `a_profile_location_that_names_australia_still_resolves_by_postcode` (over-correction guard), and the `self_reported_city_coords` doc-test.
+
+| Falsification | Mutation | Expected failing test | Result |
+|---|---|---|---|
+| baseline-caller | profile_kit calls `city_coords` again | a_bare_or_embedded_4_digit_code… | killed |
+| baseline-gate | remove the `names_au_locality` gate | a_bare_or_embedded_4_digit_code… | killed |
+| baseline-flag | self_reported passes `false` | a_bare_or_embedded_4_digit_code… | killed |
+| overcorrect-no-postcode-fallback | gate every postcode fallback | a_profile_location_that_names_australia… | killed |
+| overcorrect-gate-before-city-match | gate before the city match | a_profile_location_that_names_australia… (Auckland 1010, Brisbane 4000) | killed |
+
+**Falsification (compiled):** 5 of 5 killed.
+
+## REQ-FEDIVERSE-001 — a WebFinger document is a Fediverse account only when it names an ActivityPub actor or profile page
+
+**Found.** `extract_webfinger` (src/modules/fediverse/mod.rs, HEAD 358b4a3 l.154) bailed out only when `links` and `aliases` were both empty. It then rejected only a present subject that did not match. Any other JRD minted a `fediverse`/`mastodon` Username (0.68) and tagged the seed Email `fediverse` at STRONG, with the evidence "Fediverse account (WebFinger)". WebFinger is a general discovery protocol. An OpenID Connect issuer lookup (OIDC Discovery 1.0 §2) answers the same endpoint, echoes `acct:<queried>`, and carries only an issuer link, so a custom mail domain fronted by an IdP reported every address as a Fediverse account. The source name `fediverse` maps to correlator family `other`, so the defect did not inflate cross-family corroboration. The harm was a false account claim plus a redundant username pivot.
+
+**Implemented.** The proof is now required, not implied. The module computes `profile_page` (rel=profile-page) and `actor` (rel=self, whose type `is_activitypub_type` accepts: activity+json, or ld+json with the activitystreams profile, W3C ActivityPub §3.2). Only http(s) hrefs count. When both are absent, the document is a clean miss, the same as a 404, and nothing is emitted. Alias-only and issuer-only documents no longer mint anything.
+
+### Locks
+
+| Test | Falsified by | Result |
+|---|---|---|
+| `an_oidc_issuer_webfinger_is_not_a_fediverse_account` | baseline-no-proof-gate | killed |
+| `a_webfinger_with_only_untyped_aliases_is_not_a_fediverse_account` | baseline-no-proof-gate | killed |
+| `a_profile_page_with_a_non_http_href_is_not_proof_of_an_account` | baseline-profile-http-filter-late | killed |
+| `an_actor_only_webfinger_is_still_a_fediverse_account` | baseline-actor-type-activity-json-only, overcorrect-require-profile-page, overcorrect-require-both | killed |
+
+**Falsification (compiled):** 5 of 5 killed.
+
+## REQ-OPENARCH-001 — ten register entries out of 9 539 were Open Archives' whole answer
+
+**Found** by the adversarially verified module audit. Re-verified on HEAD and against the live API.
+
+`openarch` requests one page from Open Archives (`number_show=10`). It decodes the index's own `number_found`, which the vendor's OpenAPI spec defines as "Total number of results found". That total was written only into a per-record `index_total` evidence attribute, and nothing outside the module reads it. `build_entities` never set `ModuleResult.truncation`. So `ModuleDone` carried `truncated: None`, and `core::coverage` recorded the provider as `Observed`: a complete answer whose silence settles an absence.
+
+- Live on 2026-09-23, "John Smith" returned `number_found` 9539 and 10 entries.
+- The drift canary "Jan Jansen" held 126 802 entries when it was chosen.
+- Every common-name FullName scan was affected.
+
+`ROWS`'s own doc promised that "the total is reported alongside". It was, but only in a place nothing reads. This is the REQ-COVERAGE-001 defect at one more site.
+
+The audit's harm claim was checked and narrowed:
+- The visible damage is the provider-coverage row. `report.json`, `GET /api/v1/scans/{id}/coverage` and the dossier appendix read "observed" with no reason, where they should read "truncated" and "10 of 9539 retrieved".
+- `settles_absence()` has no production consumer today. `IntelligenceLedger::record_provider`, `coverage_gaps` and `reject_claim` are called only from tests.
+- The note about the cache was stale. REQ-CACHE-001 already carries `truncation` through a replay, so openarch's 86 400 s TTL keeps the verdict.
+
+A second silent negative sat behind the first. The empty-page return ran before any verdict, so an answer with a positive `number_found` and no rows would read as "Open Archives holds nothing". REQ-WIKITREE-002's review round moved the same return in `wikitree`.
+
+### Implemented
+
+- `build_entities` takes the decoded `number_found: Option<u64>`. `process` passes it unchanged instead of collapsing an absent total into `0`.
+- The page's cut is declared before the empty-page return, through the existing authorities and in `hunter_io`'s shape:
+  - a total above the entries read: `mark_truncated_of(read, total, …)`, lossless for any `u64`;
+  - a total the page meets: complete;
+  - no total: `mark_truncated_if_capped(read, ROWS, …)`. A full page is bounded by the cap, a short one by the data.
+- "Read" means `docs.len().min(ROWS)`, the entries the loop actually takes.
+- A zero `number_found` counts as no total, as the `index_total` fallback always treated it. Beside returned rows it is false.
+- `index_total` is kept. It annotates each record in the dossier, which is a different job from deciding completeness (REQ-NETLAS-001's scope rule).
+- The module still fetches one page, by design. The vendor allows `number_show` up to 100 and paging with `start`, so the operator has a next step. The cut is now declared rather than hidden.
+
+### Locks
+
+`modules::openarch::tests`:
+- `a_page_short_of_the_index_total_is_declared_truncated`: 3 of 9539 on the live fixture, decoded the way `process` decodes it, plus an over-long page counted only up to the cap ("10 of 11").
+- `a_page_holding_the_whole_index_total_is_complete`: the over-correction guard, for a short page and a full page.
+- `with_no_index_total_a_full_page_is_declared_and_a_short_one_is_not`, including a zero total beside rows.
+- `an_empty_page_under_a_positive_index_total_is_declared_not_a_clean_negative`
+- `the_index_answering_no_match_is_a_clean_negative`: the over-correction guard on the live no-match shape captured 2026-09-23 (`number_found: 0`, `docs` omitted).
+- The four existing tests now pass the total as an `Option`. The missing-total test passes `None`, which is what it always meant.
+
+### Falsified
+
+| # | mutation | result |
+|---|---|---|
+| O1 | **baseline**: the cut is never declared | killed |
+| O2 | **baseline**: the empty-page return runs ahead of the verdict | killed |
+| O3 | over-correction: every page with a total is cut | killed |
+| O4 | over-correction, boundary: a page that meets the total is cut (`>=`) | killed |
+| O5 | **baseline**, no total: the full-page fallback dropped | killed |
+| O6 | over-correction: every page without a total is cut | killed |
+| O7 | read and total swapped ("9539 of 3") | killed |
+| O8 | a zero total beside rows trusted as complete | killed |
+| O9 | the read count not capped to `ROWS` | killed |
+| O10 | refactor guard: the `index_total` fallback lost | killed |
+
+### Residual
+
+- `process` hands `response.number_found` to `build_entities` with no offline test seam, because the endpoint is inlined. A mutation that passes `None` there would survive; its effect is to downgrade a full page to the unknown-total sentence, which is still honest.
+- `europeana` (`totalResults` → `matching_records`) and `chronicling_america` (`pagination.of` → `matching_pages`) came from the same genealogy PR. Both record a provider total the same way and never declare it. Each needs its own evidence.
+- `hunter_io`, `wikitree` and now `openarch` each carry the same match: use the known total, else fall back to the cap. The three spellings already differ slightly: `wikitree` goes through `usize::try_from`, and `hunter_io` trusts a zero. By `mark_truncated_if_capped`'s own rule, that decision belongs in `ModuleResult`, written once.
+
+**Falsification (compiled):** 10 of 10 killed.
 
 ## REQ-PHONEAU-002 / REQ-SEARCH-007 / REQ-SEARCH-008 / REQ-SEARCH-009 / REQ-SEARCH-010 / REQ-SEARCH-011 / REQ-GEO-007 — search-result extraction minted a namesake's page, a breadcrumb ID and a city centroid as the subject's
 
@@ -23421,6 +23713,7 @@ tested (M14), and after M12/M13 the correlator hands those sites no
 non-finite radius. The second is the documentation corrections. `hse-core`
 changed (a doc comment on `tags::COARSE` only), so `wasm-ui/pkg` is left for
 the lead to regenerate. `wasm-ui/src` is unchanged.
+
 ## REQ-CERTINTEL-002 — a certificate's issuer organisation and subject were read from the wrong field
 
 **Found** as a residual REQ-RESILIENCE-003 recorded against itself: the crate
@@ -23694,6 +23987,609 @@ runs it, which also catches a guard dropped before the engine starts.
 `core::cancel::tests::a_guards_scan_id_is_registered_for_as_long_as_it_can_be_read`
 pins the accessor the structure depends on: it returns the registered key,
 and the key stays registered while the guard lives.
+
+## REQ-CRED-001 — the Numverify key has one caller (the HTTPS gateway, key in a header), and no keyed module builds a plaintext URL
+
+**Found** by the API-keys audit (CRED-01, KEYREG-08; one defect), then independently verified. Line numbers are at HEAD `22bc201`, whose tree matches `6d9b86a`.
+
+`contact_enrich` had its own Numverify phone leg. It read `HUNTSMAN_NUMVERIFY_KEY` (`contact_enrich/mod.rs:187`) and built `/api/validate?access_key=<KEY>&number=<phone>` (`:199-203`). It tried `https://apilayer.net{qs}` and, on **any** `Err`, resent the identical URL as `format!("http://apilayer.net{qs}")` (`:239-245`). `try_url` returned `Err` for three reasons:
+- a transport failure;
+- any non-2xx (`:221`);
+- the legacy host's in-body `success:false` (`:229-234`).
+
+So a timeout on café Wi-Fi, a captive portal or a 5xx sent the paid key and the subject's number across the network in cleartext. An on-path attacker could also answer the plaintext request with a forged `valid:true`, and the module minted that at EXPERT. The client does not refuse `http://`: `util/http/ssrf.rs:286-341` sets no `https_only`, and nothing under `src/` does.
+
+Three further effects came from the same leg:
+- **It poisoned the shared key.** On the in-body envelope it called `ctx.report_key_exhausted("numverify", key, 200)` (`:230`), and a non-429 status marks the key `KeyStatus::Invalid` in the process-global pool (`core/module/mod.rs:488-496`). The key `numverify`'s `ServiceDef` validates is the APILayer gateway's (`util/service_defs/mod.rs:157-181`, `api.apilayer.com` with an `apikey` header). Live, the legacy host answers a key it does not recognise with HTTP 200 and code 101. Whether it recognises a gateway key is **unverified** (no real key in hand). Where it does not, every Phone target marked a working key Invalid.
+- **It spent the quota twice.** The `numverify` module (`modules/mod.rs:542`) already queried the same target through the gateway (`numverify/mod.rs:96-112`) alongside `contact_enrich` (`modules/mod.rs:423`). Every Phone therefore cost two calls, plus a third on the fallback.
+- **It escaped the gates for keyed modules.** `contact_enrich` declares `ModuleCost::Free` (`:133`), so its keyed call ran in `--free-only` scans (`core/engine/dispatch.rs:426` skips only non-Free modules). It also escaped the once-per-target dispatch dedup, which applies only to non-Free modules (`dispatch.rs:1392`).
+
+**Were the two outputs equivalent?** Deleting the leg is only lossless if they were, and they were not. `numverify` minted the `Address` (`location, country`), its `Coordinates` and the carrier `Organisation`. `contact_enrich` also minted the **validated subject `Phone`**: EXPERT; tagged `numverify`/`validated`/`country:`/`line:`; eight evidence fields. That entity had to move to `numverify`, not disappear.
+
+**Vendor facts** (primary sources, read 2026-09-23):
+- The gateway's API reference (<https://marketplace.apilayer.com/number_verification-api/tabs/api_docs>) says: "All requests made to the API must hold a custom HTTP header named "apikey"" and "All API requests must be made over HTTPS. Calls made over plain HTTP will fail." Errors are non-2xx: 400, 401 "No valid API key provided", 404, 429 "API request limit exceeded", and 5xx.
+- The documented `/validate` sample response (<https://marketplace.apilayer.com/code/response?service_name=number_verification&method=get&endpoint=/validate>) carries exactly the ten fields the legacy decoder read: `valid`, `number`, `local_format`, `international_format`, `country_prefix`, `country_code`, `country_name`, `location`, `carrier`, `line_type`. So the gateway can feed everything `contact_enrich` minted.
+- Live keyless requests against the gateway: no key returns `401 {"message":"No API key found in request"}`; a garbage key returns `401 {"message":"Invalid authentication credentials"}`; plain `http://` returns 401. A refused key is a status, which `keyed_ok_or_404` already reads, not an in-body envelope.
+- Live against the legacy host: `https://apilayer.net/api/validate?access_key=garbage…` returns `HTTP 200 {"success":false,"error":{"code":101,"type":"invalid_access_key",…}}`.
+
+### Implemented, at the one authority
+
+- **`contact_enrich` has no phone leg.** It accepts `Email` only. It no longer declares `Phone` in `produces()`. Its Numverify types, `numverify_key_error_detail`, `build_phone_entities` and the `transport:` tag are deleted. It reads no key at all.
+- **`numverify` is the one Numverify caller.**
+  - `validate(ctx, base, key, number)` owns the request and its verdict. The host is `API_BASE`, the HTTPS gateway the `ServiceDef` probes. The key goes only in the `apikey` header. The status verdict is the shared `keyed_ok_or_404`, and the body is decoded by `json_scanned`.
+  - A failure is returned, never retried elsewhere. `base` is a parameter only so the loopback tests drive the real request path.
+- **The validated `Phone` is minted by `numverify`**, via `build_entities` → `validated_phone`, with the same tier, tags and evidence fields as before and no `transport:` tag. `NvResp` gains `number`, `local_format` and `country_prefix`, `produces()` gains `Phone`, and the region entities are unchanged.
+- **Not carried over: `contact_enrich`'s LOW `phone-registration` Address** of `location` alone. `numverify`'s own `Address` already carries that field, qualified with the country, so two rows from one answer would state one fact twice.
+- **`util::http::test_server::serve_recording`**, an extension of the shared loopback server (`serve` is now a wrapper around it). It hands back each request head, so a test can assert *where* a module put the key.
+- **`keyed_tests`:** the `contact_enrich` special case is removed. It was already unreachable: a `Free` module has `requires_key == false` and is skipped before it.
+- **Docs.** The README's Phone module count goes from 18 to 17. The `.env.example` Numverify block now describes the gateway contract instead of `access_key`.
+
+### Locks
+
+- `modules::numverify::tests`:
+  - `the_key_travels_in_the_apikey_header_and_never_in_the_url`: loopback via `serve_recording`. One request; the request line is exactly `GET /validate?number=%2B14158586273 HTTP/1.1`; the key appears once, in the `apikey` header.
+  - `a_failure_is_never_retried_and_a_miss_or_invalid_number_is_an_answer`: a 500 is an error after exactly one request. A 404 is the clean miss. A 200 `valid:false` is an answer that mints nothing.
+  - `the_one_numverify_host_is_the_https_gateway`: `API_BASE` is the HTTPS gateway, and the `ServiceDef`'s `test_url` is on it.
+  - `a_valid_answer_confirms_the_subject_phone`: the vendor's documented sample response. The Phone's tier, tags and all eight evidence fields are checked, with no `transport` tag or attribute.
+  - `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone`
+  - `every_entity_minted_from_an_answer_is_attributed_to_numverify`, moved here from `contact_enrich`.
+  - `module_metadata_full` now asserts `Phone` in `produces()`.
+  - `invalid_number_yields_nothing` now also decodes `{}`.
+- `modules::contact_enrich::tests`:
+  - `accepts_email_only`
+  - `a_phone_target_sends_no_request_even_with_a_numverify_key`: the client goes through a recording loopback proxy with a key configured, and no request leaves.
+  - `an_email_target_still_asks_gravatar_and_carries_no_key` is that test's control: the same proxy sees exactly one Gravatar request. It is also the over-correction guard.
+- `tests/architecture.rs` → `a_credential_reading_module_never_builds_a_plaintext_http_url`: no module that reads a credential (`ctx.key(`, `ctx.key_opt(`, `.next_pooled_key(`) builds an `"http://…` URL.
+  - It scans per module directory, not per file.
+  - It has self-checks on the predicate, a floor of 40 keyed modules, and a floor on the `"https://` literals it can see, so it is not reading blanked source.
+  - At HEAD it flags exactly one line, `contact_enrich/mod.rs:243`. Keyless plaintext users (`ip_geo`, `subdomain_takeover`) are out of scope and not flagged.
+
+### Falsified
+
+Harness: `mutate2.py`, spec `mut_cred001.json`. The `-arch` rows run `--test architecture -- credential_reading`; the rest run `--lib -- numverify contact_enrich`. The result column is the harness's own output.
+
+| id | mutation | result |
+|---|---|---|
+| B1 | **baseline**: `contact_enrich` accepts `Phone` again | KILLED by `accepts_email_only` |
+| B2 | **baseline**: `contact_enrich`'s phone leg restored (`?access_key=` over HTTPS, then plaintext `http://apilayer.net` on any error) | KILLED by `a_phone_target_sends_no_request_even_with_a_numverify_key` |
+| B2-arch | B2, against the source lock | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` |
+| B3 | **baseline**: `validate` puts `access_key={key}` in the URL | KILLED by `the_key_travels_in_the_apikey_header_and_never_in_the_url` |
+| B4 | the key is sent under another header name | KILLED by `the_key_travels_in_the_apikey_header_and_never_in_the_url` |
+| B5 | **baseline**: a failed request is retried at a plaintext URL | KILLED by `a_failure_is_never_retried_and_a_miss_or_invalid_number_is_an_answer` |
+| B6 | `API_BASE` is `http://` | KILLED by `the_one_numverify_host_is_the_https_gateway` |
+| B6-arch | B6, against the source lock | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` |
+| B7-arch | `process` asks the legacy host over `http://` instead of `API_BASE` | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` |
+| N1 | the validated `Phone` is not minted (the capability is lost with the leg) | KILLED by 3: `a_valid_answer_confirms_the_subject_phone`, `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone`, `every_entity_minted_from_an_answer_is_attributed_to_numverify` |
+| N2 | the `valid` gate is removed | KILLED by 2: `a_failure_is_never_retried_and_a_miss_or_invalid_number_is_an_answer`, `invalid_number_yields_nothing` |
+| N3 | the `country:` tag is not upper-cased | KILLED by `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone` |
+| N4 | a blank country code is tagged | KILLED by `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone` |
+| N5 | a blank line type is tagged | KILLED by `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone` |
+| N6 | blank evidence fields are kept | KILLED by `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone` |
+| N7 | `local` is read from the wrong field | KILLED by `a_valid_answer_confirms_the_subject_phone` |
+| N8 | the `transport:https` tag comes back | KILLED by `a_valid_answer_confirms_the_subject_phone` |
+| N9 | `numverify` does not declare `Phone` in `produces()` | KILLED by `module_metadata_full` |
+| N10 | `serve_recording` records nothing (a blind recorder would make the no-request test vacuous) | KILLED by 3: `an_email_target_still_asks_gravatar_and_carries_no_key`, `a_failure_is_never_retried_and_a_miss_or_invalid_number_is_an_answer`, `the_key_travels_in_the_apikey_header_and_never_in_the_url` |
+| O1 | over-correction: `numverify` confirms nothing | KILLED by 6: `a_valid_answer_confirms_the_subject_phone`, `blank_fields_add_nothing_and_a_regionless_answer_still_confirms_the_phone`, `every_entity_minted_from_an_answer_is_attributed_to_numverify`, `build_entity_emits_region_with_carrier_evidence`, `build_entity_line_type_tag`, `country_only_still_geolocates` |
+| O2 | over-correction: a 404 is an error, not the clean miss | KILLED by `a_failure_is_never_retried_and_a_miss_or_invalid_number_is_an_answer` |
+| O3 | over-correction: `contact_enrich` stops asking Gravatar too | KILLED by `an_email_target_still_asks_gravatar_and_carries_no_key` |
+| O4-arch | over-correction: the lock flags prefix handling (`strip_prefix("http://…")`) | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` (predicate self-check) |
+| O5-arch | over-correction: the lock flags a bare `"http://"` literal | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` (predicate self-check) |
+| L1-arch | the lock scans literal-blanked source (can never fire) | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` (`"https://` floor) |
+| L2-arch | the lock misses `ctx.key(` readers | KILLED by `a_credential_reading_module_never_builds_a_plaintext_http_url` (keyed-module floor) |
+
+**26 of 26 killed**, run against the compiled patch. Clippy `-D warnings` is clean.
+
+### Residual
+
+- **Legacy keys.** An operator whose key is a legacy numverify.com `access_key` now has it used nowhere. At HEAD the `numverify` module and the `ServiceDef` probe already sent it to the gateway. Whether the gateway accepts a legacy key is unverified.
+- **AU state tags.** The `au-state:`/`country:AU` tags `contact_enrich` put on its LOW `phone-registration` Address are not emitted for the Numverify location. `numverify`'s `Address` does not tag AU states. The correlator's coordinate fallback (`geo::coord_state`) still applies to its `Coordinates`.
+- **The lock is lexical.** A plaintext URL assembled from a bare `"http://"` literal or a scheme variable evades it. It is a class guard, not a proof.
+- **Signup hint.** `util/keys/constants.rs:127` still points operators at numverify.com. That is hint hygiene, tracked with the KEYREG rows.
+
+## REQ-KEYREG-001 — every credential HSE reads is one the key pool holds, and a burned key is reported to the pool its env var names
+
+### Found
+
+At `6d9b86a`, HSE described its credentials in four views, and nothing tied them together.
+
+- **Four read credentials had no `ServiceDef`.** `KNOWN_KEYS` (`src/util/keys/constants.rs:6`) had 55 entries. The `env_var`s of `SERVICE_DEFS` (`src/util/service_defs/mod.rs`) covered 50. The difference was `HUNTSMAN_OATHNET_KEY`, `HUNTSMAN_ALIENVAULT_KEY`, `HUNTSMAN_AUSPOST_KEY`, `HUNTSMAN_STOLEN_TAX_KEY` and `HUNTSMAN_PROXYCURL_KEY`. Several paths only see an env var that has a def: pooling (`is_poolable_service` = `find_service(..).is_some()`), CSV-splitting (`register_configured_keys`, `keys/io.rs`), hot-injection, validation, `api_key_probe` and the key-health dashboard. So `hse keys add oathnet <k>` was refused as "not a poolable service" (`cli/keys_cmd/mod.rs:194`), and `HUNTSMAN_OATHNET_KEY=a,b` reached OathNet as the literal `a,b`.
+- **One listed credential was read by nothing.** `proxycurl::process` short-circuits (`modules/proxycurl/mod.rs:117-120`), because the vendor sunset the API. `KNOWN_KEYS` (`constants.rs:15`) and `signup_hint` (`constants.rs:99`, "paid, per-credit; see pricing") still asked the operator to buy the key, and `hse doctor` ranked it 44th of 55.
+- **Burn reports for three modules were silent no-ops.** The shared keyed helpers used their `module` argument as the pool service name. That covers `fetch_keyed_json` (`util/http/fetch.rs:1121,1125`), `keyed_cascade_with_key` (`:1222`), `attempt_with_key` (`:1290`) and `keyed_cascade_json` (`:1364,1383`). `ip_reputation` passes `SRC = "ip_reputation"` for its OTX key (`ip_reputation/mod.rs:281`), `auspost` passes `"auspost"` (`auspost/mod.rs:297`) and `stolen_tax` passes `"stolen_tax"` (`stolen_tax/mod.rs:183`). None of these was a pool name. `KeyPool::mark_status`/`record_error` do `services.get_mut(lower)` and skip an unknown name (`key_pool/pool.rs:340`), and `next_key_excluding` answers `None` (`:265`). The result: a burned OTX, AusPost or Stolen.tax key never became `Invalid` or `RateLimited`, and the call never rotated. `hunter_io` had shipped the same bug earlier and patched it locally with a `pool_service()` shim.
+- **Nothing guarded the sets.** The existing guards checked only consumed ⇒ `KNOWN_KEYS`, template ⇒ consumed, and `KNOWN_KEYS` ⇒ hint. `keyed_module_pool_services_are_registered` (`service_defs/tests.rs:318`) was a hand-kept table of four rows.
+
+### Implemented
+
+- **Four new `ServiceDef`s** (`util/service_defs/mod.rs`). Each `key_header` is the header that module sends:
+  - `oathnet` uses `x-api-key` (`util::oathnet`'s `AuthScheme::XApiKey`).
+  - `alienvault_otx` uses `X-OTX-API-KEY` (`ip_reputation::OTX_KEY_HEADER`).
+  - `auspost` uses `AUTH-KEY`.
+  - `stolen_tax` uses `Api-Key`.
+- **`NO_PROBE` and `ServiceDef::probe_url()`.** A def may be pooled and never probed. `validation::probe_request_args` builds no curl argv for such a def, so `validate_against_endpoint` returns `Indeterminate` without sending a request. `hse keys validate` reports it as "no validator for service" (`keys_cmd::has_validator`), not as an inconclusive probe. The per-provider probe choices are:
+  - **OathNet: `NO_PROBE`.** Every search spends a daily-quota lookup. The vendor documents no free key-status endpoint. `GET /service/scanners/quota` is listed, but its cost and its plan-gating are undocumented.
+  - **AusPost: `NO_PROBE`.** Rate limits are per credential per day, and no status endpoint is documented.
+  - **Stolen.tax: `NO_PROBE`.** It is a paid API, and its docs could not be reached to confirm a free endpoint. The code therefore takes the fail-closed choice.
+  - **OTX: probed at `/api/v1/users/me`.** This is the endpoint OTX documents for "Validate your API Key configuration".
+- **Proxycurl removed.** `HUNTSMAN_PROXYCURL_KEY` is gone from `KNOWN_KEYS`, `signup_hint` and `.env.example`. The `[RESERVED]` line stays in `env_template.txt`, where `NOT_YET_WIRED` still lists it.
+- **The helpers resolve the pool name themselves.** `util::http::fetch::pool_service(module, key_env)` returns `service_for_env(key_env).map_or(module, |d| d.name)`.
+  - `fetch_keyed_json` already took `key_env`. `keyed_cascade`, `keyed_cascade_with_key` and `keyed_cascade_json` now take it too, and all 16 call sites in `src/modules` pass their `KEY_ENV`. `stolen_tax` gained a `KEY_ENV` const.
+  - The pool name is used only for `report_key_exhausted`, `next_pooled_key` and `handle_keyed_error`. `module` still labels errors and breaker/request tags, so operator-facing errors still say `ip_reputation`, not `alienvault_otx`.
+  - This fixes `ip_reputation`, `auspost` and `stolen_tax` without any per-module shim.
+  - The `pool_service()` shims in `hunter_io`, `exa_search` and `hlr_cnam` are **kept**. They feed `keyed_ok_or_404` and direct `report_key_exhausted` calls, which take no `key_env`, so the new mechanism does not cover them. Lock L1 checks that each shim asks the registry.
+- **Lock L1, `credential_registry_views_are_one_set`** (`tests/architecture_parts/architecture_part3.rs`). It replaces the four-row table and asserts three things:
+  1. The credentials production `src/` reads are exactly `KNOWN_KEYS`. The check uses the existing three read forms, over comment-blanked source with test items stripped, filtered to `_KEY|_TOKEN|_USER|_SECRET|_ID|_GUID`.
+  2. `KNOWN_KEYS` is exactly the set of def `env_var`s. The `censys_secret` and `wigle_user` defs cover today's paired credentials; KEYREG-07 pairing is not invented here.
+  3. In `src/modules`, every pool-name argument (`report_key_exhausted`, `next_pooled_key`, `entry_status`, `keyed_ok_or_404`, `note_keyed_error`, `handle_keyed_error`) resolves through `find_service`. Every key-env argument (`fetch_keyed_json`, `keyed_cascade*`) resolves through `service_for_env`. A shim call is accepted only if its body asks `service_for_env`.
+
+  Sites the scan cannot resolve go on a shrink-only allowlist, with a reason for each and a cap. It has one entry, `urlhaus`'s runtime `key_service`, which is `"urlhaus"` or `"threatfox"`. A companion test drives the scanner itself on fixtures.
+
+### Locks
+
+- `util::service_defs::tests::the_four_unregistered_credentials_are_pool_services_with_their_modules_headers`
+- `util::service_defs::tests::billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check`
+- `util::service_defs::tests::no_probe_is_opt_in_and_never_paired_with_a_probe_parser`
+- `util::key_pool::validation::tests::a_probe_less_provider_gets_no_probe_request`
+- `util::key_pool::validation::tests::validating_a_probe_less_key_is_indeterminate`
+- `util::key_pool::validation::tests::the_otx_probe_sends_the_key_as_x_otx_api_key_to_users_me`
+- `util::key_pool::validation::tests::probed_providers_keep_their_request_shapes` (over-correction guard)
+- `cli::keys_cmd::tests::a_probe_less_service_reads_as_having_no_validator`
+- `util::http::fetch::tests::pool_service_is_the_key_envs_def_not_the_module_label`
+- `util::http::tests::fetch_keyed_json_burns_and_rotates_in_the_pool_its_key_env_names`, over the loopback `test_server`
+- `util::http::tests::keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names`, over the loopback
+- `util::http::tests::keyed_cascade_json_burns_an_in_body_failure_in_the_pool_its_key_env_names`, over the loopback
+- `tests/architecture.rs` → `credential_registry_views_are_one_set` (**L1**)
+- `tests/architecture.rs` → `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments`
+
+Vendor facts relied on, each checked on 2026-09-23:
+- **OTX.** The API reference (`otx.alienvault.com/assets/static/external_api.html`) lists `GET /api/v1/users/me`: "Validate your API Key configuration. If valid, some basic information about the user account corresponding to the API Key supplied will be returned." A live keyless request answered 403.
+- **OathNet header.** `docs.oathnet.org` says: "The header name must be lowercase: `x-api-key`."
+- **OathNet quota.** `docs.oathnet.org/guides/rate-limiting.md` says: "daily quotas … Each plan has a set number of lookups available per day" and "Initialize session (counts as 1 lookup)". It shows quota metadata only on search responses.
+- **AusPost.** `auspost.com.au/developers/help-support/about-our-apis` documents the `AUTH-KEY` header and rate limits "from the same credentials".
+
+### Falsified
+
+Harness: `mutate2.py`, spec `mut_keyreg001.json`. The `-arch` and `L*` rows run `--test architecture -- credential_registry`; the rest run `--lib -- util::http util::key_pool util::service_defs cli::keys_cmd`. The result column is the harness's own output.
+
+| id | mutation | result |
+|---|---|---|
+| B1 | **baseline**: `fetch_keyed_json` reports the burn under `module` again | KILLED by `fetch_keyed_json_burns_and_rotates_in_the_pool_its_key_env_names` |
+| B2 | **baseline**: `fetch_keyed_json` rotates from `module`'s pool again | KILLED by `fetch_keyed_json_burns_and_rotates_in_the_pool_its_key_env_names` |
+| B3 | **baseline**: `pool_service` ignores `key_env` and returns `module` | KILLED by 4: `pool_service_is_the_key_envs_def_not_the_module_label`, `fetch_keyed_json_burns_and_rotates_in_the_pool_its_key_env_names`, `keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names`, `keyed_cascade_json_burns_an_in_body_failure_in_the_pool_its_key_env_names` |
+| B4 | **baseline**: `keyed_cascade_with_key` rotates from `module`'s pool | KILLED by `keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names` |
+| B5 | **baseline**: `attempt_with_key` hands `module` to `handle_keyed_error` | KILLED by `keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names` |
+| B6 | **baseline**: the cascade's auth-shaped-400 burn goes to `module` | KILLED by `keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names` |
+| B7 | **baseline**: `keyed_cascade_json`'s in-body burn goes to `module` | KILLED by `keyed_cascade_json_burns_an_in_body_failure_in_the_pool_its_key_env_names` |
+| B8 | **baseline**: `keyed_cascade_json` rotates from `module`'s pool | KILLED by `keyed_cascade_json_burns_an_in_body_failure_in_the_pool_its_key_env_names` |
+| B9 | **baseline**: OathNet's def is unregistered (renamed away from its env var) | KILLED by 6: `a_probe_less_service_reads_as_having_no_validator`, `keyed_cascade_burns_and_rotates_in_the_pool_its_key_env_names`, `a_probe_less_provider_gets_no_probe_request`, `billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check`, `no_probe_is_opt_in_and_never_paired_with_a_probe_parser`, `the_four_unregistered_credentials_are_pool_services_with_their_modules_headers` |
+| B9-arch | B9, against L1 | KILLED by `credential_registry_views_are_one_set` |
+| B10-arch | **baseline**: `HUNTSMAN_PROXYCURL_KEY` is back in `KNOWN_KEYS` | KILLED by `credential_registry_views_are_one_set` |
+| B11-arch | **baseline**: `hunter_io` passes `SRC` as its pool name (the original shape of the bug) | KILLED by `credential_registry_views_are_one_set` |
+| B12-arch | `stolen_tax` passes a key env var that no def owns | KILLED by `credential_registry_views_are_one_set` |
+| G1 | the probe reads `test_url` directly, bypassing `probe_url` | KILLED by `a_probe_less_provider_gets_no_probe_request` |
+| G2 | `probe_url` ignores `NO_PROBE` | KILLED by 4: `a_probe_less_service_reads_as_having_no_validator`, `a_probe_less_provider_gets_no_probe_request`, `billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check`, `no_probe_is_opt_in_and_never_paired_with_a_probe_parser` |
+| G3 | `has_validator` ignores `NO_PROBE` | KILLED by `a_probe_less_service_reads_as_having_no_validator` |
+| G4 | OathNet is probed at the unverified `/scanners/quota` | KILLED by 4: `a_probe_less_service_reads_as_having_no_validator`, `a_probe_less_provider_gets_no_probe_request`, `billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check`, `no_probe_is_opt_in_and_never_paired_with_a_probe_parser` |
+| G5 | the OTX def sends the wrong header | KILLED by 2: `the_otx_probe_sends_the_key_as_x_otx_api_key_to_users_me`, `the_four_unregistered_credentials_are_pool_services_with_their_modules_headers` |
+| G6 | OTX is probed at a threat-data endpoint instead of `/users/me` | KILLED by 2: `the_otx_probe_sends_the_key_as_x_otx_api_key_to_users_me`, `billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check` |
+| G7 | the AusPost def sends the wrong header | KILLED by `the_four_unregistered_credentials_are_pool_services_with_their_modules_headers` |
+| G8 | the Stolen.tax def sends the wrong header | KILLED by `the_four_unregistered_credentials_are_pool_services_with_their_modules_headers` |
+| G9 | `pool_service` falls back to `""` instead of `module` | KILLED by `pool_service_is_the_key_envs_def_not_the_module_label` |
+| G10 | a probe-less key is judged `Rejected` instead of `Indeterminate` | KILLED by `validating_a_probe_less_key_is_indeterminate` |
+| L1 | L1 scans source whose comments are not blanked | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L2 | L1 does not filter to credential suffixes | KILLED by 2: `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments`, `credential_registry_views_are_one_set` |
+| L3 | L1 scans test files | KILLED by `credential_registry_views_are_one_set` |
+| L4 | `calls_of` counts `fn` definitions as calls | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L5 | any shim is trusted, whether or not it asks the registry | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L6 | any named pool argument passes | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L7 | any named key-env argument passes | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L8 | a registry-derived shim is accepted as a key-env argument | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L9 | the allowlist never matches | KILLED by 2: `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments`, `credential_registry_views_are_one_set` |
+| L10 | the allowlist matches everything | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| L11 | a stale allowlist entry is added | KILLED by `credential_registry_views_are_one_set` |
+| L12 | the allowlist cap is raised to admit a new entry | KILLED by `credential_registry_views_are_one_set` |
+| L13 | `calls_of` sees no calls (vacuous scan) | KILLED by 2: `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments`, `credential_registry_views_are_one_set` |
+| O1 | **over-correction**: no provider is ever probed | KILLED by 5: `a_probe_less_service_reads_as_having_no_validator`, `probed_providers_keep_their_request_shapes`, `the_otx_probe_sends_the_key_as_x_otx_api_key_to_users_me`, `billed_providers_are_never_probed_and_otx_is_probed_only_at_its_key_check`, `no_probe_is_opt_in_and_never_paired_with_a_probe_parser` |
+| O2 | **over-correction**: the error label becomes the pool name (`alienvault_otx`) | KILLED by `fetch_keyed_json_burns_and_rotates_in_the_pool_its_key_env_names` |
+| O3-arch | **over-correction**: OathNet is dropped from `KNOWN_KEYS` instead of being registered | KILLED by `credential_registry_views_are_one_set` |
+| O4 | **over-correction**: only defs with a `probe_parser` are probed | KILLED by 2: `probed_providers_keep_their_request_shapes`, `the_otx_probe_sends_the_key_as_x_otx_api_key_to_users_me` |
+
+**40 of 40 killed**, run against the compiled patch. Clippy `-D warnings` is clean. B1–G1 were run before a container restart and G2–O4 after it, on the same source.
+
+### Residual
+
+- **Shims kept.** `hunter_io`, `exa_search` and `hlr_cnam` keep their `pool_service()` shims, because `keyed_ok_or_404` and direct `report_key_exhausted` calls take no `key_env`. L1 verifies that each shim asks the registry. Removing them needs `keyed_ok_or_404` to take `key_env`.
+- **Allowlist.** `urlhaus`'s runtime `key_service` stays allowlisted (cap 1).
+- **Unprobed keys.** OathNet, AusPost and Stolen.tax keys stay `Untested` until a free status endpoint is confirmed from vendor docs. OathNet's `/service/scanners/quota` is the candidate.
+- **Out of scope here.** The KEYREG-07 companion-var pairing and the explicit `key_roi` tier for every def (KEYREG-05) are not part of this change.
+
+## REQ-CRED-002 — module failure text is credential-redacted once, at the engine's ModuleError sink
+
+**Found** (audit finding CRED-07, verified). Every module failure reaches three places through one arm of `ScanEngine::finalise_module_result`: the circuit breaker, the `warn!` log and the `ModuleError` event, which is persisted to `events`, streamed over SSE and folded into the debug bundle. At HEAD 66e5a76 that arm passed the raw text to all three: `circuit::record_error(name, &e.to_string())`, `warn!(…, error = %e, …)` and `error: e.to_string()` (`src/core/engine/dispatch.rs:785-793`). The panicked-task arm of `absorb_dispatch_outcome` did the same (`dispatch.rs:1829-1834`). `util::http` redacts the error text it builds itself (`error_snippet`, `json_body_error`, `read_capped_or_err`), but module errors built from a provider's body skip that. Examples are `keyed_cascade_json`'s in-body `KeyFailure { detail }` (`src/util/http/fetch.rs:1407-1421`, used by `ipqs` and `criminal_ip`) and europeana's `body.error` (`src/modules/europeana/mod.rs:150-157`). Any other `Error::module(format!(…, body))` is the same. If one of those providers echoed the keyed URL or the key, HSE would persist and stream it. Whether any of them does is **unverified**; the fix does not depend on it. It closes the path for every module, whatever a provider echoes. Separately, `redact_credentials` is case-sensitive, so the list's `apiKey=` never matched all-lowercase `apikey=`. The bare `key=` entry cannot catch it either, because the `i` before `key=` fails its boundary check. Thunderforest documents exactly this form: `https://api.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey=<insert-your-apikey-here>` (https://www.thunderforest.com/docs/apikeys/, fetched 2026-09-23).
+
+**Implemented.**
+- `redact_credentials` is stateful (it reads the env and the key pool), and `core` may not import `util` (`core_does_not_import_util_directly`). The engine therefore reaches it through a new `EngineHost::redact_credentials` method on the existing host contract (`src/core/engine_host.rs`). `UtilEngineHost` delegates it to `util::http::redact_credentials`, and `app::runtime` injects that host. The no-op default returns the text unchanged; it is used only by test and isolated engines, which configure no keys.
+- The `Ok(Err(e))` arm computes `msg = self.host.redact_credentials(&e.to_string())` once. It passes `msg` to `circuit::record_error`, to `warn!` and to the emitted `ModuleError`. The one redactor covers every module, present and future. It masks query-param credentials plus every configured `HUNTSMAN_*` or pooled key value found verbatim. Because only credential values are masked, the diagnosis survives.
+- The breaker now classifies the redacted text. A key value that happens to contain a `429` or `402` token therefore no longer hard-trips the module as a rate limit. `circuit` keeps no message text; it only classifies.
+- The panicked-task arm redacts the same way. `absorb_dispatch_outcome` becomes `pub(super)` so the engine tests can drive it.
+- `"apikey="` joins `redact_credentials`'s `CREDENTIAL_PARAMS`.
+- The per-site wraps the finding first proposed (fetch.rs, europeana) are unnecessary: the sink covers them. The Numverify leg in `contact_enrich` was already removed by REQ-CRED-001.
+
+**Locks.**
+- `core::engine::tests::module_error_sink_is_redacted` (L6). An `Error::module` carrying `?api_key=sk-429-…` and `?apikey=…` is emitted with both values masked. `status 401` and `q=target@example.com` survive. The breaker stays closed after it.
+- `core::engine::tests::a_panicked_module_task_error_is_redacted`. A `JoinError` panic message carrying `?token=…` is emitted masked.
+- Both engine tests build the engine with the shipped `UtilEngineHost`, so they also lock the host's delegation.
+- `util::http::tests::redact_strips_lowercase_apikey`. `?apikey=` is masked, and a mid-word `xapikey=` is left alone.
+
+**Falsified** (`mutate2.py`, filters `module_error_sink_is_redacted a_panicked_module_task_error_is_redacted redact_strips_lowercase_apikey`):
+
+| id | mutation | result |
+|---|---|---|
+| M1 | **baseline**: the sink emits the raw `e.to_string()` | KILLED by `module_error_sink_is_redacted` |
+| M2 | the breaker classifies the raw text | KILLED by `module_error_sink_is_redacted` |
+| M3 | the panicked-task arm emits the raw `JoinError` text | KILLED by `a_panicked_module_task_error_is_redacted` |
+| M4 | `"apikey="` is removed from `CREDENTIAL_PARAMS` | KILLED by 2: `module_error_sink_is_redacted`, `redact_strips_lowercase_apikey` |
+| M5 | **over-correction**: the sink replaces every module error with a fixed "redacted" string | KILLED by `module_error_sink_is_redacted` |
+| M6 | **over-correction**: the panic arm replaces the panic text with a fixed string | KILLED by `a_panicked_module_task_error_is_redacted` |
+| M7 | **over-correction**: `apikey=` skips the boundary check and masks mid-word | KILLED by `redact_strips_lowercase_apikey` |
+| M8 | `UtilEngineHost::redact_credentials` returns the text unchanged instead of delegating | KILLED by 2: `a_panicked_module_task_error_is_redacted`, `module_error_sink_is_redacted` |
+
+**8 of 8 killed**, run against the compiled patch. Clippy `-D warnings` is clean.
+
+### Residual
+
+- `wifi_intel` sends its own `ModuleError` straight onto the bus (`src/modules/wifi_intel/mod.rs:412-418`), so it bypasses this sink. Its text is built from `Lookup::Refused` reasons, the `to_string()` of the error `util::wigle::get` returns. For a 401/403 that is HSE's own fixed message; for any other non-2xx it is `http_status_error`'s classification, whose provider-body snippet comes from `error_body` and is already credential-redacted there. So the bypass carries provider text, but not unredacted.
+- Whether IPQS, Criminal IP or Europeana ever echo a key in these fields remains unverified. The sink makes that question moot for the event log.
+
+## REQ-KEYFLOOR-001 — an optional key never leaves a module worse than keyless: a refused key falls back to the keyless answer and is still reported to the pool
+
+**Found** (plan lock L10, verified at HEAD d3c36f0d). Two modules with a working keyless path skipped it whenever a key was set:
+
+- `shodan`: `if let Some(key) = ctx.key_opt(KEY_ENV) { self.query_paid(..)?; } else { self.query_internetdb(..)?; }` (`src/modules/shodan/mod.rs:162-169`). `query_paid` classified the host-API answer with `keyed_ok_or_404` (`mod.rs:319`), which turns a `401`/`403` into `Err` after burning the key (`src/util/http/fetch.rs:1014-1045`). A key Shodan refused therefore made the module error out, and InternetDB, which needs no key, was never asked.
+- `greynoise`: the keyed branch `return`ed before the Community path on every outcome (`src/modules/greynoise/mod.rs:328-348`), and its refusal also came through `keyed_ok_or_404` (`mod.rs:340`). A refused key made the module error out, and the keyless `v3/community` endpoint was never asked.
+
+In both cases the operator who set a key got less than one who did not.
+
+**Vendor facts relied on** (fetched 2026-09-23):
+- InternetDB is keyless: "No, you don't need to have a Shodan account or a Shodan API key in order to use the InternetDB API" (https://internetdb.shodan.io/). Live, `GET https://internetdb.shodan.io/8.8.8.8` answered `200` with no key.
+- GreyNoise Community is keyless: "API Address: `api.greynoise.io/v3/community`", "Available to unauthenticated users with a limited number of lookups per day" (https://docs.greynoise.io/docs/using-the-greynoise-community-api). Live, `GET /v3/community/8.8.8.8` with no key answered GreyNoise's documented shape (`404` with `"IP not observed scanning the internet."`).
+- GreyNoise refuses a bad key on `v3/ip` with `401 {"message":"unauthorized"}` (live request with `key: invalidkey000`, 2026-09-23).
+- **Not relied on.** Shodan's developer docs (https://developer.shodan.io/api) do not say which plans may call `/shodan/host/{ip}` or which status a free key gets. Live on 2026-09-23, `/shodan/host/8.8.8.8` answered `200` both with an invalid key and with no key, so no refusal could be reproduced. The fix therefore does not depend on how Shodan treats a free key. It falls back on the statuses the repo already treats as a key refusal (`401`/`403`, and the auth-shaped `400`), whichever key receives them.
+
+**Implemented.**
+- `util::http::keyed_answer` is the single owner of the keyed status policy. It returns a `KeyedAnswer`: `Found(resp)` (2xx), `Absent` (404), or `KeyRejected { status, error }` (`401`, `403`, or a `400` that `is_auth_failure_400_body` recognises). In the `KeyRejected` case the key has already been reported exhausted, so it is marked `Invalid` in the pool. Every other non-2xx is still an `Err` with the same typed classification as before (`RateLimited`, `BotChallenge`, `Module`), and a `429` still burns `RateLimited`. `keyed_ok_or_404` is now `keyed_answer` with `KeyRejected` folded back into `Err`, so its 23 remaining call sites in 18 modules keep their behaviour and the policy lives in one place.
+- `shodan`: `process` delegates to `Shodan::lookup(api_base, internetdb_base, ip, ctx)`. On a paid-API `KeyRejected`, `lookup` logs a warning naming the status, then answers from InternetDB. A paid `2xx` or `404` still answers alone. A `429`, an outage or an unreadable body is still the module's error.
+- `greynoise`: `process` delegates to `GreyNoise::lookup(base, ip, ctx)`. On a `v3/ip` `KeyRejected`, `lookup` logs a warning, then answers from `v3/community`, which sends no key. Every other outcome is unchanged.
+- The refusal is never read as a negative about the subject (REQ-KEYSKIP-001). The module either returns the keyless provider's own answer or fails. The dead key is visible on the key-health views as `Invalid` and in the log.
+
+**Locks.**
+- `util::http::tests::keyed_answer_separates_a_key_refusal_from_every_other_failure`: `401`, `403` and the auth-shaped `400` are `KeyRejected` and burn `Invalid`. A `429` is `Err(RateLimited)` and burns `RateLimited`. A `500` and a bad-query `400` are `Err` and burn nothing.
+- `modules::shodan::tests::a_refused_key_still_gets_the_keyless_internetdb_answer`: loopback, with a key set and the host API answering `401`, then `403`. InternetDB's entities are returned and the key is `Invalid` in the `shodan` pool.
+- `modules::shodan::tests::only_a_key_refusal_falls_back_to_internetdb`: a paid `429` is `Err(RateLimited)`, and a paid `200` or `404` answers alone. InternetDB receives zero requests in all three cases.
+- `modules::greynoise::tests::a_refused_key_still_gets_the_keyless_community_answer`: loopback, with a key set and `v3/ip` answering `401`, then `403`. The second request is `GET /v3/community/…`, it carries no key, the Community verdict is returned, and the key is `Invalid` in the `greynoise` pool.
+- `modules::greynoise::tests::only_a_key_refusal_falls_back_to_the_community_api`: a `429` is `Err(RateLimited)`, and a `200` or `404` answers alone. The server sees exactly one request in each case.
+- The existing `keyed_ok_or_404_*` tests still pass unchanged. `keyed_ok_or_404_leaves_a_plain_refusal_a_module_fault` locks the fold-back.
+
+**Falsified** (`mutate2.py`, filters `keyed_answer keyed_ok_or_404 shodan greynoise`):
+
+| id | mutation | result |
+|---|---|---|
+| B1 | **baseline** (shodan): a paid-API key refusal is returned as the module's error again | KILLED by `a_refused_key_still_gets_the_keyless_internetdb_answer` |
+| B2 | **baseline** (greynoise): a `v3/ip` key refusal is returned as the module's error again | KILLED by `a_refused_key_still_gets_the_keyless_community_answer` |
+| M1 | `keyed_answer` does not count a `403` as a refusal | KILLED by 3: `a_refused_key_still_gets_the_keyless_community_answer`, `a_refused_key_still_gets_the_keyless_internetdb_answer`, `keyed_answer_separates_a_key_refusal_from_every_other_failure` |
+| M2 | `keyed_answer` does not count the auth-shaped `400` as a refusal | KILLED by `keyed_answer_separates_a_key_refusal_from_every_other_failure` |
+| M3 | a refusal is no longer reported to the pool (only a `429` burns) | KILLED by 3: `a_refused_key_still_gets_the_keyless_community_answer`, `a_refused_key_still_gets_the_keyless_internetdb_answer`, `keyed_answer_separates_a_key_refusal_from_every_other_failure` |
+| M4 | `keyed_ok_or_404` folds a refusal into a clean miss (`Ok(None)`) | KILLED by 2: `keyed_ok_or_404_leaves_a_plain_refusal_a_module_fault`, `keyed_ok_or_404_types_a_challenge_page_as_the_typed_wall` |
+| M5 | shodan reads a refusal as the paid API's clean miss (the REQ-KEYSKIP-001 defect) | KILLED by `a_refused_key_still_gets_the_keyless_internetdb_answer` |
+| M6 | greynoise reads a refusal as "never observed" (an empty result) | KILLED by `a_refused_key_still_gets_the_keyless_community_answer` |
+| O1 | **over-correction**: a `429` also falls back to the keyless path | KILLED by 3: `only_a_key_refusal_falls_back_to_the_community_api`, `only_a_key_refusal_falls_back_to_internetdb`, `keyed_answer_separates_a_key_refusal_from_every_other_failure` |
+| O2 | **over-correction**: shodan always asks InternetDB too, even when the key works | KILLED by `only_a_key_refusal_falls_back_to_internetdb` |
+| O3 | **over-correction**: shodan never uses the key (keyless only) | KILLED by 2: `a_refused_key_still_gets_the_keyless_internetdb_answer`, `only_a_key_refusal_falls_back_to_internetdb` |
+| O4 | **over-correction**: greynoise never uses the key (keyless only) | KILLED by 2: `a_refused_key_still_gets_the_keyless_community_answer`, `only_a_key_refusal_falls_back_to_the_community_api` |
+| O5 | **over-correction**: greynoise also falls back after a paid `404` | KILLED by `only_a_key_refusal_falls_back_to_the_community_api` |
+| O6 | **over-correction**: a `500` counts as a key refusal | KILLED by `keyed_answer_separates_a_key_refusal_from_every_other_failure` |
+
+**14 of 14 killed**, run against the compiled patch. Clippy `-D warnings` is clean.
+
+**Review follow-up: the lock covers the new authority.** `keyed_answer` burns a refused key under its first argument, exactly as `keyed_ok_or_404` does, but REQ-KEYREG-001's lock `credential_registry_views_are_one_set` listed only `keyed_ok_or_404` among the pool-name arguments it checks (`POOL_NAME_ARGS`, `tests/architecture_parts/architecture_part3.rs`). A module calling `keyed_answer` directly with a name the pool does not hold would have had every burn silently dropped, with the lock green. `("keyed_answer", 0)` is now in `POOL_NAME_ARGS`, and the scanner fixture `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` carries a `keyed_answer(SRC, …)` site it must flag. Falsified (`mutate2.py`, `--test architecture -- credential_registry`):
+
+| id | mutation | result |
+|---|---|---|
+| R1 | **baseline**: `keyed_answer` removed from `POOL_NAME_ARGS` | KILLED by `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments` |
+| R2 | `shodan` passes `"shodan_paid"` (no such pool) to `keyed_answer` | KILLED by `credential_registry_views_are_one_set` |
+| R3 | `keyed_answer` is read at the wrong argument (the key, index 1) | KILLED by 2: `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments`, `credential_registry_views_are_one_set` |
+| R4 | **over-correction**: `keyed_answer`'s first argument is also required to be a key env var | KILLED by 2: `credential_registry_scanner_reads_calls_resolves_names_and_skips_comments`, `credential_registry_views_are_one_set` |
+
+### Residual
+
+- **Other keyless floors.** The other plan rows are not in this change: hibp's Domain branch without a key, threatfox reading `HUNTSMAN_ABUSECH_KEY` first, pulsedive's key becoming optional, and netlas moving to `Authorization: Bearer`. The threatfox change touches pool-service resolution for a shared abuse.ch key and the `urlhaus` runtime `key_service` allowlist, so it is not a trivial one-liner. The 18 other modules that use `keyed_ok_or_404` have not been audited for a keyless path they could fall back to.
+- **Throttled key.** A `429` on the keyed call is still the module's error, not a fallback, because it is a throttle rather than a refusal. Whether InternetDB or GreyNoise Community would answer while the key is throttled is not verified.
+- **Pool label.** `keyed_answer`, like `keyed_ok_or_404`, still reports the burn under the caller's `module` label. For `shodan` and `greynoise` that label is also the pool name, so the burn reaches the right pool (the tests assert it). For the modules where the two differ, see the REQ-KEYREG-001 residual.
+
+## REQ-CRED-003 — a failed tile fetch's `502` never carries the upstream URL or its key; a credential parameter's name matches in any case
+
+**Found** by the verified API-keys audit (finding CRED-04). Every line cited is at `6d9b86a`, whose tree is this branch's base.
+
+`GET /api/v1/tiles/{z}/{x}/{y}` (`api/routes/mod.rs:545`) is not loopback-gated: it answers any client `hse serve` admits (`--bind 0.0.0.0` with a token, or `--allow-unauthenticated`). A tile the cache does not hold forces one upstream fetch, and a failed fetch is a `502` whose `detail` is `fetch_upstream`'s `Err` verbatim (`api/tiles.rs:194-200`). Two paths put the operator's tile key into that body (the send error and the host fallback). The body-read path used the same bare rendering, though today it has no URL to leak:
+
+- **The send error** (`api/tiles.rs:216`): `format!("request failed: {e}")`. reqwest's `Display` appends ` for url (<url>)` whenever the error carries a URL (reqwest 0.12.28, `src/error.rs:267-269`, read from the locked registry source), and a send error does: a connect or timeout failure through `with_url`/`if_no_url` (`src/async_impl/client.rs`), a redirect failure with the hop's URL (`src/redirect.rs:332`). That URL is the expanded `HUNTSMAN_TILE_UPSTREAM` template, which `CHANGELOG.md:41` invites to be "any `{z}/{x}/{y}` server". Keyed tile servers take the key in the query. Thunderforest documents its template as `https://api.thunderforest.com/{style}/{z}/{x}/{y}{scale}.{format}?apikey={apikey}` ([Map Tiles API](https://www.thunderforest.com/docs/map-tiles-api/), fetched 2026-09-23). reqwest's own `Error` documentation warns: "Errors may include the full URL used to make the `Request`. If the URL contains sensitive information (e.g. an API key as a query parameter), be sure to remove it" ([docs.rs, reqwest 0.12.28 `Error`](https://docs.rs/reqwest/0.12.28/reqwest/struct.Error.html)). So an offline device, a captive portal or a redirect loop answered `{"detail":"request failed: error sending request for url (https://api.thunderforest.com/cycle/19/1/1.png?apikey=<KEY>)"}`.
+- **The body error** (`api/tiles.rs:233`): `format!("body read failed: {e}")`. In 0.12.28 a body error carries no URL (`bytes_stream` maps through `error::decode` with none attached, `src/async_impl/response.rs:357`), so this was not a live leak. It was the same bare rendering one reqwest upgrade away from being one, and it reported only reqwest's category label.
+- **The host fallback** (`api/tiles.rs:84-89`): `upstream_host()` falls back to `self.upstream.clone()`, the whole template, when the template has no host (`tiles.example/{z}/{x}/{y}.png?apikey=<KEY>`, scheme forgotten). Its doc comment rested on "the template itself is not secret", which a keyed template falsifies.
+
+The shared redactor would not have caught the first path even had it been applied. `redact_credentials` compared names case-exactly (`util/http/redact.rs:47`, `starts_with`), its list held the camel-case `apiKey=` (`:23`), and `key=` needs a query boundary before it (`:51-55`), which the `i` of `apikey` is not. So Thunderforest's lowercase `apikey=` passed through intact.
+
+### Implemented
+
+- **A shared renderer for a reqwest error that leaves the process.** `util::http::transport_error_message(e)` does three things: it strips the URL (`without_url`), keeps the `source()` cause chain and credential-redacts the whole. It is the composition `send_tagged` already inlined (`error_cause_chain(e.without_url())`, `util/http/url.rs:153`), lifted out so it has one owner. `send_tagged` now calls it, and so do both of the tile proxy's reqwest error sites. The strip happens in the renderer, not at each call site, so a call site that uses the renderer cannot forget it. The `502` keeps its cause in place of reqwest's bare label: `request failed: error sending request: <cause chain>`, `request failed: error following redirect: too many redirects`, or a `body read failed: …` chain that names hyper's `error reading a body from connection`.
+- **`upstream_host()` discloses the host or a description, never the template.** When the template has no host, it answers `(no host: HUNTSMAN_TILE_UPSTREAM is not an absolute URL)`. That is the fact the operator needs, and it carries nothing from the template. `host_str` excludes userinfo, path and query, so a parsed template discloses only its host, as before.
+- **`redact_credentials` matches a parameter name in any ASCII case.** The name is compared with `eq_ignore_ascii_case` over a byte window. The list is written lowercase, as names rather than spellings: `apikey=` covers `apiKey=`, `APIKEY=` and Thunderforest's `apikey=`, and `accesstoken=` covers `accessToken=`. No entry is duplicated. The boundary rule is unchanged and holds in any case, so `monKEY=` stays a word. The name is kept as the text spelled it, and only the value is masked. The list's own policy already says that over-redaction in an error string is harmless and under-redaction leaks. Every caller of the shared redactor gains this: module error snippets, `send_tagged`, the export and dossier redaction passes, and the tile proxy.
+
+**Rejected: `url_mut()` to strip only the query.** A key can ride the path or the userinfo as well as the query, and the host is already in the body's `upstream` field. Removing the URL entirely is the only strip that does not depend on where the key sits.
+
+### Locks
+
+- `api::tiles::tests::a_failed_keyed_fetch_never_echoes_the_upstream_url_or_its_key` runs the real handler over three failures of an `?apikey=`-keyed template: a refused loopback connect (the device offline), a `util::http::test_server` redirect loop (a captive portal) and a template with no host. For each it asserts the `502` body has no key, no `apikey` in any casing (a masked URL still leaks the URL), no tile path and no upstream port. It also asserts that `upstream` names the host (or the no-host description) and that `detail` still carries a cause past reqwest's label.
+- `api::tiles::tests::a_tile_cut_off_mid_body_is_a_502_with_its_cause_and_caches_nothing`: an upstream that promises 4096 bytes, sends 8 and drops the connection. The `502`'s `detail` carries the body error's cause chain, so the body site goes through the same renderer, and the truncated tile is not cached.
+- `util::http::tests::redact_masks_a_credential_name_in_any_case` covers Thunderforest's URL inside reqwest's ` for url (…)` suffix, nine names in mixed case, the name kept as spelled, and `monKEY=` / `MonKey=` left alone.
+- Standing controls: `an_upstream_failure_is_a_502_naming_the_upstream_and_caches_nothing` (the `upstream` field names `127.0.0.1`, and `detail` still says `404`), `the_template_and_the_cache_share_one_layout` (`upstream_host()` is the host), `send_tagged_strips_url_so_secrets_and_pii_dont_leak`, `redact_strips_apikey_camel_case` and `redact_does_not_match_substring_words`.
+
+### Falsified
+
+Run with `mutate2.py` (spec `mut_CRED003.json`) over `--lib -- api::tiles util::http::tests`. Every mutation compiled, and each result below is the harness's own line.
+
+| # | mutation | result |
+|---|---|---|
+| CR-B1 | **baseline**: the send error rendered bare again (`format!("request failed: {e}")`) | killed by `a_failed_keyed_fetch_never_echoes_the_upstream_url_or_its_key` |
+| CR-B2 | **baseline**: `upstream_host()` falls back to the whole template again | killed by `a_failed_keyed_fetch_never_echoes_the_upstream_url_or_its_key` |
+| CR-B3 | **baseline**: the redactor's list and case-exact match as at `6d9b86a` | killed by `redact_masks_a_credential_name_in_any_case` |
+| CR-M1 | the renderer keeps the URL (`error_cause_chain(e)`, no `without_url`) | killed by `a_failed_keyed_fetch_never_echoes_the_upstream_url_or_its_key`, `send_tagged_strips_url_so_secrets_and_pii_dont_leak` |
+| CR-M2 | the body error rendered bare again (`format!("body read failed: {e}")`) | killed by `a_tile_cut_off_mid_body_is_a_502_with_its_cause_and_caches_nothing` |
+| CR-M3 | the renderer strips the URL but drops the cause chain (`e.without_url().to_string()`) | killed by `a_failed_keyed_fetch_never_echoes_the_upstream_url_or_its_key`, `a_tile_cut_off_mid_body_is_a_502_with_its_cause_and_caches_nothing` |
+| CR-M4 | the name compared case-exactly over the lowercase list | killed by `redact_handles_multiple_credentials_on_one_line`, `redact_masks_a_credential_name_in_any_case`, `redact_strips_apikey_camel_case` |
+| CR-M5 | the `apikey=` entry removed | killed by `redact_handles_multiple_credentials_on_one_line`, `redact_masks_a_credential_name_in_any_case`, `redact_strips_apikey_camel_case` |
+| CR-O1 | over-correction: `upstream_host()` never names a host | killed by `a_failed_keyed_fetch_never_echoes_the_upstream_url_or_its_key`, `an_upstream_failure_is_a_502_naming_the_upstream_and_caches_nothing`, `the_template_and_the_cache_share_one_layout` |
+| CR-O2 | over-correction: the `502`'s `detail` is a fixed string (no cause at all) | killed by `a_failed_keyed_fetch_never_echoes_the_upstream_url_or_its_key`, `a_tile_cut_off_mid_body_is_a_502_with_its_cause_and_caches_nothing`, `an_upstream_failure_is_a_502_naming_the_upstream_and_caches_nothing` |
+| CR-O3 | over-correction: the renderer answers a constant for every reqwest error | killed by `a_failed_keyed_fetch_never_echoes_the_upstream_url_or_its_key`, `a_tile_cut_off_mid_body_is_a_502_with_its_cause_and_caches_nothing` |
+| CR-O4 | over-correction: the boundary check dropped (every `…key=` masked mid-word) | killed by `redact_does_not_match_substring_words`, `redact_masks_a_credential_name_in_any_case` |
+| CR-O5 | over-correction: the matched name rewritten to the list's lowercase spelling | killed by `redact_masks_a_credential_name_in_any_case`, `redact_strips_apikey_camel_case` |
+
+**Falsification (compiled):** 13 of 13 killed. CR-B3 is killed only by the new redactor test, so the case-exact redactor passed every earlier test.
+
+### Residual
+
+- Other sites strip the URL inline and drop the cause chain: `core::error`'s `From<reqwest::Error>`, `app::cells` (`:261`, `:300`), `core::webhook` and three modules. None of them leaks. Moving them onto `transport_error_message` would give their messages a cause, and is left for a separate change.
+- `util::http::fetch` renders a header-keyed send error as `redact_credentials(&e.to_string())` (`fetch.rs:1102`). The key rides a header there, and the redactor masks any credential parameter, but the URL itself, including any searched target in its query, still reaches the module error. This was not part of the finding and was not changed here (unverified as a live leak).
+- The redactor's literal pass masks configured `HUNTSMAN_*` values only verbatim. `HUNTSMAN_TILE_UPSTREAM` holds the template, not the expanded URL, so that pass never matched a tile URL. The fix does not depend on it.
+
+## REQ-KEYREG-002 — a key slot counts as configured only when its value is a usable credential, on every surface that reports keys
+
+**Found** by the verified API-keys audit (finding KEYREG-06). Every line cited is at `6d9b86a`, whose tree is this branch's base.
+
+`hse provision` writes the shipped template's slots uncommented, each holding an `insert_<service>_key_here` placeholder. `src/cli/env_template.txt` has 62 such lines, and they cover every `KNOWN_KEYS` entry. `install.sh:1819` delegates to `hse provision --env-only --discover`, so every installed device starts with this file. `keys::load_from_file_only` (`util/keys/io.rs:283-316`) returns each placeholder verbatim, and `keys::load` keeps them too. The value-level authority already existed. `keys::is_configured_value` (`util/keys/constants.rs:362`) rejects blank and placeholder values. `hse doctor` had fixed its own unset-keys listing with a private `key_slot_is_filled` (`app/doctor/mod.rs:633`). Four other surfaces still decided "configured" by name presence:
+
+- **The web Settings key grid** (`api/settings_handlers/mod.rs:207`): `let set = loaded.contains_key(&name)`. On a provisioned device every row read `set`.
+- **The web acquisition list** (`api/settings_handlers/mod.rs:217`): `rank_unset_keys(|k| loaded.contains_key(k))`. Every known key was "present", so the list came back **empty**. This is the one place that tells a web operator which keys to register. It is the defect doctor's own comment describes (`app/doctor/mod.rs:257-260`).
+- **The debug bundle's key inventory** (`app/export/environment.rs:31-41`): `keys_present` listed every `HUNTSMAN_*` name, and `keys_absent` tested `!loaded.contains_key`. A provisioned device's bundle therefore listed every placeholder as present and gave `keys_absent : 0`, the wrong answer to "why did module X find nothing?".
+- **The "configured key rejected" diagnosis**: `hse doctor` (`app/doctor/mod.rs:328`) and `GET /api/v1/keys/health` (`api/settings_handlers/mod.rs:154`) each filtered `auth_failing_sources` inline with `loaded.contains_key(e)`. Modules read keys through `ModuleContext::key_opt`, which filters placeholders (`core/module/mod.rs:464-466`). So a placeholder slot's module never sends the placeholder, and an auth streak on that source is stale history from an earlier key. Both surfaces still told the operator to "replace or renew" a key they had never supplied.
+
+`tests/api.rs:1733-1757` checked the acquisition list only for an app with no key file. It also read whatever `~/.huntsman.env` the developer had, because the handler took its path from `$HOME` (`api/settings_handlers/mod.rs:197`). No test could give the grid a provisioned file without writing the developer's real one.
+
+### Implemented
+
+- **One slot predicate, promoted to the key registry.** `keys::is_configured_slot(loaded, name)` is `loaded.get(name).is_some_and(is_configured_value)`, doctor's `key_slot_is_filled` moved out of `app::doctor` and made the shared authority. Doctor's private copy is deleted and its unset-keys listing calls the shared one. (Removing it also returns the `sorted_huntsman_keys` doc comment, which had been attached to the wrong function, to its own function.)
+- **The Settings grid and acquisition list** use it for `set` and for `rank_unset_keys`. A placeholder row now reads `unset` and is listed for acquisition. A real value is still `set` and is not listed.
+- **The debug bundle's inventory** is a pure `export::environment::key_presence(loaded)`. `keys_present` keeps a `HUNTSMAN_*` entry only when `is_configured_value` accepts its value, and `keys_absent` is every `KNOWN_KEYS` entry `is_configured_slot` rejects. `render_environment` calls it.
+- **The rejected-key diagnosis** is one function, `key_health::configured_key_rejections(health, loaded)`: `auth_failing_sources` narrowed by `is_configured_slot`. `hse doctor` and `keys_health` both call it instead of their two inline filters.
+- **The key surface's file is state, not `$HOME`.** `AppState.key_file` is the env file `settings/keys` GET reads and PUT writes. `hse serve` sets it to `keys::env_path()`, so production reads and writes the same file as before. PUT now goes through `write_keys_at(&s.key_file, …)`, so a key saved from the page is written to the file the grid reads. Test states get `.huntsman.env` beside the isolated test home, which nothing writes. `tests/common::test_app_with_key_file` hands a test its own scratch file, so no test reads or writes the developer's real key file.
+
+**Rejected: filtering placeholders inside `load_from_file_only`.** The PUT editor has to see a placeholder slot to replace it in place, and `hse provision` reads the same parser to count placeholders. The question belongs at the point of decision, not in the reader.
+
+### Locks
+
+- `settings_acquisition_ignores_placeholders` (`tests/api.rs`, lock L8 of the audit plan) runs the real route over the shipped template, written to a scratch file with `HUNTSMAN_SHODAN_KEY` set to a real-looking value. Every known key still holding its placeholder has `set: false` and is in the acquisition list. `HUNTSMAN_SHODAN_KEY` has `set: true` and is not in the list (over-correction guard).
+- `settings_keys_put_writes_the_file_the_grid_reads` (`tests/api.rs`): a PUT from a write-enabled app lands in that app's key file, and the GET then shows the saved name as `set`. The name is not a real service's slot.
+- `util::keys::tests::a_provisioned_template_configures_no_slot_and_a_real_value_does`: the shipped template, parsed by `load_from_file_only`, configures no known key. Absent, blank and whitespace slots are unset. A real value is set for its own slot and not for another.
+- `util::key_health::tests::a_rejection_is_reported_only_for_a_slot_holding_a_real_key`: of three auth-failing sources, only the one whose slot holds a real key is reported. The placeholder slot and the absent slot are not.
+- `app::export::tests::the_bundle_key_inventory_lists_a_placeholder_slot_as_absent`: with every known key a placeholder except one real key, `keys_present` is that key plus a non-key knob with a value, and `keys_absent` is every other known key.
+- Standing control: `app::doctor::tests::a_placeholder_slot_still_appears_in_the_unset_keys_remediation`, now calling the shared predicate.
+
+### Falsified
+
+Run with `mutate2.py` (spec `mut_KEYREG002.json`) over `--lib --test api -- util::keys:: util::key_health:: app::doctor:: app::export::tests::the_bundle settings_`. Every mutation compiled, and each result below is the harness's own line.
+
+| # | mutation | result |
+|---|---|---|
+| KR-B1 | **baseline**: the grid's `set` is `loaded.contains_key(&name)` again | killed by `settings_acquisition_ignores_placeholders` |
+| KR-B2 | **baseline**: the acquisition list ranks by `loaded.contains_key(k)` again | killed by `settings_acquisition_ignores_placeholders` |
+| KR-B3 | **baseline**: `keys_absent` tests `!loaded.contains_key(k)` again | killed by `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent` |
+| KR-B4 | **baseline**: `keys_present` lists every `HUNTSMAN_*` name again | killed by `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent` |
+| KR-B5 | **baseline**: the rejected-key filter is `loaded.contains_key(e)` again | killed by `a_rejection_is_reported_only_for_a_slot_holding_a_real_key` |
+| KR-B6 | **baseline**: the shared predicate itself becomes `loaded.contains_key(name)` | killed by `a_placeholder_slot_still_appears_in_the_unset_keys_remediation`, `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent`, `settings_acquisition_ignores_placeholders`, `a_rejection_is_reported_only_for_a_slot_holding_a_real_key`, `a_provisioned_template_configures_no_slot_and_a_real_value_does` |
+| KR-M1 | the predicate rejects only a blank value (a placeholder passes) | killed by the same five tests as KR-B6 |
+| KR-M2 | the GET reads `keys::env_path()` again instead of `s.key_file` | killed by `settings_acquisition_ignores_placeholders`, `settings_keys_put_writes_the_file_the_grid_reads` |
+| KR-O1 | over-correction: every row is `set: false` | killed by `settings_acquisition_ignores_placeholders`, `settings_keys_put_writes_the_file_the_grid_reads` |
+| KR-O2 | over-correction: the acquisition list names every known key | killed by `settings_acquisition_ignores_placeholders` |
+| KR-O3 | over-correction: the predicate answers `false` for every slot | killed by `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent`, `settings_acquisition_ignores_placeholders`, `settings_keys_put_writes_the_file_the_grid_reads`, `a_rejection_is_reported_only_for_a_slot_holding_a_real_key`, `a_provisioned_template_configures_no_slot_and_a_real_value_does` |
+| KR-O4 | wrong scope: a slot is configured when ANY slot in the map holds a real value | killed by `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent`, `settings_acquisition_ignores_placeholders`, `a_rejection_is_reported_only_for_a_slot_holding_a_real_key`, `a_provisioned_template_configures_no_slot_and_a_real_value_does` |
+| KR-O5 | over-correction: `keys_absent` lists every known key | killed by `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent` |
+| KR-O6 | over-correction: no rejection is ever reported | killed by `a_rejection_is_reported_only_for_a_slot_holding_a_real_key` (rerun; see below) |
+| KR-O7 | over-correction: `keys_present` lists nothing | killed by `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent` (rerun; see below) |
+
+**Falsification (compiled):** 15 of 15 killed.
+
+The first run reported KR-O6 and KR-O7 as `SURVIVED` (62 lib and 9 api tests passed). Those two verdicts were stale binaries, not live mutants. `CARGO_TARGET_DIR` is shared with other worktrees of this crate, and path packages hash relative to the workspace root, so every worktree writes the same artifact names (the dep-info files list `src/…` relative paths). When another worktree builds after the harness writes a mutation, cargo treats the newer artifact as fresh and runs that build instead. Both were run again through the harness (spec `mut_KEYREG002b.json`). KR-O6 was killed, and KR-O7 survived a second time. KR-O7 was then run alone (`mut_KEYREG002c.json`) and was killed. Both were also applied by hand, and each failed its lock under a direct `cargo test`. Every `killed` verdict above names at least one test that exists only in this branch, so it came from this branch's binary with that mutation in it.
+
+One mutation was deliberately not run: PUT reverted to `keys::write_keys` (the `$HOME` file). The harness runs the real test binary, and that mutation would write the test's value into the operator's real `~/.huntsman.env`. `settings_keys_put_writes_the_file_the_grid_reads` would fail on it (the scratch file would not contain the name), but proving that is not worth writing a live key file.
+
+### Residual
+
+- **Pooled keys cannot fill a placeholder slot (new; read from source at this base, not reproduced, not changed here).** `core::engine::passes::hot_inject_keys` (`core/engine/passes.rs:440`) and `key_pool::merge_pool_into_env` (`util/key_pool/validation.rs:338`) skip a service whose env var is present in the key map by name. On a provisioned device every slot is present as a placeholder. So a key added with `hse keys add` or `POST /api/v1/keys/pool/add` is never injected. `ModuleContext::key_opt` then filters the placeholder, and the module reports the key missing while the pool holds one. The fix is the same predicate (`!keys::is_configured_slot`) in both gap-fills. It changes which credential authenticates outbound requests, so it needs its own requirement, its own tests against the process-global pool, and review against the KEYREG-01/03 pool changes. It was left out of this display fix.
+- `selftest::check_keys` still reports `keys.len()` as "HUNTSMAN_* key(s) loaded". That count includes placeholders and non-key knobs. It is a load smoke check, not a "configured" decision, and was not changed.
+- KEYREG-09 (the lane that replaces `likely_env_var`'s prefix heuristic) restructures both rejected-key surfaces. It should keep calling `configured_key_rejections`, or apply `is_configured_slot` wherever it moves the filter.
+
+---
+
+**Superseded on merge with #649.** Main fixed the debug-bundle surface independently. Its `export::environment::key_inventory` applies the same `is_configured_value` test and also counts slots that were provisioned but never filled in (`unfilled`). Main's `environment_key_inventory_treats_template_placeholders_as_absent` locks it. That is the bundle authority now, and this branch's `key_presence` and `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent` were dropped in the merge, so there is still one implementation. The KR-B3/B4/O3–O7 rows above ran against the pre-merge `key_presence`. The web settings and `hse doctor` surfaces, and their locks, are unchanged.
+
+## REQ-CACHE-002 — a cached module answer is replayed only by a build whose module logic produced it
+
+### Found
+
+At HEAD the inter-scan cache key was `archive_key(name, target)`
+(`src/core/engine/dispatch.rs:288`), which returned
+`module:kind:normalised-value`. Nothing in the key named the code that computed
+the archived row. All three dispatch paths build the key through `archive_key`
+before `lookup_module_result_fresh` and `archive_if_eligible`: sequential
+(`dispatch.rs:1407`), the paid phase (`:1557`) and the free phase (`:1693`). A
+hit goes to `replay_cached_result`, so the module's `process()` never runs.
+
+28 modules opt in through `cache_ttl_secs()`. Most cache for 86 400 s, `fofa`
+for 172 800 s and `builtwith` for 604 800 s. A new binary computes byte-identical
+keys, so after an upgrade that fixed one of these modules, a re-scan inside the
+TTL replayed the answer the defective code had computed. The fix appeared not to
+ship, for up to a week. Nothing said so: a replay is tallied as `cached`, not as
+stale.
+
+The stale rows do not accumulate. `Store::prune_module_result_cache`
+(`src/storage/archive.rs:59`) deletes every row past `archived_at + ttl_secs` and
+caps the table at `MODULE_RESULT_CACHE_MAX_ROWS` (20 000). It runs at startup and
+at every scan boundary. `lookup_module_result_fresh` (`archive.rs:90`) already
+ignores an expired row.
+
+### Implemented
+
+- `build.rs` computes `LOGIC_FINGERPRINT` into the generated `source_manifest`.
+  It is FNV-1a 64 over the sorted (path, NUL, u64-LE length, contents) of every
+  file under `src/` and `hse-core/src/`, plus `Cargo.lock`. The script stays pure
+  std, with no build dependencies.
+- Test material is excluded, following the repo's own conventions: `tests.rs`,
+  `*_tests.rs`, `test_*` files (`test_support.rs`, `test_server.rs` and
+  `test_psl.txt` are all `cfg(test)`-only) and anything under a `tests/` or
+  `testdata/` directory. The browser UI (`src/web/`) is excluded too. Editing a
+  test therefore does not cool every cache. Nothing else is excluded, because
+  over-inclusion costs only one extra re-ask. An earlier draft also skipped
+  dotfiles; no dotfile exists in either root, so no test could hold that rule,
+  and it was removed.
+- Embedded data counts as logic. `public_suffix_list.dat` (`include_str!`) and
+  `ieee.bin` (`include_bytes!`) change module output, so a data refresh cools
+  the cache the way a code fix does. `Cargo.lock` counts because a dependency
+  bump can change parsing.
+- It is a content hash, not the commit SHA. A docs-, test- or CI-only commit
+  leaves every cache warm, and a prebuilt binary and a source build of one tree
+  share one cache. `HSE_GIT_SHA` is also `unknown` for source-archive builds.
+- `archive_key` is now `archive_key_with(LOGIC_FINGERPRINT, name, target)`. The
+  key is `fingerprint:module:kind:value`, and its normalisation is unchanged, so
+  it still matches the dispatch dedup key. A row archived by other logic is a
+  different row, so the lookup misses. The module asks again once and archives
+  under the new key.
+- **No migration.** Old rows, including every row in the pre-fingerprint key
+  format, become unreachable and age out under the TTL prune and row cap above.
+- A listed file that cannot be read fails the build instead of being skipped.
+  Skipping it could produce a value equal to the previous build's.
+- Every hashed file and every walked directory is declared with
+  `cargo:rerun-if-changed`, matching the existing `collect`. The Cargo reference
+  (https://doc.rust-lang.org/cargo/reference/build-scripts.html) says that for a
+  directory path cargo "will scan the entire directory for any modifications".
+  The old comment at `build.rs:45` said cargo does not recurse, so it has been
+  corrected. The per-file watches are a redundant superset, kept deliberately.
+  The same page gives the build script's working directory as the package root,
+  which is what the relative `src`, `hse-core/src` and `Cargo.lock` paths rely
+  on.
+- FNV-1a 64 parameters: offset basis 14695981039346656037, prime 1099511628211.
+  Test vectors: `""` → `cbf29ce484222325`, `"a"` → `af63dc4c8601ec8c`,
+  `"foobar"` → `85944171f73967e8`. Source:
+  https://datatracker.ietf.org/doc/html/draft-eastlake-fnv. The lock test
+  asserts all three vectors.
+
+**One fingerprint for the build, not one per module.** Every logic change cools
+every caching module. A module asks again once per target re-scanned after the
+upgrade, which costs the same as an early TTL lapse and cannot loop. A
+per-module fingerprint would have saved about 10% of coolings over the
+2026-09-05..09-23 history. It would also be unsound without a transitive import
+closure: the caching `wikitree` imports `name_intel`, so a `name_intel` fix would
+leave `wikitree`'s pre-fix answers live. A text scan in a pure-std `build.rs`
+cannot close that graph reliably.
+
+### Locks
+
+- `core::engine::tests::a_cached_answer_is_a_hit_only_under_the_logic_fingerprint_that_archived_it`:
+  the key against `InMemoryStore`. The fingerprint prefixes the unchanged
+  `module:kind:normalised-value` key. Two different fingerprints never share a
+  row: a lookup under another fingerprint misses, and the same fingerprint hits.
+- `core::engine::tests::an_upgrade_never_replays_an_answer_archived_by_other_module_logic`:
+  runs the real `dispatch_target`. The store is seeded with the exact
+  pre-fingerprint key and with another build's key.
+  - The module must run, nothing may be tallied `cached`, no stale value may
+    reach the scan, and the fresh answer must land under this build's key.
+  - A second scan of the same build must then hit. This is the over-correction
+    guard.
+- `tests::logic_fingerprint_is_the_hash_of_the_module_logic_on_disk`
+  (`src/lib_tests.rs`): re-derives the value from the tree, independently of
+  `build.rs`, with a reference FNV-1a pinned to the draft vectors.
+  - It asserts its own premises: `dispatch.rs`, `hse-core/src/lib.rs` and the
+    PSL and OUI blobs are in; `lib_tests.rs`, `engine/tests.rs`,
+    `test_support.rs` and `src/web/` are out.
+  - It then asserts that the embedded constant equals the hash. The value is a
+    pure function of the sorted tree contents, with no timestamps and no walk
+    order, so two builds of one tree agree. On an incremental rebuild it also
+    catches a stale constant (a `rerun-if-changed` gap).
+- Standing: `cache_hit_skips_reprocessing_a_later_scan_of_the_same_target` and
+  `a_cache_replay_of_a_partial_answer_is_still_partial`.
+
+### Falsified
+
+Run with `mutate2.py` (spec `mut_CACHE002.json`) over
+`--lib -- fingerprint cache_ upgrade_never`. Every mutation compiled, and each
+result below is the harness's own line.
+
+The shared target directory is also built by other worktrees of this crate with
+the same package metadata hash. Their build script overwrote this lane's
+`OUT_DIR`, and their test binary replaced this lane's. That made a first run
+report `NO-RUN` (a `source_manifest` without `LOGIC_FINGERPRINT`) and one
+`SURVIVED` from a stale 44-test binary. The run was discarded. The run recorded
+here passed
+`--config=profile.dev.package.huntsman-search-engine.codegen-units=255`, which
+gives this crate a distinct metadata hash (checked: a distinct `OUT_DIR` and test
+executable) without rebuilding any dependency.
+
+| # | mutation | result |
+|---|---|---|
+| C2-B1 | **baseline**: `archive_key` writes the pre-fingerprint `module:kind:value` key | killed by `an_upgrade_never_replays_an_answer_archived_by_other_module_logic` |
+| C2-B2 | **baseline**: the fingerprint is formatted away (`{fingerprint:.0}`) | killed by `a_cached_answer_is_a_hit_only_under_the_logic_fingerprint_that_archived_it`, `an_upgrade_never_replays_an_answer_archived_by_other_module_logic` |
+| C2-O1 | over-correction: a per-call fingerprint (the cache never hits) | killed by `a_cache_replay_of_a_partial_answer_is_still_partial`, `an_upgrade_never_replays_an_answer_archived_by_other_module_logic`, `cache_hit_skips_reprocessing_a_later_scan_of_the_same_target` |
+| C2-O2 | under-inclusion: only `src/core/engine/` is hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M4 | over-inclusion: all test material hashed (a test edit cools every cache) | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M4a | over-inclusion: `tests.rs` hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M4b | over-inclusion: `*_tests.rs` hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M4c | over-inclusion: `test_*` files hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M4d | over-inclusion: files under `tests/` hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M4e | over-inclusion: files under `testdata/` hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M5 | determinism: inputs hashed in `read_dir` order, not sorted | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M6 | contents not hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M7 | `hse-core` not hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M8 | embedded data not hashed (`.rs` only) | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M9 | `Cargo.lock` not hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M10 | not FNV-1a (multiply before the xor) | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M11 | no length framing | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M12 | the browser UI (`src/web/`) hashed | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+| C2-M13 | paths not hashed (a rename is invisible) | killed by `logic_fingerprint_is_the_hash_of_the_module_logic_on_disk` |
+
+**Falsification (compiled):** 19 of 19 killed.
+
+A removed `cargo:rerun-if-changed` line is equivalent under a clean build, so it
+is not in the table. It shows up only on an incremental rebuild, where the
+on-disk lock catches it.
+
+### Residual
+
+- Effective cache life becomes min(TTL, time between logic-changing upgrades).
+  An operator who updates on every `main` commit (about 2.2 logic commits a day
+  in the window above) re-asks each caching provider roughly twice a day per
+  re-scanned target. `builtwith`'s week-long cache loses the most, so batch
+  updates if its quota matters.
+- Adjacent, not changed here: the `Dockerfile` copies `Cargo.toml`,
+  `Cargo.lock`, `build.rs`, `src` and `benches` but not `hse-core`, which
+  `Cargo.toml` depends on by path. That comes from reading the files; no docker
+  build was run. The fingerprint's `hse-core/src` root is skipped when absent,
+  as `collect` does, so it adds no new failure there.
 
 ## REQ-GEOLABEL-029 / REQ-GEOLABEL-030 / REQ-SCANSTATUS-006 / REQ-SCANSTATUS-007 — final review, correction round 1
 

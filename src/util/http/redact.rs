@@ -6,11 +6,17 @@
 /// request URL in their error response, and HSE keys often ride in
 /// the URL as a `?api_key=…` / `?apiKey=…` query parameter.
 ///
-/// The matched names (`api_key`, `apiKey`, `key`, `token`, `secret`,
-/// `access_token`, `auth`) cover the providers HSE keys directly
-/// (Hunter, WhoisXML, OpenCellID, Shodan, etc.). The redaction
+/// The matched names (`api_key`, `apikey`, `key`, `token`, `secret`,
+/// `access_token`, `accesstoken`, `auth`) cover the providers HSE keys directly
+/// (Hunter, WhoisXML, OpenCellID, Shodan, etc.) and the keyed tile servers
+/// `HUNTSMAN_TILE_UPSTREAM` may name (Thunderforest's `?apikey=`). A name
+/// matches in **any ASCII case**: a query parameter's name is spelled by its
+/// provider, not by HSE — `apiKey`, `apikey` and `APIKEY` are all in use — and
+/// a case-exact list had to guess every spelling, so Thunderforest's lowercase
+/// `apikey=` slipped past the camel-case entry (REQ-CRED-003). The redaction
 /// replaces the value with `***` and preserves the surrounding
-/// delimiters so the error message still reads naturally.
+/// delimiters (and the name as the text spelled it) so the error message
+/// still reads naturally.
 pub(crate) fn redact_credentials(text: &str) -> String {
     // Each literal already carries its trailing `=` so the match loop below
     // compares directly against these bytes — no `format!("{name}=")` needed
@@ -18,11 +24,14 @@ pub(crate) fn redact_credentials(text: &str) -> String {
     // string fresh at EVERY cursor position for EVERY name, up to
     // `text.len() * CREDENTIAL_PARAMS.len()` allocations for a body with no
     // credential match at all).
+    //
+    // Written lowercase because they are names, not spellings: the match below
+    // is ASCII-case-insensitive, so `apikey=` is `apiKey=` and `APIKEY=` too.
     const CREDENTIAL_PARAMS: &[&str] = &[
         "api_key=",
-        "apiKey=",
+        "apikey=",
         "access_token=",
-        "accessToken=",
+        "accesstoken=",
         "secret=",
         "token=",
         "auth=",
@@ -44,7 +53,10 @@ pub(crate) fn redact_credentials(text: &str) -> String {
     let bytes = text.as_bytes();
     'outer: while cursor < bytes.len() {
         for name in CREDENTIAL_PARAMS {
-            if bytes[cursor..].starts_with(name.as_bytes()) {
+            if bytes
+                .get(cursor..cursor + name.len())
+                .is_some_and(|window| window.eq_ignore_ascii_case(name.as_bytes()))
+            {
                 // Boundary check: the preceding char (if any) should be
                 // a query separator or whitespace — `apiKey=` mid-word
                 // (`monKey=`) shouldn't trip.

@@ -17,7 +17,10 @@ pub struct ServiceDef {
     pub env_var: &'static str,
     /// Coarse grouping (`breach`, `infra`, `geo`, …) for reporting/ROI rollups.
     pub category: &'static str,
-    /// A cheap endpoint a key-validation probe can hit to check the key works.
+    /// A cheap endpoint a key-validation probe can hit to check the key works,
+    /// or [`NO_PROBE`] when no endpoint is verified safe to spend a probe on.
+    /// Read it through [`ServiceDef::probe_url`], which is where that sentinel
+    /// is resolved.
     pub test_url: &'static str,
     /// Where the key goes on a request (query param vs header) — see [`KeyPlacement`].
     pub key_header: KeyPlacement,
@@ -31,6 +34,28 @@ pub struct ServiceDef {
     /// `ServiceDef` is (de)serialized only where its data fields matter.
     #[serde(skip)]
     pub probe_parser: Option<ProbeParser>,
+}
+
+/// The [`ServiceDef::test_url`] of a provider that must never be probed: a
+/// provider whose every documented endpoint bills a lookup or spends a daily
+/// quota, or whose only candidate endpoint is not confirmed by the vendor to be
+/// free and to answer a valid key with a 2xx on every plan.
+///
+/// A key for such a provider still pools, rotates, CSV-splits and is marked
+/// exhausted. Only `hse keys validate` / `add_and_validate` treat it
+/// differently: the verdict is `Indeterminate`, so the key stays `Untested`
+/// instead of the validator spending the operator's quota (or condemning a
+/// valid key on a plan-gated 403) to find out (REQ-KEYREG-001).
+pub const NO_PROBE: &str = "";
+
+impl ServiceDef {
+    /// The endpoint a validation probe may hit for this provider, or `None`
+    /// when the def is registered with [`NO_PROBE`]. Every probe reads the URL
+    /// here, so a probe-less provider can never be sent a request by accident.
+    #[must_use]
+    pub fn probe_url(&self) -> Option<&'static str> {
+        (self.test_url != NO_PROBE).then_some(self.test_url)
+    }
 }
 
 /// The rate-limit back-off window (seconds) for `service`, or a conservative
@@ -844,6 +869,84 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         // inspects the HTTP status, never reads/keeps the response body.
         test_url: "https://www.osintcat.net/api/email-osint?query=test%40example.com",
         key_header: KeyPlacement::Header("x-api-key"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    // The four below were in `KNOWN_KEYS`, read by live modules, and absent
+    // here — so none of them could be pooled (`hse keys add oathnet` refused
+    // it as "not a poolable service"), CSV-split (`KEY=a,b` reached the
+    // provider as the literal "a,b"), hot-injected, validated or listed on
+    // the key-health dashboard, and every `report_key_exhausted` against them
+    // was a silent no-op (REQ-KEYREG-001). Each `key_header` is the header its
+    // own module sends; `credential_registry_views_are_one_set`
+    // (tests/architecture_parts/architecture_part3.rs) now fails the build
+    // for the next credential that ships without a def.
+    //
+    // OathNet — the breach/stealer Multiplier `oathnet_pro` and
+    // `util::oathnet` read through `util::oathnet::KEY_ENV`. `util::oathnet`'s
+    // `CurlClient` authenticates with `AuthScheme::XApiKey`, i.e. a lowercase
+    // `x-api-key` header, which the vendor requires ("The header name must be
+    // lowercase", docs.oathnet.org). NO PROBE: every search bills a lookup
+    // against the daily quota ("Initialize session (counts as 1 lookup)",
+    // docs.oathnet.org/guides/rate-limiting.md), and the vendor names no
+    // endpoint that reports quota without spending one. The reference lists
+    // `GET /service/scanners/quota`, but documents neither its cost nor
+    // whether a plan without scanners answers it 403 — which this probe would
+    // read as a rejected key.
+    ServiceDef {
+        name: "oathnet",
+        env_var: "HUNTSMAN_OATHNET_KEY",
+        category: "breach",
+        test_url: NO_PROBE,
+        key_header: KeyPlacement::Header("x-api-key"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    // AlienVault OTX — the optional key `ip_reputation` sends as
+    // `X-OTX-API-KEY` (its `OTX_KEY_HEADER`; the vendor's own SDK,
+    // AlienVault-OTX/OTX-Python-SDK `OTXv2.py`, sends the same header). The
+    // name matches `key_harvest`'s `otx.alienvault.com` tag. `/api/v1/users/me`
+    // is the endpoint OTX documents for exactly this ("Validate your API Key
+    // configuration. If valid, some basic information about the user account
+    // corresponding to the API Key supplied will be returned",
+    // otx.alienvault.com/assets/static/external_api.html); it returns account
+    // metadata, not threat data. Live (2026-09-23): no key and a garbage key
+    // both answer `403 {"detail": "Authentication required"}`, which the
+    // probe reads as `Rejected`.
+    ServiceDef {
+        name: "alienvault_otx",
+        env_var: "HUNTSMAN_ALIENVAULT_KEY",
+        category: "threat_intel",
+        test_url: "https://otx.alienvault.com/api/v1/users/me",
+        key_header: KeyPlacement::Header("X-OTX-API-KEY"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    // Australia Post postcode search — `auspost` sends the key as `AUTH-KEY`,
+    // the header Australia Post documents
+    // (auspost.com.au/developers/help-support/about-our-apis). NO PROBE: the
+    // same page says requests are rate-limited "from the same credentials" per
+    // second, minute, hour AND day, and documents no key-status endpoint, so
+    // any probe spends the operator's daily allowance.
+    ServiceDef {
+        name: "auspost",
+        env_var: "HUNTSMAN_AUSPOST_KEY",
+        category: "geoint",
+        test_url: NO_PROBE,
+        key_header: KeyPlacement::Header("AUTH-KEY"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    // Stolen.tax — paid breach search; `stolen_tax` sends the key as
+    // `Api-Key`. NO PROBE: a paid per-query API with no free key-status
+    // endpoint this environment could confirm (stolen.tax's docs refused the
+    // connection on 2026-09-23).
+    ServiceDef {
+        name: "stolen_tax",
+        env_var: "HUNTSMAN_STOLEN_TAX_KEY",
+        category: "breach",
+        test_url: NO_PROBE,
+        key_header: KeyPlacement::Header("Api-Key"),
         rate_limit_reset_secs: 60,
         probe_parser: None,
     },

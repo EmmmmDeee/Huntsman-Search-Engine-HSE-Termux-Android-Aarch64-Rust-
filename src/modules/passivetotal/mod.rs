@@ -458,14 +458,25 @@ impl Module for PassiveTotal {
         // FIRST `:` (an api_key value itself never contains one in practice,
         // but a username can't either way — this is the only unambiguous
         // split point).
-        let Some((username, api_key)) = raw.split_once(':') else {
-            // Missing separator — an unusable/misconfigured credential, not a
-            // network failure.
-            return Ok(ModuleResult::new());
+        //
+        // A value that does not split into two non-blank halves (the bare
+        // api_key pasted over the colon-less `.env.example` template, or
+        // `alice:` / `:key`) is as unusable as no value at all, and the
+        // provider is never asked. Ok(empty) here was the same false
+        // CleanNegative the `None` arm above refuses, so it gets the same
+        // refusal (REQ-KEYSKIP-003). Plain `MissingKey(KEY_ENV)` keeps
+        // dispatch's exact-match signup hint and releases the paid dedup
+        // entry so a corrected key can still be tried on this target.
+        let usable = raw
+            .split_once(':')
+            .filter(|(u, k)| !u.trim().is_empty() && !k.trim().is_empty());
+        let Some((username, api_key)) = usable else {
+            tracing::warn!(
+                module = SRC,
+                "{KEY_ENV} is set but malformed (expected username:api_key); skipping"
+            );
+            return Err(crate::core::error::Error::MissingKey(KEY_ENV.into()));
         };
-        if username.trim().is_empty() || api_key.trim().is_empty() {
-            return Ok(ModuleResult::new());
-        }
 
         let (query, target_is_ip) = match target.kind {
             TargetKind::Domain => (target.value.trim().to_string(), false),

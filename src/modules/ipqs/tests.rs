@@ -122,3 +122,119 @@ fn missing_fraud_score_defaults_to_clean_and_omits_optionals() {
 // (`crate::util::http::is_key_or_quota_message`) moved to `util::http::fetch`
 // and is unit-tested there — it is a shared primitive with two other callers
 // now (stolen_tax, niamonx), not an ipqs-local concern.
+
+#[test]
+fn a_non_key_provider_failure_is_never_a_clean_miss() {
+    use crate::util::http::BodyVerdict;
+    for j in [
+        r#"{"success":false}"#,
+        r#"{"success":false,"message":"An internal error occurred. Please try again later."}"#,
+        r#"{"success":false,"message":"Your subscription is not valid for this IP API."}"#,
+    ] {
+        assert!(
+            !matches!(body_verdict(&parse(j)), BodyVerdict::Absent),
+            "must not be a clean miss: {j}"
+        );
+        let err = accepted(parse(j)).err().expect("must fail closed");
+        assert!(err.to_string().contains("success=false"), "{err}");
+    }
+}
+
+#[test]
+fn an_unverified_refusal_text_fails_closed_and_a_dead_key_is_still_key_shaped() {
+    use crate::util::http::BodyVerdict;
+    // No refusal wording is trusted as "IPQS holds nothing": the vendor's docs
+    // name none, so an invalid-target-looking message is reported with IPQS's
+    // own words rather than read as a clean negative.
+    for m in [
+        "Invalid IPv4 address, IPv6 address or hostname. Please check the IP/Hostname and try again.",
+        "Invalid email address. Please check the email and try again.",
+    ] {
+        let j = serde_json::json!({ "success": false, "message": m }).to_string();
+        assert!(!matches!(body_verdict(&parse(&j)), BodyVerdict::Absent), "{m}");
+        let err = accepted(parse(&j)).err().expect("fails closed");
+        assert!(err.to_string().contains(m), "{err}");
+    }
+    assert!(matches!(
+        body_verdict(&parse(r#"{"success":false,"message":"Invalid API Key."}"#)),
+        BodyVerdict::KeyFailure { .. }
+    ));
+    let ok = parse(r#"{"success":true,"fraud_score":12}"#);
+    assert!(matches!(body_verdict(&ok), BodyVerdict::Accept));
+    assert!(accepted(ok).is_ok());
+    // A body with no `success` flag at all is an answer, not a failure.
+    assert!(accepted(parse(r#"{"fraud_score":3}"#)).is_ok());
+}
+
+#[tokio::test]
+async fn a_provider_failure_on_the_real_request_path_is_an_error_not_a_miss() {
+    // REQ-IPQS-001: the module's real request path against a loopback. A
+    // non-key `success:false` came back `Ok(empty)` — coverage's "IPQS holds
+    // nothing" — for a query IPQS failed.
+    use crate::util::http::test_server::{Canned, serve};
+    let base = serve(vec![
+        Canned::json(200, r#"{"success":false,"message":"An internal error occurred."}"#),
+        Canned::json(200, r#"{"success":true,"fraud_score":12}"#),
+    ])
+    .await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let ctx = ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    };
+    let client = reqwest::Client::new();
+    let err = query(&ctx, &client, &base, "ip", "8.8.8.8", "k")
+        .await
+        .err()
+        .expect("a provider failure fails closed");
+    assert!(err.to_string().contains("An internal error occurred."), "{err}");
+    let ok = query(&ctx, &client, &base, "ip", "8.8.8.8", "k").await.expect("answers");
+    assert!(ok.is_some(), "a real answer is still an answer");
+}
+
+/// REQ-IPQS-001: the rotation half of the verdict, on the module's real
+/// request path. IPQS reports a dead key in-body on an HTTP 200, so the
+/// classifier test above cannot show that the cascade acts on it: a `query`
+/// that dropped the verdict, or read the key failure as an answer, would
+/// still pass there. Here the first key's in-body failure must retire it in
+/// the pool and the next pooled key must be asked, whose answer is returned.
+///
+/// The pool is the process-global one (`fofa`'s lock explains why that is
+/// safe in tests: `huntsman_dir_path()` is pid-scoped under `cfg(test)`); key
+/// VALUES are pid-unique so parallel tests cannot collide.
+#[tokio::test]
+async fn a_dead_key_on_the_real_request_path_rotates_to_the_next_pooled_key() {
+    use crate::util::http::test_server::{Canned, serve};
+    use crate::util::key_pool::{KeyEntry, KeyStatus, global_pool};
+    let pool = global_pool();
+    let dead = format!("ipqs-req-ipqs-001-dead-{}", std::process::id());
+    let live = format!("ipqs-req-ipqs-001-live-{}", std::process::id());
+    assert!(pool.add(SRC, KeyEntry::new(dead.clone())), "fixture: `ipqs` is poolable");
+    assert!(pool.add(SRC, KeyEntry::new(live.clone())), "fixture");
+    let base = serve(vec![
+        Canned::json(200, r#"{"success":false,"message":"Invalid API Key."}"#),
+        Canned::json(200, r#"{"success":true,"fraud_score":12}"#),
+    ])
+    .await;
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let ctx = ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    };
+    let body = query(&ctx, &reqwest::Client::new(), &base, "ip", "8.8.8.8", &dead)
+        .await
+        .expect("the next pooled key answers")
+        .expect("an answer, not a miss");
+    assert_eq!(body.fraud_score, Some(12));
+    assert_eq!(
+        pool.entry_status(SRC, &dead),
+        Some(KeyStatus::Invalid),
+        "the in-body key failure must retire the key that sent it"
+    );
+}

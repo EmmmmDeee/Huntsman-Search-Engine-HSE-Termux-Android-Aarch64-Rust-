@@ -266,7 +266,9 @@ fn all_services_defined() {
     assert!(defs.len() >= 24);
     for d in defs {
         assert!(d.env_var.starts_with("HUNTSMAN_"));
-        assert!(!d.test_url.is_empty());
+        // An empty `test_url` is `NO_PROBE` — a provider that is pooled but
+        // never probed (REQ-KEYREG-001); which defs may carry it is pinned by
+        // `no_probe_is_opt_in_and_never_paired_with_a_probe_parser`.
     }
 }
 
