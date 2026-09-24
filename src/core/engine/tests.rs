@@ -2003,7 +2003,7 @@ async fn module_error_sink_is_redacted() {
              and https://tile.example.invalid/1/2/3.png?apikey=TFSECRET4567",
         ))),
         &mut state,
-        &[],
+        ModuleAdmission::default(),
         false,
     );
     let error = recorded_module_error(&mut rx, name).expect("a ModuleError is emitted");
