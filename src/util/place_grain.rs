@@ -468,7 +468,8 @@ struct SegmentStreet {
     grain: StreetGrain,
     rest_from: usize,
     /// The words that name the street and are not its type: the words before
-    /// a trailing type (`"Adelaide"` of `"Adelaide St"`), after a leading one
+    /// a trailing type and after any house number (`"Adelaide"` of `"Adelaide
+    /// St"`, `"Sydney"` of `"45 Sydney Road"`), after a leading one
     /// up to a house number (`"Mayor"` of `"Calle Mayor 5"`), after the house
     /// number of a type-less numbered street (`"Nguyễn Huệ"` of `"123 Nguyễn
     /// Huệ"`). Empty for a compound word (`"Hauptstraße"`), whose one word is
@@ -517,10 +518,17 @@ fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
         // A trailing type FOLLOWS a name word, so the `St` of `"St Kilda"` is a
         // saint, not a street.
         if i > 0 && STREET_TYPES.contains(&w.as_str()) {
+            // The name starts after the house number (`"Sydney"` of `"45
+            // Sydney Road"`, `"Smith"` of `"Unit 5 12 Smith St"`): a number
+            // is where the street is, not what it is called.
+            let name_from = words[..i]
+                .iter()
+                .rposition(|w| is_house_number(w))
+                .map_or(0, |k| k + 1);
             found(SegmentStreet {
                 grain: numbered(words[..i].iter().any(has_digit)),
                 rest_from: i + 1,
-                name: 0..i,
+                name: name_from..i,
                 kind: i..i + 1,
             });
         }
@@ -768,11 +776,13 @@ fn place_tokens(s: &str) -> Vec<String> {
 ///   City" is not Kansas, "Mexico City" not Mexico).
 ///
 /// A street is named after places, so the words of a street the query names
-/// ([`place_naming`]) match only together with the street's type:
-/// `"Adelaide Street"` is the `"Adelaide St, Brisbane City QLD"` asked about,
-/// but `"Adelaide"` — the South Australian capital, 1,600 km away — is not,
-/// nor is `"Sydney"` the place of `"Sydney Rd, Brunswick VIC"` or `"Huế"` of
-/// `"12 Phố Huế, Hà Nội"`. A numbered street written with no type word
+/// ([`place_naming`]) match only as that WHOLE street, every word of its name
+/// with its type: `"Adelaide Street"` is the `"Adelaide St, Brisbane City
+/// QLD"` asked about, but `"Adelaide"` — the South Australian capital, 1,600
+/// km away — is not, nor is `"Sydney"` the place of `"Sydney Rd, Brunswick
+/// VIC"`, `"Huế"` of `"12 Phố Huế, Hà Nội"`, or `"Western Highway"` (in
+/// Victoria) of `"Great Western Hwy, Blaxland NSW"`. A house number is not
+/// part of the name (`"Sydney Road"` is the `"45 Sydney Road"` asked about). A numbered street written with no type word
 /// (`"123 Nguyễn Huệ, Quận 1"`) has no type to carry, so no name matches
 /// its words.
 ///
@@ -813,13 +823,21 @@ pub fn is_name_of_queried_place(name: &str, query: &str) -> bool {
             streets.push((span(st.name), span(st.kind)));
         }
     }
-    // A run that reaches into a street's name is that street only when it
-    // also carries the street's type: `"Adelaide Street"` is the `"Adelaide
-    // St"` asked about, `"Adelaide"` is the city the street is named after.
+    // A run that reaches into a street is that street only when it carries
+    // the WHOLE street, every word of its name and its type: `"Adelaide
+    // Street"` is the `"Adelaide St"` asked about, `"Adelaide"` is the city
+    // the street is named after, and `"Western Highway"` (Victoria) is not
+    // the `"Great Western Hwy"` (NSW) asked about. A street with no type word
+    // has no whole to carry, so no run that reaches it is that street.
     let names_a_street_whole = |run: std::ops::Range<usize>| {
         streets.iter().all(|(name, kind)| {
-            let touches = run.start < name.end && name.start < run.end;
-            !touches || (!kind.is_empty() && run.start <= kind.start && kind.end <= run.end)
+            let whole = if kind.is_empty() {
+                name.clone()
+            } else {
+                name.start.min(kind.start)..name.end.max(kind.end)
+            };
+            let touches = run.start < whole.end && whole.start < run.end;
+            !touches || (!kind.is_empty() && run.start <= whole.start && whole.end <= run.end)
         })
     };
     (0..have.len()).any(|i| {
@@ -1176,6 +1194,14 @@ mod city_grain_tests {
             ("Huế", "12 Phố Huế, Hà Nội"),
             ("Mayor", "Calle Mayor 5, Madrid"),
             ("Nguyễn Huệ", "123 Nguyễn Huệ, Quận 1, Hồ Chí Minh"),
+            // The tail of a street's name, with its type, is another road:
+            // the Western Highway is in Victoria, the Great Western Highway
+            // in NSW.
+            ("Western Highway", "Great Western Hwy, Blaxland NSW"),
+            ("Western Highway", "45 Great Western Hwy, Blaxland NSW"),
+            ("Northern Road", "Old Northern Rd, Castle Hill NSW"),
+            ("Pacific Highway", "Old Pacific Hwy, Mooney Mooney NSW"),
+            ("Mayor 5", "Calle Mayor 5, Madrid"),
         ] {
             assert!(!is_name_of_queried_place(hit, query), "{hit} / {query}");
         }
@@ -1192,6 +1218,14 @@ mod city_grain_tests {
             ("Hà Nội", "12 Phố Huế, Hà Nội"),
             ("Phố Huế", "12 Phố Huế, Hà Nội"),
             ("Hauptstraße", "Hauptstraße 12, Berlin"),
+            ("Great Western Highway", "Great Western Hwy, Blaxland NSW"),
+            // A house number is not part of the name the street is called.
+            (
+                "Great Western Highway",
+                "45 Great Western Hwy, Blaxland NSW",
+            ),
+            ("Smith Street", "Unit 5 12 Smith St, Toowong QLD"),
+            ("Calle Mayor", "Calle Mayor 5, Madrid"),
         ] {
             assert!(is_name_of_queried_place(hit, query), "{hit} / {query}");
         }

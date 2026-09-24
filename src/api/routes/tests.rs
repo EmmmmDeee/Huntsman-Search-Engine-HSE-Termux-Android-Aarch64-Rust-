@@ -431,6 +431,60 @@ use super::*;
         );
     }
 
+    /// REQ-SCANSTATUS-030 / REQ-SCANSTATUS-032: a scan row whose finalise
+    /// fell short (`scan_json`'s `finalise_incomplete`) reads `partial` on
+    /// every reader of the row in the SPA — the shared `statusPill` (the
+    /// scan-info header, the radar sweep list), the scan list's stat tiles
+    /// (`scanStats`) and its filter box — never as a green `complete`.
+    #[test]
+    fn embedded_spa_reads_a_finalise_incomplete_row_as_partial() {
+        let helpers = app_file("js/helpers.js");
+        let pill = helpers
+            .split_once("export function statusPill(s, partial){")
+            .and_then(|(_, b)| b.split_once('\n'))
+            .map(|(b, _)| b)
+            .expect("statusPill present in helpers.js");
+        let partial = pill
+            .find("partial===true")
+            .expect("statusPill must read the row's finalise shortfall");
+        let complete = pill
+            .find("complete:'s-complete'")
+            .expect("statusPill's status map");
+        assert!(partial < complete, "{pill}");
+        assert!(pill[partial..complete].contains("'partial'"), "{pill}");
+
+        let scans = app_file("js/views/scans.js");
+        let stats = scans
+            .split_once("export function scanStats(scans){")
+            .and_then(|(_, b)| b.split_once("\n}\n"))
+            .map(|(b, _)| b)
+            .expect("scanStats present in scans.js");
+        let partial = stats
+            .find("s.finalise_incomplete===true) partial++")
+            .expect("scanStats must count a partial scan apart");
+        let complete = stats
+            .find("complete++")
+            .expect("scanStats' complete bucket");
+        assert!(
+            partial < complete,
+            "a partial scan must be bucketed before the green complete count: {stats}"
+        );
+        assert!(stats.contains("partial,aborted"), "{stats}");
+        assert!(
+            scans.contains("stats.partial?`${stats.partial} partial`"),
+            "the Complete tile must name the partial scans it leaves out"
+        );
+        let filter = scans
+            .split_once("const rows = q ? S.scans.filter(s =>")
+            .and_then(|(_, b)| b.split_once(") : S.scans;"))
+            .map(|(b, _)| b)
+            .expect("the scan filter");
+        assert!(
+            filter.contains("s.finalise_incomplete===true && 'partial'.includes(q)"),
+            "the filter must find a row by the `partial` its pill says: {filter}"
+        );
+    }
+
     /// REQ-SCANSTATUS-015: the live surfaces that read `scan_complete` alone
     /// — the scan log's pill and line, the radar's status — read a
     /// completion whose finalise recorded a shortfall as partial, as every

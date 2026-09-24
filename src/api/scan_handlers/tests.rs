@@ -110,6 +110,66 @@ Victims:
         );
     }
 
+    /// REQ-SCANSTATUS-031: an import ends with the announcement a live scan
+    /// ends with. Its row reads `running` while it works, so the web scan log
+    /// tails it as live and waits for a `scan_complete` — which no import
+    /// sent, so the log read `live` until the stream's idle timeout and then
+    /// `disconnected`. The event is broadcast on the app's bus AFTER the
+    /// terminal row write (a subscriber re-reads the row on it) and recorded
+    /// in the scan's event log, as a live scan's is.
+    #[tokio::test]
+    async fn a_web_import_announces_its_completion_to_the_scan_log() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+        let state = crate::api::test_state();
+        let mut rx = state.bus.subscribe();
+        let app = axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(Arc::clone(&state));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import?format=stealerlogs")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(
+                "Module: Stealerlogs\nVictims:\n  [1]\n    Log Id:\n      abc123\n    Credentials:\n      [1]\n        Username:\n          alice\n        Password:\n          hunter2\n    Domains:\n      [1]\n        example.com\n    Credential Count:\n      1\n",
+            ))
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert_eq!(resp.status(), 200);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let sid = json["scan_id"].as_str().expect("scan id").to_string();
+        let row = state.store.get_scan(&sid).unwrap().expect("row");
+
+        let heard = rx.try_recv().expect("the import announced its completion");
+        assert_eq!(heard.scan_id, sid);
+        match &heard.kind {
+            crate::core::event::EventKind::ScanComplete {
+                scan_id,
+                entity_count,
+                status,
+                finalise_incomplete,
+            } => {
+                assert_eq!(scan_id, &sid);
+                assert_eq!(*status, row.status, "the event says what the row says");
+                assert_eq!(*entity_count, row.entity_count);
+                assert_eq!(*finalise_incomplete, row.finalise_incomplete());
+            }
+            other => panic!("expected scan_complete, got {other:?}"),
+        }
+        let logged = state.store.events_for_scan(&sid).unwrap();
+        assert!(
+            logged.iter().any(|e| matches!(
+                e.kind,
+                crate::core::event::EventKind::ScanComplete { .. }
+            )),
+            "the completion is in the scan's event log: {logged:?}"
+        );
+    }
+
     /// REQ-SCANSTATUS-006: an import stays in flight for as long as its
     /// blocking work runs, not for as long as its HTTP request does. The
     /// registry guard and the semaphore permit lived in the handler's future,
@@ -587,6 +647,59 @@ Victims:
         let (again, _) = radar_scan_spec();
         assert_eq!(again.kind, target.kind);
         assert_eq!(again.value, target.value);
+    }
+
+    /// REQ-SCANSTATUS-030: a radar sweep goes out of `GET /radar/history` as
+    /// every other scan row does (`handlers::scan_json`), with the derived
+    /// `finalise_incomplete` and `interrupted` the sweep list's status pill
+    /// reads. Listed as raw rows, a sweep whose finalise fell short read as a
+    /// green `complete`, and one a dead process left `running` read as still
+    /// running.
+    #[tokio::test]
+    async fn radar_history_rows_carry_what_the_sweep_pill_reads() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+        let state = crate::api::test_state();
+        let (target, _) = radar_scan_spec();
+        let mut short = crate::core::scan::Scan::new("sweep-short".to_string(), target.clone());
+        short.status = crate::core::scan::ScanStatus::Complete;
+        short.error = Some("3/3 relations failed to persist: disk full".into());
+        short.started_at = 100;
+        let mut dead = crate::core::scan::Scan::new("sweep-dead".to_string(), target.clone());
+        dead.status = crate::core::scan::ScanStatus::Running;
+        dead.started_at = 200;
+        let mut clean = crate::core::scan::Scan::new("sweep-clean".to_string(), target);
+        clean.status = crate::core::scan::ScanStatus::Complete;
+        clean.started_at = 300;
+        for sc in [&short, &dead, &clean] {
+            state.store.upsert_scan(sc).unwrap();
+        }
+        let app = axum::Router::new()
+            .route("/api/v1/radar/history", axum::routing::get(radar_history))
+            .with_state(Arc::clone(&state));
+        let req = Request::builder()
+            .uri("/api/v1/radar/history")
+            .body(Body::empty())
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert_eq!(resp.status(), 200);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let sweeps = json["sweeps"].as_array().expect("sweeps");
+        let row = |id: &str| {
+            sweeps
+                .iter()
+                .find(|r| r["id"] == id)
+                .unwrap_or_else(|| panic!("{id} listed: {json}"))
+        };
+        assert_eq!(row("sweep-short")["finalise_incomplete"], true);
+        assert_eq!(row("sweep-short")["interrupted"], false);
+        assert_eq!(row("sweep-dead")["interrupted"], true);
+        assert_eq!(row("sweep-clean")["finalise_incomplete"], false);
+        assert_eq!(row("sweep-clean")["interrupted"], false);
     }
 
     /// Every sensor gates on `Coordinates | MacAddress` and ignores the VALUE,

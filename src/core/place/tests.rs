@@ -1888,6 +1888,14 @@ fn an_unnumbered_street_naming_is_held_to_the_street_it_names() {
                 ("place_name", "Adelaide"),
             ][..],
         ),
+        // The tail of a street's name with its type is another road: the
+        // Western Highway (Victoria) is not the "Great Western Hwy" (NSW)
+        // asked about.
+        (
+            "geocode",
+            "Great Western Hwy, Blaxland NSW",
+            &[("place_type", "residential"), ("road", "Western Highway")][..],
+        ),
     ] {
         let p = geocoded(source, input, attrs);
         assert!(p.grain >= FixGrain::Locality, "{input} {attrs:?}: {p:?}");
@@ -1913,6 +1921,11 @@ fn an_unnumbered_street_naming_is_held_to_the_street_it_names() {
             "geocode",
             "Đường Láng, Hà Nội",
             &[("place_type", "road"), ("road", "Đường Láng")][..],
+        ),
+        (
+            "geocode",
+            "Great Western Hwy, Blaxland NSW",
+            &[("place_type", "road"), ("road", "Great Western Highway")][..],
         ),
     ] {
         let p = geocoded(source, input, attrs);

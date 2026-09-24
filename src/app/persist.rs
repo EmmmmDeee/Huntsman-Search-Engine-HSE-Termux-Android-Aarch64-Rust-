@@ -74,10 +74,23 @@ fn confidence_rank(entities: &mut [Entity]) {
 /// the process survives can leave it in progress. A kill leaves `Running`,
 /// which the web process that holds the import in its in-flight registry reads
 /// as interrupted once it is gone.
+///
+/// Every terminal write — [`Self::finish`]'s, or the `Failed` [`Drop`]
+/// records — is followed by the announcement a live scan ends with
+/// (`ScanEngine::finalise_scan`, `conclude_failed`): a `scan_complete` event
+/// carrying the terminal status, the stored entity count and whether the
+/// finalise fell short, recorded in the scan's event log and then broadcast
+/// on the bus [`Self::announce_on`] names (the web upload's; the CLI import
+/// has none). The row reads `running` while the import works
+/// (REQ-SCANSTATUS-005), so the web scan log tails it as live — and it learns
+/// that a scan ended from that event alone. With no import ever sending it,
+/// the log of an import opened mid-run read `live` until the stream's idle
+/// timeout and then `disconnected`, never `complete` (REQ-SCANSTATUS-031).
 pub(crate) struct ImportScanRow {
     store: std::sync::Arc<dyn crate::core::StoragePort>,
     scan: crate::core::scan::Scan,
     finished: bool,
+    bus: Option<crate::core::event::EventBus>,
 }
 
 impl ImportScanRow {
@@ -101,7 +114,44 @@ impl ImportScanRow {
             store,
             scan,
             finished: false,
+            bus: None,
         })
+    }
+
+    /// Broadcast the import's `scan_complete` on `bus` too, once it is
+    /// recorded — for the live subscribers of the process running it (the web
+    /// scan log's stream).
+    pub(crate) fn announce_on(mut self, bus: crate::core::event::EventBus) -> Self {
+        self.bus = Some(bus);
+        self
+    }
+
+    /// The announcement after the terminal write: the `scan_complete` a live
+    /// scan ends with, recorded (best-effort, logged) and then broadcast. After
+    /// the row, so a subscriber that re-reads the row on the event reads it
+    /// terminal, as the engine orders its own (`finalise_scan`'s commit step).
+    fn announce(&self) {
+        use crate::core::event::{Event, EventKind};
+        let event = Event::new(
+            self.scan.id.clone(),
+            EventKind::ScanComplete {
+                scan_id: self.scan.id.clone(),
+                entity_count: self.scan.entity_count,
+                status: self.scan.status,
+                finalise_incomplete: self.scan.finalise_incomplete(),
+            },
+        );
+        if let Err(e) = self.store.insert_event(&event) {
+            tracing::warn!(
+                scan_id = %self.scan.id,
+                error = %e,
+                "import: could not record its scan_complete event"
+            );
+        }
+        if let Some(bus) = &self.bus {
+            // Errors only when nobody is subscribed — the usual case.
+            let _ = bus.send(event);
+        }
     }
 
     /// Store the import's entities — one atomic batch, so it lands whole or
@@ -136,6 +186,9 @@ impl ImportScanRow {
         self.scan.error = tally.message();
         let written = self.store.upsert_scan(&self.scan);
         self.finished = written.is_ok();
+        if self.finished {
+            self.announce();
+        }
         let error = self.scan.error.clone();
         written.map(|()| error)
     }
@@ -160,6 +213,9 @@ impl Drop for ImportScanRow {
                 "import: could not record the Failed status; the row still reads running"
             );
         }
+        // Announced even when the row write failed, as `conclude_failed`
+        // does: the event still says how the import ended.
+        self.announce();
     }
 }
 
@@ -456,6 +512,62 @@ mod tests {
         }));
         assert!(panicking.is_err());
         assert_eq!(status("panic"), ScanStatus::Failed);
+    }
+
+    /// REQ-SCANSTATUS-031: every import ends with the `scan_complete` a live
+    /// scan ends with — recorded in the scan's event log on each terminal
+    /// write (`finish`, and the `Failed` its Drop records) and broadcast on the
+    /// bus it was given, after the row is terminal.
+    #[test]
+    fn every_import_exit_announces_how_it_ended() {
+        use crate::core::StoragePort;
+        use crate::core::event::EventKind;
+        use crate::core::scan::{FinaliseTally, FinaliseWrite, Scan, ScanStatus, Target};
+        use std::sync::Arc;
+        let store: Arc<dyn StoragePort> = Arc::new(crate::core::test_support::InMemoryStore::new());
+        let scan = |id: &str| Scan::new(id.to_string(), Target::new(TargetKind::FullName, "x"));
+        let announced = |id: &str| -> Vec<(ScanStatus, usize, bool)> {
+            store
+                .events_for_scan(id)
+                .unwrap()
+                .into_iter()
+                .filter_map(|e| match e.kind {
+                    EventKind::ScanComplete {
+                        status,
+                        entity_count,
+                        finalise_incomplete,
+                        ..
+                    } => Some((status, entity_count, finalise_incomplete)),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // A finish with a shortfall, on a bus: recorded, then broadcast
+        // with the row already terminal.
+        let (bus, mut rx) = tokio::sync::broadcast::channel(4);
+        let mut row = ImportScanRow::begin(Arc::clone(&store), scan("short"))
+            .unwrap()
+            .announce_on(bus);
+        row.store_entities(&[Entity::new(EntityKind::Email, "a@b.com", 0.9, "short")])
+            .unwrap();
+        let mut tally = FinaliseTally::default();
+        tally.add(FinaliseWrite::Relations, 2, 2, Some("disk full".into()));
+        row.finish(ScanStatus::Complete, &tally).unwrap();
+        assert_eq!(announced("short"), vec![(ScanStatus::Complete, 1, true)]);
+        let heard = rx.try_recv().expect("broadcast");
+        assert_eq!(heard.scan_id, "short");
+        assert!(matches!(heard.kind, EventKind::ScanComplete { .. }));
+
+        // A CLI import (no bus) still records it.
+        let row = ImportScanRow::begin(Arc::clone(&store), scan("cli")).unwrap();
+        row.finish(ScanStatus::Complete, &FinaliseTally::default())
+            .unwrap();
+        assert_eq!(announced("cli"), vec![(ScanStatus::Complete, 0, false)]);
+
+        // An exit before the terminal write announces `Failed`.
+        drop(ImportScanRow::begin(Arc::clone(&store), scan("dropped")).unwrap());
+        assert_eq!(announced("dropped"), vec![(ScanStatus::Failed, 0, false)]);
     }
 
     /// REQ-SCANSTATUS-009: an import row claims only the entities it stored.

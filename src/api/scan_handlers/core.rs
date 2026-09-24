@@ -689,6 +689,10 @@ pub async fn scan_import(
     // Persist scan, entities, relations, and correlations on a blocking thread
     // so SQLite commits don't stall the 2-worker async reactor.
     let store = Arc::clone(&s.store);
+    // The import ends with the `scan_complete` a live scan ends with, on this
+    // process's bus, for the scan log tailing its `running` row
+    // (`ImportScanRow::announce_on`, REQ-SCANSTATUS-031).
+    let bus = s.bus.clone();
     let sid2 = sid.clone();
     // The third element is `false` when enrichment was skipped for size — the
     // caller must be able to tell that apart from a genuinely relation-free
@@ -741,7 +745,8 @@ pub async fn scan_import(
         let mut entities = entities;
         crate::app::persist::prepare_import_batch(&mut entities, &sid2);
         let entity_count = entities.len();
-        let mut row = crate::app::persist::ImportScanRow::begin(Arc::clone(&store), scan)?;
+        let mut row =
+            crate::app::persist::ImportScanRow::begin(Arc::clone(&store), scan)?.announce_on(bus);
         row.store_entities(&entities)?;
         // Every relation / correlation write below counts into this; its
         // message is the scan's recorded shortfall (see `FinaliseTally`).

@@ -24675,3 +24675,107 @@ and `views::scans::tests::a_partial_scan_row_reads_partial`.
 | M4 | `wasm-ui::html::status_pill` ignores `partial` | killed by `html::tests::a_scan_whose_finalise_was_cut_short_reads_partial` |
 
 **4 of 4 caught.**
+
+## REQ-OPENMETEO-004 / REQ-SCANSTATUS-030 / REQ-SCANSTATUS-031 / REQ-SCANSTATUS-032 — final review, correction round 10
+
+**Found** by the tenth correction round of the final review of PR #649,
+which raised four findings against 9a4c2132. Each was checked against that
+head, and all four were real. Each fix is made where its rule lives and has
+a regression test that fails on the code before it. Each fix was then undone
+in place, its tests were seen to fail, and the file was restored byte for
+byte (table below).
+
+**REQ-OPENMETEO-004 — a street's words match only as the whole street.**
+Round 9 let a run of the query's words that reaches into a street's name
+match only if it also carries the street's type. It did not require the run
+to carry the rest of the name. For `"Great Western Hwy, Blaxland NSW"`, the
+hit "Western Highway" joins to the run *western highway*: it touches the
+name and holds the type, so `is_name_of_queried_place` accepted it. The
+Western Highway is a different road, in Victoria. In
+`core::place::grain::forward_geocode_account` a Nominatim `road` or Photon
+`place_name` of "Western Highway" therefore kept the street cap for the NSW
+address. "Northern Road" / `"Old Northern Rd"` and "Pacific Highway" /
+`"Old Pacific Hwy"` behaved the same. A run that reaches into a street,
+meaning its name or its type, must now carry the whole street: every name
+word and the type. A trailing-type street's name now starts after the last
+house-number word before the type (`is_house_number`). So "Sydney Road" is
+still the `"45 Sydney Road Brunswick"` that was asked about, and "Smith
+Street" is still `"Unit 5 12 Smith St"`. Before this, the name began at the
+segment's first word, and a whole-name rule would have rejected them. A
+type-less numbered street still has no type to carry, so no run that reaches
+it matches. Tests: new negative cases (the three above, with and without a
+house number) and controls ("Great Western Highway", "Smith Street",
+"Calle Mayor") in
+`util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place`;
+a "Western Highway" road hit, held to the input's administrative grain, and
+a "Great Western Highway" control, which keeps street grain, in
+`core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names`.
+
+**REQ-SCANSTATUS-031 — an import announces how it ended.** Since
+REQ-SCANSTATUS-005, an import's row reads `running` while it works. The web
+scan log (`log.js` `renderLog`) therefore tails it as live. The import is in
+the in-flight registry, so its SSE stream is accepted, and the log waits for
+a `scan_complete`. No import sent one: neither `scan_import` nor
+`app::persist` touched the event bus. So the log of an import opened
+mid-run read `live` until the stream's 120 s idle timeout, then
+`disconnected`, and never `complete` or `partial`. `ImportScanRow`, the one
+lifecycle both import paths share, now ends every terminal write with the
+announcement a live scan makes: `finish`, and the `Failed` its Drop records.
+It builds a `scan_complete` carrying the terminal status, the stored entity
+count and `Scan::finalise_incomplete`. It records the event in the scan's
+event log (best-effort, logged), then broadcasts it on the bus that
+`ImportScanRow::announce_on` names. This happens after the row write, so a
+subscriber that re-reads the row on the event reads it terminal, the same
+order the engine uses. The web upload passes the app's bus. The CLI import
+has none and only records the event. Drop announces even when its `Failed`
+write fails, as `conclude_failed` does. Tests:
+`api::scan_handlers::tests::a_web_import_announces_its_completion_to_the_scan_log`
+(the bus hears a `scan_complete` matching the committed row, and the event
+log holds it) and
+`app::persist::tests::every_import_exit_announces_how_it_ended` (a finish
+with a shortfall, broadcast and recorded as `complete` + partial; a CLI
+finish with no bus, recorded; a drop, recorded as `failed`).
+
+**REQ-SCANSTATUS-030 — the round-9 changes that had no test.** Round 9's
+ledger said every fix in that round had a regression test that failed on
+the code before it. That was not true of two changes: `GET /radar/history`
+serving its rows through `scan_json`, and the `partial` branch of the JS
+`statusPill`. Either could be reverted with every test still passing. The
+only test that called `/radar/history` checked for a 401, and nothing read
+`helpers.js`. Both now have tests:
+`api::scan_handlers::tests::radar_history_rows_carry_what_the_sweep_pill_reads`
+(a stored sweep that is `Complete` with an `error` is listed as
+`finalise_incomplete: true`, a stored `Running` sweep that is not in flight
+as `interrupted: true`, and a clean sweep with neither) and
+`api::routes::tests::embedded_spa_reads_a_finalise_incomplete_row_as_partial`
+(the embedded `statusPill` decides `partial` before its status map).
+
+**REQ-SCANSTATUS-032 — the scan list's tiles and filter read a partial scan
+as its pill does.** REQ-SCANSTATUS-030 made a scan list row show a partial
+scan as `partial`. Two other readers of the same rows on `#/scans` were not
+updated. `scanStats` bucketed on `status === 'complete'` alone, so the green
+Complete tile counted a partial scan. The filter box matched only the stored
+`status`, so typing "partial" found none of the rows whose pill said it.
+`scanStats` now counts a `complete` row with `finalise_incomplete === true`
+as `partial`, outside the green total. The Complete tile's sub-line names
+the partial count beside the aborted and failed counts. An aborted partial
+scan stays with the aborted. The filter matches "partial" on a row with
+`finalise_incomplete === true`. Test: the same
+`embedded_spa_reads_a_finalise_incomplete_row_as_partial` (the partial
+bucket comes before the complete one, the tile names it, and the filter
+reads it).
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `names_a_street_whole` checks only the type and the name touch (as at 9a4c2132) | killed by `util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place` and `core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names` |
+| M2 | a trailing-type street's name starts at the segment's first word (house number included) | killed by `util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place` and `a_street_named_either_way_is_the_queried_street` (`"Oak Gr"` / `"12 Oak Grove, Toowong"`) |
+| M3 | `ImportScanRow` does not announce (as at 9a4c2132) | killed by `app::persist::tests::every_import_exit_announces_how_it_ended` and `api::scan_handlers::tests::a_web_import_announces_its_completion_to_the_scan_log` |
+| M4 | the web upload does not pass the app's bus | killed by `api::scan_handlers::tests::a_web_import_announces_its_completion_to_the_scan_log` |
+| M5 | `/radar/history` lists raw rows (`ok_list("sweeps", scans)`, as before round 9) | killed by `api::scan_handlers::tests::radar_history_rows_carry_what_the_sweep_pill_reads` |
+| M6 | `statusPill` loses its `partial` branch | killed by `api::routes::tests::embedded_spa_reads_a_finalise_incomplete_row_as_partial` |
+| M7 | `scanStats` has no partial bucket (as at 9a4c2132) | killed by `api::routes::tests::embedded_spa_reads_a_finalise_incomplete_row_as_partial` |
+| M8 | the filter does not match "partial" (as at 9a4c2132) | killed by `api::routes::tests::embedded_spa_reads_a_finalise_incomplete_row_as_partial` |
+
+**8 of 8 caught.**
