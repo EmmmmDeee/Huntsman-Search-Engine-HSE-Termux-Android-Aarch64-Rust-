@@ -1041,12 +1041,18 @@ impl Scan {
     /// the import's label (an email string read as a full name), which neither
     /// stores the relations the store refused nor re-correlates the imported
     /// entities (REQ-SCANSTATUS-017/020). Re-importing rebuilds a refused
-    /// write or a pass that failed on a store read, but the import pipeline is
-    /// deterministic over the same data: a size skip recurs on it (and batches
-    /// within the cap are each enriched on their own, so links between batches
-    /// are never derived), and a correlation pass that panicked on it panics
-    /// again (REQ-SCANSTATUS-021). The skip clause identifies an import
-    /// written before `origin` existed.
+    /// write, a pass that failed on a store read, or a pass a time budget cut
+    /// short. A size skip recurs on the same data (and batches within the cap
+    /// are each enriched on their own, so links between batches are never
+    /// derived). A correlation pass that panicked recurs on the same data too
+    /// (REQ-SCANSTATUS-021) — but only when it read the same data: the
+    /// correlator reads the scan's stored entities AND relations, and every
+    /// other clause an import can record beside a panic (a refused relation
+    /// write, a derivation its budget cut) means the relations it read were
+    /// incomplete. Then a re-import that stores the whole graph runs the pass
+    /// over different data, which may finish or panic again, so the caveat
+    /// does not claim either (REQ-SCANSTATUS-027). The skip clause identifies
+    /// an import written before `origin` existed.
     fn finalise_shortfall(&self, err: &str) -> String {
         let import = self.origin == ScanOrigin::Import;
         let remedy = if FinaliseTally::records_import_enrichment_skip(err) {
@@ -1058,13 +1064,15 @@ impl Scan {
             if FinaliseTally::records_only_correlation_panic(err) {
                 "neither re-running nor re-importing can rebuild it: a re-run is a live scan \
                  of the import's label, and its correlation pass panicked on the imported \
-                 data, so a re-import of the same data runs the same pass over the same data \
-                 and panics again"
+                 data with its whole graph derived and stored, so a re-import of the same \
+                 data runs the same pass over the same data and meets the same panic, unless \
+                 a time budget stops it first, which leaves the correlations incomplete too"
             } else {
                 "re-running cannot rebuild it (a re-run is a live scan of the import's label) \
-                 — re-importing the data rebuilds the rest of it but not its correlations: \
-                 its correlation pass panicked on the imported data, so a re-import of the \
-                 same data runs the same pass over the same data and panics again"
+                 — re-importing the data rebuilds the rest of it, and may or may not rebuild \
+                 its correlations: its correlation pass panicked over the incomplete graph \
+                 this import stored, so a re-import that stores the whole graph runs the pass \
+                 over different data, which may finish or may panic again"
             }
         } else if import {
             "re-running cannot rebuild it (a re-run is a live scan of the import's \
@@ -1355,6 +1363,21 @@ impl FinaliseTally {
         self.pass_failed(
             FinalisePass::RelationDerivation,
             format!("stopped at its time budget after the {last_pass} pass"),
+        );
+    }
+
+    /// Record that the correlator's time budget stopped it after `ran` of its
+    /// `total` rules ([`FinalisePass::Correlation`]): the scan keeps the
+    /// firings of the rules that ran, but a finding a later rule would have
+    /// made is absent for a reason other than the data (REQ-SCANSTATUS-026).
+    /// Fixed words around the counts, so the clause is a pure function of how
+    /// far the pass got — and never the panic clause, so
+    /// [`Self::records_correlation_panic`] leaves it to the remedy of a pass
+    /// a re-run or a re-import can finish.
+    pub fn correlation_cut(&mut self, ran: usize, total: usize) {
+        self.pass_failed(
+            FinalisePass::Correlation,
+            format!("stopped at its time budget after {ran} of its {total} rules"),
         );
     }
 

@@ -24401,3 +24401,104 @@ Every other MNC under 425 stays Israel.
 | M7 | `mcc_to_centroid` ignores `MNC_CENTROIDS` | killed by `modules::cell_intel::tests::a_palestinian_network_under_mcc_425_is_placed_in_palestine` |
 
 **7 of 7 caught.**
+
+## REQ-SCANSTATUS-025 / REQ-SCANSTATUS-026 / REQ-SCANSTATUS-027 / REQ-SCANSTATUS-022 — final review, correction round 7
+
+**Found** by the seventh correction round of the final review of PR #649,
+which raised seven findings against c0171718. Each was checked against that
+head, and all seven were real. Findings 1, 4 and 6 describe one defect (the
+finalise's own Failed branch). Findings 2 and 5 describe another (an
+unrecorded correlator budget cut). Finding 3 is a caveat that claimed a
+certainty the pipeline does not have. Finding 7 is a doc comment. That leaves
+three code defects and one doc defect. Each code fix is made where its rule
+lives and has a regression test that fails on the code before it. Each fix
+was then undone in place, the test was seen to fail, and the file was
+restored (table below).
+
+**REQ-SCANSTATUS-025 — a finalise whose entity writes were all refused
+claims what the checkpoints stored.** REQ-SCANSTATUS-023 made
+`conclude_failed` count the entities the store holds, and said that kept the
+REQ-SCANSTATUS-009 rule "on every failure path". The finalise's own Failed
+branch (`persisted == 0 && first_err.is_some()`) did not go through
+`conclude_failed`. It hard-coded `entity_count = 0` on the row and on
+`ScanComplete`, and the webhook read the row. But the seed round always
+checkpoints, and so does every productive round, so a store that filled or
+locked between the checkpoints and the finalise batch left the scan's
+entities stored. `entities_for_scan`, `/scans/{id}/entities` and every
+export listed them under a row and an event that said 0. The blocking phase
+now returns a `FinalisePhase`. `Finalised(scan, event)` goes to the commit
+step as before. `EntitiesRefused(scan)` carries the first refusal in `error`
+and is concluded by `conclude_failed` after the phase, which records and
+flushes the `failed` event, writes the row best-effort, broadcasts, and tells
+the webhook, as the branch did, but with the stored count. A count the store
+cannot read keeps `Scan::new`'s 0. The run still returns the failed scan as
+`Ok`. The commit step's best-effort flag is gone, because no path reaches the
+commit with a `Failed` scan any more. The `ImportScanRow::store_entities` doc
+said "the live engine's Failed branch zeroes the count for exactly this
+reason", which was never true of a checkpointed live scan. It now points to
+`conclude_failed`. `RefusingStore::refusing_entity_writes_after(n)` takes
+the first `n` entity batches, then refuses every entity write.
+
+**REQ-SCANSTATUS-026 — a correlator cut short by its budget is recorded.**
+REQ-SCANSTATUS-024 recorded a derivation budget cut because a result that
+depended on how busy the device was must not read whole. The correlator's own
+`CORRELATOR_BUDGET` (120 s) has the same property. `evaluate_rules_on` and
+`evaluate_relation_rules_on` stopped at the deadline with a `warn!` and
+returned the partial firings, and `Correlator::evaluate` returned them as a
+plain `Ok`. So `correlate_and_persist` recorded nothing, and the scan was
+written `Complete` with `error: None`. Each pass now returns a `RulePass`
+(firings, how many rules ran, whether it was cut). `evaluate` returns an
+`Evaluation`, whose `cut` is a `RulesCut { ran, total }` when the budget
+stopped it. `total` is every entity rule, plus every relation rule when the
+scan has relations. `evaluate_within(scan_id, budget)` lets a test use a zero
+budget. `correlate_and_persist` (through `correlate_and_persist_with`, which
+takes the evaluation) records a cut with the new
+`FinaliseTally::correlation_cut`. It writes "correlation pass failed: stopped
+at its time budget after N of its M rules", so all three finalise paths
+(the live engine, `hse import`, the web upload) mark the scan "partial,
+finalise-incomplete". The clause is not the panic clause, so
+`records_correlation_panic` does not match it, and an import keeps the
+remedy "re-import the data to rebuild it". `guarded_correlation_pass` is now
+generic over the pass's result. `Correlator::run` (the storage self-test)
+drops the cut along with the rest of the evaluation.
+
+**REQ-SCANSTATUS-027 — a correlation panic over an incomplete graph is not
+called certain to recur.** `finalise_shortfall` told an import whose error
+recorded a correlation panic alongside other clauses that re-importing
+rebuilds "the rest of it but not its correlations", because "a re-import of
+the same data runs the same pass over the same data and panics again". The
+correlator reads the scan's stored entities and relations. On an import, the
+only other clauses that can be recorded beside a panic are a relation write
+the store refused and a derivation its budget cut. The import paths run no
+cross-scan or boost pass, a size skip runs no correlator, and a panic stores
+no correlation to refuse. Both of those clauses mean the relations the pass
+read were incomplete, so a re-import that stores the whole graph runs the
+pass over different data. That pass may finish or may panic again. The mixed
+wording now says a re-import "may or may not rebuild its correlations". An
+error that records the panic alone keeps "neither re-running nor re-importing
+can rebuild it", since that pass ran over the whole graph. It now adds that a
+time budget may stop the pass first, which also leaves the correlations
+incomplete. The REQ-SCANSTATUS-021 CHANGELOG entry now makes the same
+distinction.
+
+**REQ-SCANSTATUS-022 (doc) — the `scan_complete` event names the aborted
+classification.** Round 6 corrected the `finalise_incomplete` doc on
+`Scan` and on `WebhookPayload`, but not the one on
+`EventKind::ScanComplete`. That doc still said an `Aborted` scan with a
+shortfall is classified "partial, finalise-incomplete" by every export.
+`partial_export_reason` returns "aborted" for it. The doc now reads the same
+way as the webhook's: "partial, finalise-incomplete" when `Complete`,
+"partial, aborted" when `Aborted`, with the shortfall named in the
+completeness caveat for both. It also lists the derivation and correlator
+budget cuts among the causes.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | the Failed branch records `entity_count: 0` and commits itself (as at c0171718) | killed by `core::engine::tests::a_finalise_whose_entity_writes_are_refused_claims_the_checkpointed_entities` |
+| M2 | `correlate_and_persist` ignores `Evaluation::cut` | killed by `core::engine::tests::a_correlator_the_budget_cut_short_is_recorded` |
+| M3 | `evaluate_rules_on` reports a deadline stop as uncut | killed by `core::correlator::tests::correlator_budget_stops_starting_new_rules_past_the_deadline` and `core::engine::tests::a_correlator_the_budget_cut_short_is_recorded` |
+| M4 | the mixed-clause caveat says the panic recurs (as at c0171718) | killed by `core::scan::tests::a_correlation_panic_over_an_incomplete_graph_is_not_called_certain` |
+
+**4 of 4 caught.**

@@ -237,9 +237,11 @@ impl Correlator {
     /// [`Self::evaluate`] and persist through
     /// `core::engine::correlate_and_persist`, which stores every firing it can
     /// and counts each refusal into the scan's
-    /// [`FinaliseTally`](crate::core::scan::FinaliseTally).
+    /// [`FinaliseTally`](crate::core::scan::FinaliseTally), which also
+    /// records a pass its time budget cut short ([`Evaluation::cut`]); here
+    /// the cut is dropped with the rest of the evaluation.
     pub fn run(&self, scan_id: &str) -> Result<Vec<Correlation>> {
-        let firings = self.evaluate(scan_id)?;
+        let firings = self.evaluate(scan_id)?.firings;
         for c in &firings {
             self.store.upsert_correlation(c)?;
         }
@@ -247,13 +249,25 @@ impl Correlator {
     }
 
     /// Run every entity rule and every relation rule over the persisted scan
-    /// and return the ranked firings WITHOUT writing them — storing them is
-    /// the caller's job (see [`Self::run`]). Reads the scan's entities and its
-    /// relations, both of which the finalise persists before this runs.
-    pub fn evaluate(&self, scan_id: &str) -> Result<Vec<Correlation>> {
+    /// under the finalise's time budget ([`CORRELATOR_BUDGET`]) and return
+    /// the ranked firings WITHOUT writing them — storing them is the caller's
+    /// job (see [`Self::run`]) — with whether the budget stopped the pass
+    /// ([`Evaluation::cut`]). Reads the scan's entities and its relations,
+    /// both of which the finalise persists before this runs.
+    pub fn evaluate(&self, scan_id: &str) -> Result<Evaluation> {
+        self.evaluate_within(scan_id, CORRELATOR_BUDGET)
+    }
+
+    /// [`Self::evaluate`] under `budget` in place of [`CORRELATOR_BUDGET`],
+    /// so a test can cut the pass without a graph that takes minutes.
+    pub(crate) fn evaluate_within(
+        &self,
+        scan_id: &str,
+        budget: std::time::Duration,
+    ) -> Result<Evaluation> {
         let entities = self.store.entities_for_scan(scan_id)?;
         if entities.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Evaluation::default());
         }
         // Build the quarantine-filtered confirmed view ONCE and share it across
         // both the entity-only and the graph-aware passes. Each pass otherwise
@@ -269,17 +283,24 @@ impl Correlator {
         // One shared wall-clock deadline across the entity AND relation passes, so
         // the WHOLE finalise correlator phase is bounded (a huge recalled graph
         // can't hang the scan). Never reached by a normal scan.
-        let deadline = Some(std::time::Instant::now() + CORRELATOR_BUDGET);
-        let mut firings = evaluate_rules_on(&context, scan_id, now, deadline);
+        let deadline = Some(std::time::Instant::now() + budget);
+        let entity_pass = evaluate_rules_on(&context, scan_id, now, deadline);
+        let mut ran = entity_pass.ran;
+        let mut total = RULES.len();
+        let mut stopped = entity_pass.cut;
+        let mut firings = entity_pass.firings;
 
         // Graph-aware pass: rules that need the typed relation edges (the
         // attribution graph), not just the flat entity list. Relations are
         // persisted by `finalise_scan` before the correlator runs.
         let relations = self.store.relations_for_scan(scan_id)?;
         if !relations.is_empty() {
-            firings.extend(evaluate_relation_rules_on(
-                &context, &relations, scan_id, now, deadline,
-            ));
+            let relation_pass =
+                evaluate_relation_rules_on(&context, &relations, scan_id, now, deadline);
+            ran += relation_pass.ran;
+            total += RELATION_RULES.len();
+            stopped |= relation_pass.cut;
+            firings.extend(relation_pass.firings);
         }
 
         // Rank each firing by severity × highest child C_eff and sort
@@ -322,8 +343,44 @@ impl Correlator {
                  EXAMINED, not what was found"
             );
         }
-        Ok(firings)
+        Ok(Evaluation {
+            firings,
+            cut: stopped.then_some(RulesCut { ran, total }),
+        })
     }
+}
+
+/// What [`Correlator::evaluate`] produced: the ranked firings, and whether
+/// its time budget stopped it before its last rule.
+#[derive(Debug, Default)]
+pub struct Evaluation {
+    /// Every firing of the rules that ran, ranked.
+    pub firings: Vec<Correlation>,
+    /// Set when [`CORRELATOR_BUDGET`] stopped the pass: the rules after the
+    /// cut never ran, so their findings are absent for a reason other than
+    /// the data. The finalise records it on the scan
+    /// ([`FinaliseTally::correlation_cut`](crate::core::scan::FinaliseTally::correlation_cut)),
+    /// so a correlation that depended on how busy the device was does not
+    /// read whole (REQ-SCANSTATUS-026).
+    pub cut: Option<RulesCut>,
+}
+
+/// How far a correlator pass got before its time budget stopped it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RulesCut {
+    /// Rules that ran, entity rules first, then relation rules.
+    pub ran: usize,
+    /// Rules the pass would have run: every entity rule, plus every relation
+    /// rule when the scan has relations.
+    pub total: usize,
+}
+
+/// One rule pass's firings, how many of its rules ran, and whether the
+/// deadline stopped it before its last rule.
+struct RulePass {
+    firings: Vec<Correlation>,
+    ran: usize,
+    cut: bool,
 }
 
 // ─── Rules ─────────────────────────────────────────────────────────────────
@@ -617,7 +674,7 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     let context = RuleContext::new(&confirmed);
     // The live incremental pass is per-round and small — no budget, full
     // determinism (its streaming correlations must be reproducible).
-    evaluate_rules_on(&context, scan_id, now, None)
+    evaluate_rules_on(&context, scan_id, now, None).firings
 }
 
 /// Wall-clock budget for the FINALISE correlator pass (entity rules + the
@@ -629,10 +686,11 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 /// at finalise and (before the recovery fix) lost everything. Cap it: run as
 /// many rules as fit, then finalise with the correlations computed so far — the
 /// full entity set and the partial correlations still persist and the scan
-/// COMPLETES instead of hanging. Only the pathological large-graph case ever
-/// reaches this deadline; a normal scan finishes in well under a second, so the
-/// finalise stays deterministic in every realistic case. Generous so legitimate
-/// scans keep every correlation.
+/// finishes instead of hanging. The cut is reported ([`Evaluation::cut`]) and
+/// recorded on the scan, which then reads "partial, finalise-incomplete":
+/// which rules ran depended on how busy the device was, so the absence of the
+/// rest is not a finding (REQ-SCANSTATUS-026). Generous so legitimate scans
+/// keep every correlation.
 const CORRELATOR_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Raise the quarantine alarm when the examined set is under `1/N` of the scan.
@@ -652,14 +710,15 @@ const QUARANTINE_ALARM_RATIO: usize = 4;
 /// can filter once and share the confirmed view and RuleContext instead of
 /// cloning per pass. `deadline` (set only on the finalise pass) caps total
 /// wall-time: once reached, no further rule is started and the pass returns what
-/// it has — a complete scan with partial correlations beats one hung forever.
+/// it has, marked cut — a finished scan with partial correlations, recorded as
+/// such, beats one hung forever.
 fn evaluate_rules_on(
     context: &RuleContext,
     scan_id: &str,
     now: u64,
     deadline: Option<std::time::Instant>,
-) -> Vec<Correlation> {
-    let mut out = Vec::new();
+) -> RulePass {
+    let mut firings = Vec::new();
     for (i, rule) in RULES.iter().enumerate() {
         if deadline.is_some_and(|dl| std::time::Instant::now() >= dl) {
             warn!(
@@ -668,11 +727,19 @@ fn evaluate_rules_on(
                 total = RULES.len(),
                 "correlator entity-rule budget exceeded — finalising with partial correlations"
             );
-            break;
+            return RulePass {
+                firings,
+                ran: i,
+                cut: true,
+            };
         }
-        out.extend(rule(context, scan_id, now));
+        firings.extend(rule(context, scan_id, now));
     }
-    out
+    RulePass {
+        firings,
+        ran: RULES.len(),
+        cut: false,
+    }
 }
 
 /// Entities minus the `candidate`-tagged quarantine set — the view every
@@ -869,8 +936,8 @@ fn evaluate_relation_rules_on(
     scan_id: &str,
     now: u64,
     deadline: Option<std::time::Instant>,
-) -> Vec<Correlation> {
-    let mut out = Vec::new();
+) -> RulePass {
+    let mut firings = Vec::new();
     for (i, rule) in RELATION_RULES.iter().enumerate() {
         // The graph-aware rules are the costly ones on a large recalled graph, so
         // the shared finalise deadline matters most here.
@@ -881,11 +948,19 @@ fn evaluate_relation_rules_on(
                 total = RELATION_RULES.len(),
                 "correlator relation-rule budget exceeded — finalising with partial correlations"
             );
-            break;
+            return RulePass {
+                firings,
+                ran: i,
+                cut: true,
+            };
         }
-        out.extend(rule(context, relations, scan_id, now));
+        firings.extend(rule(context, relations, scan_id, now));
     }
-    out
+    RulePass {
+        firings,
+        ran: RELATION_RULES.len(),
+        cut: false,
+    }
 }
 
 #[cfg(test)]

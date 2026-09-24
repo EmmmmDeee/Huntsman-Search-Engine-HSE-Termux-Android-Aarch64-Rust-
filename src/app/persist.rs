@@ -110,8 +110,9 @@ impl ImportScanRow {
     /// used to be set before [`Self::begin`], so a batch the store refused (a
     /// full or locked disk) left a `Failed` row claiming every entity while
     /// `entities_for_scan` returned none, and `/stats` summed them into
-    /// `total_entities`; the live engine's Failed branch zeroes the count for
-    /// exactly this reason.
+    /// `total_entities`. A row claims what the store holds for the scan
+    /// (REQ-SCANSTATUS-009), as a live scan's `Failed` row does
+    /// (`ScanEngine::conclude_failed` counts `entities_for_scan`).
     pub(crate) fn store_entities(&mut self, entities: &[Entity]) -> Result<()> {
         self.store.upsert_entities_batch(entities)?;
         self.scan.entity_count = entities.len();

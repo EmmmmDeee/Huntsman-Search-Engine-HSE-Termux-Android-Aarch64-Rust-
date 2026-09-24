@@ -1047,7 +1047,7 @@ fn finalise_correlation_pass_survives_a_panicking_rule() {
     // reproduce byte for byte, and a payload can carry run-specific text such
     // as an address.
     let local = 0u8;
-    let panicked = guarded_correlation_pass("s", || {
+    let panicked = guarded_correlation_pass::<Vec<Correlation>>("s", || {
         panic!("kaboom in a correlation rule at {:p}", &local)
     });
     assert_eq!(
@@ -1057,7 +1057,9 @@ fn finalise_correlation_pass_survives_a_panicking_rule() {
     );
 
     // A returned error yields its own text as the reason.
-    let errored = guarded_correlation_pass("s", || Err(Error::module("correlator", "boom")));
+    let errored = guarded_correlation_pass::<Vec<Correlation>>("s", || {
+        Err(Error::module("correlator", "boom"))
+    });
     assert_eq!(
         errored.expect_err("a returned error yields no firings"),
         Error::module("correlator", "boom").to_string()
@@ -6557,6 +6559,45 @@ fn correlate_and_persist_records_a_pass_that_failed_outright() {
     assert_eq!(clean.message(), None);
 }
 
+/// REQ-SCANSTATUS-026: a correlator its time budget cut short is recorded on
+/// the scan by the one correlation step every finalise path runs (the live
+/// engine, `hse import` and the web upload). `evaluate` returned the partial
+/// firings as a plain `Ok`, so the scan was written `Complete` with `error:
+/// None` while the rules after the cut never ran — a result that depended on
+/// how busy the device was, read whole. The cut keeps its firings, and is not
+/// the panic clause, so a re-import is still offered as its remedy.
+#[test]
+fn a_correlator_the_budget_cut_short_is_recorded() {
+    use crate::core::test_support::InMemoryStore;
+
+    let sid = "corr-cut";
+    let inner = Arc::new(InMemoryStore::new());
+    inner
+        .upsert_entity(&correlatable_email(sid))
+        .expect("should succeed");
+    let store: Arc<dyn StoragePort> = inner.clone();
+
+    let mut cut = FinaliseTally::default();
+    let kept = correlate_and_persist_with(&store, sid, &mut cut, |c| {
+        c.evaluate_within(sid, std::time::Duration::ZERO)
+    })
+    .expect("a cut pass still ran");
+    assert!(kept.is_empty(), "no rule started after the deadline");
+    let total = crate::core::correlator::rule_counts().0;
+    let msg = cut.message().expect("a cut pass is a shortfall");
+    assert_eq!(
+        msg,
+        format!("correlation pass failed: stopped at its time budget after 0 of its {total} rules")
+    );
+    assert!(!FinaliseTally::records_correlation_panic(&msg));
+
+    // Control: the shipped budget runs every rule and records nothing.
+    let mut whole = FinaliseTally::default();
+    let all = correlate_and_persist(&store, sid, &mut whole).expect("ran");
+    assert!(!all.is_empty(), "the fixture fires");
+    assert_eq!(whole.message(), None);
+}
+
 /// The same, end to end on the live engine: a scan whose correlator could
 /// not read its graph is recorded as such, and stays `Complete`.
 #[tokio::test]
@@ -6822,7 +6863,7 @@ async fn scan_complete_reaches_live_subscribers_only_after_the_row_is_terminal()
 
 /// REQ-SCANSTATUS-008: a Failed scan is announced `failed` even when its
 /// best-effort terminal write is lost. When every entity write fails the scan
-/// takes the Failed branch, whose row write is best-effort. REQ-SCANSTATUS-007
+/// is failed by `conclude_failed`, whose row write is best-effort. REQ-SCANSTATUS-007
 /// withheld `scan_complete` when that write failed too, and nothing was
 /// broadcast in its place — so `hse live` printed no "scan failed" line and
 /// the web scan log's pill stayed "live", then cycled through reconnects
@@ -9492,6 +9533,49 @@ async fn a_scan_whose_finalise_panics_is_failed_and_announced() {
     assert_eq!(row.entity_count, stored, "{row:?}");
     assert!(row.modules_run > 0, "{row:?}");
     assert!(row.stop_reason.is_some(), "{row:?}");
+    let announced: Vec<usize> = inner
+        .events_for_scan(&row.id)
+        .expect("readable")
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            EventKind::ScanComplete { entity_count, .. } => Some(entity_count),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced, vec![stored], "the event claims what is stored");
+}
+
+/// REQ-SCANSTATUS-025: a finalise whose entity writes the store refused
+/// after the seed round's checkpoint stored the scan's entities (a disk that
+/// filled, a database that locked) is failed claiming what the store holds.
+/// Its own Failed branch hard-coded 0 — the one failure path not concluded
+/// by `conclude_failed` — so the row, the `scan_complete` event and the
+/// webhook said 0 entities while `entities_for_scan`, and every export of the
+/// scan, listed the checkpointed ones.
+#[tokio::test]
+async fn a_finalise_whose_entity_writes_are_refused_claims_the_checkpointed_entities() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_ENTITY, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_entity_writes_after(1));
+    let out = run_terminal_scenario(inner.clone(), store, "checkpointed@example.com", false).await;
+    let done = out.result.expect("a failed finalise is the run's result");
+    assert_eq!(done.status, ScanStatus::Failed, "{done:?}");
+    assert_eq!(out.heard, vec![(ScanStatus::Failed, false)]);
+    assert_eq!(out.history, vec![(ScanStatus::Failed, false)]);
+    let row = out.stored.expect("the row exists");
+    assert_eq!(row.status, ScanStatus::Failed, "{row:?}");
+    assert_eq!(row.error.as_deref(), Some(REFUSED_ENTITY), "{row:?}");
+    assert!(row.modules_run > 0, "{row:?}");
+
+    let stored = inner.entities_for_scan(&row.id).expect("readable").len();
+    assert!(
+        stored > 0,
+        "the seed round's checkpoint stored the entities"
+    );
+    assert_eq!(row.entity_count, stored, "{row:?}");
+    assert_eq!(done.entity_count, stored, "{done:?}");
     let announced: Vec<usize> = inner
         .events_for_scan(&row.id)
         .expect("readable")

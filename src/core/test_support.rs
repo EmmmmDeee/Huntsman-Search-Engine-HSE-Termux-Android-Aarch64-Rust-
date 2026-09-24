@@ -475,6 +475,8 @@ pub struct RefusingStore {
     panic_on_relation_reads: bool,
     refuse_detach: bool,
     refuse_entity_writes: bool,
+    refuse_entity_writes_after: Option<usize>,
+    entity_batches_taken: std::sync::atomic::AtomicUsize,
     refuse_template_counts: bool,
     refuse_terminal_scan_writes: bool,
     refuse_scan_writes: bool,
@@ -561,6 +563,25 @@ impl RefusingStore {
     pub fn refusing_entity_writes(mut self) -> Self {
         self.refuse_entity_writes = true;
         self
+    }
+
+    /// Take the first `batches` entity batch writes, then refuse every entity
+    /// write, batch and single — a store that fills up (or locks) after a
+    /// live scan's checkpoints stored its entities, before its finalise.
+    #[must_use]
+    pub fn refusing_entity_writes_after(mut self, batches: usize) -> Self {
+        self.refuse_entity_writes_after = Some(batches);
+        self
+    }
+
+    /// Whether the entity writes [`Self::refusing_entity_writes_after`]
+    /// allows are used up.
+    fn entity_writes_exhausted(&self) -> bool {
+        self.refuse_entity_writes_after.is_some_and(|n| {
+            self.entity_batches_taken
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= n
+        })
     }
 
     /// Refuse every cross-scan route-count read.
@@ -661,14 +682,18 @@ impl StoragePort for RefusingStore {
         self.inner().delete_scan(scan_id)
     }
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {
-        if self.refuse_entity_writes {
+        if self.refuse_entity_writes || self.entity_writes_exhausted() {
             return Err(injected(REFUSED_ENTITY));
         }
         self.inner().upsert_entity(entity)
     }
     fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize> {
-        if self.refuse_entity_writes {
+        if self.refuse_entity_writes || self.entity_writes_exhausted() {
             return Err(injected(REFUSED_ENTITY));
+        }
+        if self.refuse_entity_writes_after.is_some() {
+            self.entity_batches_taken
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         if let Some(gate) = &self.entity_batch_gate {
             // A test that dropped its side just lets the write through.

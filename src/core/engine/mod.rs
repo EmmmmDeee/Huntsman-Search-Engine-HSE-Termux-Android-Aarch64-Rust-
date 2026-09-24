@@ -765,8 +765,8 @@ impl ScanEngine {
             // A store that refuses the scan-start row (disk full, a locked or
             // read-only database) ends the scan here, before any module runs
             // and before the finalise that announces every other outcome. It
-            // is announced `failed` all the same, exactly as the finalise's
-            // best-effort Failed branch is (REQ-SCANSTATUS-008): the status
+            // is announced `failed` all the same, exactly as a finalise whose
+            // entities the store refused is (REQ-SCANSTATUS-008): the status
             // is true whether or not any row landed, and it is the only way a
             // status-only subscriber — the radar's "sweep #N running…", the
             // `hse live` renderer, the web scan log — learns the sweep ended.
@@ -1157,9 +1157,10 @@ impl ScanEngine {
         // thread: CancellationToken is not 'static and cannot be moved.
         let cancelled = ctx.cancel.is_cancelled();
         // The blocking phase builds the terminal scan record but does NOT
-        // persist its terminal status — see the commit step after it. The
-        // flag says whether that final write is best-effort (the Failed
-        // record, whose loss is logged) or must propagate its error.
+        // persist its terminal status — see the commit step after it. A
+        // finalise whose entities the store refused outright is not committed
+        // here at all: it is failed by `conclude_failed`, as every other
+        // failure is (see the match after the phase).
         // The run's module accounting and why its expansion stopped are known
         // before the finalise starts, so they are set here, once — recorded
         // on EVERY terminal path below (failed as well as complete/aborted,
@@ -1178,7 +1179,7 @@ impl ScanEngine {
         // finalise that panicked (or failed) is concluded from — see the
         // match after the phase.
         let before_finalise = scan.clone();
-        let finalised = tokio::task::spawn_blocking(move || -> Result<(Scan, bool, Event)> {
+        let finalised = tokio::task::spawn_blocking(move || -> Result<FinalisePhase> {
             // Mint ApiKey entities for every FOREIGN key identified in this scan's
             // endpoint responses, run the finalise-time offline enrichment passes,
             // then persist the batch (falling back to per-entity upserts on a
@@ -1217,23 +1218,16 @@ impl ScanEngine {
             );
 
             if persisted == 0 && first_err.is_some() {
-                scan.status = ScanStatus::Failed;
-                scan.entity_count = 0;
+                // Nothing this finalise wrote landed. The scan is failed
+                // after the phase, by `conclude_failed` — the one way a scan
+                // is failed — so its row, event and webhook claim the
+                // entities the store holds: the checkpoints (the seed round's
+                // and every productive round's) stored them before this batch
+                // was refused, and every export of the scan reads them
+                // (REQ-SCANSTATUS-025).
                 scan.error = first_err;
                 scan.finished_at = Some(crate::core::entity::unix_now());
-                // Recorded now, broadcast after the commit step below — see
-                // there. The row is persisted by that step, after the event is
-                // durable — best-effort there, logged on failure.
-                let completion = emitter.record(
-                    &scan.id,
-                    EventKind::ScanComplete {
-                        scan_id: scan.id.clone(),
-                        entity_count: 0,
-                        status: scan.status,
-                        finalise_incomplete: false,
-                    },
-                );
-                return Ok((scan, true, completion));
+                return Ok(FinalisePhase::EntitiesRefused(scan));
             }
 
             // The terminal status is DECIDED here but not yet written: the
@@ -1311,7 +1305,7 @@ impl ScanEngine {
                     finalise_incomplete: scan.finalise_incomplete(),
                 },
             );
-            Ok((scan, false, completion))
+            Ok(FinalisePhase::Finalised(scan, Box::new(completion)))
         })
         .await;
         // A panic in the blocking phase — a pass other than the guarded
@@ -1325,11 +1319,20 @@ impl ScanEngine {
         // It is failed here instead, as every other failure is
         // (`conclude_failed`), with a fixed reason: a panic payload can
         // carry run-specific detail (REQ-SCANSTATUS-019).
-        let (scan, best_effort_persist, completion) = match finalised
+        let (scan, completion) = match finalised
             .map_err(|join| blocking_failure("the finalise", &join))
             .and_then(|phase| phase)
         {
-            Ok(done) => done,
+            Ok(FinalisePhase::Finalised(scan, completion)) => (scan, *completion),
+            Ok(FinalisePhase::EntitiesRefused(failed)) => {
+                // The store refused every entity the finalise wrote (a full
+                // disk, a locked database). Failed like every other failure,
+                // and still returned as the run's result, not an error. Its
+                // `entity_count` is `Scan::new`'s 0 — kept when the store
+                // cannot be read either.
+                error!(scan_id = %failed.id, "the store refused every finalise entity write — failing the scan");
+                return Ok(self.conclude_failed(failed, &ctx.http).await);
+            }
             Err(e) => {
                 error!(scan_id = %before_finalise.id, error = %e, "the finalise did not finish — failing the scan");
                 let mut failed = before_finalise;
@@ -1369,47 +1372,36 @@ impl ScanEngine {
             .map_err(|join| blocking_failure("the terminal status write", &join))
             .and_then(|w| w);
         let mut scan = scan;
-        match written {
-            Ok(()) => {}
-            Err(e) if best_effort_persist => {
-                // error!, not warn!: this is the terminal Failed record for
-                // a scan that persisted nothing. Losing the write means the
-                // stored scan never reflects its own failure — an
-                // unrecoverable integrity gap the operator can only see
-                // here. The failed scan is still returned to the caller.
-                error!(scan_id = %scan.id, error = %e, "failed to persist failed-scan record");
-            }
-            Err(e) => {
-                // The strict path's commit was refused (a full disk, a busy
-                // timeout) after the scan stored its entities, relations and
-                // correlations. Returning the error here, as this once did,
-                // left the row `Running` — `interrupted` once the web guard
-                // drops — under a durable `scan_complete {status: complete}`
-                // that no live subscriber ever heard: `hse live` printed
-                // nothing, the radar kept "sweep #N running…", and the web scan
-                // log's pill stayed "live" and cycled through reconnects
-                // against the stored `Running` row — the gap
-                // REQ-SCANSTATUS-008 closed for the Failed branch alone. The
-                // scan is failed now (`conclude_failed`): a `scan_complete
-                // {status: failed}` is recorded and made durable, the row is
-                // written `Failed` best-effort, the failure is what
-                // subscribers hear, and the operator's webhook is told
-                // `failed` (REQ-SCANSTATUS-018). The `complete` event recorded
-                // above stays in the history (the event log is append-only,
-                // and it must be durable before the row may read terminal),
-                // followed by this one: the log reads "scan complete" then
-                // "scan failed", its last word `failed`, as the row's is when
-                // the store takes that write (REQ-SCANSTATUS-014).
-                error!(scan_id = %scan.id, error = %e, "the terminal status write was refused — failing the scan");
-                scan.error = Some(match scan.error.take() {
-                    Some(shortfall) => {
-                        format!("{shortfall}; the terminal status write failed: {e}")
-                    }
-                    None => format!("the terminal status write failed: {e}"),
-                });
-                self.conclude_failed(scan, &ctx.http).await;
-                return Err(e);
-            }
+        if let Err(e) = written {
+            // The commit was refused (a full disk, a busy
+            // timeout) after the scan stored its entities, relations and
+            // correlations. Returning the error here, as this once did,
+            // left the row `Running` — `interrupted` once the web guard
+            // drops — under a durable `scan_complete {status: complete}`
+            // that no live subscriber ever heard: `hse live` printed
+            // nothing, the radar kept "sweep #N running…", and the web scan
+            // log's pill stayed "live" and cycled through reconnects
+            // against the stored `Running` row — the gap
+            // REQ-SCANSTATUS-008 closed for the Failed outcome alone. The
+            // scan is failed now (`conclude_failed`): a `scan_complete
+            // {status: failed}` is recorded and made durable, the row is
+            // written `Failed` best-effort, the failure is what
+            // subscribers hear, and the operator's webhook is told
+            // `failed` (REQ-SCANSTATUS-018). The `complete` event recorded
+            // above stays in the history (the event log is append-only,
+            // and it must be durable before the row may read terminal),
+            // followed by this one: the log reads "scan complete" then
+            // "scan failed", its last word `failed`, as the row's is when
+            // the store takes that write (REQ-SCANSTATUS-014).
+            error!(scan_id = %scan.id, error = %e, "the terminal status write was refused — failing the scan");
+            scan.error = Some(match scan.error.take() {
+                Some(shortfall) => {
+                    format!("{shortfall}; the terminal status write failed: {e}")
+                }
+                None => format!("the terminal status write failed: {e}"),
+            });
+            self.conclude_failed(scan, &ctx.http).await;
+            return Err(e);
         }
 
         // Only now does a live subscriber hear `scan_complete`. The event was
@@ -1419,22 +1411,13 @@ impl ScanEngine {
         // (the radar view does exactly that, on the documented promise that
         // "the engine writes the row before it emits the event") read
         // `running` and the scan-start row's counts, and nothing prompted it to
-        // look again (REQ-SCANSTATUS-004). A strict commit the store refused
-        // never announces the `complete` it recorded: it is failed above, and
-        // `conclude_failed` announces its `failed` event instead.
-        //
-        // The best-effort Failed record is the exception, and it IS announced
-        // even when the store refused it (REQ-SCANSTATUS-008): the event's
-        // `status: failed` is true whether or not the row landed, and it is
-        // the only way a status-only subscriber learns the outcome. `hse live`
-        // prints "scan failed" from it, and the web scan log sets its failed
-        // pill and closes the stream on it; withholding it (REQ-SCANSTATUS-007)
-        // left the log "live" until the SSE idle timeout, after which the
-        // reconnect found the `Running` start row and cycled forever — in
-        // exactly the case, a store refusing writes, where the operator most
-        // needs telling. The radar re-reads only the sweep's readings, which a
-        // refused store never held. A strict commit the store refused is
-        // failed above and announced by `conclude_failed` (REQ-SCANSTATUS-014).
+        // look again (REQ-SCANSTATUS-004). A commit the store refused never
+        // announces the `complete` it recorded: it is failed above, and
+        // `conclude_failed` announces its `failed` event instead
+        // (REQ-SCANSTATUS-014). A finalise whose entities the store refused
+        // never reaches here: it is failed after the phase, and
+        // `conclude_failed` announces it even when the store refuses its row
+        // too (REQ-SCANSTATUS-008).
         self.emitter.broadcast(completion);
         self.notify_completion_webhook(&ctx.http, &scan).await;
         Ok(scan)
@@ -1460,9 +1443,10 @@ impl ScanEngine {
 
     /// Concludes `scan` as `Failed` — the one way every failure after the
     /// engine took the scan is ended, so each is announced alike: the
-    /// scan-start row refused (REQ-SCANSTATUS-016), the finalise panicked
-    /// (REQ-SCANSTATUS-019), the strict commit refused (REQ-SCANSTATUS-014),
-    /// and a panic anywhere else in the run (`force_fail_panicked_scan`).
+    /// scan-start row refused (REQ-SCANSTATUS-016), every finalise entity
+    /// write refused (REQ-SCANSTATUS-025), the finalise panicked
+    /// (REQ-SCANSTATUS-019), the commit refused (REQ-SCANSTATUS-014), and a
+    /// panic anywhere else in the run (`force_fail_panicked_scan`).
     /// The caller sets `scan.error`.
     ///
     /// Records a `scan_complete {status: failed}` and flushes the writer, so
@@ -1475,10 +1459,11 @@ impl ScanEngine {
     /// (REQ-SCANSTATUS-018).
     ///
     /// The row, the event and the webhook all claim the entities the store
-    /// holds for the scan (REQ-SCANSTATUS-009): a failure outside the
-    /// finalise's own accounting — a finalise that panicked after its batch
-    /// persist, a panic mid-run after checkpoints — reaches here with
-    /// `Scan::new`'s 0 while the scan's entities are stored and exported.
+    /// holds for the scan (REQ-SCANSTATUS-009): a finalise whose entity
+    /// writes were all refused after the checkpoints stored them, a finalise
+    /// that panicked after its batch persist, a panic mid-run after
+    /// checkpoints — each reaches here with `Scan::new`'s 0 while the scan's
+    /// entities are stored and exported.
     /// Best-effort: a count the store cannot read keeps the scan's own
     /// (REQ-SCANSTATUS-023).
     async fn conclude_failed(&self, mut scan: Scan, http: &reqwest::Client) -> Scan {
@@ -3303,6 +3288,18 @@ pub(crate) fn derive_relations_within(
     derived.relations
 }
 
+/// What the finalise's blocking phase hands the async commit step.
+enum FinalisePhase {
+    /// The terminal scan (`Complete` or `Aborted`, its shortfall in `error`)
+    /// and its recorded — not yet broadcast — `scan_complete`, for the commit
+    /// step to write and then announce.
+    Finalised(Scan, Box<Event>),
+    /// The store refused every entity the finalise wrote; `error` holds the
+    /// first refusal. Failed by `ScanEngine::conclude_failed`, which counts
+    /// the entities the scan's checkpoints stored (REQ-SCANSTATUS-025).
+    EntitiesRefused(Scan),
+}
+
 /// Persist a finished scan's relation edges and count what the store refused
 /// into `tally` — the one relation-persist step every path that finalises a
 /// scan runs (the live engine's [`derive_and_persist_relations`], the CLI
@@ -3364,20 +3361,39 @@ pub(crate) fn persist_relations(
 /// failure is recorded too ([`FinaliseTally::pass_failed`]): a
 /// pass that never produced its firings leaves nothing to count as refused,
 /// and "no correlations" read as a whole scan whose rules simply did not fire.
+/// So is a pass the correlator's time budget cut short
+/// ([`FinaliseTally::correlation_cut`]): its firings are kept, but the rules
+/// after the cut never ran (REQ-SCANSTATUS-026).
 pub(crate) fn correlate_and_persist(
     store: &Arc<dyn StoragePort>,
     scan_id: &str,
     tally: &mut FinaliseTally,
 ) -> Option<Vec<crate::core::correlator::Correlation>> {
-    let firings = match guarded_correlation_pass(scan_id, || {
-        crate::core::correlator::Correlator::new(Arc::clone(store)).evaluate(scan_id)
-    }) {
-        Ok(firings) => firings,
+    correlate_and_persist_with(store, scan_id, tally, |c| c.evaluate(scan_id))
+}
+
+/// [`correlate_and_persist`] with the evaluation supplied — the correlator's
+/// own budget in production, a zero budget in a test that needs a cut.
+fn correlate_and_persist_with(
+    store: &Arc<dyn StoragePort>,
+    scan_id: &str,
+    tally: &mut FinaliseTally,
+    evaluate: impl FnOnce(
+        &crate::core::correlator::Correlator,
+    ) -> Result<crate::core::correlator::Evaluation>,
+) -> Option<Vec<crate::core::correlator::Correlation>> {
+    let correlator = crate::core::correlator::Correlator::new(Arc::clone(store));
+    let evaluation = match guarded_correlation_pass(scan_id, || evaluate(&correlator)) {
+        Ok(evaluation) => evaluation,
         Err(reason) => {
             tally.pass_failed(FinalisePass::Correlation, reason);
             return None;
         }
     };
+    if let Some(cut) = evaluation.cut {
+        tally.correlation_cut(cut.ran, cut.total);
+    }
+    let firings = evaluation.firings;
     for c in &firings {
         let outcome = store.upsert_correlation(c);
         if let Err(e) = &outcome {
@@ -3648,7 +3664,7 @@ pub(crate) use crate::core::scan::CORRELATION_PASS_PANICKED;
 /// Run a correlator pass under a panic guard — the single canonical way any
 /// caller invokes the full finalise-time rule engine.
 ///
-/// Returns `Ok(firings)` on success, or `Err(reason)` when the pass returned an
+/// Returns `Ok` with the pass's result on success, or `Err(reason)` when the pass returned an
 /// error (its text) OR **panicked** ([`CORRELATION_PASS_PANICKED`]) — the
 /// caller carries on without correlations, and must record `reason` on the
 /// scan ([`FinaliseTally::pass_failed`], which
@@ -3665,12 +3681,12 @@ pub(crate) use crate::core::scan::CORRELATION_PASS_PANICKED;
 /// caller through this one guard closes that asymmetry — a caught panic degrades
 /// uniformly to "no correlations," exactly as the live pass does. Pure
 /// control-flow wrapper; unit-tested with a deliberately panicking closure.
-pub(crate) fn guarded_correlation_pass(
+pub(crate) fn guarded_correlation_pass<T>(
     scan_id: &str,
-    run: impl FnOnce() -> crate::core::error::Result<Vec<crate::core::correlator::Correlation>>,
-) -> std::result::Result<Vec<crate::core::correlator::Correlation>, String> {
+    run: impl FnOnce() -> crate::core::error::Result<T>,
+) -> std::result::Result<T, String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
-        Ok(Ok(firings)) => Ok(firings),
+        Ok(Ok(result)) => Ok(result),
         Ok(Err(e)) => {
             warn!(scan_id, error = %e, "correlator failed");
             Err(e.to_string())

@@ -275,14 +275,18 @@ pub enum EventKind {
         #[serde(default = "terminal_status_default")]
         status: ScanStatus,
         /// Whether the scan's finalise recorded a shortfall — a write the
-        /// store refused, a pass that failed outright, or an import's
+        /// store refused, a pass that failed outright, a relation derivation
+        /// or a correlator its time budget cut short, or an import's
         /// relation and correlation pass skipped for size — in the row's
         /// `error` (`FinaliseTally`). Such a scan reaches `Complete` (or
-        /// `Aborted`), yet every export classifies it "partial,
-        /// finalise-incomplete" (`partial_export_reason`); without this the
-        /// live surfaces that read the event alone — `hse live`, the web scan
-        /// log's pill, the radar — announced a clean completion for the same
-        /// scan (REQ-SCANSTATUS-015). Never set on a `Failed` event. Omitted
+        /// `Aborted`), yet every export classifies it partial
+        /// (`partial_export_reason`): "partial, finalise-incomplete" when
+        /// `Complete`, "partial, aborted" when `Aborted`, with the shortfall
+        /// named in the scan's completeness caveat for both
+        /// (REQ-SCANSTATUS-022). Without this the live surfaces that read the
+        /// event alone — `hse live`, the web scan log's pill, the radar —
+        /// announced a clean completion for the same scan
+        /// (REQ-SCANSTATUS-015). Never set on a `Failed` event. Omitted
         /// from the wire when `false`, and `false` for a row persisted before
         /// the field existed, so a clean completion serialises as before.
         #[serde(default, skip_serializing_if = "is_false")]

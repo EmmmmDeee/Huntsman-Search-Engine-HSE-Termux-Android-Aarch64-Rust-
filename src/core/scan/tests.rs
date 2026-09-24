@@ -2001,7 +2001,8 @@ fn an_import_whose_correlator_panicked_is_not_told_to_re_import() {
         "{caveat}"
     );
 
-    // Beside a refused write, re-importing rebuilds that write only.
+    // Beside a refused write, re-importing rebuilds that write; whether it
+    // rebuilds the correlations is not known (REQ-SCANSTATUS-027, below).
     tally.add(FinaliseWrite::Relations, 40, 2, Some("busy".into()));
     let both = tally.message().expect("recorded");
     assert!(FinaliseTally::records_correlation_panic(&both));
@@ -2009,7 +2010,7 @@ fn an_import_whose_correlator_panicked_is_not_told_to_re_import() {
     import.error = Some(both);
     let caveat = import.completeness_caveat("the import").expect("caveated");
     assert!(
-        caveat.contains("rebuilds the rest of it but not its correlations"),
+        caveat.contains("re-importing the data rebuilds the rest of it"),
         "{caveat}"
     );
     assert!(
@@ -2027,6 +2028,64 @@ fn an_import_whose_correlator_panicked_is_not_told_to_re_import() {
     let caveat = live.completeness_caveat("the scan").expect("caveated");
     assert!(
         caveat.ends_with("re-run the scan to rebuild it"),
+        "{caveat}"
+    );
+}
+
+/// REQ-SCANSTATUS-027: a correlation panic recurs on a re-import only when
+/// the pass reads the same data. The correlator reads the scan's stored
+/// relations, and every other clause an import records beside a panic — a
+/// relation write the store refused, a derivation its time budget cut —
+/// means those relations were incomplete. The caveat asserted, as fact, that
+/// a re-import "panics again" and cannot rebuild the correlations, which a
+/// re-import that stores the whole graph can. It now says it may or may not,
+/// and keeps the certain wording for a panic over the whole graph.
+#[test]
+fn a_correlation_panic_over_an_incomplete_graph_is_not_called_certain() {
+    let mut import = scan_for(ScanStatus::Complete, None);
+    import.origin = ScanOrigin::Import;
+    let thinned: [fn(&mut FinaliseTally); 2] = [
+        |t| t.derivation_cut("structural"),
+        |t| t.add(FinaliseWrite::Relations, 40, 2, Some("busy".into())),
+    ];
+    for thin in thinned {
+        let mut tally = FinaliseTally::default();
+        thin(&mut tally);
+        tally.pass_failed(FinalisePass::Correlation, CORRELATION_PASS_PANICKED);
+        let err = tally.message().expect("recorded");
+        import.error = Some(err.clone());
+        let caveat = import.completeness_caveat("the import").expect("caveated");
+        assert!(!caveat.contains("panics again"), "{caveat}");
+        assert!(!caveat.contains("not its correlations"), "{caveat}");
+        assert!(
+            caveat.contains("may or may not rebuild its correlations"),
+            "{err}: {caveat}"
+        );
+    }
+
+    // Over the whole graph, the pass meets the same panic on the same data.
+    let mut tally = FinaliseTally::default();
+    tally.pass_failed(FinalisePass::Correlation, CORRELATION_PASS_PANICKED);
+    import.error = tally.message();
+    let caveat = import.completeness_caveat("the import").expect("caveated");
+    assert!(
+        caveat.contains("neither re-running nor re-importing can rebuild it"),
+        "{caveat}"
+    );
+    assert!(caveat.contains("meets the same panic"), "{caveat}");
+
+    // A correlator its budget cut is not a panic: a re-import can finish it.
+    let mut tally = FinaliseTally::default();
+    tally.correlation_cut(12, 40);
+    let err = tally.message().expect("recorded");
+    assert_eq!(
+        err,
+        "correlation pass failed: stopped at its time budget after 12 of its 40 rules"
+    );
+    import.error = Some(err);
+    let caveat = import.completeness_caveat("the import").expect("caveated");
+    assert!(
+        caveat.ends_with("re-import the data to rebuild it"),
         "{caveat}"
     );
 }
