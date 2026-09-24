@@ -232,13 +232,37 @@ state file now also carries `competitors`, `capability_gaps`, `clusters` and
   identical results: 8844 tests, 8817 passed, 27 ignored, 0 failed.
   Doctests: 88 passed, 3 ignored, twice.
 
+### Change 6: [DEFECT] A key pool file that will not load is moved to a free backup name or kept, never destroyed (REQ-KEYPOOL-003)
+
+- **What.** `util::key_pool::persistence`: `claim_backup_name` takes the
+  first free name of `key_pool.json.bak`, `.bak.1` … `.bak.999` with
+  `create_new`, so a backup never replaces anything. A file that cannot be
+  moved aside stays where it is, and the pool that stands in for it
+  (`KeyPool::never_saved`) refuses every save with both reasons and the
+  remedy. `save_pool_to` is the one write path. `hse keys` prints the
+  refusal first, and the console's pool add, rotate and revoke answer 409.
+- **Why.** Every unusable pool file went to `.bak`, so a second one
+  destroyed the first backup, and a failed rename was ignored, so the next
+  save replaced the file that had not moved.
+- **Review.** An independent review of the first draft found the name was
+  checked, then renamed, which another process could race; it is claimed
+  with `create_new` now. Its ID collided with REQ-KEYPOOL-002.
+- **Evidence.**
+  - Runtime on sandboxed builds: 0 of 10 checks before, 10 of 10 after.
+    With one backup name freed by hand, the next command moved the file
+    there, and a key added then persisted.
+  - Mutations: 11 of 11 caught, the three console handlers by the runtime
+    check alone.
+- **Fresh worktree.** Passed. The gate passed. The full suite ran twice with
+  identical results: 8848 tests, 8821 passed, 27 ignored, 0 failed; the only
+  difference from the merge's verified run is the 4 new key-pool tests.
+  Doctests: 88 passed, 3 ignored, twice.
+
 ## Next
 
-- **REQ-INGEST-001.** `hse ingest` mines the "OCR unavailable for <path>"
-  stand-in for an image it could not read, so the file's path comes back as
-  findings. Drafted and reviewed; applied and verified on its own next.
-- **Then**, drafted and reviewed the same way: REQ-CLI-HINTS-001 (the hint
-  after a stored scan names `hse list`, which does not exist),
-  REQ-KEYPOOL-003 (a key pool file that will not load is destroyed) and
-  REQ-SETTINGS-001 (a `settings.json` that does not parse resets every
-  switch).
+- **REQ-SETTINGS-001.** A `settings.json` that does not parse reset every
+  switch; drafted and reviewed, applied and verified on its own next.
+- **Then**, drafted and reviewed the same way: REQ-INGEST-001 (an unread
+  image's file path came back as findings) and REQ-CLI-HINTS-001 (the hint
+  after a stored scan names `hse list`, which does not exist), re-ported
+  onto the merged base.

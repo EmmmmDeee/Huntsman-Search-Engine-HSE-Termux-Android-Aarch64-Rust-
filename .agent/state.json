@@ -32,6 +32,12 @@
       "category": "DEFECT",
       "evidence": "Found: New Scan's Scan Name field was collected and never sent, ScanOptions had no field for it, and the API refused a name as an unknown option. Browser check on sandboxed hse serve builds, driving the real form: 4 of 18 before, 18 of 18 after; after the review fixes 23 of 23 (batch, Live page, tab, invisible and bidi cases added), 12 of 12 after a server restart on the same database, 6 of 6 opening a database the previous build wrote, and 4 of 4 with the previous build opening this build's database (every row loads, the name is ignored: the field is additive and absent-tolerant, so a downgrade stays usable rather than failing). hse scan --name stored the cleaned name; a two-line name exited 1 with the reason and stored nothing. No server panicked. An independent review found no blocking defect and three should-fix ones (Compare hid a named scan's target; the batch button dropped the name; invisible, bidi and line-separator characters passed the one-line rule) plus nits; all fixed except a top-level \"name\" being ignored, which is an API change and is recorded as an open defect. Mutations: 29 of 29 caught, each applied alone. Non-Rust edits: five console views are JavaScript today (new_scan.js, scans.js, diff.js, live.js, scan_info/index.js); the rules they use moved into wasm-ui (scan_label, scanMatches), and each view's port is recorded as an open defect because it is larger than one change.",
       "fresh_worktree": "Passed in a fresh worktree of the committed tree: the gate passed (doc coverage held at 1001), and the full suite ran twice with identical results, 8559 tests (8532 passed, 27 ignored, 0 failed); doctests 85 passed, 3 ignored, twice."
+    },
+    {
+      "contract": "A key pool file HSE cannot load is moved aside to a backup name claimed with create_new, or, when it cannot be moved, kept in place with every save refused and the refusal shown by hse keys and the console's pool add, rotate and revoke (REQ-KEYPOOL-003)",
+      "category": "DEFECT",
+      "evidence": "Found: util::key_pool::persistence::backup_and_fresh renamed an unusable pool file to key_pool.json.bak every time and ignored a failed rename, so a second unusable file replaced the first backup, and when the rename failed (a directory at .bak is enough) the next save replaced the unread file. Runtime on sandboxed builds (hse keys against a scratch HOME, and a sandboxed hse serve for the console's pool routes): 0 of 10 checks before, 10 of 10 after (two unusable files in turn, a directory at .bak, every backup name taken, and the console's add, rotate and revoke over a pool that cannot be saved); with one backup name freed by hand, the next hse keys command moved the file there and a key added then persisted across processes. An independent review of the first draft found the free-name check could race another process (now create_new) and an ID collision with REQ-KEYPOOL-002 (now 003). Mutations: 11 of 11 caught, each applied alone: K1-K8 by the key_pool unit tests, K9-K11 (the console handlers answering 200 over a pool that cannot be saved) by the runtime check alone. The write side gained save_pool_to(pool, path), the counterpart of load_pool_from(path) it lacked.",
+      "fresh_worktree": "Passed. The gate (scripts/gate.sh --quick) passed in a fresh worktree of the committed tree (doc coverage 998, ceiling 1001). The full suite ran twice with identical results: 8848 tests, 8821 passed, 27 ignored, 0 failed; against the merge's verified run, the only difference is the 4 new util::key_pool tests. Doctests: 88 passed, 3 ignored, twice."
     }
   ],
   "rejected": [
@@ -66,10 +72,6 @@
       "evidence": "src/util/http/tests.rs:1289-1325"
     },
     {
-      "description": "key_pool backup_and_fresh ignores a failed rename: its warning says the pool was backed up, and the next save_pool replaces the unreadable pool file.",
-      "evidence": "src/util/key_pool/persistence.rs:50-54 (let _ = std::fs::rename); reachable when the .json.bak path exists as a directory"
-    },
-    {
       "description": "Stop or Abort on a scan another hse process runs (hse scan, hse radar or hse live in a terminal) answers 404: a server can cancel only the scans it runs. REQ-SCANSTATUS-038 made such a scan read as running, correctly, so the console offers the button.",
       "evidence": "src/api/scan_handlers/core.rs scan_cancel looks the id up in AppState.cancellations only; ss3.sh scenario A shows the scan running with interrupted=false while the CLI runs it"
     },
@@ -90,7 +92,7 @@
       "evidence": "Language rule: tooling in Rust (build.rs, xtask or a bin target). Cluster \"scripts [1]\" signals nonrust=3271 lines."
     }
   ],
-  "cycle": 5,
+  "cycle": 6,
   "competitors": [
     {
       "name": "SpiderFoot 4.0",

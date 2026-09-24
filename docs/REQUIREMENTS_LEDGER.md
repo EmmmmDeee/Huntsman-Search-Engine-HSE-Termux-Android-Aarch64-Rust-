@@ -25581,3 +25581,144 @@ unknown option key. The 4 checks that passed are the ones a nameless build
 also satisfies: the scan was queued, it still showed its target, the
 unnamed scan was titled by its target, and there were no page errors. No
 server panicked in any run.
+
+---
+
+## REQ-KEYPOOL-003 — a key pool file that would not load was destroyed
+
+**Requirement.** A key pool file HSE cannot load may still hold keys, so it is
+never destroyed. It is moved aside to a name that holds nothing yet, or, if it
+cannot be moved, it is left in place, nothing is saved over it, and the
+operator is told.
+
+**Defect.** `util::key_pool::persistence::backup_and_fresh` ran whenever the
+pool file existed but could not be loaded: corrupt JSON (a hand edit gone
+wrong), bytes that are not UTF-8, or a failed read. It did this:
+
+```rust
+let backup = path.with_extension("json.bak");
+let _ = std::fs::rename(path, &backup);
+KeyPool::new()
+```
+
+Two ways to lose keys followed:
+
+- **Every backup had the same name.** On Linux a rename replaces its
+  destination, so a second unusable pool file replaced the first backup, and
+  every key in it.
+- **A failed rename was ignored.** The warning just logged said "backing up",
+  the empty pool was returned all the same, and the next save (a harvested key,
+  `hse keys add`) atomically replaced the file that had not been moved. A
+  directory at `key_pool.json.bak` is enough to make the rename fail.
+
+On the build before this fix, both happened at runtime: after two unusable
+files in turn, `.bak` held only the second; with a directory at `.bak`, `hse
+keys add` replaced the unreadable file; and with every backup name taken, the
+older `.bak` was replaced and the add reported success.
+
+**Fix.**
+
+- `claim_backup_name` claims the first free name of `key_pool.json.bak`, then
+  `.bak.1` up to `.bak.999`, by creating it with `create_new`, which fails if
+  anything is there. The rename then replaces only that empty placeholder, so a
+  backup never replaces anything, even with two `hse` processes loading the
+  same broken file at once. (The first draft checked the name, then renamed;
+  the review found another process could take the name in between.) A failed
+  rename gives the placeholder back.
+- When the file cannot be moved aside, or no name is free, it stays where it
+  is. The pool returned in its place is `KeyPool::never_saved`, and every save
+  refuses with the reason: why the file would not load, why it would not move,
+  and the remedy, "repair or move it, then restart hse". The one failure that
+  leaves nothing to protect is the file being gone already (another process
+  moved it first); then the empty pool saves as usual.
+- The refusal is visible where a change is made: `KeyPool::save_refusal()`.
+  Every `hse keys` command prints it first, and the web key editor's add,
+  revoke and rotate answer 409 with it instead of a 200 for a change that lasts
+  only until the process exits. It is logged as an error when it is decided,
+  and as a warning by each scan's end-of-scan save, but not by the saves that
+  follow each harvested key or key status change, which would bury it.
+- All saves go through `save_pool_to(pool, path)`, the counterpart of
+  `load_pool_from(path)` the write side lacked, so the refusal has one place to
+  live, and it runs before anything touches the disk.
+
+The first draft of this change reused the id `REQ-KEYPOOL-002`, which already
+names another defect; the review caught it.
+
+**Locks** (`util::key_pool::tests`):
+
+- `a_second_unusable_pool_file_does_not_replace_the_first_backup`: two unusable
+  files in turn; the first survives in `.bak` and the second goes to `.bak.1`.
+  The fresh pool then saves normally and touches no backup.
+- `a_backup_name_held_by_a_directory_is_skipped`: a directory at `.bak`; the
+  file goes to `.bak.1` and is no longer where a save would replace it.
+- `when_every_backup_name_is_taken_nothing_is_replaced`: `.bak` to `.bak.999`
+  all exist; the older backup keeps its bytes, the file stays, and the save is
+  refused.
+- `a_pool_file_that_cannot_be_moved_aside_is_never_saved_over`: a failing
+  rename is injected; a key is added; the save is refused with both reasons and
+  the remedy, the file keeps its bytes, and the claimed name is given back.
+  "Not found" from the move while the file is still there is refused too; a
+  file that is really gone lets the pool save.
+
+**Not locked by a test: where the refusal is shown.** The web handlers and
+`hse keys` read the process-wide pool, which no test can point at a broken
+file without touching every other test's pool. Both are checked at runtime
+instead (below): the console's add, rotate and revoke each answer 409 over a
+pool file that must be kept, and `hse keys add` fails with the reason.
+
+### Mutations
+
+11 deliberate breakages, each applied alone to the finished change and run against the tests that own the behaviour: the unit tests for K1 to K8, and for K9 to K11, which break the console handlers, a binary built with the breakage and the runtime check below. All 11 are caught.
+
+| breakage | caught by |
+|---|---|
+| K1 a backup name already taken is reused | `a_second_unusable_pool_file_does_not_replace_the_first_backup`, `when_every_backup_name_is_taken_nothing_is_replaced` |
+| K1b every backup is .json.bak again | `a_backup_name_held_by_a_directory_is_skipped`, `a_second_unusable_pool_file_does_not_replace_the_first_backup`, `when_every_backup_name_is_taken_nothing_is_replaced` |
+| K3 a failed move is ignored again | `when_every_backup_name_is_taken_nothing_is_replaced`, `a_pool_file_that_cannot_be_moved_aside_is_never_saved_over` |
+| K4 save ignores a pool that must not be saved | `a_pool_file_that_cannot_be_moved_aside_is_never_saved_over`, `when_every_backup_name_is_taken_nothing_is_replaced` |
+| K5 a file already gone still blocks saves | `a_pool_file_that_cannot_be_moved_aside_is_never_saved_over` |
+| K6 NotFound while the file is there blocks nothing | `a_pool_file_that_cannot_be_moved_aside_is_never_saved_over` |
+| K7 the claimed name is not given back | `a_pool_file_that_cannot_be_moved_aside_is_never_saved_over` |
+| K8 the numbered names never run out | `when_every_backup_name_is_taken_nothing_is_replaced` |
+| K9 the web add answers 200 over a pool it cannot save | the runtime check alone (below): the console's pool add is a 409 |
+| K10 the web rotate answers 200 over a pool it cannot save | the runtime check alone: rotate is a 409 |
+| K11 the web revoke answers 200 over a pool it cannot save | the runtime check alone: revoke is a 409 |
+
+### Runtime
+
+Run against a scratch `HOME` with `hse keys` from the build before the fix and
+from this one, and against a sandboxed `hse serve` for the console's pool
+routes. The server binary is a copy outside any source tree, with auto-update,
+update notices and the map-tile fetch switched off.
+
+| check | before | after |
+|---|---|---|
+| two unusable pool files in turn: the first backup keeps its bytes | fail | pass |
+| the second goes to `.bak.1` | fail | pass |
+| a directory at `.bak`: the unreadable file survives `hse keys add` | fail | pass |
+| every backup name taken: the older `.bak` keeps its bytes | fail | pass |
+| the unreadable file is not saved over | fail | pass |
+| `hse keys add` fails with the reason | fail (exit 0) | pass |
+| console pool add over a pool it cannot save: 409 that says so | fail (200) | pass |
+| rotate: 409 | fail (200) | pass |
+| revoke: 409 | fail (200) | pass |
+| the unreadable file is not saved over by the server | fail | pass |
+| **total** | **0 of 10** | **10 of 10** |
+
+The three console checks are the only ones that reach the handlers' 409
+(no unit test can point the process-wide pool at a broken file), so each
+handler's check was also broken on purpose and built into the binary: K9 to
+K11 in the table above, each caught by its console check alone.
+
+What the operator sees, from `hse keys add` with every backup name taken (the
+path shortened):
+
+```text
+warning: the key pool at ~/.huntsman/key_pool.json could not be loaded (key must be a string at line 1 column 3) or moved aside (no usable backup name from ~/.huntsman/key_pool.json.bak to .bak.999). It is left in place, and nothing is saved over it: repair or move it, then restart hse
+error: save: the key pool at ~/.huntsman/key_pool.json could not be loaded (…) or moved aside (…). It is left in place, and nothing is saved over it: repair or move it, then restart hse
+```
+
+It exits 1, and the file keeps its bytes. With one backup name freed by hand
+(`.bak.7`), the next `hse keys list` moved the file there, bytes intact, and
+started from an empty pool; `hse keys add` then saved, and a new process read
+the key back.

@@ -79,6 +79,11 @@ pub struct ServiceHealth {
 pub struct KeyPool {
     pub(super) data: Mutex<PoolData>,
     pub(super) indices: Mutex<HashMap<String, usize>>,
+    /// Why this pool must never be written to disk, when it must not: the
+    /// pool file could not be loaded, and could not be moved aside either, so
+    /// it may still hold keys this process never read. `save_pool_to` refuses
+    /// with this reason rather than replace the file (REQ-KEYPOOL-003).
+    pub(super) not_saved_over: Option<String>,
 }
 
 impl Default for KeyPool {
@@ -89,17 +94,34 @@ impl Default for KeyPool {
 
 impl KeyPool {
     pub fn new() -> Self {
-        Self {
-            data: Mutex::new(PoolData::default()),
-            indices: Mutex::new(HashMap::new()),
-        }
+        Self::from_data(PoolData::default())
     }
 
     pub fn from_data(data: PoolData) -> Self {
         Self {
             data: Mutex::new(data),
             indices: Mutex::new(HashMap::new()),
+            not_saved_over: None,
         }
+    }
+
+    /// An empty pool that is never saved, for when the pool file on disk
+    /// could be neither loaded nor moved aside. `reason` is the error every
+    /// save returns.
+    pub(super) fn never_saved(reason: String) -> Self {
+        Self {
+            not_saved_over: Some(reason),
+            ..Self::new()
+        }
+    }
+
+    /// Why this pool is never saved, when it is not: its file could be neither
+    /// loaded nor moved aside, so it is kept, and every save is refused
+    /// (REQ-KEYPOOL-003). Callers that change the pool on an operator's behalf
+    /// report it, since the change lasts only as long as this process.
+    #[must_use]
+    pub fn save_refusal(&self) -> Option<&str> {
+        self.not_saved_over.as_deref()
     }
 
     pub fn add(&self, service: &str, key: KeyEntry) -> bool {

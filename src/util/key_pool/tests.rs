@@ -323,6 +323,144 @@ fn load_pool_from_backs_up_an_unreadable_file_instead_of_silently_dropping_it() 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// REQ-KEYPOOL-003: a backup never replaces an earlier one. Every unusable
+/// pool file went to `key_pool.json.bak`, so a second one destroyed the
+/// first, keys and all. After a move, the fresh pool saves as usual.
+#[test]
+fn a_second_unusable_pool_file_does_not_replace_the_first_backup() {
+    use super::persistence::{load_pool_from, save_pool_to};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("key_pool.json");
+    std::fs::write(&path, b"{ first, hand-edited").expect("first file");
+    assert_eq!(load_pool_from(&path).total_keys(), 0);
+    std::fs::write(&path, [0xff, 0xfe]).expect("second file");
+    let pool = load_pool_from(&path);
+    assert_eq!(pool.total_keys(), 0);
+
+    assert!(!path.exists(), "both files were moved aside");
+    assert_eq!(
+        std::fs::read(dir.path().join("key_pool.json.bak")).expect("first backup"),
+        b"{ first, hand-edited"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("key_pool.json.bak.1")).expect("second backup"),
+        [0xff, 0xfe]
+    );
+
+    // Moved aside, nothing is at risk, so the fresh pool is saved normally.
+    assert_eq!(pool.save_refusal(), None);
+    assert!(pool.add("shodan", KeyEntry::new("a-key-added-after")));
+    save_pool_to(&pool, &path).expect("a pool whose file was moved aside saves");
+    assert_eq!(load_pool_from(&path).total_keys(), 1);
+    assert_eq!(
+        std::fs::read(dir.path().join("key_pool.json.bak")).expect("first backup"),
+        b"{ first, hand-edited",
+        "the save touched no backup"
+    );
+}
+
+/// REQ-KEYPOOL-003: a backup name something else already holds is skipped.
+/// The rename onto a directory there failed, the failure was ignored, and the
+/// file stayed where the next save replaced it.
+#[test]
+fn a_backup_name_held_by_a_directory_is_skipped() {
+    use super::persistence::load_pool_from;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("key_pool.json");
+    std::fs::create_dir(dir.path().join("key_pool.json.bak")).expect("a directory in the way");
+    std::fs::write(&path, b"not json").expect("pool file");
+    assert_eq!(load_pool_from(&path).total_keys(), 0);
+
+    assert!(!path.exists(), "the file was moved aside");
+    assert_eq!(
+        std::fs::read(dir.path().join("key_pool.json.bak.1")).expect("backup"),
+        b"not json"
+    );
+}
+
+/// REQ-KEYPOOL-003: when every backup name is taken, nothing is replaced: the
+/// earlier backups keep their bytes, the pool file stays, and the pool that
+/// stands in for it refuses every save, saying why.
+#[test]
+fn when_every_backup_name_is_taken_nothing_is_replaced() {
+    use super::persistence::{load_pool_from, save_pool_to};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("key_pool.json");
+    std::fs::write(dir.path().join("key_pool.json.bak"), b"an older backup").expect("bak");
+    for n in 1..=999 {
+        std::fs::write(dir.path().join(format!("key_pool.json.bak.{n}")), b"").expect("bak.n");
+    }
+    std::fs::write(&path, b"{ unreadable, holds keys").expect("pool file");
+
+    let pool = load_pool_from(&path);
+    let refusal = pool.save_refusal().expect("the pool must not be saved");
+    assert!(refusal.contains("no usable backup name"), "{refusal}");
+    assert!(pool.add("shodan", KeyEntry::new("a-key-added-after")));
+    save_pool_to(&pool, &path).expect_err("the unread file must not be replaced");
+    assert_eq!(
+        std::fs::read(&path).expect("kept"),
+        b"{ unreadable, holds keys"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("key_pool.json.bak")).expect("bak"),
+        b"an older backup"
+    );
+}
+
+/// REQ-KEYPOOL-003: a pool file that cannot be moved aside is never saved
+/// over. The pool that stands in for it refuses every save, with both reasons
+/// (why it would not load, why it would not move) and the remedy, and the file
+/// keeps its bytes. The backup name the failed move claimed is given back. A
+/// file another process moved first leaves nothing to protect.
+#[test]
+fn a_pool_file_that_cannot_be_moved_aside_is_never_saved_over() {
+    use super::persistence::{backup_and_fresh_with, save_pool_to};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("key_pool.json");
+    std::fs::write(&path, b"{ keys this process could not read").expect("pool file");
+    let pool = backup_and_fresh_with(&path, "expected value at line 1", |_, _| {
+        Err(std::io::Error::other("injected: read-only directory"))
+    });
+    assert!(pool.add("shodan", KeyEntry::new("a-key-added-later")));
+
+    let err = save_pool_to(&pool, &path).expect_err("the unread file must not be replaced");
+    let said = err.to_string();
+    for part in [
+        "expected value at line 1",
+        "injected: read-only directory",
+        "then restart hse",
+    ] {
+        assert!(said.contains(part), "{part}: {said}");
+    }
+    assert_eq!(pool.save_refusal(), Some(said.as_str()));
+    assert_eq!(
+        std::fs::read(&path).expect("the file is still there"),
+        b"{ keys this process could not read"
+    );
+    assert!(
+        !dir.path().join("key_pool.json.bak").exists(),
+        "the claimed backup name is given back"
+    );
+
+    // "Not found" from the move while the file is still there protects it too.
+    let pool = backup_and_fresh_with(&path, "corrupt", |_, _| {
+        Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+    });
+    assert!(pool.save_refusal().is_some(), "the file is still there");
+
+    let other = dir.path().join("other.json");
+    save_pool_to(&KeyPool::new(), &other).expect("an ordinary pool saves");
+    assert!(other.exists());
+
+    // A file another process moved away first leaves nothing to protect.
+    let gone = dir.path().join("gone.json");
+    let pool = backup_and_fresh_with(&gone, "corrupt", |_, _| {
+        Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+    });
+    assert_eq!(pool.save_refusal(), None);
+    save_pool_to(&pool, &gone).expect("nothing is left to overwrite");
+}
+
 #[test]
 fn next_key_prefers_higher_tier() {
     let pool = KeyPool::new();

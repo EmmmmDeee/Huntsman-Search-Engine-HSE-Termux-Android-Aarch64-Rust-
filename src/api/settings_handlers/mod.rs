@@ -275,6 +275,20 @@ fn key_not_found() -> axum::response::Response {
         .into_response()
 }
 
+/// The 409 a pool write returns when the pool cannot be saved: its file could
+/// be neither loaded nor moved aside, so it is kept, and nothing is saved over
+/// it (REQ-KEYPOOL-003). The change stands for this process only, which the
+/// operator needs to know, not a 200 that reads as saved.
+fn pool_not_saved(refusal: &str) -> axum::response::Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": format!("applied until hse restarts, but not saved: {refusal}")
+        })),
+    )
+        .into_response()
+}
+
 /// `POST /api/v1/keys/pool/add` — add a NEW key to a service's rotation pool.
 /// The web Settings page's key editor (`settings/keys` PUT) already lets an
 /// operator set the PRIMARY `HUNTSMAN_*_KEY` env var for any service; this is
@@ -314,6 +328,9 @@ pub async fn keys_pool_add(
     entry.notes = req.notes.clone();
     entry.environment = req.env.clone();
     if pool.add(service, entry) {
+        if let Some(refusal) = pool.save_refusal() {
+            return pool_not_saved(refusal);
+        }
         crate::util::key_pool::save_pool_best_effort(&pool);
         tracing::info!(service, "key pool: added via web");
         (
@@ -446,6 +463,9 @@ pub async fn keys_pool_revoke(
     }
     let pool = crate::util::key_pool::global_pool();
     if pool.revoke_by_id(&req.service, &req.id) {
+        if let Some(refusal) = pool.save_refusal() {
+            return pool_not_saved(refusal);
+        }
         crate::util::key_pool::save_pool_best_effort(&pool);
         tracing::info!(service = %req.service, id = %req.id, "key pool: revoked via web");
         (
@@ -479,6 +499,9 @@ pub async fn keys_pool_rotate(
     }
     let pool = crate::util::key_pool::global_pool();
     if pool.rotate_by_id(&req.service, &req.id, req.new.trim()) {
+        if let Some(refusal) = pool.save_refusal() {
+            return pool_not_saved(refusal);
+        }
         crate::util::key_pool::save_pool_best_effort(&pool);
         tracing::info!(service = %req.service, id = %req.id, "key pool: rotated via web");
         (
