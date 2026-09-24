@@ -66,7 +66,4425 @@
     {
       "description": "Stop or Abort on a scan another hse process runs (hse scan, hse radar or hse live in a terminal) answers 404: a server can cancel only the scans it runs. REQ-SCANSTATUS-002 made such a scan read as running, correctly, so the console offers the button.",
       "evidence": "src/api/scan_handlers/core.rs scan_cancel looks the id up in AppState.cancellations only; ss3.sh scenario A shows the scan running with interrupted=false while the CLI runs it"
+    },
+    {
+      "description": "The CLI tells users to \"view with `hse list`\" after an investigate or ingest run, but no `list` subcommand exists.",
+      "evidence": "src/cli/investigate.rs:221 and src/cli/ingest/mod.rs:327 print the hint; src/cli/command.rs Command enum has no List variant (competitor gap analysis, 2026-09-24)."
+    },
+    {
+      "description": "A top-level \"name\" in a POST /api/v1/scans or /api/v1/live body is silently ignored (202, no name); only unknown keys inside \"options\" are refused. Refusing unknown top-level keys changes the public API, so it needs approval.",
+      "evidence": "src/api/scan_handlers/mod.rs scan_request_from_json checks only the options object; review of REQ-SCANNAME-001, finding 5."
+    },
+    {
+      "description": "Port candidates too large for one verifiable change: the console views new_scan.js (665 lines), scans.js, diff.js, live.js and scan_info/index.js are JavaScript; each needs its own port to wasm-ui.",
+      "evidence": "Language rule: new code in Rust. REQ-SCANNAME-001 moved its rules (title, search) into wasm-ui and left only call-site glue in these files."
+    },
+    {
+      "description": "Repository tooling is shell: scripts/gate.sh, scripts/wasm_ui_drift_check.sh, scripts/doc_coverage.sh and others (3271 lines under scripts/). Porting to a cargo xtask is larger than one change.",
+      "evidence": "Language rule: tooling in Rust (build.rs, xtask or a bin target). Cluster \"scripts [1]\" signals nonrust=3271 lines."
     }
   ],
-  "cycle": 4
+  "cycle": 4,
+  "competitors": [
+    {
+      "name": "SpiderFoot 4.0",
+      "url": "https://github.com/smicallef/spiderfoot",
+      "why_same_shape": "MIT, self-hosted Python OSINT automation with an embedded local web UI (sf.py -l) and CLIs (sf.py, sfcli.py) over a SQLite back-end. It takes the same all-source seeds (IP, domain, email, phone, username, name, bitcoin), and HSE explicitly reproduces its command surface and scan model (README.md:8-9, 336-359)."
+    },
+    {
+      "name": "Recon-ng",
+      "url": "https://github.com/lanmaster53/recon-ng",
+      "why_same_shape": "GPLv3, self-hosted Python recon framework with an interactive CLI, recon-cli, and recon-web (a local web UI plus REST API) over per-workspace SQLite. It serves the same web-based OSINT recon operators on Linux."
+    },
+    {
+      "name": "theHarvester",
+      "url": "https://github.com/laramies/theHarvester",
+      "why_same_shape": "GPLv2, self-hosted Python OSINT collector with a CLI, the HarvestView local web UI and a REST API on 127.0.0.1:5000, over a local SQLite evidence store. It overlaps HSE's domain, email, IP and breach sources and its authorised-use stance."
+    },
+    {
+      "name": "Maigret",
+      "url": "https://github.com/soxoj/maigret",
+      "why_same_shape": "MIT, self-hosted Python person-OSINT tool that builds a dossier from a username and searches recursively on the IDs it finds. It has a CLI and a built-in local web UI (--web) and installs via pip or snap (amd64/arm64) on Linux. It covers HSE's username and identity slice."
+    },
+    {
+      "name": "OWASP Amass",
+      "url": "https://github.com/owasp-amass/amass",
+      "why_same_shape": "Apache-2.0 single static Go binary: a CLI with a local collection engine and asset DB for domain, IP and ASN mapping, the NETINT slice HSE also scans (README.md:371-374). Kept although it has no web UI, because its CLI, engine and output functions (viz, track, blacklists, -dir) overlap HSE's."
+    }
+  ],
+  "capability_gaps": [
+    {
+      "capability": "Name a scan (SpiderFoot 4.0 \"Scan Name\") and see it wherever the scan is listed or titled",
+      "competitors": [
+        "SpiderFoot"
+      ],
+      "source": "https://github.com/smicallef/spiderfoot/blob/v4.0/spiderfoot/templates/newscan.tmpl (scanname field); spiderfoot/static/js/spiderfoot.scanlist.js (Name column)",
+      "status": "dormant",
+      "files": [
+        "src/web/js/views/new_scan.js",
+        "src/core/scan/options.rs",
+        "src/api/scan_handlers/mod.rs",
+        "wasm-ui/src/views/scans.rs"
+      ]
+    },
+    {
+      "capability": "Route every module's egress, not just search, through an operator HTTP/SOCKS proxy or Tor",
+      "competitors": [
+        "SpiderFoot",
+        "Recon-ng",
+        "theHarvester",
+        "Maigret"
+      ],
+      "source": "https://github.com/smicallef/spiderfoot/blob/v4.0/sf.py (_socks1type..._socks5pwd, 'TOR'); https://github.com/lanmaster53/recon-ng/blob/master/recon/core/base.py (L89 proxy option); https://github.com/laramies/theHarvester/blob/master/README.md (proxies.yaml, -p, fail-closed proxy mode); https://github.com/soxoj/maigret/blob/main/docs/source/command-line-options.rst (--proxy, --tor-proxy)",
+      "status": "open",
+      "files": [
+        "src/util/http/ssrf.rs",
+        "src/util/http/client.rs",
+        "src/util/egress/mod.rs",
+        "src/util/curl/mod.rs",
+        "src/util/curl_client/mod.rs",
+        "Cargo.toml"
+      ]
+    },
+    {
+      "capability": "Flag or remove an individual wrong finding (false positive), honoured by views, correlation and exports",
+      "competitors": [
+        "SpiderFoot",
+        "Recon-ng"
+      ],
+      "source": "https://github.com/smicallef/spiderfoot/blob/v4.0/sfwebui.py (resultsetfp L1141-1196, cascades to child results; filterfp L1655); https://github.com/lanmaster53/recon-ng/blob/master/recon/core/framework.py (_do_db_delete L1108)",
+      "status": "open",
+      "files": [
+        "src/storage/mod.rs",
+        "src/storage/entities.rs",
+        "src/api/routes/mod.rs",
+        "src/api/scan_handlers/mod.rs",
+        "src/app/export/renderers.rs",
+        "wasm-ui/src/scan_info/browse.rs",
+        "src/web/js/scan_info/browse.js"
+      ]
+    },
+    {
+      "capability": "Standalone graph export (SVG/HTML image, DOT, Neo4j Cypher) alongside GEXF",
+      "competitors": [
+        "Maigret",
+        "OWASP Amass"
+      ],
+      "source": "https://github.com/soxoj/maigret/blob/main/README.md (--graph interactive D3 HTML, --neo4j Cypher); https://github.com/owasp-amass/amass/blob/main/internal/viz/cli.go (L60-62 -d3, -dot, -gexf)",
+      "status": "dormant",
+      "files": [
+        "src/api/routes/mod.rs",
+        "src/api/scan_handlers/analysis.rs",
+        "src/web/js/scan_info/index.js",
+        "src/web/js/scan_info/graph.js",
+        "src/app/export/mod.rs",
+        "src/cli/command.rs"
+      ]
+    },
+    {
+      "capability": "Operator scope denylist: identifiers or domains never to query or pivot on",
+      "competitors": [
+        "Maigret",
+        "OWASP Amass"
+      ],
+      "source": "https://github.com/soxoj/maigret/blob/main/docs/source/command-line-options.rst (--ignore-ids); https://github.com/owasp-amass/amass/blob/main/internal/enum/cli.go (L100 -bl, L134 -blf)",
+      "status": "open",
+      "files": [
+        "src/core/scan/options.rs",
+        "src/core/engine/dispatch.rs",
+        "src/core/engine/expansion.rs",
+        "src/cli/command.rs",
+        "src/api/scan_handlers/mod.rs",
+        "src/web/js/views/new_scan.js"
+      ]
+    },
+    {
+      "capability": "Workspaces: a separate store per engagement or case, plus listing and filtering scans by case",
+      "competitors": [
+        "Recon-ng",
+        "OWASP Amass"
+      ],
+      "source": "https://github.com/lanmaster53/recon-ng/wiki/Features (Workspaces, -w); https://github.com/lanmaster53/recon-ng/blob/master/recon/core/base.py (L620-666); https://github.com/owasp-amass/amass/blob/main/internal/enum/cli.go (L137 -dir)",
+      "status": "open",
+      "files": [
+        "src/util/paths.rs",
+        "src/lib.rs",
+        "src/storage/mod.rs",
+        "src/api/scan_handlers/core.rs",
+        "src/web/js/views/scans.js",
+        "src/cli/command.rs"
+      ]
+    },
+    {
+      "capability": "Backup/restore and lossless transfer of the store or of a scan (snapshot, export/import)",
+      "competitors": [
+        "Recon-ng",
+        "theHarvester"
+      ],
+      "source": "https://github.com/lanmaster53/recon-ng/wiki/Features (Database Snapshots); https://github.com/lanmaster53/recon-ng/blob/master/recon/core/base.py (L668-718); https://github.com/laramies/theHarvester/blob/master/README.md (/runs/import, /runs/import-database, /runs/export-database, per-run JSONL export)",
+      "status": "open",
+      "files": [
+        "src/storage/mod.rs",
+        "src/app/import/mod.rs",
+        "src/app/export/mod.rs",
+        "src/cli/command.rs",
+        "src/api/routes/mod.rs"
+      ]
+    },
+    {
+      "capability": "Human-readable standalone report (self-contained HTML or Markdown; PDF via print)",
+      "competitors": [
+        "Maigret",
+        "Recon-ng"
+      ],
+      "source": "https://github.com/soxoj/maigret/blob/main/docs/source/command-line-options.rst (-H --html, -P --pdf, -M --md); https://github.com/lanmaster53/recon-ng-marketplace/blob/master/modules/reporting/html.py ('HTML Report Generator')",
+      "status": "open",
+      "files": [
+        "src/app/export/renderers.rs",
+        "src/app/export/mod.rs",
+        "src/api/scan_export/mod.rs",
+        "src/api/routes/mod.rs",
+        "src/web/js/scan_info/index.js"
+      ]
+    },
+    {
+      "capability": "Goal-directed module selection: choose the modules, and their upstream producers, that yield the data types the operator wants",
+      "competitors": [
+        "SpiderFoot",
+        "theHarvester"
+      ],
+      "source": "https://github.com/smicallef/spiderfoot/blob/v4.0/sf.py (L100 -t 'Event types to collect (modules selected automatically)'); https://github.com/smicallef/spiderfoot/blob/v4.0/sfwebui.py (startscan L1295, typelist → modulesProducing); https://github.com/laramies/theHarvester/blob/master/README.md (capability selectors -b emails,urls,...)",
+      "status": "open",
+      "files": [
+        "src/cli/sf.rs",
+        "src/web/js/views/new_scan.js",
+        "src/web/js/state.js",
+        "src/core/dependency/mod.rs",
+        "src/core/dependency/reachability.rs",
+        "src/core/scan/options.rs"
+      ]
+    },
+    {
+      "capability": "CLI client for a running `hse serve`: list, start, stop, tail and export server-side scans from the terminal",
+      "competitors": [
+        "SpiderFoot",
+        "OWASP Amass"
+      ],
+      "source": "https://github.com/smicallef/spiderfoot/blob/v4.0/sfcli.py (cli.server_baseurl L77; scans/start/stop/logs -w/export/delete/find); https://github.com/owasp-amass/amass/blob/main/cmd/amass/main.go; https://github.com/owasp-amass/amass/blob/main/internal/enum/cli.go (L103 -engine URL)",
+      "status": "open",
+      "files": [
+        "src/cli/command.rs",
+        "src/cli/mod.rs",
+        "src/api/routes/mod.rs",
+        "src/api/auth",
+        "src/cli/investigate.rs",
+        "src/cli/ingest/mod.rs"
+      ]
+    },
+    {
+      "capability": "Per-module option settings (non-boolean module parameters editable in Settings or the CLI)",
+      "competitors": [
+        "SpiderFoot",
+        "Recon-ng"
+      ],
+      "source": "https://github.com/smicallef/spiderfoot/blob/v4.0/sfwebui.py (optsraw L964-986, module.<mod>.<opt>); https://github.com/smicallef/spiderfoot/blob/v4.0/sfcli.py (set L1172); https://github.com/lanmaster53/recon-ng/wiki/Features (Configuration Persistence); https://github.com/lanmaster53/recon-ng/blob/master/recon/core/framework.py (options L899-938)",
+      "status": "open",
+      "files": [
+        "src/util/settings/mod.rs",
+        "src/cli/config.rs",
+        "src/api/settings_handlers/mod.rs",
+        "src/web/js/views/opts.js",
+        "src/util/quota_config.rs",
+        "src/core/module/mod.rs"
+      ]
+    },
+    {
+      "capability": "Spreadsheet (XLSX) export, including a multi-sheet workbook",
+      "competitors": [
+        "SpiderFoot",
+        "Recon-ng"
+      ],
+      "source": "https://github.com/smicallef/spiderfoot/blob/v4.0/sfwebui.py (scaneventresultexport L366, filetype xlsx|excel); https://github.com/lanmaster53/recon-ng/blob/master/recon/core/web/exports.py (xlsxify); https://github.com/lanmaster53/recon-ng/blob/master/recon/core/web/reports.py (xlsx workbook, one sheet per table)",
+      "status": "open",
+      "files": [
+        "src/app/export/renderers.rs",
+        "src/app/export/mod.rs",
+        "src/api/scan_export/mod.rs",
+        "src/web/js/scan_info/index.js",
+        "Cargo.toml",
+        "deny.toml"
+      ]
+    },
+    {
+      "capability": "Machine-readable REST API description (OpenAPI/Swagger)",
+      "competitors": [
+        "theHarvester",
+        "Recon-ng"
+      ],
+      "source": "https://github.com/laramies/theHarvester/blob/master/README.md (Swagger /docs, ReDoc /redoc); https://github.com/lanmaster53/recon-ng/blob/master/recon/core/web/__init__.py (Swagger, specs_route '/api/')",
+      "status": "open",
+      "files": [
+        "src/api/routes/mod.rs",
+        "docs/"
+      ]
+    },
+    {
+      "capability": "Read-only SQL query of the local store",
+      "competitors": [
+        "SpiderFoot",
+        "Recon-ng"
+      ],
+      "source": "https://github.com/smicallef/spiderfoot/blob/master/README.md ('SQLite back-end for custom querying'); https://github.com/smicallef/spiderfoot/blob/v4.0/sfcli.py (query L541); https://github.com/lanmaster53/recon-ng/wiki/Features (db query, db schema)",
+      "status": "open",
+      "files": [
+        "src/cli/command.rs",
+        "src/storage/mod.rs"
+      ]
+    },
+    {
+      "capability": "Map of a scan's geolocated findings plus KML/GeoJSON export",
+      "competitors": [
+        "Recon-ng"
+      ],
+      "source": "https://github.com/lanmaster53/recon-ng-marketplace/blob/master/modules/reporting/pushpin.py ('HTML media and map reports for all of the PushPins'); https://github.com/lanmaster53/recon-ng/blob/master/recon/core/web/reports.py (pushpin)",
+      "status": "open",
+      "files": [
+        "src/web/js/radar_map.js",
+        "src/web/js/scan_info/location.js",
+        "wasm-ui/src/scan_info/location.rs",
+        "src/app/export/mod.rs",
+        "src/api/routes/mod.rs"
+      ]
+    },
+    {
+      "capability": "Include or exclude username-probe sites by category (tags)",
+      "competitors": [
+        "Maigret"
+      ],
+      "source": "https://github.com/soxoj/maigret/blob/main/README.md (--tags photo,dating); https://github.com/soxoj/maigret/blob/main/docs/source/command-line-options.rst (--tags, --exclude-tags, --top-sites)",
+      "status": "open",
+      "files": [
+        "src/modules/username_search/mod.rs",
+        "src/modules/username_search/sites.rs",
+        "src/core/scan/options.rs",
+        "src/cli/command.rs",
+        "src/web/js/views/new_scan.js"
+      ]
+    },
+    {
+      "capability": "Bulk scan-list actions and scoped exports: export several scans as one file, delete or re-run many, export one entity type or the current filter",
+      "competitors": [
+        "SpiderFoot"
+      ],
+      "source": "https://github.com/smicallef/spiderfoot/blob/v4.0/sfwebui.py (scaneventresultexportmulti L418, scanexportjsonmulti L540, scanvizmulti L632, rerunscanmulti L784, scandelete L988, scaneventresultexport by type L366, scansearchresultexport L491)",
+      "status": "open",
+      "files": [
+        "wasm-ui/src/views/scans.rs",
+        "src/web/js/views/scans.js",
+        "src/app/export/mod.rs",
+        "src/api/scan_export/mod.rs",
+        "src/api/routes/mod.rs",
+        "src/api/scan_handlers/analysis.rs"
+      ]
+    },
+    {
+      "capability": "Analyst notes on individual findings, and editable scan notes",
+      "competitors": [
+        "Recon-ng"
+      ],
+      "source": "https://github.com/lanmaster53/recon-ng/blob/master/recon/core/framework.py (_do_db_notes L1027 'Adds notes to rows in the database')",
+      "status": "open",
+      "files": [
+        "src/storage/mod.rs",
+        "src/api/routes/mod.rs",
+        "wasm-ui/src/scan_info/browse.rs",
+        "src/app/export/renderers.rs",
+        "src/core/scan/options.rs"
+      ]
+    },
+    {
+      "capability": "Correlation rule catalogue and operator-authored rules",
+      "competitors": [
+        "SpiderFoot"
+      ],
+      "source": "https://github.com/smicallef/spiderfoot/blob/master/README.md (YAML-configurable correlation engine, 37 rules); https://github.com/smicallef/spiderfoot/blob/v4.0/correlations/README.md; https://github.com/smicallef/spiderfoot/blob/v4.0/sfwebui.py (correlationrules L1237)",
+      "status": "open",
+      "files": [
+        "src/core/correlator/mod.rs",
+        "src/core/correlator/rules/mod.rs",
+        "src/cli/command.rs",
+        "src/api/routes/mod.rs",
+        "src/web/js/views/engines.js"
+      ]
+    },
+    {
+      "capability": "Persistent, console-managed scan schedules that survive restarts (pause, resume, run-now, dispatch history)",
+      "competitors": [
+        "theHarvester"
+      ],
+      "source": "https://github.com/laramies/theHarvester/blob/master/README.md (HarvestView Schedules; /api/v1/schedules pause/resume/run-now/dispatches)",
+      "status": "open",
+      "files": [
+        "src/core/live/mod.rs",
+        "src/api/live_handlers.rs",
+        "src/web/js/views/live.js",
+        "install.sh",
+        "docs/AUTONOMY.md"
+      ]
+    },
+    {
+      "capability": "Clone a scan into the New Scan form to edit it before re-running",
+      "competitors": [
+        "SpiderFoot"
+      ],
+      "source": "https://github.com/smicallef/spiderfoot/blob/v4.0/sfwebui.py (clonescan L853)",
+      "status": "open",
+      "files": [
+        "src/web/js/views/scans.js",
+        "src/web/js/views/new_scan.js",
+        "src/web/js/state.js",
+        "src/web/js/router.js",
+        "wasm-ui/src/views/scans.rs"
+      ]
+    }
+  ],
+  "clusters": [
+    {
+      "name": "scan-name/server: ScanOptions.name, its request and CLI seams",
+      "files": [
+        "src/core/scan/options.rs",
+        "src/core/scan/tests.rs",
+        "src/api/scan_handlers/mod.rs",
+        "src/api/live_handlers.rs",
+        "src/cli/command.rs",
+        "src/cli/scan/mod.rs",
+        "src/cli/live/mod.rs",
+        "tests/api.rs"
+      ],
+      "status": "in_progress",
+      "score": null
+    },
+    {
+      "name": "scan-name/console: what the console calls a scan, and New Scan sending the name",
+      "files": [
+        "wasm-ui/src/scan_label.rs",
+        "wasm-ui/src/views/scans.rs",
+        "wasm-ui/src/scan_info/info.rs",
+        "src/web/js/views/new_scan.js",
+        "src/web/js/views/scans.js",
+        "src/web/js/views/diff.js",
+        "src/web/js/views/live.js",
+        "src/web/js/scan_info/index.js"
+      ],
+      "status": "in_progress",
+      "score": null
+    },
+    {
+      "name": "src/selftest",
+      "files": [
+        "src/selftest/capability_probe.rs",
+        "src/selftest/mod.rs",
+        "src/selftest/tests.rs"
+      ],
+      "status": "pending",
+      "score": 12.0
+    },
+    {
+      "name": "src/util/http [1]",
+      "files": [
+        "src/util/http/client.rs",
+        "src/util/http/fetch.rs",
+        "src/util/http/keys.rs",
+        "src/util/http/mod.rs",
+        "src/util/http/redact.rs",
+        "src/util/http/ssrf.rs",
+        "src/util/http/test_server.rs",
+        "src/util/http/tests.rs"
+      ],
+      "status": "pending",
+      "score": 8.5
+    },
+    {
+      "name": "src/app [2]",
+      "files": [
+        "src/app/runtime.rs",
+        "src/app/scan_run.rs",
+        "src/app/signal.rs",
+        "src/app/signal_tests.rs",
+        "src/app/tidy.rs",
+        "src/app/update.rs"
+      ],
+      "status": "pending",
+      "score": 8.0
+    },
+    {
+      "name": "scripts [1]",
+      "files": [
+        "scripts/check_workflows.py",
+        "scripts/diagnose.sh",
+        "scripts/doc_coverage.sh",
+        "scripts/gate.sh",
+        "scripts/pack_monolith.py",
+        "scripts/reconcile.sh",
+        "scripts/setup-dev.sh",
+        "scripts/standard-test.sh"
+      ],
+      "status": "pending",
+      "score": 6.54
+    },
+    {
+      "name": "src/core/engine",
+      "files": [
+        "src/core/engine/dispatch.rs",
+        "src/core/engine/enrich.rs",
+        "src/core/engine/expansion.rs",
+        "src/core/engine/mod.rs",
+        "src/core/engine/passes.rs",
+        "src/core/engine/ranking.rs",
+        "src/core/engine/tests.rs",
+        "src/core/engine/writer.rs"
+      ],
+      "status": "pending",
+      "score": 6.5
+    },
+    {
+      "name": "wasm-ui/src",
+      "files": [
+        "wasm-ui/src/confidence.rs",
+        "wasm-ui/src/entity_lookup.rs",
+        "wasm-ui/src/html.rs",
+        "wasm-ui/src/lib.rs",
+        "wasm-ui/src/scan_state.rs",
+        "wasm-ui/src/theme.rs"
+      ],
+      "status": "pending",
+      "score": 6.0
+    },
+    {
+      "name": "src/modules/cert_intel",
+      "files": [
+        "src/modules/cert_intel/mod.rs",
+        "src/modules/cert_intel/tests.rs"
+      ],
+      "status": "pending",
+      "score": 5.5
+    },
+    {
+      "name": ".",
+      "files": [
+        "build.rs",
+        "docker-entrypoint.sh",
+        "install.sh"
+      ],
+      "status": "pending",
+      "score": 5.03
+    },
+    {
+      "name": "src/modules/see_know/endpoints",
+      "files": [
+        "src/modules/see_know/endpoints/mod.rs",
+        "src/modules/see_know/endpoints/tests.rs"
+      ],
+      "status": "pending",
+      "score": 5.0
+    },
+    {
+      "name": "src/modules/streaming_probe",
+      "files": [
+        "src/modules/streaming_probe/mod.rs",
+        "src/modules/streaming_probe/sites.rs",
+        "src/modules/streaming_probe/tests.rs"
+      ],
+      "status": "pending",
+      "score": 5.0
+    },
+    {
+      "name": "src/modules/username_search",
+      "files": [
+        "src/modules/username_search/mod.rs",
+        "src/modules/username_search/sites.rs",
+        "src/modules/username_search/tests.rs"
+      ],
+      "status": "pending",
+      "score": 5.0
+    },
+    {
+      "name": "src/util/entity_extractor",
+      "files": [
+        "src/util/entity_extractor/classifier.rs",
+        "src/util/entity_extractor/extractor.rs",
+        "src/util/entity_extractor/mod.rs",
+        "src/util/entity_extractor/patterns.rs"
+      ],
+      "status": "pending",
+      "score": 4.5
+    },
+    {
+      "name": "src/web/js/views [2]",
+      "files": [
+        "src/web/js/views/new_scan.js",
+        "src/web/js/views/opts.js",
+        "src/web/js/views/radar.js",
+        "src/web/js/views/scans.js",
+        "src/web/js/views/search.js"
+      ],
+      "status": "pending",
+      "score": 4.43
+    },
+    {
+      "name": "src/core [1]",
+      "files": [
+        "src/core/breach_consensus.rs",
+        "src/core/breach_platforms.rs",
+        "src/core/breach_sweep.rs",
+        "src/core/classifier.rs",
+        "src/core/classifier_tests.rs",
+        "src/core/classify_module.rs",
+        "src/core/classify_module_tests.rs",
+        "src/core/confidence.rs"
+      ],
+      "status": "pending",
+      "score": 4.0
+    },
+    {
+      "name": "src/core/live",
+      "files": [
+        "src/core/live/mod.rs",
+        "src/core/live/tests.rs"
+      ],
+      "status": "pending",
+      "score": 4.0
+    },
+    {
+      "name": "src/storage [1]",
+      "files": [
+        "src/storage/archive.rs",
+        "src/storage/archive_tests.rs",
+        "src/storage/entities.rs",
+        "src/storage/mod.rs",
+        "src/storage/signal.rs",
+        "src/storage/signal_tests.rs",
+        "src/storage/stealer_rows.rs",
+        "src/storage/templates.rs"
+      ],
+      "status": "pending",
+      "score": 3.5
+    },
+    {
+      "name": "src/util [2]",
+      "files": [
+        "src/util/exif.rs",
+        "src/util/identity.rs",
+        "src/util/iptc.rs",
+        "src/util/iptc_tests.rs",
+        "src/util/json.rs",
+        "src/util/key_fingerprint.rs",
+        "src/util/mod.rs",
+        "src/util/paths.rs"
+      ],
+      "status": "pending",
+      "score": 3.3
+    },
+    {
+      "name": "src/core/correlator",
+      "files": [
+        "src/core/correlator/mod.rs",
+        "src/core/correlator/perf.rs",
+        "src/core/correlator/tests.rs"
+      ],
+      "status": "pending",
+      "score": 3.0
+    },
+    {
+      "name": "src/util/atomic_file",
+      "files": [
+        "src/util/atomic_file/mod.rs",
+        "src/util/atomic_file/tests.rs"
+      ],
+      "status": "pending",
+      "score": 3.0
+    },
+    {
+      "name": "src/web/js/views [1]",
+      "files": [
+        "src/web/js/views/assurance.js",
+        "src/web/js/views/attack.js",
+        "src/web/js/views/dash.js",
+        "src/web/js/views/debug_log.js",
+        "src/web/js/views/diff.js",
+        "src/web/js/views/engines.js",
+        "src/web/js/views/key_harvest.js",
+        "src/web/js/views/live.js"
+      ],
+      "status": "pending",
+      "score": 2.83
+    },
+    {
+      "name": "src/util/extract",
+      "files": [
+        "src/util/extract/mod.rs",
+        "src/util/extract/tests.rs"
+      ],
+      "status": "pending",
+      "score": 2.7
+    },
+    {
+      "name": "src/util/see_know [1]",
+      "files": [
+        "src/util/see_know/budget.rs",
+        "src/util/see_know/client.rs",
+        "src/util/see_know/config.rs",
+        "src/util/see_know/data_log.rs",
+        "src/util/see_know/endpoints.rs",
+        "src/util/see_know/enterprise_config.rs",
+        "src/util/see_know/integration_tests.rs",
+        "src/util/see_know/mod.rs"
+      ],
+      "status": "pending",
+      "score": 2.7
+    },
+    {
+      "name": "src/web/js",
+      "files": [
+        "src/web/js/api.js",
+        "src/web/js/helpers.js",
+        "src/web/js/main.js",
+        "src/web/js/radar_map.js",
+        "src/web/js/router.js",
+        "src/web/js/state.js",
+        "src/web/js/timers.js",
+        "src/web/js/ui.js"
+      ],
+      "status": "pending",
+      "score": 2.51
+    },
+    {
+      "name": "src/util/see_know [2]",
+      "files": [
+        "src/util/see_know/tests.rs",
+        "src/util/see_know/web_client_advanced.rs",
+        "src/util/see_know/web_dispatcher.rs"
+      ],
+      "status": "pending",
+      "score": 2.2
+    },
+    {
+      "name": "src/util [4]",
+      "files": [
+        "src/util/timefmt.rs",
+        "src/util/union_find.rs",
+        "src/util/x509_field.rs",
+        "src/util/xmp.rs",
+        "src/util/xmp_tests.rs"
+      ],
+      "status": "pending",
+      "score": 2.1
+    },
+    {
+      "name": "src/app/import [2]",
+      "files": [
+        "src/app/import/local.rs",
+        "src/app/import/mod.rs",
+        "src/app/import/oathnet_report.rs",
+        "src/app/import/sql_dump.rs",
+        "src/app/import/stealer.rs",
+        "src/app/import/tests.rs",
+        "src/app/import/txt.rs"
+      ],
+      "status": "pending",
+      "score": 2.0
+    },
+    {
+      "name": "src/bin/gen_oui",
+      "files": [
+        "src/bin/gen_oui/build.rs",
+        "src/bin/gen_oui/build_tests.rs",
+        "src/bin/gen_oui/main.rs"
+      ],
+      "status": "pending",
+      "score": 2.0
+    },
+    {
+      "name": "src/util [1]",
+      "files": [
+        "src/util/atproto.rs",
+        "src/util/backoff.rs",
+        "src/util/canonical.rs",
+        "src/util/cell.rs",
+        "src/util/cell_db.rs",
+        "src/util/confusable.rs",
+        "src/util/dns.rs",
+        "src/util/engine_host.rs"
+      ],
+      "status": "pending",
+      "score": 1.8
+    },
+    {
+      "name": "src/util/diagnostics",
+      "files": [
+        "src/util/diagnostics/analyse.rs",
+        "src/util/diagnostics/cluster.rs",
+        "src/util/diagnostics/event_hints.rs",
+        "src/util/diagnostics/ledger.rs",
+        "src/util/diagnostics/mod.rs",
+        "src/util/diagnostics/tests.rs",
+        "src/util/diagnostics/types.rs"
+      ],
+      "status": "pending",
+      "score": 1.8
+    },
+    {
+      "name": "src/web/js/scan_info [2]",
+      "files": [
+        "src/web/js/scan_info/identities.js",
+        "src/web/js/scan_info/index.js",
+        "src/web/js/scan_info/info.js",
+        "src/web/js/scan_info/insights.js",
+        "src/web/js/scan_info/leads.js",
+        "src/web/js/scan_info/location.js",
+        "src/web/js/scan_info/log.js",
+        "src/web/js/scan_info/metrics.js"
+      ],
+      "status": "pending",
+      "score": 1.73
+    },
+    {
+      "name": "src/core [3]",
+      "files": [
+        "src/core/module_runtime.rs",
+        "src/core/outage.rs",
+        "src/core/outage_tests.rs",
+        "src/core/radar_live.rs",
+        "src/core/radar_track.rs",
+        "src/core/rf.rs",
+        "src/core/rf_tests.rs",
+        "src/core/snake_graph.rs"
+      ],
+      "status": "pending",
+      "score": 1.7
+    },
+    {
+      "name": "src/modules/search_engines/extract",
+      "files": [
+        "src/modules/search_engines/extract/mod.rs",
+        "src/modules/search_engines/extract/tests.rs"
+      ],
+      "status": "pending",
+      "score": 1.7
+    },
+    {
+      "name": "src/modules/web_crawler/crawl_util",
+      "files": [
+        "src/modules/web_crawler/crawl_util/mod.rs",
+        "src/modules/web_crawler/crawl_util/tests.rs"
+      ],
+      "status": "pending",
+      "score": 1.7
+    },
+    {
+      "name": "src/core/correlator/rules/identity/account",
+      "files": [
+        "src/core/correlator/rules/identity/account/broker.rs",
+        "src/core/correlator/rules/identity/account/handle.rs",
+        "src/core/correlator/rules/identity/account/key.rs",
+        "src/core/correlator/rules/identity/account/mod.rs",
+        "src/core/correlator/rules/identity/account/platform.rs",
+        "src/core/correlator/rules/identity/account/tracking.rs"
+      ],
+      "status": "pending",
+      "score": 1.6
+    },
+    {
+      "name": "src/app/import [1]",
+      "files": [
+        "src/app/import/combined.rs",
+        "src/app/import/combolist.rs",
+        "src/app/import/csv.rs",
+        "src/app/import/dossier.rs",
+        "src/app/import/html.rs",
+        "src/app/import/json.rs",
+        "src/app/import/kml.rs",
+        "src/app/import/kml_tests.rs"
+      ],
+      "status": "pending",
+      "score": 1.5
+    },
+    {
+      "name": "src/util/html",
+      "files": [
+        "src/util/html/mod.rs",
+        "src/util/html/tests.rs"
+      ],
+      "status": "pending",
+      "score": 1.5
+    },
+    {
+      "name": "src/web/js/scan_info [1]",
+      "files": [
+        "src/web/js/scan_info/audit.js",
+        "src/web/js/scan_info/benchmark.js",
+        "src/web/js/scan_info/browse.js",
+        "src/web/js/scan_info/communities.js",
+        "src/web/js/scan_info/correlations.js",
+        "src/web/js/scan_info/duplicates.js",
+        "src/web/js/scan_info/gaps.js",
+        "src/web/js/scan_info/graph.js"
+      ],
+      "status": "pending",
+      "score": 1.39
+    },
+    {
+      "name": "src/web/js/scan_info [3]",
+      "files": [
+        "src/web/js/scan_info/network.js",
+        "src/web/js/scan_info/path.js",
+        "src/web/js/scan_info/pivots.js",
+        "src/web/js/scan_info/report.js",
+        "src/web/js/scan_info/stealer.js",
+        "src/web/js/scan_info/timeline.js",
+        "src/web/js/scan_info/trust.js"
+      ],
+      "status": "pending",
+      "score": 1.28
+    },
+    {
+      "name": "src/modules/search_engines/fetch",
+      "files": [
+        "src/modules/search_engines/fetch/mod.rs",
+        "src/modules/search_engines/fetch/tests.rs"
+      ],
+      "status": "pending",
+      "score": 1.2
+    },
+    {
+      "name": "src/modules/au_unclaimed",
+      "files": [
+        "src/modules/au_unclaimed/mod.rs",
+        "src/modules/au_unclaimed/qld_helpers.rs",
+        "src/modules/au_unclaimed/tests.rs"
+      ],
+      "status": "pending",
+      "score": 1.1
+    },
+    {
+      "name": "src/modules/wigle",
+      "files": [
+        "src/modules/wigle/account.rs",
+        "src/modules/wigle/emit.rs",
+        "src/modules/wigle/fetch.rs",
+        "src/modules/wigle/mod.rs",
+        "src/modules/wigle/tests.rs"
+      ],
+      "status": "pending",
+      "score": 1.1
+    },
+    {
+      "name": "src/cli/serve",
+      "files": [
+        "src/cli/serve/mod.rs",
+        "src/cli/serve/tests.rs"
+      ],
+      "status": "pending",
+      "score": 1.0
+    },
+    {
+      "name": "src/util/address_au",
+      "files": [
+        "src/util/address_au/mod.rs",
+        "src/util/address_au/tests.rs"
+      ],
+      "status": "pending",
+      "score": 1.0
+    },
+    {
+      "name": "src/util/endpoint_override",
+      "files": [
+        "src/util/endpoint_override/mod.rs",
+        "src/util/endpoint_override/tests.rs"
+      ],
+      "status": "pending",
+      "score": 1.0
+    },
+    {
+      "name": "src/util/key_pool",
+      "files": [
+        "src/util/key_pool/mod.rs",
+        "src/util/key_pool/persistence.rs",
+        "src/util/key_pool/pool.rs",
+        "src/util/key_pool/tests.rs",
+        "src/util/key_pool/types.rs",
+        "src/util/key_pool/validation.rs"
+      ],
+      "status": "pending",
+      "score": 1.0
+    },
+    {
+      "name": "src/util/keys",
+      "files": [
+        "src/util/keys/constants.rs",
+        "src/util/keys/io.rs",
+        "src/util/keys/mod.rs",
+        "src/util/keys/tests.rs"
+      ],
+      "status": "pending",
+      "score": 1.0
+    },
+    {
+      "name": "src/util/scan",
+      "files": [
+        "src/util/scan/mod.rs"
+      ],
+      "status": "pending",
+      "score": 1.0
+    },
+    {
+      "name": "src/modules/dns_axfr",
+      "files": [
+        "src/modules/dns_axfr/mod.rs",
+        "src/modules/dns_axfr/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.9
+    },
+    {
+      "name": "hse-core/src",
+      "files": [
+        "hse-core/src/coords.rs",
+        "hse-core/src/lib.rs",
+        "hse-core/src/tags.rs",
+        "hse-core/src/tests.rs",
+        "hse-core/src/coords/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.8
+    },
+    {
+      "name": "src/util/probe",
+      "files": [
+        "src/util/probe/mod.rs",
+        "src/util/probe/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.8
+    },
+    {
+      "name": "src/bin/architecture_audit",
+      "files": [
+        "src/bin/architecture_audit/audit.rs",
+        "src/bin/architecture_audit/audit_tests.rs",
+        "src/bin/architecture_audit/main.rs"
+      ],
+      "status": "pending",
+      "score": 0.7
+    },
+    {
+      "name": "src/util/oathnet",
+      "files": [
+        "src/util/oathnet/mod.rs",
+        "src/util/oathnet/paths.rs",
+        "src/util/oathnet/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.7
+    },
+    {
+      "name": "src/core [4]",
+      "files": [
+        "src/core/test_support.rs",
+        "src/core/wire_keys.rs",
+        "src/core/xml.rs",
+        "src/core/xml_tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.6
+    },
+    {
+      "name": "src/modules/exa_search",
+      "files": [
+        "src/modules/exa_search/mod.rs",
+        "src/modules/exa_search/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.6
+    },
+    {
+      "name": "src/modules/structured_id",
+      "files": [
+        "src/modules/structured_id/mod.rs",
+        "src/modules/structured_id/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.6
+    },
+    {
+      "name": "src",
+      "files": [
+        "src/lib.rs",
+        "src/lib_tests.rs",
+        "src/main.rs",
+        "src/main_tests.rs",
+        "src/storage/tests.rs",
+        "src/web/spa.html"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/core [2]",
+      "files": [
+        "src/core/coverage.rs",
+        "src/core/cross_scan.rs",
+        "src/core/diamond.rs",
+        "src/core/engine_host.rs",
+        "src/core/intelligence.rs",
+        "src/core/link.rs",
+        "src/core/link_tests.rs",
+        "src/core/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/core/correlator/rules [2]",
+      "files": [
+        "src/core/correlator/rules/device_track.rs",
+        "src/core/correlator/rules/gap.rs",
+        "src/core/correlator/rules/handle_variant.rs",
+        "src/core/correlator/rules/infra.rs",
+        "src/core/correlator/rules/infra_closure.rs",
+        "src/core/correlator/rules/integrity.rs",
+        "src/core/correlator/rules/locale.rs",
+        "src/core/correlator/rules/lookalike.rs"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/core/correlator/rules/geo",
+      "files": [
+        "src/core/correlator/rules/geo/chain.rs",
+        "src/core/correlator/rules/geo/cluster.rs",
+        "src/core/correlator/rules/geo/jurisdiction.rs",
+        "src/core/correlator/rules/geo/mod.rs",
+        "src/core/correlator/rules/geo/profile.rs"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/core/graph",
+      "files": [
+        "src/core/graph/mod.rs",
+        "src/core/graph/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/modules/au_geo",
+      "files": [
+        "src/modules/au_geo/mod.rs",
+        "src/modules/au_geo/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/modules/employer_pivot",
+      "files": [
+        "src/modules/employer_pivot/mod.rs",
+        "src/modules/employer_pivot/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/modules/nostr",
+      "files": [
+        "src/modules/nostr/mod.rs",
+        "src/modules/nostr/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/modules/search_engines/queries",
+      "files": [
+        "src/modules/search_engines/queries/exposure.rs",
+        "src/modules/search_engines/queries/mod.rs",
+        "src/modules/search_engines/queries/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/modules/typosquat",
+      "files": [
+        "src/modules/typosquat/mod.rs",
+        "src/modules/typosquat/punycode.rs",
+        "src/modules/typosquat/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/util/abn",
+      "files": [
+        "src/util/abn/mod.rs",
+        "src/util/abn/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/util/key_vault",
+      "files": [
+        "src/util/key_vault/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/util/oui",
+      "files": [
+        "src/util/oui/ieee.rs",
+        "src/util/oui/ieee_tests.rs",
+        "src/util/oui/mod.rs",
+        "src/util/oui/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.5
+    },
+    {
+      "name": "src/cli [2]",
+      "files": [
+        "src/cli/engines.rs",
+        "src/cli/investigate.rs",
+        "src/cli/live_frame.rs",
+        "src/cli/logging.rs",
+        "src/cli/mod.rs",
+        "src/cli/modules.rs",
+        "src/cli/oathnet_batch.rs",
+        "src/cli/query.rs"
+      ],
+      "status": "pending",
+      "score": 0.4
+    },
+    {
+      "name": "src/core/crypto",
+      "files": [
+        "src/core/crypto/mod.rs",
+        "src/core/crypto/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.4
+    },
+    {
+      "name": "src/modules/asic_banned_orgs",
+      "files": [
+        "src/modules/asic_banned_orgs/mod.rs",
+        "src/modules/asic_banned_orgs/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.4
+    },
+    {
+      "name": "src/modules/gleif_lei",
+      "files": [
+        "src/modules/gleif_lei/family.rs",
+        "src/modules/gleif_lei/family_tests.rs",
+        "src/modules/gleif_lei/helpers.rs",
+        "src/modules/gleif_lei/level2.rs",
+        "src/modules/gleif_lei/mod.rs",
+        "src/modules/gleif_lei/tests.rs",
+        "src/modules/gleif_lei/transform.rs",
+        "src/modules/gleif_lei/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.4
+    },
+    {
+      "name": "src/util/document_parse",
+      "files": [
+        "src/util/document_parse/csv_parse.rs",
+        "src/util/document_parse/image_geolocation.rs",
+        "src/util/document_parse/image_prep.rs",
+        "src/util/document_parse/image_reverse_search.rs",
+        "src/util/document_parse/json_parse.rs",
+        "src/util/document_parse/mod.rs",
+        "src/util/document_parse/ocr.rs",
+        "src/util/document_parse/pdf_parse.rs"
+      ],
+      "status": "pending",
+      "score": 0.4
+    },
+    {
+      "name": "wasm-ui/src/scan_info [2]",
+      "files": [
+        "wasm-ui/src/scan_info/identities.rs",
+        "wasm-ui/src/scan_info/info.rs",
+        "wasm-ui/src/scan_info/leads.rs",
+        "wasm-ui/src/scan_info/location.rs",
+        "wasm-ui/src/scan_info/metrics.rs",
+        "wasm-ui/src/scan_info/mod.rs",
+        "wasm-ui/src/scan_info/network.rs",
+        "wasm-ui/src/scan_info/path.rs"
+      ],
+      "status": "pending",
+      "score": 0.4
+    },
+    {
+      "name": "wasm-ui/src/views",
+      "files": [
+        "wasm-ui/src/views/dash.rs",
+        "wasm-ui/src/views/diff.rs",
+        "wasm-ui/src/views/mod.rs",
+        "wasm-ui/src/views/scans.rs"
+      ],
+      "status": "pending",
+      "score": 0.4
+    },
+    {
+      "name": "scripts [2]",
+      "files": [
+        "scripts/wasm_ui_drift_check.sh"
+      ],
+      "status": "pending",
+      "score": 0.33
+    },
+    {
+      "name": "src/app/doctor",
+      "files": [
+        "src/app/doctor/mod.rs",
+        "src/app/doctor/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.3
+    },
+    {
+      "name": "src/modules/breach_timezone",
+      "files": [
+        "src/modules/breach_timezone/mod.rs",
+        "src/modules/breach_timezone/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.3
+    },
+    {
+      "name": "src/modules/doh_resolver",
+      "files": [
+        "src/modules/doh_resolver/mod.rs",
+        "src/modules/doh_resolver/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.3
+    },
+    {
+      "name": "src/util/curl",
+      "files": [
+        "src/util/curl/mod.rs",
+        "src/util/curl/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.3
+    },
+    {
+      "name": "src/util/geohash",
+      "files": [
+        "src/util/geohash/address.rs",
+        "src/util/geohash/country.rs",
+        "src/util/geohash/distance.rs",
+        "src/util/geohash/encode.rs",
+        "src/util/geohash/mod.rs",
+        "src/util/geohash/tests.rs",
+        "src/util/geohash/timezone.rs"
+      ],
+      "status": "pending",
+      "score": 0.3
+    },
+    {
+      "name": "src/api/handlers",
+      "files": [
+        "src/api/handlers/mod.rs",
+        "src/api/handlers/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.2
+    },
+    {
+      "name": "src/cli/keys_cmd",
+      "files": [
+        "src/cli/keys_cmd/mod.rs",
+        "src/cli/keys_cmd/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.2
+    },
+    {
+      "name": "src/modules [1]",
+      "files": [
+        "src/modules/breach_rich.rs",
+        "src/modules/breach_rich_tests.rs",
+        "src/modules/cell_local.rs",
+        "src/modules/device_cell.rs",
+        "src/modules/device_fix.rs",
+        "src/modules/github_api.rs",
+        "src/modules/keyed_tests.rs",
+        "src/modules/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.2
+    },
+    {
+      "name": "src/modules/asic_business_names",
+      "files": [
+        "src/modules/asic_business_names/mod.rs",
+        "src/modules/asic_business_names/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.2
+    },
+    {
+      "name": "src/modules/dehashed",
+      "files": [
+        "src/modules/dehashed/build.rs",
+        "src/modules/dehashed/mod.rs",
+        "src/modules/dehashed/tests.rs",
+        "src/modules/dehashed/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.2
+    },
+    {
+      "name": "src/modules/discord_snowflake",
+      "files": [
+        "src/modules/discord_snowflake/mod.rs",
+        "src/modules/discord_snowflake/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.2
+    },
+    {
+      "name": "src/modules/securitytrails",
+      "files": [
+        "src/modules/securitytrails/mod.rs",
+        "src/modules/securitytrails/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.2
+    },
+    {
+      "name": "src/modules/see_know/pivots",
+      "files": [
+        "src/modules/see_know/pivots/mod.rs",
+        "src/modules/see_know/pivots/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.2
+    },
+    {
+      "name": "src/modules/urlscan",
+      "files": [
+        "src/modules/urlscan/mod.rs",
+        "src/modules/urlscan/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.2
+    },
+    {
+      "name": "src/util/log_capture",
+      "files": [
+        "src/util/log_capture/mod.rs",
+        "src/util/log_capture/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.2
+    },
+    {
+      "name": "wasm-ui/src/scan_info [1]",
+      "files": [
+        "wasm-ui/src/scan_info/audit.rs",
+        "wasm-ui/src/scan_info/benchmark.rs",
+        "wasm-ui/src/scan_info/browse.rs",
+        "wasm-ui/src/scan_info/communities.rs",
+        "wasm-ui/src/scan_info/correlations.rs",
+        "wasm-ui/src/scan_info/coverage.rs",
+        "wasm-ui/src/scan_info/duplicates.rs",
+        "wasm-ui/src/scan_info/gaps.rs"
+      ],
+      "status": "pending",
+      "score": 0.2
+    },
+    {
+      "name": "wasm-ui/src/scan_info [3]",
+      "files": [
+        "wasm-ui/src/scan_info/pivots.rs",
+        "wasm-ui/src/scan_info/timeline.rs",
+        "wasm-ui/src/scan_info/trust.rs"
+      ],
+      "status": "pending",
+      "score": 0.2
+    },
+    {
+      "name": "src/api",
+      "files": [
+        "src/api/assurance_handlers.rs",
+        "src/api/cells_handlers.rs",
+        "src/api/key_harvest_handlers.rs",
+        "src/api/live_handlers.rs",
+        "src/api/mod.rs",
+        "src/api/tests.rs",
+        "src/api/tiles.rs",
+        "src/api/update_handlers.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/bin/dep_cooldown",
+      "files": [
+        "src/bin/dep_cooldown/lockfile.rs",
+        "src/bin/dep_cooldown/lockfile_tests.rs",
+        "src/bin/dep_cooldown/main.rs",
+        "src/bin/dep_cooldown/main_tests.rs",
+        "src/bin/dep_cooldown/policy.rs",
+        "src/bin/dep_cooldown/policy_tests.rs",
+        "src/bin/dep_cooldown/registry.rs",
+        "src/bin/dep_cooldown/registry_tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/core/coref",
+      "files": [
+        "src/core/coref/mod.rs",
+        "src/core/coref/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/core/correlator/rules/location",
+      "files": [
+        "src/core/correlator/rules/location/mod.rs",
+        "src/core/correlator/rules/location/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/core/timeline",
+      "files": [
+        "src/core/timeline/mod.rs",
+        "src/core/timeline/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/core/validation [1]",
+      "files": [
+        "src/core/validation/confusable.rs",
+        "src/core/validation/domain.rs",
+        "src/core/validation/email.rs",
+        "src/core/validation/ip.rs",
+        "src/core/validation/mod.rs",
+        "src/core/validation/phone.rs",
+        "src/core/validation/placeholder.rs",
+        "src/core/validation/report.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/modules/chain_intel",
+      "files": [
+        "src/modules/chain_intel/mod.rs",
+        "src/modules/chain_intel/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/modules/criminal_ip",
+      "files": [
+        "src/modules/criminal_ip/mod.rs",
+        "src/modules/criminal_ip/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/modules/dns_intel [1]",
+      "files": [
+        "src/modules/dns_intel/brute.rs",
+        "src/modules/dns_intel/constants.rs",
+        "src/modules/dns_intel/dkim.rs",
+        "src/modules/dns_intel/helpers.rs",
+        "src/modules/dns_intel/mod.rs",
+        "src/modules/dns_intel/permute.rs",
+        "src/modules/dns_intel/resolve.rs",
+        "src/modules/dns_intel/resolve_batch.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/modules/fullhunt",
+      "files": [
+        "src/modules/fullhunt/mod.rs",
+        "src/modules/fullhunt/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/modules/mnemonic_pdns",
+      "files": [
+        "src/modules/mnemonic_pdns/mod.rs",
+        "src/modules/mnemonic_pdns/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/modules/netblock",
+      "files": [
+        "src/modules/netblock/mod.rs",
+        "src/modules/netblock/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/modules/osintcat",
+      "files": [
+        "src/modules/osintcat/mod.rs",
+        "src/modules/osintcat/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/modules/search_engines",
+      "files": [
+        "src/modules/search_engines/build.rs",
+        "src/modules/search_engines/engines.rs",
+        "src/modules/search_engines/mod.rs",
+        "src/modules/search_engines/tests.rs",
+        "src/modules/search_engines/websearch/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/modules/search_engines/helpers",
+      "files": [
+        "src/modules/search_engines/helpers/mod.rs",
+        "src/modules/search_engines/helpers/parse.rs",
+        "src/modules/search_engines/helpers/relevance.rs",
+        "src/modules/search_engines/helpers/tests.rs",
+        "src/modules/search_engines/helpers/text.rs",
+        "src/modules/search_engines/helpers/urls.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/modules/see_know",
+      "files": [
+        "src/modules/see_know/mod.rs",
+        "src/modules/see_know/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/modules/sunrise_sunset",
+      "files": [
+        "src/modules/sunrise_sunset/mod.rs",
+        "src/modules/sunrise_sunset/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/util/egress",
+      "files": [
+        "src/util/egress/mod.rs",
+        "src/util/egress/pool.rs",
+        "src/util/egress/pool_tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": "src/util/geo",
+      "files": [
+        "src/util/geo/mod.rs",
+        "src/util/geo/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.1
+    },
+    {
+      "name": ".github/workflows [1]",
+      "files": [
+        ".github/workflows/audit.yml",
+        ".github/workflows/bench-smoke.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/copilot-setup-steps.yml",
+        ".github/workflows/fuzz.yml",
+        ".github/workflows/live-drift.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/rust-clippy.yml"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": ".github/workflows [2]",
+      "files": [
+        ".github/workflows/secret-scan.yml"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "benches",
+      "files": [
+        "benches/correlation_pass.rs",
+        "benches/scan_throughput.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "fuzz/fuzz_targets",
+      "files": [
+        "fuzz/fuzz_targets/cert_der.rs",
+        "fuzz/fuzz_targets/ingest_text.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/api/auth",
+      "files": [
+        "src/api/auth/mod.rs",
+        "src/api/auth/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/api/routes",
+      "files": [
+        "src/api/routes/mod.rs",
+        "src/api/routes/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/api/scan_export",
+      "files": [
+        "src/api/scan_export/mod.rs",
+        "src/api/scan_export/redact.rs",
+        "src/api/scan_export/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/api/scan_handlers",
+      "files": [
+        "src/api/scan_handlers/analysis.rs",
+        "src/api/scan_handlers/core.rs",
+        "src/api/scan_handlers/diagnostics.rs",
+        "src/api/scan_handlers/intel.rs",
+        "src/api/scan_handlers/mod.rs",
+        "src/api/scan_handlers/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/api/settings_handlers",
+      "files": [
+        "src/api/settings_handlers/mod.rs",
+        "src/api/settings_handlers/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/app [1]",
+      "files": [
+        "src/app/benchmark.rs",
+        "src/app/convert.rs",
+        "src/app/gap.rs",
+        "src/app/mod.rs",
+        "src/app/outage.rs",
+        "src/app/outage_tests.rs",
+        "src/app/persist.rs",
+        "src/app/report.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/app/audit",
+      "files": [
+        "src/app/audit/mod.rs",
+        "src/app/audit/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/app/batch",
+      "files": [
+        "src/app/batch/mod.rs",
+        "src/app/batch/sites.rs",
+        "src/app/batch/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/app/cells",
+      "files": [
+        "src/app/cells/mod.rs",
+        "src/app/cells/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/app/diff",
+      "files": [
+        "src/app/diff/mod.rs",
+        "src/app/diff/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/app/export",
+      "files": [
+        "src/app/export/dossier.rs",
+        "src/app/export/environment.rs",
+        "src/app/export/health_policy.rs",
+        "src/app/export/mod.rs",
+        "src/app/export/renderers.rs",
+        "src/app/export/system_debug.rs",
+        "src/app/export/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/audit",
+      "files": [
+        "src/audit/analysis.rs",
+        "src/audit/events.rs",
+        "src/audit/mod.rs",
+        "src/audit/tests.rs",
+        "src/audit/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/cli [1]",
+      "files": [
+        "src/cli/assurance.rs",
+        "src/cli/attack.rs",
+        "src/cli/batch.rs",
+        "src/cli/bsi.rs",
+        "src/cli/command.rs",
+        "src/cli/config.rs",
+        "src/cli/diagnostics.rs",
+        "src/cli/dorkus.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/cli [3]",
+      "files": [
+        "src/cli/query_pack.rs",
+        "src/cli/radar.rs",
+        "src/cli/selftest.rs",
+        "src/cli/sf.rs",
+        "src/cli/tests.rs",
+        "src/cli/update.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/cli/ingest",
+      "files": [
+        "src/cli/ingest/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/cli/live",
+      "files": [
+        "src/cli/live/mod.rs",
+        "src/cli/live/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/cli/provision",
+      "files": [
+        "src/cli/provision/mod.rs",
+        "src/cli/provision/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/cli/scan",
+      "files": [
+        "src/cli/scan/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/cli/scan/dossier",
+      "files": [
+        "src/cli/scan/dossier/analysis.rs",
+        "src/cli/scan/dossier/appendix.rs",
+        "src/cli/scan/dossier/findings.rs",
+        "src/cli/scan/dossier/frontmatter.rs",
+        "src/cli/scan/dossier/mod.rs",
+        "src/cli/scan/dossier/plan.rs",
+        "src/cli/scan/dossier/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/assurance",
+      "files": [
+        "src/core/assurance/catalog.rs",
+        "src/core/assurance/continuity.rs",
+        "src/core/assurance/derive.rs",
+        "src/core/assurance/gap.rs",
+        "src/core/assurance/mod.rs",
+        "src/core/assurance/model.rs",
+        "src/core/assurance/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/attack",
+      "files": [
+        "src/core/attack/mod.rs",
+        "src/core/attack/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/benchmark",
+      "files": [
+        "src/core/benchmark/mod.rs",
+        "src/core/benchmark/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/cancel",
+      "files": [
+        "src/core/cancel/mod.rs",
+        "src/core/cancel/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/community",
+      "files": [
+        "src/core/community/mod.rs",
+        "src/core/community/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/convex",
+      "files": [
+        "src/core/convex/mod.rs",
+        "src/core/convex/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/correlator/rules [1]",
+      "files": [
+        "src/core/correlator/rules/assoc.rs",
+        "src/core/correlator/rules/breach.rs",
+        "src/core/correlator/rules/breach_pii.rs",
+        "src/core/correlator/rules/broker.rs",
+        "src/core/correlator/rules/creator_exposure.rs",
+        "src/core/correlator/rules/crypto.rs",
+        "src/core/correlator/rules/dating_exposure.rs",
+        "src/core/correlator/rules/device_constellation.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/correlator/rules [3]",
+      "files": [
+        "src/core/correlator/rules/mod.rs",
+        "src/core/correlator/rules/multipath.rs",
+        "src/core/correlator/rules/org.rs",
+        "src/core/correlator/rules/payid.rs",
+        "src/core/correlator/rules/resolved.rs",
+        "src/core/correlator/rules/reuse_closure.rs",
+        "src/core/correlator/rules/robust.rs",
+        "src/core/correlator/rules/same_record.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/correlator/rules [4]",
+      "files": [
+        "src/core/correlator/rules/sim.rs",
+        "src/core/correlator/rules/template.rs",
+        "src/core/correlator/rules/tests.rs",
+        "src/core/correlator/rules/transitive.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/correlator/rules/identity",
+      "files": [
+        "src/core/correlator/rules/identity/cluster.rs",
+        "src/core/correlator/rules/identity/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/correlator/tests [1]",
+      "files": [
+        "src/core/correlator/tests/part02.rs",
+        "src/core/correlator/tests/part03.rs",
+        "src/core/correlator/tests/part04.rs",
+        "src/core/correlator/tests/part05.rs",
+        "src/core/correlator/tests/part06.rs",
+        "src/core/correlator/tests/part07.rs",
+        "src/core/correlator/tests/part08.rs",
+        "src/core/correlator/tests/part09.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/correlator/tests [2]",
+      "files": [
+        "src/core/correlator/tests/part10.rs",
+        "src/core/correlator/tests/part11.rs",
+        "src/core/correlator/tests/part12.rs",
+        "src/core/correlator/tests/part13.rs",
+        "src/core/correlator/tests/part14.rs",
+        "src/core/correlator/tests/part15.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/data_broker",
+      "files": [
+        "src/core/data_broker/mod.rs",
+        "src/core/data_broker/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/dependency",
+      "files": [
+        "src/core/dependency/mod.rs",
+        "src/core/dependency/reachability.rs",
+        "src/core/dependency/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/diff",
+      "files": [
+        "src/core/diff/mod.rs",
+        "src/core/diff/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/engine/circuit",
+      "files": [
+        "src/core/engine/circuit/mod.rs",
+        "src/core/engine/circuit/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/engine/health",
+      "files": [
+        "src/core/engine/health/mod.rs",
+        "src/core/engine/health/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/engine/history",
+      "files": [
+        "src/core/engine/history/mod.rs",
+        "src/core/engine/history/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/engine/ledger",
+      "files": [
+        "src/core/engine/ledger/mod.rs",
+        "src/core/engine/ledger/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/engine/timeout",
+      "files": [
+        "src/core/engine/timeout/mod.rs",
+        "src/core/engine/timeout/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/error",
+      "files": [
+        "src/core/error/mod.rs",
+        "src/core/error/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/event",
+      "files": [
+        "src/core/event/mod.rs",
+        "src/core/event/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/exposure",
+      "files": [
+        "src/core/exposure/mod.rs",
+        "src/core/exposure/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/gap",
+      "files": [
+        "src/core/gap/mod.rs",
+        "src/core/gap/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/geo_family",
+      "files": [
+        "src/core/geo_family/mod.rs",
+        "src/core/geo_family/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/gexf",
+      "files": [
+        "src/core/gexf/mod.rs",
+        "src/core/gexf/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/leads",
+      "files": [
+        "src/core/leads/mod.rs",
+        "src/core/leads/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/metrics",
+      "files": [
+        "src/core/metrics/mod.rs",
+        "src/core/metrics/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/module",
+      "files": [
+        "src/core/module/mod.rs",
+        "src/core/module/provider.rs",
+        "src/core/module/provider_tests.rs",
+        "src/core/module/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/network",
+      "files": [
+        "src/core/network/mod.rs",
+        "src/core/network/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/path",
+      "files": [
+        "src/core/path/mod.rs",
+        "src/core/path/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/pivot",
+      "files": [
+        "src/core/pivot/mod.rs",
+        "src/core/pivot/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/platform",
+      "files": [
+        "src/core/platform/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/port",
+      "files": [
+        "src/core/port/mod.rs",
+        "src/core/port/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/profiles",
+      "files": [
+        "src/core/profiles/mod.rs",
+        "src/core/profiles/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/query_pack",
+      "files": [
+        "src/core/query_pack/mod.rs",
+        "src/core/query_pack/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/radar_live",
+      "files": [
+        "src/core/radar_live/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/relation",
+      "files": [
+        "src/core/relation/affiliation.rs",
+        "src/core/relation/builders.rs",
+        "src/core/relation/graph.rs",
+        "src/core/relation/mod.rs",
+        "src/core/relation/social_extract.rs",
+        "src/core/relation/tests.rs",
+        "src/core/relation/types.rs",
+        "src/core/relation/affiliation/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/resolve",
+      "files": [
+        "src/core/resolve/mod.rs",
+        "src/core/resolve/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/roi",
+      "files": [
+        "src/core/roi/mod.rs",
+        "src/core/roi/tests.rs",
+        "src/core/roi/utility.rs",
+        "src/core/roi/utility_tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/scan",
+      "files": [
+        "src/core/scan/classify.rs",
+        "src/core/scan/detect.rs",
+        "src/core/scan/mod.rs",
+        "src/core/scan/options.rs",
+        "src/core/scan/runner.rs",
+        "src/core/scan/scoring.rs",
+        "src/core/scan/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/stealer_row",
+      "files": [
+        "src/core/stealer_row/mod.rs",
+        "src/core/stealer_row/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/trust",
+      "files": [
+        "src/core/trust/mod.rs",
+        "src/core/trust/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/validation [2]",
+      "files": [
+        "src/core/validation/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/core/webhook",
+      "files": [
+        "src/core/webhook/mod.rs",
+        "src/core/webhook/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules [2]",
+      "files": [
+        "src/modules/termux_sensor.rs",
+        "src/modules/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/abn_lookup",
+      "files": [
+        "src/modules/abn_lookup/fetch.rs",
+        "src/modules/abn_lookup/mod.rs",
+        "src/modules/abn_lookup/parse.rs",
+        "src/modules/abn_lookup/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/abuseipdb",
+      "files": [
+        "src/modules/abuseipdb/mod.rs",
+        "src/modules/abuseipdb/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/acnc_charities",
+      "files": [
+        "src/modules/acnc_charities/entity.rs",
+        "src/modules/acnc_charities/mod.rs",
+        "src/modules/acnc_charities/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ahmia",
+      "files": [
+        "src/modules/ahmia/mod.rs",
+        "src/modules/ahmia/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ahpra",
+      "files": [
+        "src/modules/ahpra/mod.rs",
+        "src/modules/ahpra/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/anubis",
+      "files": [
+        "src/modules/anubis/mod.rs",
+        "src/modules/anubis/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/api_discovery",
+      "files": [
+        "src/modules/api_discovery/mod.rs",
+        "src/modules/api_discovery/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/api_key_probe",
+      "files": [
+        "src/modules/api_key_probe/mod.rs",
+        "src/modules/api_key_probe/probes.rs",
+        "src/modules/api_key_probe/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/app_links",
+      "files": [
+        "src/modules/app_links/mod.rs",
+        "src/modules/app_links/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/asic_director",
+      "files": [
+        "src/modules/asic_director/mod.rs",
+        "src/modules/asic_director/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/asic_persons",
+      "files": [
+        "src/modules/asic_persons/mod.rs",
+        "src/modules/asic_persons/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/au_business_id",
+      "files": [
+        "src/modules/au_business_id/mod.rs",
+        "src/modules/au_business_id/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/au_rdap",
+      "files": [
+        "src/modules/au_rdap/mod.rs",
+        "src/modules/au_rdap/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/auspost",
+      "files": [
+        "src/modules/auspost/mod.rs",
+        "src/modules/auspost/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/austlii",
+      "files": [
+        "src/modules/austlii/mod.rs",
+        "src/modules/austlii/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/beacondb",
+      "files": [
+        "src/modules/beacondb/mod.rs",
+        "src/modules/beacondb/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/binaryedge",
+      "files": [
+        "src/modules/binaryedge/mod.rs",
+        "src/modules/binaryedge/tests.rs",
+        "src/modules/binaryedge/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/bitbucket_user",
+      "files": [
+        "src/modules/bitbucket_user/mod.rs",
+        "src/modules/bitbucket_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/bitcoin",
+      "files": [
+        "src/modules/bitcoin/mod.rs",
+        "src/modules/bitcoin/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/bluesky_user",
+      "files": [
+        "src/modules/bluesky_user/mod.rs",
+        "src/modules/bluesky_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/breachdirectory",
+      "files": [
+        "src/modules/breachdirectory/mod.rs",
+        "src/modules/breachdirectory/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/builtwith",
+      "files": [
+        "src/modules/builtwith/mod.rs",
+        "src/modules/builtwith/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/c99",
+      "files": [
+        "src/modules/c99/mod.rs",
+        "src/modules/c99/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/cell_intel",
+      "files": [
+        "src/modules/cell_intel/helpers.rs",
+        "src/modules/cell_intel/mod.rs",
+        "src/modules/cell_intel/tests.rs",
+        "src/modules/cell_intel/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/censys",
+      "files": [
+        "src/modules/censys/mod.rs",
+        "src/modules/censys/tests.rs",
+        "src/modules/censys/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/certspotter",
+      "files": [
+        "src/modules/certspotter/mod.rs",
+        "src/modules/certspotter/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/chess_profile",
+      "files": [
+        "src/modules/chess_profile/mod.rs",
+        "src/modules/chess_profile/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/chronicling_america",
+      "files": [
+        "src/modules/chronicling_america/mod.rs",
+        "src/modules/chronicling_america/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/cloud_storage",
+      "files": [
+        "src/modules/cloud_storage/mod.rs",
+        "src/modules/cloud_storage/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/codeberg_user",
+      "files": [
+        "src/modules/codeberg_user/mod.rs",
+        "src/modules/codeberg_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/codewars_user",
+      "files": [
+        "src/modules/codewars_user/mod.rs",
+        "src/modules/codewars_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/comb_search",
+      "files": [
+        "src/modules/comb_search/mod.rs",
+        "src/modules/comb_search/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/commoncrawl",
+      "files": [
+        "src/modules/commoncrawl/mod.rs",
+        "src/modules/commoncrawl/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/contact_enrich",
+      "files": [
+        "src/modules/contact_enrich/mod.rs",
+        "src/modules/contact_enrich/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/cpan_user",
+      "files": [
+        "src/modules/cpan_user/mod.rs",
+        "src/modules/cpan_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/crates_io",
+      "files": [
+        "src/modules/crates_io/mod.rs",
+        "src/modules/crates_io/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/crossref_search",
+      "files": [
+        "src/modules/crossref_search/mod.rs",
+        "src/modules/crossref_search/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/crtsh",
+      "files": [
+        "src/modules/crtsh/mod.rs",
+        "src/modules/crtsh/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/data_gov_au",
+      "files": [
+        "src/modules/data_gov_au/mod.rs",
+        "src/modules/data_gov_au/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/device_sensors",
+      "files": [
+        "src/modules/device_sensors/mod.rs",
+        "src/modules/device_sensors/tests.rs",
+        "src/modules/device_sensors/wifi.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/devto",
+      "files": [
+        "src/modules/devto/mod.rs",
+        "src/modules/devto/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/disposable_check",
+      "files": [
+        "src/modules/disposable_check/mod.rs",
+        "src/modules/disposable_check/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/dns_intel [2]",
+      "files": [
+        "src/modules/dns_intel/srv.rs",
+        "src/modules/dns_intel/tests.rs",
+        "src/modules/dns_intel/wildcard.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/dockerhub_user",
+      "files": [
+        "src/modules/dockerhub_user/mod.rs",
+        "src/modules/dockerhub_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/domainsdb",
+      "files": [
+        "src/modules/domainsdb/mod.rs",
+        "src/modules/domainsdb/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/email_canonical",
+      "files": [
+        "src/modules/email_canonical/mod.rs",
+        "src/modules/email_canonical/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/email_header_geo",
+      "files": [
+        "src/modules/email_header_geo/infer.rs",
+        "src/modules/email_header_geo/mod.rs",
+        "src/modules/email_header_geo/tables.rs",
+        "src/modules/email_header_geo/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/email_locale",
+      "files": [
+        "src/modules/email_locale/mod.rs",
+        "src/modules/email_locale/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/email_parse",
+      "files": [
+        "src/modules/email_parse/mod.rs",
+        "src/modules/email_parse/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/emailrep",
+      "files": [
+        "src/modules/emailrep/mod.rs",
+        "src/modules/emailrep/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/epieos",
+      "files": [
+        "src/modules/epieos/mod.rs",
+        "src/modules/epieos/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/europeana",
+      "files": [
+        "src/modules/europeana/mod.rs",
+        "src/modules/europeana/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/europepmc_search",
+      "files": [
+        "src/modules/europepmc_search/mod.rs",
+        "src/modules/europepmc_search/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/exif_geo",
+      "files": [
+        "src/modules/exif_geo/extract.rs",
+        "src/modules/exif_geo/mod.rs",
+        "src/modules/exif_geo/parse.rs",
+        "src/modules/exif_geo/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/fediverse",
+      "files": [
+        "src/modules/fediverse/mod.rs",
+        "src/modules/fediverse/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/fofa",
+      "files": [
+        "src/modules/fofa/mod.rs",
+        "src/modules/fofa/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/fullcontact",
+      "files": [
+        "src/modules/fullcontact/mod.rs",
+        "src/modules/fullcontact/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/gaming_profile",
+      "files": [
+        "src/modules/gaming_profile/mod.rs",
+        "src/modules/gaming_profile/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/geo_domain_classifier",
+      "files": [
+        "src/modules/geo_domain_classifier/mod.rs",
+        "src/modules/geo_domain_classifier/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/geo_intel",
+      "files": [
+        "src/modules/geo_intel/ip_geo.rs",
+        "src/modules/geo_intel/mod.rs",
+        "src/modules/geo_intel/phone_geo.rs",
+        "src/modules/geo_intel/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/geocode",
+      "files": [
+        "src/modules/geocode/mod.rs",
+        "src/modules/geocode/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/gitea_user",
+      "files": [
+        "src/modules/gitea_user/mod.rs",
+        "src/modules/gitea_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/github_code_search",
+      "files": [
+        "src/modules/github_code_search/build.rs",
+        "src/modules/github_code_search/mod.rs",
+        "src/modules/github_code_search/tests.rs",
+        "src/modules/github_code_search/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/github_commits",
+      "files": [
+        "src/modules/github_commits/mod.rs",
+        "src/modules/github_commits/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/github_user",
+      "files": [
+        "src/modules/github_user/fetch.rs",
+        "src/modules/github_user/helpers.rs",
+        "src/modules/github_user/mod.rs",
+        "src/modules/github_user/tests.rs",
+        "src/modules/github_user/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/gitlab_user",
+      "files": [
+        "src/modules/gitlab_user/mod.rs",
+        "src/modules/gitlab_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/gravatar",
+      "files": [
+        "src/modules/gravatar/mod.rs",
+        "src/modules/gravatar/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/greynoise",
+      "files": [
+        "src/modules/greynoise/mod.rs",
+        "src/modules/greynoise/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/hacker_news",
+      "files": [
+        "src/modules/hacker_news/mod.rs",
+        "src/modules/hacker_news/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/hackertarget",
+      "files": [
+        "src/modules/hackertarget/mod.rs",
+        "src/modules/hackertarget/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/hexpm_user",
+      "files": [
+        "src/modules/hexpm_user/mod.rs",
+        "src/modules/hexpm_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/hibp",
+      "files": [
+        "src/modules/hibp/mod.rs",
+        "src/modules/hibp/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/hlr_cnam",
+      "files": [
+        "src/modules/hlr_cnam/mod.rs",
+        "src/modules/hlr_cnam/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/hudsonrock",
+      "files": [
+        "src/modules/hudsonrock/mod.rs",
+        "src/modules/hudsonrock/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/huggingface_user",
+      "files": [
+        "src/modules/huggingface_user/mod.rs",
+        "src/modules/huggingface_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/hunter_io",
+      "files": [
+        "src/modules/hunter_io/mod.rs",
+        "src/modules/hunter_io/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/intelx",
+      "files": [
+        "src/modules/intelx/mod.rs",
+        "src/modules/intelx/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ip2location",
+      "files": [
+        "src/modules/ip2location/mod.rs",
+        "src/modules/ip2location/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ip_geo",
+      "files": [
+        "src/modules/ip_geo/mod.rs",
+        "src/modules/ip_geo/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ip_registry",
+      "files": [
+        "src/modules/ip_registry/mod.rs",
+        "src/modules/ip_registry/tests.rs",
+        "src/modules/ip_registry/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ip_reputation",
+      "files": [
+        "src/modules/ip_reputation/mod.rs",
+        "src/modules/ip_reputation/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ip_whois_geo",
+      "files": [
+        "src/modules/ip_whois_geo/mod.rs",
+        "src/modules/ip_whois_geo/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ipinfo",
+      "files": [
+        "src/modules/ipinfo/mod.rs",
+        "src/modules/ipinfo/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ipqs",
+      "files": [
+        "src/modules/ipqs/mod.rs",
+        "src/modules/ipqs/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ipquery",
+      "files": [
+        "src/modules/ipquery/mod.rs",
+        "src/modules/ipquery/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/keybase",
+      "files": [
+        "src/modules/keybase/mod.rs",
+        "src/modules/keybase/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/launchpad_user",
+      "files": [
+        "src/modules/launchpad_user/mod.rs",
+        "src/modules/launchpad_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/leakcheck_public",
+      "files": [
+        "src/modules/leakcheck_public/mod.rs",
+        "src/modules/leakcheck_public/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/leakix",
+      "files": [
+        "src/modules/leakix/mod.rs",
+        "src/modules/leakix/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/libravatar",
+      "files": [
+        "src/modules/libravatar/mod.rs",
+        "src/modules/libravatar/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/lobsters",
+      "files": [
+        "src/modules/lobsters/mod.rs",
+        "src/modules/lobsters/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/local_net",
+      "files": [
+        "src/modules/local_net/mod.rs",
+        "src/modules/local_net/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/mastodon_user",
+      "files": [
+        "src/modules/mastodon_user/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/mylnikov",
+      "files": [
+        "src/modules/mylnikov/mod.rs",
+        "src/modules/mylnikov/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/name_intel",
+      "files": [
+        "src/modules/name_intel/mod.rs",
+        "src/modules/name_intel/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/name_intel/permute",
+      "files": [
+        "src/modules/name_intel/permute/mod.rs",
+        "src/modules/name_intel/permute/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/netlas",
+      "files": [
+        "src/modules/netlas/mod.rs",
+        "src/modules/netlas/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/niamonx",
+      "files": [
+        "src/modules/niamonx/envelope.rs",
+        "src/modules/niamonx/mod.rs",
+        "src/modules/niamonx/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/npm_author",
+      "files": [
+        "src/modules/npm_author/mod.rs",
+        "src/modules/npm_author/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/numverify",
+      "files": [
+        "src/modules/numverify/mod.rs",
+        "src/modules/numverify/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/oathnet_pro",
+      "files": [
+        "src/modules/oathnet_pro/breach.rs",
+        "src/modules/oathnet_pro/mod.rs",
+        "src/modules/oathnet_pro/stealer.rs",
+        "src/modules/oathnet_pro/tests.rs",
+        "src/modules/oathnet_pro/validate.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/onyphe",
+      "files": [
+        "src/modules/onyphe/mod.rs",
+        "src/modules/onyphe/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/open_meteo_geo",
+      "files": [
+        "src/modules/open_meteo_geo/mod.rs",
+        "src/modules/open_meteo_geo/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/openarch",
+      "files": [
+        "src/modules/openarch/mod.rs",
+        "src/modules/openarch/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/opencellid",
+      "files": [
+        "src/modules/opencellid/mod.rs",
+        "src/modules/opencellid/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/opencorporates",
+      "files": [
+        "src/modules/opencorporates/mod.rs",
+        "src/modules/opencorporates/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/opensanctions",
+      "files": [
+        "src/modules/opensanctions/entity_builders.rs",
+        "src/modules/opensanctions/mod.rs",
+        "src/modules/opensanctions/tests.rs",
+        "src/modules/opensanctions/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/overpass",
+      "files": [
+        "src/modules/overpass/mod.rs",
+        "src/modules/overpass/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/passivetotal",
+      "files": [
+        "src/modules/passivetotal/mod.rs",
+        "src/modules/passivetotal/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/payid",
+      "files": [
+        "src/modules/payid/mod.rs",
+        "src/modules/payid/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/pgp",
+      "files": [
+        "src/modules/pgp/mod.rs",
+        "src/modules/pgp/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/phone_au",
+      "files": [
+        "src/modules/phone_au/mod.rs",
+        "src/modules/phone_au/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/phone_geo",
+      "files": [
+        "src/modules/phone_geo/data.rs",
+        "src/modules/phone_geo/mod.rs",
+        "src/modules/phone_geo/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/phone_intl",
+      "files": [
+        "src/modules/phone_intl/mod.rs",
+        "src/modules/phone_intl/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/photon",
+      "files": [
+        "src/modules/photon/build.rs",
+        "src/modules/photon/mod.rs",
+        "src/modules/photon/tests.rs",
+        "src/modules/photon/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/plc_directory",
+      "files": [
+        "src/modules/plc_directory/history.rs",
+        "src/modules/plc_directory/mod.rs",
+        "src/modules/plc_directory/resolve.rs",
+        "src/modules/plc_directory/tests.rs",
+        "src/modules/plc_directory/transform.rs",
+        "src/modules/plc_directory/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/portscan",
+      "files": [
+        "src/modules/portscan/mod.rs",
+        "src/modules/portscan/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/profile_kit",
+      "files": [
+        "src/modules/profile_kit/mod.rs",
+        "src/modules/profile_kit/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/proxycurl",
+      "files": [
+        "src/modules/proxycurl/build.rs",
+        "src/modules/proxycurl/mod.rs",
+        "src/modules/proxycurl/tests.rs",
+        "src/modules/proxycurl/types.rs",
+        "src/modules/proxycurl/url.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/pulsedive",
+      "files": [
+        "src/modules/pulsedive/mod.rs",
+        "src/modules/pulsedive/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/pwned_passwords",
+      "files": [
+        "src/modules/pwned_passwords/mod.rs",
+        "src/modules/pwned_passwords/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/pypi_user",
+      "files": [
+        "src/modules/pypi_user/mod.rs",
+        "src/modules/pypi_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/qld_cadastre",
+      "files": [
+        "src/modules/qld_cadastre/mod.rs",
+        "src/modules/qld_cadastre/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ransomlook",
+      "files": [
+        "src/modules/ransomlook/mod.rs",
+        "src/modules/ransomlook/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ransomware_live",
+      "files": [
+        "src/modules/ransomware_live/mod.rs",
+        "src/modules/ransomware_live/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/rdap_domain",
+      "files": [
+        "src/modules/rdap_domain/mod.rs",
+        "src/modules/rdap_domain/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/reddit_user",
+      "files": [
+        "src/modules/reddit_user/feed.rs",
+        "src/modules/reddit_user/harvest.rs",
+        "src/modules/reddit_user/mod.rs",
+        "src/modules/reddit_user/tests.rs",
+        "src/modules/reddit_user/transform.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/ripestat",
+      "files": [
+        "src/modules/ripestat/mod.rs",
+        "src/modules/ripestat/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/rubygems_user",
+      "files": [
+        "src/modules/rubygems_user/mod.rs",
+        "src/modules/rubygems_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/sanctions_ofac",
+      "files": [
+        "src/modules/sanctions_ofac/crypto.rs",
+        "src/modules/sanctions_ofac/crypto_tests.rs",
+        "src/modules/sanctions_ofac/entity.rs",
+        "src/modules/sanctions_ofac/list.rs",
+        "src/modules/sanctions_ofac/mod.rs",
+        "src/modules/sanctions_ofac/parse.rs",
+        "src/modules/sanctions_ofac/parse_tests.rs",
+        "src/modules/sanctions_ofac/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/search_engines/health",
+      "files": [
+        "src/modules/search_engines/health/mod.rs",
+        "src/modules/search_engines/health/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/search_engines/helpers/entity",
+      "files": [
+        "src/modules/search_engines/helpers/entity/extractors.rs",
+        "src/modules/search_engines/helpers/entity/mod.rs",
+        "src/modules/search_engines/helpers/entity/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/see_know/extract",
+      "files": [
+        "src/modules/see_know/extract/associates.rs",
+        "src/modules/see_know/extract/geo.rs",
+        "src/modules/see_know/extract/mod.rs",
+        "src/modules/see_know/extract/rich_detail.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/see_know/query_optimizer",
+      "files": [
+        "src/modules/see_know/query_optimizer/cost_analyzer.rs",
+        "src/modules/see_know/query_optimizer/mod.rs",
+        "src/modules/see_know/query_optimizer/roi_router.rs",
+        "src/modules/see_know/query_optimizer/types.rs",
+        "src/modules/see_know/query_optimizer/value_scorer.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/seon",
+      "files": [
+        "src/modules/seon/entity_builders.rs",
+        "src/modules/seon/mod.rs",
+        "src/modules/seon/tests.rs",
+        "src/modules/seon/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/shodan",
+      "files": [
+        "src/modules/shodan/mod.rs",
+        "src/modules/shodan/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/signal_radar",
+      "files": [
+        "src/modules/signal_radar/bluetooth.rs",
+        "src/modules/signal_radar/cell.rs",
+        "src/modules/signal_radar/gps.rs",
+        "src/modules/signal_radar/lan.rs",
+        "src/modules/signal_radar/mod.rs",
+        "src/modules/signal_radar/tests.rs",
+        "src/modules/signal_radar/wifi.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/sitemap",
+      "files": [
+        "src/modules/sitemap/mod.rs",
+        "src/modules/sitemap/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/smtp_vrfy",
+      "files": [
+        "src/modules/smtp_vrfy/mod.rs",
+        "src/modules/smtp_vrfy/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/social_location",
+      "files": [
+        "src/modules/social_location/mod.rs",
+        "src/modules/social_location/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/social_probe",
+      "files": [
+        "src/modules/social_probe/mod.rs",
+        "src/modules/social_probe/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/sourceforge_user",
+      "files": [
+        "src/modules/sourceforge_user/mod.rs",
+        "src/modules/sourceforge_user/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/stackoverflow_user",
+      "files": [
+        "src/modules/stackoverflow_user/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/steam_profile",
+      "files": [
+        "src/modules/steam_profile/mod.rs",
+        "src/modules/steam_profile/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/stolen_tax",
+      "files": [
+        "src/modules/stolen_tax/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/subdomain_center",
+      "files": [
+        "src/modules/subdomain_center/mod.rs",
+        "src/modules/subdomain_center/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/subdomain_takeover",
+      "files": [
+        "src/modules/subdomain_takeover/mod.rs",
+        "src/modules/subdomain_takeover/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/threatfox",
+      "files": [
+        "src/modules/threatfox/mod.rs",
+        "src/modules/threatfox/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/trove_au",
+      "files": [
+        "src/modules/trove_au/mod.rs",
+        "src/modules/trove_au/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/url_extract",
+      "files": [
+        "src/modules/url_extract/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/urlhaus",
+      "files": [
+        "src/modules/urlhaus/mod.rs",
+        "src/modules/urlhaus/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/username_variants",
+      "files": [
+        "src/modules/username_variants/mod.rs",
+        "src/modules/username_variants/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/virustotal",
+      "files": [
+        "src/modules/virustotal/mod.rs",
+        "src/modules/virustotal/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/waf_detect",
+      "files": [
+        "src/modules/waf_detect/mod.rs",
+        "src/modules/waf_detect/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/wayback",
+      "files": [
+        "src/modules/wayback/mod.rs",
+        "src/modules/wayback/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/web_crawler",
+      "files": [
+        "src/modules/web_crawler/hydration.rs",
+        "src/modules/web_crawler/hydration_tests.rs",
+        "src/modules/web_crawler/mod.rs",
+        "src/modules/web_crawler/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/webserver_banner",
+      "files": [
+        "src/modules/webserver_banner/mod.rs",
+        "src/modules/webserver_banner/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/whois",
+      "files": [
+        "src/modules/whois/client.rs",
+        "src/modules/whois/mod.rs",
+        "src/modules/whois/parse.rs",
+        "src/modules/whois/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/whoisxml",
+      "files": [
+        "src/modules/whoisxml/mod.rs",
+        "src/modules/whoisxml/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/wifi_intel",
+      "files": [
+        "src/modules/wifi_intel/mod.rs",
+        "src/modules/wifi_intel/tests.rs",
+        "src/modules/wifi_intel/types.rs",
+        "src/modules/wifi_intel/wigle.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/wifidb",
+      "files": [
+        "src/modules/wifidb/mod.rs",
+        "src/modules/wifidb/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/wiki_geosearch",
+      "files": [
+        "src/modules/wiki_geosearch/mod.rs",
+        "src/modules/wiki_geosearch/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/wikidata",
+      "files": [
+        "src/modules/wikidata/builder.rs",
+        "src/modules/wikidata/claims.rs",
+        "src/modules/wikidata/classify.rs",
+        "src/modules/wikidata/mod.rs",
+        "src/modules/wikidata/tests.rs",
+        "src/modules/wikidata/types.rs",
+        "src/modules/wikidata/urls.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/wikidata_geo",
+      "files": [
+        "src/modules/wikidata_geo/mod.rs",
+        "src/modules/wikidata_geo/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/wikitree",
+      "files": [
+        "src/modules/wikitree/mod.rs",
+        "src/modules/wikitree/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/xposed_or_not",
+      "files": [
+        "src/modules/xposed_or_not/build.rs",
+        "src/modules/xposed_or_not/mod.rs",
+        "src/modules/xposed_or_not/tests.rs",
+        "src/modules/xposed_or_not/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/xposed_or_not_domain",
+      "files": [
+        "src/modules/xposed_or_not_domain/mod.rs",
+        "src/modules/xposed_or_not_domain/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/modules/zoomeye",
+      "files": [
+        "src/modules/zoomeye/mod.rs",
+        "src/modules/zoomeye/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util [3]",
+      "files": [
+        "src/util/place_grain.rs",
+        "src/util/probe_confidence.rs",
+        "src/util/quota_config.rs",
+        "src/util/recon.rs",
+        "src/util/redact.rs",
+        "src/util/scraper_health.rs",
+        "src/util/sim_anonymity.rs",
+        "src/util/threat.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/ahmia",
+      "files": [
+        "src/util/ahmia/mod.rs",
+        "src/util/ahmia/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/breach_sector",
+      "files": [
+        "src/util/breach_sector/mod.rs",
+        "src/util/breach_sector/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/bsb",
+      "files": [
+        "src/util/bsb/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/budget",
+      "files": [
+        "src/util/budget/mod.rs",
+        "src/util/budget/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/circuit_breaker",
+      "files": [
+        "src/util/circuit_breaker/mod.rs",
+        "src/util/circuit_breaker/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/city_coords",
+      "files": [
+        "src/util/city_coords/mod.rs",
+        "src/util/city_coords/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/ckan",
+      "files": [
+        "src/util/ckan/mod.rs",
+        "src/util/ckan/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/curl_client",
+      "files": [
+        "src/util/curl_client/mod.rs",
+        "src/util/curl_client/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/dmarc",
+      "files": [
+        "src/util/dmarc/mod.rs",
+        "src/util/dmarc/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/domain_vn",
+      "files": [
+        "src/util/domain_vn/mod.rs",
+        "src/util/domain_vn/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/domains",
+      "files": [
+        "src/util/domains/mod.rs",
+        "src/util/domains/psl.rs",
+        "src/util/domains/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/found_keys",
+      "files": [
+        "src/util/found_keys/mod.rs",
+        "src/util/found_keys/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/freq",
+      "files": [
+        "src/util/freq/mod.rs",
+        "src/util/freq/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/geometry",
+      "files": [
+        "src/util/geometry/circle.rs",
+        "src/util/geometry/coherence.rs",
+        "src/util/geometry/fix.rs",
+        "src/util/geometry/footprint.rs",
+        "src/util/geometry/median.rs",
+        "src/util/geometry/mod.rs",
+        "src/util/geometry/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/gravatar",
+      "files": [
+        "src/util/gravatar/mod.rs",
+        "src/util/gravatar/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/hashcat",
+      "files": [
+        "src/util/hashcat/mod.rs",
+        "src/util/hashcat/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/http [2]",
+      "files": [
+        "src/util/http/trust.rs",
+        "src/util/http/url.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/key_harvest",
+      "files": [
+        "src/util/key_harvest/crypto.rs",
+        "src/util/key_harvest/emit.rs",
+        "src/util/key_harvest/mod.rs",
+        "src/util/key_harvest/osint_keys.rs",
+        "src/util/key_harvest/patterns.rs",
+        "src/util/key_harvest/service_domains.rs",
+        "src/util/key_harvest/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/key_health",
+      "files": [
+        "src/util/key_health/mod.rs",
+        "src/util/key_health/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/key_roi",
+      "files": [
+        "src/util/key_roi/mod.rs",
+        "src/util/key_roi/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/mediawiki",
+      "files": [
+        "src/util/mediawiki/mod.rs",
+        "src/util/mediawiki/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/namesake",
+      "files": [
+        "src/util/namesake/mod.rs",
+        "src/util/namesake/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/netrotate",
+      "files": [
+        "src/util/netrotate/mod.rs",
+        "src/util/netrotate/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/oathnet_batch",
+      "files": [
+        "src/util/oathnet_batch/helpers.rs",
+        "src/util/oathnet_batch/mod.rs",
+        "src/util/oathnet_batch/query_gen.rs",
+        "src/util/oathnet_batch/tests.rs",
+        "src/util/oathnet_batch/types.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/osint_providers",
+      "files": [
+        "src/util/osint_providers/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/phone",
+      "files": [
+        "src/util/phone/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/postcode_au",
+      "files": [
+        "src/util/postcode_au/mod.rs",
+        "src/util/postcode_au/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/preflight",
+      "files": [
+        "src/util/preflight/mod.rs",
+        "src/util/preflight/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/raw_archive",
+      "files": [
+        "src/util/raw_archive/config.rs",
+        "src/util/raw_archive/format.rs",
+        "src/util/raw_archive/io.rs",
+        "src/util/raw_archive/mod.rs",
+        "src/util/raw_archive/query.rs",
+        "src/util/raw_archive/tests.rs",
+        "src/util/raw_archive/url.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/regional",
+      "files": [
+        "src/util/regional/mod.rs",
+        "src/util/regional/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/response_cache",
+      "files": [
+        "src/util/response_cache/mod.rs",
+        "src/util/response_cache/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/service_defs",
+      "files": [
+        "src/util/service_defs/mod.rs",
+        "src/util/service_defs/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/settings",
+      "files": [
+        "src/util/settings/mod.rs",
+        "src/util/settings/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/spf",
+      "files": [
+        "src/util/spf/mod.rs",
+        "src/util/spf/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/str_util",
+      "files": [
+        "src/util/str_util/mod.rs",
+        "src/util/str_util/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/surnames",
+      "files": [
+        "src/util/surnames/mod.rs",
+        "src/util/surnames/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/target_match",
+      "files": [
+        "src/util/target_match/mod.rs",
+        "src/util/target_match/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/termux",
+      "files": [
+        "src/util/termux/mod.rs",
+        "src/util/termux/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/tlsrpt",
+      "files": [
+        "src/util/tlsrpt/mod.rs",
+        "src/util/tlsrpt/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/uid",
+      "files": [
+        "src/util/uid/mod.rs",
+        "src/util/uid/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/url_util",
+      "files": [
+        "src/util/url_util/mod.rs",
+        "src/util/url_util/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/wifi",
+      "files": [
+        "src/util/wifi/mod.rs",
+        "src/util/wifi/tests.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "src/util/wigle",
+      "files": [
+        "src/util/wigle/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "tests [1]",
+      "files": [
+        "tests/api.rs",
+        "tests/architecture.rs",
+        "tests/audit_regression.rs",
+        "tests/autonomy_charter.rs",
+        "tests/cli_seed_validation.rs",
+        "tests/doc_drift.rs",
+        "tests/entity_merge_greatest.rs",
+        "tests/halting.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "tests [2]",
+      "files": [
+        "tests/install_invariants.rs",
+        "tests/live_drift.rs",
+        "tests/module_runtime_seam.rs",
+        "tests/query_floor_skips.rs",
+        "tests/radar_sightings.rs",
+        "tests/reconciler_device.rs",
+        "tests/smoke.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "tests/architecture_parts",
+      "files": [
+        "tests/architecture_parts/architecture_part2.rs",
+        "tests/architecture_parts/architecture_part3.rs",
+        "tests/architecture_parts/architecture_part4.rs",
+        "tests/architecture_parts/architecture_part5.rs",
+        "tests/architecture_parts/architecture_part6.rs",
+        "tests/architecture_parts/architecture_part7.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "tests/common",
+      "files": [
+        "tests/common/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    },
+    {
+      "name": "tests/reconciler_harness",
+      "files": [
+        "tests/reconciler_harness/mod.rs"
+      ],
+      "status": "pending",
+      "score": 0.0
+    }
+  ],
+  "current_cluster": "scan-name/server: ScanOptions.name, its request and CLI seams"
 }

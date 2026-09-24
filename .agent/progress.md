@@ -138,11 +138,43 @@ between the two.
 - **Open defect recorded.** Stop on a scan another process runs answers 404.
   That was true before this change.
 
+## Run 2026-09-24: the cluster procedure
+
+The operator replaced the maintainer procedure with a cluster-based one. The
+state file now also carries `competitors`, `capability_gaps`, `clusters` and
+`current_cluster`.
+
+- **Setup.** The recorded work branch exists and `origin/main` has not moved
+  past its base, so the run continues on it with no rebase. The baseline for
+  this run is the fresh-worktree check of the branch head, run minutes
+  before: gate passed, 8550 tests twice with identical results, 0 failures,
+  doctests 86 twice. No baseline failures and no flaky tests.
+- **What HSE is.** A proprietary, single-binary Rust OSINT/GEOINT/NETINT
+  engine, with a CLI (including a SpiderFoot `sf.py`-compatible front end)
+  and a loopback web console, for authorised investigators working from an
+  Android phone in Termux without root. It is not passive-only. It forbids
+  unsafe code and native dependencies, and gates new crates behind a cooldown.
+- **Competitors.** SpiderFoot 4.0, Recon-ng, theHarvester, Maigret and OWASP
+  Amass. Each was read from its own repository.
+- **Capability gaps.** There are 21, two of them dormant: the scan name
+  (being wired now), and a standalone SVG of the scan graph that
+  `/scans/{id}/snake.svg` renders but nothing links to. The other 19 are
+  open. Eight competitor functions were dropped because they break a hard
+  constraint: an AI summary, onion fetching, screenshots, external scanners,
+  a runtime module marketplace, a Cloudflare bypass, browser cookie jars and
+  library embedding.
+- **Clusters.** The 1221 code files form 398 directory clusters, scored by
+  cheap problem signals (dead-code allowances, TODOs, unsafe, swallowed
+  errors, unwraps, casts, and non-Rust lines). The score only orders
+  candidates; each cluster is read in full before anything in it changes. The
+  scan-name change was already in progress and crosses the wire, so it is
+  recorded as two halves, server and console, split where the halves meet at
+  the JSON field `options.name`.
+- **Current cluster.** Scan name, server half and console half together.
+
 ## Next
 
 - **REQ-SCANNAME-001.** New Scan's "Scan Name" field is never sent, so the
-  name is not stored and not shown. Queued next, because it is wrong
-  behaviour and not styling.
-- **UI remake, continued.** Then the pages: the scan list, New Scan,
-  Settings, and a scan's own pages.
-- **Repair queue.** Then continue from #1 in `.agent/files.md`.
+  name is not stored and not shown. In progress, as this run's first change.
+- **Then** the highest-scoring cluster, and the open defects this run found:
+  the CLI's `hse list` hint names a command that does not exist.
