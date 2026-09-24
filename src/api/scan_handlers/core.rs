@@ -879,8 +879,8 @@ pub async fn scan_import(
             // a `Complete` row whose finalise did not complete answers
             // `partial`: the store refused some of the relations or
             // correlations derived above, the derivation's time budget cut
-            // it short, the correlation pass failed outright, or both were
-            // skipped for size. That row is stored `Complete` (the upload was imported
+            // it short, the correlator's time budget cut it short, the
+            // correlation pass failed outright, or both were skipped for size. That row is stored `Complete` (the upload was imported
             // in full) with the shortfall in its `error`, and every export of
             // it reads "partial, finalise-incomplete". Answering `complete`
             // told the client the import was whole while the counts above

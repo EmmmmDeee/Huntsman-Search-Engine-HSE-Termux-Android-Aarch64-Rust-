@@ -476,7 +476,9 @@ pub struct RefusingStore {
     refuse_detach: bool,
     refuse_entity_writes: bool,
     refuse_entity_writes_after: Option<usize>,
+    refuse_one_entity_write_after: Option<usize>,
     entity_batches_taken: std::sync::atomic::AtomicUsize,
+    single_entity_writes_refused: std::sync::atomic::AtomicUsize,
     refuse_template_counts: bool,
     refuse_terminal_scan_writes: bool,
     refuse_scan_writes: bool,
@@ -574,14 +576,52 @@ impl RefusingStore {
         self
     }
 
+    /// Take the first `batches` entity batch writes, then refuse every
+    /// entity batch write, and refuse one single entity write alone: the
+    /// first re-write of an entity the wrapped store already holds for its
+    /// scan — a store that refuses one of a finalise's per-entity retries (a
+    /// transient busy or locked database) of an entity a checkpoint stored.
+    #[must_use]
+    pub fn refusing_one_entity_write_after(mut self, batches: usize) -> Self {
+        self.refuse_one_entity_write_after = Some(batches);
+        self
+    }
+
+    /// How many entity batch writes this store has taken.
+    fn entity_batches(&self) -> usize {
+        self.entity_batches_taken
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Whether the entity writes [`Self::refusing_entity_writes_after`]
     /// allows are used up.
     fn entity_writes_exhausted(&self) -> bool {
-        self.refuse_entity_writes_after.is_some_and(|n| {
-            self.entity_batches_taken
-                .load(std::sync::atomic::Ordering::SeqCst)
-                >= n
-        })
+        self.refuse_entity_writes_after
+            .is_some_and(|n| self.entity_batches() >= n)
+    }
+
+    /// Whether the entity batch writes
+    /// [`Self::refusing_one_entity_write_after`] allows are used up.
+    fn entity_batches_exhausted(&self) -> bool {
+        self.entity_writes_exhausted()
+            || self
+                .refuse_one_entity_write_after
+                .is_some_and(|n| self.entity_batches() >= n)
+    }
+
+    /// Whether this write of `entity` is the one single entity write
+    /// [`Self::refusing_one_entity_write_after`] refuses.
+    fn refuses_this_single_entity_write(&self, entity: &Entity) -> bool {
+        self.refuse_one_entity_write_after
+            .is_some_and(|n| self.entity_batches() >= n)
+            && self
+                .inner()
+                .scan_ids_for_entity(&entity.uid)
+                .is_ok_and(|ids| ids.contains(&entity.scan_id))
+            && self
+                .single_entity_writes_refused
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 0
     }
 
     /// Refuse every cross-scan route-count read.
@@ -682,16 +722,20 @@ impl StoragePort for RefusingStore {
         self.inner().delete_scan(scan_id)
     }
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {
-        if self.refuse_entity_writes || self.entity_writes_exhausted() {
+        if self.refuse_entity_writes
+            || self.entity_writes_exhausted()
+            || self.refuses_this_single_entity_write(entity)
+        {
             return Err(injected(REFUSED_ENTITY));
         }
         self.inner().upsert_entity(entity)
     }
     fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize> {
-        if self.refuse_entity_writes || self.entity_writes_exhausted() {
+        if self.refuse_entity_writes || self.entity_batches_exhausted() {
             return Err(injected(REFUSED_ENTITY));
         }
-        if self.refuse_entity_writes_after.is_some() {
+        if self.refuse_entity_writes_after.is_some() || self.refuse_one_entity_write_after.is_some()
+        {
             self.entity_batches_taken
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }

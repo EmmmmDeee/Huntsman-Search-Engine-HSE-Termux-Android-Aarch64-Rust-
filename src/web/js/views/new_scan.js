@@ -485,8 +485,9 @@ export async function uploadDossier(){
     // never as a success (REQ-SCANSTATUS-012).
     // `status: "partial"` — every entity is stored, but the store refused some
     // of the derived relations/correlations, the derivation's time budget cut
-    // it short, the correlation pass failed, or both were skipped for size. Say so here, where the counts above would
-    // otherwise read as the whole graph.
+    // it short, the correlator's time budget cut it short, the correlation
+    // pass failed, or both were skipped for size. Say so here, where the
+    // counts above would otherwise read as the whole graph.
     if (r.status === 'aborted'){
       st.textContent = `Import cancelled: ${r.entity_count} entities kept, but relations and correlations were not finished.`;
       if (r.finalise_error) st.textContent += ` Stored incompletely: ${r.finalise_error}`;

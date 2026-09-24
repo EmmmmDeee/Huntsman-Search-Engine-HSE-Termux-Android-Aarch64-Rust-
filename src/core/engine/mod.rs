@@ -1209,7 +1209,6 @@ impl ScanEngine {
             let total = entities.len();
             let (persisted, first_err) =
                 persist_entities_with_fallback(store.as_ref(), &scan.id, &entities);
-            let entity_count = persisted;
             tally.add(
                 FinaliseWrite::Entities,
                 total,
@@ -1229,6 +1228,16 @@ impl ScanEngine {
                 scan.finished_at = Some(crate::core::entity::unix_now());
                 return Ok(FinalisePhase::EntitiesRefused(scan));
             }
+
+            // The row, the `scan_complete` event and the webhook claim the
+            // entities the store holds for the scan — what `entities_for_scan`
+            // and every export of it list — not the writes this finalise
+            // landed. The two differ when the store refused some of those
+            // writes: a refused entity a checkpoint stored keeps that row, and
+            // a refused address-fold detach keeps the folded spelling
+            // (REQ-SCANSTATUS-028). The same count `conclude_failed` takes;
+            // this finalise's own count when the store cannot be read.
+            let entity_count = stored_entity_count_in(store.as_ref(), &scan.id).unwrap_or(persisted);
 
             // The terminal status is DECIDED here but not yet written: the
             // stored record stays `Running` until every artefact an export
@@ -1423,17 +1432,16 @@ impl ScanEngine {
         Ok(scan)
     }
 
-    /// How many entities the store holds for `scan_id`, or `None` when the
-    /// read fails (logged) — see [`Self::conclude_failed`].
+    /// [`stored_entity_count_in`] off the async runtime, or `None` when the
+    /// blocking task itself fails (logged) — see [`Self::conclude_failed`].
     async fn stored_entity_count(&self, scan_id: &str) -> Option<usize> {
         let store = Arc::clone(&self.store);
         let id = scan_id.to_string();
-        match tokio::task::spawn_blocking(move || store.entities_for_scan(&id))
+        match tokio::task::spawn_blocking(move || stored_entity_count_in(store.as_ref(), &id))
             .await
             .map_err(|join| blocking_failure("the stored entity count", &join))
-            .and_then(|r| r)
         {
-            Ok(entities) => Some(entities.len()),
+            Ok(count) => count,
             Err(e) => {
                 warn!(scan_id, error = %e, "could not count the scan's stored entities");
                 None
@@ -1510,8 +1518,9 @@ impl ScanEngine {
     /// bounded to a 10 s timeout and never returns an error, so a slow or dead
     /// endpoint can't stall or fail the scan.
     ///
-    /// Called on every terminal path — the normal commit (complete / aborted,
-    /// and the best-effort failed record) and [`Self::conclude_failed`] — so
+    /// Called on every terminal path — the normal commit (complete /
+    /// aborted) and [`Self::conclude_failed`] (every failure, including a
+    /// finalise whose entity writes were all refused) — so
     /// the webhook hears every outcome the live subscribers hear: `status`
     /// distinguishes them, and `finalise_incomplete` carries a partial
     /// completion ([`Scan::finalise_incomplete`]), which it used to post as a
@@ -3179,6 +3188,22 @@ fn apply_address_folds(
         outcome.err().map(|e| e.to_string()),
     );
     collapsed
+}
+
+/// How many entities `store` holds for `scan_id` — what `entities_for_scan`,
+/// `/scans/{id}/entities` and every export of the scan list — or `None` when
+/// the read fails (logged). The one count a concluded scan's row, its
+/// `scan_complete` event and its webhook claim, on every terminal path: the
+/// finalise's commit and [`ScanEngine::conclude_failed`] (REQ-SCANSTATUS-009,
+/// REQ-SCANSTATUS-023, REQ-SCANSTATUS-025, REQ-SCANSTATUS-028).
+fn stored_entity_count_in(store: &dyn StoragePort, scan_id: &str) -> Option<usize> {
+    match store.entities_for_scan(scan_id) {
+        Ok(entities) => Some(entities.len()),
+        Err(e) => {
+            warn!(scan_id, error = %e, "could not count the scan's stored entities");
+            None
+        }
+    }
 }
 
 /// Phase 3: persist the scan's entities in a single transaction (collapsing N

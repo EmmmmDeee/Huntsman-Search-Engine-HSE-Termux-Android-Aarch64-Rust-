@@ -1036,6 +1036,13 @@ impl Scan {
     /// finalise did not complete: what `err` (its [`FinaliseTally::message`])
     /// means for every view of it, and the remedy that rebuilds it.
     ///
+    /// What a refused write leaves is not always an absence: a live scan's
+    /// checkpoints store its entities before the finalise, so an entity whose
+    /// finalise write the store refused is still listed, as the checkpoint
+    /// stored it, and a refused address-fold detach leaves the folded
+    /// spelling listed beside its survivor. The clause says so rather than
+    /// call every shortfall absent (REQ-SCANSTATUS-028).
+    ///
     /// The remedy follows the scan's origin AND what failed. No shortfall on an
     /// import is rebuilt by a re-run: `/scans/{id}/rerun` starts a LIVE scan of
     /// the import's label (an email string read as a full name), which neither
@@ -1082,8 +1089,10 @@ impl Scan {
         };
         format!(
             "its finalise did not complete ({err}) — what it did not store or compute is \
-             absent from every view and export of it, so that absence is not a finding; \
-             {remedy}"
+             absent from every view and export of it, or there only as the scan stored it \
+             before its finalise (an entity whose finalise write was refused lacks the \
+             finalise's enrichment; an address whose fold was refused is listed twice), so \
+             that absence is not a finding; {remedy}"
         )
     }
 

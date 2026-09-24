@@ -8,6 +8,7 @@ All notable changes to this project are documented here. Format per [Keep a Chan
 
 ### Fixed
 
+- A live scan whose finalise could store only some of its entities now reports the entities the store holds for it. Its row, its `scan_complete` event, the webhook and `/stats` counted only the entities the finalise wrote, while `/scans/{id}/entities` and every export also listed the refused ones as their checkpoint stored them. The completeness caveat no longer calls those entities absent: it says they lack the finalise's enrichment (REQ-SCANSTATUS-028).
 - A live scan whose finalise could store none of its entities is now failed claiming the entities its checkpoints stored. Its row, its `scan_complete` event and the webhook had said 0 entities, while `/scans/{id}/entities` and every export listed the checkpointed ones (REQ-SCANSTATUS-025).
 - When the correlator hits its time budget, the scan now records it. On a busy device a live scan, `hse import` or a web upload could skip the rules after the cut and still be stored as complete. It now reads "partial, finalise-incomplete", and the error says how many rules ran (REQ-SCANSTATUS-026).
 - The `scan_complete` event's `finalise_incomplete` doc no longer says an aborted scan's exports read "partial, finalise-incomplete". They read "partial, aborted" (REQ-SCANSTATUS-022).

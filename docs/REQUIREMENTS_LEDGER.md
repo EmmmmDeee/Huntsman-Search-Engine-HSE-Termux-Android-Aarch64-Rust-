@@ -24502,3 +24502,71 @@ budget cuts among the causes.
 | M4 | the mixed-clause caveat says the panic recurs (as at c0171718) | killed by `core::scan::tests::a_correlation_panic_over_an_incomplete_graph_is_not_called_certain` |
 
 **4 of 4 caught.**
+
+## REQ-SCANSTATUS-028 / REQ-SCANSTATUS-026 / REQ-SCANSTATUS-025 (doc) — final review, correction round 8
+
+**Found** by the eighth correction round of the final review of PR #649,
+which raised four findings against e726b524. Each was checked against that
+head, and all four were real. Findings 1 and 3 describe one stale doc
+comment (`notify_completion_webhook`). Finding 2 is a code defect. Finding 4
+is a pair of stale comments. The code fix is made where its rule lives and
+has a regression test that fails on the code before it. The fix was then
+undone in place, the test was seen to fail, and the file was restored byte
+for byte (table below).
+
+**REQ-SCANSTATUS-028 — a finalise whose store refused some of its entity
+writes claims what the store holds.** REQ-SCANSTATUS-009, -023 and -025 say a
+concluded scan's row claims the entities the store holds for it, but round 7
+applied that only where every finalise entity write was refused. When the
+batch persist rolled back and the per-entity fallback had k of N writes
+refused, the scan was committed `Complete` with `entity_count = N - k`, on
+the row, on the `scan_complete` event and on the webhook (and so in the
+`/stats` sum). The seed round and every productive round checkpoint the
+scan's entities before the finalise, so a refused entity keeps the row its
+checkpoint stored, and `entities_for_scan`, `/scans/{id}/entities` and every
+export listed all N. A refused address-fold detach has the same shape: the
+folded spelling stays stored and exported but was left out of the count.
+The count now has one authority, `stored_entity_count_in`, which reads
+`entities_for_scan`. The Finalised path takes its `entity_count` from it
+right after the persist, falling back to the finalise's own count when the
+store cannot be read, and `conclude_failed` (through the async
+`stored_entity_count`) reads the same function. The same read covers the
+refused-detach case; there is no separate end-to-end test for it, because
+no stub scan in the suite produces an address fold, and the unit test
+`a_refused_address_fold_detach_is_counted` already shows the victim stays
+listed by `entities_for_scan`. The completeness caveat also said what a
+finalise did not store is "absent from every view and export". That is not
+true of a refused entity re-write or detach, so it now says the shortfall is
+absent "or there only as the scan stored it before its finalise (an entity
+whose finalise write was refused lacks the finalise's enrichment; an address
+whose fold was refused is listed twice)".
+`RefusingStore::refusing_one_entity_write_after(n)` takes the first `n`
+entity batches, then refuses every entity batch and the first single re-write
+of an entity the wrapped store already holds for its scan. The test
+`a_finalise_whose_store_refused_one_entity_write_claims_what_the_store_holds`
+runs a scan through it and checks that the row, the returned scan, the event
+and `entities_for_scan().len()` agree (20, where the row used to say 19), and
+that the caveat says the refused entity lacks the finalise's enrichment.
+
+**REQ-SCANSTATUS-025 (doc) — the webhook doc names where a Failed webhook
+comes from.** The `notify_completion_webhook` doc still listed "the
+best-effort failed record" among the commit step's outcomes, which round 7
+removed. It now reads: the normal commit (complete / aborted) and
+`conclude_failed` (every failure, including a finalise whose entity writes
+were all refused).
+
+**REQ-SCANSTATUS-026 (comments) — the web upload's `partial` causes name the
+correlator budget.** The comment on the web upload's `status: "partial"` in
+`api::scan_handlers::core` and the matching one in
+`src/web/js/views/new_scan.js` listed a derivation budget cut but not a
+correlator budget cut, which REQ-SCANSTATUS-026 also records. Both now list
+it.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | the Finalised path's `entity_count` is the finalise's own `persisted` (as at e726b524) | killed by `core::engine::tests::a_finalise_whose_store_refused_one_entity_write_claims_what_the_store_holds` (19 vs 20) |
+| M2 | the caveat says every shortfall is "absent from every view and export" (as at e726b524) | killed by `core::engine::tests::a_finalise_whose_store_refused_one_entity_write_claims_what_the_store_holds` |
+
+**2 of 2 caught.**

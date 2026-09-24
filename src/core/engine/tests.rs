@@ -9588,6 +9588,57 @@ async fn a_finalise_whose_entity_writes_are_refused_claims_the_checkpointed_enti
     assert_eq!(announced, vec![stored], "the event claims what is stored");
 }
 
+/// REQ-SCANSTATUS-028: a finalise whose store refused SOME of its entity
+/// writes claims what the store holds for the scan, as one whose store
+/// refused them all does (REQ-SCANSTATUS-025). The scan was committed
+/// `Complete` with `entity_count` set to the writes this finalise landed —
+/// N-1 here — while the refused entity kept the row its checkpoint stored,
+/// so `entities_for_scan`, and every export of the scan, listed all N. The
+/// row, the `scan_complete` event, the webhook and `/stats` said N-1.
+#[tokio::test]
+async fn a_finalise_whose_store_refused_one_entity_write_claims_what_the_store_holds() {
+    use crate::core::test_support::{InMemoryStore, REFUSED_ENTITY, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).refusing_one_entity_write_after(1));
+    let out = run_terminal_scenario(inner.clone(), store, "one-refused@example.com", false).await;
+    let done = out.result.expect("the scan completes");
+    assert_eq!(done.status, ScanStatus::Complete, "{done:?}");
+    assert_eq!(out.heard, vec![(ScanStatus::Complete, true)]);
+    let row = out.stored.expect("the row exists");
+    assert_eq!(row.status, ScanStatus::Complete, "{row:?}");
+
+    let stored = inner.entities_for_scan(&row.id).expect("readable").len();
+    // The refused entity was one the seed round's checkpoint stored: every
+    // entity the finalise attempted is still listed for the scan.
+    assert_eq!(
+        row.error.as_deref(),
+        Some(format!("1/{stored} entities failed to persist: {REFUSED_ENTITY}").as_str()),
+        "{row:?}"
+    );
+    assert_eq!(row.entity_count, stored, "{row:?}");
+    assert_eq!(done.entity_count, stored, "{done:?}");
+    let announced: Vec<usize> = inner
+        .events_for_scan(&row.id)
+        .expect("readable")
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            EventKind::ScanComplete { entity_count, .. } => Some(entity_count),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced, vec![stored], "the event claims what is stored");
+    // The refused entity is listed as its checkpoint stored it, so the
+    // caveat does not call it absent.
+    let caveat = row.completeness_caveat("this scan").expect("a shortfall");
+    assert!(
+        caveat
+            .contains("an entity whose finalise write was refused lacks the finalise's enrichment"),
+        "{caveat}"
+    );
+}
+
 /// REQ-SCANSTATUS-024: a relation derivation its time budget cut short is
 /// recorded on the scan by the one step every finalise path derives through
 /// (the live engine, `hse import` and the web upload). It used to be a log
