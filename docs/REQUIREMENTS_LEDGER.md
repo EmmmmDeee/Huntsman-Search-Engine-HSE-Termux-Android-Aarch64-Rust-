@@ -24418,6 +24418,8 @@ One mutation was deliberately not run: PUT reverted to `keys::write_keys` (the `
 
 ---
 
+**Superseded on merge with #649.** Main fixed the debug-bundle surface independently. Its `export::environment::key_inventory` applies the same `is_configured_value` test and also counts slots that were provisioned but never filled in (`unfilled`). Main's `environment_key_inventory_treats_template_placeholders_as_absent` locks it. That is the bundle authority now, and this branch's `key_presence` and `the_bundle_key_inventory_lists_a_placeholder_slot_as_absent` were dropped in the merge, so there is still one implementation. The KR-B3/B4/O3–O7 rows above ran against the pre-merge `key_presence`. The web settings and `hse doctor` surfaces, and their locks, are unchanged.
+
 ## REQ-CACHE-002 — a cached module answer is replayed only by a build whose module logic produced it
 
 ### Found
