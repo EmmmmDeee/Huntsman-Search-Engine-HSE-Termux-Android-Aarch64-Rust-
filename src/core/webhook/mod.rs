@@ -16,8 +16,16 @@ pub struct WebhookPayload<'a> {
     pub target_value: &'a str,
     /// How many entities the scan produced.
     pub entity_count: usize,
-    /// Terminal scan status (`completed`, `cancelled`, …).
+    /// Terminal scan status: `complete`, `aborted` or `failed`
+    /// ([`ScanStatus::as_str`](crate::core::scan::ScanStatus::as_str)).
     pub status: &'a str,
+    /// `true` when a `complete` or `aborted` scan's finalise did not store or
+    /// compute everything ([`Scan::finalise_incomplete`](crate::core::scan::Scan::finalise_incomplete))
+    /// — the scan every export reads "partial, finalise-incomplete" and
+    /// `scan_complete` announces partial (REQ-SCANSTATUS-015). Always `false`
+    /// on a `failed` scan. Always sent, so a consumer never reads a missing
+    /// field as whole.
+    pub finalise_incomplete: bool,
     /// How many correlations fired.
     pub correlations_count: usize,
 }
@@ -59,6 +67,7 @@ pub async fn notify_scan_complete(
         "target_value": payload.target_value,
         "entity_count": payload.entity_count,
         "status": payload.status,
+        "finalise_incomplete": payload.finalise_incomplete,
         "correlations_count": payload.correlations_count,
         "timestamp": crate::core::entity::unix_now(),
     });

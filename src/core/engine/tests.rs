@@ -5957,6 +5957,7 @@ async fn run_panic_safe_force_fails_a_scan_that_panics_outside_process() {
         target.clone(),
     );
     let scan_id = scan.id.clone();
+    let mut heard = bus.subscribe();
     let ctx = ModuleContext {
         scan_id: scan_id.clone(),
         bus,
@@ -5970,6 +5971,32 @@ async fn run_panic_safe_force_fails_a_scan_that_panics_outside_process() {
         result.is_err(),
         "a scan whose dispatch panics must surface as an Err, not silently vanish"
     );
+
+    // REQ-SCANSTATUS-019: the failure is announced, as every other is — the
+    // row alone was written, so `hse live`, the radar and the web scan log
+    // heard no `scan_complete` and kept waiting.
+    let failed = |kinds: Vec<EventKind>| {
+        kinds
+            .into_iter()
+            .filter(|k| {
+                matches!(
+                    k,
+                    EventKind::ScanComplete {
+                        status: ScanStatus::Failed,
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    assert_eq!(failed(drain_events(&mut heard)), 1, "the failure is heard");
+    let history = store
+        .events_for_scan(&scan_id)
+        .expect("should succeed")
+        .into_iter()
+        .map(|e| e.kind)
+        .collect();
+    assert_eq!(failed(history), 1, "and durable");
 
     let persisted = store
         .get_scan(&scan_id)
@@ -9267,4 +9294,190 @@ async fn a_complete_scan_with_a_finalise_shortfall_is_announced_partial() {
     let out = run_terminal_scenario(inner, store, "clean@example.com", false).await;
     assert_eq!(out.result.expect("completes").error, None);
     assert_eq!(out.heard, vec![(ScanStatus::Complete, false)]);
+}
+
+/// A one-shot local HTTP sink standing in for an operator's webhook: the
+/// hostname a scan's `webhook_url` names (it clears the SSRF guard, which
+/// refuses an IP literal) and a client that resolves it to the sink. The
+/// receiver yields the raw request once one arrives.
+fn webhook_sink(
+    host: &'static str,
+) -> (String, reqwest::Client, std::sync::mpsc::Receiver<String>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should succeed");
+    let port = listener.local_addr().expect("should succeed").port();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            sock.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .ok();
+            let mut acc = Vec::new();
+            let mut buf = [0u8; 2048];
+            for _ in 0..10 {
+                match sock.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        acc.extend_from_slice(&buf[..n]);
+                        if String::from_utf8_lossy(&acc).contains("correlations_count") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+            let _ = tx.send(String::from_utf8_lossy(&acc).to_string());
+        }
+    });
+    let http = reqwest::Client::builder()
+        .resolve(host, std::net::SocketAddr::from(([127, 0, 0, 1], port)))
+        .build()
+        .expect("should succeed");
+    (format!("http://{host}:{port}/hook"), http, rx)
+}
+
+/// Runs the stub-breach scan against `store` with a webhook configured, and
+/// returns the run's result and the webhook request, if one arrived.
+async fn run_with_webhook(
+    store: Arc<dyn StoragePort>,
+    seed: &str,
+    host: &'static str,
+) -> (Result<Scan>, Option<String>) {
+    let (url, http, rx) = webhook_sink(host);
+    let (bus, _rx) = tokio::sync::broadcast::channel(8192);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Email, seed);
+    let scan = Scan::new(crate::core::entity::scan_id("email", seed), target.clone()).with_options(
+        ScanOptions {
+            depth: 1,
+            max_roi: false,
+            regional_search: false,
+            webhook_url: Some(url),
+            ..Default::default()
+        },
+    );
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http,
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let result = engine.run(scan, target, ctx).await;
+    let request = tokio::task::spawn_blocking(move || {
+        rx.recv_timeout(std::time::Duration::from_secs(5)).ok()
+    })
+    .await
+    .expect("should succeed");
+    (result, request)
+}
+
+/// REQ-SCANSTATUS-018: the operator's webhook hears every outcome the live
+/// subscribers hear. A strict commit the store refused, and a scan-start row
+/// the store refused, were failed and announced on the bus, then returned
+/// their error before the webhook — whose own contract promised a POST for
+/// every terminal state — so the webhook heard nothing. A completion whose
+/// finalise recorded a shortfall was posted as a bare `"status":"complete"`:
+/// the one reader still told the scan was whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_webhook_hears_refused_and_partial_scans_as_they_are() {
+    use crate::core::test_support::{InMemoryStore, RefusingStore};
+
+    // The terminal write refused (a busy timeout): the webhook hears `failed`.
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner).refusing_scan_writes_in(ScanStatus::Complete));
+    let (result, request) = run_with_webhook(
+        store,
+        "hook-commit@example.com",
+        "hook-commit.fixture-host.example-corp",
+    )
+    .await;
+    assert!(result.is_err());
+    let request = request.expect("the refused commit is posted");
+    assert!(request.contains("\"status\":\"failed\""), "{request}");
+    assert!(
+        request.contains("\"finalise_incomplete\":false"),
+        "{request}"
+    );
+
+    // The scan-start row refused: the webhook hears `failed`.
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner).refusing_scan_writes_in(ScanStatus::Running));
+    let (result, request) = run_with_webhook(
+        store,
+        "hook-start@example.com",
+        "hook-start.fixture-host.example-corp",
+    )
+    .await;
+    assert!(result.is_err());
+    let request = request.expect("the refused start is posted");
+    assert!(request.contains("\"status\":\"failed\""), "{request}");
+
+    // A finalise shortfall: `complete`, and partial.
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> = Arc::new(RefusingStore::new(inner).refusing_relation_reads());
+    let (result, request) = run_with_webhook(
+        store,
+        "hook-short@example.com",
+        "hook-short.fixture-host.example-corp",
+    )
+    .await;
+    assert!(result.expect("the scan completes").error.is_some());
+    let request = request.expect("the completion is posted");
+    assert!(request.contains("\"status\":\"complete\""), "{request}");
+    assert!(
+        request.contains("\"finalise_incomplete\":true"),
+        "{request}"
+    );
+
+    // Control: a clean completion is posted whole.
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (result, request) = run_with_webhook(
+        store,
+        "hook-clean@example.com",
+        "hook-clean.fixture-host.example-corp",
+    )
+    .await;
+    assert_eq!(result.expect("completes").error, None);
+    let request = request.expect("the completion is posted");
+    assert!(request.contains("\"status\":\"complete\""), "{request}");
+    assert!(
+        request.contains("\"finalise_incomplete\":false"),
+        "{request}"
+    );
+}
+
+/// REQ-SCANSTATUS-019: a finalise that panics fails the scan and announces
+/// it. Only the correlator runs under `guarded_correlation_pass`; a panic in
+/// any other pass of the blocking phase (here the cross-scan route pass's
+/// relation read) reached the engine as a `JoinError`, was returned as a plain
+/// error, and skipped the commit and the announcement: no `scan_complete`, the
+/// row left `Running`. `run_panic_safe`'s `catch_unwind` never saw it.
+#[tokio::test]
+async fn a_scan_whose_finalise_panics_is_failed_and_announced() {
+    use crate::core::test_support::{InMemoryStore, RefusingStore};
+
+    let inner = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn StoragePort> =
+        Arc::new(RefusingStore::new(inner.clone()).panicking_on_relation_reads());
+    let out = run_terminal_scenario(inner, store, "finalise-panic@example.com", false).await;
+    let err = out.result.expect_err("the panic is returned as an error");
+    assert_eq!(err.to_string(), "the finalise panicked", "{err}");
+    assert_eq!(out.heard, vec![(ScanStatus::Failed, false)]);
+    assert_eq!(out.history.last(), Some(&(ScanStatus::Failed, false)));
+    let row = out.stored.expect("the row exists");
+    assert_eq!(row.status, ScanStatus::Failed, "{row:?}");
+    assert_eq!(
+        row.error.as_deref(),
+        Some("the finalise panicked"),
+        "a fixed reason: the payload's address never reaches the row"
+    );
+    assert!(row.finished_at.is_some());
 }

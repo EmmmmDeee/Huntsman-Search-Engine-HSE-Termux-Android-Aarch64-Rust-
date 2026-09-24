@@ -810,6 +810,30 @@ impl StopReason {
     }
 }
 
+/// Where a scan's entities came from — the fact that decides how a shortfall
+/// in its stored result can be rebuilt ([`Scan::completeness_caveat`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScanOrigin {
+    /// Collected by the engine from a live target: a re-run collects it again.
+    #[default]
+    Live,
+    /// Persisted from a batch the operator already held — `hse import`,
+    /// `hse ingest --auto-scan`, `hse investigate --auto-scan` or a web upload,
+    /// every one written by `app::persist::ImportScanRow`. A re-run of it is a
+    /// live scan of its label, which rebuilds nothing it stored.
+    Import,
+}
+
+impl ScanOrigin {
+    /// `true` for [`Self::Live`] — the default, omitted from the stored JSON
+    /// so a live scan's row and wire form are unchanged.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        *self == Self::Live
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scan {
     pub id: String,
@@ -857,6 +881,11 @@ pub struct Scan {
     /// treats it exactly as it did before, with no schema migration.
     #[serde(default)]
     pub stop_reason: Option<StopReason>,
+    /// Where this scan's entities came from. `#[serde(default)]` for the same
+    /// reason as [`Self::stop_reason`]: a row written before the field existed
+    /// reads [`ScanOrigin::Live`], the advice every row carried until then.
+    #[serde(default, skip_serializing_if = "ScanOrigin::is_live")]
+    pub origin: ScanOrigin,
 }
 
 impl Scan {
@@ -907,6 +936,19 @@ impl Scan {
         }
     }
 
+    /// Whether this scan finished (`Complete` or `Aborted`) but its finalise
+    /// did not store or compute everything: [`Self::error`] on such a row is
+    /// written only by the finalise's [`FinaliseTally`]. The one reading both
+    /// completion announcements carry — the `scan_complete` event's
+    /// `finalise_incomplete` and the operator webhook's — so neither can call
+    /// whole a scan every export reads "partial, finalise-incomplete"
+    /// (REQ-SCANSTATUS-015). `false` on a `Failed` scan, whose `error` is its
+    /// failure, and on a scan not yet finished.
+    #[must_use]
+    pub fn finalise_incomplete(&self) -> bool {
+        matches!(self.status, ScanStatus::Complete | ScanStatus::Aborted) && self.error.is_some()
+    }
+
     /// The operator-facing caveat this scan needs, or `None` when its results
     /// stand on their own as a complete answer.
     ///
@@ -943,18 +985,26 @@ impl Scan {
         match self.status {
             ScanStatus::Complete => {
                 if let Some(err) = self.error.as_deref() {
-                    // The remedy follows the cause. An import's relation and
-                    // correlation pass skipped for size is not rebuilt by a
-                    // re-run: `/scans/{id}/rerun` starts a LIVE scan of the
-                    // import's label (an email string read as a full name),
-                    // which neither enriches the stored entities nor lifts
-                    // the cap, and re-importing the same data hits the same
-                    // cap (REQ-SCANSTATUS-017).
-                    let remedy = if FinaliseTally::records_import_enrichment_skip(err) {
+                    // The remedy follows the scan's origin. No shortfall on an
+                    // import is rebuilt by a re-run: `/scans/{id}/rerun`
+                    // starts a LIVE scan of the import's label (an email
+                    // string read as a full name), which neither stores the
+                    // relations the store refused nor re-correlates the
+                    // imported entities (REQ-SCANSTATUS-017/020). Re-importing
+                    // rebuilds a refused write; a size skip recurs on the same
+                    // data, and batches within the cap are each enriched on
+                    // their own, so links between batches are never derived.
+                    // The skip clause identifies an import written before
+                    // `origin` existed.
+                    let size_skipped = FinaliseTally::records_import_enrichment_skip(err);
+                    let remedy = if size_skipped {
                         "re-running cannot rebuild it (a re-run is a live scan of the import's \
-                         label, and re-importing the same data hits the same cap) — import the \
-                         data in smaller batches, each within the cap, to get its relations and \
-                         correlations"
+                         label, and re-importing the same data hits the same cap) — importing \
+                         the data in smaller batches, each within the cap, enriches each batch \
+                         on its own; links between entities in different batches are not derived"
+                    } else if self.origin == ScanOrigin::Import {
+                        "re-running cannot rebuild it (a re-run is a live scan of the import's \
+                         label) — re-import the data to rebuild it"
                     } else {
                         "re-run the scan to rebuild it"
                     };
@@ -1005,6 +1055,7 @@ impl Scan {
             modules_cached: 0,
             options: ScanOptions::default(),
             stop_reason: None,
+            origin: ScanOrigin::Live,
         }
     }
 

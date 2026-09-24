@@ -1884,8 +1884,10 @@ fn a_complete_scan_missing_stored_records_is_caveated() {
 /// correlation pass was skipped for size is not told to "re-run the scan".
 /// A re-run of an import is a live scan of its label — it neither enriches
 /// the stored entities nor lifts the cap — and a re-import of the same data
-/// hits the same cap. The caveat names the remedy that works; every other
-/// shortfall keeps the re-run advice.
+/// hits the same cap. The caveat names the remedy that works, without
+/// promising the links between batches it cannot derive; every other
+/// shortfall on a live scan keeps the re-run advice (an import's is
+/// REQ-SCANSTATUS-020's).
 #[test]
 fn an_import_skipped_for_size_is_not_told_to_re_run() {
     let mut tally = FinaliseTally::default();
@@ -1898,6 +1900,13 @@ fn an_import_skipped_for_size_is_not_told_to_re_run() {
     assert!(!caveat.contains("re-run the scan"), "{caveat}");
     assert!(caveat.contains("smaller batches"), "{caveat}");
     assert!(caveat.contains("6000 entities exceed"), "{caveat}");
+    // The batch remedy does not promise the whole dossier's graph: each
+    // batch is enriched on its own, so cross-batch links are never derived.
+    assert!(!caveat.contains("to get its relations"), "{caveat}");
+    assert!(
+        caveat.ends_with("links between entities in different batches are not derived"),
+        "{caveat}"
+    );
 
     // Behind a write shortfall, the skip still decides the remedy.
     let mut both = FinaliseTally::default();
@@ -1907,8 +1916,10 @@ fn an_import_skipped_for_size_is_not_told_to_re_run() {
         &both.message().expect("recorded")
     ));
 
-    // Control: any other shortfall is rebuilt by a re-run, and says so — a
-    // correlation pass that failed is not mistaken for the import's pass.
+    // Control: on a LIVE scan's row any other shortfall is rebuilt by a
+    // re-run, and says so — a correlation pass that failed is not mistaken
+    // for the import's pass.
+    assert_eq!(s.origin, ScanOrigin::Live, "fixture: a live scan's row");
     for other in [
         "2/40 relations failed to persist: disk full",
         "correlation pass failed: panicked",
@@ -1924,6 +1935,40 @@ fn an_import_skipped_for_size_is_not_told_to_re_run() {
             "{caveat}"
         );
     }
+}
+
+/// REQ-SCANSTATUS-020: no shortfall on an import is sent to a re-run. The
+/// store refusing 2 of 40 relation writes on a web upload left the row
+/// `Complete` with that shortfall, and the caveat said "re-run the scan to
+/// rebuild it": `/scans/{id}/rerun` is a live network scan of the import's
+/// label, which rebuilds none of the import's relations. The remedy now
+/// follows the row's origin, which the import's row lifecycle records.
+#[test]
+fn an_import_shortfall_is_not_told_to_re_run() {
+    let mut import = scan_for(ScanStatus::Complete, None);
+    import.origin = ScanOrigin::Import;
+    for shortfall in [
+        "2/40 relations failed to persist: busy",
+        "correlation pass failed: panicked",
+    ] {
+        import.error = Some(shortfall.into());
+        let caveat = import.completeness_caveat("the import").expect("caveated");
+        assert!(!caveat.contains("re-run the scan"), "{caveat}");
+        assert!(caveat.contains("a re-run is a live scan"), "{caveat}");
+        assert!(
+            caveat.ends_with("re-import the data to rebuild it"),
+            "{caveat}"
+        );
+    }
+
+    // The origin survives the store's JSON round trip, and a live scan's
+    // row is written exactly as before the field existed.
+    let json = serde_json::to_string(&import).expect("serialises");
+    let back: Scan = serde_json::from_str(&json).expect("round-trips");
+    assert_eq!(back.origin, ScanOrigin::Import);
+    let live = scan_for(ScanStatus::Complete, None);
+    let json = serde_json::to_string(&live).expect("serialises");
+    assert!(!json.contains("origin"), "{json}");
 }
 
 #[test]

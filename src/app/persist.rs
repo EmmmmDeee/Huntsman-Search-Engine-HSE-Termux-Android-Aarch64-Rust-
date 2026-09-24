@@ -85,13 +85,17 @@ impl ImportScanRow {
     ///
     /// The row claims no entities yet: nothing is stored until
     /// [`Self::store_entities`], and the count it records is what that stored
-    /// (REQ-SCANSTATUS-009).
+    /// (REQ-SCANSTATUS-009). It is marked an
+    /// [`Import`](crate::core::scan::ScanOrigin::Import) here, the one place
+    /// every import's row is written, so a shortfall on it is never told that
+    /// a re-run rebuilds it (REQ-SCANSTATUS-020).
     pub(crate) fn begin(
         store: std::sync::Arc<dyn crate::core::StoragePort>,
         mut scan: crate::core::scan::Scan,
     ) -> Result<Self> {
         scan.status = crate::core::scan::ScanStatus::Running;
         scan.entity_count = 0;
+        scan.origin = crate::core::scan::ScanOrigin::Import;
         store.upsert_scan(&scan)?;
         Ok(Self {
             store,
@@ -536,6 +540,15 @@ mod tests {
         assert_eq!(
             stored.error.as_deref(),
             Some("4/4 relations failed to persist: disk full")
+        );
+        // REQ-SCANSTATUS-020: the row is an import's, so its shortfall is not
+        // sent to a re-run — a live scan of the label that rebuilds nothing.
+        assert_eq!(stored.origin, crate::core::scan::ScanOrigin::Import);
+        let caveat = stored.completeness_caveat("the import").expect("caveated");
+        assert!(!caveat.contains("re-run the scan"), "{caveat}");
+        assert!(
+            caveat.ends_with("re-import the data to rebuild it"),
+            "{caveat}"
         );
     }
 

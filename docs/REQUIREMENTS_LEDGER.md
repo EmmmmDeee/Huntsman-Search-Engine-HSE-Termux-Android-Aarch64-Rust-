@@ -24181,3 +24181,118 @@ import's pass.
 | M6 | `completeness_caveat` without the import-skip remedy | killed by `core::scan::tests::an_import_skipped_for_size_is_not_told_to_re_run` |
 
 **10 of 10 caught.**
+
+## REQ-SCANSTATUS-018 / REQ-SCANSTATUS-019 / REQ-SCANSTATUS-020 — final review, correction round 5
+
+**Found** by the fifth correction round of the final review of PR #649,
+which raised nine findings against 11fb8fbc. Each was checked against that
+head, and all nine were real. Findings 1 and 8 describe one defect (the
+webhook), and findings 4 and 7 describe another (the `scan_import`
+comments). Findings 2 and 9 are wording errors in round 4's CHANGELOG
+entries, and finding 3 is a wording error in round 4's caveat. That leaves
+five code defects and three corrected texts. Each code fix is made where its
+rule lives and has a regression test that fails on the code before it.
+Each fix was then undone in place, the test was seen to fail, and the file
+was restored byte-identically (table below).
+
+**One way to fail a scan.** The failure paths had each grown their own copy
+of "record `scan_complete {failed}`, flush, write the row `Failed`,
+broadcast": the refused start row (REQ-SCANSTATUS-016), the refused strict
+commit (REQ-SCANSTATUS-014), and a partial copy in
+`force_fail_panicked_scan` that wrote the row only. They now all call
+`ScanEngine::conclude_failed`. It records the failed event and flushes the
+writer, so the event is durable before the row may read terminal. It then
+writes the row `Failed` (best-effort, logged), broadcasts the event, and
+posts the webhook. The fixes below are what that one path does and the
+copies did not.
+
+**REQ-SCANSTATUS-018 — the webhook hears every outcome.** The webhook block
+said it "Fires for every terminal state (complete / aborted / failed)". But
+the refused-commit and refused-start paths returned `Err` before reaching
+it, so with `HUNTSMAN_WEBHOOK_URL` set, a scan that `hse live`, the radar
+and the web scan log all heard as `failed` posted nothing. A completion
+whose `FinaliseTally` recorded a shortfall was posted as
+`"status":"complete"` with no partial flag, although every export reads it
+"partial, finalise-incomplete" and REQ-SCANSTATUS-015 announces it partial.
+The POST is now `ScanEngine::notify_completion_webhook`. The normal commit
+path and `conclude_failed` both call it, so every terminal path posts.
+`WebhookPayload` gains `finalise_incomplete`, which is always sent. It is
+read from `Scan::finalise_incomplete`: `Complete` or `Aborted` with `error`
+set. The same method now sets the `scan_complete` event's flag, so the
+event and the webhook cannot disagree.
+
+**REQ-SCANSTATUS-019 — a finalise that panics is failed and announced.**
+Only the correlator runs under `guarded_correlation_pass`. A panic in any
+other pass of the finalise's `spawn_blocking` closure (the cross-scan route
+pass, the relation derivation, the corroboration promotion) reached the
+engine as a `JoinError`. `.map_err(Error::Other)??` turned it into a plain
+error, which skipped the commit and the broadcast. `run_panic_safe`'s
+`catch_unwind` never saw it, so `force_fail_panicked_scan` never ran. The
+row stayed at the `Running` start row and no `scan_complete` was recorded.
+The web scan log stayed "live", the radar showed "sweep #N running…", and
+`hse live` printed nothing. The engine now joins the phase and, on a panic
+(or an `Err`), concludes the scan it held before the phase through
+`conclude_failed`, with the fixed reason "the finalise panicked". A panic
+payload can carry run-specific detail, the reason
+`guarded_correlation_pass` records a panic the same way. The commit's own
+`spawn_blocking` is joined the same way (`blocking_failure`), and a panic
+there is a refused commit. `force_fail_panicked_scan` wrote the row only,
+so a scan that panicked on its own task was never announced either. It now
+concludes through `conclude_failed`, reading the payload before any await
+(it is `Send`, not `Sync`). The `run_panic_safe` doc no longer claims to
+cover panics that never unwind to it.
+
+**REQ-SCANSTATUS-020 — no shortfall on an import is sent to a re-run.**
+REQ-SCANSTATUS-017 changed the remedy only when the error held the size-skip
+clause. An import whose store refused 2 of 40 relation writes was still
+told to "re-run the scan to rebuild it". `scan_rerun` copies the row's
+target into a live network scan of the import's label, which rebuilds none
+of the import's relations. The round-4 test locked this in: its control
+asserted that such a shortfall "is rebuilt by a re-run". The scan row now
+records where its entities came from: `Scan::origin`, a `ScanOrigin` that
+is `Live` by default (`serde(default)`, omitted from the JSON when `Live`,
+so a live scan's row and wire form are unchanged). `ImportScanRow::begin`,
+where every import's row is first written (the CLI's
+`persist_entities_as_scan` and the web upload), sets it to `Import`.
+`completeness_caveat` picks the remedy from it. For an import shortfall the
+remedy is "re-import the data to rebuild it". A size skip keeps its batch
+remedy, and the skip clause still identifies an import row written before
+the field existed. The round-4 control now runs on a live scan's row only.
+
+**Corrected texts.**
+- Finding 3: the size-skip remedy said importing in smaller batches recovers
+  the dossier's "relations and correlations". `enrich_persisted_batch`
+  derives relations and runs the correlator over one scan's batch, so no
+  link between entities in different batches is ever derived. The caveat now
+  says that importing in smaller batches "enriches each batch on its own;
+  links between entities in different batches are not derived". The
+  CHANGELOG says the same.
+- Findings 4 and 7: `scan_import`'s cap comment and its
+  `enrichment_skipped` response-field comment gave `/scans/{id}/rerun` as
+  the remedy for an over-cap upload. They now give the REQ-SCANSTATUS-017
+  remedy: re-import in batches under `PERSIST_ENRICH_MAX_ENTITIES`, with
+  cross-batch links not derived.
+- Finding 2: the REQ-SCANSTATUS-014 CHANGELOG entry implied that the event
+  log no longer says "scan complete". It does. The `complete` event must be
+  durable before the row may read terminal (REQ-SCANSTATUS-004), so it is
+  recorded before the commit. The log is append-only, so the event stays
+  when the commit is refused, and the `failed` event follows it. The entry
+  now says so. Round 4's ledger text was already accurate.
+- Finding 9: the REQ-SCANSTATUS-016 CHANGELOG entry promised the row is
+  stored failed "once the store takes a write again". The engine makes one
+  Failed write, right after the refusal, and nothing retries it later. The
+  entry now says what the code does.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `conclude_failed` does not post the webhook | killed by `core::engine::tests::the_webhook_hears_refused_and_partial_scans_as_they_are` ("the refused commit is posted") |
+| M2 | the webhook posts `finalise_incomplete: false` | killed by `core::engine::tests::the_webhook_hears_refused_and_partial_scans_as_they_are` (the partial case) |
+| M3 | a finalise failure is returned without `conclude_failed` (as at 11fb8fbc) | killed by `core::engine::tests::a_scan_whose_finalise_panics_is_failed_and_announced` (`heard: []`) |
+| M4 | `force_fail_panicked_scan` writes the row only (as at 11fb8fbc) | killed by `core::engine::tests::run_panic_safe_force_fails_a_scan_that_panics_outside_process` ("the failure is heard", 0) |
+| M5 | `ImportScanRow::begin` leaves `origin` `Live` | killed by `app::persist::tests::an_import_rows_terminal_write_carries_the_finalise_record` (`left: Live`) |
+| M6 | `completeness_caveat` ignores `origin` | killed by `core::scan::tests::an_import_shortfall_is_not_told_to_re_run` and `app::persist::tests::an_import_rows_terminal_write_carries_the_finalise_record` |
+| M7 | the size-skip remedy as at 11fb8fbc | killed by `core::scan::tests::an_import_skipped_for_size_is_not_told_to_re_run` |
+
+**7 of 7 caught.**

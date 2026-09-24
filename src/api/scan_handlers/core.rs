@@ -680,7 +680,11 @@ pub async fn scan_import(
     // (`app::persist::skip_enrichment_over_cap`, the CLI import's own cap), so a
     // huge upload always COMPLETES. A realistic dossier (well under the cap)
     // still gets full relations + correlations; a larger one stores every entity
-    // and can be correlated on demand via `/scans/{id}/rerun`.
+    // and is recorded partial. `/scans/{id}/rerun` does not enrich it — a re-run
+    // is a live scan of the import's label — so the remedy is to re-import the
+    // data in batches under `PERSIST_ENRICH_MAX_ENTITIES`, each enriched on its
+    // own: links between entities in different batches are not derived
+    // (REQ-SCANSTATUS-017).
 
     // Persist scan, entities, relations, and correlations on a blocking thread
     // so SQLite commits don't stall the 2-worker async reactor.
@@ -855,8 +859,12 @@ pub async fn scan_import(
             // (`app::persist::PERSIST_ENRICH_MAX_ENTITIES`), or a cancel
             // reached it first — which disambiguates a skipped pass from a
             // dossier that genuinely yielded zero relations/correlations.
-            // Every entity is still persisted either way; the scan can be
-            // enriched on demand via `/scans/{id}/rerun`.
+            // Every entity is still persisted either way. `/scans/{id}/rerun`
+            // does not enrich it (a re-run is a live scan of the import's
+            // label); re-importing the data in batches under
+            // `PERSIST_ENRICH_MAX_ENTITIES` enriches each batch on its own,
+            // and links between entities in different batches are not
+            // derived (REQ-SCANSTATUS-017).
             "enrichment_skipped": !enriched,
             // Together these disambiguate a stealer-log upload's paired
             // credential rows the same way `enrichment_skipped` does for
