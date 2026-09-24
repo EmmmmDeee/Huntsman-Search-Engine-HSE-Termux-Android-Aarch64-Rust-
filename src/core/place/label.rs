@@ -642,6 +642,52 @@ fn country_phrase(e: Option<&Entity>, lat: f64, lon: f64) -> Option<String> {
     Some(format!("{name} (approx.)"))
 }
 
+/// The curated Australian centre a point graded `grain` may be NAMED after, as
+/// `(name, state, distance_km)` — the one authority on that choice, read by
+/// the place label ([`offline_phrase`]) and, through [`fused_au_locality`], by
+/// every other field naming a best-location fix.
+///
+/// A capital's suburb anchor ("Footscray", "Bondi") names a position to a
+/// suburb; a fix graded coarser than that is named after the nearest town or
+/// city instead (`util::geo::nearest_au_town`), or the name would be finer
+/// than the fix and would restate the very suburb a redaction withheld (P1,
+/// REQ-GEOLABEL-030/031). `None` outside Australia. Pure.
+#[must_use]
+pub fn nearest_au_anchor(
+    lat: f64,
+    lon: f64,
+    grain: FixGrain,
+) -> Option<(&'static str, &'static str, f64)> {
+    if grain > FixGrain::Suburb {
+        crate::util::geo::nearest_au_town(lat, lon)
+    } else {
+        crate::util::geo::nearest_au_locality(lat, lon)
+    }
+}
+
+/// The grain a best-location fix good to `radius_km` is NAMED at: the grain
+/// its radius grades, never finer than a locality — a fused label names a
+/// town or city at most. The one grain [`describe_fused`] and
+/// [`fused_au_locality`] share.
+#[must_use]
+pub fn fused_name_grain(radius_km: f64) -> FixGrain {
+    FixGrain::from_radius_m((radius_km * 1_000.0).max(0.0)).max(FixGrain::Locality)
+}
+
+/// The Australian centre a best-location fix at `(lat, lon)` good to
+/// `radius_km` is named after — the anchor its place label
+/// ([`describe_fused`]) names, so the fix's `locality` field (printed as
+/// "near …" on the CLI dossier's headline, written to report.json and
+/// `/location` beside `place_label`) and its label cannot name two places.
+/// They did: the correlator asked `util::geo::nearest_au_locality` whatever
+/// the radius, so a redacted `-37.8,144.9` at ±5.6 km read "near Footscray"
+/// above a label naming Melbourne, restating the suburb the redaction
+/// withheld (REQ-GEOLABEL-031). `None` outside Australia. Pure.
+#[must_use]
+pub fn fused_au_locality(lat: f64, lon: f64, radius_km: f64) -> Option<&'static str> {
+    nearest_au_anchor(lat, lon, fused_name_grain(radius_km)).map(|(name, _, _)| name)
+}
+
 /// The offline place phrase for a point graded `grain` / `radius_m`, and the
 /// grain the phrase names (never finer than `grain`).
 ///
@@ -650,7 +696,7 @@ fn country_phrase(e: Option<&Entity>, lat: f64, lon: f64) -> Option<String> {
 ///   country.
 /// * Finer — the nearest curated centre within [`NEAR_CENTRE_KM`] (Australia's
 ///   anchors — never a capital's suburb for a fix coarser than a suburb,
-///   `util::geo::nearest_au_town` — then Vietnam's centrally-run cities), then
+///   [`nearest_au_anchor`] — then Vietnam's centrally-run cities), then
 ///   the nearest tabulated
 ///   city within [`NEAR_CITY_KM`], worded by [`near_centre`] at locality grain;
 ///   an Australian point beyond every centre is "remote QLD — nearest centre
@@ -679,15 +725,9 @@ fn offline_phrase(
         _ => {}
     }
     let at_locality = grain.max(FixGrain::Locality);
-    // A capital's suburb anchor ("Footscray", "Bondi") names a position to a
-    // suburb; a fix graded coarser than that is named after the nearest town
-    // or city instead, or the label would be finer than the fix (P1).
-    let nearest_au = if grain > FixGrain::Suburb {
-        crate::util::geo::nearest_au_town(lat, lon)
-    } else {
-        crate::util::geo::nearest_au_locality(lat, lon)
-    };
-    if let (Some(st), Some((name, anchor_state, km))) = (au_state, nearest_au) {
+    if let (Some(st), Some((name, anchor_state, km))) =
+        (au_state, nearest_au_anchor(lat, lon, grain))
+    {
         if km <= NEAR_CENTRE_KM
             && let Some(centre) = au_anchor_position(name)
         {
@@ -1232,7 +1272,7 @@ pub fn describe_fused(lat: f64, lon: f64, radius_km: f64, kind: FixKind) -> Opti
         return None;
     }
     let radius = (radius_km * 1_000.0).max(0.0);
-    let grain = FixGrain::from_radius_m(radius).max(FixGrain::Locality);
+    let grain = fused_name_grain(radius_km);
     let (phrase, g) = offline_phrase(None, lat, lon, grain, radius)?;
     let (how, basis) = match kind {
         FixKind::Synergy | FixKind::Corroboration => ("fused fix", LabelBasis::Fused),

@@ -657,7 +657,6 @@ pub async fn scan_import(
         .or_else(|| entities.iter().find(|e| e.kind == EntityKind::Email))
         .map_or_else(|| "uploaded dossier".to_string(), |e| e.value.clone());
 
-    let entity_count = entities.len();
     // Written `Running` first and turned `Complete` only once the entities,
     // relations and correlations are all stored (the commit at the end of the
     // blocking closure below). Exports classify a scan by its stored status,
@@ -668,8 +667,9 @@ pub async fn scan_import(
     // before the commit records `Failed`, and a kill leaves `Running`, which
     // reads as interrupted once this process no longer holds the import in its
     // in-flight registry (REQ-SCANSTATUS-005).
-    let mut scan = Scan::new(sid.clone(), Target::new(TargetKind::FullName, label));
-    scan.entity_count = entity_count;
+    // The row's entity count is set by `ImportScanRow::store_entities` once the
+    // batch is stored, never claimed ahead of it (REQ-SCANSTATUS-009).
+    let scan = Scan::new(sid.clone(), Target::new(TargetKind::FullName, label));
 
     // Cross-entry enrichment (relation derivation + the correlator) is pairwise
     // WITHIN same-key buckets, so a pathological single-domain dossier — e.g.
@@ -715,20 +715,30 @@ pub async fn scan_import(
         cancel.clone(),
     );
     let (
-        relation_count,
-        correlation_count,
-        enriched,
-        stealer_rows_stored,
-        terminal,
-        finalise_error,
+        entity_count,
+        (
+            relation_count,
+            correlation_count,
+            enriched,
+            stealer_rows_stored,
+            terminal,
+            finalise_error,
+        ),
     ) = match super::offload_store(move || -> crate::core::error::Result<_> {
         use crate::core::scan::{FinaliseTally, FinaliseWrite};
         // Declared before `row`, so they drop after it: after its terminal
         // write, or after the `Failed` its Drop records on an early exit.
         let _in_flight = in_flight;
         let _permit = permit;
-        let row = crate::app::persist::ImportScanRow::begin(Arc::clone(&store), scan)?;
-        store.upsert_entities_batch(&entities)?;
+        // The same preparation the CLI import applies before storing
+        // (`app::persist::prepare_import_batch`): the offline geo enrichment
+        // and the strongest-first ranking. It appends derived Coordinates, so
+        // the batch is counted after it (REQ-GEOLABEL-033).
+        let mut entities = entities;
+        crate::app::persist::prepare_import_batch(&mut entities, &sid2);
+        let entity_count = entities.len();
+        let mut row = crate::app::persist::ImportScanRow::begin(Arc::clone(&store), scan)?;
+        row.store_entities(&entities)?;
         // Every relation / correlation write below counts into this; its
         // message is the scan's recorded shortfall (see `FinaliseTally`).
         let mut tally = FinaliseTally::default();
@@ -767,11 +777,17 @@ pub async fn scan_import(
         // large import (entities are already persisted above; nothing lost).
         if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
             let (status, error) = commit(row, ScanStatus::Complete, &tally)?;
-            return Ok((0usize, 0usize, false, stealer_rows_stored, status, error));
+            return Ok((
+                entity_count,
+                (0usize, 0usize, false, stealer_rows_stored, status, error),
+            ));
         }
         if cancel.is_cancelled() {
             let (status, error) = commit(row, ScanStatus::Aborted, &tally)?;
-            return Ok((0usize, 0usize, false, stealer_rows_stored, status, error));
+            return Ok((
+                entity_count,
+                (0usize, 0usize, false, stealer_rows_stored, status, error),
+            ));
         }
         // Wall-clock bound on the super-linear derivation chain, matching a
         // live scan (the entity-count guard above already skips the
@@ -787,7 +803,10 @@ pub async fn scan_import(
         // whatever the tally recorded about them.
         if cancel.is_cancelled() {
             let (status, error) = commit(row, ScanStatus::Aborted, &tally)?;
-            return Ok((relations, 0usize, false, stealer_rows_stored, status, error));
+            return Ok((
+                entity_count,
+                (relations, 0usize, false, stealer_rows_stored, status, error),
+            ));
         }
         // Run the correlator so cross-entry handle-reuse / breach clusters
         // surface exactly as they would for a live scan. Not fatal: a
@@ -802,12 +821,15 @@ pub async fn scan_import(
         let correlations = tally.persisted(FinaliseWrite::Correlations);
         let (status, error) = commit(row, ScanStatus::Complete, &tally)?;
         Ok((
-            relations,
-            correlations,
-            true,
-            stealer_rows_stored,
-            status,
-            error,
+            entity_count,
+            (
+                relations,
+                correlations,
+                true,
+                stealer_rows_stored,
+                status,
+                error,
+            ),
         ))
     })
     .await

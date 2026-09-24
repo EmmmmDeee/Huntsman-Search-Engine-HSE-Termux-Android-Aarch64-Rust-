@@ -6793,14 +6793,17 @@ async fn scan_complete_reaches_live_subscribers_only_after_the_row_is_terminal()
     assert_eq!(heard, 1);
 }
 
-/// REQ-SCANSTATUS-007: a Failed scan whose best-effort terminal write is lost
-/// is not announced. When every entity write fails the scan takes the Failed
-/// branch, whose row write is best-effort; when that write failed too the
-/// error was logged, the scan returned, and `scan_complete` was broadcast for
-/// a row still reading `running` — the REQ-SCANSTATUS-004 symptom on the one
-/// path the reordering missed.
+/// REQ-SCANSTATUS-008: a Failed scan is announced `failed` even when its
+/// best-effort terminal write is lost. When every entity write fails the scan
+/// takes the Failed branch, whose row write is best-effort. REQ-SCANSTATUS-007
+/// withheld `scan_complete` when that write failed too, and nothing was
+/// broadcast in its place — so `hse live` printed no "scan failed" line and
+/// the web scan log's pill stayed "live", then cycled through reconnects
+/// against the `Running` start row, in exactly the case (a store refusing
+/// writes) the operator most needs telling. The event's status is true
+/// whether or not the row landed.
 #[tokio::test]
-async fn a_failed_scan_whose_row_was_not_written_is_not_announced() {
+async fn a_failed_scan_whose_row_was_not_written_is_still_announced_failed() {
     use crate::core::test_support::{InMemoryStore, RefusingStore};
 
     let run = |refuse_row: bool| async move {
@@ -6844,10 +6847,13 @@ async fn a_failed_scan_whose_row_was_not_written_is_not_announced() {
             .get_scan(&scan_id)
             .expect("should succeed")
             .map(|s| s.status);
-        let heard = drain_events(&mut late)
+        let heard: Vec<ScanStatus> = drain_events(&mut late)
             .into_iter()
-            .filter(|k| matches!(k, EventKind::ScanComplete { .. }))
-            .count();
+            .filter_map(|k| match k {
+                EventKind::ScanComplete { status, .. } => Some(status),
+                _ => None,
+            })
+            .collect();
         (stored, heard)
     };
 
@@ -6858,13 +6864,14 @@ async fn a_failed_scan_whose_row_was_not_written_is_not_announced() {
         "the row write was refused"
     );
     assert_eq!(
-        heard, 0,
-        "scan_complete announced for a row that never turned terminal"
+        heard,
+        vec![ScanStatus::Failed],
+        "a status-only subscriber must still hear the scan failed"
     );
     // Control: the Failed row that was written is announced, once.
     let (stored, heard) = run(false).await;
     assert_eq!(stored, Some(ScanStatus::Failed));
-    assert_eq!(heard, 1);
+    assert_eq!(heard, vec![ScanStatus::Failed]);
 }
 
 /// Scan 7258fc07: `expansion_stop max_entities=2500 reached`, then

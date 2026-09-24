@@ -23795,3 +23795,127 @@ write through `RefusingStore::pausing_entity_batch`, drops the request
 future, and checks the registry, the row and the permit. The engine test
 uses `RefusingStore::refusing_terminal_scan_writes` and has a control run
 in which the Failed row is written and announced once.
+
+## REQ-GEOLABEL-031 / REQ-GEOLABEL-032 / REQ-GEOLABEL-033 / REQ-SCANSTATUS-008 / REQ-SCANSTATUS-009 — final review, correction round 2
+
+**Found** by the second correction round of the final review of PR #649,
+which raised eight findings against 01172758. Each was checked against that
+head, and all eight were real. Two pairs describe one defect each (the
+best-location `locality`, and the web upload's missing enrichment), so there
+are five behaviour defects and one documentation defect. Each behaviour fix
+is made where its rule lives and has a regression test that fails on the code
+before it. Each fix was then undone in place, the test was seen to fail, and
+the file was restored byte-identically (table below).
+
+**REQ-GEOLABEL-031 — every name for a fix is chosen at the fix's grain.**
+REQ-GEOLABEL-030 changed only `core::place::label::offline_phrase`. The
+best-location estimate's `locality` (`best_au_location_estimate`, every
+rung) and the corroboration's (`au_location_corroboration`) still asked
+`util::geo::nearest_au_locality`, whatever the fix's radius. The CLI dossier
+prints that value as ", near {locality}" on the headline line above the
+`place:` line, and report.json and `/location` write it as `locality` beside
+`place_label`. A person-anchored coordinate stored redacted as `-37.8,144.9`
+wins rung 2 at ±5.6 km (the quantisation floor), so the dossier read "near
+Footscray" above "place: … Melbourne, VIC", and report.json carried
+`"locality":"Footscray"` beside a label naming Melbourne. The choice now has
+one authority, `core::place::nearest_au_anchor(lat, lon, grain)`: a grain
+coarser than a suburb asks `nearest_au_town`, anything finer
+`nearest_au_locality`. `offline_phrase` calls it with the label's grain. A
+best-location fix's name goes through `core::place::fused_au_locality`,
+which calls it at `fused_name_grain(radius_km)`, the grain `describe_fused`
+also names at: the radius's grade, never finer than a locality. The
+correlator's `au_locality_name` reads `fused_au_locality` for every rung
+and for the corroboration, so a fix's `locality` is the anchor its
+`place_label` names, and one fix has one name. A fix good to metres on the
+Footscray anchor now reads "Melbourne" in both places, as its label already
+did. The postcode rungs' 8 km radius is named once
+(`POSTCODE_RUNG_RADIUS_KM`), so the rung and its locality cannot disagree.
+The correlator narratives that name each stored coordinate's nearest anchor
+with its distance (AU-057, AU-099, the device profile, the state-consensus
+note) are outside this rule. They word a coordinate, not a best-location
+fix, and print the distance beside the name.
+
+**REQ-GEOLABEL-032 — every MCC stand-in lies in its own country.**
+`cell_intel`'s MCC table gave MCC 216 (Hungary) the coordinates
+`41.0082,28.9784`, which is Istanbul, and MCC 219 (Croatia)
+`44.0165,21.0059`, which is central Serbia. REQ-GEOLABEL-029 made the record
+name its country in words, so a device camped on a Hungarian network read
+"Hungary" while its pin, geohash and timezone put it in Turkey. The rows now
+read `47.1625,19.5033` and `45.1000,15.2000`. The `match` is now a table,
+`MCC_CENTROIDS`, so a test can visit every row. The oracle is containment in
+the named country's OWN offline box (`util::geohash::country::country_box`,
+test-only), not `reverse_country_iso`. That function answers the first
+matching box, so it reads right points in shadowed boxes as the neighbour:
+Belgium as France, Portugal as Spain, Ukraine as Russia, and ten more. The
+three MCC countries the offline table does not box (HR, IR, TZ) get a box in
+the test, so a new row with no box fails until it is given one.
+
+**REQ-GEOLABEL-033 — the web upload prepares its entities as `hse import`
+does.** `persist_entities_as_scan` (the CLI's `hse import`, `ingest` and
+`investigate`) ran `engine::enrich_offline_geo` and the strongest-first
+ranking before storing. The web upload (`api::scan_handlers::core::scan_import`)
+stored the parsed set as it was. So the same file imported through the two
+surfaces was stored as two different scans. The web upload got no Address
+parsing, no geohash, country or timezone tags, no admission grain stamps,
+no Coordinates derived from addresses, and none of REQ-GEOLABEL-027's
+city-onto-country-signal merge, and its relations, correlations, place
+labels, CSV `fix_radius_m`/`place_grain` columns and GEXF labels all
+differed. The REQ-GEOLABEL-027 entry and `enrich_offline_geo`'s doc already
+named the web upload as a caller. Both paths now call one function,
+`app::persist::prepare_import_batch`, which runs the enrichment and then the
+ranking. The web upload runs it inside its blocking closure, before the row's
+first write, and counts the batch afterwards, because derived Coordinates are
+appended. Those two entries are now accurate as written.
+
+**REQ-SCANSTATUS-008 — a failed scan is announced `failed` even when its
+row was lost.** REQ-SCANSTATUS-007 withheld the `ScanComplete` broadcast
+when the best-effort Failed row could not be written, and broadcast nothing
+in its place. Two subscribers read the event only for its `status`:
+`hse live`, which prints "scan failed" from it, and the web scan log, whose
+`onTerminal` sets the failed pill and closes the stream. With the broadcast
+withheld, `hse live` printed nothing for that iteration. The log's pill stayed
+"live" until the SSE idle timeout. The reconnect then found the `Running`
+start row and answered 200, so the pill cycled indefinitely. This happened in
+exactly the case, a store refusing writes, where the operator most needs
+telling. The event's `status: failed` is true whether or not the row landed,
+so the Failed branch broadcasts it again. The strict path is unchanged: a
+commit that fails outright returns before the broadcast. The radar was the
+subscriber REQ-SCANSTATUS-007 protected, but it re-reads only the sweep's
+readings, which a refusing store never held. It now takes the sweep's outcome
+from the event and says "sweep failed" for one that failed. REQ-SCANSTATUS-007
+is superseded, and its CHANGELOG bullet is withdrawn.
+
+**REQ-SCANSTATUS-009 — an import row claims only the entities it stored.**
+Both import paths set `scan.entity_count` to the parsed count before
+`ImportScanRow::begin`. So the `Running` row claimed every entity before any
+was stored. A batch the store refused (one transaction, rolled back whole)
+left a `Failed` row claiming them all while `entities_for_scan` returned
+none, and `/stats` summed them into `total_entities`. The live engine's
+Failed branch zeroes the count for this reason. `begin` now writes the count
+as 0. The batch goes through `ImportScanRow::store_entities`, which records
+the count only once the batch is stored, for the terminal write (`finish`, or
+Drop's `Failed`). A failure after the batch committed still reports the
+stored entities.
+
+**Documentation.** The ROADMAP's layer headers kept the branch's counts
+through the merge of origin/main (8f55cc1c). They now read `src/util/` (217
+files) and `src/core/` (213 files), which `find … -name '*.rs' | wc -l`
+confirms.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `au_locality_name` asks `nearest_au_locality` at every radius | killed by `core::correlator::rules::location::tests::a_best_locations_locality_names_what_its_place_label_names` (`Some("Footscray")` for the ±5.6 km fix) |
+| M1a | `fused_au_locality` grades the radius without `describe_fused`'s locality floor | killed by the same test (`Some("Footscray")` for the metre-grade fix whose label names Melbourne) |
+| M2 | MCC 216 back on Istanbul's row | killed by `modules::cell_intel::tests::every_mcc_stand_in_lies_in_its_own_country` ("MCC [\"216\"] (41.0082,28.9784) is not in HU") |
+| M2a | MCC 219 back on central Serbia's row | killed by the same test ("MCC [\"219\"] (44.0165,21.0059) is not in HR") |
+| M3 | the web upload stores its entities without `prepare_import_batch` | killed by `api::scan_handlers::tests::scan_import_enriches_like_the_cli_import` (the stored set lacks what the enrichment adds) |
+| M4 | `store_entities` records the count before the batch | killed by `app::persist::tests::an_import_row_claims_only_the_entities_it_stored` and `api::scan_handlers::tests::a_web_import_whose_entities_were_refused_claims_none` (a `Failed` row claiming every parsed entity) |
+| M5 | `begin` keeps the caller's count | killed by `an_import_row_claims_only_the_entities_it_stored` (the `Running` row claims 7) |
+| M6 | the engine's commit step as at 01172758 (Failed broadcast withheld when its row was lost) | killed by `core::engine::tests::a_failed_scan_whose_row_was_not_written_is_still_announced_failed` (`[]`, not `[Failed]`) |
+
+**8 of 8 caught.** The engine test replaces REQ-SCANSTATUS-007's
+`a_failed_scan_whose_row_was_not_written_is_not_announced`, which pinned the
+withdrawn behaviour. Its control run still checks that a written Failed row
+is announced exactly once.

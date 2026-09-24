@@ -75,7 +75,7 @@ same code compiles into the `wasm32` browser UI. `#![forbid(unsafe_code)]`.
 `crate::core::tags` so existing call sites are unchanged. Everything above
 depends on it; it depends on nothing in-repo.
 
-### Layer 1 — `src/util/` (216 files, stateless shared mechanism)
+### Layer 1 — `src/util/` (217 files, stateless shared mechanism)
 The reusable primitives every module leans on. Key sub-areas:
 - `util/http/` — the shared client, `send_tagged`, `read_body_capped_or_fail`
   (fail-closed body reads), `http_status_error` (typed 404/429/BotChallenge/…),
@@ -158,7 +158,7 @@ authority per canonicaliser — `to_e164_au`, `canonical_email_mailbox`,
 `TargetMatch`, `split_identity_secret` are each single-sourced and shared, never
 re-implemented per module.
 
-### Layer 2 — `src/core/` (211 files, the engine and its contracts)
+### Layer 2 — `src/core/` (213 files, the engine and its contracts)
 - `core/module/` — the **`Module` trait** (the capability contract: `accepts`,
   `process`, `produces`, `category`, `priority`, `attack_techniques`,
   `max_timeout_ms`) and `provider.rs` (`ProviderDescriptor`: cost/economics,

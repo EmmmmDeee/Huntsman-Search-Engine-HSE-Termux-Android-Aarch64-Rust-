@@ -813,3 +813,57 @@ use super::*;
             "an untraceable geocoder input stays an independent Geocode leg"
         );
     }
+
+    /// REQ-GEOLABEL-031: a best-location fix's `locality` names the anchor
+    /// its `place_label` names (`core::place::fused_au_locality`). An
+    /// inner-west Melbourne fix redacted to `-37.8,144.9` sits exactly on the
+    /// Footscray anchor; graded ±5–6 km it printed "near Footscray" on the
+    /// dossier's headline and wrote `"locality":"Footscray"` to report.json
+    /// beside a `place_label` naming Melbourne — the suburb the redaction
+    /// withheld.
+    #[test]
+    fn a_best_locations_locality_names_what_its_place_label_names() {
+        let label_of = |est: &AuLocationEstimate| {
+            crate::core::place::describe_fused(
+                est.lat,
+                est.lon,
+                est.radius_km,
+                crate::core::place::FixKind::SingleSignal,
+            )
+            .expect("place label")
+            .text
+        };
+        let redacted = best_au_location_estimate(&[coord_at("-37.8,144.9", 0.85, "exif_geo")])
+            .expect("rung-2 estimate");
+        assert!(redacted.radius_km > 5.0, "{redacted:?}");
+        assert_eq!(redacted.locality.as_deref(), Some("Melbourne"), "{redacted:?}");
+        let text = label_of(&redacted);
+        assert!(text.contains("Melbourne") && !text.contains("Footscray"), "{text}");
+
+        // A fix good to metres on the same anchor: its label names Melbourne
+        // (a fused label is never finer than a locality), and so does its
+        // `locality` — one fix, one name.
+        let point = best_au_location_estimate(&[coord_at(
+            "-37.800123,144.900456",
+            0.85,
+            "exif_geo",
+        )])
+        .expect("rung-2 estimate");
+        assert!(point.radius_km < 0.1, "{point:?}");
+        assert_eq!(point.locality.as_deref(), Some("Melbourne"), "{point:?}");
+        assert!(label_of(&point).contains("Melbourne"), "{}", label_of(&point));
+
+        // The corroboration's radius is never under 8 km: never a suburb.
+        let ents = vec![
+            au_coord("-37.8000,144.9000", 0.80, "abn_lookup", "VIC"),
+            au_coord("-37.8010,144.9010", 0.70, "exif_geo", "VIC"),
+        ];
+        let c = au_location_corroboration(&ents).expect("two agreeing classes");
+        assert!(c.radius_km >= 8.0, "{:?}", c.radius_km);
+        assert_eq!(c.locality.as_deref(), Some("Melbourne"));
+
+        // Control: a fix away from any capital's suburb keeps its own town.
+        let geelong = best_au_location_estimate(&[coord_at("-38.1499,144.3617", 0.85, "exif_geo")])
+            .expect("rung-2 estimate");
+        assert_eq!(geelong.locality.as_deref(), Some("Geelong"), "{geelong:?}");
+    }

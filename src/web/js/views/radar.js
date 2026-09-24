@@ -393,15 +393,20 @@ function syncLiveButtons(){
 function setLiveStatus(text){ const el = $('#radar-live-status'); if (el) el.textContent = text; }
 
 /* Follow a continuous radar over its own event stream (the same SSE the Live
-   page tails): a `live_tick` says a sweep started, a `scan_complete` says its
-   readings are persisted — the engine writes the row before it emits the
-   event — so the view refreshes exactly then, not on a timer. `live_stop`
+   page tails): a `live_tick` says a sweep started, a `scan_complete` says it
+   ended — the engine writes the row before it emits the event — so the view
+   refreshes exactly then, not on a timer. A sweep whose store refused its
+   writes still ends with `scan_complete` carrying `status: failed`
+   (REQ-SCANSTATUS-008); its row may not have landed, so the status is read
+   from the event, and the refresh re-reads only the readings. `live_stop`
    releases the session. One stream at a time; render() closes it on leaving. */
 function onLiveEvent(ev){
   if (!ev || !ev.type) return;
   if (ev.type === 'live_tick') { setLiveStatus(`continuous radar · sweep #${ev.iteration} running…`); return; }
   if (ev.type === 'scan_complete') {
-    setLiveStatus(`continuous radar · sweep done at ${fmtClock()}`);
+    setLiveStatus(ev.status === 'failed'
+      ? `continuous radar · sweep failed at ${fmtClock()}`
+      : `continuous radar · sweep done at ${fmtClock()}`);
     view.sid = null; syncSweepPicker();
     refreshSignals(true); refreshRecurring(); refreshDisruptions();
     return;

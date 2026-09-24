@@ -1,6 +1,6 @@
 use super::CellIntel;
 use super::helpers::{
-    accuracy_to_confidence, build_tower_device, mcc_to_centroid, parse_cells_survey,
+    MCC_CENTROIDS, accuracy_to_confidence, build_tower_device, mcc_to_centroid, parse_cells_survey,
 };
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
@@ -217,6 +217,43 @@ fn mcc_au_maps_to_au_centroid() {
 #[test]
 fn unknown_mcc_returns_none() {
     assert!(mcc_to_centroid("999").is_none());
+}
+
+/// REQ-GEOLABEL-032: every MCC stand-in point lies in the country its row
+/// names. MCC 216 (Hungary) carried Istanbul's coordinates and 219 (Croatia)
+/// central Serbia's, so a device camped on a Hungarian network was labelled
+/// "Hungary" while its pin, geohash and timezone put it in Turkey.
+///
+/// The check is containment in the country's OWN offline box
+/// (`util::geohash::country::country_box`), not `reverse_country_iso`, which
+/// answers the first matching box and so reads a right Belgian point as
+/// France. A country that table has no box for is given one here, so a new
+/// row cannot slip through unchecked.
+#[test]
+fn every_mcc_stand_in_lies_in_its_own_country() {
+    // (iso, lat_min, lat_max, lon_min, lon_max) for the MCC countries the
+    // offline table does not box.
+    const EXTRA: &[(&str, f64, f64, f64, f64)] = &[
+        ("HR", 42.4, 46.6, 13.4, 19.5),
+        ("IR", 25.0, 39.8, 44.0, 63.4),
+        ("TZ", -11.8, -0.9, 29.3, 40.5),
+    ];
+    for &(mccs, lat, lon, iso) in MCC_CENTROIDS {
+        let (la_min, la_max, lo_min, lo_max) = crate::util::geohash::country::country_box(iso)
+            .or_else(|| {
+                EXTRA
+                    .iter()
+                    .find(|&&(code, ..)| code == iso)
+                    .map(|&(_, a, b, c, d)| (a, b, c, d))
+            })
+            .unwrap_or_else(|| panic!("MCC {mccs:?}: no box to check {iso} against"));
+        assert!(
+            (la_min..=la_max).contains(&lat) && (lo_min..=lo_max).contains(&lon),
+            "MCC {mccs:?} ({lat},{lon}) is not in {iso}"
+        );
+    }
+    assert_eq!(mcc_to_centroid("216").map(|(.., iso)| iso), Some("HU"));
+    assert_eq!(mcc_to_centroid("219").map(|(.., iso)| iso), Some("HR"));
 }
 
 /// REQ-GEOLABEL-029: the MCC fallback names itself a country signal — the

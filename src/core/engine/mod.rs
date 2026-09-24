@@ -1279,11 +1279,9 @@ impl ScanEngine {
         // the status.
         self.writer.flush().await;
         let commit_store = Arc::clone(&self.store);
-        // The flag says whether the terminal row was written: the best-effort
-        // Failed record can be lost, and a lost row must not be announced.
-        let (scan, committed) = tokio::task::spawn_blocking(move || -> Result<(Scan, bool)> {
+        let scan = tokio::task::spawn_blocking(move || -> Result<Scan> {
             match commit_store.upsert_scan(&scan) {
-                Ok(()) => Ok((scan, true)),
+                Ok(()) => Ok(scan),
                 Err(e) if best_effort_persist => {
                     // error!, not warn!: this is the terminal Failed record for
                     // a scan that persisted nothing. Losing the write means the
@@ -1291,7 +1289,7 @@ impl ScanEngine {
                     // unrecoverable integrity gap the operator can only see
                     // here. The failed scan is still returned to the caller.
                     error!(scan_id = %scan.id, error = %e, "failed to persist failed-scan record");
-                    Ok((scan, false))
+                    Ok(scan)
                 }
                 Err(e) => Err(e),
             }
@@ -1306,15 +1304,22 @@ impl ScanEngine {
         // (the radar view does exactly that, on the documented promise that
         // "the engine writes the row before it emits the event") read
         // `running` and the scan-start row's counts, and nothing prompted it to
-        // look again (REQ-SCANSTATUS-004). No completion is announced for a
-        // row that never became terminal: a commit that failed outright
-        // returned above, and a best-effort Failed record that was lost is
-        // not `committed` (REQ-SCANSTATUS-007) — a subscriber re-reading the
-        // row would find it `running` and never look again. The recorded
-        // `ScanComplete` event stays in the durable log.
-        if committed {
-            self.emitter.broadcast(completion);
-        }
+        // look again (REQ-SCANSTATUS-004). A commit that failed outright
+        // returned above, so no completion is announced for a row that never
+        // became terminal on the strict path.
+        //
+        // The best-effort Failed record is the exception, and it IS announced
+        // even when the store refused it (REQ-SCANSTATUS-008): the event's
+        // `status: failed` is true whether or not the row landed, and it is
+        // the only way a status-only subscriber learns the outcome. `hse live`
+        // prints "scan failed" from it, and the web scan log sets its failed
+        // pill and closes the stream on it; withholding it (REQ-SCANSTATUS-007)
+        // left the log "live" until the SSE idle timeout, after which the
+        // reconnect found the `Running` start row and cycled forever — in
+        // exactly the case, a store refusing writes, where the operator most
+        // needs telling. The radar re-reads only the sweep's readings, which a
+        // refused store never held.
+        self.emitter.broadcast(completion);
 
         // Fire the operator's completion webhook, if one was configured via
         // `HUNTSMAN_WEBHOOK_URL` / `ScanOptions`. The URL was already threaded into

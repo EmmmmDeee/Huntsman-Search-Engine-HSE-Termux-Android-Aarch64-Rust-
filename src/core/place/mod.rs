@@ -34,7 +34,8 @@ pub mod label;
 pub use grain::{FixBasis, FixGrain, FixPrecision, StandsFor, assess, fix_radius_ceil_m};
 pub use label::{
     FixKind, LabelBasis, PLACE_CAVEAT, PLACE_LEGEND, PlaceContext, PlaceLabel, describe,
-    describe_fused, fix_radius_km_text, fused_label_json, place_label_json,
+    describe_fused, fix_radius_km_text, fused_au_locality, fused_label_json, fused_name_grain,
+    nearest_au_anchor, place_label_json,
 };
 
 #[cfg(test)]

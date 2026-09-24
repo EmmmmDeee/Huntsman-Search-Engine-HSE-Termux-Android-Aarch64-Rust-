@@ -291,6 +291,99 @@ Victims:
         assert_eq!(scan.error.as_deref(), Some(expected.as_str()));
     }
 
+    /// REQ-GEOLABEL-033: the web upload prepares its entities exactly as
+    /// `hse import` does (`app::persist::prepare_import_batch`): the offline
+    /// geo enrichment turns a resolvable Address into a Coordinates fix. It
+    /// used to store the parsed set as-is, so the same file imported through
+    /// the browser had no address fixes, no geo tags and no grain stamps, and
+    /// every relation, correlation and place label downstream differed from
+    /// the CLI import of the identical bytes. The response's and the row's
+    /// entity count include the derived fix.
+    #[tokio::test]
+    async fn scan_import_enriches_like_the_cli_import() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        const CSV: &str = "id,email,name,database_name,address\n\
+            1,jordanavery@gmail.com,Jordan Avery,ExampleBreach2019,\"10 Smith St, Sydney NSW 2000\"\n";
+        let inner: Arc<dyn crate::core::StoragePort> =
+            Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
+        let app = axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(crate::api::test_state_with_store(Arc::clone(&inner)));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(CSV))
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert_eq!(resp.status(), 200);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("should succeed");
+        let sid = json["scan_id"].as_str().expect("scan_id");
+        let stored = inner.entities_for_scan(sid).expect("should succeed");
+
+        // The CLI's preparation over the same parse, for comparison.
+        let (mut parsed, _) = crate::app::import::entities_from_upload(CSV, sid, None)
+            .await
+            .expect("should succeed");
+        crate::app::persist::prepare_import_batch(&mut parsed, sid);
+        let kinds = |es: &[crate::core::entity::Entity]| {
+            let mut v: Vec<(String, String)> = es
+                .iter()
+                .map(|e| (format!("{:?}", e.kind), e.value.clone()))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(kinds(&stored), kinds(&parsed), "{json}");
+        assert!(
+            stored
+                .iter()
+                .any(|e| e.kind == crate::core::entity::EntityKind::Coordinates),
+            "the Sydney address must become a Coordinates fix: {stored:?}"
+        );
+        assert_eq!(json["entity_count"], stored.len(), "{json}");
+        let row = inner.get_scan(sid).expect("should succeed").expect("row");
+        assert_eq!(row.entity_count, stored.len());
+    }
+
+    /// REQ-SCANSTATUS-009: a web import whose entity batch the store refuses
+    /// records `Failed` claiming no entities. The row's count was set before
+    /// the batch, so the `Failed` row claimed every parsed entity while
+    /// `entities_for_scan` returned none, and `/stats` summed them.
+    #[tokio::test]
+    async fn a_web_import_whose_entities_were_refused_claims_none() {
+        use crate::core::test_support::{InMemoryStore, RefusingStore};
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        const DOSSIER: &str = "Entry #1:\n   \u{2022} email: ops@acme-corp.io\n   \u{2022} name: Ops Lead\n";
+        let inner = Arc::new(InMemoryStore::new());
+        let app = axum::Router::new()
+            .route("/api/v1/scans/import", axum::routing::post(scan_import))
+            .with_state(crate::api::test_state_with_store(Arc::new(
+                RefusingStore::new(inner.clone()).refusing_entity_writes(),
+            )));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scans/import")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(DOSSIER))
+            .expect("should succeed");
+        let resp = app.oneshot(req).await.expect("should succeed");
+        assert!(!resp.status().is_success(), "{:?}", resp.status());
+        let rows = crate::core::StoragePort::list_scans(inner.as_ref(), 10).expect("should succeed");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].status, crate::core::scan::ScanStatus::Failed);
+        assert_eq!(rows[0].entity_count, 0, "{:?}", rows[0]);
+    }
+
     #[test]
     fn max_upload_bytes_stays_in_sync_with_the_app_import_authority() {
         // MAX_UPLOAD_BYTES is DEFINED as `app::import::MAX_IMPORT_BYTES as

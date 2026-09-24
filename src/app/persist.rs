@@ -82,17 +82,36 @@ pub(crate) struct ImportScanRow {
 
 impl ImportScanRow {
     /// Write `scan` as `Running` and take charge of its terminal status.
+    ///
+    /// The row claims no entities yet: nothing is stored until
+    /// [`Self::store_entities`], and the count it records is what that stored
+    /// (REQ-SCANSTATUS-009).
     pub(crate) fn begin(
         store: std::sync::Arc<dyn crate::core::StoragePort>,
         mut scan: crate::core::scan::Scan,
     ) -> Result<Self> {
         scan.status = crate::core::scan::ScanStatus::Running;
+        scan.entity_count = 0;
         store.upsert_scan(&scan)?;
         Ok(Self {
             store,
             scan,
             finished: false,
         })
+    }
+
+    /// Store the import's entities — one atomic batch, so it lands whole or
+    /// not at all — and only then count them on the row, for the terminal
+    /// write ([`Self::finish`], or the `Failed` [`Drop`] records). The count
+    /// used to be set before [`Self::begin`], so a batch the store refused (a
+    /// full or locked disk) left a `Failed` row claiming every entity while
+    /// `entities_for_scan` returned none, and `/stats` summed them into
+    /// `total_entities`; the live engine's Failed branch zeroes the count for
+    /// exactly this reason.
+    pub(crate) fn store_entities(&mut self, entities: &[Entity]) -> Result<()> {
+        self.store.upsert_entities_batch(entities)?;
+        self.scan.entity_count = entities.len();
+        Ok(())
     }
 
     /// Write the terminal `status` — the import's last write — together with
@@ -212,12 +231,30 @@ pub(crate) async fn persist_entities_as_scan(
     // before relations/correlations so the derived fixes are persisted, related
     // and correlated in this same pass.
     let mut entities = entities.to_vec();
-    crate::core::engine::enrich_offline_geo(&mut entities, sid);
-    confidence_rank(&mut entities);
+    prepare_import_batch(&mut entities, sid);
 
     let store: Arc<dyn StoragePort> =
         Arc::new(crate::storage::Store::open(&crate::default_db_path())?);
     persist_batch_into(&store, sid, label, kind, &entities)
+}
+
+/// What every import does to its parsed entities before storing them — the
+/// CLI's (`hse import` / `ingest` / `investigate`, through
+/// [`persist_entities_as_scan`]) and the web upload's
+/// (`api::scan_handlers::core::scan_import`) — so the same bytes imported
+/// through either surface are stored as the same scan: the offline geospatial
+/// enrichment a live scan's finalise applies
+/// ([`enrich_offline_geo`](crate::core::engine::enrich_offline_geo) — address
+/// parsing, geohash/timezone/country tags, admission grain stamps, and
+/// Coordinates derived from addresses), then the strongest-first ranking
+/// relation derivation relies on ([`confidence_rank`]). The web upload used to
+/// skip both, so an Address "10 Smith St, Sydney NSW 2000" became a Sydney fix
+/// through `hse import` and nothing through the browser, and every relation,
+/// correlation and place label downstream differed (REQ-GEOLABEL-033).
+/// Derived Coordinates are appended, so a caller counts the batch after this.
+pub(crate) fn prepare_import_batch(entities: &mut Vec<Entity>, sid: &str) {
+    crate::core::engine::enrich_offline_geo(entities, sid);
+    confidence_rank(entities);
 }
 
 /// The store-facing body of [`persist_entities_as_scan`], over an injected
@@ -238,10 +275,9 @@ fn persist_batch_into(
     // scan whole, the same window the live engine's finalise had (see
     // `ScanEngine::finalise_scan`'s commit step). Any exit before `finish` —
     // an error below, a panic — records `Failed` (`ImportScanRow`).
-    let mut scan = Scan::new(sid.to_string(), Target::new(kind, label));
-    scan.entity_count = entities.len();
-    let row = ImportScanRow::begin(std::sync::Arc::clone(store), scan)?;
-    store.upsert_entities_batch(entities)?;
+    let scan = Scan::new(sid.to_string(), Target::new(kind, label));
+    let mut row = ImportScanRow::begin(std::sync::Arc::clone(store), scan)?;
+    row.store_entities(entities)?;
     let mut tally = FinaliseTally::default();
     let (relations, correlations, enriched) =
         enrich_persisted_batch(store, sid, entities, &mut tally);
@@ -350,6 +386,69 @@ mod tests {
         }));
         assert!(panicking.is_err());
         assert_eq!(status("panic"), ScanStatus::Failed);
+    }
+
+    /// REQ-SCANSTATUS-009: an import row claims only the entities it stored.
+    /// The count was set before [`ImportScanRow::begin`], so the `Running` row
+    /// claimed every parsed entity before any was stored, and a batch the
+    /// store refused left a `Failed` row claiming them all while
+    /// `entities_for_scan` returned none — `/stats` summed them into
+    /// `total_entities`.
+    #[test]
+    fn an_import_row_claims_only_the_entities_it_stored() {
+        use crate::core::StoragePort as _;
+        use crate::core::scan::ScanStatus;
+        use crate::core::test_support::{InMemoryStore, RefusingStore};
+        use std::sync::Arc;
+
+        let sid = "persist-refused-entities";
+        let inner = Arc::new(InMemoryStore::new());
+        let store: Arc<dyn crate::core::StoragePort> =
+            Arc::new(RefusingStore::new(inner.clone()).refusing_entity_writes());
+        let refused = persist_batch_into(
+            &store,
+            sid,
+            "jsmith".into(),
+            TargetKind::FullName,
+            &enrichable_batch(sid),
+        );
+        assert!(refused.is_err(), "{refused:?}");
+        let row = inner.get_scan(sid).unwrap().expect("row written");
+        assert_eq!(row.status, ScanStatus::Failed);
+        assert_eq!(row.entity_count, 0, "{row:?}");
+        assert!(inner.entities_for_scan(sid).unwrap().is_empty());
+
+        // While it runs, before its batch is stored, the row claims none.
+        let mut claimed = crate::core::scan::Scan::new(
+            "persist-running".to_string(),
+            crate::core::scan::Target::new(TargetKind::FullName, "x"),
+        );
+        claimed.entity_count = 7;
+        let running = ImportScanRow::begin(Arc::clone(&store), claimed).unwrap();
+        assert_eq!(
+            inner
+                .get_scan("persist-running")
+                .unwrap()
+                .unwrap()
+                .entity_count,
+            0
+        );
+        drop(running);
+
+        // Control: a stored batch is counted on the terminal row.
+        let whole_store: Arc<dyn crate::core::StoragePort> = Arc::new(InMemoryStore::new());
+        let entities = enrichable_batch(sid);
+        persist_batch_into(
+            &whole_store,
+            sid,
+            "jsmith".into(),
+            TargetKind::FullName,
+            &entities,
+        )
+        .expect("persist succeeds");
+        let row = whole_store.get_scan(sid).unwrap().expect("row written");
+        assert_eq!(row.status, ScanStatus::Complete);
+        assert_eq!(row.entity_count, entities.len());
     }
 
     /// The merge of REQ-SCANSTATUS-005's lifecycle with REQ-SCANSTATUS-003's
