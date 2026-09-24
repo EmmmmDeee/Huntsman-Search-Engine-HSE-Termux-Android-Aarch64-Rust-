@@ -402,17 +402,24 @@ function setLiveStatus(text){ const el = $('#radar-live-status'); if (el) el.tex
    landed, so the status is read from the event, and the refresh re-reads
    only the readings. A sweep whose finalise did not store or compute
    everything carries `finalise_incomplete` and reads partial, as its exports
-   do (REQ-SCANSTATUS-015). `live_stop` releases the session. One stream at a
+   do (REQ-SCANSTATUS-015). A sweep cut off before its modules finished (the
+   per-iteration watchdog, a cancel by scan id, a session stop) carries
+   `status: aborted` and reads "stopped early", as `hse live` and the scan
+   log say it, never "done" (REQ-SCANSTATUS-035). `live_stop` releases the
+   session. One stream at a
    time; render() closes it on leaving. */
 function onLiveEvent(ev){
   if (!ev || !ev.type) return;
   if (ev.type === 'live_tick') { setLiveStatus(`continuous radar · sweep #${ev.iteration} running…`); return; }
   if (ev.type === 'scan_complete') {
+    const partial = ev.finalise_incomplete === true ? ' (partial — finalise incomplete)' : '';
     setLiveStatus(ev.status === 'failed'
       ? `continuous radar · sweep failed at ${fmtClock()}`
-      : ev.finalise_incomplete === true
-        ? `continuous radar · sweep done (partial — finalise incomplete) at ${fmtClock()}`
-        : `continuous radar · sweep done at ${fmtClock()}`);
+      : ev.status === 'aborted'
+        ? `continuous radar · sweep stopped early${partial} at ${fmtClock()}`
+        : partial
+          ? `continuous radar · sweep done${partial} at ${fmtClock()}`
+          : `continuous radar · sweep done at ${fmtClock()}`);
     view.sid = null; syncSweepPicker();
     refreshSignals(true); refreshRecurring(); refreshDisruptions();
     return;

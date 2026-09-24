@@ -76,12 +76,17 @@ fn confidence_rank(entities: &mut [Entity]) {
 /// as interrupted once it is gone.
 ///
 /// Every terminal write — [`Self::finish`]'s, or the `Failed` [`Drop`]
-/// records — is followed by the announcement a live scan ends with
-/// (`ScanEngine::finalise_scan`, `conclude_failed`): a `scan_complete` event
-/// carrying the terminal status, the stored entity count and whether the
-/// finalise fell short, recorded in the scan's event log and then broadcast
-/// on the bus [`Self::announce_on`] names (the web upload's; the CLI import
-/// has none). The row reads `running` while the import works
+/// records — comes with the announcement a live scan ends with, in the order
+/// the engine makes it (`ScanEngine::finalise_scan`'s commit step,
+/// `conclude_failed`): a `scan_complete` event carrying the terminal status,
+/// the stored entity count and whether the finalise fell short is recorded in
+/// the scan's event log FIRST, then the row is written terminal, then the
+/// event is broadcast on the bus [`Self::announce_on`] names (the web
+/// upload's; the CLI import has none). A row reads terminal only once its
+/// `scan_complete` is in the log, so no export or event-log download reads a
+/// finished import with no word of how it ended, and a refused row write
+/// leaves a `running` row (then `Failed`, [`Drop`]) rather than a `complete`
+/// one whose log never says so (REQ-SCANSTATUS-033). The row reads `running` while the import works
 /// (REQ-SCANSTATUS-005), so the web scan log tails it as live — and it learns
 /// that a scan ended from that event alone. With no import ever sending it,
 /// the log of an import opened mid-run read `live` until the stream's idle
@@ -91,6 +96,9 @@ pub(crate) struct ImportScanRow {
     scan: crate::core::scan::Scan,
     finished: bool,
     bus: Option<crate::core::event::EventBus>,
+    /// Why the store refused [`Self::finish`]'s terminal write, for the
+    /// `Failed` row [`Drop`] records in its place.
+    refused: Option<String>,
 }
 
 impl ImportScanRow {
@@ -115,6 +123,7 @@ impl ImportScanRow {
             scan,
             finished: false,
             bus: None,
+            refused: None,
         })
     }
 
@@ -126,11 +135,14 @@ impl ImportScanRow {
         self
     }
 
-    /// The announcement after the terminal write: the `scan_complete` a live
-    /// scan ends with, recorded (best-effort, logged) and then broadcast. After
-    /// the row, so a subscriber that re-reads the row on the event reads it
-    /// terminal, as the engine orders its own (`finalise_scan`'s commit step).
-    fn announce(&self) {
+    /// The `scan_complete` a live scan ends with, for the terminal row about
+    /// to be written — its status, count and shortfall — recorded in the
+    /// scan's event log (best-effort, logged) BEFORE that write, as the
+    /// engine's commit step records and flushes its own before the row: a
+    /// row that reads terminal has its `scan_complete` in the log
+    /// (REQ-SCANSTATUS-033). Returned for [`Self::broadcast`] once the row
+    /// is written.
+    fn record_completion(&self) -> crate::core::event::Event {
         use crate::core::event::{Event, EventKind};
         let event = Event::new(
             self.scan.id.clone(),
@@ -148,6 +160,13 @@ impl ImportScanRow {
                 "import: could not record its scan_complete event"
             );
         }
+        event
+    }
+
+    /// Broadcast a recorded `scan_complete` on the bus, after the row it
+    /// describes is written — so a subscriber that re-reads the row on the
+    /// event reads it terminal, as the engine orders its own.
+    fn broadcast(&self, event: crate::core::event::Event) {
         if let Some(bus) = &self.bus {
             // Errors only when nobody is subscribed — the usual case.
             let _ = bus.send(event);
@@ -174,8 +193,14 @@ impl ImportScanRow {
     /// [`Scan::error`](crate::core::scan::Scan::error) authority
     /// ([`FinaliseTally`](crate::core::scan::FinaliseTally)), so the status and
     /// the error an export classifies the scan by are written in one place and
-    /// once. Returns that error, for the caller's summary. A failed write leaves
-    /// the row to [`Drop`], which records `Failed`.
+    /// once. Returns that error, for the caller's summary.
+    ///
+    /// The `scan_complete` is recorded before the row and broadcast after it
+    /// ([`Self::record_completion`]). A failed write leaves the row to
+    /// [`Drop`], which records `Failed` and a `scan_complete {failed}` after
+    /// this one — the log reads "complete" then "failed", its last word the
+    /// row's, as a live scan's does when its commit is refused
+    /// (REQ-SCANSTATUS-014); subscribers hear only the failure.
     pub(crate) fn finish(
         mut self,
         status: crate::core::scan::ScanStatus,
@@ -184,13 +209,19 @@ impl ImportScanRow {
         self.scan.status = status;
         self.scan.finished_at = Some(crate::core::entity::unix_now());
         self.scan.error = tally.message();
-        let written = self.store.upsert_scan(&self.scan);
-        self.finished = written.is_ok();
-        if self.finished {
-            self.announce();
-        }
+        let completion = self.record_completion();
         let error = self.scan.error.clone();
-        written.map(|()| error)
+        match self.store.upsert_scan(&self.scan) {
+            Ok(()) => {
+                self.finished = true;
+                self.broadcast(completion);
+                Ok(error)
+            }
+            Err(e) => {
+                self.refused = Some(e.to_string());
+                Err(e)
+            }
+        }
     }
 }
 
@@ -201,11 +232,22 @@ impl Drop for ImportScanRow {
         }
         self.scan.status = crate::core::scan::ScanStatus::Failed;
         self.scan.finished_at = Some(crate::core::entity::unix_now());
-        self.scan.error = Some(if std::thread::panicking() {
-            "import panicked before its terminal write".to_string()
-        } else {
-            "import failed before its terminal write".to_string()
+        self.scan.error = Some(match self.refused.take() {
+            // `finish`'s own write was refused: say so, after the shortfall
+            // it carried, as the engine's refused commit does.
+            Some(refused) => match self.scan.error.take() {
+                Some(shortfall) => {
+                    format!("{shortfall}; the terminal status write failed: {refused}")
+                }
+                None => format!("the terminal status write failed: {refused}"),
+            },
+            None if std::thread::panicking() => {
+                "import panicked before its terminal write".to_string()
+            }
+            None => "import failed before its terminal write".to_string(),
         });
+        // Recorded before the row, broadcast after it, as `finish` does.
+        let completion = self.record_completion();
         if let Err(e) = self.store.upsert_scan(&self.scan) {
             tracing::warn!(
                 scan_id = %self.scan.id,
@@ -213,9 +255,9 @@ impl Drop for ImportScanRow {
                 "import: could not record the Failed status; the row still reads running"
             );
         }
-        // Announced even when the row write failed, as `conclude_failed`
+        // Broadcast even when the row write failed, as `conclude_failed`
         // does: the event still says how the import ended.
-        self.announce();
+        self.broadcast(completion);
     }
 }
 
@@ -568,6 +610,91 @@ mod tests {
         // An exit before the terminal write announces `Failed`.
         drop(ImportScanRow::begin(Arc::clone(&store), scan("dropped")).unwrap());
         assert_eq!(announced("dropped"), vec![(ScanStatus::Failed, 0, false)]);
+    }
+
+    /// REQ-SCANSTATUS-033: an import records its `scan_complete` BEFORE the
+    /// row reads terminal, as the engine's commit step does. It used to write
+    /// the row first, so an export or event-log download between the two read
+    /// a finished import with no `scan_complete`; and a refused terminal write
+    /// left no `complete` in the log ahead of the `failed` its Drop records.
+    #[test]
+    fn an_import_row_reads_terminal_only_once_its_completion_is_logged() {
+        use crate::core::StoragePort;
+        use crate::core::event::EventKind;
+        use crate::core::scan::{FinaliseTally, FinaliseWrite, Scan, ScanStatus, Target};
+        use crate::core::test_support::{InMemoryStore, REFUSED_SCAN, RefusingStore};
+        use std::sync::Arc;
+        let scan = |id: &str| Scan::new(id.to_string(), Target::new(TargetKind::FullName, "x"));
+        let logged = |store: &dyn StoragePort, id: &str| -> Vec<ScanStatus> {
+            store
+                .events_for_scan(id)
+                .unwrap()
+                .into_iter()
+                .filter_map(|e| match e.kind {
+                    EventKind::ScanComplete { status, .. } => Some(status),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // Every terminal row write — `finish`'s and the `Failed` of Drop —
+        // finds its `scan_complete` already in the log.
+        let inner = Arc::new(InMemoryStore::new());
+        let store: Arc<dyn StoragePort> = inner.clone();
+        ImportScanRow::begin(Arc::clone(&store), scan("done"))
+            .unwrap()
+            .finish(ScanStatus::Complete, &FinaliseTally::default())
+            .unwrap();
+        drop(ImportScanRow::begin(Arc::clone(&store), scan("dropped")).unwrap());
+        let witnesses = inner.terminal_witnesses();
+        assert_eq!(witnesses.len(), 2, "{witnesses:?}");
+        for w in &witnesses {
+            assert!(w.completion_event, "{w:?}");
+        }
+
+        // A terminal write the store refuses: the log keeps the `complete`
+        // it recorded first, then the `failed` of the row that replaced it —
+        // its last word the row's — and the row says why.
+        let inner = Arc::new(InMemoryStore::new());
+        let store: Arc<dyn StoragePort> = Arc::new(
+            RefusingStore::new(inner.clone()).refusing_scan_writes_in(ScanStatus::Complete),
+        );
+        let (bus, mut rx) = tokio::sync::broadcast::channel(4);
+        let row = ImportScanRow::begin(Arc::clone(&store), scan("refused"))
+            .unwrap()
+            .announce_on(bus);
+        let mut tally = FinaliseTally::default();
+        tally.add(FinaliseWrite::Relations, 2, 2, Some("disk full".into()));
+        assert!(row.finish(ScanStatus::Complete, &tally).is_err());
+        assert_eq!(
+            logged(inner.as_ref(), "refused"),
+            vec![ScanStatus::Complete, ScanStatus::Failed]
+        );
+        let stored = inner.get_scan("refused").unwrap().expect("row written");
+        assert_eq!(stored.status, ScanStatus::Failed);
+        assert_eq!(
+            stored.error.as_deref(),
+            Some(
+                format!(
+                    "2/2 relations failed to persist: disk full; \
+                     the terminal status write failed: {REFUSED_SCAN}"
+                )
+                .as_str()
+            )
+        );
+        // Subscribers hear only how it ended: the failure.
+        let heard = rx.try_recv().expect("broadcast");
+        assert!(
+            matches!(
+                heard.kind,
+                EventKind::ScanComplete {
+                    status: ScanStatus::Failed,
+                    ..
+                }
+            ),
+            "{heard:?}"
+        );
+        assert!(rx.try_recv().is_err(), "one broadcast");
     }
 
     /// REQ-SCANSTATUS-009: an import row claims only the entities it stored.

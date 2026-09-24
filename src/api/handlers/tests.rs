@@ -106,6 +106,39 @@ use crate::app::export::csv_escape;
         assert_eq!(flag(&mk(ScanStatus::Failed, Some(cut))), serde_json::json!(false));
     }
 
+    /// REQ-SCANSTATUS-034: a finished scan whose finalise fell short is
+    /// histogrammed as the `partial` its row pill reads — the dashboard's
+    /// Scan Status panel counted it under its stored `complete`, a green
+    /// tally beside the Recent Scans row that called it `partial`.
+    #[test]
+    fn a_partial_scan_is_histogrammed_apart_from_complete() {
+        use super::aggregate_scan_stats;
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+
+        let mk = |id: &str, status: ScanStatus, error: Option<&str>| {
+            let mut s = Scan::new(id, Target::new(TargetKind::Domain, "cloudflare.com"));
+            s.status = status;
+            s.error = error.map(str::to_string);
+            s
+        };
+        let cut = "3/3 relations failed to persist: disk full";
+        let scans = [
+            mk("short", ScanStatus::Complete, Some(cut)),
+            mk("whole", ScanStatus::Complete, None),
+            mk("stopped-short", ScanStatus::Aborted, Some(cut)),
+            mk("stopped", ScanStatus::Aborted, None),
+            // Control: a failure's error is its failure, never "partial".
+            mk("failed", ScanStatus::Failed, Some(cut)),
+        ];
+        let agg = aggregate_scan_stats(&scans, &std::collections::HashSet::new());
+        assert_eq!(agg.by_status.get("partial"), Some(&1), "{agg:?}");
+        assert_eq!(agg.by_status.get("complete"), Some(&1), "{agg:?}");
+        assert_eq!(agg.by_status.get("aborted_partial"), Some(&1), "{agg:?}");
+        assert_eq!(agg.by_status.get("aborted"), Some(&1), "{agg:?}");
+        assert_eq!(agg.by_status.get("failed"), Some(&1), "{agg:?}");
+        assert_eq!(agg.by_status.values().sum::<u64>(), 5, "{agg:?}");
+    }
+
     #[test]
     fn a_running_row_with_no_handle_is_histogrammed_as_interrupted() {
         use super::{aggregate_scan_stats, is_interrupted};

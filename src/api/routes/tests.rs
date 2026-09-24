@@ -532,6 +532,55 @@ use super::*;
         assert!(partial < done, "{on_live}");
     }
 
+    /// REQ-SCANSTATUS-035: a radar sweep that ended `aborted` (the
+    /// per-iteration watchdog, a cancel by scan id, a session stop) reads
+    /// "stopped early", with the partial note when its finalise fell short —
+    /// it fell through to "sweep done" before.
+    #[test]
+    fn embedded_spa_radar_reads_an_aborted_sweep_as_stopped_early() {
+        let radar = app_file("js/views/radar.js");
+        let on_live = radar
+            .split_once("function onLiveEvent(ev){")
+            .and_then(|(_, b)| b.split_once("\n}\n"))
+            .map(|(b, _)| b)
+            .expect("onLiveEvent present in radar.js");
+        let aborted = on_live
+            .find("ev.status === 'aborted'")
+            .expect("the radar must read an aborted sweep");
+        let stopped = on_live
+            .find("sweep stopped early${partial} at")
+            .expect("the aborted sweep line, partial note included");
+        let done = on_live
+            .find("sweep done at")
+            .expect("the clean sweep line");
+        assert!(aborted < stopped && stopped < done, "{on_live}");
+    }
+
+    /// REQ-SCANSTATUS-034: the dashboard's Scan Status panel pills the
+    /// `/stats` `partial` / `aborted_partial` buckets as the scan list pills
+    /// such a row — never a green `complete`.
+    #[test]
+    fn embedded_spa_dashboard_pills_a_partial_bucket_as_partial() {
+        let dash = app_file("js/views/dash.js");
+        let pill = dash
+            .split_once("export function dashStatusPill(k){")
+            .and_then(|(_, b)| b.split_once("\n}\n"))
+            .map(|(b, _)| b)
+            .expect("dashStatusPill present in dash.js");
+        assert!(
+            pill.contains("k === 'partial') return statusPill('complete', true)"),
+            "{pill}"
+        );
+        assert!(
+            pill.contains("k === 'aborted_partial') return statusPill('aborted', true)"),
+            "{pill}"
+        );
+        assert!(
+            dash.contains("<tr><td>${dashStatusPill(k)}</td>"),
+            "the Scan Status panel must pill its buckets through dashStatusPill"
+        );
+    }
+
     #[test]
     fn embedded_spa_styles_every_entity_kind() {
         // Rendering contract: every `EntityKind` a module can produce must have a

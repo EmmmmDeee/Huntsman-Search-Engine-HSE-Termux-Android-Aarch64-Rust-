@@ -1927,6 +1927,21 @@ fn an_unnumbered_street_naming_is_held_to_the_street_it_names() {
             "Great Western Hwy, Blaxland NSW",
             &[("place_type", "road"), ("road", "Great Western Highway")][..],
         ),
+        // Either street of an unnumbered corner is the street asked about.
+        (
+            "geocode",
+            "Cnr George St & Smith St, Brisbane City QLD",
+            &[("place_type", "road"), ("road", "Smith Street")][..],
+        ),
+        (
+            "photon",
+            "Cnr George St & King St, Sydney NSW",
+            &[
+                ("place_type", "street"),
+                ("osm_key", "highway"),
+                ("place_name", "King Street"),
+            ][..],
+        ),
     ] {
         let p = geocoded(source, input, attrs);
         assert_eq!(p.grain, FixGrain::Street, "{input}: {p:?}");

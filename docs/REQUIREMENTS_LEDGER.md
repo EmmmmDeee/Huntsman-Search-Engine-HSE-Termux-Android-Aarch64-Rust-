@@ -24779,3 +24779,117 @@ reads it).
 | M8 | the filter does not match "partial" (as at 9a4c2132) | killed by `api::routes::tests::embedded_spa_reads_a_finalise_incomplete_row_as_partial` |
 
 **8 of 8 caught.**
+
+## REQ-OPENMETEO-005 / REQ-SCANSTATUS-033 / REQ-SCANSTATUS-034 / REQ-SCANSTATUS-035 — final review, correction round 11
+
+**Found** by the eleventh correction round of the final review of PR #649,
+which raised six findings against 4ee46e53. Two pairs were the same defect
+reported twice (findings 1 and 6: the corner address; findings 3 and 5: the
+dashboard tally), so there were four distinct defects. Each was checked
+against that head, and all four were real. Each fix is made where its rule
+lives and has a regression test that fails on the code before it. The fixes
+were undone together in place (the tests kept), every new test was seen to
+fail, and the files were restored byte for byte (table below).
+
+**REQ-OPENMETEO-005 — either street of a corner is the queried street.**
+Round 10 (REQ-OPENMETEO-004) required a run that reaches into a street to
+cover the whole street, `name.start..kind.end`. But `segment_street` started
+a trailing-type street's name at the segment's first word unless a house
+number came first, and it kept only the LAST street of a segment. For
+`"Cnr George St & Smith St, Brisbane City QLD"` the street read as the name
+"Cnr George St & Smith" plus the type "St", so no geocoder road could cover
+it: `is_name_of_queried_place("Smith Street", …)` returned false, and
+`core::place::grain::forward_geocode_account`, which applies the fragment
+test to every input with no numbered street, capped a correct "Smith
+Street" hit at the Brisbane locality grain. At 9a4c2132 the same hit kept
+street grain. A trailing-type street's name now starts after the last word
+that `starts_a_street_name` accepts: a house number, a corner word (`cnr`,
+`corner`), or a `&` / `and` that follows a street type (the join between a
+corner's two streets). A join that follows a name word stays inside the
+name (`"Smith and Jones Rd"`), and a type word at the segment's start is a
+saint, as before. `SegmentStreet` now carries every street its segment
+names (`StreetWords`), not only the one its grain and `rest_from` describe.
+So "George Street" and "Smith Street" both match the corner, and "Smith" or
+"George" alone still touches a street without covering it and does not. The
+grain and `locality_part` read the same street as before. A street led by a
+business or building name (`"Westfield Chermside Gympie Rd"`) is NOT
+changed. Nothing in the words tells "Westfield Chermside" (not part of the
+road's name) from "Great" in `"Great Western Hwy"` (part of it), and
+reading such a prefix as not part of the name would again accept "Western
+Highway", the Victorian road, as the NSW one. So such a hit keeps the
+locality cap: a coarser grain, never a false street. Tests: corner cases
+(positive "Smith Street", "George Street", "Oak Avenue", "Smith and Jones
+Road"; negative "Smith", "George", "Jones Road") in
+`util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place`;
+"King Street" / `"Cnr George St & King St, Sydney NSW"` in
+`a_street_named_either_way_is_the_queried_street`; a Nominatim `road` and a
+Photon `place_name` hit on a corner, both keeping street grain, in
+`core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names`.
+
+**REQ-SCANSTATUS-033 — an import's row reads terminal only once its
+`scan_complete` is logged.** REQ-SCANSTATUS-031 wrote the import's terminal
+row first and recorded its `scan_complete` after, and its doc claimed that
+was the engine's order. It is not. The engine's commit step records the
+event, flushes it, and only then writes the row, because "a scan reads
+terminal only once … every event through `ScanComplete` — is durable"; its
+own comment traces scan 7258fc07's bundle ("status: Complete" with no
+`scan_complete`) to breaking that. An import broke it two ways: an export or
+event-log download between the row write and `insert_event` read a finished
+import with no `scan_complete`, and an `insert_event` refused after the row
+commit (a full disk, `SQLITE_BUSY`) was only logged, leaving a `complete`
+row with no word in its log of how it ended. `ImportScanRow` now records
+the `scan_complete` for the row it is about to write
+(`record_completion`), then writes the row, then broadcasts the event
+(`broadcast`), in `finish` and in its `Drop` alike. If `finish`'s row write
+is refused, `Drop` records the `Failed` row and a second `scan_complete
+{failed}`, the "complete then failed" sequence REQ-SCANSTATUS-014 accepts
+for the engine, and subscribers hear only the failure. The `Failed` row
+says why, as the engine's refused commit does: the shortfall `finish`
+carried, then "the terminal status write failed: …" (it said "import failed
+before its terminal write" before). Test:
+`app::persist::tests::an_import_row_reads_terminal_only_once_its_completion_is_logged`
+(the `InMemoryStore` terminal witness sees the `scan_complete` already in
+the log for both `finish` and `Drop`; a store refusing the `Complete` write
+leaves `[complete, failed]` in the log, a `Failed` row naming the refusal
+after the shortfall, and one broadcast, `failed`).
+
+**REQ-SCANSTATUS-034 — the dashboard tallies a partial scan as partial.**
+`aggregate_scan_stats` (`/stats` `scans_by_status`) bucketed a scan by its
+stored status alone, so a `Complete` scan whose finalise fell short
+(`Scan::finalise_incomplete`) counted under `complete`, and the dashboard's
+Scan Status panel (`dash.js`) pilled that bucket green, next to its Recent
+Scans table, which read the same row `partial`. REQ-SCANSTATUS-030/032 had
+fixed every other reader of scan rows. `aggregate_scan_stats` now buckets
+such a scan as `partial` (a `Complete` one) or `aborted_partial` (an
+`Aborted` one), just as `interrupted` is split out of `running`. `dash.js`
+pills the buckets through `dashStatusPill`, which renders those two keys as
+`statusPill('complete', true)` / `statusPill('aborted', true)` (`partial`,
+`aborted · partial`). The dashboard is the only consumer of
+`scans_by_status`. Tests:
+`api::handlers::tests::a_partial_scan_is_histogrammed_apart_from_complete`
+(a complete, a partial complete, an aborted, a partial aborted and a failed
+scan with an `error` land in five buckets, the failure never partial) and
+`api::routes::tests::embedded_spa_dashboard_pills_a_partial_bucket_as_partial`.
+
+**REQ-SCANSTATUS-035 — the radar reads an aborted sweep as stopped early.**
+The radar's `onLiveEvent` named only `failed` and a partial finish in its
+`scan_complete` line, so a sweep that ended `aborted` (the per-iteration
+wall-time watchdog, a cancel by scan id, a session stop forwarded into the
+iteration) read "sweep done", where `hse live` prints "scan aborted —
+stopped early" and the web scan log `aborted`. It now reads "continuous
+radar · sweep stopped early at HH:MM", with "(partial — finalise
+incomplete)" when `finalise_incomplete` is true, matching the scan log's
+`aborted · partial`. Test:
+`api::routes::tests::embedded_spa_radar_reads_an_aborted_sweep_as_stopped_early`.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `segment_street` / `is_name_of_queried_place` as at 4ee46e53 (name from the last house number only, one street per segment) | killed by `util::place_grain::city_grain_tests::a_street_named_after_a_place_is_not_that_place`, `a_street_named_either_way_is_the_queried_street` and `core::place::tests::an_unnumbered_street_naming_is_held_to_the_street_it_names` (grain Locality, not Street) |
+| M2 | `ImportScanRow` writes the row before it records the event (as at 4ee46e53) | killed by `app::persist::tests::an_import_row_reads_terminal_only_once_its_completion_is_logged` |
+| M3 | `aggregate_scan_stats` buckets by stored status alone (as at 4ee46e53) | killed by `api::handlers::tests::a_partial_scan_is_histogrammed_apart_from_complete` |
+| M4 | `dash.js` pills every bucket with `statusPill(k)` (as at 4ee46e53) | killed by `api::routes::tests::embedded_spa_dashboard_pills_a_partial_bucket_as_partial` |
+| M5 | `onLiveEvent` has no `aborted` branch (as at 4ee46e53) | killed by `api::routes::tests::embedded_spa_radar_reads_an_aborted_sweep_as_stopped_early` |
+
+**5 of 5 caught.**

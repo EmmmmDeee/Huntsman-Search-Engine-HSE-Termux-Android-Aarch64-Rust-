@@ -368,6 +368,16 @@ pub(crate) fn scan_json(
 /// Pure aggregation of dashboard scan statistics — the per-status histogram and
 /// the entity/dedup totals — over a scan list. Split out of [`stats`] so the
 /// summation logic is unit-testable without a live store + async handler.
+///
+/// The histogram's keys are what each row's status pill reads, never the
+/// stored status alone: a `running` row nobody is running is `interrupted`
+/// ([`is_interrupted`]), and a finished row whose finalise fell short
+/// ([`Scan::finalise_incomplete`](crate::core::scan::Scan::finalise_incomplete))
+/// is `partial` (a `Complete` one) or `aborted_partial` (an `Aborted` one) —
+/// the `partial` / `aborted · partial` its scan-list row, its exports and the
+/// dashboard's own Recent Scans table call it. Counted under its stored
+/// status, it raised the dashboard's green `complete` tally beside the Recent
+/// Scans row that read it `partial` (REQ-SCANSTATUS-034).
 #[derive(Default, PartialEq, Eq, Debug)]
 pub(crate) struct ScanStatsAgg {
     pub by_status: std::collections::BTreeMap<&'static str, u64>,
@@ -386,6 +396,11 @@ pub(crate) fn aggregate_scan_stats(
         // progress forever (REQ-SCANSTATUS-001).
         let bucket = if is_interrupted(scan, in_flight) {
             "interrupted"
+        } else if scan.finalise_incomplete() {
+            match scan.status {
+                crate::core::scan::ScanStatus::Aborted => "aborted_partial",
+                _ => "partial",
+            }
         } else {
             scan.status.as_str()
         };

@@ -461,23 +461,52 @@ fn is_house_number(w: &str) -> bool {
 
 /// A street found in one comma-separated segment: its grain, the index of
 /// the first word AFTER it (the locality that shares the segment, as in
-/// `"45 Sydney Road Brunswick"`), and which of the segment's words are the
-/// street's NAME and which its TYPE — so a comparison can tell the place a
-/// street is named after (`"Adelaide"` of `"Adelaide St"`) from the street.
+/// `"45 Sydney Road Brunswick"`), and the words of EVERY street the segment
+/// names ([`StreetWords`]) — so a comparison can tell the place a street is
+/// named after (`"Adelaide"` of `"Adelaide St"`) from the street, and either
+/// street of a corner (`"Cnr George St & Smith St"`) from a fragment of it.
 struct SegmentStreet {
     grain: StreetGrain,
     rest_from: usize,
+    /// Every street the segment's words name, in the order they were read:
+    /// the one `grain` and `rest_from` describe, and any other the segment
+    /// also names (`"George St"` of `"Cnr George St & Smith St"`, where the
+    /// grain is the later `"Smith St"`'s).
+    streets: Vec<StreetWords>,
+}
+
+/// Which of a segment's words are one street's NAME and which its TYPE.
+#[derive(Clone)]
+struct StreetWords {
     /// The words that name the street and are not its type: the words before
-    /// a trailing type and after any house number (`"Adelaide"` of `"Adelaide
-    /// St"`, `"Sydney"` of `"45 Sydney Road"`), after a leading one
-    /// up to a house number (`"Mayor"` of `"Calle Mayor 5"`), after the house
-    /// number of a type-less numbered street (`"Nguyễn Huệ"` of `"123 Nguyễn
-    /// Huệ"`). Empty for a compound word (`"Hauptstraße"`), whose one word is
-    /// name and type at once.
+    /// a trailing type back to the last house number or corner word
+    /// ([`starts_a_street_name`]: `"Adelaide"` of `"Adelaide St"`, `"Sydney"`
+    /// of `"45 Sydney Road"`, `"Smith"` of `"Cnr George St & Smith St"`),
+    /// after a leading one up to a house number (`"Mayor"` of `"Calle Mayor
+    /// 5"`), after the house number of a type-less numbered street (`"Nguyễn
+    /// Huệ"` of `"123 Nguyễn Huệ"`). Empty for a compound word
+    /// (`"Hauptstraße"`), whose one word is name and type at once.
     name: std::ops::Range<usize>,
     /// The street's type word(s); empty when none was written (the type-less
     /// numbered street).
     kind: std::ops::Range<usize>,
+}
+
+/// Whether a trailing-type street's name starts AFTER word `k` of a segment:
+/// a house number (`"45 Sydney Road"`: a number is where the street is, not
+/// what it is called), a corner word (`"Cnr"`, `"Corner"`), or a `"&"` /
+/// `"and"` that follows a street type — the join between the two streets of
+/// a corner (`"Cnr George St & Smith St"`, `"Main St and Oak Ave"`). A join
+/// that follows a name word is inside one street's name (`"Smith and Jones
+/// Rd"`), and a type word at the segment's start is a saint (`"St & ..."`).
+///
+/// `words` are the segment's words as written, `lower` the same words trimmed
+/// of punctuation and lowercased.
+fn starts_a_street_name(words: &[&str], lower: &[String], k: usize) -> bool {
+    let joins = words[k] == "&" || lower[k] == "and";
+    is_house_number(words[k])
+        || matches!(lower[k].as_str(), "cnr" | "corner")
+        || (joins && k >= 2 && STREET_TYPES.contains(&lower[k - 1].as_str()))
 }
 
 /// The street one comma-separated segment names, if any.
@@ -497,15 +526,18 @@ fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
         })
         .collect();
     let has_digit = |w: &&str| w.chars().any(|c| c.is_ascii_digit());
-    let mut best: Option<SegmentStreet> = None;
-    let mut found = |street: SegmentStreet| {
-        let keep = best.as_ref().is_none_or(|b| {
-            (street.grain == StreetGrain::House && b.grain == StreetGrain::Street)
-                || (street.grain == b.grain && street.rest_from > b.rest_from)
+    // The street `grain` and `rest_from` describe, and every street read.
+    let mut best: Option<(StreetGrain, usize)> = None;
+    let mut streets: Vec<StreetWords> = Vec::new();
+    let mut found = |grain: StreetGrain, rest_from: usize, words: StreetWords| {
+        let keep = best.is_none_or(|(g, r)| {
+            (grain == StreetGrain::House && g == StreetGrain::Street)
+                || (grain == g && rest_from > r)
         });
         if keep {
-            best = Some(street);
+            best = Some((grain, rest_from));
         }
+        streets.push(words);
     };
     let numbered = |yes: bool| {
         if yes {
@@ -519,18 +551,21 @@ fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
         // saint, not a street.
         if i > 0 && STREET_TYPES.contains(&w.as_str()) {
             // The name starts after the house number (`"Sydney"` of `"45
-            // Sydney Road"`, `"Smith"` of `"Unit 5 12 Smith St"`): a number
-            // is where the street is, not what it is called.
-            let name_from = words[..i]
-                .iter()
-                .rposition(|w| is_house_number(w))
+            // Sydney Road"`, `"Smith"` of `"Unit 5 12 Smith St"`) or the
+            // corner word or join before it (`"Smith"` of `"Cnr George St &
+            // Smith St"`): neither is what the street is called.
+            let name_from = (0..i)
+                .rev()
+                .find(|&k| starts_a_street_name(words, &lower, k))
                 .map_or(0, |k| k + 1);
-            found(SegmentStreet {
-                grain: numbered(words[..i].iter().any(has_digit)),
-                rest_from: i + 1,
-                name: name_from..i,
-                kind: i..i + 1,
-            });
+            found(
+                numbered(words[..i].iter().any(has_digit)),
+                i + 1,
+                StreetWords {
+                    name: name_from..i,
+                    kind: i..i + 1,
+                },
+            );
         }
         // A leading type STARTS the street line — first, or after only the
         // house number (`"12 Đường Láng"`) — and a name must follow it, so
@@ -550,12 +585,14 @@ fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
                         .position(has_digit)
                         .filter(|_| number_may_follow)
                         .map(|k| end + k);
-                    found(SegmentStreet {
-                        grain: numbered(before || number_at.is_some()),
-                        rest_from: words.len(),
-                        name: end..number_at.unwrap_or(words.len()),
-                        kind: i..end,
-                    });
+                    found(
+                        numbered(before || number_at.is_some()),
+                        words.len(),
+                        StreetWords {
+                            name: end..number_at.unwrap_or(words.len()),
+                            kind: i..end,
+                        },
+                    );
                 }
             }
         }
@@ -568,12 +605,14 @@ fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
                 .iter()
                 .enumerate()
                 .any(|(j, o)| j != i && has_digit(o));
-            found(SegmentStreet {
-                grain: numbered(others),
-                rest_from: words.len(),
-                name: i..i,
-                kind: i..i + 1,
-            });
+            found(
+                numbered(others),
+                words.len(),
+                StreetWords {
+                    name: i..i,
+                    kind: i..i + 1,
+                },
+            );
         }
     }
     // Only when no type word placed the street: the rule claims the WHOLE
@@ -589,14 +628,17 @@ fn segment_street(words: &[&str], street_line: bool) -> Option<SegmentStreet> {
             .iter()
             .any(|w| w.chars().any(char::is_alphabetic))
     {
-        best = Some(SegmentStreet {
-            grain: StreetGrain::House,
-            rest_from: words.len(),
+        best = Some((StreetGrain::House, words.len()));
+        streets.push(StreetWords {
             name: 1..words.len(),
             kind: 0..0,
         });
     }
-    best
+    best.map(|(grain, rest_from)| SegmentStreet {
+        grain,
+        rest_from,
+        streets,
+    })
 }
 
 /// Each comma-separated segment of `s` with the street it names, if any.
@@ -782,9 +824,11 @@ fn place_tokens(s: &str) -> Vec<String> {
 /// km away — is not, nor is `"Sydney"` the place of `"Sydney Rd, Brunswick
 /// VIC"`, `"Huế"` of `"12 Phố Huế, Hà Nội"`, or `"Western Highway"` (in
 /// Victoria) of `"Great Western Hwy, Blaxland NSW"`. A house number is not
-/// part of the name (`"Sydney Road"` is the `"45 Sydney Road"` asked about). A numbered street written with no type word
-/// (`"123 Nguyễn Huệ, Quận 1"`) has no type to carry, so no name matches
-/// its words.
+/// part of the name (`"Sydney Road"` is the `"45 Sydney Road"` asked about),
+/// nor is a corner's other street (`"Smith Street"` is a `"Cnr George St &
+/// Smith St"` asked about, as is `"George Street"`; `"Smith"` is neither). A
+/// numbered street written with no type word (`"123 Nguyễn Huệ, Quận 1"`) has
+/// no type to carry, so no name matches its words.
 ///
 /// An empty `name` is the place of nothing.
 #[must_use]
@@ -807,8 +851,8 @@ pub fn is_name_of_queried_place(name: &str, query: &str) -> bool {
     if joined.is_empty() {
         return false;
     }
-    // The query's tokens, and for each street a segment names the token spans
-    // of its name and of its type (`SegmentStreet`).
+    // The query's tokens, and for EVERY street a segment names — both of a
+    // corner's — the token spans of its name and of its type (`StreetWords`).
     let mut have: Vec<String> = Vec::new();
     let mut streets = Vec::new();
     for (words, street) in segments_with_streets(query) {
@@ -818,9 +862,9 @@ pub fn is_name_of_queried_place(name: &str, query: &str) -> bool {
             have.extend(place_tokens(w));
         }
         starts.push(have.len());
-        if let Some(st) = street {
-            let span = |r: std::ops::Range<usize>| starts[r.start]..starts[r.end];
-            streets.push((span(st.name), span(st.kind)));
+        let span = |r: &std::ops::Range<usize>| starts[r.start]..starts[r.end];
+        for st in street.iter().flat_map(|st| &st.streets) {
+            streets.push((span(&st.name), span(&st.kind)));
         }
     }
     // A run that reaches into a street is that street only when it carries
@@ -1145,6 +1189,11 @@ mod city_grain_tests {
             "Hobart Road",
             "Hobart Rd, Kings Meadows TAS"
         ));
+        // A corner, unnumbered: a geocoder's road is either street, whole.
+        assert!(is_name_of_queried_place(
+            "King Street",
+            "Cnr George St & King St, Sydney NSW"
+        ));
         assert!(!is_name_of_queried_place(
             "Kelvin Grove Road",
             "Kelvin Grove, QLD"
@@ -1202,6 +1251,11 @@ mod city_grain_tests {
             ("Northern Road", "Old Northern Rd, Castle Hill NSW"),
             ("Pacific Highway", "Old Pacific Hwy, Mooney Mooney NSW"),
             ("Mayor 5", "Calle Mayor 5, Madrid"),
+            // Either street of a corner is named after a place too.
+            ("Smith", "Cnr George St & Smith St, Brisbane City QLD"),
+            ("George", "Cnr George St & Smith St, Brisbane City QLD"),
+            // A join after a NAME word is inside one street's name.
+            ("Jones Road", "Smith and Jones Rd, Toowong QLD"),
         ] {
             assert!(!is_name_of_queried_place(hit, query), "{hit} / {query}");
         }
@@ -1226,6 +1280,18 @@ mod city_grain_tests {
             ),
             ("Smith Street", "Unit 5 12 Smith St, Toowong QLD"),
             ("Calle Mayor", "Calle Mayor 5, Madrid"),
+            // Either street of a corner is a street the query names: its
+            // corner word and the other street are not part of its name.
+            (
+                "Smith Street",
+                "Cnr George St & Smith St, Brisbane City QLD",
+            ),
+            (
+                "George Street",
+                "Cnr George St & Smith St, Brisbane City QLD",
+            ),
+            ("Oak Avenue", "Corner Main St and Oak Ave, Toowong QLD"),
+            ("Smith and Jones Road", "Smith and Jones Rd, Toowong QLD"),
         ] {
             assert!(is_name_of_queried_place(hit, query), "{hit} / {query}");
         }
