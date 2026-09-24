@@ -798,12 +798,12 @@ pub async fn scan_import(
         }
         // Wall-clock bound on the super-linear derivation chain, matching a
         // live scan (the entity-count guard above already skips the
-        // pathological case; this bounds the rest). Persisted through the
-        // same counted step the live finalise and the CLI import use, so a
-        // refused edge is recorded rather than dropped by `.is_ok()`.
-        let derive_deadline =
-            Some(std::time::Instant::now() + crate::core::relation::DERIVE_BUDGET);
-        let derived = crate::core::relation::derive_all_within(&entities, &sid2, derive_deadline);
+        // pathological case; this bounds the rest), through the same step the
+        // live finalise and the CLI import use, which records a budget cut on
+        // the tally (REQ-SCANSTATUS-024). Persisted through the same counted
+        // step too, so a refused edge is recorded rather than dropped by
+        // `.is_ok()`.
+        let derived = crate::core::engine::derive_finalise_relations(&entities, &sid2, &mut tally);
         let relations =
             crate::core::engine::persist_relations(store.as_ref(), &sid2, &derived, &mut tally);
         // The second cancel boundary: the relations above are kept, and so is
@@ -878,8 +878,9 @@ pub async fn scan_import(
             // reached the import before its enrichment finished — except that
             // a `Complete` row whose finalise did not complete answers
             // `partial`: the store refused some of the relations or
-            // correlations derived above, the correlation pass failed
-            // outright, or both were skipped for size. That row is stored `Complete` (the upload was imported
+            // correlations derived above, the derivation's time budget cut
+            // it short, the correlation pass failed outright, or both were
+            // skipped for size. That row is stored `Complete` (the upload was imported
             // in full) with the shortfall in its `error`, and every export of
             // it reads "partial, finalise-incomplete". Answering `complete`
             // told the client the import was whole while the counts above

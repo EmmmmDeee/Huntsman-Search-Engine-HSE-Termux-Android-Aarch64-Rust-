@@ -1934,7 +1934,7 @@ fn a_cell_tower_mcc_centroid_is_the_country_never_its_stand_in_city() {
         ("530", "-41.286500,174.776200", "New Zealand", "Wellington"),
         ("505", "-25.274400,133.775100", "Australia", "Alice Springs"),
     ] {
-        let point = mcc_centroid_point(mcc, "tower-1", "s1").expect("a tabulated MCC");
+        let point = mcc_centroid_point(mcc, "1", "tower-1", "s1").expect("a tabulated MCC");
         assert_eq!(point.value, value, "the stand-in this test is about");
         let p = assess(&point);
         assert_eq!(p.basis, FixBasis::CountrySignal, "{mcc}: {p:?}");
@@ -1962,7 +1962,7 @@ fn a_cell_tower_mcc_centroid_is_the_country_never_its_stand_in_city() {
     // Merged with `+64`'s stand-in (the same value), neither explains it:
     // the point is New Zealand, not Wellington city.
     let mut merged = nz_prefix_point();
-    let tower = mcc_centroid_point("530", "tower-1", "s1").expect("NZ");
+    let tower = mcc_centroid_point("530", "1", "tower-1", "s1").expect("NZ");
     merged.tags.extend(tower.tags.iter().cloned());
     merged.evidence.extend(tower.evidence.iter().cloned());
     let l = label_of(&merged, std::slice::from_ref(&merged));
@@ -2008,7 +2008,7 @@ fn a_csv_copy_of_a_country_signal_is_named_by_its_own_country_tags() {
         ("255", "Ukraine", "Russia"),
         ("268", "Portugal", "Spain"),
     ] {
-        let live = mcc_centroid_point(mcc, "tower-1", "s1").expect("a tabulated MCC");
+        let live = mcc_centroid_point(mcc, "1", "tower-1", "s1").expect("a tabulated MCC");
         let bare = csv_copy(live);
         let l = label_of(&bare, std::slice::from_ref(&bare));
         assert!(l.text.starts_with(country), "MCC {mcc}: {l:?}");

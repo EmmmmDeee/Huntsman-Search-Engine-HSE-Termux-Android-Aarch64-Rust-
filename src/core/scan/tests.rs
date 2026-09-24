@@ -1947,9 +1947,11 @@ fn an_import_skipped_for_size_is_not_told_to_re_run() {
 fn an_import_shortfall_is_not_told_to_re_run() {
     let mut import = scan_for(ScanStatus::Complete, None);
     import.origin = ScanOrigin::Import;
+    // A refused write and a pass that failed on a store read; a pass that
+    // panicked is `an_import_whose_correlator_panicked_is_not_told_to_re_import`.
     for shortfall in [
         "2/40 relations failed to persist: busy",
-        "correlation pass failed: panicked",
+        "correlation pass failed: database is locked",
     ] {
         import.error = Some(shortfall.into());
         let caveat = import.completeness_caveat("the import").expect("caveated");
@@ -1969,6 +1971,120 @@ fn an_import_shortfall_is_not_told_to_re_run() {
     let live = scan_for(ScanStatus::Complete, None);
     let json = serde_json::to_string(&live).expect("serialises");
     assert!(!json.contains("origin"), "{json}");
+}
+
+/// REQ-SCANSTATUS-021: the import pipeline is deterministic over the same
+/// data, so a correlation pass that panicked on an import panics again on a
+/// re-import of it. The caveat told the operator to "re-import the data to
+/// rebuild it", and a re-import gave the same partial scan. A panic is now
+/// told apart from a refused write or a failed store read: re-importing
+/// rebuilds the rest of a shortfall, never the correlations.
+#[test]
+fn an_import_whose_correlator_panicked_is_not_told_to_re_import() {
+    let mut import = scan_for(ScanStatus::Complete, None);
+    import.origin = ScanOrigin::Import;
+    let mut tally = FinaliseTally::default();
+    tally.pass_failed(FinalisePass::Correlation, CORRELATION_PASS_PANICKED);
+    let panicked = tally.message().expect("recorded");
+    assert!(FinaliseTally::records_correlation_panic(&panicked));
+    assert!(FinaliseTally::records_only_correlation_panic(&panicked));
+
+    import.error = Some(panicked.clone());
+    let caveat = import.completeness_caveat("the import").expect("caveated");
+    assert!(
+        !caveat.contains("re-import the data to rebuild it"),
+        "{caveat}"
+    );
+    assert!(!caveat.contains("re-run the scan"), "{caveat}");
+    assert!(
+        caveat.contains("neither re-running nor re-importing can rebuild it"),
+        "{caveat}"
+    );
+
+    // Beside a refused write, re-importing rebuilds that write only.
+    tally.add(FinaliseWrite::Relations, 40, 2, Some("busy".into()));
+    let both = tally.message().expect("recorded");
+    assert!(FinaliseTally::records_correlation_panic(&both));
+    assert!(!FinaliseTally::records_only_correlation_panic(&both));
+    import.error = Some(both);
+    let caveat = import.completeness_caveat("the import").expect("caveated");
+    assert!(
+        caveat.contains("rebuilds the rest of it but not its correlations"),
+        "{caveat}"
+    );
+    assert!(
+        !caveat.contains("re-import the data to rebuild it"),
+        "{caveat}"
+    );
+
+    // A store read the correlator failed on is not a panic.
+    assert!(!FinaliseTally::records_correlation_panic(
+        "correlation pass failed: database is locked"
+    ));
+    // A live scan re-collects its data, so its remedy is unchanged.
+    let mut live = scan_for(ScanStatus::Complete, None);
+    live.error = Some(panicked);
+    let caveat = live.completeness_caveat("the scan").expect("caveated");
+    assert!(
+        caveat.ends_with("re-run the scan to rebuild it"),
+        "{caveat}"
+    );
+}
+
+/// REQ-SCANSTATUS-022: an aborted scan's finalise still runs and still
+/// records its shortfall, which the event, the webhook, `hse live` and the
+/// web log announce as partial. The caveat never read `error` on an abort
+/// and called its entities "final", so `hse scan`, `hse export` and the
+/// dossier never named the shortfall.
+#[test]
+fn an_aborted_scan_with_a_shortfall_names_it() {
+    let mut aborted = scan_for(ScanStatus::Aborted, None);
+    let whole = aborted.completeness_caveat("the scan").expect("caveated");
+    assert!(whole.contains("are final"), "{whole}");
+    assert!(!aborted.finalise_incomplete());
+
+    aborted.error = Some("5/40 relations failed to persist: busy".into());
+    assert!(aborted.finalise_incomplete());
+    let caveat = aborted.completeness_caveat("the scan").expect("caveated");
+    assert!(caveat.contains("(aborted)"), "{caveat}");
+    assert!(
+        caveat.contains("its finalise did not complete (5/40 relations failed to persist: busy)"),
+        "{caveat}"
+    );
+    assert!(!caveat.contains("are final"), "{caveat}");
+    assert!(caveat.contains("re-run the scan to rebuild it"), "{caveat}");
+    assert!(
+        caveat.ends_with("no further data will arrive for this scan"),
+        "{caveat}"
+    );
+    // The remedy follows the origin, as on a complete scan: a web upload
+    // cancelled at its second boundary is an import.
+    aborted.origin = ScanOrigin::Import;
+    let caveat = aborted.completeness_caveat("the upload").expect("caveated");
+    assert!(
+        caveat.contains("re-import the data to rebuild it"),
+        "{caveat}"
+    );
+}
+
+/// REQ-SCANSTATUS-024: a relation derivation its time budget cut short is
+/// recorded, between an import's size skip and the correlation pass, in fixed
+/// words around the last pass that completed.
+#[test]
+fn a_derivation_cut_is_recorded_in_finalise_order() {
+    let mut t = FinaliseTally::default();
+    t.pass_failed(FinalisePass::Correlation, "locked");
+    t.derivation_cut("resolution");
+    assert_eq!(
+        t.message().as_deref(),
+        Some(
+            "relation derivation failed: stopped at its time budget after the resolution \
+             pass; correlation pass failed: locked"
+        )
+    );
+    assert!(!FinaliseTally::records_import_enrichment_skip(
+        &t.message().expect("recorded")
+    ));
 }
 
 #[test]

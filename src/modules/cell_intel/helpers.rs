@@ -113,7 +113,8 @@ pub(super) async fn query_opencellid(
 pub(super) use crate::util::cell_db::accuracy_to_confidence;
 
 /// The `Coordinates` `cell_intel` mints for a tower OpenCelliD could not
-/// locate: the centroid of the country its Mobile Country Code names
+/// locate: the centroid of the country its network's Mobile Country Code (and,
+/// where one MCC is shared between countries, its Mobile Network Code) names
 /// ([`mcc_to_centroid`]), or `None` for an unrecognised MCC.
 ///
 /// A COUNTRY signal, not a measurement. The MCC says only which country's
@@ -128,8 +129,13 @@ pub(super) use crate::util::cell_db::accuracy_to_confidence;
 /// and its ISO code (`country_code`), and no `au-state:` tag — the MCC names
 /// no state, and the NT tag the continent's centre used to earn was the
 /// stand-in's, not the tower's.
-pub(crate) fn mcc_centroid_point(mcc: &str, tower_id: &str, scan_id: &str) -> Option<Entity> {
-    let (lat, lon, country) = mcc_to_centroid(mcc)?;
+pub(crate) fn mcc_centroid_point(
+    mcc: &str,
+    mnc: &str,
+    tower_id: &str,
+    scan_id: &str,
+) -> Option<Entity> {
+    let (lat, lon, country) = mcc_to_centroid(mcc, mnc)?;
     let coords = format!("{lat:.4},{lon:.4}");
     let mut e = Entity::new(
         EntityKind::Coordinates,
@@ -149,6 +155,7 @@ pub(crate) fn mcc_centroid_point(mcc: &str, tower_id: &str, scan_id: &str) -> Op
         )
         .with_attr("tower_id", tower_id)
         .with_attr("mcc", mcc)
+        .with_attr("mnc", mnc)
         .with_attr(
             "country",
             crate::util::geohash::country_name_for_iso(country).unwrap_or(country),
@@ -171,7 +178,10 @@ pub(crate) fn mcc_centroid_point(mcc: &str, tower_id: &str, scan_id: &str) -> Op
 /// (REQ-GEOLABEL-032). Each row's MCCs are the ITU-T E.212 codes of the
 /// country its ISO names: `620` is Ghana and `640` Tanzania, and a row that
 /// once read `620` → Tanzania put every Ghanaian network in Tanzania and left
-/// Tanzania's own unresolved (REQ-GEOLABEL-035).
+/// Tanzania's own unresolved (REQ-GEOLABEL-035). An MCC shared with another
+/// country's networks names the country that holds it; the other country's
+/// networks under it are listed by MNC in [`MNC_CENTROIDS`], which
+/// [`mcc_to_centroid`] reads first (REQ-GEOLABEL-038).
 pub(super) const MCC_CENTROIDS: &[(&[&str], f64, f64, &str)] = &[
     // Oceania / Australia
     (&["505"], -25.2744, 133.7751, "AU"),
@@ -242,15 +252,36 @@ pub(super) const MCC_CENTROIDS: &[(&[&str], f64, f64, &str)] = &[
     (&["250"], 61.5240, 105.3188, "RU"),
 ];
 
-/// Coarse country fix from a cell's **Mobile Country Code**: `(lat, lon, ISO)` at
-/// the country's stand-in point ([`MCC_CENTROIDS`]), or `None` for an
-/// unrecognised MCC. The fallback when no precise tower location is available —
-/// at least the device's *country* is known from the network it's camped on.
-pub(super) fn mcc_to_centroid(mcc: &str) -> Option<(f64, f64, &'static str)> {
-    MCC_CENTROIDS
+/// The networks whose Mobile Country Code is shared with another country, as
+/// `(MCC, MNCs, lat, lon, ISO)`: a network listed here is in the country its
+/// row names, not the one [`MCC_CENTROIDS`] gives its MCC. MCC 425 is Israel's,
+/// but the Palestinian operators Jawwal (425-05) and Ooredoo Palestine
+/// (425-06) are allocated under it too, so reading the MCC alone put a device
+/// in Ramallah camped on Jawwal in Israel — tagged `country:IL`, labelled
+/// "Israel" (REQ-GEOLABEL-038). The stand-in point lies inside the West Bank.
+/// MNCs are compared as numbers, so `5` and `05` are one network.
+pub(super) const MNC_CENTROIDS: &[(&str, &[u16], f64, f64, &str)] =
+    &[("425", &[5, 6], 32.0000, 35.2500, "PS")];
+
+/// Coarse country fix from a cell's **Mobile Country Code** and **Mobile
+/// Network Code**: `(lat, lon, ISO)` at the stand-in point of the country the
+/// network belongs to — [`MNC_CENTROIDS`] for a network whose MCC is shared
+/// with another country, else the MCC's own row in [`MCC_CENTROIDS`] — or
+/// `None` for an unrecognised MCC. The fallback when no precise tower location
+/// is available — at least the device's *country* is known from the network
+/// it's camped on.
+pub(super) fn mcc_to_centroid(mcc: &str, mnc: &str) -> Option<(f64, f64, &'static str)> {
+    let mnc_num = mnc.trim().parse::<u16>().ok();
+    MNC_CENTROIDS
         .iter()
-        .find(|(mccs, ..)| mccs.contains(&mcc))
-        .map(|&(_, lat, lon, iso)| (lat, lon, iso))
+        .find(|(code, mncs, ..)| *code == mcc && mnc_num.is_some_and(|n| mncs.contains(&n)))
+        .map(|&(_, _, lat, lon, iso)| (lat, lon, iso))
+        .or_else(|| {
+            MCC_CENTROIDS
+                .iter()
+                .find(|(mccs, ..)| mccs.contains(&mcc))
+                .map(|&(_, lat, lon, iso)| (lat, lon, iso))
+        })
 }
 
 // ---------------------------------------------------------------------------

@@ -1736,7 +1736,23 @@ pub fn derive_coreferences(
 /// the live and import paths can't drift on which relations a finished scan
 /// carries.
 pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
-    derive_all_within(entities, scan_id, None)
+    derive_all_within(entities, scan_id, None).relations
+}
+
+/// What [`derive_all_within`] built, and whether its deadline cut the pass
+/// chain short.
+#[derive(Debug, Clone, Default)]
+pub struct DerivedRelations {
+    /// The edges built, collapsed to one per [`Relation::id`] at its maximum
+    /// confidence.
+    pub relations: Vec<Relation>,
+    /// The last pass that completed before the deadline stopped the chain, or
+    /// `None` when every pass ran. A finalise records a cut on the scan
+    /// (`FinaliseTally::derivation_cut`), because every pass after it — and
+    /// the correlator reading the thinner graph — produced nothing, and a
+    /// scan whose result depended on how busy the device was must not read
+    /// whole (REQ-SCANSTATUS-024).
+    pub cut_after: Option<&'static str>,
 }
 
 /// Wall-clock budget for the finalise-time relation derivation. Most of the
@@ -1755,8 +1771,9 @@ pub const DERIVE_BUDGET: std::time::Duration = std::time::Duration::from_secs(90
 /// first, then the inference passes that consume them), so a budget cut keeps
 /// the foundational attribution graph and only drops the softer inference
 /// edges — the finalise then persists a partial-but-coherent relation set
-/// instead of being SIGKILLed with nothing. `None` runs the full chain
-/// unconditionally (the import path and every test exercise that branch).
+/// instead of being SIGKILLed with nothing, and records the cut
+/// ([`DerivedRelations::cut_after`]) so the scan does not read whole. `None`
+/// runs the full chain unconditionally ([`derive_all`]).
 ///
 /// Mirrors the correlator's finalise budget so a scan ALWAYS converges to a
 /// written dossier: collection stops at the wall-time, derivation stops at this
@@ -1765,7 +1782,7 @@ pub fn derive_all_within(
     entities: &[Entity],
     scan_id: &str,
     deadline: Option<std::time::Instant>,
-) -> Vec<Relation> {
+) -> DerivedRelations {
     // Stop the pass chain if the budget is spent; `passed` names the last pass
     // that completed so the log shows how far derivation got. `out` is threaded
     // in as an argument (not captured) so it resolves to the function-local
@@ -1779,7 +1796,12 @@ pub fn derive_all_within(
                     after = $passed,
                     "relation-derivation budget exceeded — finalising with partial relations"
                 );
-                return $out;
+                // Collapsed like the full chain's result, so a cut set carries
+                // each edge at its strongest confidence too.
+                return DerivedRelations {
+                    relations: collapse_to_max_confidence($out),
+                    cut_after: Some($passed),
+                };
             }
         };
     }
@@ -1881,7 +1903,10 @@ pub fn derive_all_within(
     // links at surname-guess confidence and can flip downstream confidence-floor
     // gating (resolve_identity_clusters / connection_brokers). Collapsing here makes
     // the intent hold regardless of emit order or the persistence conflict policy.
-    collapse_to_max_confidence(out)
+    DerivedRelations {
+        relations: collapse_to_max_confidence(out),
+        cut_after: None,
+    }
 }
 
 /// Collapse duplicate edges (same [`Relation::id`] — same `from`/`kind`/`to`/`scan`,

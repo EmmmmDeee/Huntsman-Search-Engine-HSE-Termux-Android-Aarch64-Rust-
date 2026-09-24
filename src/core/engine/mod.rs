@@ -1160,6 +1160,20 @@ impl ScanEngine {
         // persist its terminal status — see the commit step after it. The
         // flag says whether that final write is best-effort (the Failed
         // record, whose loss is logged) or must propagate its error.
+        // The run's module accounting and why its expansion stopped are known
+        // before the finalise starts, so they are set here, once — recorded
+        // on EVERY terminal path below (failed as well as complete/aborted,
+        // and a finalise that panicked): why the expansion stopped is just as
+        // material to a failed scan's reader, and setting it before the
+        // blocking phase means neither a new terminal branch nor a panic in
+        // the phase can lose it (REQ-SCANSTATUS-023).
+        scan.modules_run = stats.run;
+        scan.modules_errored = stats.errored;
+        scan.modules_timed_out = stats.timed_out;
+        scan.modules_deduped = stats.deduped;
+        scan.modules_skipped = stats.skipped;
+        scan.modules_cached = stats.cached;
+        scan.stop_reason = stop_reason;
         // The scan as it stood before the blocking phase took it: what a
         // finalise that panicked (or failed) is concluded from — see the
         // match after the phase.
@@ -1201,18 +1215,6 @@ impl ScanEngine {
                 total - persisted,
                 first_err.clone(),
             );
-
-            scan.modules_run = stats.run;
-            scan.modules_errored = stats.errored;
-            scan.modules_timed_out = stats.timed_out;
-            scan.modules_deduped = stats.deduped;
-            scan.modules_skipped = stats.skipped;
-            scan.modules_cached = stats.cached;
-            // Recorded on EVERY terminal path below (failed as well as
-            // complete/aborted): why the expansion stopped is just as material
-            // to a failed scan's reader, and setting it once here means a new
-            // terminal branch cannot forget it.
-            scan.stop_reason = stop_reason;
 
             if persisted == 0 && first_err.is_some() {
                 scan.status = ScanStatus::Failed;
@@ -1332,6 +1334,10 @@ impl ScanEngine {
                 error!(scan_id = %before_finalise.id, error = %e, "the finalise did not finish — failing the scan");
                 let mut failed = before_finalise;
                 failed.error = Some(e.to_string());
+                // Its `entity_count` is still `Scan::new`'s 0, but the phase
+                // may have stored every entity before it panicked (the batch
+                // persist runs first): `conclude_failed` counts what the
+                // store holds (REQ-SCANSTATUS-023).
                 self.conclude_failed(failed, &ctx.http).await;
                 return Err(e);
             }
@@ -1434,6 +1440,24 @@ impl ScanEngine {
         Ok(scan)
     }
 
+    /// How many entities the store holds for `scan_id`, or `None` when the
+    /// read fails (logged) — see [`Self::conclude_failed`].
+    async fn stored_entity_count(&self, scan_id: &str) -> Option<usize> {
+        let store = Arc::clone(&self.store);
+        let id = scan_id.to_string();
+        match tokio::task::spawn_blocking(move || store.entities_for_scan(&id))
+            .await
+            .map_err(|join| blocking_failure("the stored entity count", &join))
+            .and_then(|r| r)
+        {
+            Ok(entities) => Some(entities.len()),
+            Err(e) => {
+                warn!(scan_id, error = %e, "could not count the scan's stored entities");
+                None
+            }
+        }
+    }
+
     /// Concludes `scan` as `Failed` — the one way every failure after the
     /// engine took the scan is ended, so each is announced alike: the
     /// scan-start row refused (REQ-SCANSTATUS-016), the finalise panicked
@@ -1449,8 +1473,19 @@ impl ScanEngine {
     /// subscriber (`hse live`, the radar, the web scan log) learns the scan
     /// ended (REQ-SCANSTATUS-008); then tells the operator's webhook
     /// (REQ-SCANSTATUS-018).
+    ///
+    /// The row, the event and the webhook all claim the entities the store
+    /// holds for the scan (REQ-SCANSTATUS-009): a failure outside the
+    /// finalise's own accounting — a finalise that panicked after its batch
+    /// persist, a panic mid-run after checkpoints — reaches here with
+    /// `Scan::new`'s 0 while the scan's entities are stored and exported.
+    /// Best-effort: a count the store cannot read keeps the scan's own
+    /// (REQ-SCANSTATUS-023).
     async fn conclude_failed(&self, mut scan: Scan, http: &reqwest::Client) -> Scan {
         scan.status = ScanStatus::Failed;
+        if let Some(stored) = self.stored_entity_count(&scan.id).await {
+            scan.entity_count = stored;
+        }
         if scan.finished_at.is_none() {
             scan.finished_at = Some(crate::core::entity::unix_now());
         }
@@ -1897,11 +1932,16 @@ impl ScanEngine {
         // only the softer inference edges — strictly better than stalling.
         let ents: Vec<Entity> = entity_map.snapshot();
         let mut rels = relations.clone();
-        rels.extend(crate::core::relation::derive_all_within(
-            &ents,
-            scan_id,
-            Some(Instant::now() + crate::core::relation::DERIVE_BUDGET),
-        ));
+        // A cut here is not recorded: these are probe inputs, not the scan's
+        // stored graph, which the finalise derives (and accounts for) again.
+        rels.extend(
+            crate::core::relation::derive_all_within(
+                &ents,
+                scan_id,
+                Some(Instant::now() + crate::core::relation::DERIVE_BUDGET),
+            )
+            .relations,
+        );
 
         let context = crate::core::correlator::RuleContext::new(&ents);
         let probes = crate::core::correlator::gap_fill_probes(&context, &rels);
@@ -3205,8 +3245,7 @@ fn derive_and_persist_relations(
     lineage_relations: &[Relation],
     tally: &mut FinaliseTally,
 ) {
-    let derive_deadline = Some(Instant::now() + crate::core::relation::DERIVE_BUDGET);
-    let derived = crate::core::relation::derive_all_within(entities, scan_id, derive_deadline);
+    let derived = derive_finalise_relations(entities, scan_id, tally);
     if !lineage_relations.is_empty() || !derived.is_empty() {
         let lineage_n = lineage_relations.len();
         let derived_n = derived.len();
@@ -3222,6 +3261,46 @@ fn derive_and_persist_relations(
             "entity relations persisted"
         );
     }
+}
+
+/// Derive a finished scan's relation edges under the shipped
+/// [`DERIVE_BUDGET`](crate::core::relation::DERIVE_BUDGET), starting now — the
+/// one derivation step every path that finalises a scan runs (the live
+/// engine's [`derive_and_persist_relations`], the CLI batch persist in
+/// `app::persist` and the web upload in `api::scan_handlers::core`). See
+/// [`derive_relations_within`].
+pub(crate) fn derive_finalise_relations(
+    entities: &[Entity],
+    scan_id: &str,
+    tally: &mut FinaliseTally,
+) -> Vec<Relation> {
+    derive_relations_within(
+        entities,
+        scan_id,
+        Some(Instant::now() + crate::core::relation::DERIVE_BUDGET),
+        tally,
+    )
+}
+
+/// Derive a finished scan's relation edges, stopping new passes at
+/// `deadline`, and record a cut into `tally`
+/// ([`FinaliseTally::derivation_cut`]). The cut used to be a log line only: a
+/// large import on a loaded device stopped after its early passes, the
+/// correlator ran over the thinner graph, and the scan was written `Complete`
+/// with `error: None` — while the same file re-imported on an idle device
+/// produced more edges and more findings and ALSO read complete
+/// (REQ-SCANSTATUS-024).
+pub(crate) fn derive_relations_within(
+    entities: &[Entity],
+    scan_id: &str,
+    deadline: Option<Instant>,
+    tally: &mut FinaliseTally,
+) -> Vec<Relation> {
+    let derived = crate::core::relation::derive_all_within(entities, scan_id, deadline);
+    if let Some(last_pass) = derived.cut_after {
+        tally.derivation_cut(last_pass);
+    }
+    derived.relations
 }
 
 /// Persist a finished scan's relation edges and count what the store refused
@@ -3562,12 +3641,9 @@ fn run_finalise_housekeeping(store: &dyn StoragePort, scan_id: &str) {
     }
 }
 
-/// The reason [`guarded_correlation_pass`] gives for a pass that panicked.
-/// Fixed text, never the payload: a panic message can carry a pointer, a
-/// thread id or other run-specific detail, and this reason is written into
-/// [`Scan::error`], which a debug bundle must reproduce byte for byte. The
-/// payload is still logged.
-pub(crate) const CORRELATION_PASS_PANICKED: &str = "panicked";
+/// The reason [`guarded_correlation_pass`] gives for a pass that panicked —
+/// defined beside its reader, [`FinaliseTally::records_correlation_panic`].
+pub(crate) use crate::core::scan::CORRELATION_PASS_PANICKED;
 
 /// Run a correlator pass under a panic guard — the single canonical way any
 /// caller invokes the full finalise-time rule engine.

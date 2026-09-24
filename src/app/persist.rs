@@ -385,9 +385,10 @@ fn enrich_persisted_batch(
 
     // Bound derivation by wall-clock, identically to a live scan
     // (engine::derive_and_persist_relations): a large batch must not run the
-    // super-linear derivation pass chain for minutes. Partial relations persist.
-    let derive_deadline = Some(std::time::Instant::now() + crate::core::relation::DERIVE_BUDGET);
-    let derived = crate::core::relation::derive_all_within(entities, sid, derive_deadline);
+    // super-linear derivation pass chain for minutes. Partial relations
+    // persist, and a cut is recorded on the tally, so the scan does not read
+    // whole (REQ-SCANSTATUS-024).
+    let derived = crate::core::engine::derive_finalise_relations(entities, sid, tally);
     let relations = crate::core::engine::persist_relations(store.as_ref(), sid, &derived, tally);
 
     // The full correlator runs under the canonical panic guard inside

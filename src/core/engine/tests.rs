@@ -9467,7 +9467,8 @@ async fn a_scan_whose_finalise_panics_is_failed_and_announced() {
     let inner = Arc::new(InMemoryStore::new());
     let store: Arc<dyn StoragePort> =
         Arc::new(RefusingStore::new(inner.clone()).panicking_on_relation_reads());
-    let out = run_terminal_scenario(inner, store, "finalise-panic@example.com", false).await;
+    let out =
+        run_terminal_scenario(inner.clone(), store, "finalise-panic@example.com", false).await;
     let err = out.result.expect_err("the panic is returned as an error");
     assert_eq!(err.to_string(), "the finalise panicked", "{err}");
     assert_eq!(out.heard, vec![(ScanStatus::Failed, false)]);
@@ -9480,4 +9481,60 @@ async fn a_scan_whose_finalise_panics_is_failed_and_announced() {
         "a fixed reason: the payload's address never reaches the row"
     );
     assert!(row.finished_at.is_some());
+
+    // REQ-SCANSTATUS-023: the pass that panicked ran after the entity
+    // persist, so the scan's entities are stored. The row and the
+    // announcement claim them, and keep the run's module accounting and why
+    // its expansion stopped — all of which a scan concluded from its
+    // pre-finalise copy used to report as 0 / none.
+    let stored = inner.entities_for_scan(&row.id).expect("readable").len();
+    assert!(stored > 0, "the entities were persisted before the panic");
+    assert_eq!(row.entity_count, stored, "{row:?}");
+    assert!(row.modules_run > 0, "{row:?}");
+    assert!(row.stop_reason.is_some(), "{row:?}");
+    let announced: Vec<usize> = inner
+        .events_for_scan(&row.id)
+        .expect("readable")
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            EventKind::ScanComplete { entity_count, .. } => Some(entity_count),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced, vec![stored], "the event claims what is stored");
+}
+
+/// REQ-SCANSTATUS-024: a relation derivation its time budget cut short is
+/// recorded on the scan by the one step every finalise path derives through
+/// (the live engine, `hse import` and the web upload). It used to be a log
+/// line: the scan was written `Complete` with `error: None` over a graph —
+/// and a correlation — that depended on how busy the device was.
+#[test]
+fn a_derivation_the_budget_cut_short_is_recorded() {
+    let ents = vec![
+        Entity::new(EntityKind::Domain, "acme.com", 0.7, "s"),
+        Entity::new(EntityKind::Domain, "mail.acme.com", 0.6, "s"),
+    ];
+    let mut cut = FinaliseTally::default();
+    let rels = derive_relations_within(&ents, "s", Some(std::time::Instant::now()), &mut cut);
+    assert!(!rels.is_empty(), "the edges built before the cut are kept");
+    assert_eq!(
+        cut.message().as_deref(),
+        Some("relation derivation failed: stopped at its time budget after the structural pass")
+    );
+
+    let mut whole = FinaliseTally::default();
+    let all = derive_relations_within(&ents, "s", None, &mut whole);
+    assert_eq!(whole.message(), None, "an uncut derivation records nothing");
+    assert_eq!(
+        all.len(),
+        crate::core::relation::derive_all(&ents, "s").len()
+    );
+    let mut shipped = FinaliseTally::default();
+    derive_finalise_relations(&ents, "s", &mut shipped);
+    assert_eq!(
+        shipped.message(),
+        None,
+        "a small set is derived within budget"
+    );
 }

@@ -21,8 +21,10 @@ pub struct WebhookPayload<'a> {
     pub status: &'a str,
     /// `true` when a `complete` or `aborted` scan's finalise did not store or
     /// compute everything ([`Scan::finalise_incomplete`](crate::core::scan::Scan::finalise_incomplete))
-    /// — the scan every export reads "partial, finalise-incomplete" and
-    /// `scan_complete` announces partial (REQ-SCANSTATUS-015). Always `false`
+    /// — the scan `scan_complete` announces partial and every export reads
+    /// partial: "partial, finalise-incomplete" when `complete`, "partial,
+    /// aborted" when `aborted`, with the shortfall named in the scan's
+    /// completeness caveat either way (REQ-SCANSTATUS-015/022). Always `false`
     /// on a `failed` scan. Always sent, so a consumer never reads a missing
     /// field as whole.
     pub finalise_incomplete: bool,

@@ -215,6 +215,7 @@ pub fn country_name_for_iso(iso: &str) -> Option<&'static str> {
         // its `country` attribute name the country in words, never as its
         // bare code (REQ-GEOLABEL-035).
         "HR" => "Croatia",
+        "PS" => "Palestine",
         "GH" => "Ghana",
         "TZ" => "Tanzania",
         "KZ" => "Kazakhstan",

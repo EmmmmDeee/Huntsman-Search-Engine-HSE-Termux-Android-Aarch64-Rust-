@@ -24296,3 +24296,108 @@ the field existed. The round-4 control now runs on a live scan's row only.
 | M7 | the size-skip remedy as at 11fb8fbc | killed by `core::scan::tests::an_import_skipped_for_size_is_not_told_to_re_run` |
 
 **7 of 7 caught.**
+
+## REQ-SCANSTATUS-021 / REQ-SCANSTATUS-022 / REQ-SCANSTATUS-023 / REQ-SCANSTATUS-024 / REQ-GEOLABEL-038 — final review, correction round 6
+
+**Found** by the sixth correction round of the final review of PR #649,
+which raised eight findings against 2fcf2360. Each was checked against that
+head, and all eight were real. Findings 2, 4 and 7 describe one defect (a
+panicked finalise concluded from a stale copy of the scan). Findings 5 and 8
+describe another (the `Aborted` caveat ignored `error`). Finding 8 also
+named two doc comments that claimed an export classification the code does
+not make. That leaves five code defects. Each fix is made where its rule
+lives and has a regression test that fails on the code before it. Each fix
+was then undone in place, the test was seen to fail, and the file was
+restored byte-identically (table below).
+
+**REQ-SCANSTATUS-021 — an import whose correlator panicked is not told to
+re-import.** REQ-SCANSTATUS-020 gave every non-size-skip shortfall on an
+import the remedy "re-import the data to rebuild it". The import pipeline is
+deterministic over the same data: `prepare_import_batch` enriches offline,
+and the correlator reads the same stored batch. So a rule that panicked on
+the import (`correlation pass failed: panicked`, the case
+`guarded_correlation_pass` exists for) panics again on a re-import. The
+round-5 test locked the wrong remedy in: its loop asserted that exact error
+ends "re-import the data to rebuild it". `CORRELATION_PASS_PANICKED` now
+lives in `core::scan`, beside its readers
+`FinaliseTally::records_correlation_panic` and
+`records_only_correlation_panic`, and the engine re-exports it for
+`guarded_correlation_pass`. The remedy now depends on what failed as well as
+where the scan came from, in the new `Scan::finalise_shortfall`. An import
+whose only shortfall is the panic is told that neither a re-run nor a
+re-import can rebuild it. An import that also lost writes is told that a
+re-import rebuilds those but not its correlations. A refused write, or a
+correlation pass that failed on a store read, keeps "re-import the data to
+rebuild it". The round-5 test now uses a store-read failure. A live scan
+keeps "re-run the scan", because a re-run collects its data again.
+
+**REQ-SCANSTATUS-022 — an aborted scan names its shortfall.**
+`Scan::finalise_incomplete` is true for an `Aborted` scan with `error` set.
+The event, the webhook, `hse live` and the web log therefore announce it as
+partial. But `completeness_caveat`'s `Aborted` arm never read `error`, and
+said the entities "are final". So `hse scan`, `hse export`/audit/gap/diff
+and the dossier never named the shortfall. That arm now uses the same
+`finalise_shortfall` clause and remedy as the `Complete` arm. An abort with
+no shortfall keeps its wording. The doc comments on
+`Scan::finalise_incomplete` and `WebhookPayload::finalise_incomplete` said
+such a scan's exports read "partial, finalise-incomplete". That is true only
+for a `Complete` scan. They now say that an `Aborted` one reads "partial,
+aborted" and that the caveat names the shortfall for both.
+
+**REQ-SCANSTATUS-023 — a panicked finalise claims what was stored and
+run.** REQ-SCANSTATUS-019 concluded a panicked finalise from
+`before_finalise`, the copy taken before the blocking phase. The closure
+set the module counters and `stop_reason`, and the entity count was set only
+after the batch persist. So the `Failed` row, its `scan_complete` event and
+the webhook reported 0 entities, 0 modules and no stop reason, even when the
+panic came after every entity was stored. The round-5 test hit exactly this
+case (`panicking_on_relation_reads` panics in the cross-scan route pass) and
+asserted none of it. The module counters and `stop_reason` are known before
+the phase, so they are now set on the scan before `before_finalise` is
+taken. `conclude_failed` is the one way a scan is failed, and it now sets
+`entity_count` from what the store holds for the scan
+(`stored_entity_count`, best-effort: a failed read keeps the scan's own
+count). That keeps the REQ-SCANSTATUS-009 rule, that a row claims what was
+stored, on every failure path, including a panic mid-run after checkpoints.
+
+**REQ-SCANSTATUS-024 — a derivation cut short by its budget is recorded.**
+The live finalise, `hse import` and the web upload all call
+`derive_all_within` under `DERIVE_BUDGET`. When the deadline stopped the
+pass chain, the only record was a `warn!`. The scan was stored `Complete`
+with `error: None` over a thinner graph and a correlation that depended on
+how busy the device was. `derive_all_within` now returns `DerivedRelations`,
+whose `cut_after` names the last pass that completed. All three finalise
+paths now go through the new `engine::derive_finalise_relations`, which
+records a cut with `FinaliseTally::derivation_cut`. The new
+`FinalisePass::RelationDerivation` is placed between an import's size skip
+and the correlator. It writes "relation derivation failed: stopped at its
+time budget after the <pass> pass", so the scan reads "partial,
+finalise-incomplete". The mid-scan gap-fill probe derivation takes
+`.relations` and records nothing, because its edges are probe inputs, not
+the stored graph. A cut result is now collapsed to one edge per id at its
+strongest confidence, the same as a full run. Before, a cut returned the
+raw list, so the weakest duplicate won the first-write-wins upsert.
+
+**REQ-GEOLABEL-038 — a Palestinian network is placed in Palestine.** The
+MCC fallback read the MCC alone, so a tower on Jawwal (425-05) or Ooredoo
+Palestine (425-06) with no OpenCelliD fix was tagged `country:IL` and
+labelled "Israel". A new table, `MNC_CENTROIDS`, lists the networks whose
+MCC is shared with another country. `mcc_to_centroid(mcc, mnc)` reads it
+first and compares MNCs as numbers, so `5` and `05` match. Palestine's
+stand-in point lies inside the West Bank. `mcc_centroid_point` takes the MNC
+and records it as evidence. `country_name_for_iso` names "PS" "Palestine".
+Every other MNC under 425 stays Israel.
+
+### Locks
+
+| # | mutation | result |
+|---|---|---|
+| M1 | `finalise_shortfall` ignores a correlation panic | killed by `core::scan::tests::an_import_whose_correlator_panicked_is_not_told_to_re_import` |
+| M2 | the `Aborted` arm ignores `error` (as at 2fcf2360) | killed by `core::scan::tests::an_aborted_scan_with_a_shortfall_names_it` |
+| M3 | `conclude_failed` does not count the stored entities | killed by `core::engine::tests::a_scan_whose_finalise_panics_is_failed_and_announced` |
+| M4 | `modules_run` is not set before the blocking phase | killed by `core::engine::tests::a_scan_whose_finalise_panics_is_failed_and_announced` |
+| M5 | `derive_relations_within` drops the cut | killed by `core::engine::tests::a_derivation_the_budget_cut_short_is_recorded` |
+| M6 | `derive_all_within` never reports a cut | killed by `core::relation::tests::derive_all_within_budget_stops_starting_new_passes_past_the_deadline` |
+| M7 | `mcc_to_centroid` ignores `MNC_CENTROIDS` | killed by `modules::cell_intel::tests::a_palestinian_network_under_mcc_425_is_placed_in_palestine` |
+
+**7 of 7 caught.**

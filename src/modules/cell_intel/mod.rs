@@ -170,7 +170,7 @@ impl Module for CellIntel {
 
             // Fallback: MCC -> country centroid (coarse but free, offline).
             // A COUNTRY signal, not a measurement — see `mcc_centroid_point`.
-            if let Some(e) = mcc_centroid_point(&key.mcc, &key.tower_id, &ctx.scan_id) {
+            if let Some(e) = mcc_centroid_point(&key.mcc, &key.mnc, &key.tower_id, &ctx.scan_id) {
                 result.push(e);
             }
         }

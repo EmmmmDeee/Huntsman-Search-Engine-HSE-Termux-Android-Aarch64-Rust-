@@ -599,7 +599,7 @@ fn derive_all_within_budget_stops_starting_new_passes_past_the_deadline() {
 
     // `None` is exactly `derive_all` — the wrapper adds no edges and drops none.
     assert_eq!(
-        derive_all_within(&ents, "s", None).len(),
+        derive_all_within(&ents, "s", None).relations.len(),
         derive_all(&ents, "s").len(),
         "unbudgeted derive_all_within is identical to derive_all"
     );
@@ -607,7 +607,7 @@ fn derive_all_within_budget_stops_starting_new_passes_past_the_deadline() {
     // A far-future deadline never trips: full union, same as `None`.
     let future = Some(Instant::now() + Duration::from_secs(3600));
     assert_eq!(
-        derive_all_within(&ents, "s", future).len(),
+        derive_all_within(&ents, "s", future).relations.len(),
         derive_all(&ents, "s").len(),
         "a deadline that can't be reached runs the whole chain"
     );
@@ -618,7 +618,14 @@ fn derive_all_within_budget_stops_starting_new_passes_past_the_deadline() {
     // do not. This is the SIGKILL-avoidance guarantee: a pathological graph
     // still finalises a coherent partial relation set instead of nothing.
     let now = Some(Instant::now());
-    let partial = derive_all_within(&ents, "s", now);
+    let cut = derive_all_within(&ents, "s", now);
+    // The cut is reported, naming the last pass that completed, so a
+    // finalise can record it (REQ-SCANSTATUS-024); an uncut chain reports
+    // none.
+    assert_eq!(cut.cut_after, Some("structural"));
+    assert_eq!(derive_all_within(&ents, "s", None).cut_after, None);
+    assert_eq!(derive_all_within(&ents, "s", future).cut_after, None);
+    let partial = cut.relations;
     let structural = derive_structural(&ents, "s");
     assert_eq!(
         partial.len(),
