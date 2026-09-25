@@ -1069,6 +1069,46 @@ fn setup_dev_enables_the_repo_hooks_only_where_that_is_safe() {
     assert_eq!(value, "", "hooks already in .git/hooks are not disabled");
     assert!(warning.contains("pre-commit"), "{warning}");
 
+    // A hook installed as a symlink is the developer's own too; `find -type f`
+    // did not match one, so it was silently disabled (review on PR #652).
+    let linked = with_hooks_dir();
+    std::os::unix::fs::symlink(
+        linked.home().join("shared-hooks/pre-push"),
+        linked.path().join(".git/hooks/pre-push"),
+    )
+    .unwrap();
+    let (value, warning) = configure(&linked);
+    assert_eq!(value, "", "a symlinked hook is not disabled");
+    assert!(warning.contains("pre-push"), "{warning}");
+
+    // A config git cannot write must not be reported as done (review on PR
+    // #652): the push gate would stay off while setup said it was on.
+    let locked = with_hooks_dir();
+    fs::write(locked.path().join(".git/config.lock"), "").unwrap();
+    let out = locked
+        .cmd("bash", locked.path())
+        .arg("-c")
+        .arg(format!(
+            "source '{}' && configure_git_hooks",
+            root().join("scripts/setup-dev.sh").display()
+        ))
+        .output()
+        .expect("bash");
+    assert!(!out.status.success(), "a failed write is a failure");
+    assert!(
+        text(&out.stderr).contains("pushes are NOT gated")
+            && !text(&out.stdout).contains("core.hooksPath = .githooks"),
+        "stdout: {}\nstderr: {}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    fs::remove_file(locked.path().join(".git/config.lock")).unwrap();
+    assert_eq!(
+        configure(&locked).0,
+        ".githooks",
+        "and it works once unlocked"
+    );
+
     let older = Repo::bare();
     assert_eq!(
         configure(&older).0,

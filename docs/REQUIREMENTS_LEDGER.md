@@ -27559,3 +27559,25 @@ the index given the same mtime, and ctime ignored (`core.trustctime=false`).
 On the old code it failed 8/8, naming exactly the flake's two trees. With the
 fix it passed 8/8. The full suite then ran 20 times with no failure, against
 2 in 12 before.
+
+#### REQ-HARNESS-004, corrected by review on PR #652
+
+Copilot found two defects in `configure_git_hooks`, and both are fixed:
+
+- **Symlinked hooks were missed.** The safety scan used `find -type f`, which
+  does not match symlinks. A hook installed as a link into a shared hooks
+  directory was therefore silently disabled, which is what the scan exists to
+  prevent. It now also matches `-type l`.
+- **The config write was not checked.** A locked or read-only `.git/config`
+  left `core.hooksPath` unset while setup printed that the gate was on. The
+  write is now checked: on failure setup warns "pushes are NOT gated", with
+  the command to run, and the function returns 1. `main` reports the failure
+  and continues with the rest of setup.
+
+`setup_dev_enables_the_repo_hooks_only_where_that_is_safe` gains both cases:
+- a dangling symlink in `.git/hooks`;
+- a `.git/config.lock` that makes git refuse the write, then success once the
+  lock is removed.
+
+Restoring `-type f` alone fails the test, and so does restoring the unchecked
+write.

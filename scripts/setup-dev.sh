@@ -152,12 +152,18 @@ configure_git_hooks() {
     return 0
   fi
   hooks_dir="$(git rev-parse --git-path hooks)"
-  own="$(find "$hooks_dir" -maxdepth 1 -type f ! -name '*.sample' 2>/dev/null | head -1)"
+  # Symlinks count: hooks are often installed as links into a shared hooks
+  # directory, and `-type f` alone does not match one.
+  own="$(find "$hooks_dir" -maxdepth 1 \( -type f -o -type l \) ! -name '*.sample' 2>/dev/null | head -1)"
   if [ -n "$own" ]; then
     warn "git hooks: $hooks_dir has your own hooks ($(basename "$own")); leaving them. To enable the push gate: git config core.hooksPath .githooks"
     return 0
   fi
-  git config core.hooksPath .githooks
+  # A locked or read-only config leaves pushes ungated: say so, never claim it.
+  if ! git config core.hooksPath .githooks; then
+    warn "git hooks: could not set core.hooksPath (is .git/config locked or read-only?); pushes are NOT gated. Run: git config core.hooksPath .githooks"
+    return 1
+  fi
   log "git hooks: core.hooksPath = .githooks (pushes need a gate receipt; see .githooks/pre-push)"
 }
 
@@ -186,7 +192,8 @@ main() {
   install_system_deps
   ensure_rust
   configure_env
-  configure_git_hooks
+  # A hooks-config failure has already been reported; the rest of setup still runs.
+  configure_git_hooks || true
   if [ "$DEPS_ONLY" = "1" ]; then
     log "--deps-only: skipping verification"
     exit 0
