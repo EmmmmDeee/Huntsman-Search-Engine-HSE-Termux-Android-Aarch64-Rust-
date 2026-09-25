@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# git pre-push hook: refuse to push a commit whose tree the gate has not passed.
+#
+# The Claude Code hook (.claude/hooks/pre-push-gate.sh) guards pushes a Claude
+# Code session issues, and has to find them by reading the command line. A
+# person pushing from a terminal (a laptop, Termux) went through no check at
+# all. git runs this hook for every `git push` from a clone whose
+# `core.hooksPath` is `.githooks` (scripts/setup-dev.sh sets that), and hands
+# it the exact commit each ref sends, so nothing here guesses (REQ-HARNESS-004).
+#
+# stdin, one line per ref:  <local ref> <local sha> <remote ref> <remote sha>
+# A deletion has an all-zero local sha and sends nothing, so it passes.
+#
+# Deliberate ways past it: `git push --no-verify` (git's own switch, visible
+# in the command), or HSE_PUSH_GATE=off in the pusher's environment. Both are
+# a person's decision. A checkout older than gate receipts (no
+# scripts/gate-receipt.sh) is not policed.
+set -uo pipefail
+
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || { cat >/dev/null; exit 0; }
+receipt="$top/scripts/gate-receipt.sh"
+
+# Read every line before any exit: git writes them to this pipe, and closing
+# it early fails git's write (REQ-HARNESS-002).
+lines=()
+while IFS= read -r line; do lines+=("$line"); done
+
+[ "${HSE_PUSH_GATE:-on}" = off ] && exit 0
+[ -x "$receipt" ] || exit 0
+
+missing=()
+for line in "${lines[@]}"; do
+    # shellcheck disable=SC2034  # remote_sha is part of git's line format
+    read -r local_ref local_sha remote_ref remote_sha <<<"$line"
+    [ -n "${local_sha:-}" ] || continue
+    [[ $local_sha =~ ^0+$ ]] && continue
+    if ! out="$(cd "$top" && "$receipt" check "$local_sha" 2>&1)"; then
+        missing+=("$local_ref -> $remote_ref: $out")
+    fi
+done
+
+[ "${#missing[@]}" -eq 0 ] && exit 0
+
+# shellcheck disable=SC2016  # backticks are literal
+{
+    printf 'HSE pre-push: the gate has not passed on what this push sends.\n'
+    for m in "${missing[@]}"; do printf '  %s\n' "$m"; done
+    printf '\nRun `scripts/gate.sh --quick` (or the full `scripts/gate.sh`) on exactly\n'
+    printf 'this commit, then push again. A new commit, amend or rebase is a new tree.\n'
+    printf 'To push anyway, deliberately: `git push --no-verify` (REQ-HARNESS-004).\n'
+} >&2
+exit 1

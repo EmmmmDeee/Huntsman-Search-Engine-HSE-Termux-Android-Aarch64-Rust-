@@ -57,7 +57,13 @@ worktree_tree() {
     scratch="$(mktemp -d)" || die "mktemp failed"
     real="$(git -C "$TOP" rev-parse --path-format=absolute --git-path index)"
     if [ -f "$real" ]; then
-        cp "$real" "$scratch/index" || { rm -rf "$scratch"; die "cannot copy the index"; }
+        # `-p` keeps the index's mtime. git re-hashes a file whose stat data
+        # looks unchanged only when that file is racily clean: not older
+        # than the index file itself. A fresh mtime on the copy hid a
+        # same-size edit made in the same tick as the last index write, so
+        # the receipt named a tree `git commit` would not record
+        # (REQ-HARNESS-005).
+        cp -p "$real" "$scratch/index" || { rm -rf "$scratch"; die "cannot copy the index"; }
     fi
     local tree
     if GIT_INDEX_FILE="$scratch/index" git -C "$TOP" add -A -- . 2>/dev/null \

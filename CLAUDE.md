@@ -41,8 +41,10 @@ Three of those mechanisms are in this repository and must keep working:
 
 - **A push must carry a gate receipt.** `.claude/hooks/pre-push-gate.sh`
   (`PreToolUse` on `Bash`) refuses a `git push` whose tree
-  `scripts/gate.sh` has not passed. Run `scripts/gate.sh --quick` on the exact
-  commit first; an amend or rebase is a new tree (REQ-HARNESS-001).
+  `scripts/gate.sh` has not passed, and so does git's own `.githooks/pre-push`
+  for every push from a clone `scripts/setup-dev.sh` configured. Run
+  `scripts/gate.sh --quick` on the exact commit first; an amend or rebase is a
+  new tree (REQ-HARNESS-001, REQ-HARNESS-004).
 - **The implementer is not the only judge.** Hand the committed range to the
   `hse-falsifier` subagent (worktree-isolated) before the PR.
 - **Cloud success proves cloud success.** Behaviour that depends on the

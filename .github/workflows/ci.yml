@@ -376,4 +376,4 @@ jobs:
       # runs on every git command a session issues, and a syntax error in it
       # would block every push (REQ-HARNESS-001).
       - name: ShellCheck
-        run: shellcheck --severity=warning install.sh scripts/reconcile.sh scripts/gate-receipt.sh .claude/hooks/pre-push-gate.sh .claude/hooks/session-start.sh
+        run: shellcheck --severity=warning install.sh scripts/reconcile.sh scripts/gate-receipt.sh scripts/setup-dev.sh .claude/hooks/pre-push-gate.sh .claude/hooks/session-start.sh .githooks/pre-push

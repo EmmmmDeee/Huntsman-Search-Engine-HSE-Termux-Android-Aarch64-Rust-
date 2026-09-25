@@ -132,6 +132,41 @@ ENVEOF
   chmod 0600 "$envf" 2>/dev/null || true
 }
 
+# Point git at the repository's own hooks (.githooks/), so every `git push`
+# from this clone is checked against a gate receipt, not only pushes issued by
+# a Claude Code session (REQ-HARNESS-004). `core.hooksPath` replaces
+# .git/hooks, so it is set only when it is unset and .git/hooks holds no hook
+# of the developer's own; otherwise this says what to do instead of silently
+# disabling their hooks.
+configure_git_hooks() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  [ -d .githooks ] || return 0
+  local current own hooks_dir
+  current="$(git config --get core.hooksPath || true)"
+  if [ "$current" = ".githooks" ]; then
+    log "git hooks: core.hooksPath already .githooks"
+    return 0
+  fi
+  if [ -n "$current" ]; then
+    warn "git hooks: core.hooksPath is '$current'; leaving it. To enable the push gate: git config core.hooksPath .githooks"
+    return 0
+  fi
+  hooks_dir="$(git rev-parse --git-path hooks)"
+  # Symlinks count: hooks are often installed as links into a shared hooks
+  # directory, and `-type f` alone does not match one.
+  own="$(find "$hooks_dir" -maxdepth 1 \( -type f -o -type l \) ! -name '*.sample' 2>/dev/null | head -1)"
+  if [ -n "$own" ]; then
+    warn "git hooks: $hooks_dir has your own hooks ($(basename "$own")); leaving them. To enable the push gate: git config core.hooksPath .githooks"
+    return 0
+  fi
+  # A locked or read-only config leaves pushes ungated: say so, never claim it.
+  if ! git config core.hooksPath .githooks; then
+    warn "git hooks: could not set core.hooksPath (is .git/config locked or read-only?); pushes are NOT gated. Run: git config core.hooksPath .githooks"
+    return 1
+  fi
+  log "git hooks: core.hooksPath = .githooks (pushes need a gate receipt; see .githooks/pre-push)"
+}
+
 verify() {
   if ! command -v cargo >/dev/null 2>&1; then
     warn "cargo unavailable — skipping verification"
@@ -157,6 +192,8 @@ main() {
   install_system_deps
   ensure_rust
   configure_env
+  # A hooks-config failure has already been reported; the rest of setup still runs.
+  configure_git_hooks || true
   if [ "$DEPS_ONLY" = "1" ]; then
     log "--deps-only: skipping verification"
     exit 0
@@ -164,4 +201,7 @@ main() {
   verify
 }
 
-main "$@"
+# Run only when executed, so a test can source this file and call one function.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
