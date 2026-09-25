@@ -27581,3 +27581,81 @@ Copilot found two defects in `configure_git_hooks`, and both are fixed:
 
 Restoring `-type f` alone fails the test, and so does restoring the unchecked
 write.
+
+## REQ-ACCEPT-001 — no single, commit-bound record of a device run existed
+
+**Requirement.** On-device acceptance of a commit is one command, and it
+produces one machine-readable record naming that exact commit, the device,
+and the result of each stage.
+
+**Gap.** The operating architecture (`docs/OPERATING_ARCHITECTURE.md` §5)
+makes a real Termux arm64 run the final authority for platform behaviour. CI
+cross-compiles for `aarch64-linux-android`, but it runs nothing there. The
+device-side tools were separate commands: `install.sh`, `cargo test`,
+`scripts/standard-test.sh`, `scripts/diagnose.sh`. None refused local state,
+bound its result to a commit, or produced a verdict a cloud session could
+read.
+
+**Fix.** `scripts/termux-accept.sh`. Its stages, in order:
+
+- **checkout**: refuses a checkout with any uncommitted change, before
+  building anything.
+- **platform**: requires Termux on aarch64. `--host` runs the same stages
+  elsewhere, and the verdict then says `HOST-ONLY`.
+- **build**: builds `--profile fast|release|dev`, and records the time and the
+  binary size.
+- **identity**: the built binary's `hse build-sha --json` must name HEAD and
+  be verifiable.
+- **tests**: runs `cargo test --locked --lib --bins --tests`, unless
+  `--skip-tests` is given.
+- **restart**: `hse config feature.auto_update` is set by one process and read
+  back by a new one, both ways, in a scratch `HOME`.
+- **install**: only with `--install`. The real installer installs HEAD, and
+  the `hse` on `PATH` must then prove it is HEAD.
+- **resources**: binary size, free disk, and the battery level if termux-api
+  is present.
+
+The run writes `~/.huntsman/acceptance/<sha>.json`, or the path given with
+`--out`, and prints it. The verdict is `ACCEPTED`, `PARTIAL` (tests skipped),
+`HOST-ONLY` or `REJECTED`. It exits 1 on a failed stage and 2 on a refusal.
+
+**Locks** (`tests/termux_accept.rs`, 9 tests). Stub `cargo`, `uname` and
+`hse` on `PATH` let every verdict be reached without a phone or a real build.
+The Termux-identifying environment (`uname -m`, `TERMUX_VERSION`, `PREFIX`) is
+set by each test, so the suite gives the same answers when it runs on a
+device.
+
+The tests cover:
+- dirty-tree refusal, with cargo never reached;
+- non-Termux refusal in three shapes, and the `--host` run marked `HOST-ONLY`;
+- an `ACCEPTED` device run that leaves the operator's own settings untouched;
+- `PARTIAL` when tests are skipped;
+- identity failures for a wrong commit and for an unverifiable build;
+- a setting that does not persist;
+- a failed build and failed tests;
+- each profile's output directory;
+- `--out`.
+
+**Mutations.** 13 breakages of the runner, each applied alone, all caught:
+- the dirty check;
+- the platform check;
+- the host verdict;
+- the sha comparison;
+- the verifiable flag;
+- one direction of the restart check;
+- the partial verdict;
+- the build result;
+- the exit code;
+- storing the record;
+- the dev profile directory;
+- the test result;
+- the scratch `HOME`.
+
+Two survived the first draft. No stub reported `"verifiable":false`. And a
+restart check run in the real `HOME`, which also deleted it, left nothing
+for the tests to see. The device test now pre-seeds the operator's settings
+and requires them to be unchanged, byte for byte.
+
+**Not proven here.** This change adds the runner. It has not yet been run on
+a device. Its first real record is the evidence the architecture asks for,
+and it comes only from a phone.

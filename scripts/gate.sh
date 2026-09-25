@@ -299,7 +299,7 @@ if command -v shellcheck >/dev/null 2>&1; then
     # FAIL for something CI passes. A gate that cries wolf is worse than one
     # that skips: it trains you to ignore it.
     run "shellcheck" shellcheck --severity=warning install.sh scripts/gate.sh scripts/reconcile.sh \
-        scripts/gate-receipt.sh scripts/setup-dev.sh .claude/hooks/pre-push-gate.sh .claude/hooks/session-start.sh .githooks/pre-push
+        scripts/gate-receipt.sh scripts/setup-dev.sh .claude/hooks/pre-push-gate.sh .claude/hooks/session-start.sh .githooks/pre-push scripts/termux-accept.sh
 else
     skip "shellcheck" "not installed"
 fi

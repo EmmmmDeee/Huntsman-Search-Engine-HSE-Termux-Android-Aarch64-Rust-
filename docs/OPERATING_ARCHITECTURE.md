@@ -107,7 +107,36 @@ confidence.
 The cloud host is x86_64 glibc Linux with a different kernel, filesystem,
 network and toolchain. The CI job `ci.yml::aarch64-android` cross-compiles
 the library, `hse` and every test for `aarch64-linux-android`, but it runs
-none of them. What a person on a real device can run today:
+none of them.
+
+**One command for the device stage: `scripts/termux-accept.sh`** (REQ-ACCEPT-001).
+On the device, in a clean checkout of the commit under test, it runs these
+stages in order:
+
+1. **checkout**: refuses uncommitted changes.
+2. **platform**: requires Termux on aarch64.
+3. **build**: `--profile fast` by default.
+4. **identity**: the binary's own `hse build-sha --json` must be HEAD and
+   verifiable.
+5. **tests**: the suite on bionic/aarch64.
+6. **restart**: a setting written by one `hse` process is read back by a new
+   one, in a scratch `HOME`.
+7. **install**: runs the real installer on HEAD, only with `--install`.
+8. **resources**: binary size, free disk, and battery level when termux-api
+   is present.
+
+It writes one JSON record, bound to the commit, to
+`~/.huntsman/acceptance/<sha>.json` and prints it. Its verdict is one of:
+- `ACCEPTED`: a device, every stage run and passed.
+- `PARTIAL`: tests were skipped.
+- `HOST-ONLY`: a `--host` run, which is never device evidence.
+- `REJECTED`: a stage failed.
+
+Paste the record into the PR, or into the cloud session, as the device
+evidence for that exact commit. `tests/termux_accept.rs` reaches every
+verdict against stubbed tools.
+
+The same layers, one command at a time:
 
 | Layer | Command | Proves |
 |---|---|---|
