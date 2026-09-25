@@ -311,6 +311,7 @@ fn network_kind_labels_are_internal_evidence_labels() {
 #[test]
 fn extract_cell_intel_emits_dominant_carrier_as_organisation() {
     let resp = Resp {
+        message: None,
         success: Some(true),
         result_count: Some(3),
         total_results: Some(3),
@@ -370,6 +371,7 @@ fn extract_cell_intel_emits_dominant_carrier_as_organisation() {
 #[test]
 fn extract_cell_intel_passes_non_generic_carrier_through() {
     let resp = Resp {
+        message: None,
         success: Some(true),
         result_count: Some(2),
         total_results: Some(2),
@@ -411,6 +413,7 @@ fn extract_cell_intel_passes_non_generic_carrier_through() {
 #[test]
 fn extract_cell_intel_emits_coordinates_for_towers_with_position() {
     let resp = Resp {
+        message: None,
         success: Some(true),
         result_count: Some(3),
         total_results: Some(3),
@@ -488,6 +491,7 @@ fn extract_cell_intel_emits_coordinates_for_towers_with_position() {
 #[test]
 fn extract_cell_intel_emits_address_from_city_region_country_consensus() {
     let resp = Resp {
+        message: None,
         success: Some(true),
         result_count: Some(3),
         total_results: Some(3),
@@ -571,6 +575,7 @@ fn extract_bluetooth_intel_emits_at_most_three_mac_entities() {
         });
     }
     let resp = Resp {
+        message: None,
         success: Some(true),
         result_count: Some(5),
         total_results: Some(5),
@@ -667,6 +672,7 @@ fn emit_ssid_entities_emits_address_from_city_region_country_consensus() {
 #[test]
 fn extract_bluetooth_intel_skips_short_macs() {
     let resp = Resp {
+        message: None,
         success: Some(true),
         result_count: Some(1),
         total_results: Some(1),
@@ -691,6 +697,7 @@ fn extract_bluetooth_intel_skips_short_macs() {
 #[test]
 fn extract_cell_intel_skips_failed_responses() {
     let resp = Resp {
+        message: None,
         success: Some(false),
         result_count: None,
         total_results: None,
@@ -749,6 +756,7 @@ fn budget_snapshot_aggregates_all_four_sub_budgets() {
 
 #[test]
 fn account_status_state_transitions_and_unverified_detection() {
+    let _account = ACCOUNT_LOCK.blocking_lock();
     struct CacheGuard;
     impl Drop for CacheGuard {
         fn drop(&mut self) {
@@ -799,6 +807,7 @@ fn account_status_state_transitions_and_unverified_detection() {
 /// `fetch.rs::classify_and_decode`, never a dedicated poll.
 #[test]
 fn mark_verified_clears_a_stale_unverified_latch() {
+    let _account = ACCOUNT_LOCK.blocking_lock();
     struct CacheGuard;
     impl Drop for CacheGuard {
         fn drop(&mut self) {
@@ -1292,6 +1301,231 @@ fn budget_snapshot_reports_every_declared_budget() {
 static BUDGET_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
+/// Serialises every test that reads or moves the process-global WiGLE account
+/// latch. Any 412 marks it unverified and any 200 marks it verified, so a test
+/// asserting the default state would otherwise pass or fail on interleaving.
+static ACCOUNT_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// A one-shot local server answering the first request with `status` and a
+/// JSON `body`, over plain HTTP, so a real `reqwest::Response` can be fed to
+/// [`classify_and_decode`].
+async fn serve_once(status: &'static str, body: &'static str) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let head = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(body.as_bytes()).await;
+        let _ = sock.flush().await;
+    });
+    addr
+}
+
+async fn classify_served(
+    status: &'static str,
+    body: &'static str,
+) -> crate::core::error::Result<Resp> {
+    let addr = serve_once(status, body).await;
+    let resp = get_with_retry(
+        &reqwest::Client::new(),
+        "user",
+        "token",
+        &format!("http://{addr}/"),
+    )
+    .await
+    .expect("the local server answers");
+    classify_and_decode(resp).await
+}
+
+/// REQ-WIGLE-002. A 412 (unverified account) came back as an empty
+/// `success:false` body that every caller turned into `Ok(empty)`, recorded as
+/// `CleanNegative`. It is the typed `Unavailable` skip, and still latches the
+/// account unverified for `hse doctor`.
+#[tokio::test]
+async fn a_412_is_an_unavailable_skip_that_latches_the_account_unverified() {
+    let _account = ACCOUNT_LOCK.lock().await;
+    mark_verified(1);
+    let Err(err) = classify_served(
+        "412 Precondition Failed",
+        r#"{"success":false,"message":"Email is not verified for account."}"#,
+    )
+    .await
+    else {
+        panic!("a 412 is not an answer");
+    };
+    match err {
+        crate::core::error::Error::Skipped { class, reason } => {
+            assert_eq!(class, crate::core::event::SkipClass::Unavailable);
+            assert!(
+                reason.contains("412") && reason.contains("NOT \"nothing found\""),
+                "{reason}"
+            );
+        }
+        other => panic!("expected an Unavailable skip, got {other:?}"),
+    }
+    assert!(
+        is_unverified(),
+        "the 412 must still latch the account unverified"
+    );
+    mark_verified(2);
+}
+
+/// REQ-WIGLE-002. A 200 whose body WiGLE marked `success:false` is WiGLE
+/// declining the search, in its own words, not an empty answer. A body it
+/// marked `success:true` is returned as the answer it is.
+#[tokio::test]
+async fn a_success_false_body_is_a_refusal_and_a_success_true_body_is_an_answer() {
+    let _account = ACCOUNT_LOCK.lock().await;
+    let Err(err) = classify_served(
+        "200 OK",
+        r#"{"success":false,"message":"too many queries today."}"#,
+    )
+    .await
+    else {
+        panic!("success:false is not an answer");
+    };
+    match err {
+        crate::core::error::Error::Skipped { class, reason } => {
+            assert_eq!(class, crate::core::event::SkipClass::Unavailable);
+            assert!(
+                reason.contains("too many queries today.")
+                    && reason.contains("NOT \"nothing found\""),
+                "the refusal must carry WiGLE's own reason: {reason}"
+            );
+        }
+        other => panic!("expected an Unavailable skip, got {other:?}"),
+    }
+
+    let ok = classify_served(
+        "200 OK",
+        r#"{"success":true,"totalResults":0,"results":[]}"#,
+    )
+    .await
+    .expect("a successful empty search is an answer");
+    assert_eq!(ok.success, Some(true));
+    assert!(ok.results.is_empty());
+}
+
+#[test]
+fn a_refusal_without_a_message_still_says_so() {
+    let body = Resp {
+        message: None,
+        success: Some(false),
+        result_count: None,
+        total_results: None,
+        results: Vec::new(),
+    };
+    match refused(&body) {
+        crate::core::error::Error::Skipped { reason, .. } => {
+            assert!(reason.contains("no reason given"), "{reason}");
+        }
+        other => panic!("expected a skip, got {other:?}"),
+    }
+}
+
+/// REQ-WIGLE-002. A spent location budget is the typed `Unavailable` skip,
+/// naming the budget, and no request leaves the host.
+#[tokio::test]
+async fn an_exhausted_geo_budget_is_an_unavailable_skip() {
+    let _g = BUDGET_LOCK.lock().await;
+    GEO_BUDGET.reset_scan();
+    while GEO_BUDGET.try_increment() {}
+    let reason = expect_skip(
+        Wigle
+            .process(
+                &Target::new(TargetKind::Coordinates, "-33.86,151.2"),
+                &offline_ctx(),
+            )
+            .await,
+        crate::core::event::SkipClass::Unavailable,
+    );
+    assert!(
+        reason.contains("wigle_geo"),
+        "names the spent budget: {reason}"
+    );
+    GEO_BUDGET.reset_scan();
+}
+
+fn ssid_body(total: u64) -> Resp {
+    Resp {
+        message: None,
+        success: Some(true),
+        result_count: None,
+        total_results: Some(total),
+        results: Vec::new(),
+    }
+}
+
+/// REQ-WIGLE-002. An SSID WiGLE holds more than `SSID_UNIQUE_MAX` times was
+/// reported as an empty answer: "no such network", the opposite of what WiGLE
+/// said. It is declared truncated against WiGLE's own count. No observations
+/// stays the one real negative, with no caveat.
+#[test]
+fn a_non_unique_ssid_is_declared_not_denied() {
+    let none = ssid_result("Kowalczyk-Family-5G", &ssid_body(0), "s");
+    assert!(
+        none.entities.is_empty() && none.truncation.is_none(),
+        "0 is a real negative"
+    );
+
+    let many = ssid_result("Kowalczyk-Family-5G", &ssid_body(SSID_UNIQUE_MAX + 1), "s");
+    assert!(many.entities.is_empty(), "a shared name places nobody");
+    let note = many.truncation.expect("a shared name is not an absence");
+    assert!(
+        note.contains(&(SSID_UNIQUE_MAX + 1).to_string()) && note.contains("uniqueness rule"),
+        "the notice carries WiGLE's count and the rule that withheld it: {note}"
+    );
+
+    let edge = ssid_result("Kowalczyk-Family-5G", &ssid_body(SSID_UNIQUE_MAX), "s");
+    assert!(
+        edge.truncation.is_none(),
+        "at the limit the name still counts as unique"
+    );
+}
+
+/// REQ-WIGLE-002. What a BSSID lookup reports for each way it can end.
+#[test]
+fn a_bssid_lookup_reports_how_much_of_it_ran() {
+    let both = bssid_outcome(&[], None).expect("both corpora asked, neither held it");
+    assert!(
+        both.entities.is_empty() && both.truncation.is_none(),
+        "the real negative"
+    );
+
+    let half = bssid_outcome(&[NetworkKind::Bluetooth], None).expect("an answer, partial");
+    let note = half
+        .truncation
+        .expect("half a lookup cannot settle absence");
+    assert!(
+        note.contains("bluetooth"),
+        "names the corpus left unasked: {note}"
+    );
+
+    expect_skip(
+        bssid_outcome(&[NetworkKind::Wifi, NetworkKind::Bluetooth], None),
+        crate::core::event::SkipClass::Unavailable,
+    );
+
+    let err = bssid_outcome(
+        &[NetworkKind::Bluetooth],
+        Some(crate::core::error::Error::RateLimited("wigle: 429".into())),
+    )
+    .expect_err("a failed corpus cannot vouch for absence");
+    assert!(matches!(err, crate::core::error::Error::RateLimited(_)));
+}
+
 /// Take [`BUDGET_LOCK`] from a synchronous test. Safe here because `#[test]`
 /// functions run outside any Tokio runtime; async tests `.await` the lock
 /// directly instead.
@@ -1307,6 +1541,31 @@ fn budget_guard() -> tokio::sync::MutexGuard<'static, ()> {
 /// while an attempted call here fails instantly against a refused local
 /// connection. So `Ok(empty)` means "never dialled" and `Err` means "dialled",
 /// which is exactly the distinction under test.
+/// Assert `r` is the typed skip of `class` (never `Ok(empty)`, which coverage
+/// records as a clean negative), and that its reason says so: a skip reason
+/// must never read as "found nothing" (REQ-WIGLE-002). Returns the reason.
+#[track_caller]
+fn expect_skip(
+    r: crate::core::error::Result<ModuleResult>,
+    class: crate::core::event::SkipClass,
+) -> String {
+    match r {
+        Err(crate::core::error::Error::Skipped { class: got, reason }) => {
+            assert_eq!(got, class, "wrong skip class: {reason}");
+            assert!(
+                reason.contains("NOT \"nothing found\""),
+                "a skip reason must disclaim absence: {reason}"
+            );
+            reason
+        }
+        Err(e) => panic!("expected a {class:?} skip, got the error {e:?}"),
+        Ok(out) => panic!(
+            "expected a {class:?} skip, got Ok with {} entities — Ok(empty) is recorded as CleanNegative",
+            out.entities.len()
+        ),
+    }
+}
+
 fn offline_ctx() -> crate::core::module::ModuleContext {
     let http = reqwest::Client::builder()
         .resolve(
@@ -1397,12 +1656,16 @@ async fn a_skipped_generic_ssid_costs_no_budget() {
     SSID_BUDGET.reset_scan();
     let before = SSID_BUDGET.scan_remaining();
 
-    let out = Wigle
-        .ssid_search("user", "token", "NETGEAR", &offline_ctx())
-        .await
-        .expect("a generic SSID is skipped, not an error");
-
-    assert!(out.entities.is_empty(), "generic SSID must not geolocate");
+    let reason = expect_skip(
+        Wigle
+            .ssid_search("user", "token", "NETGEAR", &offline_ctx())
+            .await,
+        crate::core::event::SkipClass::Scoped,
+    );
+    assert!(
+        reason.contains("NETGEAR"),
+        "the reason names the query: {reason}"
+    );
     assert_eq!(
         SSID_BUDGET.scan_remaining(),
         before,
@@ -1417,12 +1680,10 @@ async fn an_empty_ssid_costs_no_budget() {
     SSID_BUDGET.reset_scan();
     let before = SSID_BUDGET.scan_remaining();
 
-    let out = Wigle
-        .ssid_search("user", "token", "", &offline_ctx())
-        .await
-        .expect("an empty SSID is skipped, not an error");
-
-    assert!(out.entities.is_empty());
+    expect_skip(
+        Wigle.ssid_search("user", "token", "", &offline_ctx()).await,
+        crate::core::event::SkipClass::NotApplicable,
+    );
     assert_eq!(SSID_BUDGET.scan_remaining(), before);
 }
 
@@ -1439,11 +1700,18 @@ async fn an_exhausted_ssid_budget_issues_no_request() {
     while SSID_BUDGET.try_increment() {}
     assert!(!SSID_BUDGET.remaining(), "precondition: allowance drained");
 
-    let out = Wigle
-        .ssid_search("user", "token", "Kowalczyk-Family-5G", &offline_ctx())
-        .await
-        .expect("exhaustion is a skip, not a failed request");
-    assert!(out.entities.is_empty());
+    // The loopback resolve would turn a request into an `Http` error, so an
+    // `Unavailable` skip also proves no request was issued.
+    let reason = expect_skip(
+        Wigle
+            .ssid_search("user", "token", "Kowalczyk-Family-5G", &offline_ctx())
+            .await,
+        crate::core::event::SkipClass::Unavailable,
+    );
+    assert!(
+        reason.contains("wigle_ssid"),
+        "names the spent budget: {reason}"
+    );
 
     SSID_BUDGET.reset_scan();
 }
@@ -1460,11 +1728,16 @@ async fn an_exhausted_bssid_budget_probes_no_observation_kind() {
     while BSSID_BUDGET.try_increment() {}
     assert!(!BSSID_BUDGET.remaining(), "precondition: allowance drained");
 
-    let out = Wigle
-        .bssid_lookup("user", "token", "AA:BB:CC:DD:EE:FF", &offline_ctx())
-        .await
-        .expect("exhaustion is a skip, not a failed request");
-    assert!(out.entities.is_empty());
+    let reason = expect_skip(
+        Wigle
+            .bssid_lookup("user", "token", "AA:BB:CC:DD:EE:FF", &offline_ctx())
+            .await,
+        crate::core::event::SkipClass::Unavailable,
+    );
+    assert!(
+        reason.contains("wigle_bssid"),
+        "names the spent budget: {reason}"
+    );
 
     BSSID_BUDGET.reset_scan();
 }
@@ -1505,12 +1778,12 @@ async fn a_generic_ssid_dispatch_spends_nothing() {
     SSID_BUDGET.reset_scan();
     let before = SSID_BUDGET.scan_remaining();
 
-    let out = Wigle
-        .process(&Target::new(TargetKind::Ssid, "NETGEAR"), &offline_ctx())
-        .await
-        .expect("a generic SSID is skipped, not an error");
-
-    assert!(out.entities.is_empty());
+    expect_skip(
+        Wigle
+            .process(&Target::new(TargetKind::Ssid, "NETGEAR"), &offline_ctx())
+            .await,
+        crate::core::event::SkipClass::Scoped,
+    );
     assert_eq!(
         SSID_BUDGET.scan_remaining(),
         before,
@@ -1607,6 +1880,7 @@ fn an_ap_in_the_null_island_jitter_band_yields_no_phantom_position() {
 #[test]
 fn a_jitter_band_tower_is_not_a_top_three_position() {
     let resp = Resp {
+        message: None,
         success: Some(true),
         result_count: Some(2),
         total_results: Some(2),

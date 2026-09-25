@@ -6,21 +6,43 @@ use super::*;
 /// endpoints answer with HTTP 412 and a `success:false` body rather than a
 /// 200 with a thinner result set — live-confirmed 2026-07-11:
 /// `{"success":false,"message":"Email is not verified for account. Send
-/// verification email on account page: https://wigle.net/account"}`. This is
-/// a known, already-documented throttle (surfaced separately by `hse doctor`
-/// / `/api/v1/stats`), not a transient failure, so callers should see a
-/// clean zero-yield result — same as any other "WiGLE said no" — instead of
-/// a `ModuleError`. Also records the fact in the account cache: ground truth
-/// learned for free from traffic already being made, without a dedicated
-/// `profile/user` poll.
-fn account_unverified_response() -> Resp {
+/// verification email on account page: https://wigle.net/account"}`. It is a
+/// known account state (surfaced separately by `hse doctor` / `/api/v1/stats`),
+/// not a transient fault, so it must not be a `ModuleError` that trips the
+/// circuit breaker. It is not an answer about the target either: it used to
+/// come back as an empty `success:false` body, which every caller turned into
+/// `Ok(empty)`, which coverage records as `CleanNegative` — "WiGLE holds
+/// nothing here" for a search WiGLE refused to run (REQ-WIGLE-002). It is the
+/// typed `Unavailable` skip. Also records the fact in the account cache:
+/// ground truth learned for free from traffic already being made, without a
+/// dedicated `profile/user` poll.
+fn account_unverified() -> crate::core::error::Error {
     super::account::mark_unverified(crate::core::entity::unix_now());
-    Resp {
-        success: Some(false),
-        result_count: None,
-        total_results: None,
-        results: Vec::new(),
-    }
+    crate::core::error::Error::skipped(
+        crate::core::event::SkipClass::Unavailable,
+        "WiGLE refused this account (HTTP 412) because its email address \
+         is not verified, and serves no search results until it is. Verify it at \
+         https://wigle.net/account. This is NOT \"nothing found\": WiGLE returned no data",
+    )
+}
+
+/// A decoded search body WiGLE marked `success:false`: the request reached
+/// WiGLE and WiGLE declined to serve it, in its own words (`message`). Not a
+/// negative — the search did not run — and not a transport fault the breaker
+/// should count, so it is the same typed `Unavailable` skip (REQ-WIGLE-002).
+pub(super) fn refused(body: &Resp) -> crate::core::error::Error {
+    let said = body
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or("no reason given");
+    crate::core::error::Error::skipped(
+        crate::core::event::SkipClass::Unavailable,
+        format!(
+            "WiGLE answered success:false ({said}). This is NOT \"nothing found\": the search did not run"
+        ),
+    )
 }
 
 /// Bounded cap for a single post-429 retry sleep. WiGLE's own `Retry-After`
@@ -85,23 +107,31 @@ pub(super) async fn get_with_retry(
     }
 }
 
-/// Classify a completed WiGLE response: `412` (unverified account) maps to a
-/// clean empty result, any other non-success is a hard error, and a success
-/// is decoded + scanned for leaked keys. A success ALSO records the account
+/// Classify a completed WiGLE response: `412` (unverified account) is the
+/// typed `Unavailable` skip, any other non-success is a hard error, and a
+/// success is decoded + scanned for leaked keys — and a decoded body WiGLE
+/// itself marked `success:false` is the same skip, so every caller holds a body
+/// that really is an answer (REQ-WIGLE-002). A success ALSO records the account
 /// as verified (the symmetric counterpart of the 412 branch below) — see
 /// [`super::account::mark_verified`] — so a stale unverified latch from
 /// earlier in the process self-corrects the moment traffic proves otherwise.
 /// Shared tail for every WiGLE search endpoint once [`get_with_retry`] has
 /// resolved the 429 question.
-async fn classify_and_decode(resp: reqwest::Response) -> crate::core::error::Result<Resp> {
+pub(super) async fn classify_and_decode(
+    resp: reqwest::Response,
+) -> crate::core::error::Result<Resp> {
     if resp.status().as_u16() == 412 {
-        return Ok(account_unverified_response());
+        return Err(account_unverified());
     }
     if !resp.status().is_success() {
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
     super::account::mark_verified(crate::core::entity::unix_now());
-    crate::util::http::json_scanned(resp, SRC).await
+    let body: Resp = crate::util::http::json_scanned(resp, SRC).await?;
+    if body.success != Some(true) {
+        return Err(refused(&body));
+    }
+    Ok(body)
 }
 
 /// Default WiFi-only fetch retained for back-compat — delegates to

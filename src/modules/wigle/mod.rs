@@ -32,6 +32,7 @@ use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
+    event::SkipClass,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -39,7 +40,7 @@ use crate::util::budget::{BudgetSnapshot, QuotaBudget};
 
 use emit::{emit_bssid_entities, emit_ssid_entities, extract_bluetooth_intel, extract_cell_intel};
 #[cfg(test)]
-use fetch::get_with_retry;
+use fetch::{classify_and_decode, get_with_retry, refused};
 use fetch::{fetch_detail, fetch_wigle, fetch_wigle_ssid, fetch_wigle_typed};
 
 /// The SSID classifier now lives in [`crate::util::wifi`] so the engine's
@@ -63,6 +64,9 @@ struct Resp {
     total_results: Option<u64>,
     #[serde(default)]
     results: Vec<Network>,
+    /// WiGLE's own reason when `success` is false (see `fetch::refused`).
+    #[serde(default)]
+    message: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -169,6 +173,25 @@ pub(super) static SSID_BUDGET: QuotaBudget = QuotaBudget::new(
     "HUNTSMAN_WIGLE_SSID_SCAN_CAP",
     "HUNTSMAN_WIGLE_SSID_SESSION_CAP",
 );
+
+/// The typed skip for a WiGLE sub-budget that ran out before a request was
+/// issued. Every such guard returned `Ok(empty)`, which dispatch records as
+/// `ModuleDone { found: 0 }` and coverage aggregates to `CleanNegative` — "WiGLE
+/// holds nothing here" for a search that was never sent. A spent quota is
+/// `SkipClass::Unavailable`: a coverage gap the operator can close by raising
+/// the cap (REQ-WIGLE-002).
+fn budget_spent(budget: &QuotaBudget, what: &str) -> Error {
+    Error::skipped(
+        SkipClass::Unavailable,
+        format!(
+            "not queried: the WiGLE {what} allowance (`{}`, {} per scan, {} per session) is \
+             spent. This is NOT \"nothing found\": WiGLE was never asked",
+            budget.label(),
+            budget.scan_cap(),
+            budget.session_cap(),
+        ),
+    )
+}
 
 /// Reset all WiGLE per-scan budgets. Called from `engine.rs` at
 /// scan start so each scan gets a fresh allowance for every
@@ -326,7 +349,7 @@ impl Module for Wigle {
         }
 
         if !GEO_BUDGET.try_increment() {
-            return Ok(ModuleResult::new());
+            return Err(budget_spent(&GEO_BUDGET, "location search"));
         }
 
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
@@ -336,22 +359,21 @@ impl Module for Wigle {
         // once for a path that issues two calls is what made a documented
         // "3 geo searches per scan" cost up to six.
         let tight = fetch_wigle(&ctx.http, user, token, lat, lon, 0.002).await?;
-        let empty = tight.success != Some(true)
-            || tight.total_results.or(tight.result_count).unwrap_or(0) == 0;
+        // A body WiGLE refused never gets here: `classify_and_decode` returns
+        // it as a typed skip, so "empty" means WiGLE answered with no rows.
+        let empty = tight.total_results.or(tight.result_count).unwrap_or(0) == 0;
         let body = if empty && GEO_BUDGET.try_increment() {
             fetch_wigle(&ctx.http, user, token, lat, lon, 0.01).await?
         } else {
             tight
         };
 
-        if body.success != Some(true) {
-            return Ok(ModuleResult::new());
-        }
         let total = body
             .total_results
             .or(body.result_count)
             .unwrap_or(body.results.len() as u64);
         if total == 0 {
+            // WiGLE answered and holds no network here: the one real negative.
             return Ok(ModuleResult::new());
         }
 
@@ -872,9 +894,11 @@ impl Wigle {
         // lookup — the former `Cell` probe here sent an undocumented
         // `type=cell` to `network/detail` (see `fetch_detail`).
         let mut last_error = None;
+        let mut unasked = Vec::new();
         for kind in [NetworkKind::Wifi, NetworkKind::Bluetooth] {
-            if !BSSID_BUDGET.try_increment() {
-                break;
+            if !unasked.is_empty() || !BSSID_BUDGET.try_increment() {
+                unasked.push(kind);
+                continue;
             }
             match fetch_detail(&ctx.http, user, token, bssid, kind).await {
                 Ok(Some(body)) if body.success == Some(true) && !body.results.is_empty() => {
@@ -889,10 +913,7 @@ impl Wigle {
                 Err(e) => last_error = Some(e),
             }
         }
-        if let Some(e) = last_error {
-            return Err(e);
-        }
-        Ok(ModuleResult::new())
+        bssid_outcome(&unasked, last_error)
     }
 
     /// WiGLE SSID search. Only a *unique* SSID geolocates: a generic/default name
@@ -907,30 +928,89 @@ impl Wigle {
         ssid: &str,
         ctx: &ModuleContext,
     ) -> Result<ModuleResult> {
-        if ssid.is_empty() || is_generic_ssid(ssid) {
-            return Ok(ModuleResult::new());
+        if ssid.is_empty() {
+            return Err(Error::skipped(
+                SkipClass::NotApplicable,
+                "not queried: an empty SSID names no network. This is NOT \"nothing found\": WiGLE was never asked",
+            ));
+        }
+        if is_generic_ssid(ssid) {
+            return Err(Error::query_too_weak(
+                SkipClass::Scoped,
+                ssid,
+                "a carrier or vendor default that countless unrelated routers broadcast, \
+                 so no location it returns would place the subject",
+            ));
         }
         // Charged here, past the skip filters: a scan whose SSIDs are all
         // carrier defaults issues no request and must keep its full allowance
         // for the one distinctive name that appears later in the pivot chain.
         if !SSID_BUDGET.try_increment() {
-            return Ok(ModuleResult::new());
+            return Err(budget_spent(&SSID_BUDGET, "SSID search"));
         }
         let body = fetch_wigle_ssid(&ctx.http, user, token, ssid).await?;
-        if body.success != Some(true) {
-            return Ok(ModuleResult::new());
-        }
-        let total = body
-            .total_results
-            .or(body.result_count)
-            .unwrap_or(body.results.len() as u64);
-        // 0 → not in WiGLE; a large count → the name isn't unique, so no single
-        // location places anyone. Only a small match set geolocates a network.
-        if total == 0 || total > SSID_UNIQUE_MAX {
-            return Ok(ModuleResult::new());
-        }
-        Ok(emit_ssid_entities(ssid, &body.results, &ctx.scan_id))
+        Ok(ssid_result(ssid, &body, &ctx.scan_id))
     }
+}
+
+/// What a finished BSSID lookup reports, given the corpora the budget left
+/// unasked and the last request error. **Pure.**
+///
+/// An error wins: a corpus that failed cannot vouch for absence. Nothing asked
+/// at all is the typed `Unavailable` skip. One corpus asked and the other not
+/// is an answer that cannot settle absence, so it is truncated. Both of the
+/// last two used to be `Ok(empty)`, recorded as `CleanNegative` for a lookup
+/// that never ran or ran halfway (REQ-WIGLE-002). Both asked and neither held
+/// the address is the one real negative.
+fn bssid_outcome(unasked: &[NetworkKind], last_error: Option<Error>) -> Result<ModuleResult> {
+    if let Some(e) = last_error {
+        return Err(e);
+    }
+    if unasked.len() >= 2 {
+        return Err(budget_spent(&BSSID_BUDGET, "BSSID lookup"));
+    }
+    let mut result = ModuleResult::new();
+    if let Some(kind) = unasked.first() {
+        result.mark_truncated(
+            0,
+            None,
+            &format!(
+                "the WiGLE BSSID budget, before the {} corpus was asked",
+                kind.as_str()
+            ),
+        );
+    }
+    Ok(result)
+}
+
+/// What an SSID search that WiGLE answered reports. **Pure.**
+///
+/// No observations is the real negative. More than [`SSID_UNIQUE_MAX`] means
+/// WiGLE holds the name many times over, so no single location places anyone.
+/// That used to be an empty answer, which coverage recorded as "WiGLE has no
+/// such network", the opposite of what WiGLE said. It is declared instead: N
+/// observations exist, none were emitted, and why (REQ-WIGLE-002).
+fn ssid_result(ssid: &str, body: &Resp, scan_id: &str) -> ModuleResult {
+    let total = body
+        .total_results
+        .or(body.result_count)
+        .unwrap_or(body.results.len() as u64);
+    if total == 0 {
+        return ModuleResult::new();
+    }
+    if total > SSID_UNIQUE_MAX {
+        let mut result = ModuleResult::new();
+        result.mark_truncated(
+            0,
+            usize::try_from(total).ok(),
+            &format!(
+                "the uniqueness rule (more than {SSID_UNIQUE_MAX} observations: the name \
+                 is shared by unrelated networks, so none places the subject)"
+            ),
+        );
+        return result;
+    }
+    emit_ssid_entities(ssid, &body.results, scan_id)
 }
 
 /// Above this global observation count an SSID is treated as non-unique — its
