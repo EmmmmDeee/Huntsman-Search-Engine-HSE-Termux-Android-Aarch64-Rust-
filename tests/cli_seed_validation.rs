@@ -8,6 +8,7 @@
 //!   - an image `hse ingest` cannot read fails with the reason, and its file
 //!     path is never mined for findings.
 //!   - the hint printed after a scan is stored is a command that reads it back.
+//!   - automatic updates never touch the source tree a build runs from.
 
 mod common;
 
@@ -392,6 +393,143 @@ fn a_settings_file_that_does_not_parse_stops_hse_and_is_kept() {
         "the self-update check did not run: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REQ-UPDATE-002. `hse` run from a build (`<tree>/target/debug/hse`) found
+/// `<tree>` by walking up from its own path, and when that tree was behind its
+/// origin, updated it in the background. The installer, started in a clone,
+/// upgrades it to `main` in place and installs over the system `hse`. Every
+/// test that runs the built binary did that to the checkout it tested
+/// (REQ-UPDATE-001). Automatic updates now look only for an installation. An
+/// explicit `hse update` still finds the build tree. The real binary runs in a
+/// fixture tree one commit behind a local origin, whose `install.sh` only
+/// leaves a mark.
+#[cfg(unix)]
+#[test]
+fn automatic_updates_never_touch_the_tree_a_build_runs_from() {
+    use std::path::Path;
+    let git = |dir: &Path, args: &[&str]| {
+        let out = Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let base = common::tmp_dir("update-scope");
+    let _ = std::fs::remove_dir_all(&base);
+    let origin = base.join("origin");
+    let tree = base.join("tree");
+    let mark = base.join("installer-ran");
+    std::fs::create_dir_all(&origin).expect("origin dir");
+    git(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(
+        origin.join("Cargo.toml"),
+        "[package]\nname = \"huntsman-search-engine\"\n",
+    )
+    .expect("Cargo.toml");
+    std::fs::write(
+        origin.join("install.sh"),
+        "#!/bin/sh\ntouch \"$HSE_TEST_INSTALL_MARK\"\n",
+    )
+    .expect("install.sh");
+    git(&origin, &["add", "-A"]);
+    git(&origin, &["commit", "-q", "-m", "one"]);
+    git(
+        &base,
+        &[
+            "clone",
+            "-q",
+            origin.to_str().unwrap(),
+            tree.to_str().unwrap(),
+        ],
+    );
+    git(&origin, &["commit", "-q", "--allow-empty", "-m", "two"]);
+
+    // The binary where a build puts it.
+    let bin = tree.join("target/debug/hse");
+    std::fs::create_dir_all(bin.parent().unwrap()).expect("target dir");
+    if std::fs::hard_link(BIN, &bin).is_err() {
+        std::fs::copy(BIN, &bin).expect("copy hse");
+    }
+    let hse = |home: &Path, args: &[&str], installation: Option<&Path>| {
+        std::fs::create_dir_all(home).expect("home");
+        let mut c = Command::new(&bin);
+        c.args(args)
+            .current_dir(&tree)
+            .env("HOME", home)
+            .env("RUST_LOG", "off")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("HSE_TEST_INSTALL_MARK", &mark)
+            .env_remove("HUNTSMAN_INSTALL_DIR")
+            .env_remove("HSE_REF");
+        if let Some(dir) = installation {
+            c.env("HUNTSMAN_INSTALL_DIR", dir);
+        }
+        c.output().expect("spawn hse")
+    };
+    // The installer is started detached, so it is waited for.
+    let installer_ran = || {
+        for _ in 0..100 {
+            if mark.exists() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        false
+    };
+
+    // A build, with no installation recorded: not updated automatically.
+    let as_build = base.join("home-build");
+    let out = hse(&as_build, &["config"], None);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !installer_ran(),
+        "the tree a build runs from was updated in the background"
+    );
+    // An explicit check still finds the build tree, and the commit waiting.
+    let out = hse(&as_build, &["update", "--check"], None);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 commit(s) available"), "{stdout}");
+
+    // Control: the same tree recorded as the installation is updated, so the
+    // silence above is the rule and not a dead mechanism.
+    let out = hse(&base.join("home-installed"), &["config"], Some(&tree));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        installer_ran(),
+        "an installation behind its origin is updated"
+    );
+
+    // Detached: pinned to one commit, and `update --check` says so
+    // (REQ-UPDATE-001), where it used to say "offline?".
+    git(&tree, &["checkout", "-q", "--detach"]);
+    let out = hse(&as_build, &["update", "--check"], None);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("HEAD is detached"), "{stdout}");
+
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// REQ-INGEST-001: when tesseract runs and refuses an image, its own reason
