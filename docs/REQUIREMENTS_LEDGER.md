@@ -27321,3 +27321,59 @@ noticed and checked out the commit under review. Its instructions now require
 checking out the tip of the range and proving it (`git rev-parse HEAD`, a
 `--stat` of the claimed files) before running anything, because a review of
 the wrong tree reads as evidence.
+
+## REQ-GATE-005 — the workflow lint counted manifests inside an ignored nested worktree
+
+**Requirement.** `scripts/check_workflows.py`'s audit-path invariant compares
+gate.sh's skip-list against the paths audit.yml's `**/Cargo.{toml,lock}`
+filter can really match: the paths the next commit can carry.
+
+**Defect.** Found by the gate on this branch. `_expand_workflow_path`
+expanded `**/Cargo.toml` by walking the filesystem (`Path(".").rglob`),
+excluding only paths containing `target`. It therefore also found every
+manifest inside a nested checkout under an ignored directory. The
+`hse-falsifier` subagent that REQ-HARNESS-001 added runs with `isolation:
+worktree`, so it leaves `.claude/worktrees/agent-*/`: a full copy of the
+repository, including `Cargo.toml`/`Cargo.lock` for the root, `fuzz`,
+`hse-core` and `wasm-ui`. The lint then reported eight of those paths as
+missing from gate.sh's skip-list (`… is in audit.yml's path filter but not in
+scripts/gate.sh's audit skip-list …`) and failed `workflow files`. That made
+the gate refuse to record a receipt, and so refuse the push. CI can never see
+these paths: `.claude/worktrees/` is in `.gitignore`, and a path filter
+matches only a commit's changed files. The lint had become unusable in
+exactly the workflow this branch makes standard.
+
+**Fix.** The glob is expanded over `git ls-files --cached --others
+--exclude-standard`: tracked files, plus untracked files that are not
+ignored. That is the set `git add -A` would commit, and the same set the gate
+receipt's tree is computed from (`scripts/gate-receipt.sh tree`), so the lint
+and the receipt agree on which files exist. Build output, nested worktrees and
+any other ignored tree drop out without being listed. Untracked files still
+count, so a new crate is flagged before it is staged, as eagerly as the
+filesystem walk flagged it. The expansion over this checkout is unchanged: the
+four crates' `Cargo.toml` and `Cargo.lock`.
+
+**Lock.** `tests/agent_harness.rs`
+`the_workflow_lint_counts_only_manifests_git_tracks` builds a git fixture from
+the real lint and its inputs (`.gitignore`, `scripts/gate.sh`, every workflow,
+the four crates' manifests). It adds an ignored `.claude/worktrees/agent-test/`
+holding nested manifests, stages with `git add -A`, and runs the lint:
+
+- it must pass, because the ignored worktree is not a path CI can see;
+- after an untracked, not-ignored `newcrate/Cargo.toml` is added, it must fail
+  and name that path, so the fix did not trade one silent omission for
+  another.
+
+It skips, with a message, on a host without python3 and pyyaml, as gate.sh's
+`workflow files` check does.
+
+**Sensitivity.** Each direction fails under its own mutation:
+
+| mutation | fails at |
+|---|---|
+| R1 the filesystem `rglob` restored | the ignored-worktree assertion |
+| R2 index only (`git ls-files` without `--others`) | the unstaged-new-crate assertion |
+
+The first draft of the new-crate assertion read stdout. The lint reports
+problems on stderr, so the assertion failed on the fixed code, which was a
+defect in the check, not in the lint. It now reads stderr.

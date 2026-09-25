@@ -524,6 +524,90 @@ fn the_hook_drains_its_stdin_before_any_exit() {
 }
 
 #[test]
+fn the_workflow_lint_counts_only_manifests_git_tracks() {
+    // `scripts/check_workflows.py` checks that gate.sh's audit skip-list covers
+    // audit.yml's `**/Cargo.{toml,lock}` filter. It expanded that glob by
+    // walking the filesystem, excluding only `target/`, so it also found the
+    // manifests inside an ignored nested checkout. The `hse-falsifier` subagent
+    // creates one by design (`.claude/worktrees/agent-*/`). The lint then
+    // reported paths CI can never see as missing, and failed the gate
+    // (REQ-GATE-005). A path filter matches only what a commit changes, which is
+    // tracked files, so the glob is now expanded over `git ls-files`.
+    let has_yaml = Command::new("python3")
+        .args(["-c", "import yaml"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !has_yaml {
+        // Same stance as gate.sh's `workflow files` SKIP: CI is the authority.
+        eprintln!("SKIP: python3 with pyyaml is not available on this host");
+        return;
+    }
+
+    let repo = Repo::bare();
+    let copy = |rel: &str| {
+        let dst = repo.path().join(rel);
+        fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        fs::copy(root().join(rel), &dst).unwrap_or_else(|e| panic!("copy {rel}: {e}"));
+    };
+    for rel in [
+        ".gitignore",
+        "scripts/gate.sh",
+        "scripts/check_workflows.py",
+    ] {
+        copy(rel);
+    }
+    for entry in fs::read_dir(root().join(".github/workflows")).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        copy(&format!(".github/workflows/{name}"));
+    }
+    for crate_dir in ["", "fuzz/", "hse-core/", "wasm-ui/"] {
+        copy(&format!("{crate_dir}Cargo.toml"));
+        copy(&format!("{crate_dir}Cargo.lock"));
+    }
+    // A Claude Code worktree: a full nested copy of the manifests, in a
+    // directory the repository ignores. It exists before anything is staged,
+    // as it does in a real session.
+    let nested = ".claude/worktrees/agent-test";
+    for crate_dir in ["", "fuzz/", "hse-core/"] {
+        repo.write(&format!("{nested}/{crate_dir}Cargo.toml"), "[package]\n");
+        repo.write(&format!("{nested}/{crate_dir}Cargo.lock"), "version = 4\n");
+    }
+    repo.commit_all("fixture: the lint, its inputs, and an ignored worktree");
+    assert!(
+        !repo.git(&["ls-files"]).contains(nested),
+        "the fixture's worktree must be ignored, as `.claude/worktrees/` is here"
+    );
+
+    let lint = || {
+        repo.cmd("python3", repo.path())
+            .arg("scripts/check_workflows.py")
+            .output()
+            .expect("python3")
+    };
+    let out = lint();
+    assert!(
+        out.status.success(),
+        "an ignored nested worktree's manifests are not paths CI can see, so \
+         the lint must not ask gate.sh to list them\nstdout: {}\nstderr: {}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+
+    // The other direction: the lint exists to catch a NEW crate gate.sh does
+    // not list yet, and must still do so before the crate is staged. An
+    // untracked, not-ignored manifest is a path the next commit carries.
+    repo.write("newcrate/Cargo.toml", "[package]\n");
+    let out = lint();
+    // The lint reports its problems on stderr.
+    assert!(
+        !out.status.success() && text(&out.stderr).contains("newcrate/Cargo.toml"),
+        "an unstaged new crate must still be flagged, or the fix traded one \
+         silent omission for another\nstderr: {}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
 fn a_checkout_without_gate_receipts_is_not_policed() {
     let repo = Repo::bare();
     assert_allowed(&repo.hook("git push"), "no scripts/gate-receipt.sh");

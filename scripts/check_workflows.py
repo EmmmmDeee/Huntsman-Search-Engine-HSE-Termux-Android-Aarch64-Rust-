@@ -52,6 +52,7 @@ Exits non-zero, naming the file and the reason, when any invariant breaks.
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -171,13 +172,34 @@ def _expand_workflow_path(pattern: str) -> set[str]:
     # directory, which `git diff -- <dir>` already covers recursively.
     if pattern.endswith("/**"):
         return {pattern[: -len("/**")]}
-    # `**/Cargo.toml` — every such file in the tree, excluding build output.
+    # `**/Cargo.toml` — every such file the next commit could contain: tracked,
+    # or untracked and not ignored. That is the set a workflow path filter can
+    # ever match, since GitHub filters on a commit's changed paths. This walked
+    # the filesystem with `rglob`, excluding only `target/`, so it also found
+    # every nested checkout under an ignored directory. A Claude Code worktree
+    # (`.claude/worktrees/agent-*/`, which the `hse-falsifier` subagent creates
+    # by design) holds a full copy of the repository's manifests, and each one
+    # became a "missing" gate path, so the lint failed on paths CI can never
+    # see (REQ-GATE-005). Asking git drops build output, nested worktrees and
+    # any other ignored tree without listing them. Untracked files still count,
+    # so a new crate is flagged before it is staged, as eagerly as before.
     if pattern.startswith("**/"):
         leaf = pattern[len("**/") :]
-        return {
-            str(q) for q in Path(".").rglob(leaf) if "target" not in q.parts
-        } | {leaf}
+        return {p for p in _committable_files() if Path(p).name == leaf} | {leaf}
     return {pattern}
+
+
+def _committable_files() -> list[str]:
+    """The paths `git add -A` would commit: tracked, plus untracked and not
+    ignored. The same set the gate receipt's tree is computed from
+    (`scripts/gate-receipt.sh tree`), so the two cannot disagree about which
+    files exist."""
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        capture_output=True,
+        check=True,
+    ).stdout
+    return [p for p in out.decode().split("\0") if p]
 
 
 def _check_audit_paths() -> list[str]:
