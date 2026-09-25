@@ -17,6 +17,11 @@ An amend, a rebase or a new file is a new tree, so run the gate again.
 `HSE_PUSH_GATE=off` in Claude Code's own environment turns the hook off (a
 person's decision). Writing it as a prefix on the command does nothing.
 
+Pushes from your own terminal go through git's `.githooks/pre-push`, which
+checks the exact commit each ref sends. `scripts/setup-dev.sh` switches it on
+(`git config core.hooksPath .githooks`) unless you already have hooks of your
+own. `git push --no-verify` is the deliberate way past it.
+
 ## Commands (`.claude/commands/`)
 
 | Command | Runs |

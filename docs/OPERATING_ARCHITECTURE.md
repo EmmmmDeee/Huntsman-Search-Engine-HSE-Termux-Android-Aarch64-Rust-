@@ -68,6 +68,14 @@ than guessed at (REQ-HARNESS-003). So:
 - a push of a tree that already passed costs one file lookup, not a second
   gate run.
 
+The same receipt guards pushes that do not come from a Claude Code session.
+`.githooks/pre-push` is git's own pre-push hook. git hands it the exact commit
+each ref sends, so it needs no command parsing, and it refuses any commit
+without a receipt (REQ-HARNESS-004). `scripts/setup-dev.sh` switches it on by
+setting `core.hooksPath=.githooks`, but not over hooks a developer already
+has. A person on a laptop or on the Termux device pushes through the same
+check as a session.
+
 The receipt is a record, not a signature. A person can turn the check off for
 their own sessions with `HSE_PUSH_GATE=off` in Claude Code's environment (for
 example `env` in `.claude/settings.local.json`). Writing that prefix into the

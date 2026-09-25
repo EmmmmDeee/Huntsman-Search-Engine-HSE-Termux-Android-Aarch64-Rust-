@@ -27459,3 +27459,103 @@ mutation script that outlived its apparent end later copied files back after
 they had been stashed. Its liveness check used `pgrep -f` with `\|`, which
 ERE reads as a literal pipe, so it reported the script finished. It was
 stopped with `TaskStop`, and the tree was restored and rechecked.
+
+## REQ-HARNESS-004 — a person's `git push` went through no gate check at all
+
+**Requirement.** Every push from a configured clone carries a gate receipt
+for each commit it sends, whoever issues it.
+
+**Defect.** REQ-HARNESS-001 enforced receipts through a Claude Code
+`PreToolUse` hook, so only pushes a Claude Code session issued were checked.
+A person pushing from a terminal (a laptop, or Termux on the device) went
+through nothing. That hook also has to find the push by reading the command
+line (REQ-HARNESS-003), while git knows exactly what a push sends.
+
+**Fix.**
+
+- `.githooks/pre-push`, git's native hook. git hands it one line per ref,
+  `<local ref> <local sha> <remote ref> <remote sha>`. It checks each non-zero
+  local sha with `scripts/gate-receipt.sh check`, skips deletions (all-zero
+  sha), names every ref without a receipt, and exits 1. It reads all of stdin
+  before any exit (REQ-HARNESS-002). The deliberate ways past it are git's own
+  `--no-verify`, visible in the command, and `HSE_PUSH_GATE=off` in the
+  pusher's environment. A checkout without `scripts/gate-receipt.sh` is not
+  policed.
+- `scripts/setup-dev.sh` gains `configure_git_hooks`, called before the
+  `--deps-only` exit, so cloud sessions get it through
+  `.claude/hooks/session-start.sh`. It sets `core.hooksPath=.githooks` only
+  when that key is unset and `.git/hooks` holds no hook of the developer's
+  own, because `core.hooksPath` replaces `.git/hooks`. Otherwise it prints the
+  one command to run. The script now runs `main` only when executed, so a
+  test can source it.
+- CI's ShellCheck step and the gate lint `.githooks/pre-push` and
+  `scripts/setup-dev.sh`.
+
+**Locks** (`tests/agent_harness.rs`):
+
+- `a_real_git_push_is_refused_until_the_gate_has_passed`: a real `git push`
+  to a real bare remote, so git itself invokes the hook. It is refused with no
+  receipt and nothing reaches the remote. It is allowed with one. A branch at
+  the same commit and a deletion pass. A new commit is refused and the remote
+  is unchanged. `HSE_PUSH_GATE=off` passes.
+- `the_git_hook_checks_each_ref_it_is_handed`: four lines on stdin. Both
+  refs without a receipt are named, the gated one is not, and a deletion is
+  skipped.
+- `setup_dev_enables_the_repo_hooks_only_where_that_is_safe`: a fresh clone
+  is switched on, idempotently. A custom `core.hooksPath` is kept with a
+  warning. A developer hook in `.git/hooks` is not disabled. A checkout with
+  no `.githooks` is left alone. `main` calls the function before the
+  `--deps-only` exit.
+
+**Mutations.** 11 breakages, each applied alone, all caught:
+
+| breakage | caught by |
+|---|---|
+| G1 the hook always passes | the real-push and per-ref tests |
+| G2 a deletion is checked | the real-push and per-ref tests |
+| G3 it stops at the first missing ref | the per-ref test |
+| G4 only the first ref is read | the per-ref test |
+| G5 `HSE_PUSH_GATE=off` ignored | the real-push test |
+| G6 the hook is not executable | the real-push and per-ref tests |
+| G7 a custom `core.hooksPath` is overridden | the setup test |
+| G8 the developer's own hooks are disabled | the setup test |
+| G9 set without a `.githooks` directory | the setup test |
+| G10 `main` never calls it | the setup test |
+| G11 called after the `--deps-only` exit | the setup test |
+
+G3, G10 and G11 survived the first draft. The per-ref test had only one ref
+without a receipt, and the wiring assertion had not been applied, because
+rustfmt had reflowed its anchor. The matrix itself also first reported every
+caught mutation as a compile error: a failing test prints `error: test
+failed`, which matched its `^error` filter. Both the tests and the matrix
+were fixed before these results. The vacuity rule in ROADMAP §6 applies to
+the harness too.
+
+## REQ-HARNESS-005 — the receipt could name a tree `git commit` would not record
+
+**Requirement.** `gate-receipt.sh tree` is the tree `git add -A && git
+commit` records, for every file state git itself can see.
+
+**Defect.** Found as a flake: `a_receipt_covers_its_tree_and_nothing_else`
+failed 2 of 12 runs of the suite, with `the tree changed while the gate ran:
+9d9fce6… -> fdaa9c6…`. `tree` computes from a copy of the index, and plain
+`cp` gave the copy a fresh mtime. git re-hashes a file whose stat data looks
+unchanged only when the file is racily clean: its mtime is not older than the
+index file's own mtime. Take a file rewritten at the same size, in the same
+timestamp tick as the last index write. The real index still counts it as
+racy, so git re-hashes it and commits the new content. The fresh-mtime copy
+trusts the stale stat data and keeps the old blob. The receipt then named a
+tree nobody committed. The gate normally runs well after the last edit, so
+real use rarely hits it, but nothing ruled it out.
+
+**Fix.** `cp -p`: the copy keeps the index's mtime, so git's racy-clean
+decision on the copy is the one it makes on the real index.
+
+**Lock.** `the_tree_matches_what_git_commits_for_a_racily_clean_file`
+recreates the stat state on purpose, so the result no longer depends on
+timing. README is set to a fixed old mtime before the commit, so git cannot
+smudge its entry. It is then rewritten at the same size, its mtime restored,
+the index given the same mtime, and ctime ignored (`core.trustctime=false`).
+On the old code it failed 8/8, naming exactly the flake's two trees. With the
+fix it passed 8/8. The full suite then ran 20 times with no failure, against
+2 in 12 before.

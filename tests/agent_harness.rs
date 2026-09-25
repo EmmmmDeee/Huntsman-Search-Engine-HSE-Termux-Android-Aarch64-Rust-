@@ -299,6 +299,55 @@ fn the_tree_of_a_clean_checkout_is_its_head_tree() {
     assert_eq!(repo.worktree_tree(), repo.tree_of("HEAD"));
 }
 
+/// REQ-HARNESS-005. git re-hashes a file whose stat data looks unchanged only
+/// when the file is "racily clean": its mtime is not older than the index
+/// file's own mtime. `tree` worked on a copy of the index, and a plain `cp`
+/// gave the copy a fresh mtime. So a file rewritten at the same size in the
+/// same timestamp tick as the last index write was re-hashed by `git commit`
+/// but not by the receipt, and the receipt named a tree nobody committed. It
+/// failed 2 runs in 12 of this suite by chance. This recreates that stat state
+/// on purpose: same size, mtime restored, ctime ignored, index as old as the
+/// file.
+#[test]
+fn the_tree_matches_what_git_commits_for_a_racily_clean_file() {
+    let repo = Repo::new();
+    repo.git(&["config", "core.trustctime", "false"]);
+    let readme = repo.path().join("README.md");
+    // A fixed time well in the past. If the file's mtime shares a tick with
+    // the index write below, git "smudges" the entry (zeroes its recorded
+    // size) and every later read re-hashes it, which hides the defect. An old
+    // mtime rules that out, so the outcome no longer depends on timing.
+    let then = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+    let set_mtime = |p: &Path| {
+        fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(then))
+            .unwrap();
+    };
+    set_mtime(&readme);
+    repo.commit_all("add the receipt script");
+
+    // Same byte count as "fixture\n", so size cannot give the change away.
+    fs::write(&readme, "checked\n").unwrap();
+    set_mtime(&readme);
+    set_mtime(&repo.path().join(".git/index"));
+
+    let tree = repo.worktree_tree();
+    repo.commit_all("what git commits");
+    assert_eq!(
+        repo.git(&["show", "HEAD:README.md"]),
+        "checked",
+        "precondition: git itself saw the change"
+    );
+    assert_eq!(
+        tree,
+        repo.tree_of("HEAD"),
+        "the receipt's tree must be the tree git commits"
+    );
+}
+
 #[test]
 fn the_tree_is_what_committing_everything_would_record_and_the_index_is_untouched() {
     let repo = Repo::new();
@@ -787,6 +836,264 @@ fn a_checkout_without_gate_receipts_is_not_policed() {
     assert_allowed(
         &repo.hook_with(not_a_repo.path(), "git push", None),
         "not a git checkout",
+    );
+}
+
+// ─── .githooks/pre-push: every push, not only a Claude Code session's ───────
+
+impl Repo {
+    /// Install this checkout's git pre-push hook into the fixture, point
+    /// `core.hooksPath` at it, and add a bare repository as `origin`.
+    fn with_git_hook_and_remote(&self) -> PathBuf {
+        let hooks = self.path().join(".githooks");
+        fs::create_dir_all(&hooks).unwrap();
+        fs::copy(root().join(".githooks/pre-push"), hooks.join("pre-push")).unwrap();
+        assert!(
+            is_executable(&hooks.join("pre-push")),
+            ".githooks/pre-push must be committed executable, or git skips it"
+        );
+        self.git(&["config", "core.hooksPath", ".githooks"]);
+        let remote = self.home().join("remote.git");
+        self.git_in(
+            self.home(),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        self.git(&["remote", "add", "origin", remote.to_str().unwrap()]);
+        remote
+    }
+
+    /// A real `git push` with `args`, run the way a person runs it.
+    fn push(&self, args: &[&str], gate_env: Option<&str>) -> Output {
+        let mut c = self.cmd("git", self.path());
+        c.args(["-c", "commit.gpgsign=false", "push"]).args(args);
+        if let Some(v) = gate_env {
+            c.env("HSE_PUSH_GATE", v);
+        }
+        c.output().expect("git")
+    }
+
+    /// The commit `branch` points at in the bare remote, if it exists.
+    fn remote_head(&self, remote: &Path, branch: &str) -> Option<String> {
+        let out = self
+            .cmd("git", self.path())
+            .args([
+                "--git-dir",
+                remote.to_str().unwrap(),
+                "rev-parse",
+                "--verify",
+                "--quiet",
+            ])
+            .arg(format!("refs/heads/{branch}"))
+            .output()
+            .expect("git");
+        out.status
+            .success()
+            .then(|| text(&out.stdout).trim().to_string())
+    }
+}
+
+/// REQ-HARNESS-004. The receipt check guarded only pushes a Claude Code session
+/// issued; a person pushing from a terminal went through nothing. git runs
+/// `.githooks/pre-push` for every push from a clone configured for it, and this
+/// drives a real push to a real (bare) remote, so git itself invokes the hook.
+#[test]
+fn a_real_git_push_is_refused_until_the_gate_has_passed() {
+    let repo = Repo::new();
+    let remote = repo.with_git_hook_and_remote();
+    repo.commit_all("fixture with the receipt script and the git hook");
+
+    let out = repo.push(&["-q", "origin", "main"], None);
+    assert!(!out.status.success(), "a push with no receipt must fail");
+    assert!(
+        text(&out.stderr).contains("scripts/gate.sh --quick"),
+        "the refusal names the fix: {}",
+        text(&out.stderr)
+    );
+    assert_eq!(
+        repo.remote_head(&remote, "main"),
+        None,
+        "nothing reached the remote"
+    );
+
+    repo.record_pass();
+    let out = repo.push(&["-q", "origin", "main"], None);
+    assert!(
+        out.status.success(),
+        "a gated commit pushes: {}",
+        text(&out.stderr)
+    );
+    let pushed = repo.git(&["rev-parse", "HEAD"]);
+    assert_eq!(
+        repo.remote_head(&remote, "main").as_deref(),
+        Some(pushed.as_str())
+    );
+
+    // A branch at the same commit carries the same tree, so it may go too;
+    // deleting it afterwards sends nothing, so it is never checked.
+    repo.git(&["branch", "old"]);
+    assert!(repo.push(&["-q", "origin", "old"], None).status.success());
+    let out = repo.push(&["-q", "origin", "--delete", "old"], None);
+    assert!(
+        out.status.success(),
+        "a deletion sends nothing: {}",
+        text(&out.stderr)
+    );
+
+    // A new commit is a new tree.
+    repo.write("README.md", "changed after the gate\n");
+    repo.commit_all("unchecked");
+    assert!(!repo.push(&["-q", "origin", "main"], None).status.success());
+    assert_eq!(
+        repo.remote_head(&remote, "main").as_deref(),
+        Some(pushed.as_str()),
+        "the refused commit did not reach the remote"
+    );
+
+    // The pusher's own, deliberate way past it.
+    assert!(
+        repo.push(&["-q", "origin", "main"], Some("off"))
+            .status
+            .success()
+    );
+}
+
+/// REQ-HARNESS-004. git hands the hook one line per ref; each is checked on
+/// its own commit, a deletion (all-zero sha) is skipped, and the refusal names
+/// exactly the refs without a receipt.
+#[test]
+fn the_git_hook_checks_each_ref_it_is_handed() {
+    let repo = Repo::new();
+    repo.with_git_hook_and_remote();
+    repo.commit_all("gated");
+    repo.record_pass();
+    let gated = repo.git(&["rev-parse", "HEAD"]);
+    repo.write("README.md", "ungated\n");
+    repo.commit_all("ungated");
+    let ungated = repo.git(&["rev-parse", "HEAD"]);
+    let zero = "0".repeat(40);
+
+    let run = |stdin: String| {
+        use std::io::Write;
+        let mut child = repo
+            .cmd("bash", repo.path())
+            .arg(repo.path().join(".githooks/pre-push"))
+            .args(["origin", "unused-url"])
+            .stdin(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("bash");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+
+    let out = run(format!(
+        "refs/heads/a {gated} refs/heads/a {zero}\n\
+         refs/heads/b {ungated} refs/heads/b {zero}\n\
+         (delete) {zero} refs/heads/c {gated}\n\
+         refs/heads/d {ungated} refs/heads/d {zero}\n"
+    ));
+    assert_eq!(code(&out), 1);
+    let err = text(&out.stderr);
+    assert!(
+        err.contains("refs/heads/b ->")
+            && err.contains("refs/heads/d ->")
+            && !err.contains("refs/heads/a ->"),
+        "every ref without a receipt is named, and only those: {err}"
+    );
+
+    let out = run(format!(
+        "refs/heads/a {gated} refs/heads/a {zero}\n(delete) {zero} refs/heads/c {gated}\n"
+    ));
+    assert_eq!(code(&out), 0, "{}", text(&out.stderr));
+}
+
+/// REQ-HARNESS-004. `scripts/setup-dev.sh` turns the hook on by pointing
+/// `core.hooksPath` at `.githooks`. That setting replaces `.git/hooks`, so it
+/// is only written where it cannot disable anything of the developer's own.
+#[test]
+fn setup_dev_enables_the_repo_hooks_only_where_that_is_safe() {
+    let configure = |repo: &Repo| -> (String, String) {
+        let out = repo
+            .cmd("bash", repo.path())
+            .arg("-c")
+            .arg(format!(
+                "source '{}' && configure_git_hooks",
+                root().join("scripts/setup-dev.sh").display()
+            ))
+            .output()
+            .expect("bash");
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        let got = repo
+            .cmd("git", repo.path())
+            .args(["config", "--get", "core.hooksPath"])
+            .output()
+            .expect("git");
+        (text(&got.stdout).trim().to_string(), text(&out.stderr))
+    };
+    let with_hooks_dir = || {
+        let repo = Repo::bare();
+        repo.write(".githooks/pre-push", "#!/bin/sh\n");
+        repo
+    };
+
+    let fresh = with_hooks_dir();
+    assert_eq!(
+        configure(&fresh).0,
+        ".githooks",
+        "a fresh clone is switched on"
+    );
+    assert_eq!(
+        configure(&fresh).0,
+        ".githooks",
+        "and re-running changes nothing"
+    );
+
+    let custom = with_hooks_dir();
+    custom.git(&["config", "core.hooksPath", "my-hooks"]);
+    let (value, warning) = configure(&custom);
+    assert_eq!(value, "my-hooks", "a developer's own hooksPath is kept");
+    assert!(
+        warning.contains("git config core.hooksPath .githooks"),
+        "{warning}"
+    );
+
+    let own = with_hooks_dir();
+    let hook = own.path().join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\n").unwrap();
+    let (value, warning) = configure(&own);
+    assert_eq!(value, "", "hooks already in .git/hooks are not disabled");
+    assert!(warning.contains("pre-commit"), "{warning}");
+
+    let older = Repo::bare();
+    assert_eq!(
+        configure(&older).0,
+        "",
+        "a checkout without .githooks is left alone"
+    );
+
+    // The function above only matters if setup runs it, and before the
+    // `--deps-only` exit: that is the path a Claude Code cloud session takes
+    // (.claude/hooks/session-start.sh).
+    let setup = read("scripts/setup-dev.sh");
+    let main_body = setup
+        .split("\nmain() {")
+        .nth(1)
+        .and_then(|b| b.split("\n}").next())
+        .expect("setup-dev.sh defines main()");
+    let call = main_body
+        .find("configure_git_hooks")
+        .expect("main() must call configure_git_hooks");
+    let deps_exit = main_body
+        .find("if [ \"$DEPS_ONLY\" = \"1\" ]")
+        .expect("main() has the --deps-only exit");
+    assert!(
+        call < deps_exit,
+        "configure_git_hooks must run before the --deps-only exit"
     );
 }
 
