@@ -69,6 +69,10 @@ log() { printf '\033[1;36m==>\033[0m %s\n' "$*" >&2; }
 # than escaped. Every value here is a sha, a number, a version or a device
 # label, where dropping them loses nothing.
 jstr() { printf '"%s"' "$(printf '%s' "$1" | tr -d '"\\' | tr -d '\000-\037')"; }
+# A URL fit for the record, which is pasted into PRs: the credentials a URL can
+# carry (`https://TOKEN@host/…`, as install.sh suggests for a private
+# repository) are replaced.
+redact() { printf '%s' "$1" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@#\1***@#'; }
 
 STAGES=()
 FAILED=0
@@ -198,11 +202,12 @@ fi
 # ── restart ─────────────────────────────────────────────────────────────────
 # Two separate processes and a value unlike the default: the second can only
 # report it if the first really wrote it where a restart reads it. The scratch
-# HOME starts with updates and update notices off. `hse config` checks for an
-# update first and installs one into the checkout its binary was built under,
-# which replaces the commit under test (REQ-UPDATE-001); with notices on it
-# would still fetch into that checkout's refs. So the key toggled here is not
-# `feature.auto_update` either.
+# HOME starts with updates and update notices off, so `hse config` never checks
+# for one. An automatic update no longer acts on the tree a build runs from
+# (REQ-UPDATE-002). Before that, it installed into the checkout its binary was
+# built under and replaced the commit under test (REQ-UPDATE-001). This stage
+# does not lean on that fix to leave the checkout alone, so the key it toggles
+# is not `feature.auto_update` either.
 if [ -x "$BIN" ]; then
     SCRATCH="$(mktemp -d)"
     mkdir -p "$SCRATCH/.huntsman"
@@ -224,10 +229,13 @@ fi
 
 # ── install (opt-in) ────────────────────────────────────────────────────────
 # The installer upgrades in place a clone it is started inside. Started in the
-# checkout under test it would point origin at the checkout itself and reset
-# its `main` to HEAD. So the commit's own installer installs where it installs
-# for an operator (HSE_INSTALL_DIR, else its default), fetching HEAD from the
-# checkout's origin; HEAD must be pushed there, as the device stage expects.
+# checkout under test it would point origin at the checkout itself and switch
+# it to a branch named after HEAD. So the commit's own installer installs where
+# it installs for an operator (HSE_INSTALL_DIR, else its default), fetching
+# HEAD from the checkout's origin; HEAD must be pushed there, as the device
+# stage expects. HSE_REQUIRE_SHA pins the commit and HSE_REF is left to the
+# installer: named after the commit, the install's branch would follow nothing
+# and never update again.
 # An `hse` for HEAD already on PATH would pass the check below whether or not
 # the installer did anything, so that run proves nothing and says so.
 if [ "$INSTALL" = 1 ]; then
@@ -240,7 +248,7 @@ if [ "$INSTALL" = 1 ]; then
         stage install FAIL "HSE_INSTALL_DIR is the checkout under test; installing there would replace it"
     elif [[ $PRE_ID == *"\"sha\":\"$SHA\""* ]]; then
         stage install SKIP "an hse for HEAD ($PRE) was on PATH before install.sh ran, so this run cannot show the installer installed it; remove it, or install into a fresh HSE_INSTALL_DIR"
-    elif HSE_INSTALL_DIR="$IDIR" HSE_REPO_URL="$FROM" HSE_REF="$SHA" HSE_REQUIRE_SHA="$SHA" \
+    elif HSE_INSTALL_DIR="$IDIR" HSE_REPO_URL="$FROM" HSE_REQUIRE_SHA="$SHA" \
         HSE_PREFER_BUILD=1 HSE_BUILD_PROFILE="$PROFILE" bash "$WT/install.sh" >&2; then
         INSTALLED="$(command -v hse || true)"
         ID="$([ -n "$INSTALLED" ] && "$INSTALLED" build-sha --json 2>/dev/null || true)"
@@ -250,7 +258,7 @@ if [ "$INSTALL" = 1 ]; then
             stage install FAIL "install.sh finished, but the hse on PATH (${INSTALLED:-none}) reports ${ID:-nothing}, not a verifiable HEAD"
         fi
     else
-        stage install FAIL "install.sh failed installing $SHA from $FROM into $IDIR (log: \$HOME/.cache/hse-install.log)"
+        stage install FAIL "install.sh failed installing $SHA from $(redact "$FROM") into $IDIR (log: \$HOME/.cache/hse-install.log)"
     fi
 fi
 
@@ -284,7 +292,7 @@ NOW_ORIGIN="$(git -C "$TOP" remote get-url origin 2>/dev/null || true)"
 if [ -n "$CHANGED" ]; then
     stage unchanged FAIL "changed during the run:$CHANGED"
 elif [ "$NOW_ORIGIN" != "$ORIGIN_URL" ]; then
-    stage unchanged FAIL "origin changed during the run: ${ORIGIN_URL:-none} -> ${NOW_ORIGIN:-none}"
+    stage unchanged FAIL "origin changed during the run: $(redact "${ORIGIN_URL:-none}") -> $(redact "${NOW_ORIGIN:-none}")"
 else
     stage unchanged PASS "the build and the checkout are still $SHA, with no change"
 fi

@@ -138,10 +138,9 @@ see, or an ignored file, is never what is tested (REQ-ACCEPT-003). The
 install stage passes only for a verifiable HEAD that the installer itself put
 on `PATH`.
 
-Nothing the run starts may update the checkout. An `hse` run from inside a
-checkout checks for an update before most commands. On a branch that is
-behind, it installs the update there. A detached HEAD is never updated
-(REQ-UPDATE-001), which is one more reason to check out the exact commit.
+Nothing the run starts may update the checkout. An automatic update acts
+only on an installation, never on the tree a build runs from (REQ-UPDATE-002),
+and never on a detached HEAD (REQ-UPDATE-001).
 
 It writes one JSON record, bound to the commit, to
 `~/.huntsman/acceptance/<sha>.json` and prints it. Its verdict is one of:

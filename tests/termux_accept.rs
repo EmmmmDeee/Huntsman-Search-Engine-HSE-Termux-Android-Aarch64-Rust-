@@ -68,9 +68,10 @@ exit 0
 /// and, unless this `HOME` turned automatic updates off, installs it into the
 /// source tree the binary sits in (`target/<profile>/../..`): the checkout
 /// under test (REQ-UPDATE-001). Here the "update" is a line added to its
-/// README, which the runner must never let happen. The switch is read as the
-/// real `hse` reads its one settings file: a value `config` stored wins over
-/// the one the file started with.
+/// README, which the runner must never let happen. With update notices on it
+/// still checks, which leaves a marker. The switch is read as the real `hse`
+/// reads its one settings file: a value `config` stored wins over the one the
+/// file started with.
 const HSE_STUB: &str = r#"#!/bin/sh
 updates_off() {
     case "$(sed -n 's/^feature\.auto_update=//p' "$HOME/.huntsman/settings" 2>/dev/null)" in
@@ -81,6 +82,11 @@ updates_off() {
 }
 if [ "$1" != build-sha ] && ! updates_off; then
     echo "updated by hse" >> "$(dirname "$0")/../../README.md"
+fi
+# With update notices on, it still fetches upstream into that checkout's refs.
+if [ "$1" != build-sha ] \
+    && ! grep -Eq '"feature\.update_notify": *false' "$HOME/.huntsman/settings.json" 2>/dev/null; then
+    touch "$STUB_MARKERS/hse-checked-for-updates"
 fi
 case "$1" in
 build-sha)
@@ -521,6 +527,13 @@ fn the_runner_never_lets_hse_update_the_checkout_under_test() {
     assert_eq!(stage(&rec, "restart"), "PASS");
     assert_eq!(stage(&rec, "unchanged"), "PASS");
     assert_eq!(fs::read_to_string(&readme).unwrap(), "fixture\n");
+    assert!(
+        !fx.stubs
+            .path()
+            .join("markers/hse-checked-for-updates")
+            .exists(),
+        "update notices are off too, so no fetch reaches the checkout's refs"
+    );
 
     // Control: the same binary with updates left on does edit the checkout,
     // so the PASS above is the runner's doing, not an inert stub.
@@ -552,6 +565,13 @@ fn a_checkout_that_changes_during_the_run_is_rejected() {
     assert_eq!(rec["verdict"], "REJECTED");
     assert_eq!(stage(&rec, "tests"), "PASS");
     assert_eq!(stage(&rec, "unchanged"), "FAIL");
+
+    // A new, untracked file in the tree being built.
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    let out = fx.run(&[], true, &[("STUB_TEST_EDITS", "stray.txt")]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert_eq!(stage(&record(&fx, &out), "unchanged"), "FAIL");
 
     // The operator's checkout, edited while the run builds.
     let fx = Fixture::new();
@@ -592,8 +612,10 @@ fn a_checkout_that_changes_during_the_run_is_rejected() {
 /// to do and puts a stub `hse` on `PATH`: for the commit it was asked for,
 /// unless `STUB_INSTALL_SHA` names another; one that cannot prove its commit
 /// with `STUB_INSTALL_UNVERIFIABLE`; or none at all with `STUB_INSTALL_NOOP`.
+/// `STUB_INSTALL_FAIL` makes it fail.
 const INSTALL_STUB: &str = r#"#!/bin/sh
-{ echo "dir=$HSE_INSTALL_DIR"; echo "from=$HSE_REPO_URL"; echo "sha=$HSE_REQUIRE_SHA"; } > "$STUB_INSTALL_LOG"
+{ echo "dir=$HSE_INSTALL_DIR"; echo "from=$HSE_REPO_URL"; echo "sha=$HSE_REQUIRE_SHA"; echo "ref=${HSE_REF:-}"; } > "$STUB_INSTALL_LOG"
+[ -n "${STUB_INSTALL_FAIL:-}" ] && exit 1
 [ -n "${STUB_INSTALL_NOOP:-}" ] && exit 0
 sed "s/@SHA@/${STUB_INSTALL_SHA:-$HSE_REQUIRE_SHA}/" "$STUB_HSE" > "$STUB_BIN/hse"
 [ -n "${STUB_INSTALL_UNVERIFIABLE:-}" ] && sed -i 's/v=true/v=false/' "$STUB_BIN/hse"
@@ -616,9 +638,11 @@ fn install_fixture(origin: &str) -> (Fixture, std::path::PathBuf, std::path::Pat
 
 /// `--install` runs the real installer, which upgrades in place a clone it is
 /// started inside. Started from the checkout under test, it pointed the
-/// checkout's origin at itself and reset its `main` to HEAD. It installs where
-/// it installs for an operator, from the checkout's origin, and never into the
-/// checkout.
+/// checkout's origin at itself and switched it to a branch named after HEAD.
+/// It installs where it installs for an operator, from the checkout's origin,
+/// and never into the checkout. The commit is pinned with `HSE_REQUIRE_SHA`
+/// alone: as `HSE_REF`, it named the install's branch after the commit, which
+/// then followed nothing and never updated again.
 #[test]
 fn the_install_stage_installs_elsewhere_and_never_into_the_checkout() {
     let origin = "https://example.invalid/hse.git";
@@ -641,6 +665,10 @@ fn the_install_stage_installs_elsewhere_and_never_into_the_checkout() {
     );
     assert!(ran.contains(&format!("from={origin}\n")), "{ran}");
     assert!(ran.contains(&format!("sha={}\n", fx.head())), "{ran}");
+    assert!(
+        ran.contains("ref=\n"),
+        "the branch is the installer's: {ran}"
+    );
     assert_eq!(fx.git(&["remote", "get-url", "origin"]), origin);
 
     // Pointed at the checkout itself, the stage refuses and never starts it.
@@ -822,4 +850,48 @@ fn a_relative_out_is_relative_to_where_the_runner_was_started() {
     let stored: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(started_in.join("run.json")).unwrap()).unwrap();
     assert_eq!(stored["sha"], fx.head());
+}
+
+/// The record is pasted into PRs. An origin URL can carry a token
+/// (`https://TOKEN@host/…`, as install.sh suggests for a private repository),
+/// and a failed install, or an origin changed during the run, wrote it there.
+#[test]
+fn credentials_in_an_origin_url_never_reach_the_record() {
+    let token = "ghp_FAKEtoken0123456789";
+    let secret_origin = format!("https://{token}@example.invalid/owner/private.git");
+    let (fx, log, bin) = install_fixture(&secret_origin);
+    let out = fx.run(
+        &["--install", "--skip-tests"],
+        true,
+        &[
+            ("STUB_INSTALL_LOG", log.to_str().unwrap()),
+            ("STUB_BIN", bin.to_str().unwrap()),
+            ("STUB_INSTALL_FAIL", "1"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let rec = record(&fx, &out);
+    assert_eq!(stage(&rec, "install"), "FAIL");
+    let printed = text(&out.stdout);
+    assert!(
+        !printed.contains(token),
+        "the token is in the record: {printed}"
+    );
+    assert!(
+        printed.contains("https://***@example.invalid/owner/private.git"),
+        "{printed}"
+    );
+    assert!(
+        fs::read_to_string(&log).unwrap().contains(&secret_origin),
+        "the installer itself still gets the real URL"
+    );
+
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    fx.git(&["remote", "add", "origin", &secret_origin]);
+    let moved = format!("https://{token}@example.invalid/elsewhere.git");
+    let out = fx.run(&[], true, &[("STUB_TEST_REPOINTS", &moved)]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert_eq!(stage(&record(&fx, &out), "unchanged"), "FAIL");
+    assert!(!text(&out.stdout).contains(token), "{}", text(&out.stdout));
 }

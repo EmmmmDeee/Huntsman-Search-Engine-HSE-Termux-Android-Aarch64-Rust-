@@ -42,7 +42,21 @@ fn install_dir_var(env_file: &Path) -> Option<String> {
 /// 1. `HUNTSMAN_INSTALL_DIR` env var — written by `install.sh` on every run.
 /// 2. Common install paths under `$HOME` (`.local/share/hse`, `hse`, `.hse`).
 /// 3. Upward traversal from the running binary (dev / in-place builds).
+///
+/// Steps 1 and 2 find an installation ([`find_installation`]). Step 3 finds the
+/// source tree a build sits in ([`build_tree_of`]), which only an explicit
+/// update uses ([`auto_update_dir`], REQ-UPDATE-002).
 pub fn find_install_dir() -> Option<PathBuf> {
+    find_installation().or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| build_tree_of(&exe))
+    })
+}
+
+/// An installation: the directory `install.sh` recorded, or one of its
+/// default paths under `$HOME`.
+fn find_installation() -> Option<PathBuf> {
     // 1. Env var written by install.sh — see `install_dir_var` for why this
     // isn't a bare `std::env::var` check. Only checking the process env here
     // used to let self-update fail with "no local source found" even on a
@@ -66,20 +80,20 @@ pub fn find_install_dir() -> Option<PathBuf> {
         }
     }
 
-    // 3. Walk up from the running binary (in-place dev builds)
-    if let Ok(exe) = std::env::current_exe() {
-        let mut p = exe.parent()?.to_path_buf();
-        for _ in 0..5 {
-            if is_hse_source(&p) {
-                return Some(p);
-            }
-            match p.parent() {
-                Some(parent) => p = parent.to_path_buf(),
-                None => break,
-            }
-        }
-    }
+    None
+}
 
+/// The HSE source tree a binary at `exe` was built in: the nearest of its
+/// ancestors, up to five levels, holding `Cargo.toml` and `install.sh`
+/// (`<tree>/target/<profile>/hse`, or `…/deps/<test>` for a test binary).
+fn build_tree_of(exe: &Path) -> Option<PathBuf> {
+    let mut p = exe.parent()?.to_path_buf();
+    for _ in 0..5 {
+        if is_hse_source(&p) {
+            return Some(p);
+        }
+        p = p.parent()?.to_path_buf();
+    }
     None
 }
 
@@ -116,9 +130,24 @@ fn install_ref() -> String {
 /// source tree the installer would have fetched; fetching it here, by the
 /// installer's own sequence, makes every update path self-sufficient.
 pub fn ensure_install_dir() -> Option<PathBuf> {
-    if let Some(dir) = find_install_dir() {
-        return Some(dir);
-    }
+    find_install_dir().or_else(bootstrap_recorded)
+}
+
+/// Where an automatic update looks: an installation only, bootstrapped as
+/// [`ensure_install_dir`] does it. Never the source tree the running binary
+/// was built in. That tree is a build: `cargo run`, a test suite, CI, an
+/// acceptance run. Updating it in the background ran `install.sh` against it,
+/// and the installer upgrades a clone it is started in to `main`, then
+/// installs over the system `hse`. A test suite did that to a CI checkout
+/// mid-run (REQ-UPDATE-001). On a branch behind its origin, it still could
+/// until this. An explicit `hse update` still finds the build tree
+/// (REQ-UPDATE-002).
+fn auto_update_dir() -> Option<PathBuf> {
+    find_installation().or_else(bootstrap_recorded)
+}
+
+/// Bootstrap the directory `install.sh` recorded but never populated.
+fn bootstrap_recorded() -> Option<PathBuf> {
     let env_file = PathBuf::from(crate::util::keys::env_path());
     let recorded = PathBuf::from(install_dir_var(&env_file)?);
     match bootstrap_source(&recorded, &repo_url(), &install_ref()) {
@@ -291,10 +320,11 @@ pub struct UpstreamState {
     pub sha: Option<String>,
 }
 
-/// Convenience wrapper: find the install dir and report upstream state.
-/// Returns `None` when offline or no install dir.
+/// The automatic update check (the CLI gate): upstream state for the
+/// installation. `None` when offline, or there is no installation
+/// ([`auto_update_dir`]: a build tree is never updated automatically).
 pub fn check_upstream() -> Option<UpstreamState> {
-    let dir = ensure_install_dir()?;
+    let dir = auto_update_dir()?;
     let behind = commits_behind(&dir)?;
     Some(UpstreamState {
         behind,
@@ -302,10 +332,11 @@ pub fn check_upstream() -> Option<UpstreamState> {
     })
 }
 
-/// Convenience wrapper: find the install dir and return how many commits behind
-/// the tracking branch HEAD is. Returns `None` when offline or no install dir.
+/// The automatic update check (the `hse serve` timer): how many commits the
+/// installation is behind. `None` when offline, or there is no installation
+/// ([`auto_update_dir`]: a build tree is never updated automatically).
 pub fn check_updates() -> Option<u64> {
-    ensure_install_dir().and_then(|d| commits_behind(&d))
+    auto_update_dir().and_then(|d| commits_behind(&d))
 }
 
 // ── Opportunistic CLI self-update ────────────────────────────────────────────
@@ -402,7 +433,7 @@ pub fn record_check_stamp(now: u64) {
 /// "update" to a cached or latest-release build that reports the same version
 /// while being older than the commit that triggered this update.
 fn spawn_detached_update(target_sha: Option<&str>) {
-    let Some(dir) = ensure_install_dir() else {
+    let Some(dir) = auto_update_dir() else {
         return;
     };
     let script = dir.join("install.sh");
@@ -1021,6 +1052,12 @@ mod tests {
         );
         git_fixture(&local, &["fetch", "-q", "--depth", "1", "origin", &pinned]);
         git_fixture(&local, &["checkout", "-q", "--detach", "FETCH_HEAD"]);
+        // A device clone that ran `git checkout <sha>` still has main's
+        // remote-tracking ref, so a fallback to main would find something here.
+        git_fixture(
+            &local,
+            &["fetch", "-q", "origin", "+main:refs/remotes/origin/main"],
+        );
 
         assert!(is_detached(&local), "precondition: HEAD is detached");
         assert_eq!(

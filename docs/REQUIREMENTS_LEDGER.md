@@ -27730,11 +27730,10 @@ a_detached_head_is_behind_nothing_and_names_no_update ... FAILED
   assertion `left == right` failed: a pinned commit follows no branch, so it is behind nothing
 ```
 
-**Not fixed here.** A checkout on a branch that is behind its remote is still
-updated by a non-exempt `hse` run from inside it, and a test suite run from
-such a checkout runs one. The acceptance runner detects that and rejects the
-run (REQ-ACCEPT-002). Keeping the test suite's own `hse` runs away from the
-update check is a separate change.
+**Not fixed here, then fixed.** A checkout on a branch that is behind its
+remote was still updated by a non-exempt `hse` run from inside it, and a test
+suite run from such a checkout runs one. REQ-UPDATE-002 closes that: an
+automatic update never acts on the tree a build runs from.
 
 ## REQ-ACCEPT-002 — the acceptance run could rewrite the checkout it vouched for
 
@@ -27751,7 +27750,10 @@ test:
 - **install** ran `install.sh` from inside the checkout. The installer
   upgrades in place a clone it is started inside. It ran `git remote set-url
   origin <the checkout>`, which pointed the operator's origin at the checkout
-  itself, and `checkout -B main FETCH_HEAD`, which reset their `main`.
+  itself. With `HSE_REF` set to the commit, it then ran `checkout -B <sha>
+  FETCH_HEAD`, which switched the checkout to a new branch named after the
+  commit. (An earlier draft of this entry said it reset `main`. It did not.
+  The independent review of this change corrected that.)
 - Nothing checked, at the end, that the commit the record names was still the
   one on disk.
 
@@ -27830,6 +27832,14 @@ reproduced by a separate verifier, and by Copilot on PR #653:
   record.
 - **A relative `--out`** was resolved against the directory the runner had
   moved to, not the operator's.
+- **A token in the record** (the review of the earlier commit). An `origin`
+  URL can carry one (`https://TOKEN@host/…`, which install.sh suggests for a
+  private repository). A failed install and a changed origin both wrote the
+  URL into the record, which the procedure says to paste into the PR.
+- **An install pinned forever** (same review). `--install` passed
+  `HSE_REF=<sha>`, so the installer named the install's branch after the
+  commit. After that the branch follows nothing: `hse update --check` says
+  "Already up to date" and automatic updates never run again.
 
 **Fix.**
 - Build, tests and install run in a private detached worktree of HEAD under
@@ -27849,8 +27859,12 @@ reproduced by a separate verifier, and by Copilot on PR #653:
 - The battery probe runs under `timeout` (`HSE_ACCEPT_API_TIMEOUT`, default 10
   s), which also ends its children.
 - A relative `--out` is resolved from where the runner was started.
+- URL credentials are masked (`https://***@host/…`) in everything the
+  record says. The installer still gets the real URL.
+- The install is pinned with `HSE_REQUIRE_SHA` alone. Its branch stays the
+  installer's own (`main`), which keeps updating.
 
-**Locks** (`tests/termux_accept.rs`, now 17 tests). The stubs model each case:
+**Locks** (`tests/termux_accept.rs`, now 18 tests). The stubs model each case:
 `getprop` answers or not; `cargo` honours `CARGO_TARGET_DIR` and reports where
 it ran; the stub suite fails on a hidden edit or ignored input; the stub
 installer can install another commit, an unverifiable binary, or nothing. The
@@ -27866,10 +27880,12 @@ new cases:
 - `CARGO_TARGET_DIR`, absolute and relative;
 - a hanging battery probe, with a working one as the control;
 - a relative `--out` from a subdirectory;
+- a token in `origin`, through a failed install and through a changed origin;
+- no update check at all in the restart stage, notices included;
 - an edit to either tree during the run, and a moved worktree HEAD. The next
   run then resets the kept worktree.
 
-**Mutations.** 22 breakages of the runner, each applied alone, all caught by
+**Mutations.** 26 breakages of the runner, each applied alone, all caught by
 the test written for it:
 - the 9 of REQ-ACCEPT-002;
 - building in the checkout;
@@ -27883,8 +27899,76 @@ the test written for it:
 - an unresolved relative `--out`;
 - `unchanged` checking only one of the two trees;
 - not exporting the target directory;
-- the hard-coded `target/`.
+- the hard-coded `target/`;
+- update notices left on;
+- `unchanged` ignoring untracked files;
+- no redaction;
+- `HSE_REF` pinned to the commit again.
+
+Three of these (notices, untracked files, and a `main` fallback in
+`upstream_sha` for REQ-UPDATE-001) survived the first draft of the tests. An
+independent review found them. The tests were strengthened until each one
+failed.
 
 **Not proven here.** Building in a worktree has not yet run on a phone. A new
 worktree path rebuilds the workspace crates once. Later runs reuse the kept
 worktree.
+
+## REQ-UPDATE-002 — automatic updates acted on the tree a build runs from
+
+**Requirement.** An automatic update (the CLI gate or the `hse serve` timer)
+acts only on an installation. That is the directory `install.sh` recorded, or
+one of its default paths. It never acts on the source tree the running binary
+was built in.
+
+**Gap (measured).** `find_install_dir` walks up from the running binary, and a
+binary at `<tree>/target/<profile>/hse` finds `<tree>`. Every automatic update
+used that lookup. So `cargo run`, any test that runs the built binary, CI, and
+the acceptance runner's own test stage each checked `<tree>` against its
+origin, and updated it when it was behind. The installer, started in that
+clone, upgrades it in place to `main` and installs over the system `hse`.
+REQ-UPDATE-001 stopped this for a detached HEAD. The independent review of
+that change reproduced it with the real binary on a branch checkout behind
+its origin. There the stub installer ran in place, and on Termux it would
+replace the device's own `hse`. The acceptance runner's `unchanged` stage
+cannot see a replaced system binary.
+
+**Fix.** The lookup is split in two. `find_installation` covers the recorded
+directory and the default paths. `build_tree_of` covers the walk up from a
+binary. `auto_update_dir` (an installation, bootstrapped if recorded but
+empty) is what `check_upstream`, `check_updates` and `spawn_detached_update`
+use. An explicit `hse update`, the API trigger and `hse update --check` still
+use `find_install_dir`, so a developer can still update a build tree on
+purpose.
+
+**Lock.** `automatic_updates_never_touch_the_tree_a_build_runs_from`
+(`tests/cli_seed_validation.rs`) runs the real binary from
+`<tree>/target/debug/hse`. `<tree>` is a fixture one commit behind a local
+origin, and its `install.sh` only leaves a mark.
+
+- `hse config` with no installation recorded: the installer never starts.
+- `hse update --check`: still finds the tree and reports "1 commit(s)
+  available".
+- Control: the same tree recorded as the installation
+  (`HUNTSMAN_INSTALL_DIR`). `hse config` starts the installer, so the silence
+  above is the rule and not a dead mechanism.
+- The tree detached: `hse update --check` says "HEAD is detached", the
+  REQ-UPDATE-001 message that no test covered before.
+
+**Falsification.** Each change applied alone:
+
+```
+automatic lookup walks up again (find_install_dir in auto_update_dir):
+  automatic_updates_never_touch_the_tree_a_build_runs_from ... FAILED
+origin_ref falls back to main again (REQ-UPDATE-001's surviving mutant):
+  a_detached_head_is_behind_nothing_and_names_no_update ... FAILED
+no detached message in `update --check`:
+  automatic_updates_never_touch_the_tree_a_build_runs_from ... FAILED
+```
+
+**Not fixed here.** Found by the same review, read in the code and not run:
+
+- A detached installation's automatic check stores "behind: unknown". The
+  `hse serve` status and the debug bundle then show it as "not yet checked".
+- An install made with `HSE_REF=<sha>` still never updates. The acceptance
+  runner no longer makes one (REQ-ACCEPT-003).
