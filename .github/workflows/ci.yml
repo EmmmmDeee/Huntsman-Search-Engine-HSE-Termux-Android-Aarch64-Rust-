@@ -372,5 +372,8 @@ jobs:
       # ludeeus/action-shellcheck@master revision in 2026-05).
       # scripts/reconcile.sh rewrites install.sh's Termux:API block on a
       # device and runs there unbuilt, so it is linted here to the same bar.
+      # So are the gate receipt and the Claude Code hooks: the pre-push hook
+      # runs on every git command a session issues, and a syntax error in it
+      # would block every push (REQ-HARNESS-001).
       - name: ShellCheck
-        run: shellcheck --severity=warning install.sh scripts/reconcile.sh
+        run: shellcheck --severity=warning install.sh scripts/reconcile.sh scripts/gate-receipt.sh .claude/hooks/pre-push-gate.sh .claude/hooks/session-start.sh

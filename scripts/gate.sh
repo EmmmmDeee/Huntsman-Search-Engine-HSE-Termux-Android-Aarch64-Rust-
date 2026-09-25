@@ -94,6 +94,14 @@ free_mb() { df -Pk . | awk 'NR==2 {print int($4/1024)}'; }
 QUICK=0
 [ "${1:-}" = "--quick" ] && QUICK=1
 
+# ── Receipt: the tree this run checks (REQ-HARNESS-001) ──────────────────────
+# Read before any check runs, so the receipt written at the end names the tree
+# the checks actually saw. `scripts/gate-receipt.sh` explains the format; the
+# pre-push hook (.claude/hooks/pre-push-gate.sh) refuses a push without one.
+GATE_MODE=full
+[ "$QUICK" = 1 ] && GATE_MODE=quick
+GATE_TREE="$(scripts/gate-receipt.sh tree 2>/dev/null || true)"
+
 MSRV="$(grep -m1 '^rust-version' Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')"
 TARGET=aarch64-linux-android
 RUSTDOC_LINTS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags"
@@ -290,7 +298,8 @@ if command -v shellcheck >/dev/null 2>&1; then
     # tolerates, so a host that happens to have shellcheck installed reported a
     # FAIL for something CI passes. A gate that cries wolf is worse than one
     # that skips: it trains you to ignore it.
-    run "shellcheck" shellcheck --severity=warning install.sh scripts/gate.sh scripts/reconcile.sh
+    run "shellcheck" shellcheck --severity=warning install.sh scripts/gate.sh scripts/reconcile.sh \
+        scripts/gate-receipt.sh .claude/hooks/pre-push-gate.sh .claude/hooks/session-start.sh
 else
     skip "shellcheck" "not installed"
 fi
@@ -404,6 +413,11 @@ printf '\n\033[1m───────── gate summary ───────�
 for p in "${PASS[@]:-}"; do [ -n "$p" ] && printf '  \033[32mPASS\033[0m  %s\n' "$p"; done
 for s in "${SKIP[@]:-}"; do [ -n "$s" ] && printf '  \033[33mSKIP\033[0m  %s\n' "$s"; done
 for f in "${FAIL[@]:-}"; do [ -n "$f" ] && printf '  \033[31mFAIL\033[0m  %s\n' "$f"; done
+
+# Written before the verdict below, and only by gate-receipt.sh, which refuses
+# when anything failed, nothing ran, or the tree changed during the run.
+printf '\n'
+scripts/gate-receipt.sh record "$GATE_MODE" "$GATE_TREE" "${#PASS[@]}" "${#FAIL[@]}" "${#SKIP[@]}"
 
 if [ "${#FAIL[@]}" -gt 0 ]; then
     printf '\n\033[1;31m%d check(s) FAILED — do not commit.\033[0m\n' "${#FAIL[@]}"

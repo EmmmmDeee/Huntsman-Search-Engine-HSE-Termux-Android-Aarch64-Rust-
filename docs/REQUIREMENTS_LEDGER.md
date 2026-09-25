@@ -27096,3 +27096,133 @@ With `RUST_LOG=off`, `hse ingest -f notes.txt --auto-scan` on the build before
 stored a scan and printed nothing about it: stderr was empty. On this build it
 prints one line on stderr, the stored scan's id and the hint, and stdout
 carries the two extracted entities, as before.
+
+## REQ-HARNESS-001 — the pre-push gate, the permission list and the drift agent were registered where Claude Code never looks
+
+**Requirement.** A session pushes only a tree `scripts/gate.sh` passed on.
+Every hook, settings key and subagent the repository ships is one Claude Code
+actually loads, and the suite fails when one is not.
+
+**Defect.** `.claude/settings.json` registered the pre-push gate under
+`StopBeforePush`. Claude Code has no event of that name, so it drops the entry
+with a settings warning and keeps the rest of the file. The gate had never
+run on a push. The same file listed its pre-approved tools under
+`permissions.allowlist` (the key is `allow`), set `keybindings`,
+`reasoning_effort`, `terminal`, `feedback` and `cache` (none of them settings;
+keybindings live in `~/.claude/keybindings.json`), and pinned every local
+session to `claude-opus-4-1-20250805`. `.claude/agents/hse-drift-watcher.md`
+had no frontmatter, so Claude Code read it as documentation and no such agent
+existed. Its text sent the reader to `/drift-watch` and `/drift-fix`, which do
+not exist either. The `UserPromptSubmit` hook defined a function it never
+called and exited 0 on every prompt. `.claude/UPGRADE_SUMMARY.md` and
+`QUICK_REFERENCE.md` described all of this as working. None of it failed a
+test, because nothing read these files.
+
+The gate's own design had a second problem: running `gate.sh --quick` inside
+a push hook takes minutes on every push, and repeats a run that normally
+happened moments earlier.
+
+**Fix.**
+
+- `scripts/gate-receipt.sh` is the one authority for gate receipts. `tree`
+  prints the tree id `git add -A && git commit` would record, computed in a
+  scratch copy of the index. `record` writes
+  `$(git rev-parse --git-common-dir)/hse-gate/<tree>` only when no check
+  failed, at least one ran, and the tree is the one read at the start. `check
+  [<rev>]` looks one up, and accepts only a file that names its own tree.
+- `scripts/gate.sh` reads the tree before its first check, and hands its real
+  counters to `record` once, after its last check and before its verdict.
+- `.claude/hooks/pre-push-gate.sh` is a `PreToolUse` hook on `Bash` (`if:
+  Bash(git *)`). It parses the hook JSON in pure bash, because Termux ships
+  neither jq nor python. It finds each `git push` through `cd DIR &&`,
+  subshells, `git -C`, `git -c`, env prefixes and wrappers, resolves every ref
+  the push sends (refspecs, `src:dst`, `+force`), and exits 2 with the
+  command that fixes it when a ref's tree has no receipt. Dry runs,
+  deletions, other repositories and pre-receipt checkouts pass. Only Claude
+  Code's own environment can turn it off (`HSE_PUSH_GATE=off`), not a
+  prefix in the command.
+- `.claude/settings.json` holds only real keys: `$schema`, a `permissions.allow`
+  list narrowed to the verification commands (gate, receipt, cargo
+  fmt/check/clippy/test/doc/build, the workflow lint), and the two hooks. The
+  model pin, the invented keys and the dead prompt hook are gone.
+- `hse-drift-watcher` gets frontmatter and a body that matches the sweep's
+  real outcome classes. The new `hse-falsifier` subagent (`isolation:
+  worktree`) is the independent reviewer of a committed range: revert checks,
+  mutations, reachability, capability loss, Termux constraints.
+- CI's ShellCheck step and the gate's lint the receipt script and both hooks.
+- `docs/OPERATING_ARCHITECTURE.md` maps each stage of the Huntsman × Claude
+  Code loop to its mechanism and says which the repository enforces.
+
+**Locks.** `tests/agent_harness.rs` (15 tests). The receipt and hook tests run
+the real scripts in throwaway git repositories, isolated from the host's git
+config. Settings, agents and the gate's wiring are read from this checkout.
+
+- `the_tree_of_a_clean_checkout_is_its_head_tree`,
+  `the_tree_is_what_committing_everything_would_record_and_the_index_is_untouched`
+  (edits, an untracked file and an ignored one; the real index and `git status`
+  unchanged).
+- `a_receipt_is_written_only_for_a_clean_pass_on_an_unchanged_tree` (failed,
+  nothing ran, unreadable start tree, tree changed mid-run, bad mode, bad
+  count), `a_receipt_covers_its_tree_and_nothing_else` (amend, empty commit,
+  unresolvable rev → 3), `a_receipt_file_that_does_not_name_its_tree_is_not_a_receipt`,
+  `every_worktree_of_a_clone_shares_its_receipts`.
+- `a_push_is_refused_until_the_gate_has_passed_on_its_tree`,
+  `a_command_that_is_not_a_push_is_never_blocked`,
+  `a_push_is_found_however_the_command_line_reaches_it`,
+  `the_ref_a_push_sends_is_the_one_that_needs_the_receipt`,
+  `a_checkout_without_gate_receipts_is_not_policed`.
+- `settings_use_only_real_keys_and_hook_events` (every event in Claude Code's
+  list, every hook script present and executable, no key outside the ones
+  this file uses), `the_push_gate_runs_before_every_git_command`,
+  `every_subagent_definition_loads` (frontmatter on line 1, `name` = file
+  stem, a `description`, `hse-falsifier` present),
+  `the_gate_records_a_receipt_for_the_tree_it_read_before_its_first_check`.
+
+**Not locked by a test: Claude Code's own matching of `if: Bash(git *)`.**
+The hook is tested as a program. That Claude Code starts it for a compound
+command such as `cd x && git push` is taken from the hooks reference, which
+says `if` is checked against each subcommand. The hook repeats the
+detection itself, so a looser `if` costs a process spawn, never a missed push.
+
+### Baseline sensitivity
+
+Each file restored alone to its pre-change content fails the suite:
+
+| restored from `1571c4d` | fails |
+|---|---|
+| `.claude/settings.json` | `settings_use_only_real_keys_and_hook_events`, `the_push_gate_runs_before_every_git_command` |
+| `.claude/agents/hse-drift-watcher.md` | `every_subagent_definition_loads` |
+| `scripts/gate.sh` | `the_gate_records_a_receipt_for_the_tree_it_read_before_its_first_check` |
+| `.claude/hooks/pre-push-gate.sh` (the old gate runner) | `a_push_is_refused_until_the_gate_has_passed_on_its_tree`, `a_push_is_found_however_the_command_line_reaches_it`, `the_ref_a_push_sends_is_the_one_that_needs_the_receipt` |
+
+### Mutations
+
+21 deliberate breakages, each applied alone and run against
+`tests/agent_harness.rs`. All 21 are caught. M11 survived the first draft,
+whose deletion case named a branch that did not exist, so a deletion misread
+as a push resolved nothing and passed anyway. The test now deletes a real
+branch that has no receipt. Every file was restored byte for byte afterwards.
+
+| breakage | caught by |
+|---|---|
+| M1 `record` ignores failed checks | `a_receipt_is_written_only_for_a_clean_pass_on_an_unchanged_tree` |
+| M2 `record` ignores a tree that changed mid-run | `a_receipt_is_written_only_for_a_clean_pass_on_an_unchanged_tree` |
+| M3 any file at the path is a receipt | `a_receipt_file_that_does_not_name_its_tree_is_not_a_receipt` |
+| M4 `tree` is `HEAD^{tree}` | three receipt tests |
+| M5 `tree` stages into the real index | three receipt tests |
+| M6 receipts per worktree (`--git-dir`) | `every_worktree_of_a_clone_shares_its_receipts` |
+| M7 `record` accepts a run where nothing executed | `a_receipt_is_written_only_for_a_clean_pass_on_an_unchanged_tree` |
+| M8 `cd DIR &&` not followed | `a_push_is_found_however_the_command_line_reaches_it` |
+| M9 `git -C DIR` not followed | `a_push_is_found_however_the_command_line_reaches_it` |
+| M10 always check HEAD, whatever the refspecs | `the_ref_a_push_sends_is_the_one_that_needs_the_receipt`, `a_command_that_is_not_a_push_is_never_blocked` |
+| M11 `--delete` read as a push | `a_command_that_is_not_a_push_is_never_blocked` |
+| M12 a refusal exits 0 | three hook tests |
+| M13 `--dry-run` read as a push | `a_command_that_is_not_a_push_is_never_blocked` |
+| M14 `\n` in the command not a separator | `a_push_is_found_however_the_command_line_reaches_it` |
+| M15 `;` not a separator | `a_push_is_found_however_the_command_line_reaches_it` |
+| M16 `git -c` does not consume its value | `a_push_is_found_however_the_command_line_reaches_it` |
+| M17 `timeout`/`env`/`nohup` wrappers not skipped | `a_push_is_found_however_the_command_line_reaches_it` |
+| M18 subshell brackets kept on the word | `a_push_is_found_however_the_command_line_reaches_it` |
+| M19 `:dst` read as pushing HEAD | `a_command_that_is_not_a_push_is_never_blocked` |
+| M20 `HSE_PUSH_GATE=off` ignored | `a_push_is_found_however_the_command_line_reaches_it` |
+| M21 quotes kept on `cd '<dir>'` | `a_push_is_found_however_the_command_line_reaches_it` |
