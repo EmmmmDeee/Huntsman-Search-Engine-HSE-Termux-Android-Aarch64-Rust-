@@ -5,7 +5,7 @@ Verify that documentation values stay synchronized with code.
 ## Usage
 ```
 /doc-drift          # Check all docs against code values
-/doc-drift --fix    # Auto-update docs to match code (if safe)
+/doc-drift --fix    # Then update the docs to match the code, and re-run
 ```
 
 ## What It Checks
@@ -31,4 +31,4 @@ Docs that quote SeekNow prices:
 - To audit existing docs for staleness
 
 ## Related
-- `cargo test --test doc_drift -- --ignored --nocapture` (direct command)
+- `cargo test --locked --test doc_drift` (direct command; part of every gate and CI run)

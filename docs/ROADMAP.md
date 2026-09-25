@@ -18,7 +18,7 @@
 > (`src/core/module/provider.rs`) — machine-readable and canonical, so this
 > document points at it rather than copying it.
 
-Last realigned: **2026-09-23**.
+Last realigned: **2026-09-25**.
 
 ---
 
@@ -297,6 +297,11 @@ correlations they unlock, not by count.
 - `install.sh`, `Dockerfile`, `docker-entrypoint.sh`, `railway.json`,
   `scripts/reconcile.sh` — install / deploy / device-reconcile lifecycle.
 - `wasm-ui/` — the browser UI crate; kept in lockstep with served exports.
+- `.claude/` + `scripts/gate.sh` / `scripts/gate-receipt.sh` — the Claude Code
+  harness: the pre-push hook that refuses a tree the gate has not passed, and
+  the `hse-falsifier` / `hse-drift-watcher` subagents; `tests/agent_harness.rs`
+  fails on any part Claude Code would silently ignore (REQ-HARNESS-001). How
+  it fits the whole loop: [`OPERATING_ARCHITECTURE.md`](OPERATING_ARCHITECTURE.md).
 
 ---
 

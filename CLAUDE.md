@@ -32,6 +32,26 @@ on each iteration — and is the map that `REQUIREMENTS_LEDGER.md` (the correctn
 transcripts) and the module registry (`src/modules/mod.rs`, the catalogue) hang
 off. Read it to understand where a change fits before making it.
 
+## Operating architecture & the push gate
+
+[`docs/OPERATING_ARCHITECTURE.md`](docs/OPERATING_ARCHITECTURE.md) maps the
+Huntsman × Claude Code loop (coordinate → isolate → implement → gate → falsify
+→ CI → ultrareview → Termux acceptance) to the mechanism behind each stage.
+Three of those mechanisms are in this repository and must keep working:
+
+- **A push must carry a gate receipt.** `.claude/hooks/pre-push-gate.sh`
+  (`PreToolUse` on `Bash`) refuses a `git push` whose tree
+  `scripts/gate.sh` has not passed. Run `scripts/gate.sh --quick` on the exact
+  commit first; an amend or rebase is a new tree (REQ-HARNESS-001).
+- **The implementer is not the only judge.** Hand the committed range to the
+  `hse-falsifier` subagent (worktree-isolated) before the PR.
+- **Cloud success proves cloud success.** Behaviour that depends on the
+  platform is accepted only on a real Termux arm64 run of the exact commit.
+
+`.claude/settings.json` is checked by `tests/agent_harness.rs`: an unknown hook
+event, settings key or frontmatter-less subagent fails the suite, because
+Claude Code ignores all three silently.
+
 ## Rust / testing gotchas
 
 **A doc-test's reported source line in RUN output is unreliable** on toolchain

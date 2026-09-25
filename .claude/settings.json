@@ -1,16 +1,17 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
-    "allowlist": [
-      "Bash",
-      "Read",
-      "Edit",
-      "Write",
-      "Glob",
-      "Grep",
-      "Agent",
-      "Artifact",
-      "Skill",
-      "AskUserQuestion"
+    "allow": [
+      "Bash(scripts/gate.sh *)",
+      "Bash(scripts/gate-receipt.sh *)",
+      "Bash(scripts/doc_coverage.sh *)",
+      "Bash(python3 scripts/check_workflows.py)",
+      "Bash(cargo fmt *)",
+      "Bash(cargo check *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo test *)",
+      "Bash(cargo doc *)",
+      "Bash(cargo build *)"
     ]
   },
   "hooks": {
@@ -19,51 +20,24 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh"
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh"
           }
         ]
       }
     ],
-    "StopBeforePush": [
+    "PreToolUse": [
       {
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pre-push-gate.sh"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/user-prompt-submit.sh"
+            "if": "Bash(git *)",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-push-gate.sh",
+            "timeout": 30,
+            "statusMessage": "Checking the gate receipt for this push"
           }
         ]
       }
     ]
-  },
-  "keybindings": {
-    "ctrl+g": "run /ci",
-    "ctrl+t": "run /run",
-    "ctrl+shift+t": "run /test",
-    "ctrl+shift+l": "run /loop 5m cargo test"
-  },
-  "model": "claude-opus-4-1-20250805",
-  "reasoning_effort": "high",
-  "terminal": {
-    "word_wrap": true,
-    "scroll_buffer": 10000
-  },
-  "feedback": {
-    "verbose_errors": true,
-    "show_timings": true,
-    "progress_notifications": true
-  },
-  "cache": {
-    "enable_prompt_caching": true,
-    "max_cache_size_mb": 500
   }
 }
