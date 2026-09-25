@@ -47,7 +47,20 @@ struct Repo {
 
 impl Repo {
     fn new() -> Self {
-        let repo = Self::bare();
+        Self::with_receipts(Self::bare())
+    }
+
+    /// An HSE-shaped checkout whose path contains spaces, as a real one can.
+    fn spaced() -> Self {
+        Self::with_receipts(Self::bare_in(
+            tempfile::Builder::new()
+                .prefix("hse repo with spaces ")
+                .tempdir()
+                .expect("temp dir"),
+        ))
+    }
+
+    fn with_receipts(repo: Self) -> Self {
         let scripts = repo.path().join("scripts");
         fs::create_dir_all(&scripts).unwrap();
         fs::copy(
@@ -65,8 +78,12 @@ impl Repo {
     /// A repository without the receipt script: not an HSE checkout, or one
     /// from before receipts existed.
     fn bare() -> Self {
+        Self::bare_in(tempfile::tempdir().expect("temp dir"))
+    }
+
+    fn bare_in(dir: tempfile::TempDir) -> Self {
         let repo = Self {
-            dir: tempfile::tempdir().expect("temp dir"),
+            dir,
             home: tempfile::tempdir().expect("temp dir"),
         };
         repo.write("README.md", "fixture\n");
@@ -104,6 +121,9 @@ impl Repo {
             .env("GIT_COMMITTER_NAME", "t")
             .env("GIT_COMMITTER_EMAIL", "t@t")
             .env_remove("HSE_PUSH_GATE")
+            // The hook reads the session's project directory; a test run
+            // inside a Claude Code session inherits the real one.
+            .env_remove("CLAUDE_PROJECT_DIR")
             .env_remove("GIT_DIR")
             .env_remove("GIT_INDEX_FILE")
             .env_remove("GIT_WORK_TREE");
@@ -186,6 +206,23 @@ impl Repo {
         description: &str,
         gate_env: Option<&str>,
     ) -> Output {
+        self.hook_full(cwd, command, description, gate_env, None)
+    }
+
+    /// The hook as a session whose project is `project` (`CLAUDE_PROJECT_DIR`)
+    /// runs it, from `cwd`.
+    fn hook_in_project(&self, cwd: &Path, command: &str, project: &Path) -> Output {
+        self.hook_full(cwd, command, "push it", None, Some(project))
+    }
+
+    fn hook_full(
+        &self,
+        cwd: &Path,
+        command: &str,
+        description: &str,
+        gate_env: Option<&str>,
+        project: Option<&Path>,
+    ) -> Output {
         use std::io::Write;
         let input = serde_json::json!({
             "session_id": "test",
@@ -201,6 +238,9 @@ impl Repo {
             .stderr(std::process::Stdio::piped());
         if let Some(v) = gate_env {
             c.env("HSE_PUSH_GATE", v);
+        }
+        if let Some(p) = project {
+            c.env("CLAUDE_PROJECT_DIR", p);
         }
         let mut child = c.spawn().expect("bash");
         child
@@ -470,6 +510,138 @@ fn a_push_is_found_however_the_command_line_reaches_it() {
         &repo.hook_with(repo.path(), "git push", Some("off")),
         "HSE_PUSH_GATE=off in the hook environment",
     );
+}
+
+/// REQ-HARNESS-003 (review finding on PR #651). The command was split on
+/// whitespace after the JSON was decoded, so quotes were not shell syntax:
+/// `cd '/path with spaces' && git push` resolved to a directory that does not
+/// exist, and the push went through unchecked. The hook now lexes quotes and
+/// escapes as the shell does.
+#[test]
+fn a_push_is_found_through_quotes_and_paths_with_spaces() {
+    let repo = Repo::spaced();
+    repo.commit_all("add the receipt script");
+    let at = repo.path().display().to_string();
+    assert!(
+        at.contains(' '),
+        "the fixture's path must contain spaces: {at}"
+    );
+    let elsewhere = repo.home().to_path_buf();
+    let escaped = at.replace(' ', "\\ ");
+    let forms = [
+        format!("cd '{at}' && git push"),
+        format!("cd \"{at}\" && git push"),
+        format!("cd {escaped} && git push"),
+        format!("git -C '{at}' push origin main"),
+    ];
+    for f in &forms {
+        assert_blocked(&repo.hook_with(&elsewhere, f, None), f);
+    }
+    // With a receipt they pass, so the refusals above came from resolving
+    // this repository, not from failing to resolve anything.
+    repo.record_pass();
+    for f in &forms {
+        assert_allowed(&repo.hook_with(&elsewhere, f, None), f);
+    }
+}
+
+/// REQ-HARNESS-003. A directory or refspec the shell only knows at run time
+/// cannot be checked here. Guessing let such a push through; in an HSE session
+/// it is refused, with the reason. HEAD carries a receipt throughout, so every
+/// refusal below is about what cannot be known, not a missing receipt.
+#[test]
+fn a_push_the_hook_cannot_resolve_is_refused_in_an_hse_session() {
+    let repo = Repo::new();
+    repo.commit_all("add the receipt script");
+    repo.record_pass();
+    let elsewhere = repo.home().to_path_buf();
+
+    for command in [
+        "git push origin \"$BRANCH\"",
+        "git push -u origin \"$(git branch --show-current)\"",
+        "git push origin `git branch --show-current`",
+    ] {
+        let out = repo.hook(command);
+        assert_blocked(&out, command);
+        assert!(
+            text(&out.stderr).contains("only known at run time"),
+            "{command}: the refusal says why: {}",
+            text(&out.stderr)
+        );
+    }
+
+    // A run-time directory, from a session whose project is this checkout.
+    for command in ["cd \"$REPO\" && git push", "git -C \"$REPO\" push"] {
+        let out = repo.hook_in_project(&elsewhere, command, repo.path());
+        assert_blocked(&out, command);
+        assert!(text(&out.stderr).contains("cannot tell which repository"));
+    }
+    // The same command from a session that is not about HSE is none of the
+    // hook's business.
+    assert_allowed(
+        &repo.hook_with(&elsewhere, "cd \"$REPO\" && git push", None),
+        "not an HSE session",
+    );
+
+    // A quote left open: refuse rather than guess.
+    let out = repo.hook("git push 'origin");
+    assert_blocked(&out, "unbalanced quote");
+    assert!(text(&out.stderr).contains("a quote is left open"));
+
+    // `$` inside single quotes is a literal, not an expansion.
+    assert_allowed(
+        &repo.hook("git push origin '$not-a-var'"),
+        "single-quoted $",
+    );
+}
+
+/// REQ-HARNESS-003. A heredoc's body is text fed to a command, never commands.
+/// The first lexer read it as commands, so a commit message or an inline script
+/// became unbalanced quotes and stray `push` words, and the live hook refused
+/// ordinary work in this repository's own session.
+#[test]
+fn a_heredoc_body_is_text_not_commands() {
+    let repo = Repo::new();
+    repo.commit_all("add the receipt script");
+    for command in [
+        "python3 - <<'EOF'\ns = 'git push the '''odd\" thing'\nEOF\ngit status",
+        "git commit -F - <<'MSG'\nWhy we never git push blind\nit's 'unbalanced\nMSG",
+        "cat <<-EOF\n\tgit push\n\tEOF\necho done",
+        "cat <<\"E O F\"\ngit push\nE O F",
+        "cat <<A <<'B'\ngit push\nA\n'x\nB\ntrue",
+        "git commit -m \"a; git push\" && git status",
+    ] {
+        assert_allowed(&repo.hook(command), command);
+    }
+    // A push on a line after the heredoc is still a push, and a here-string
+    // (`<<<`) is not a heredoc.
+    assert_blocked(
+        &repo.hook("cat <<'EOF'\n'x\nEOF\ngit push"),
+        "push after a heredoc",
+    );
+    assert_blocked(&repo.hook("git push <<< 'yes'"), "here-string");
+}
+
+/// REQ-HARNESS-003 (review finding on PR #651). `gate.sh` ignored the receipt
+/// command's exit status, so a receipt that could not be stored still ended in
+/// a passing gate, and the push hook then refused a tree the gate called good.
+/// A storage failure exits non-zero, and gate.sh counts it as a failure.
+#[test]
+fn a_receipt_that_cannot_be_stored_is_a_failure() {
+    let repo = Repo::new();
+    repo.commit_all("add the receipt script");
+    let dir = PathBuf::from(text(&repo.receipt(&["dir"]).stdout).trim());
+    // A file where the directory should be: unwritable even for root.
+    fs::write(&dir, "not a directory").unwrap();
+    let tree = repo.worktree_tree();
+    let out = repo.receipt(&["record", "quick", &tree, "3", "0", "0"]);
+    assert!(
+        !out.status.success(),
+        "a receipt that was not stored must not exit 0\nstdout: {}\nstderr: {}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    assert_eq!(code(&repo.receipt(&["check"])), 1, "and none exists");
 }
 
 #[test]
@@ -850,5 +1022,20 @@ fn the_gate_records_a_receipt_for_the_tree_it_read_before_its_first_check() {
     assert!(
         verdict.iter().any(|v| *v > record[0]),
         "the receipt is recorded before the verdict exits"
+    );
+    // A receipt that could not be stored must reach the verdict: the call is
+    // the condition of an `if !` whose body adds to FAIL (REQ-HARNESS-003).
+    let lines: Vec<&str> = gate.lines().collect();
+    let call = lines[record[0]].trim_start();
+    assert!(
+        call.starts_with("if ! scripts/gate-receipt.sh record "),
+        "the record call's exit status must be checked: {call}"
+    );
+    assert!(
+        lines[record[0] + 1..]
+            .iter()
+            .take(3)
+            .any(|l| l.trim_start().starts_with("FAIL+=(")),
+        "a failed record must count as a gate failure"
     );
 }

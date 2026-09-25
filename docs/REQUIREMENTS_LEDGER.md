@@ -27377,3 +27377,85 @@ It skips, with a message, on a host without python3 and pyyaml, as gate.sh's
 The first draft of the new-crate assertion read stdout. The lint reports
 problems on stderr, so the assertion failed on the fixed code, which was a
 defect in the check, not in the lint. It now reads stderr.
+
+## REQ-HARNESS-003 — the push hook read quotes as text, and the gate passed without a stored receipt
+
+**Requirement.** The pre-push hook reads a command's words as the shell does,
+and refuses a push it cannot resolve rather than letting it through. A gate
+run whose receipt could not be stored does not end in a pass.
+
+**Defects.** Two came from review of PR #651 (Copilot), and a third from the
+hook blocking this session's own work.
+
+1. The hook decoded the command, then word-split it on whitespace and trimmed
+   one quote character from each end of a word. Quotes were therefore not
+   syntax. `cd '/path with spaces' && git push` resolved to a directory that
+   does not exist, `git -C` failed, and the push was allowed unchecked. The
+   same was true of `cd "$REPO"`, `git -C "$DIR"` and `git push origin
+   "$BRANCH"`: a run-time value looked like a literal that did not resolve, and
+   an unresolvable source was skipped as "git will fail by itself". The header
+   claimed "it never skips a real push", and that claim was false.
+2. `gate.sh` ignored `gate-receipt.sh record`'s exit status. On a read-only
+   `.git` or a full disk the record fails with exit 2, the gate still printed
+   "All checks passed" and exited 0, and the push hook then refused a tree the
+   gate had called good.
+3. The first version of the lexer did not know heredocs, so it read their
+   bodies as commands. Live in this session, it refused a `python3 - <<'EOF'`
+   whose body held unbalanced-looking quotes and the word "push". Heredocs
+   carry every `git commit -F -` message and inline script here.
+
+**Fix.**
+
+- `lex` in `.claude/hooks/pre-push-gate.sh` is a small quote-aware lexer:
+  single and double quotes, backslash escapes and line continuations,
+  separators (`;` `&&` `||` `|` `&`, newline, subshell brackets), redirections
+  with their fds and targets, `~`, and heredocs (`<<`, `<<-`, quoted or escaped
+  delimiters, several on one line; bodies skipped; `<<<` is not a heredoc).
+  A word that holds `$` or a backtick outside single quotes is marked as known
+  only at run time.
+- A push whose directory or refspec is known only at run time, and a command
+  with an unclosed quote that mentions `push`, is refused with the reason.
+  This applies only when the session is working on HSE: its current directory,
+  or `$CLAUDE_PROJECT_DIR`, is an HSE checkout. Elsewhere the hook stays out
+  of the way. `$` inside single quotes is a literal.
+- `gate.sh` runs `record` as the condition of an `if !`: a storage failure is
+  added to FAIL, printed, and fails the verdict.
+
+**Locks** (`tests/agent_harness.rs`, 21 tests):
+
+- `a_push_is_found_through_quotes_and_paths_with_spaces`: a fixture at a path
+  containing spaces. `cd '…'`, `cd "…"`, backslash-escaped spaces and
+  `git -C '…'` are all refused without a receipt, and all allowed with one,
+  which proves the refusals came from resolving the repository.
+- `a_push_the_hook_cannot_resolve_is_refused_in_an_hse_session`: with HEAD
+  carrying a receipt, `"$BRANCH"`, `"$(…)"` and backtick refspecs, and `cd
+  "$REPO"` or `git -C "$REPO"` from a session whose project is the checkout,
+  are refused with "only known at run time" or "cannot tell which repository".
+  The same `cd "$REPO"` from a non-HSE session is allowed. An open quote is
+  refused. A single-quoted `$` is allowed.
+- `a_heredoc_body_is_text_not_commands`: six heredoc and quoted-separator forms
+  pass. A push on the line after a heredoc, and a here-string push, are
+  refused.
+- `a_receipt_that_cannot_be_stored_is_a_failure`: a file where the receipt
+  directory should be (unwritable even for root) makes `record` exit
+  non-zero, and no receipt exists.
+- `the_gate_records_a_receipt_for_the_tree_it_read_before_its_first_check`
+  now also requires the record call to be `if ! …` feeding `FAIL+=(`.
+- The fixture clears `CLAUDE_PROJECT_DIR`, and tests set it explicitly. A test
+  run inside a Claude Code session inherits the real one, which would
+  otherwise decide the outcome.
+
+**Sensitivity.** With the pre-change hook restored, three tests fail:
+`a_heredoc_body_is_text_not_commands` (it split `git commit -m "a; git push"`
+at the quoted `;`), `a_push_is_found_through_quotes_and_paths_with_spaces`,
+and `a_push_the_hook_cannot_resolve_is_refused_in_an_hse_session`. With the
+pre-change `gate.sh` restored, the wiring test fails. A 25-case hand check of
+the lexer against a real repository at a spaced path also passed before the
+tests were written.
+
+**Operational note.** This session's first attempt at the heredoc fix was
+itself refused by the live hook, which is how defect 3 was found. A background
+mutation script that outlived its apparent end later copied files back after
+they had been stashed. Its liveness check used `pgrep -f` with `\|`, which
+ERE reads as a literal pipe, so it reported the script finished. It was
+stopped with `TaskStop`, and the tree was restored and rechecked.

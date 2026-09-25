@@ -54,10 +54,13 @@ at least one check executed, and that tree unchanged, it writes a receipt under
 `$(git rev-parse --git-common-dir)/hse-gate/<tree>`.
 
 `.claude/hooks/pre-push-gate.sh` is a `PreToolUse` hook on `Bash`, filtered to
-git commands. For each `git push` a session issues, it resolves every ref the
-push sends (following `cd DIR &&`, `git -C DIR`, refspecs and `src:dst`) and
-refuses with exit 2 when a ref's tree has no receipt. The refusal names the
-command that fixes it. So:
+git commands. It reads the command as the shell does: quotes, escapes,
+separators, redirections and heredocs. For each `git push` it resolves every
+ref the push sends (following `cd DIR &&`, `git -C DIR`, refspecs and
+`src:dst`) and refuses with exit 2 when a ref's tree has no receipt. The
+refusal names the command that fixes it. A push whose directory or branch is
+only known at run time (`$VAR`, `$(…)`) is refused in an HSE session rather
+than guessed at (REQ-HARNESS-003). So:
 
 - a push of code the gate never saw is refused before it leaves the session;
 - an amend, a rebase or a file added after the run is a different tree, and

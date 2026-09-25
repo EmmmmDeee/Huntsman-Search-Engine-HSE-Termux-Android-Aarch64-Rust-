@@ -415,9 +415,16 @@ for s in "${SKIP[@]:-}"; do [ -n "$s" ] && printf '  \033[33mSKIP\033[0m  %s\n' 
 for f in "${FAIL[@]:-}"; do [ -n "$f" ] && printf '  \033[31mFAIL\033[0m  %s\n' "$f"; done
 
 # Written before the verdict below, and only by gate-receipt.sh, which refuses
-# when anything failed, nothing ran, or the tree changed during the run.
+# when anything failed, nothing ran, or the tree changed during the run. Those
+# refusals exit 0: the checks' own results are the verdict. A receipt that
+# could not be STORED (a read-only `.git`, a full disk) exits non-zero, and is
+# a failure here: the push hook will refuse this tree, so exiting 0 would
+# report a pushable state the gate did not establish (REQ-HARNESS-003).
 printf '\n'
-scripts/gate-receipt.sh record "$GATE_MODE" "$GATE_TREE" "${#PASS[@]}" "${#FAIL[@]}" "${#SKIP[@]}"
+if ! scripts/gate-receipt.sh record "$GATE_MODE" "$GATE_TREE" "${#PASS[@]}" "${#FAIL[@]}" "${#SKIP[@]}"; then
+    FAIL+=("gate receipt (could not be stored; see the error above)")
+    printf '  \033[31mFAIL\033[0m  %s\n' "gate receipt (could not be stored)"
+fi
 
 if [ "${#FAIL[@]}" -gt 0 ]; then
     printf '\n\033[1;31m%d check(s) FAILED — do not commit.\033[0m\n' "${#FAIL[@]}"
