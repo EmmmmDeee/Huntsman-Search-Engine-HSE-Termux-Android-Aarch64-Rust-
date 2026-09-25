@@ -14,6 +14,14 @@ pub(super) async fn cmd_update(check: bool, ref_: Option<String>) -> Result<()> 
         match update::ensure_install_dir() {
             Some(dir) => {
                 print!("Source: {}  ", dir.display());
+                if update::is_detached(&dir) {
+                    println!(
+                        "HEAD is detached: pinned to one commit and following no branch, so \
+                         nothing is behind and nothing updates it automatically. `hse update` \
+                         installs main."
+                    );
+                    return Ok(());
+                }
                 match update::commits_behind(&dir) {
                     Some(0) => println!("Already up to date."),
                     Some(n) => {

@@ -27659,3 +27659,142 @@ and requires them to be unchanged, byte for byte.
 **Not proven here.** This change adds the runner. It has not yet been run on
 a device. Its first real record is the evidence the architecture asks for,
 and it comes only from a phone.
+
+## REQ-UPDATE-001 — auto-update replaced a pinned checkout with `main`
+
+**Requirement.** An automatic update never moves a checkout whose HEAD is
+detached. A detached HEAD is one commit someone chose. It follows no branch,
+so it is behind nothing.
+
+**Gap (measured).** `current_branch` answered `install_ref()`, i.e. `main`,
+for a detached HEAD. Any `hse` command the update check does not exempt, run
+from inside a detached checkout with no recent throttle stamp, counted
+`HEAD..origin/main`, found commits, and started `install.sh` in the
+background. Started inside an HSE clone, the installer upgrades that clone in
+place with `git checkout -B main FETCH_HEAD`.
+
+Found through PR #653's CI. `Check & test (Linux x86_64, stable)` failed all
+9 `termux_accept` tests with `NotFound` copying `scripts/termux-accept.sh`, a
+file the commit has. CI checks out the PR head detached at depth 1, and earlier
+test binaries run the build-tree `hse` from the checkout with a scratch `HOME`.
+The update switched the checkout to `main`, which has no such file, while the
+later binaries ran.
+
+Reproduced outside CI with the binary CI built (`d3e3bb0`), placed in a
+depth-1 detached checkout and run once as a test runs it:
+
+```
+before: HEAD=d3e3bb0 (detached)   scripts/termux-accept.sh present
+hse config, fresh HOME:
+        "3018 commit(s) behind GitHub main — applying the update in the background"
+after:  HEAD=cf318be7 on main     scripts/termux-accept.sh MISSING
+log:    "Target revision pinned by caller: cf318be" … "Installing apt packages"
+```
+
+3018 is every commit of `main`: a depth-1 history stops at HEAD, so none of
+its ancestors is known. A full clone of the same commit reads 1 (the merge
+commit of #652), still an update. So any PR's suite could run its later test
+binaries against `main`'s files, and start a system-level install as a side
+effect. The device is exposed the same way: on-device acceptance is `git
+checkout <sha>`, and `hse config` is not exempt from the check.
+
+**Fix.** `current_branch` returns `None` for a detached HEAD. Everything built
+on it (`fetch_origin_tip`, `commits_behind`, `upstream_sha`,
+`changelog_lines`) then returns nothing, and no fetch is made. `is_detached`
+names the state, and `hse update --check` reports it instead of "could not
+reach remote — offline?". An explicit `hse update` still installs `main`. The
+installer (`checkout -B <ref>`) and `bootstrap_source` both leave HEAD on a
+branch, so installed trees keep their updates:
+`an_installer_style_checkout_sees_upstream_commits` still passes.
+
+After the fix, the same reproduction:
+
+```
+before: HEAD=d3e3bb0 (detached)   scripts/termux-accept.sh present
+hse config, fresh HOME:  (nothing)
+after:  HEAD=d3e3bb0 (detached)   scripts/termux-accept.sh present   no update log
+hse update --check:  "HEAD is detached: pinned to one commit and following no branch …"
+```
+
+**Lock.** `a_detached_head_is_behind_nothing_and_names_no_update`
+(`src/app/update.rs`) builds CI's shape: a real remote whose `main` moves on,
+and a depth-1 detached checkout of a commit off `main`. `commits_behind`,
+`upstream_sha` and `changelog_lines` all give nothing, and HEAD stays put. A
+branch control on the same checkout counts `main`'s commits. That proves the
+remote is reachable, so the `None` comes from the detached rule.
+
+**Falsification.** Restoring the fallback (`.or_else(|| Some(install_ref()))`):
+
+```
+a_detached_head_is_behind_nothing_and_names_no_update ... FAILED
+  assertion `left == right` failed: a pinned commit follows no branch, so it is behind nothing
+```
+
+**Not fixed here.** A checkout on a branch that is behind its remote is still
+updated by a non-exempt `hse` run from inside it, and a test suite run from
+such a checkout runs one. The acceptance runner detects that and rejects the
+run (REQ-ACCEPT-002). Keeping the test suite's own `hse` runs away from the
+update check is a separate change.
+
+## REQ-ACCEPT-002 — the acceptance run could rewrite the checkout it vouched for
+
+**Requirement.** An acceptance run never changes the checkout under test, and
+its record is `REJECTED` if anything it started did.
+
+**Gap.** Three paths in the REQ-ACCEPT-001 runner changed the checkout under
+test:
+
+- **restart** ran `hse config` four times in a scratch `HOME` with updates on
+  by default. From inside the checkout, a non-exempt `hse` installs an update
+  into it (REQ-UPDATE-001). The key it toggled was `feature.auto_update`
+  itself, so its last read ran with updates switched on.
+- **install** ran `install.sh` from inside the checkout. The installer
+  upgrades in place a clone it is started inside. It ran `git remote set-url
+  origin <the checkout>`, which pointed the operator's origin at the checkout
+  itself, and `checkout -B main FETCH_HEAD`, which reset their `main`.
+- Nothing checked, at the end, that the commit the record names was still the
+  one on disk.
+
+**Fix.**
+- **restart**: the scratch `HOME` starts with `feature.auto_update` and
+  `feature.update_notify` off. The round trip uses `feature.map_tiles`.
+- **install**: installs into `HSE_INSTALL_DIR`, else the installer's default,
+  fetching HEAD from the checkout's `origin`. If that directory is the
+  checkout, the stage fails without starting the installer.
+- **unchanged**, a new last stage: HEAD is still the commit under test, the
+  tree is clean, and `origin` is what it was at the start. Otherwise the
+  verdict is `REJECTED`.
+
+**Locks** (`tests/termux_accept.rs`, now 12 tests). The stub `hse` models the
+hazard as the real one has it. Every command but `build-sha` "installs an
+update" into the tree above the binary, unless its `HOME` turned updates off,
+reading the switch as `config` last stored it. With that stub:
+
+- `the_runner_never_lets_hse_update_the_checkout_under_test` passes, and its
+  control runs the same binary with updates on and sees the checkout edited;
+- `a_checkout_that_changes_during_the_run_is_rejected` covers a test run that
+  edits the tree, one that moves HEAD, and one that re-points `origin`;
+- `the_install_stage_installs_elsewhere_and_never_into_the_checkout` checks
+  the installer's directory, source and pinned commit, and the refusal when
+  `HSE_INSTALL_DIR` is the checkout.
+
+**Mutations.** 9 breakages, each applied alone, all caught by the test written
+for it:
+
+- no pre-seeded settings;
+- the restart key back to `feature.auto_update`;
+- installing in place from the checkout;
+- no install-directory guard;
+- installing from the checkout rather than `origin`;
+- ignoring a moved HEAD;
+- ignoring edits;
+- ignoring a changed `origin`;
+- no `unchanged` stage.
+
+The stub first read only the pre-seeded file. With that stub, the restart-key
+mutant survived, because the real `hse config feature.auto_update on` writes
+the same file. The stub now lets a stored value win, as the real one does.
+
+**Not proven here.** The install stage fetches HEAD from `origin`, so the
+commit must be pushed there. That is the device procedure (§5 of
+`docs/OPERATING_ARCHITECTURE.md`). It has not yet run on a device.

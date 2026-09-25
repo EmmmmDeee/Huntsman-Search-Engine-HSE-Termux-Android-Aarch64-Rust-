@@ -120,10 +120,20 @@ stages in order:
    verifiable.
 5. **tests**: the suite on bionic/aarch64.
 6. **restart**: a setting written by one `hse` process is read back by a new
-   one, in a scratch `HOME`.
-7. **install**: runs the real installer on HEAD, only with `--install`.
+   one, in a scratch `HOME` with automatic updates off.
+7. **install**: runs the real installer on HEAD, only with `--install`. It
+   installs where it installs for an operator, from the checkout's `origin`,
+   so HEAD must be pushed. It never installs into the checkout under test.
 8. **resources**: binary size, free disk, and battery level when termux-api
    is present.
+9. **unchanged**: HEAD is still the commit under test, the tree is clean, and
+   `origin` is unchanged. A run that changed the checkout did not test that
+   commit, so it is `REJECTED` (REQ-ACCEPT-002).
+
+Nothing the run starts may update the checkout. An `hse` run from inside a
+checkout checks for an update before most commands. On a branch that is
+behind, it installs the update there. A detached HEAD is never updated
+(REQ-UPDATE-001), which is one more reason to check out the exact commit.
 
 It writes one JSON record, bound to the commit, to
 `~/.huntsman/acceptance/<sha>.json` and prints it. Its verdict is one of:

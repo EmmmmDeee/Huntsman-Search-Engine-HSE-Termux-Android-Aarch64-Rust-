@@ -15,9 +15,13 @@
 #   tests      cargo test --locked --lib --bins --tests         (--skip-tests)
 #   restart    a setting written by one `hse` process is read back by a new
 #              one, in a scratch HOME that never touches the operator's state
-#   install    opt-in (--install): the real installer builds and installs HEAD,
-#              and the `hse` on PATH then proves it is HEAD
+#              and has automatic updates off
+#   install    opt-in (--install): the real installer builds and installs HEAD
+#              where it installs for an operator, never into this checkout, and
+#              the `hse` on PATH then proves it is HEAD
 #   resources  binary size, free disk, battery level if termux-api is present
+#   unchanged  HEAD is still the commit under test, the tree is clean, and
+#              origin is as it was: nothing the run started edited the checkout
 #
 # It writes one JSON record to $HOME/.huntsman/acceptance/<sha>.json (or
 # --out FILE) and prints it. The verdict is:
@@ -43,7 +47,7 @@ while [ "$#" -gt 0 ]; do
         --install) INSTALL=1 ;;
         --profile) PROFILE="${2:-}"; shift ;;
         --out) OUT="${2:-}"; shift ;;
-        -h | --help) sed -n '2,34p' "$0"; exit 0 ;;
+        -h | --help) sed -n '2,35p' "$0"; exit 0 ;;
         *) echo "termux-accept: unknown argument '$1' (see --help)" >&2; exit 2 ;;
     esac
     shift
@@ -76,6 +80,7 @@ stage() { # stage <name> <PASS|FAIL|SKIP> <detail>
 TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "termux-accept: not inside a git checkout" >&2; exit 2; }
 cd "$TOP" || exit 2
 SHA="$(git rev-parse HEAD)"
+ORIGIN_URL="$(git remote get-url origin 2>/dev/null || true)"
 
 # ── checkout ────────────────────────────────────────────────────────────────
 DIRTY="$(git status --porcelain --untracked-files=normal)"
@@ -146,10 +151,18 @@ fi
 
 # ── restart ─────────────────────────────────────────────────────────────────
 # Two separate processes and a value unlike the default: the second can only
-# report it if the first really wrote it where a restart reads it.
+# report it if the first really wrote it where a restart reads it. The scratch
+# HOME starts with updates and update notices off. `hse config` checks for an
+# update first, and from inside this checkout it installs one into it, which
+# replaces the commit under test (REQ-UPDATE-001); with notices on it would
+# still fetch into this checkout's refs. So the key toggled here is not
+# `feature.auto_update` either.
 if [ -x "$BIN" ]; then
     SCRATCH="$(mktemp -d)"
-    KEY=feature.auto_update
+    mkdir -p "$SCRATCH/.huntsman"
+    printf '{"feature.auto_update":false,"feature.update_notify":false}\n' \
+        >"$SCRATCH/.huntsman/settings.json"
+    KEY=feature.map_tiles
     if HOME="$SCRATCH" "$BIN" config "$KEY" off >/dev/null 2>&1 \
         && [[ "$(HOME="$SCRATCH" "$BIN" config "$KEY" 2>/dev/null)" == *" off" ]] \
         && HOME="$SCRATCH" "$BIN" config "$KEY" on >/dev/null 2>&1 \
@@ -164,9 +177,19 @@ else
 fi
 
 # ── install (opt-in) ────────────────────────────────────────────────────────
+# The installer upgrades in place a clone it is started inside, and this
+# script runs inside the checkout under test: there it would point origin at
+# the checkout itself and reset its `main` to HEAD. So it installs where it
+# installs for an operator (HSE_INSTALL_DIR, else its own default), fetching
+# HEAD from this checkout's origin. HEAD must be pushed there, as the device
+# stage expects.
 if [ "$INSTALL" = 1 ]; then
-    if HSE_REPO_URL="$TOP" HSE_REF="$SHA" HSE_REQUIRE_SHA="$SHA" HSE_PREFER_BUILD=1 \
-        HSE_BUILD_PROFILE="$PROFILE" bash "$TOP/install.sh" >&2; then
+    IDIR="${HSE_INSTALL_DIR:-$HOME/.local/share/hse}"
+    FROM="${ORIGIN_URL:-$TOP}"
+    if [ "$(cd "$IDIR" 2>/dev/null && pwd -P)" = "$(pwd -P)" ]; then
+        stage install FAIL "HSE_INSTALL_DIR is this checkout; installing there would replace the commit under test"
+    elif HSE_INSTALL_DIR="$IDIR" HSE_REPO_URL="$FROM" HSE_REF="$SHA" HSE_REQUIRE_SHA="$SHA" \
+        HSE_PREFER_BUILD=1 HSE_BUILD_PROFILE="$PROFILE" bash "$TOP/install.sh" >&2; then
         INSTALLED="$(command -v hse || true)"
         if [ -n "$INSTALLED" ] && [ "$("$INSTALLED" build-sha 2>/dev/null)" = "$SHA" ]; then
             stage install PASS "install.sh installed HEAD at $INSTALLED"
@@ -174,7 +197,7 @@ if [ "$INSTALL" = 1 ]; then
             stage install FAIL "install.sh finished, but the hse on PATH (${INSTALLED:-none}) is not HEAD"
         fi
     else
-        stage install FAIL "install.sh failed (log: \$HOME/.cache/hse-install.log)"
+        stage install FAIL "install.sh failed installing $SHA from $FROM into $IDIR (log: \$HOME/.cache/hse-install.log)"
     fi
 fi
 
@@ -183,6 +206,23 @@ FREE_MB="$(df -Pk "$TOP" 2>/dev/null | awk 'NR==2 {print int($4/1024)}')"
 BATTERY=""
 if command -v termux-battery-status >/dev/null 2>&1; then
     BATTERY="$(termux-battery-status 2>/dev/null | tr -d ' \n' | sed -n 's/.*"percentage":\([0-9]*\).*/\1/p')"
+fi
+
+# ── unchanged ───────────────────────────────────────────────────────────────
+# The record speaks for $SHA only if the checkout still is $SHA, as committed,
+# with the origin it started with. A stage that moved or edited it (an update,
+# an installer, a test) was not testing $SHA.
+NOW="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+EDITED="$(git status --porcelain --untracked-files=normal | head -3 | tr '\n' ' ')"
+NOW_ORIGIN="$(git remote get-url origin 2>/dev/null || true)"
+if [ "$NOW" != "$SHA" ]; then
+    stage unchanged FAIL "HEAD moved to $NOW during the run"
+elif [ -n "$EDITED" ]; then
+    stage unchanged FAIL "the checkout was edited during the run: $EDITED"
+elif [ "$NOW_ORIGIN" != "$ORIGIN_URL" ]; then
+    stage unchanged FAIL "origin changed during the run: ${ORIGIN_URL:-none} -> ${NOW_ORIGIN:-none}"
+else
+    stage unchanged PASS "HEAD is still $SHA, with no change"
 fi
 
 # ── verdict and record ──────────────────────────────────────────────────────

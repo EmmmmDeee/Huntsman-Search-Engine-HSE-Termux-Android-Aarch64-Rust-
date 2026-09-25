@@ -180,18 +180,32 @@ fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// The branch the installer checked out (`checkout -B <ref>`), or the
-/// configured ref when HEAD is detached.
-fn current_branch(dir: &Path) -> String {
-    git_stdout(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
-        .filter(|b| !b.is_empty() && b != "HEAD")
-        .unwrap_or_else(install_ref)
+/// The branch HEAD is on: the one the installer checked out (`checkout -B
+/// <ref>`), or a clone's own. `None` when HEAD is detached, or git cannot say.
+///
+/// A detached HEAD is one commit someone chose: CI checks out the commit under
+/// test, and on-device acceptance is `git checkout <sha>`. It follows no branch,
+/// so it is behind nothing. It used to stand in for the configured ref (`main`),
+/// so any `hse` command run from such a checkout counted `HEAD..origin/main` —
+/// every commit of `main` on a depth-1 clone, whose history stops at HEAD — and
+/// ran `install.sh` in the checkout, which switched it to `main`: the commit
+/// under test was replaced mid-run by the one the test was meant to differ from
+/// (REQ-UPDATE-001). The installer never leaves HEAD detached, so no install
+/// loses its updates to this.
+fn current_branch(dir: &Path) -> Option<String> {
+    git_stdout(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).filter(|b| !b.is_empty() && b != "HEAD")
+}
+
+/// Whether HEAD is detached: pinned to one commit, following no branch, so
+/// never compared with upstream or updated automatically (REQ-UPDATE-001).
+pub fn is_detached(dir: &Path) -> bool {
+    git_stdout(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).is_some_and(|b| b == "HEAD")
 }
 
 /// `refs/remotes/origin/<branch>` — the ref [`fetch_origin_tip`] fills and
-/// every comparison below reads.
-fn origin_ref(dir: &Path) -> String {
-    format!("refs/remotes/origin/{}", current_branch(dir))
+/// every comparison below reads. `None` when HEAD is on no branch.
+fn origin_ref(dir: &Path) -> Option<String> {
+    current_branch(dir).map(|b| format!("refs/remotes/origin/{b}"))
 }
 
 /// Fetch the current branch's tip from `origin` into its remote-tracking ref
@@ -203,10 +217,10 @@ fn origin_ref(dir: &Path) -> String {
 /// comparison against it read as "unreachable": auto-update and `hse update
 /// --check` were inert on the primary install path — while a `git clone`d
 /// checkout, which does set tracking, worked. An explicit refspec needs no
-/// tracking config and no config mutation. `None` when git is absent, there is
-/// no `origin`, or the remote is unreachable.
+/// tracking config and no config mutation. `None` when git is absent, HEAD is
+/// on no branch, there is no `origin`, or the remote is unreachable.
 fn fetch_origin_tip(dir: &Path) -> Option<String> {
-    let branch = current_branch(dir);
+    let branch = current_branch(dir)?;
     let remote_ref = format!("refs/remotes/origin/{branch}");
     let status = std::process::Command::new("git")
         .args([
@@ -224,7 +238,8 @@ fn fetch_origin_tip(dir: &Path) -> Option<String> {
 }
 
 /// Fetch, then count commits on `origin/<branch>` not in `HEAD`.
-/// Returns `None` when git is absent or the remote is unreachable.
+/// Returns `None` when git is absent, the remote is unreachable, or HEAD is
+/// detached ([`is_detached`]: a pinned commit is behind nothing).
 pub fn commits_behind(dir: &Path) -> Option<u64> {
     let remote_ref = fetch_origin_tip(dir)?;
     git_stdout(
@@ -236,14 +251,12 @@ pub fn commits_behind(dir: &Path) -> Option<u64> {
 
 /// One-line subjects for commits on `origin/<branch>` not in `HEAD`, as of the
 /// last fetch. Returns an empty `Vec` when git is absent, nothing has been
-/// fetched, or there are no new commits.
+/// fetched, HEAD is on no branch, or there are no new commits.
 pub fn changelog_lines(dir: &Path) -> Vec<String> {
-    git_stdout(
-        dir,
-        &["log", "--oneline", &format!("HEAD..{}", origin_ref(dir))],
-    )
-    .map(|s| s.lines().map(str::to_owned).collect())
-    .unwrap_or_default()
+    origin_ref(dir)
+        .and_then(|r| git_stdout(dir, &["log", "--oneline", &format!("HEAD..{r}")]))
+        .map(|s| s.lines().map(str::to_owned).collect())
+        .unwrap_or_default()
 }
 
 /// The commit `origin/<branch>` currently points at.
@@ -252,10 +265,10 @@ pub fn changelog_lines(dir: &Path) -> Vec<String> {
 /// state the "N commits behind" figure was computed from. This is the revision an
 /// update must actually land on — passing it to the installer is what stops the
 /// installer picking a *different* build that merely reports the same version.
-/// `None` when git is absent, nothing has been fetched, or the remote is
-/// unreachable.
+/// `None` when git is absent, HEAD is on no branch, nothing has been fetched,
+/// or the remote is unreachable.
 pub fn upstream_sha(dir: &Path) -> Option<String> {
-    let remote_ref = origin_ref(dir);
+    let remote_ref = origin_ref(dir)?;
     let out = std::process::Command::new("git")
         .args(["rev-parse", &remote_ref])
         .current_dir(dir)
@@ -959,6 +972,78 @@ mod tests {
             upstream_sha(&local).as_deref(),
             Some(new_tip.as_str()),
             "and the update must be pinned to that exact commit"
+        );
+    }
+
+    /// REQ-UPDATE-001. CI checks out the commit under test detached at depth
+    /// 1, and on-device acceptance is `git checkout <sha>`. A detached HEAD was
+    /// compared with `origin/main`, so any `hse` command run in such a checkout
+    /// counted `main`'s commits as missing and started `install.sh` there,
+    /// which switched the checkout to `main` mid-run. Same shape as CI, with a
+    /// branch control so the `None` cannot come from an unreachable remote.
+    #[test]
+    fn a_detached_head_is_behind_nothing_and_names_no_update() {
+        if !git_available() {
+            eprintln!(
+                "skipping a_detached_head_is_behind_nothing_and_names_no_update: git not installed"
+            );
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("should succeed");
+        let remote = tmp.path().join("remote");
+        let local = tmp.path().join("local");
+        std::fs::create_dir(&remote).expect("should succeed");
+        std::fs::create_dir(&local).expect("should succeed");
+        git_fixture(&remote, &["init", "-q", "--initial-branch=main"]);
+        git_fixture(
+            &remote,
+            &["config", "uploadpack.allowAnySHA1InWant", "true"],
+        );
+        git_fixture(&remote, &["commit", "-q", "-m", "base", "--allow-empty"]);
+        // The commit under test sits on a branch of its own; main moves on.
+        git_fixture(&remote, &["checkout", "-q", "-b", "feature"]);
+        git_fixture(
+            &remote,
+            &["commit", "-q", "-m", "under test", "--allow-empty"],
+        );
+        let pinned = rev_parse_head(&remote);
+        git_fixture(&remote, &["checkout", "-q", "main"]);
+        git_fixture(
+            &remote,
+            &["commit", "-q", "-m", "main moves on", "--allow-empty"],
+        );
+
+        // What actions/checkout does: a depth-1 fetch of the commit, detached.
+        git_fixture(&local, &["init", "-q"]);
+        git_fixture(
+            &local,
+            &["remote", "add", "origin", remote.to_str().expect("utf-8")],
+        );
+        git_fixture(&local, &["fetch", "-q", "--depth", "1", "origin", &pinned]);
+        git_fixture(&local, &["checkout", "-q", "--detach", "FETCH_HEAD"]);
+
+        assert!(is_detached(&local), "precondition: HEAD is detached");
+        assert_eq!(
+            commits_behind(&local),
+            None,
+            "a pinned commit follows no branch, so it is behind nothing"
+        );
+        assert_eq!(
+            upstream_sha(&local),
+            None,
+            "and no commit is named for an update to land on"
+        );
+        assert!(changelog_lines(&local).is_empty(), "and nothing is listed");
+        assert_eq!(rev_parse_head(&local), pinned, "the checkout stays put");
+
+        // Control: the same commit on a branch that follows main is compared,
+        // so the remote is reachable and the None above is the detached rule.
+        git_fixture(&local, &["checkout", "-q", "-B", "main"]);
+        assert!(!is_detached(&local));
+        assert!(
+            commits_behind(&local).is_some_and(|n| n > 0),
+            "on a branch, main's new commits are counted: {:?}",
+            commits_behind(&local)
         );
     }
 

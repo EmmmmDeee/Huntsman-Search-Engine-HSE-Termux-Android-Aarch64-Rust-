@@ -38,19 +38,46 @@ build)
     sed "s/@SHA@/$sha/" "$STUB_HSE" > "target/$d/hse"
     chmod +x "target/$d/hse" ;;
 test)
+    # A test run that edits the checkout, or moves HEAD, under the runner.
+    [ -n "${STUB_TEST_EDITS:-}" ] && echo edited >> README.md
+    [ -n "${STUB_TEST_COMMITS:-}" ] \
+        && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m moved
+    [ -n "${STUB_TEST_REPOINTS:-}" ] && git remote set-url origin "$STUB_TEST_REPOINTS"
     [ -n "${STUB_TEST_FAIL:-}" ] && exit 101 ;;
 esac
 exit 0
 "#;
 
-/// The built binary: `build-sha --json` and a `config` that persists under
+/// The built binary: `build-sha [--json]` and a `config` that persists under
 /// `$HOME/.huntsman`, unless `STUB_NO_PERSIST` makes writes vanish.
+///
+/// Like the real one, every command but `build-sha` first checks for an update
+/// and, unless this `HOME` turned automatic updates off, installs it into the
+/// source tree the binary sits in (`target/<profile>/../..`): the checkout
+/// under test (REQ-UPDATE-001). Here the "update" is a line added to its
+/// README, which the runner must never let happen. The switch is read as the
+/// real `hse` reads its one settings file: a value `config` stored wins over
+/// the one the file started with.
 const HSE_STUB: &str = r#"#!/bin/sh
+updates_off() {
+    case "$(sed -n 's/^feature\.auto_update=//p' "$HOME/.huntsman/settings" 2>/dev/null)" in
+        off) return 0 ;;
+        on) return 1 ;;
+    esac
+    grep -Eq '"feature\.auto_update": *false' "$HOME/.huntsman/settings.json" 2>/dev/null
+}
+if [ "$1" != build-sha ] && ! updates_off; then
+    echo "updated by hse" >> "$(dirname "$0")/../../README.md"
+fi
 case "$1" in
 build-sha)
-    v=true
-    [ -n "${STUB_UNVERIFIABLE:-}" ] && v=false
-    printf '{"sha":"@SHA@","dirty":false,"version":"0","verifiable":%s}\n' "$v" ;;
+    if [ "${2:-}" = --json ]; then
+        v=true
+        [ -n "${STUB_UNVERIFIABLE:-}" ] && v=false
+        printf '{"sha":"@SHA@","dirty":false,"version":"0","verifiable":%s}\n' "$v"
+    else
+        echo @SHA@
+    fi ;;
 config)
     f="$HOME/.huntsman/settings"
     mkdir -p "$HOME/.huntsman"
@@ -147,7 +174,8 @@ impl Fixture {
             .env("STUB_HSE", self.stubs.path().join("hse.in"))
             .env_remove("TERMUX_VERSION")
             .env_remove("PREFIX")
-            .env_remove("HSE_BUILD_PROFILE");
+            .env_remove("HSE_BUILD_PROFILE")
+            .env_remove("HSE_INSTALL_DIR");
         if termux {
             c.env("TERMUX_VERSION", "0.118.0")
                 .env("PREFIX", "/data/data/com.termux/files/usr");
@@ -257,7 +285,13 @@ fn a_device_run_where_every_stage_passes_is_accepted() {
     assert_eq!(rec["arch"], "aarch64");
     assert_eq!(rec["termux"], "0.118.0");
     for s in [
-        "checkout", "platform", "build", "identity", "tests", "restart",
+        "checkout",
+        "platform",
+        "build",
+        "identity",
+        "tests",
+        "restart",
+        "unchanged",
     ] {
         assert_eq!(stage(&rec, s), "PASS", "{s}");
     }
@@ -374,4 +408,129 @@ fn the_record_goes_where_out_says() {
     let stored: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&elsewhere).unwrap()).unwrap();
     assert_eq!(stored["sha"], fx.head());
+}
+
+/// REQ-UPDATE-001. `hse config` checks for an update before it runs, and run
+/// from inside the checkout it installs one there, replacing the commit under
+/// test. The restart stage runs `hse config` four times, and toggled
+/// `feature.auto_update` itself, so the last read ran with updates on.
+#[test]
+fn the_runner_never_lets_hse_update_the_checkout_under_test() {
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    let readme = fx.dir.path().join("README.md");
+    let out = fx.run(&["--skip-tests"], true, &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let rec = record(&fx, &out);
+    assert_eq!(stage(&rec, "restart"), "PASS");
+    assert_eq!(stage(&rec, "unchanged"), "PASS");
+    assert_eq!(fs::read_to_string(&readme).unwrap(), "fixture\n");
+
+    // Control: the same binary with updates left on does edit the checkout,
+    // so the PASS above is the runner's doing, not an inert stub.
+    let scratch = tempfile::tempdir().unwrap();
+    let status = Command::new(fx.dir.path().join("target/fast/hse"))
+        .args(["config", "feature.map_tiles"])
+        .env("HOME", scratch.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert_eq!(
+        fs::read_to_string(&readme).unwrap(),
+        "fixture\nupdated by hse\n",
+        "the stub models the update, so the runner is what prevented it"
+    );
+}
+
+/// The record speaks for one commit only if the checkout still is that
+/// commit at the end: edited, or moved to another HEAD, it is REJECTED.
+#[test]
+fn a_checkout_that_changes_during_the_run_is_rejected() {
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    let out = fx.run(&[], true, &[("STUB_TEST_EDITS", "1")]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let rec = record(&fx, &out);
+    assert_eq!(rec["verdict"], "REJECTED");
+    assert_eq!(stage(&rec, "tests"), "PASS");
+    assert_eq!(stage(&rec, "unchanged"), "FAIL");
+
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    let before = fx.head();
+    let out = fx.run(&[], true, &[("STUB_TEST_COMMITS", "1")]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert_ne!(fx.head(), before, "precondition: HEAD moved");
+    // The record is filed under the commit the run started on.
+    let rec: serde_json::Value = serde_json::from_str(text(&out.stdout).trim()).unwrap();
+    assert_eq!(rec["sha"], before.as_str());
+    assert_eq!(rec["verdict"], "REJECTED");
+    assert_eq!(stage(&rec, "unchanged"), "FAIL");
+
+    // Same commit, clean tree, but origin re-pointed: what the installer did
+    // to a checkout it was started inside.
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    fx.git(&["remote", "add", "origin", "https://example.invalid/hse.git"]);
+    let out = fx.run(&[], true, &[("STUB_TEST_REPOINTS", "/elsewhere")]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let rec = record(&fx, &out);
+    assert_eq!(rec["verdict"], "REJECTED");
+    assert_eq!(stage(&rec, "unchanged"), "FAIL");
+}
+
+/// `--install` runs the real installer, which upgrades in place a clone it is
+/// started inside. Started from the checkout under test, it pointed the
+/// checkout's origin at itself and reset its `main` to HEAD. It installs where
+/// it installs for an operator, from the checkout's origin, and never into the
+/// checkout.
+#[test]
+fn the_install_stage_installs_elsewhere_and_never_into_the_checkout() {
+    const INSTALL_STUB: &str = r#"#!/bin/sh
+{ echo "dir=$HSE_INSTALL_DIR"; echo "from=$HSE_REPO_URL"; echo "sha=$HSE_REQUIRE_SHA"; } > "$STUB_INSTALL_LOG"
+sed "s/@SHA@/$HSE_REQUIRE_SHA/" "$STUB_HSE" > "$STUB_BIN/hse"
+chmod +x "$STUB_BIN/hse"
+"#;
+    let origin = "https://example.invalid/hse.git";
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    fx.git(&["remote", "add", "origin", origin]);
+    fs::write(fx.dir.path().join("install.sh"), INSTALL_STUB).unwrap();
+    fx.git(&["add", "install.sh"]);
+    fx.git(&["commit", "-q", "-m", "installer"]);
+    let log = fx.stubs.path().join("install.log");
+    let bin = fx.stubs.path().join("bin");
+    let envs = [
+        ("STUB_INSTALL_LOG", log.to_str().unwrap()),
+        ("STUB_BIN", bin.to_str().unwrap()),
+    ];
+
+    let out = fx.run(&["--install", "--skip-tests"], true, &envs);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let rec = record(&fx, &out);
+    assert_eq!(stage(&rec, "install"), "PASS");
+    assert_eq!(stage(&rec, "unchanged"), "PASS");
+    let ran = fs::read_to_string(&log).expect("the installer ran");
+    let default_dir = fx.home.path().join(".local/share/hse");
+    assert!(
+        ran.contains(&format!("dir={}\n", default_dir.display())),
+        "the installer's own default, not the checkout: {ran}"
+    );
+    assert!(ran.contains(&format!("from={origin}\n")), "{ran}");
+    assert!(ran.contains(&format!("sha={}\n", fx.head())), "{ran}");
+    assert_eq!(fx.git(&["remote", "get-url", "origin"]), origin);
+
+    // Pointed at the checkout itself, the stage refuses and never starts it.
+    fs::remove_file(&log).unwrap();
+    let here = fx.dir.path().to_str().unwrap();
+    let out = fx.run(
+        &["--install", "--skip-tests"],
+        true,
+        &[envs[0], envs[1], ("HSE_INSTALL_DIR", here)],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let rec = record(&fx, &out);
+    assert_eq!(stage(&rec, "install"), "FAIL");
+    assert_eq!(rec["verdict"], "REJECTED");
+    assert!(!log.exists(), "the installer never ran");
 }
