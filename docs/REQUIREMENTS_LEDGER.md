@@ -27279,3 +27279,45 @@ no-op fails `a_full_search_page_is_declared_truncated_against_the_record_cap`
 at its `expect` ("a full page must carry a truncation notice"); the short-page
 test still passes, proving it is not merely asserting "always truncated". The
 file was restored byte for byte.
+
+## REQ-HARNESS-002 — the pre-push hook exited before reading its stdin, so a write to it raced
+
+**Requirement.** A hook drains the JSON Claude Code writes to its stdin before
+it exits on any path.
+
+**Defect.** Found by the gate, under load, on the REQ-HARNESS-001 hook. The
+bypass `[ "${HSE_PUSH_GATE:-on}" = off ] && exit 0` ran before
+`INPUT="$(cat)"`, so on that path the hook exited without reading stdin and
+closed the pipe under whoever was writing to it. The writer then failed with
+EPIPE, but only when the hook happened to be scheduled first.
+`tests/agent_harness.rs`'s `a_push_is_found_however_the_command_line_reaches_it`
+passed locally and in CI for REQ-HARNESS-001 (bf52546). It then panicked at
+the harness's strict `write_all(..).unwrap()` with `BrokenPipe` (os error 32)
+on a quick-gate run with a falsifier subagent building in parallel. That is a
+real race exposed by scheduling, not a flake: the code path was always wrong.
+Claude Code is the production writer of this stdin, so the same race applied
+to every session with the bypass set.
+
+**Fix.** `INPUT="$(cat)"` is now the hook's first statement, and the bypass
+comes after it. Every later exit (not a push, no command field, not an HSE
+checkout, pre-receipt checkout) already followed the read.
+
+**Lock.** `the_hook_drains_its_stdin_before_any_exit` sends a 256 KiB
+description, larger than a Linux pipe buffer (64 KiB). The writer then blocks
+until the reader drains, so a hook that exits without reading fails the write
+on every run, whatever the scheduling. It covers the bypass, a non-push early
+exit, and the full refusal path on the same large payload.
+`Repo::hook_described` keeps the write strict, so a regression panics rather
+than passing by luck.
+
+**Sensitivity.** With the bypass restored above `cat`, the new test failed
+5/5 runs (`test result: FAILED. 0 passed; 1 failed`). With the fix it passes,
+and the whole file passes 16/16. Before this change the defect showed up
+only occasionally.
+
+**Also from this round.** The `hse-falsifier` review of REQ-SEEKNOW-002 found
+its own worktree created at `1571c4d`, an ancestor without the change. It
+noticed and checked out the commit under review. Its instructions now require
+checking out the tip of the range and proving it (`git rev-parse HEAD`, a
+`--stat` of the claimed files) before running anything, because a review of
+the wrong tree reads as evidence.

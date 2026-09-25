@@ -31,9 +31,13 @@
 # real push.
 set -uo pipefail
 
-[ "${HSE_PUSH_GATE:-on}" = off ] && exit 0
-
+# Drain stdin before any exit. Claude Code writes the hook JSON to this
+# process's stdin; exiting first (as the bypass below used to) closes the pipe
+# under the writer, which then fails with EPIPE depending on who is scheduled
+# first. Every path below reads it, so no exit races the caller.
 INPUT="$(cat)"
+
+[ "${HSE_PUSH_GATE:-on}" = off ] && exit 0
 
 # The value of a top-level JSON string field, unescaped. Pure bash on purpose:
 # Termux does not ship jq or python by default, and a hook that silently

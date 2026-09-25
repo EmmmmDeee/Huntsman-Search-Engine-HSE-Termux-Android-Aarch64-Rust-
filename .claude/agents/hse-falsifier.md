@@ -21,6 +21,16 @@ makes: the invariant it establishes, the defect it removes, and the tests
 said to lock it. If you only get a range, derive the claims from the commit
 messages and the `docs/REQUIREMENTS_LEDGER.md` entry the change adds.
 
+**First, check out the tip of the range, and prove you did.** Your worktree
+is created from a base commit, not from the commit under review, so it can
+start on an ancestor that does not contain the change at all. Every test
+you run there would then pass or fail on the wrong code, and you would
+report on a tree nobody asked about. Run `git checkout --detach <tip>`, then
+confirm `git rev-parse HEAD` equals `<tip>` and `git diff <base>..HEAD
+--stat` lists the files the change claims to touch. Report that SHA in your
+verdict. A review of the wrong tree is worse than no review, because it
+reads as evidence.
+
 ## What to attack
 
 1. **Sensitivity.** For each test said to lock the change, restore the

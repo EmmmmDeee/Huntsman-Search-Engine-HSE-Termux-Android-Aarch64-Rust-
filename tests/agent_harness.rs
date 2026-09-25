@@ -172,13 +172,27 @@ impl Repo {
     /// The pre-push hook, run as Claude Code runs it: from `cwd`, with the
     /// `PreToolUse` JSON on stdin.
     fn hook_with(&self, cwd: &Path, command: &str, gate_env: Option<&str>) -> Output {
+        self.hook_described(cwd, command, "push it", gate_env)
+    }
+
+    /// [`Self::hook_with`] with a chosen `description`, so a test can make the
+    /// JSON larger than a pipe buffer. The write is strict (`unwrap`): a hook
+    /// that exits without draining its stdin closes the pipe under the writer,
+    /// and that must fail here rather than pass by luck of scheduling.
+    fn hook_described(
+        &self,
+        cwd: &Path,
+        command: &str,
+        description: &str,
+        gate_env: Option<&str>,
+    ) -> Output {
         use std::io::Write;
         let input = serde_json::json!({
             "session_id": "test",
             "cwd": cwd,
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
-            "tool_input": { "command": command, "description": "push it" },
+            "tool_input": { "command": command, "description": description },
         });
         let mut c = self.cmd("bash", cwd);
         c.arg(root().join(".claude/hooks/pre-push-gate.sh"))
@@ -481,6 +495,32 @@ fn the_ref_a_push_sends_is_the_one_that_needs_the_receipt() {
         &repo.hook("git push origin main feature"),
         "one of two refs",
     );
+}
+
+#[test]
+fn the_hook_drains_its_stdin_before_any_exit() {
+    // Claude Code writes the hook JSON to the hook's stdin. The bypass used to
+    // `exit 0` before reading it, closing the pipe under the writer: the write
+    // then failed with EPIPE, but only when the hook happened to be scheduled
+    // first, so it passed CI once and failed under load. A payload larger than
+    // a pipe buffer (64 KiB on Linux) removes the luck: the writer blocks until
+    // the reader drains, so a hook that exits without reading fails the write
+    // every time.
+    let repo = Repo::new();
+    repo.commit_all("add the receipt script");
+    let big = "x".repeat(256 * 1024);
+
+    // Early exit: the person's bypass.
+    let out = repo.hook_described(repo.path(), "git push", &big, Some("off"));
+    assert_allowed(&out, "bypass with a large payload");
+
+    // Early exit: not a push.
+    let out = repo.hook_described(repo.path(), "git status", &big, None);
+    assert_allowed(&out, "non-push with a large payload");
+
+    // The full path still decides correctly on a large payload.
+    let out = repo.hook_described(repo.path(), "git push", &big, None);
+    assert_blocked(&out, "push without a receipt, large payload");
 }
 
 #[test]
