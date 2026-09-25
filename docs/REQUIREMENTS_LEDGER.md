@@ -27798,3 +27798,93 @@ the same file. The stub now lets a stored value win, as the real one does.
 **Not proven here.** The install stage fetches HEAD from `origin`, so the
 commit must be pushed there. That is the device procedure (§5 of
 `docs/OPERATING_ARCHITECTURE.md`). It has not yet run on a device.
+
+## REQ-ACCEPT-003 — the runner tested the working tree, and trusted signals that prove neither the device nor the install
+
+**Requirement.** The acceptance record names a commit, so the runner builds
+and tests that commit. `ACCEPTED` needs evidence of the thing it claims: an
+Android device, and an installer that installed HEAD.
+
+**Gap.** Found by an adversarial review of the runner, with every finding
+reproduced by a separate verifier, and by Copilot on PR #653:
+
+- **The working tree, not the commit** (review ACCEPT-1, R4). `git status`
+  cannot see an edit to a path marked assume-unchanged or skip-worktree, nor
+  an ignored file the build reads (a local `vendor/` tree with an untracked
+  cargo config, say). Both passed the checkout stage, and the build and tests
+  ran on them, as HEAD. A `git status` that failed (a corrupt index) also
+  passed: its exit status was ignored.
+- **A device from environment variables alone** (review ACCEPT-2). `uname -m`
+  and the Termux variables are also true of the arm64 termux-docker image on a
+  cloud host, which got `ACCEPTED`.
+- **An install that installed nothing** (review ACCEPT-3). An `hse` for HEAD
+  already on `PATH` (from an earlier run, say) passed the check whatever the
+  installer did, and the check never asked whether the binary could prove its
+  commit.
+- **The binary looked for in the wrong place** (review ACCEPT-5; Copilot on
+  #653). The runner looked in `$TOP/target`. With `CARGO_TARGET_DIR` set, as
+  `docs/INSTALL.md` suggests, it found no binary and rejected a good build,
+  or judged a stale binary left there.
+- **A hanging battery probe** (review ACCEPT-6). `termux-battery-status` had no
+  limit. When Termux:API hung, a run whose every stage had passed wrote no
+  record.
+- **A relative `--out`** was resolved against the directory the runner had
+  moved to, not the operator's.
+
+**Fix.**
+- Build, tests and install run in a private detached worktree of HEAD under
+  `~/.cache/hse-accept/`, one per repository and kept for incremental builds.
+  None of the above is in it. `build.rs` already resolves `--git-dir` and
+  `--git-common-dir`, so `hse build-sha` is right in a worktree. `git status`
+  runs with fsmonitor off and fails closed. The `unchanged` stage checks both
+  the worktree and the operator's checkout.
+- The target directory is cargo's own answer (`cargo metadata`), asked in the
+  checkout and exported, so the build and the lookup agree.
+- A device needs `getprop ro.build.version.release`. Without it the run is
+  refused, or `HOST-ONLY` with `--host`.
+- An `hse` for HEAD already on `PATH` makes the install stage `SKIP` (the run
+  is `PARTIAL`), without starting the installer. Otherwise the stage passes
+  only if the installed binary's `build-sha --json` names HEAD and is
+  verifiable. The installer that runs is the commit's.
+- The battery probe runs under `timeout` (`HSE_ACCEPT_API_TIMEOUT`, default 10
+  s), which also ends its children.
+- A relative `--out` is resolved from where the runner was started.
+
+**Locks** (`tests/termux_accept.rs`, now 17 tests). The stubs model each case:
+`getprop` answers or not; `cargo` honours `CARGO_TARGET_DIR` and reports where
+it ran; the stub suite fails on a hidden edit or ignored input; the stub
+installer can install another commit, an unverifiable binary, or nothing. The
+new cases:
+- tracked and staged edits, and a corrupt index, are refused;
+- assume-unchanged and skip-worktree edits and an ignored file are not what is
+  tested, and are left alone;
+- a Termux aarch64 host with no Android is refused;
+- an installer that installed another commit fails, and so does one whose
+  binary cannot prove its commit;
+- a no-op installer with HEAD already on `PATH` is `SKIP`/`PARTIAL`;
+- the checkout's hidden-edited `install.sh` is not the one run;
+- `CARGO_TARGET_DIR`, absolute and relative;
+- a hanging battery probe, with a working one as the control;
+- a relative `--out` from a subdirectory;
+- an edit to either tree during the run, and a moved worktree HEAD. The next
+  run then resets the kept worktree.
+
+**Mutations.** 22 breakages of the runner, each applied alone, all caught by
+the test written for it:
+- the 9 of REQ-ACCEPT-002;
+- building in the checkout;
+- not resetting a kept worktree;
+- a fail-open `git status`;
+- not requiring Android;
+- no prior-`hse` check;
+- an install check without `verifiable`;
+- the checkout's installer;
+- no battery timeout;
+- an unresolved relative `--out`;
+- `unchanged` checking only one of the two trees;
+- not exporting the target directory;
+- the hard-coded `target/`.
+
+**Not proven here.** Building in a worktree has not yet run on a phone. A new
+worktree path rebuilds the workspace crates once. Later runs reuse the kept
+worktree.

@@ -22,24 +22,37 @@ fn write_exec(path: &Path, body: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// `cargo`: `build --profile P` writes a stub `hse` into `target/<dir>/`,
-/// and `test` passes unless told otherwise. Each run of either leaves a marker,
-/// so a test can prove cargo was never reached.
+/// `cargo`: `build --profile P` writes a stub `hse` into `<target>/<dir>/`,
+/// `metadata` names `<target>`, and `test` passes unless told otherwise.
+/// `<target>` is `CARGO_TARGET_DIR` (relative to the working directory) or
+/// `target`, as for the real cargo. Each run leaves a marker, so a test can
+/// prove cargo was never reached.
 const CARGO_STUB: &str = r#"#!/bin/sh
 touch "$STUB_MARKERS/cargo-$1"
+pwd -P > "$STUB_MARKERS/pwd-$1"
+t="${CARGO_TARGET_DIR:-target}"
+case "$t" in /*) ;; *) t="$PWD/$t" ;; esac
 case "$1" in
+metadata)
+    printf '{"packages":[],"target_directory":"%s","version":1}\n' "$t" ;;
 build)
     [ -n "${STUB_BUILD_FAIL:-}" ] && exit 101
     prof=dev
     while [ $# -gt 0 ]; do [ "$1" = --profile ] && prof="$2"; shift; done
     case "$prof" in dev) d=debug ;; *) d="$prof" ;; esac
     sha="${STUB_SHA:-$(git rev-parse HEAD)}"
-    mkdir -p "target/$d"
-    sed "s/@SHA@/$sha/" "$STUB_HSE" > "target/$d/hse"
-    chmod +x "target/$d/hse" ;;
+    mkdir -p "$t/$d"
+    sed "s/@SHA@/$sha/" "$STUB_HSE" > "$t/$d/hse"
+    chmod +x "$t/$d/hse" ;;
 test)
-    # A test run that edits the checkout, or moves HEAD, under the runner.
-    [ -n "${STUB_TEST_EDITS:-}" ] && echo edited >> README.md
+    # A suite that sees anything but the commit fails: a hidden edit to the
+    # README, or an ignored local file.
+    if [ -n "${STUB_TEST_REQUIRES_PRISTINE:-}" ]; then
+        [ "$(cat README.md)" = fixture ] && [ ! -e local.cfg ] || exit 101
+    fi
+    # A test run that edits a file (relative: the tree it runs in), or moves
+    # HEAD, under the runner.
+    [ -n "${STUB_TEST_EDITS:-}" ] && echo edited >> "$STUB_TEST_EDITS"
     [ -n "${STUB_TEST_COMMITS:-}" ] \
         && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m moved
     [ -n "${STUB_TEST_REPOINTS:-}" ] && git remote set-url origin "$STUB_TEST_REPOINTS"
@@ -114,6 +127,13 @@ impl Fixture {
         fs::write(fx.dir.path().join(".gitignore"), "target/\n").unwrap();
         fs::write(fx.dir.path().join("README.md"), "fixture\n").unwrap();
         write_exec(&fx.stubs.path().join("bin/cargo"), CARGO_STUB);
+        // Android's answer, which a device must give. Stubbed rather than
+        // absent, so a real getprop on a Termux host cannot answer instead.
+        write_exec(
+            &fx.stubs.path().join("bin/getprop"),
+            "#!/bin/sh\n[ -n \"${STUB_NO_ANDROID:-}\" ] && { echo; exit 0; }\n\
+             case \"$1\" in ro.build.version.release) echo 14 ;; ro.product.model) echo Pixel ;; esac\n",
+        );
         fs::write(fx.stubs.path().join("hse.in"), HSE_STUB).unwrap();
         fs::create_dir_all(fx.stubs.path().join("markers")).unwrap();
         fx.git(&["init", "-q", "-b", "main"]);
@@ -159,6 +179,11 @@ impl Fixture {
 
     /// Run the runner with `args`, as Termux when `termux` is set, plus `envs`.
     fn run(&self, args: &[&str], termux: bool, envs: &[(&str, &str)]) -> Output {
+        self.run_in(self.dir.path(), args, termux, envs)
+    }
+
+    /// [`Fixture::run`], started from `cwd` inside the checkout.
+    fn run_in(&self, cwd: &Path, args: &[&str], termux: bool, envs: &[(&str, &str)]) -> Output {
         let host_path = std::env::var_os("PATH").unwrap_or_default();
         let mut path = std::ffi::OsString::from(self.stubs.path().join("bin"));
         path.push(":");
@@ -166,7 +191,7 @@ impl Fixture {
         let mut c = Command::new("bash");
         c.arg(self.dir.path().join("scripts/termux-accept.sh"))
             .args(args)
-            .current_dir(self.dir.path())
+            .current_dir(cwd)
             .env("PATH", path)
             .env("HOME", self.home.path())
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -175,7 +200,8 @@ impl Fixture {
             .env_remove("TERMUX_VERSION")
             .env_remove("PREFIX")
             .env_remove("HSE_BUILD_PROFILE")
-            .env_remove("HSE_INSTALL_DIR");
+            .env_remove("HSE_INSTALL_DIR")
+            .env_remove("CARGO_TARGET_DIR");
         if termux {
             c.env("TERMUX_VERSION", "0.118.0")
                 .env("PREFIX", "/data/data/com.termux/files/usr");
@@ -242,6 +268,33 @@ fn a_checkout_with_uncommitted_changes_is_refused_before_anything_runs() {
     assert!(text(&out.stderr).contains("uncommitted changes"));
     assert!(!fx.ran_cargo(), "nothing may be built from local state");
     assert!(!fx.home.path().join(".huntsman/acceptance").exists());
+
+    // An edit to a tracked file, unstaged and then staged, with nothing
+    // untracked: a check that only sees new files would pass both.
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    fs::write(fx.dir.path().join("README.md"), "fixture\nlocal\n").unwrap();
+    for staged in [false, true] {
+        if staged {
+            fx.git(&["add", "README.md"]);
+        }
+        let out = fx.run(&[], true, &[]);
+        assert_eq!(out.status.code(), Some(2), "staged={staged}");
+        assert!(
+            text(&out.stderr).contains("uncommitted changes"),
+            "staged={staged}"
+        );
+    }
+    assert!(!fx.ran_cargo());
+
+    // A `git status` that cannot run is not a clean checkout.
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    fs::write(fx.dir.path().join(".git/index"), "not an index").unwrap();
+    let out = fx.run(&[], true, &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    assert!(text(&out.stderr).contains("git status failed"));
+    assert!(!fx.ran_cargo());
 }
 
 #[test]
@@ -267,6 +320,22 @@ fn a_host_that_is_not_termux_on_aarch64_is_refused_unless_it_says_so() {
         "a host run is never device evidence"
     );
     assert_eq!(rec["kind"], "host");
+
+    // Termux on aarch64 without Android is the arm64 termux-docker image on a
+    // cloud host: the Termux variables and `uname` alone do not make a device.
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    let out = fx.run(&[], true, &[("STUB_NO_ANDROID", "1")]);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("no Android version"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(!fx.ran_cargo());
+    let out = fx.run(&["--host"], true, &[("STUB_NO_ANDROID", "1")]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(record(&fx, &out)["verdict"], "HOST-ONLY");
 }
 
 #[test]
@@ -284,6 +353,7 @@ fn a_device_run_where_every_stage_passes_is_accepted() {
     assert_eq!(rec["kind"], "device");
     assert_eq!(rec["arch"], "aarch64");
     assert_eq!(rec["termux"], "0.118.0");
+    assert_eq!(rec["android"], "14", "a device names its Android version");
     for s in [
         "checkout",
         "platform",
@@ -394,6 +464,32 @@ fn each_profile_is_looked_for_where_cargo_puts_it() {
     );
 }
 
+/// The binary is where cargo put it. With `CARGO_TARGET_DIR` set, as
+/// docs/INSTALL.md suggests (`~/.cache/hse-build`), the runner looked in the
+/// checkout's `target/`, found no binary, and rejected a good build. A
+/// relative value is resolved as cargo resolves it.
+#[test]
+fn the_binary_is_found_wherever_cargo_target_dir_puts_it() {
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    let elsewhere = fx.home.path().join(".cache/hse-build");
+    for dir in [
+        elsewhere.to_str().unwrap().to_string(),
+        "../outside-target".to_string(),
+    ] {
+        let out = fx.run(&["--skip-tests"], true, &[("CARGO_TARGET_DIR", &dir)]);
+        assert!(out.status.success(), "{dir}: {}", text(&out.stderr));
+        let rec = record(&fx, &out);
+        assert_eq!(stage(&rec, "identity"), "PASS", "{dir}");
+        assert_eq!(stage(&rec, "restart"), "PASS", "{dir}");
+        assert!(
+            !fx.dir.path().join("target").exists(),
+            "{dir}: nothing was built into the checkout"
+        );
+    }
+    assert!(elsewhere.join("fast/hse").exists());
+}
+
 #[test]
 fn the_record_goes_where_out_says() {
     let fx = Fixture::new();
@@ -442,30 +538,43 @@ fn the_runner_never_lets_hse_update_the_checkout_under_test() {
     );
 }
 
-/// The record speaks for one commit only if the checkout still is that
-/// commit at the end: edited, or moved to another HEAD, it is REJECTED.
+/// The record speaks for one commit only if, at the end, both the tree that
+/// was built and the operator's checkout are still that commit: edited, or
+/// moved to another HEAD, either one makes the run REJECTED.
 #[test]
 fn a_checkout_that_changes_during_the_run_is_rejected() {
+    // The tree being built, edited by the tests (a relative path: where they run).
     let fx = Fixture::new();
     fx.arch("aarch64");
-    let out = fx.run(&[], true, &[("STUB_TEST_EDITS", "1")]);
+    let out = fx.run(&[], true, &[("STUB_TEST_EDITS", "README.md")]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
     let rec = record(&fx, &out);
     assert_eq!(rec["verdict"], "REJECTED");
     assert_eq!(stage(&rec, "tests"), "PASS");
     assert_eq!(stage(&rec, "unchanged"), "FAIL");
 
+    // The operator's checkout, edited while the run builds.
     let fx = Fixture::new();
     fx.arch("aarch64");
-    let before = fx.head();
-    let out = fx.run(&[], true, &[("STUB_TEST_COMMITS", "1")]);
+    let theirs = fx.dir.path().join("README.md");
+    let out = fx.run(&[], true, &[("STUB_TEST_EDITS", theirs.to_str().unwrap())]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
-    assert_ne!(fx.head(), before, "precondition: HEAD moved");
-    // The record is filed under the commit the run started on.
-    let rec: serde_json::Value = serde_json::from_str(text(&out.stdout).trim()).unwrap();
-    assert_eq!(rec["sha"], before.as_str());
+    let rec = record(&fx, &out);
     assert_eq!(rec["verdict"], "REJECTED");
     assert_eq!(stage(&rec, "unchanged"), "FAIL");
+
+    // The tree being built, moved to another commit. The next run starts from
+    // the commit again: the kept worktree is reset, not reused as it was left.
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    let out = fx.run(&[], true, &[("STUB_TEST_COMMITS", "1")]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let rec = record(&fx, &out);
+    assert_eq!(rec["verdict"], "REJECTED");
+    assert_eq!(stage(&rec, "unchanged"), "FAIL");
+    let out = fx.run(&[], true, &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(record(&fx, &out)["verdict"], "ACCEPTED");
 
     // Same commit, clean tree, but origin re-pointed: what the installer did
     // to a checkout it was started inside.
@@ -479,19 +588,21 @@ fn a_checkout_that_changes_during_the_run_is_rejected() {
     assert_eq!(stage(&rec, "unchanged"), "FAIL");
 }
 
-/// `--install` runs the real installer, which upgrades in place a clone it is
-/// started inside. Started from the checkout under test, it pointed the
-/// checkout's origin at itself and reset its `main` to HEAD. It installs where
-/// it installs for an operator, from the checkout's origin, and never into the
-/// checkout.
-#[test]
-fn the_install_stage_installs_elsewhere_and_never_into_the_checkout() {
-    const INSTALL_STUB: &str = r#"#!/bin/sh
+/// A stub `install.sh`, committed into the fixture. It logs what it was asked
+/// to do and puts a stub `hse` on `PATH`: for the commit it was asked for,
+/// unless `STUB_INSTALL_SHA` names another; one that cannot prove its commit
+/// with `STUB_INSTALL_UNVERIFIABLE`; or none at all with `STUB_INSTALL_NOOP`.
+const INSTALL_STUB: &str = r#"#!/bin/sh
 { echo "dir=$HSE_INSTALL_DIR"; echo "from=$HSE_REPO_URL"; echo "sha=$HSE_REQUIRE_SHA"; } > "$STUB_INSTALL_LOG"
-sed "s/@SHA@/$HSE_REQUIRE_SHA/" "$STUB_HSE" > "$STUB_BIN/hse"
+[ -n "${STUB_INSTALL_NOOP:-}" ] && exit 0
+sed "s/@SHA@/${STUB_INSTALL_SHA:-$HSE_REQUIRE_SHA}/" "$STUB_HSE" > "$STUB_BIN/hse"
+[ -n "${STUB_INSTALL_UNVERIFIABLE:-}" ] && sed -i 's/v=true/v=false/' "$STUB_BIN/hse"
 chmod +x "$STUB_BIN/hse"
 "#;
-    let origin = "https://example.invalid/hse.git";
+
+/// A fixture with `origin` set and the stub installer committed, and the
+/// paths the stub writes to: its log, and the `bin` directory on `PATH`.
+fn install_fixture(origin: &str) -> (Fixture, std::path::PathBuf, std::path::PathBuf) {
     let fx = Fixture::new();
     fx.arch("aarch64");
     fx.git(&["remote", "add", "origin", origin]);
@@ -500,6 +611,18 @@ chmod +x "$STUB_BIN/hse"
     fx.git(&["commit", "-q", "-m", "installer"]);
     let log = fx.stubs.path().join("install.log");
     let bin = fx.stubs.path().join("bin");
+    (fx, log, bin)
+}
+
+/// `--install` runs the real installer, which upgrades in place a clone it is
+/// started inside. Started from the checkout under test, it pointed the
+/// checkout's origin at itself and reset its `main` to HEAD. It installs where
+/// it installs for an operator, from the checkout's origin, and never into the
+/// checkout.
+#[test]
+fn the_install_stage_installs_elsewhere_and_never_into_the_checkout() {
+    let origin = "https://example.invalid/hse.git";
+    let (fx, log, bin) = install_fixture(origin);
     let envs = [
         ("STUB_INSTALL_LOG", log.to_str().unwrap()),
         ("STUB_BIN", bin.to_str().unwrap()),
@@ -533,4 +656,170 @@ chmod +x "$STUB_BIN/hse"
     assert_eq!(stage(&rec, "install"), "FAIL");
     assert_eq!(rec["verdict"], "REJECTED");
     assert!(!log.exists(), "the installer never ran");
+}
+
+/// The install stage passes only on what the installer put on `PATH`: a HEAD
+/// that can prove it. An installer that installed another commit fails. One
+/// that did nothing, with an `hse` for HEAD already on `PATH`, passed before;
+/// that run proves nothing about the installer, and says so (PARTIAL).
+#[test]
+fn the_install_stage_passes_only_what_the_installer_installed() {
+    let zeros = "0".repeat(40);
+    let (fx, log, bin) = install_fixture("https://example.invalid/hse.git");
+    let out = fx.run(
+        &["--install"],
+        true,
+        &[
+            ("STUB_INSTALL_LOG", log.to_str().unwrap()),
+            ("STUB_BIN", bin.to_str().unwrap()),
+            ("STUB_INSTALL_SHA", &zeros),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let rec = record(&fx, &out);
+    assert_eq!(stage(&rec, "install"), "FAIL");
+    assert_eq!(rec["verdict"], "REJECTED");
+
+    let (fx, log, bin) = install_fixture("https://example.invalid/hse.git");
+    let before = fs::read_to_string(fx.stubs.path().join("hse.in"))
+        .unwrap()
+        .replace("@SHA@", &fx.head());
+    write_exec(&bin.join("hse"), &before);
+    let out = fx.run(
+        &["--install"],
+        true,
+        &[
+            ("STUB_INSTALL_LOG", log.to_str().unwrap()),
+            ("STUB_BIN", bin.to_str().unwrap()),
+            ("STUB_INSTALL_NOOP", "1"),
+        ],
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let rec = record(&fx, &out);
+    assert_eq!(stage(&rec, "install"), "SKIP");
+    assert_eq!(
+        rec["verdict"], "PARTIAL",
+        "an hse that was there before shows nothing about the installer"
+    );
+    assert!(!log.exists(), "it is not run when it can prove nothing");
+
+    // The right commit is not enough: an installed binary that cannot prove
+    // it (a dirty build) fails, as it does at the identity stage.
+    let (fx, log, bin) = install_fixture("https://example.invalid/hse.git");
+    let out = fx.run(
+        &["--install", "--skip-tests"],
+        true,
+        &[
+            ("STUB_INSTALL_LOG", log.to_str().unwrap()),
+            ("STUB_BIN", bin.to_str().unwrap()),
+            ("STUB_INSTALL_UNVERIFIABLE", "1"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert_eq!(stage(&record(&fx, &out), "install"), "FAIL");
+
+    // The installer that runs is the commit's. The checkout's copy, edited
+    // behind git status's back, is not it.
+    let (fx, log, bin) = install_fixture("https://example.invalid/hse.git");
+    fx.git(&["update-index", "--assume-unchanged", "install.sh"]);
+    fs::write(fx.dir.path().join("install.sh"), "#!/bin/sh\nexit 1\n").unwrap();
+    let out = fx.run(
+        &["--install", "--skip-tests"],
+        true,
+        &[
+            ("STUB_INSTALL_LOG", log.to_str().unwrap()),
+            ("STUB_BIN", bin.to_str().unwrap()),
+        ],
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(stage(&record(&fx, &out), "install"), "PASS");
+    assert!(log.exists(), "the commit's installer ran");
+}
+
+/// The build and the tests run on the commit, not on the operator's working
+/// tree. `git status` cannot see an edit to a path marked assume-unchanged or
+/// skip-worktree, nor an ignored file the build reads, so all three passed the
+/// checkout stage and were built and tested as if they were HEAD. The stub
+/// suite fails if it sees any of them.
+#[test]
+fn hidden_edits_and_ignored_files_are_never_what_gets_tested() {
+    for flag in ["--assume-unchanged", "--skip-worktree"] {
+        let fx = Fixture::new();
+        fx.arch("aarch64");
+        fx.git(&["update-index", flag, "README.md"]);
+        fs::write(fx.dir.path().join("README.md"), "a local edit\n").unwrap();
+        fs::write(fx.dir.path().join(".git/info/exclude"), "local.cfg\n").unwrap();
+        fs::write(fx.dir.path().join("local.cfg"), "local only\n").unwrap();
+        assert_eq!(
+            fx.git(&["status", "--porcelain"]),
+            "",
+            "precondition: {flag} hides it"
+        );
+
+        let out = fx.run(&[], true, &[("STUB_TEST_REQUIRES_PRISTINE", "1")]);
+        assert!(out.status.success(), "{flag}: {}", text(&out.stderr));
+        let rec = record(&fx, &out);
+        assert_eq!(rec["verdict"], "ACCEPTED", "{flag}");
+        assert_eq!(stage(&rec, "tests"), "PASS", "{flag}");
+        let built_in = fs::read_to_string(fx.stubs.path().join("markers/pwd-build")).unwrap();
+        let checkout = fx.dir.path().canonicalize().unwrap();
+        assert_ne!(
+            Path::new(built_in.trim()),
+            checkout,
+            "{flag}: built in a worktree of the commit, not the checkout"
+        );
+        assert_eq!(
+            fs::read_to_string(fx.dir.path().join("README.md")).unwrap(),
+            "a local edit\n",
+            "{flag}: the operator's own edit is left alone"
+        );
+    }
+}
+
+/// Termux:API can hang when its app is missing or asleep. The battery probe
+/// had no limit, so a run whose every stage passed hung and wrote no record.
+#[test]
+fn a_hanging_battery_probe_cannot_stop_the_record() {
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    let probe = fx.stubs.path().join("bin/termux-battery-status");
+    write_exec(&probe, "#!/bin/sh\nexec sleep 60\n");
+    let started = std::time::Instant::now();
+    let out = fx.run(&["--skip-tests"], true, &[("HSE_ACCEPT_API_TIMEOUT", "1")]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "the probe was not cut off: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(record(&fx, &out)["battery_percent"], "");
+
+    // Control: a probe that answers is read.
+    write_exec(
+        &probe,
+        "#!/bin/sh\necho '{\"health\": \"GOOD\", \"percentage\": 87}'\n",
+    );
+    let out = fx.run(&["--skip-tests"], true, &[]);
+    assert_eq!(record(&fx, &out)["battery_percent"], "87");
+}
+
+/// A relative `--out` is the operator's path, from where they ran the script.
+/// The runner changes directory (to the checkout's top, then to the commit's
+/// worktree); the record must not follow it. Started from a subdirectory, so
+/// "where it was started" and "the checkout's top" are different answers.
+#[test]
+fn a_relative_out_is_relative_to_where_the_runner_was_started() {
+    let fx = Fixture::new();
+    fx.arch("aarch64");
+    let started_in = fx.dir.path().join("scripts");
+    let out = fx.run_in(
+        &started_in,
+        &["--skip-tests", "--out", "run.json"],
+        true,
+        &[],
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stored: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(started_in.join("run.json")).unwrap()).unwrap();
+    assert_eq!(stored["sha"], fx.head());
 }

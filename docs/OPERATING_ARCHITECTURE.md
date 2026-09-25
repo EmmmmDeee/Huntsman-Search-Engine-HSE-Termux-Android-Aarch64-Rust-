@@ -113,8 +113,10 @@ none of them.
 On the device, in a clean checkout of the commit under test, it runs these
 stages in order:
 
-1. **checkout**: refuses uncommitted changes.
-2. **platform**: requires Termux on aarch64.
+1. **checkout**: refuses uncommitted changes, and a `git status` that
+   cannot run.
+2. **platform**: requires Termux on aarch64 on Android (`getprop` must
+   answer).
 3. **build**: `--profile fast` by default.
 4. **identity**: the binary's own `hse build-sha --json` must be HEAD and
    verifiable.
@@ -126,9 +128,15 @@ stages in order:
    so HEAD must be pushed. It never installs into the checkout under test.
 8. **resources**: binary size, free disk, and battery level when termux-api
    is present.
-9. **unchanged**: HEAD is still the commit under test, the tree is clean, and
-   `origin` is unchanged. A run that changed the checkout did not test that
-   commit, so it is `REJECTED` (REQ-ACCEPT-002).
+9. **unchanged**: the build and the checkout are both still the commit under
+   test, both clean, and `origin` is unchanged. A run that changed either did
+   not test that commit, so it is `REJECTED` (REQ-ACCEPT-002).
+
+Stages 3 to 7 run on the commit itself: a private detached worktree of HEAD,
+built into the target directory cargo reports. An edit `git status` cannot
+see, or an ignored file, is never what is tested (REQ-ACCEPT-003). The
+install stage passes only for a verifiable HEAD that the installer itself put
+on `PATH`.
 
 Nothing the run starts may update the checkout. An `hse` run from inside a
 checkout checks for an update before most commands. On a branch that is
