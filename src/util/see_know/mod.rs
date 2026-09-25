@@ -79,6 +79,11 @@ pub use client::{base_url, key_fingerprint};
 
 // Endpoint functions
 pub(crate) use endpoints::get_path;
+// The `/search` + `/search/deep` page cap (500), re-exported so the module's
+// absorption path can declare a full page truncated against it
+// (REQ-SEEKNOW-002) — the count the request asked for lives with the request
+// builder, not the module.
+pub(crate) use endpoints::SEARCH_LIMIT;
 pub use endpoints::{
     CreditsProbe, credits_probe, discord_to_roblox, discord_user, query_credits, search,
     search_deep, steam_profile,

@@ -28,7 +28,7 @@ const RATE_LIMIT_BACKOFF: BackoffPolicy =
 /// **max 500**). Requested in full — the standing directive is to use
 /// see-know.ru maximally, and one richer response costs the same budget slot as
 /// a thin one.
-pub(super) const SEARCH_LIMIT: u32 = 500;
+pub(crate) const SEARCH_LIMIT: u32 = 500;
 
 /// Build the `POST /api/v1/search` request body per the see-know.ru spec:
 /// `{"query": <q>, "type": <t>?, "limit": <n>}`. An empty `query_type` omits

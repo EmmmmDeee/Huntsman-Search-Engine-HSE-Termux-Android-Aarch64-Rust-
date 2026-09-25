@@ -652,6 +652,26 @@ fn absorb_search_hits(
         result.push(parent);
     }
 
+    // Honest completeness: HSE asks for `SEARCH_LIMIT` (500) records and keeps
+    // whatever the page returns. A FULL page was bounded by that cap, not by
+    // the corpus, so the answer is incomplete — the operator saw 500 of an
+    // unknown, larger number. Absorbing exactly the cap and reporting "500
+    // record(s)" with no caveat is the "truncation reads as complete"
+    // ambiguity this engine exists to remove; a subject with thousands of
+    // breach records looked exhaustively covered. A short page ran the corpus
+    // dry before the cap and is left exhaustive — `mark_truncated_if_capped`
+    // holds that guard once. Only the pivot walk marked truncation before, so
+    // this path was silent (REQ-SEEKNOW-002). `search`/`search/deep` share the
+    // cap; the cause names which page it was.
+    result.mark_truncated_if_capped(
+        total,
+        see_know::SEARCH_LIMIT as usize,
+        &format!(
+            "the SeekNow {endpoint_path} {} record page cap",
+            see_know::SEARCH_LIMIT
+        ),
+    );
+
     // Each record yields at least one entity; reserve up front so the result
     // vector doesn't repeatedly realloc as records are walked.
     result.entities.reserve(total);

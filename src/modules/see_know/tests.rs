@@ -1917,6 +1917,72 @@ mod numeric_identifier_coercion_tests {
         );
     }
 
+    #[test]
+    fn a_full_search_page_is_declared_truncated_against_the_record_cap() {
+        // A `/search` that returns exactly the page cap was bounded by the cap,
+        // not by the corpus: the subject may have thousands of records and HSE
+        // kept 500. Reporting "500 record(s)" with no caveat reads as a
+        // complete answer. The absorption path must now declare it incomplete
+        // (REQ-SEEKNOW-002).
+        let cap = crate::util::see_know::SEARCH_LIMIT as usize;
+        let items: Vec<serde_json::Value> = (0..cap)
+            .map(|i| serde_json::json!({ "email": format!("subject{i}@example.com") }))
+            .collect();
+        let target = Target::new(TargetKind::Email, "subject@example.com");
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut result = ModuleResult::new();
+        absorb_search_hits(
+            &items,
+            &target,
+            "subject@example.com",
+            "/api/v1/search",
+            "search",
+            "see-know.eu:test",
+            "scan-1",
+            &mut seen,
+            &mut result,
+        );
+        let note = result
+            .truncation
+            .as_deref()
+            .expect("a full page must carry a truncation notice");
+        assert!(
+            note.contains("/api/v1/search") && note.contains(&cap.to_string()),
+            "the notice must name the endpoint and the cap that bounded it: {note}"
+        );
+    }
+
+    #[test]
+    fn a_short_search_page_stays_exhaustive() {
+        // The opposite case, and the guard `mark_truncated_if_capped` exists
+        // for: a page shorter than the cap ran the corpus dry, so the answer is
+        // complete and must NOT be flagged truncated — the easy over-correction
+        // that would make every scan cry wolf.
+        let items = vec![
+            serde_json::json!({ "email": "subject@example.com", "dbname": "b.com" }),
+            serde_json::json!({ "email": "subject@example.com", "dbname": "c.com" }),
+        ];
+        let target = Target::new(TargetKind::Email, "subject@example.com");
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut result = ModuleResult::new();
+        absorb_search_hits(
+            &items,
+            &target,
+            "subject@example.com",
+            "/api/v1/search",
+            "search",
+            "see-know.eu:test",
+            "scan-1",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            result.truncation.is_none(),
+            "a short page is exhaustive and must not be marked truncated: {:?}",
+            result.truncation
+        );
+    }
+
 // ── Fail-closed: a failed SeekNow fan-out is not "no records" ────────────────
 //
 // SeekNow is a breach/stealer source, so the difference between "we asked and

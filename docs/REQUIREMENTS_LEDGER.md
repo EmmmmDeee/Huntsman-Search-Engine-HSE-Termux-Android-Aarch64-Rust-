@@ -27226,3 +27226,56 @@ branch that has no receipt. Every file was restored byte for byte afterwards.
 | M19 `:dst` read as pushing HEAD | `a_command_that_is_not_a_push_is_never_blocked` |
 | M20 `HSE_PUSH_GATE=off` ignored | `a_push_is_found_however_the_command_line_reaches_it` |
 | M21 quotes kept on `cd '<dir>'` | `a_push_is_found_however_the_command_line_reaches_it` |
+
+## REQ-SEEKNOW-002 — a full SeekNow /search page was reported as a complete answer
+
+**Requirement.** A provider answer bounded by a page cap, not by the corpus,
+is declared incomplete. HSE's prime directive is one honest outcome per state;
+"we kept 500 of an unknown larger number" must never read as "this is
+everything."
+
+**Defect.** `see_know::search` / `search_deep` request `SEARCH_LIMIT` (500)
+records and return the record array only. `absorb_search_hits` recorded
+`total = items.len()` — a local count, capped at 500 — into the breach
+parent's `hits` evidence ("SeekNow: 500 record(s)…") and never called
+`mark_truncated`. The only `mark_truncated` on this module is in the pivot
+walk (mod.rs:881), which covers cross-platform ID hops, not the search corpus.
+So a subject with thousands of breach/stealer records came back as exactly 500
+with no completeness caveat — indistinguishable from an exhaustive answer. The
+provider's own `breach_count` / `stealer_count` / `external_count` totals are
+not returned by the transport, so no exact total is available on this path;
+the honest statement is the unknown-total one.
+
+**Fix.** After building the parent, `absorb_search_hits` calls
+`ModuleResult::mark_truncated_if_capped(total, see_know::SEARCH_LIMIT as usize,
+cause)` with a cause naming the endpoint and the cap. A full page (`total >=
+cap`) is declared truncated through the shared unknown-total sentence; a short
+page ran the corpus dry and is left exhaustive — that short-page guard lives
+once, in `mark_truncated_if_capped` (REQ-COVERAGE-001). `SEARCH_LIMIT` moves
+from `pub(super)` to `pub(crate)` and is re-exported from
+`util::see_know`, so the count the request asked for stays owned by the request
+builder rather than being duplicated as a literal in the module. This is a
+completeness-honesty fix only: it reads no new fields and collects no
+additional data.
+
+Single-slot interaction: `ModuleResult::truncation` is one `Option<String>`.
+When both a search-cap truncation and a later pivot-walk truncation fire on the
+same scan, the pivot cause overwrites the search one (mod.rs:881 sets it when
+`pivot_truncation` returns `Some`). Both mean "incomplete", so the result stays
+honestly truncated; only the wording differs. In the common case — a >500
+record subject whose pivots do not truncate — the search-cap notice survives,
+which is the case this fixes. Widening `truncation` to carry multiple causes is
+a separate change and was not made here.
+
+**Locks** (`src/modules/see_know/tests.rs`).
+- `a_full_search_page_is_declared_truncated_against_the_record_cap`: feeds
+  exactly `SEARCH_LIMIT` records and asserts `result.truncation` names the
+  endpoint and the cap.
+- `a_short_search_page_stays_exhaustive`: a two-record page leaves
+  `truncation` `None` — the over-correction guard.
+
+**Baseline sensitivity.** Replacing the `mark_truncated_if_capped` call with a
+no-op fails `a_full_search_page_is_declared_truncated_against_the_record_cap`
+at its `expect` ("a full page must carry a truncation notice"); the short-page
+test still passes, proving it is not merely asserting "always truncated". The
+file was restored byte for byte.
