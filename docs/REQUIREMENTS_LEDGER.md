@@ -27972,3 +27972,162 @@ no detached message in `update --check`:
   `hse serve` status and the debug bundle then show it as "not yet checked".
 - An install made with `HSE_REF=<sha>` still never updates. The acceptance
   runner no longer makes one (REQ-ACCEPT-003).
+
+## REQ-WIGLE-002 — WiGLE reported "nothing here" for searches it never ran
+
+**Requirement.** A WiGLE query that did not run, or ran only in part, is never
+reported as a clean negative. Coverage treats `Ok(empty)` as `CleanNegative`,
+"WiGLE holds nothing here", and that is the one outcome that settles an
+absence (`ProviderOutcome::settles_absence`). So a search WiGLE refused, or
+one the module never sent, has to be a typed skip. A search WiGLE answered
+only in part has to be declared truncated.
+
+**Gap.** Seven paths returned `Ok(ModuleResult::new())` for a question WiGLE
+never answered:
+
+| path | what happened | was recorded as |
+|---|---|---|
+| HTTP 412 | WiGLE refuses an account whose email is unverified, and serves no search | `CleanNegative` |
+| `success:false` body | WiGLE declined the search, in its own words (`message`) | `CleanNegative` |
+| location budget spent | no request was sent | `CleanNegative` |
+| SSID budget spent | no request was sent | `CleanNegative` |
+| BSSID budget spent, both corpora | no request was sent | `CleanNegative` |
+| BSSID budget spent after one corpus | half the lookup ran | `CleanNegative` |
+| SSID with more than `SSID_UNIQUE_MAX` observations | WiGLE holds the name many times over; none were emitted | `CleanNegative`: "no such network", the opposite of what WiGLE said |
+
+An empty or carrier-default SSID was also `Ok(empty)`. The module never asked
+about those, and asking could not place anyone.
+
+**Fix.** `classify_and_decode`, the shared tail of every WiGLE search:
+- a 412 is `Error::skipped(SkipClass::Unavailable, …)`. It still latches the
+  account as unverified for `hse doctor`, which is the only thing the 412 path
+  did right before;
+- a decoded body that is not `success:true` is the same skip, carrying WiGLE's
+  own `message` (`fetch::refused`). Every caller now holds a body that is
+  really an answer, so the scattered `success != Some(true)` checks, each of
+  which returned `Ok(empty)`, are gone.
+
+In the module:
+- a spent sub-budget is an `Unavailable` skip that names the budget, its cap
+  and its session cap (`budget_spent`);
+- an empty SSID is `NotApplicable`;
+- a carrier or vendor default is `Error::query_too_weak(SkipClass::Scoped, …)`.
+
+Two pure functions decide the rest:
+- `bssid_outcome`: an error wins; nothing asked is the budget skip; one corpus
+  asked and the other not is declared truncated, naming the corpus left
+  unasked;
+- `ssid_result`: zero observations is the real negative; more than
+  `SSID_UNIQUE_MAX` is declared truncated against WiGLE's own count.
+
+Every skip reason says "This is NOT \"nothing found\"".
+
+**Locks** (`src/modules/wigle/tests.rs`).
+- `a_412_is_an_unavailable_skip_that_latches_the_account_unverified` and
+  `a_success_false_body_is_a_refusal_and_a_success_true_body_is_an_answer`
+  feed a real `reqwest::Response` from a one-shot loopback server to
+  `classify_and_decode`, with a `success:true` control.
+- `an_exhausted_geo_budget_is_an_unavailable_skip`, and the SSID and BSSID
+  budget tests, run the module with the budget drained. The loopback-only
+  client would turn any request into an `Http` error, so the skip also proves
+  no request was sent.
+- `a_bssid_lookup_reports_how_much_of_it_ran` and
+  `a_non_unique_ssid_is_declared_not_denied` pin the two pure functions,
+  including the `SSID_UNIQUE_MAX` edge.
+- The four earlier tests that asserted `Ok(empty)` for a skipped SSID now
+  assert the typed skip. `expect_skip` fails on `Ok(empty)`, naming it
+  `CleanNegative`, and requires the reason to disclaim absence.
+
+**Falsification.** Each fixed path reverted alone. Every target test passes on
+the fix first, so a failure is the revert's doing:
+
+```
+M1  spent location budget back to Ok(empty)
+      an_exhausted_geo_budget_is_an_unavailable_skip ... FAILED
+M2  the success:false guard removed from classify_and_decode
+      a_success_false_body_is_a_refusal_and_a_success_true_body_is_an_answer ... FAILED
+M3  a 412 no longer recognised (falls to the HTTP-error path)
+      a_412_is_an_unavailable_skip_that_latches_the_account_unverified ... FAILED
+M4  the SSID uniqueness truncation removed
+      a_non_unique_ssid_is_declared_not_denied ... FAILED
+M5  the half-asked BSSID truncation removed
+      a_bssid_lookup_reports_how_much_of_it_ran ... FAILED
+```
+
+The first harness for this matrix reported every mutant as a compile error,
+the trivially safe `== 412 → == 999` edit included. The cause was the
+classifier, not the mutants: a failing test prints `error: test failed, …`,
+which the classifier's `^error` pattern read as a compile error. The
+classifier now matches only `error[E…]` and `could not compile`, requires the
+target test to have run, and a baseline pass comes first.
+
+**Also.** The new 412 test moves a process-global account latch. The tests
+that read or move that latch are serialised on `ACCOUNT_LOCK`, so a test
+asserting the default state cannot pass or fail on interleaving.
+
+**Follow-up (PR review).** The first fix routed every *search* through
+`classify_and_decode`, but two paths still reached `Ok(empty)` for a search
+that never ran, both surfaced in review:
+
+1. *The BSSID detail path bypassed the classifier.* `fetch_detail` (the WiFi /
+   Bluetooth `/detail` lookup behind `bssid_lookup`) called
+   `util::wigle::get` + `json_scanned` directly, never `classify_and_decode`.
+   So a detail HTTP 412 became a hard, un-latched `Error::module` — the account
+   was never recorded unverified — and a 200 `success:false` body decoded to an
+   `Ok(_)` the caller read as a miss, which `bssid_outcome(&[], None)` then
+   returned as `Ok(empty)` / `CleanNegative` when both corpora "missed". The
+   detail endpoint carries the SAME 412/`success:false` contract the search
+   endpoints do; the classification simply was not on that path.
+2. *An empty tight geo box with no widening budget fell through to a clean
+   negative.* The Coordinates dispatch queries a tight bounding box, then
+   widens once if it came back empty. `let body = if empty &&
+   GEO_BUDGET.try_increment() { widen } else { tight }` fell to `tight` (empty)
+   whenever the widening unit could not be reserved, and the later `total == 0`
+   branch returned `Ok(empty)`. The wider box was never asked, so a clean
+   negative was recorded for a half-finished lookup — the exact error this
+   requirement removes.
+
+**Fix (follow-up).**
+- `util::wigle` gains `get_answer`, which classifies a detail round-trip into a
+  typed `DetailAnswer`: `Absent` (404, the one genuine "no such network"),
+  `Unverified` (412), or `Answer(resp)` (a 2xx to decode); 401/403, 429, WAF
+  and other non-2xx propagate as the same typed `Err` as before. `get` and
+  `get_answer` now share one private `send_with_breaker` — a single authority
+  for the breaker gate, the send, and recording the outcome — and differ only
+  in status classification. `get`'s existing contract (a 412 folds into its
+  generic non-2xx `Err`) is preserved for its other caller (`wifi_intel`).
+- `fetch_detail` routes through `get_answer`: `Absent → Ok(None)`,
+  `Unverified → Err(account_unverified())` (the same skip + `hse doctor` latch
+  the search 412 uses), `Answer → decode_detail`. `decode_detail` applies the
+  same `success:false → refused` classification the search tail does, carrying
+  WiGLE's own `message` via the shared `refused_with_message` (also now behind
+  `refused`). `DetailResp` gains a `message` field so the detail refusal reads
+  identically to the search refusal.
+- The tight→widen decision is the pure `geo_after_tight(tight_rows,
+  reserve_widen)`: a non-empty tight box keeps its body and never reserves the
+  second unit; an empty box widens if a unit is free; an empty box with no unit
+  is the typed `Unavailable` skip, never a clean negative on a partial lookup.
+
+**Locks (follow-up)** (`src/modules/wigle/tests.rs`).
+- `a_detail_412_is_the_account_unverified_outcome_not_a_hard_error` feeds a
+  one-shot loopback server (the same `serve_once` the search tests use) to
+  `get_answer` and asserts 412 → `Unverified`, 404 → `Absent`, 200 → `Answer`.
+- `a_detail_success_false_body_is_a_refusal_not_a_miss` decodes a served
+  `success:false` body through `decode_detail` and asserts the typed refusal
+  carrying WiGLE's reason, with a `success:true` control that decodes to the
+  answer.
+- `an_empty_tight_box_with_no_widening_budget_is_a_skip_not_a_negative` pins
+  `geo_after_tight` for all three branches, including that a non-empty tight
+  box never invokes the reservation closure (`|| panic!(…)`).
+
+**Falsification (follow-up).** Each follow-up path reverted alone; the target
+test passes on the fix first, so the failure is the revert's:
+
+```
+D1  get_answer's 412 arm removed (412 falls to http_status_error)
+      a_detail_412_is_the_account_unverified_outcome_not_a_hard_error ... FAILED
+D2  decode_detail's success!=true guard removed (returns Ok(Some(body)))
+      a_detail_success_false_body_is_a_refusal_not_a_miss ... FAILED
+G1  geo_after_tight returns Ok(false) instead of Err when empty + no unit
+      an_empty_tight_box_with_no_widening_budget_is_a_skip_not_a_negative ... FAILED
+```

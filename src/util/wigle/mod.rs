@@ -76,6 +76,57 @@ pub async fn get(
     url: &str,
     src: &'static str,
 ) -> Result<Option<reqwest::Response>> {
+    // Shares the transport, breaker and status classification with
+    // [`get_answer`]. `get` folds the account-unverified 412 into the generic
+    // non-2xx `Err` arm below (its long-standing contract), whereas
+    // `get_answer` reports it as a distinct outcome the caller can act on — the
+    // only difference between the two.
+    match get_answer(http, user, token, url, src).await? {
+        DetailAnswer::Absent => Ok(None),
+        // A 412 here is not a definitive "no such network"; `get` never had a
+        // way to say "unverified", so it stays the same typed HTTP error every
+        // other non-2xx produces. Callers that must tell a 412 apart use
+        // `get_answer`.
+        DetailAnswer::Unverified => Err(Error::module(
+            src,
+            "WiGLE refused this account (HTTP 412): its email address is not \
+             verified. Verify it at https://wigle.net/account",
+        )),
+        DetailAnswer::Answer(resp) => Ok(Some(resp)),
+    }
+}
+
+/// What a WiGLE detail-endpoint round-trip resolved to, classified at the point
+/// the HTTP status is known so every detail caller agrees on what each status
+/// means. [`get`] collapses a 412 into a stringly HTTP error indistinguishable
+/// from a 5xx; a 412 is WiGLE's account-*unverified* signal on every endpoint,
+/// not a transport fault, and a caller (the BSSID path) must be able to treat it
+/// as the same typed skip the search path does rather than a hard error or a
+/// miss (REQ-WIGLE-002).
+#[derive(Debug)]
+pub enum DetailAnswer {
+    /// HTTP 404 — WiGLE genuinely has no such network. The one real absence.
+    Absent,
+    /// HTTP 412 — the account's email is unverified; WiGLE serves no detail
+    /// until it is. The caller latches the account state and reports a skip.
+    Unverified,
+    /// A 2xx response the caller must decode into its own body type.
+    Answer(reqwest::Response),
+}
+
+/// The shared transport + circuit-breaker mechanics behind [`get`] and
+/// [`get_answer`]: the pre-send breaker gate, the authenticated GET, and
+/// recording the round-trip's outcome against the host breaker. The two public
+/// entry points differ only in how they classify the resolved status, so this
+/// is the single authority for everything that touches the socket or the
+/// breaker.
+async fn send_with_breaker(
+    http: &reqwest::Client,
+    user: &str,
+    token: &str,
+    url: &str,
+    src: &'static str,
+) -> Result<reqwest::Response> {
     // The shared pre-send gate: already refused within this endpoint's backoff
     // window → do not re-ask, no socket opened. This is the cheap path the 429
     // storm above was missing. The message is deliberately the shared one: the
@@ -93,15 +144,36 @@ pub async fn get(
     // One authority for what a round-trip does to the endpoint's breaker: a 429
     // opens it immediately for the server's own Retry-After window, a 5xx counts
     // toward the failure threshold, and any definitive answer — including the
-    // 404 below and the auth failures after it — proves the host is up and
+    // 404 and the auth failures classified below — proves the host is up and
     // closes it. This module used to hand-roll that here, correctly, beside a
     // shared version that got the 429 wrong (REQ-HTTP-005); the shared one is
     // now the correct one and this is the only copy.
     crate::util::http::record_breaker_outcome(host.as_deref(), &resp);
 
+    Ok(resp)
+}
+
+/// Issue an authenticated GET and classify the WiGLE detail response into a
+/// [`DetailAnswer`] — 404 is the genuine absence, 412 is the account-unverified
+/// skip, and a 2xx is handed back for the caller to decode. Auth failures
+/// (401/403), throttles, WAF challenges and other non-2xx propagate as the same
+/// typed `Err` [`get`] produces. See [`DetailAnswer`] for why the 412 needs to
+/// be a distinct outcome (REQ-WIGLE-002).
+pub async fn get_answer(
+    http: &reqwest::Client,
+    user: &str,
+    token: &str,
+    url: &str,
+    src: &'static str,
+) -> Result<DetailAnswer> {
+    let resp = send_with_breaker(http, user, token, url, src).await?;
+
     let status = resp.status();
     if status.as_u16() == 404 {
-        return Ok(None);
+        return Ok(DetailAnswer::Absent);
+    }
+    if status.as_u16() == 412 {
+        return Ok(DetailAnswer::Unverified);
     }
     if status.as_u16() == 401 || status.as_u16() == 403 {
         return Err(Error::module(
@@ -118,7 +190,7 @@ pub async fn get(
         return Err(crate::util::http::http_status_error(src, resp).await);
     }
 
-    Ok(Some(resp))
+    Ok(DetailAnswer::Answer(resp))
 }
 
 #[cfg(test)]
