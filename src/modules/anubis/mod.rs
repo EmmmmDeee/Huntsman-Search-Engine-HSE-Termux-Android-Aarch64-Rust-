@@ -1,4 +1,4 @@
-//! Anubis (jldc.me) — free, key-less passive-DNS subdomain aggregator.
+//! Anubis (jonlu.ca) — free, key-less passive-DNS subdomain aggregator.
 //!
 //! Endpoint: `GET https://jonlu.ca/anubis/subdomains/{domain}` (moved from
 //! `jldc.me`, which now answers `301` there; the engine refuses cross-site
@@ -85,7 +85,7 @@ fn build_entities(names: &[String], domain_base: &str, scan_id: &str) -> Vec<Ent
             }
             e.add_evidence(Evidence::new(
                 SRC,
-                "Passive-DNS subdomain (Anubis / jldc.me)",
+                "Passive-DNS subdomain (Anubis / jonlu.ca)",
             ));
             Some(e)
         })
@@ -106,7 +106,7 @@ impl Module for Anubis {
     }
 
     fn description(&self) -> &'static str {
-        "Passive-DNS subdomain aggregation via Anubis/jldc.me (free, no key)"
+        "Passive-DNS subdomain aggregation via Anubis/jonlu.ca (free, no key)"
     }
 
     fn priority(&self) -> u8 {

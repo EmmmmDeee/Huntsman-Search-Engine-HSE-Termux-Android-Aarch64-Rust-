@@ -1519,11 +1519,11 @@ fn a_moved_install_dir_is_rerecorded_and_then_settles() {
     let keys = home.join(".huntsman.env");
     record_install_dir(home, "/old/place");
     provision(home);
-    record_install_dir(home, "/new/place & more|chars\\x");
+    record_install_dir(home, "/new/place & more|chars");
     provision(home);
     let text = fs::read_to_string(&keys).unwrap();
     assert!(
-        text.contains("HUNTSMAN_INSTALL_DIR=\"/new/place & more|chars\\x\""),
+        text.contains("HUNTSMAN_INSTALL_DIR=\"/new/place & more|chars\""),
         "{text}"
     );
     assert!(
@@ -1532,7 +1532,7 @@ fn a_moved_install_dir_is_rerecorded_and_then_settles() {
     );
     let settled = fs::read(&keys).unwrap();
     let before = backups(home);
-    record_install_dir(home, "/new/place & more|chars\\x");
+    record_install_dir(home, "/new/place & more|chars");
     provision(home);
     assert_eq!(fs::read(&keys).unwrap(), settled);
     assert_eq!(backups(home), before);
@@ -1564,4 +1564,35 @@ fn an_existing_unquoted_record_from_an_older_installer_converges() {
         "second install rewrote:\n{stdout}"
     );
     assert_eq!(backups(home), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_path_that_cannot_round_trip_is_refused_and_the_file_is_left_alone() {
+    // The Rust keys writer rejects `"` and `\` (src/util/keys/io.rs); a
+    // recorded value containing either would be read back differently by
+    // `hse update`. The installer refuses to record it instead.
+    use std::process::Command;
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let home = tmp.path();
+    let keys = home.join(".huntsman.env");
+    record_install_dir(home, "/good/place");
+    let before = fs::read(&keys).unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    for bad in ["/bad\\place", "/bad\"place"] {
+        let out = Command::new("bash")
+            .arg(&script)
+            .arg("__record_install_dir")
+            .arg(&keys)
+            .arg(bad)
+            .env("HOME", home)
+            .output()
+            .expect("run install.sh __record_install_dir");
+        assert!(!out.status.success(), "{bad:?} must be refused");
+        assert_eq!(
+            fs::read(&keys).unwrap(),
+            before,
+            "{bad:?} must not touch the file"
+        );
+    }
 }

@@ -104,9 +104,12 @@ struct SecureDns {
 /// one explicit hop: it must resolve against `origin`, keep its scheme (never an
 /// https → http downgrade), name a host that is not a private or reserved IP
 /// literal (hostnames are filtered by the engine's SSRF resolver at connect
-/// time; literals never reach it), and be an RDAP domain query. Anything else
-/// is refused, and the redirect is then reported as the failure it is.
-fn registry_hop(origin: &url::Url, location: &str) -> Option<url::Url> {
+/// time; literals never reach it), and be the RDAP domain query for the domain
+/// asked about — its path must END in `/domain/<domain>`, not merely contain
+/// `/domain/` somewhere, so a redirect cannot aim the hop at an arbitrary
+/// endpoint. Anything else is refused, and the redirect is then reported as
+/// the failure it is.
+fn registry_hop(origin: &url::Url, location: &str, domain: &str) -> Option<url::Url> {
     let next = origin.join(location).ok()?;
     if next.scheme() != origin.scheme() {
         return None;
@@ -124,7 +127,11 @@ fn registry_hop(origin: &url::Url, location: &str) -> Option<url::Url> {
         }
         url::Host::Domain(_) => {}
     }
-    next.path().contains("/domain/").then_some(next)
+    let mut segments = next.path_segments()?.rev();
+    let last = segments.next()?;
+    let kind = segments.next()?;
+    (kind == "domain" && last.eq_ignore_ascii_case(domain) && next.query().is_none())
+        .then_some(next)
 }
 
 const SRC: &str = "rdap_domain";
@@ -460,7 +467,7 @@ impl Module for RdapDomain {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned);
             let origin = resp.url().clone();
-            let Some(next) = location.and_then(|l| registry_hop(&origin, &l)) else {
+            let Some(next) = location.and_then(|l| registry_hop(&origin, &l, domain)) else {
                 return Err(crate::util::http::http_status_error(SRC, resp).await);
             };
             resp = ctx

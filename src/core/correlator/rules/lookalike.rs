@@ -65,6 +65,27 @@ fn differ_only_in_digits(a: &str, b: &str) -> bool {
     without_digits(a) == without_digits(b)
 }
 
+/// True when every `Domain` entity folding to a registrable domain is a
+/// nameserver host (the `ns` tag every NS-emitting module sets: `rdap_domain`,
+/// `dns_intel`, `passivetotal`, `mnemonic_pdns`). Such a domain reached the scan
+/// only as DNS-hosting infrastructure — someone's authoritative nameserver — not
+/// as a brand presented to a victim, and a phisher cannot make their domain the
+/// authoritative nameserver of the genuine one. A live `wikipedia.org` scan
+/// paired the seed with `wikimedia.org`, known only as
+/// `ns0/ns1/ns2.wikimedia.org` (the seed's own nameservers), and reported
+/// "phishing / brand-abuse infrastructure" at High (REQ-ATTR-005). The same
+/// domain surfaced through any non-nameserver route stays in scope.
+fn nameserver_only(uids: &[String], entities: &[Entity]) -> bool {
+    let mut any = false;
+    for e in entities.iter().filter(|e| uids.contains(&e.uid)) {
+        if !e.has_tag("ns") {
+            return false;
+        }
+        any = true;
+    }
+    any
+}
+
 /// AU-118 — Look-alike domain impersonation.
 ///
 /// Entity-only: folds the `Domain` entities to distinct registrable domains and
@@ -109,7 +130,11 @@ pub(in crate::core::correlator) fn rule_au_118_lookalike_domain_impersonation(
         let li = label(keys[i]);
         for kj in keys.iter().skip(i + 1) {
             let lj = label(kj);
-            if !is_lookalike(&li, &lj) || differ_only_in_digits(&li, &lj) {
+            if !is_lookalike(&li, &lj)
+                || differ_only_in_digits(&li, &lj)
+                || nameserver_only(&domains[keys[i]], entities)
+                || nameserver_only(&domains[*kj], entities)
+            {
                 continue;
             }
             // Union both sides' entities, in entity order for a stable render.
@@ -166,6 +191,48 @@ mod tests {
         assert_eq!(out[0].severity, Severity::High);
         assert!(out[0].entity_uids.contains(&real.uid));
         assert!(out[0].entity_uids.contains(&fake.uid));
+    }
+
+    /// REQ-ATTR-005: a domain seen only as the seed's nameservers is the
+    /// operator's own DNS infrastructure, not an impersonator; the same domain
+    /// discovered any other way still pairs.
+    #[test]
+    fn au118_ignores_a_domain_seen_only_as_a_nameserver() {
+        let seed = dom("wikipedia.org");
+        let mut ns: Vec<Entity> = ["ns0.wikimedia.org", "ns1.wikimedia.org"]
+            .iter()
+            .map(|v| {
+                let mut e = dom(v);
+                e.tag("ns");
+                e
+            })
+            .collect();
+        let mut all = vec![seed.clone()];
+        all.append(&mut ns);
+        let out = rule_au_118_lookalike_domain_impersonation(&RuleContext::new(&all), "s", 0);
+        assert!(
+            out.is_empty(),
+            "the seed's own nameservers are not phishing: {out:?}"
+        );
+
+        // Also surfaced as a plain domain (a crawl link, a breach record): in scope.
+        all.push(dom("wikimedia.org"));
+        let out = rule_au_118_lookalike_domain_impersonation(&RuleContext::new(&all), "s", 0);
+        assert_eq!(
+            out.len(),
+            1,
+            "a non-nameserver sighting keeps the pair: {out:?}"
+        );
+
+        // And a real impersonation that also runs its own nameserver still fires.
+        let mut fake_ns = dom("ns1.paypa1.com");
+        fake_ns.tag("ns");
+        let out = rule_au_118_lookalike_domain_impersonation(
+            &RuleContext::new(&[dom("paypal.com"), dom("paypa1.com"), fake_ns]),
+            "s",
+            0,
+        );
+        assert_eq!(out.len(), 1, "{out:?}");
     }
 
     #[test]

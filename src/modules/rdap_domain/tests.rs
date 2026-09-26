@@ -258,14 +258,14 @@ fn registry_hop_follows_the_bootstrap_redirect_only_to_a_vetted_rdap_url() {
     let origin = url::Url::parse("https://rdap.org/domain/example.com").unwrap();
     // The live answer (2026-09-26): rdap.org → the .com registry.
     assert_eq!(
-        registry_hop(&origin, "https://rdap.verisign.com/com/v1/domain/example.com")
+        registry_hop(&origin, "https://rdap.verisign.com/com/v1/domain/example.com", "example.com")
             .map(|u| u.to_string()),
         Some("https://rdap.verisign.com/com/v1/domain/example.com".to_string())
     );
     // A relative Location resolves against the origin.
     assert_eq!(
-        registry_hop(&origin, "/domain/other.com").map(|u| u.to_string()),
-        Some("https://rdap.org/domain/other.com".to_string())
+        registry_hop(&origin, "/domain/example.com", "example.com").map(|u| u.to_string()),
+        Some("https://rdap.org/domain/example.com".to_string())
     );
     for refused in [
         "http://rdap.verisign.com/com/v1/domain/example.com", // downgrade
@@ -274,8 +274,12 @@ fn registry_hop_follows_the_bootstrap_redirect_only_to_a_vetted_rdap_url() {
         "https://10.0.0.5/domain/example.com",                // private
         "https://[::1]/domain/example.com",                   // v6 loopback
         "https://evil.example/login",                         // not an RDAP query
+        "https://attacker.example/not-rdap/domain/collect",   // /domain/ mid-path
+        "https://rdap.verisign.com/com/v1/domain/other.com",  // another domain
+        "https://rdap.verisign.com/com/v1/domain/example.com/x", // extra segment
+        "https://rdap.verisign.com/com/v1/domain/example.com?x=1", // query
         "ftp://rdap.verisign.com/domain/example.com",         // scheme change
     ] {
-        assert!(registry_hop(&origin, refused).is_none(), "{refused}");
+        assert!(registry_hop(&origin, refused, "example.com").is_none(), "{refused}");
     }
 }

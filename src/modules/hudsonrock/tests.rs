@@ -405,6 +405,19 @@ use super::*;
             serde_json::from_str(r#"{"total":0,"employees":0,"users":0}"#).unwrap();
         let target = Target::new(TargetKind::Domain, "example.com");
         assert!(build_domain_result(&target, &clean, "scan").entities.is_empty());
+        // Exposure reported only as machines or only as third parties is still
+        // exposure, not a clean negative.
+        for body in [
+            r#"{"total":1,"employees":0,"users":0}"#,
+            r#"{"total":0,"employees":0,"users":0,"third_parties":3}"#,
+        ] {
+            let data: DomainResp = serde_json::from_str(body).unwrap();
+            assert_eq!(
+                build_domain_result(&target, &data, "scan").entities.len(),
+                1,
+                "{body}"
+            );
+        }
         // REQ-HUDSONROCK-001: an error envelope must not decode as "no exposure".
         assert!(serde_json::from_str::<DomainResp>(r#"{"error":"rate limited"}"#).is_err());
         // The login shape is still not a domain answer.

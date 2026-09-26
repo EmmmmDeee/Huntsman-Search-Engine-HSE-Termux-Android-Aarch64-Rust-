@@ -276,10 +276,15 @@ fn search_by_login_url(email: &str) -> String {
 }
 
 /// Build the domain entity from a `search-by-domain` answer. **Pure.** A domain
-/// with no compromised employees or users yields nothing (absence of exposure
-/// is not a finding); otherwise one entity carries the counts.
+/// whose every reported exposure count (machines, employees, users, third
+/// parties) is zero yields nothing (absence of exposure is not a finding);
+/// any non-zero count yields one entity carrying the counts.
 fn build_domain_result(target: &Target, data: &DomainResp, scan_id: &str) -> ModuleResult {
-    if data.employees == 0 && data.users == 0 {
+    if data.total == 0
+        && data.employees == 0
+        && data.users == 0
+        && data.third_parties.unwrap_or(0) == 0
+    {
         return ModuleResult::new();
     }
     let mut entity = target.to_entity(BASE_CONFIDENCE, scan_id);
@@ -289,8 +294,8 @@ fn build_domain_result(target: &Target, data: &DomainResp, scan_id: &str) -> Mod
     let mut ev = Evidence::new(
         SRC,
         format!(
-            "Infostealer exposure: {} compromised employee(s) and {} compromised user(s) of this domain",
-            data.employees, data.users
+            "Infostealer exposure: {} compromised machine(s); {} employee(s) and {} user(s) of this domain",
+            data.total, data.employees, data.users
         ),
     )
     .with_attr("compromised_machines", data.total.to_string())

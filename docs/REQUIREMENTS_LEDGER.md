@@ -28433,3 +28433,52 @@ prefix completed as JSON), and
 (zero exposure → empty; `{"error":…}` and the login shape both refused).
 The live endpoint timed out from the sandbox (25 s), so live confirmation is
 for the Termux acceptance run.
+
+## REQ-ATTR-005 — a domain's own nameservers were reported as look-alike phishing
+
+**Observed (live, sandbox, 2026-09-26).** `hse scan --kind domain --value
+wikipedia.org -m rdap_domain` raised AU-118 at High: "'wikimedia.org' and
+'wikipedia.org' are visual/typo look-alike domains … one is almost certainly
+impersonating the other". `wikimedia.org` reached the scan only as
+`ns0/ns1/ns2.wikimedia.org`, the RDAP-listed authoritative nameservers of the
+seed.
+
+**Root cause.** AU-118 pairs every two registrable domains whose labels are
+confusable, whatever role put them in the scan. A domain known only as a
+nameserver host is DNS-hosting infrastructure, not a brand shown to a victim,
+and a phisher cannot make their domain the authoritative nameserver of the
+genuine one. REQ-ATTR-004 excluded one symptom (numbered series such as
+`awsdns-52`/`awsdns-62`) but not the role itself.
+
+**Fix.** `nameserver_only` excludes a pair when every `Domain` entity folding
+to one side carries the `ns` tag every NS-emitting module sets (`rdap_domain`,
+`dns_intel`, `passivetotal`, `mnemonic_pdns`). The same domain surfaced any
+other way stays in scope, and a real impersonation that runs its own
+nameservers still fires.
+
+**Locks.** `au118_ignores_a_domain_seen_only_as_a_nameserver`: the seed with
+its own `ns`-tagged nameservers → no finding; the same domain also seen as a
+plain domain → one finding; `paypal.com` / `paypa1.com` plus
+`ns1.paypa1.com` → one finding. Correlator suite 654 pass.
+
+**Falsification.** The two `nameserver_only` guards removed:
+`au118_ignores_a_domain_seen_only_as_a_nameserver ... FAILED`.
+**Live.** The same scan after the fix: 11 entities, 6 correlations, no AU-118
+(before: 7, including the AU-118 false positive).
+
+**Review round (PR #656, 2026-09-26).** An independent review found four gaps,
+all fixed:
+- REQ-RDAP-001: `registry_hop` accepted any path merely *containing*
+  `/domain/` (e.g. `https://attacker.example/not-rdap/domain/collect`). It now
+  requires the path to END in `/domain/<the queried domain>` with no query;
+  the test adds that URL, another domain, an extra segment and a query string.
+  Falsified: the old substring check fails the test on the attacker URL.
+- REQ-HUDSONROCK-002: exposure reported only as `total` or `third_parties`
+  was discarded. The result is empty only when every count is zero; regression
+  cases cover both shapes.
+- REQ-INSTALL-012: a path containing `\` was written inside quotes, which the
+  keys loader does not round-trip. The installer now refuses `"` and `\` (as
+  the Rust writer in `src/util/keys/io.rs` does) and warns;
+  `a_path_that_cannot_round_trip_is_refused_and_the_file_is_left_alone` pins it.
+- REQ-ANUBIS-001: the description and evidence text still named `jldc.me`;
+  both name `jonlu.ca` now.

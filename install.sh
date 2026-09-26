@@ -138,8 +138,10 @@ hse_verify_or_rollback() {
 # leaves it untouched. Before this, every install rewrote the key unquoted
 # with its own comment after provision had canonicalized it, so the next
 # install's provision saw a changed file and backed it up again: one new
-# ~/.huntsman.env.bak.* per install, forever. A path containing `"` cannot
-# round-trip through the quoted form and is written bare, as before.
+# ~/.huntsman.env.bak.* per install, forever. A path containing `"` or `\`
+# cannot round-trip through the keys file (the Rust writer rejects both,
+# src/util/keys/io.rs), so it is refused with a non-zero return — the caller
+# warns — rather than recorded in a form `hse update` would misread.
 # grep+printf rather than sed, so no character in the path is ever a sed
 # metacharacter. chmod 0600 before mv keeps the key file's mode.
 hse_record_install_dir() {
@@ -150,12 +152,10 @@ hse_record_install_dir() {
         current="${current%\"}"
     fi
     [[ -f "$keys" && "$current" == "$dir" ]] && return 0
-    local line
-    if [[ "$dir" == *'"'* ]]; then
-        line="HUNTSMAN_INSTALL_DIR=$dir"
-    else
-        line="HUNTSMAN_INSTALL_DIR=\"$dir\""
+    if [[ "$dir" == *'"'* || "$dir" == *'\'* ]]; then
+        return 1
     fi
+    local line="HUNTSMAN_INSTALL_DIR=\"$dir\""
     {
         grep -v '^HUNTSMAN_INSTALL_DIR=' "$keys" 2>/dev/null || true
         printf '%s\n' "$line"
@@ -1865,7 +1865,7 @@ step "Configuring keys at $KEYS_PATH (canonical template + autonomous key discov
 # Recorded BEFORE provision, so provision is the last writer and a re-run is a
 # no-op (no rewrite, no new backup).
 hse_record_install_dir "$KEYS_PATH" "$HSE_INSTALL_DIR" \
-    || log_warn "could not record HUNTSMAN_INSTALL_DIR in $KEYS_PATH (hse update may not find install.sh)"
+    || log_warn "did not record HUNTSMAN_INSTALL_DIR in $KEYS_PATH (a path with \" or \\ cannot round-trip, or the write failed) — hse update may not find install.sh"
 "$HSE_BIN_DIR/hse" provision --env-only --discover \
     || log_warn "hse provision failed — configure keys later: hse provision --env-only --discover"
 
