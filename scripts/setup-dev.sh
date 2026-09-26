@@ -138,33 +138,60 @@ ENVEOF
 # .git/hooks, so it is set only when it is unset and .git/hooks holds no hook
 # of the developer's own; otherwise this says what to do instead of silently
 # disabling their hooks.
+#
+# The value is the main checkout's .githooks, as an absolute path. A relative
+# one is found only when git runs inside the checkout, so a push made from
+# elsewhere (GIT_DIR, --git-dir) ran no hook at all. The setting lives in
+# config every worktree of the clone shares, so it names the main checkout,
+# never a linked worktree that can be removed (REQ-HARNESS-006).
 configure_git_hooks() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  [ -d .githooks ] || return 0
-  local current own hooks_dir
+  local common main want current own hooks_dir
+  common="$(git rev-parse --git-common-dir 2>/dev/null)" || return 0
+  common="$(cd -P -- "$common" 2>/dev/null && pwd -P)" || return 0
+  if [ "$(basename -- "$common")" = .git ]; then
+    main="$(dirname -- "$common")"
+  else
+    main="$(git rev-parse --show-toplevel)"
+  fi
+  [ -f "$main/.githooks/pre-push" ] || return 0
+  want="$main/.githooks"
   current="$(git config --get core.hooksPath || true)"
-  if [ "$current" = ".githooks" ]; then
-    log "git hooks: core.hooksPath already .githooks"
+  if [ "$current" = "$want" ]; then
+    log "git hooks: core.hooksPath already $want"
+  elif [ "$current" = ".githooks" ]; then
+    # The relative value this script used to write.
+    set_hooks_path "$want" "was the relative .githooks" || return 1
+  elif [ -n "$current" ]; then
+    warn "git hooks: core.hooksPath is '$current'; leaving it. To enable the push gate: git config core.hooksPath '$want'"
     return 0
+  else
+    hooks_dir="$(git rev-parse --git-path hooks)"
+    # Symlinks count: hooks are often installed as links into a shared hooks
+    # directory, and `-type f` alone does not match one.
+    own="$(find "$hooks_dir" -maxdepth 1 \( -type f -o -type l \) ! -name '*.sample' 2>/dev/null | head -1)"
+    if [ -n "$own" ]; then
+      warn "git hooks: $hooks_dir has your own hooks ($(basename "$own")); leaving them. To enable the push gate: git config core.hooksPath '$want'"
+      return 0
+    fi
+    set_hooks_path "$want" "" || return 1
   fi
-  if [ -n "$current" ]; then
-    warn "git hooks: core.hooksPath is '$current'; leaving it. To enable the push gate: git config core.hooksPath .githooks"
-    return 0
-  fi
-  hooks_dir="$(git rev-parse --git-path hooks)"
-  # Symlinks count: hooks are often installed as links into a shared hooks
-  # directory, and `-type f` alone does not match one.
-  own="$(find "$hooks_dir" -maxdepth 1 \( -type f -o -type l \) ! -name '*.sample' 2>/dev/null | head -1)"
-  if [ -n "$own" ]; then
-    warn "git hooks: $hooks_dir has your own hooks ($(basename "$own")); leaving them. To enable the push gate: git config core.hooksPath .githooks"
-    return 0
-  fi
-  # A locked or read-only config leaves pushes ungated: say so, never claim it.
-  if ! git config core.hooksPath .githooks; then
-    warn "git hooks: could not set core.hooksPath (is .git/config locked or read-only?); pushes are NOT gated. Run: git config core.hooksPath .githooks"
+  # git skips a hook it cannot execute, without a word: on storage mounted
+  # noexec (Android shared storage) no push is gated by it.
+  if [ ! -x "$want/pre-push" ]; then
+    warn "git hooks: $want/pre-push cannot be executed here (a noexec filesystem, or a lost execute bit); git skips it, so pushes are NOT gated by it"
     return 1
   fi
-  log "git hooks: core.hooksPath = .githooks (pushes need a gate receipt; see .githooks/pre-push)"
+}
+
+# Set core.hooksPath, and say so only when the write happened: a locked or
+# read-only config leaves pushes ungated.
+set_hooks_path() { # set_hooks_path <path> <note>
+  if ! git config core.hooksPath "$1"; then
+    warn "git hooks: could not set core.hooksPath (is .git/config locked or read-only?); pushes are NOT gated. Run: git config core.hooksPath '$1'"
+    return 1
+  fi
+  log "git hooks: core.hooksPath = $1${2:+ ($2)} (pushes need a gate receipt; see .githooks/pre-push)"
 }
 
 verify() {
@@ -192,13 +219,18 @@ main() {
   install_system_deps
   ensure_rust
   configure_env
-  # A hooks-config failure has already been reported; the rest of setup still runs.
-  configure_git_hooks || true
+  # The push gate must actually be enabled. If the hook cannot be configured or
+  # executed, configure_git_hooks has warned and returns non-zero; the rest of
+  # setup still runs, but the verdict is non-success so the failure is not
+  # silently claimed as a working gate (REQ-HARNESS-006).
+  local hooks_rc=0
+  configure_git_hooks || hooks_rc=$?
   if [ "$DEPS_ONLY" = "1" ]; then
     log "--deps-only: skipping verification"
-    exit 0
+    exit "$hooks_rc"
   fi
-  verify
+  verify || exit 1
+  exit "$hooks_rc"
 }
 
 # Run only when executed, so a test can source this file and call one function.

@@ -15,9 +15,15 @@
 # in the command), or HSE_PUSH_GATE=off in the pusher's environment. Both are
 # a person's decision. A checkout older than gate receipts (no
 # scripts/gate-receipt.sh) is not policed.
+#
+# The checkout is where this file is, not `git rev-parse --show-toplevel`:
+# under GIT_DIR or `--git-dir`, run from another directory, show-toplevel
+# names that directory, and the push went through unchecked. scripts/setup-dev.sh
+# records an absolute core.hooksPath, which git finds from anywhere; a relative
+# one it finds only when the push runs inside the checkout (REQ-HARNESS-006).
 set -uo pipefail
 
-top="$(git rev-parse --show-toplevel 2>/dev/null)" || { cat >/dev/null; exit 0; }
+top="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd -P)" || { cat >/dev/null; exit 0; }
 receipt="$top/scripts/gate-receipt.sh"
 
 # Read every line before any exit: git writes them to this pipe, and closing
@@ -26,7 +32,12 @@ lines=()
 while IFS= read -r line; do lines+=("$line"); done
 
 [ "${HSE_PUSH_GATE:-on}" = off ] && exit 0
-[ -x "$receipt" ] || exit 0
+# `-f`, and run through bash: on storage mounted noexec (Android shared
+# storage) no file is executable, and the gate still applies (REQ-HARNESS-006).
+[ -f "$receipt" ] || exit 0
+# Nothing to send (an up-to-date push): git hands over no lines. An empty
+# array under `set -u` is an error in bash 4.3 and older (macOS ships 3.2).
+[ "${#lines[@]}" -gt 0 ] || exit 0
 
 missing=()
 for line in "${lines[@]}"; do
@@ -34,7 +45,7 @@ for line in "${lines[@]}"; do
     read -r local_ref local_sha remote_ref remote_sha <<<"$line"
     [ -n "${local_sha:-}" ] || continue
     [[ $local_sha =~ ^0+$ ]] && continue
-    if ! out="$(cd "$top" && "$receipt" check "$local_sha" 2>&1)"; then
+    if ! out="$(cd "$top" && bash "$receipt" check "$local_sha" 2>&1)"; then
         missing+=("$local_ref -> $remote_ref: $out")
     fi
 done
