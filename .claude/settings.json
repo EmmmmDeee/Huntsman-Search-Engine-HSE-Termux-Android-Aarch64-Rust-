@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh"
           }
         ]
       }
@@ -31,10 +31,9 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(git *)",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-push-gate.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-push-gate.sh",
             "timeout": 30,
-            "statusMessage": "Checking the gate receipt for this push"
+            "statusMessage": "HSE push gate"
           }
         ]
       }

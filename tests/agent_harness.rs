@@ -126,8 +126,41 @@ impl Repo {
             .env_remove("CLAUDE_PROJECT_DIR")
             .env_remove("GIT_DIR")
             .env_remove("GIT_INDEX_FILE")
-            .env_remove("GIT_WORK_TREE");
+            .env_remove("GIT_WORK_TREE")
+            // Config injected through the environment (a CI runner or a cloud
+            // container sets GIT_CONFIG_COUNT) would reach every git here.
+            .env_remove("GIT_CONFIG_COUNT")
+            .env_remove("GIT_CONFIG_PARAMETERS")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null");
         c
+    }
+
+    /// The hook started in `process_cwd` while its JSON says the command runs
+    /// in `cwd`: the JSON is what counts.
+    fn hook_elsewhere(&self, process_cwd: &Path, cwd: &Path, command: &str) -> Output {
+        use std::io::Write;
+        let input = serde_json::json!({
+            "session_id": "test",
+            "cwd": cwd,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": command, "description": "x" },
+        });
+        let mut child = self
+            .cmd("bash", process_cwd)
+            .arg(root().join(".claude/hooks/pre-push-gate.sh"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("bash");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
     }
 
     fn git_in(&self, dir: &Path, args: &[&str]) -> String {
@@ -852,7 +885,9 @@ impl Repo {
             is_executable(&hooks.join("pre-push")),
             ".githooks/pre-push must be committed executable, or git skips it"
         );
-        self.git(&["config", "core.hooksPath", ".githooks"]);
+        // Absolute, as scripts/setup-dev.sh writes it (REQ-HARNESS-006).
+        let abs = self.path().canonicalize().unwrap().join(".githooks");
+        self.git(&["config", "core.hooksPath", abs.to_str().unwrap()]);
         let remote = self.home().join("remote.git");
         self.git_in(
             self.home(),
@@ -1017,9 +1052,10 @@ fn the_git_hook_checks_each_ref_it_is_handed() {
 /// is only written where it cannot disable anything of the developer's own.
 #[test]
 fn setup_dev_enables_the_repo_hooks_only_where_that_is_safe() {
-    let configure = |repo: &Repo| -> (String, String) {
+    use std::os::unix::fs::PermissionsExt;
+    let configure_in = |repo: &Repo, dir: &Path| -> (String, String) {
         let out = repo
-            .cmd("bash", repo.path())
+            .cmd("bash", dir)
             .arg("-c")
             .arg(format!(
                 "source '{}' && configure_git_hooks",
@@ -1029,28 +1065,87 @@ fn setup_dev_enables_the_repo_hooks_only_where_that_is_safe() {
             .expect("bash");
         assert!(out.status.success(), "{}", text(&out.stderr));
         let got = repo
-            .cmd("git", repo.path())
+            .cmd("git", dir)
             .args(["config", "--get", "core.hooksPath"])
             .output()
             .expect("git");
         (text(&got.stdout).trim().to_string(), text(&out.stderr))
     };
+    let configure = |repo: &Repo| configure_in(repo, repo.path());
+    // As a checkout has it: committed executable.
     let with_hooks_dir = || {
         let repo = Repo::bare();
         repo.write(".githooks/pre-push", "#!/bin/sh\n");
+        fs::set_permissions(
+            repo.path().join(".githooks/pre-push"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
         repo
+    };
+    // REQ-HARNESS-006: absolute, so git finds it from any directory. A
+    // relative `.githooks` is found only inside the checkout, and a push made
+    // from elsewhere (GIT_DIR, --git-dir) ran no hook.
+    let absolute = |repo: &Repo| {
+        repo.path()
+            .canonicalize()
+            .unwrap()
+            .join(".githooks")
+            .display()
+            .to_string()
     };
 
     let fresh = with_hooks_dir();
     assert_eq!(
         configure(&fresh).0,
-        ".githooks",
+        absolute(&fresh),
         "a fresh clone is switched on"
     );
     assert_eq!(
         configure(&fresh).0,
-        ".githooks",
+        absolute(&fresh),
         "and re-running changes nothing"
+    );
+
+    // The relative value this script used to write is made absolute.
+    let relative = with_hooks_dir();
+    relative.git(&["config", "core.hooksPath", ".githooks"]);
+    assert_eq!(configure(&relative).0, absolute(&relative), "migrated");
+
+    // Run from a linked worktree, it names the main checkout's hooks: the
+    // setting is shared, and a worktree can be removed.
+    let linked_wt = with_hooks_dir();
+    linked_wt.commit_all("hooks");
+    let other = linked_wt.home().join("wt");
+    linked_wt.git(&["worktree", "add", "-q", "--detach", other.to_str().unwrap()]);
+    assert_eq!(
+        configure_in(&linked_wt, &other).0,
+        absolute(&linked_wt),
+        "the main checkout's .githooks, not the worktree's"
+    );
+
+    // A hook git cannot execute (noexec storage) is skipped by git without a
+    // word: setup says so, and does not report the gate as on.
+    let noexec = with_hooks_dir();
+    fs::set_permissions(
+        noexec.path().join(".githooks/pre-push"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let out = noexec
+        .cmd("bash", noexec.path())
+        .arg("-c")
+        .arg(format!(
+            "source '{}' && configure_git_hooks",
+            root().join("scripts/setup-dev.sh").display()
+        ))
+        .output()
+        .expect("bash");
+    assert!(!out.status.success(), "an unexecutable hook is a failure");
+    assert!(
+        text(&out.stderr).contains("cannot be executed") && text(&out.stderr).contains("NOT gated"),
+        "{}",
+        text(&out.stderr)
     );
 
     let custom = with_hooks_dir();
@@ -1058,7 +1153,10 @@ fn setup_dev_enables_the_repo_hooks_only_where_that_is_safe() {
     let (value, warning) = configure(&custom);
     assert_eq!(value, "my-hooks", "a developer's own hooksPath is kept");
     assert!(
-        warning.contains("git config core.hooksPath .githooks"),
+        warning.contains(&format!(
+            "git config core.hooksPath '{}'",
+            absolute(&custom)
+        )),
         "{warning}"
     );
 
@@ -1097,7 +1195,7 @@ fn setup_dev_enables_the_repo_hooks_only_where_that_is_safe() {
     assert!(!out.status.success(), "a failed write is a failure");
     assert!(
         text(&out.stderr).contains("pushes are NOT gated")
-            && !text(&out.stdout).contains("core.hooksPath = .githooks"),
+            && !text(&out.stdout).contains("core.hooksPath = "),
         "stdout: {}\nstderr: {}",
         text(&out.stdout),
         text(&out.stderr)
@@ -1105,7 +1203,7 @@ fn setup_dev_enables_the_repo_hooks_only_where_that_is_safe() {
     fs::remove_file(locked.path().join(".git/config.lock")).unwrap();
     assert_eq!(
         configure(&locked).0,
-        ".githooks",
+        absolute(&locked),
         "and it works once unlocked"
     );
 
@@ -1261,11 +1359,14 @@ fn the_push_gate_runs_before_every_git_command() {
             && h["command"]
                 .as_str()
                 .is_some_and(|c| c.ends_with("/.claude/hooks/pre-push-gate.sh"))
-            && h["if"].as_str().is_none_or(|cond| cond == "Bash(git *)")
+            // REQ-HARNESS-006: no filter. `sh -c 'git push'`, `eval`, `xargs git
+            // push` and `$(git push)` do not start with git, and a `git *`
+            // filter kept the hook from ever seeing them.
+            && h.get("if").is_none()
     });
     assert!(
         wired,
-        "the pre-push gate must be a PreToolUse hook on Bash, filtered at most to git commands"
+        "the pre-push gate must be a PreToolUse hook on every Bash command, with no `if` filter"
     );
 }
 
@@ -1384,5 +1485,479 @@ fn the_gate_records_a_receipt_for_the_tree_it_read_before_its_first_check() {
             .take(3)
             .any(|l| l.trim_start().starts_with("FAIL+=(")),
         "a failed record must count as a gate failure"
+    );
+}
+
+// ─── REQ-HARNESS-006: what the hook could not see, or would let through ────
+//
+// Every case below was reproduced by an independent review against the
+// earlier hook, which let each push through unchecked or refused the harmless
+// command.
+
+/// A push inside a command substitution, `sh -c`, `eval`, or behind a command
+/// that runs its arguments was invisible: none starts with `git`, and the
+/// double-quoted `$(…)` body was read as text.
+#[test]
+fn a_push_behind_a_substitution_or_another_command_is_found() {
+    let repo = Repo::new();
+    repo.commit_all("add the receipt script");
+    let forms = [
+        "out=\"$(git push origin main 2>&1)\"",
+        "echo \"result: $(git push origin main)\"",
+        "echo `git push origin main`",
+        "x=$(git push origin main)",
+        "sh -c 'git push origin main'",
+        "bash -lc \"git push origin main\"",
+        "eval git push origin main",
+        "eval 'git push origin main'",
+        "nice -n 5 git push origin main",
+        "sudo -u root git push origin main",
+        "env -i PATH=/usr/bin git push origin main",
+        "timeout -s KILL 60 git push origin main",
+        "command -p git push origin main",
+        "/usr/bin/git push origin main",
+        "setsid git push origin main",
+        // Quote/escape-obfuscated `push`: the shell removes the quotes and
+        // escapes before running the word, so the text holds no `push`
+        // substring, yet a real `git push` runs. A raw-substring shortcut let
+        // these through; the lexer removes the quotes, so the walk sees the
+        // push (REQ-HARNESS-006).
+        "git pu\"\"sh origin main",
+        "git pu''sh origin main",
+        "git pus\\h origin main",
+        "git p\\ush origin main",
+        "git 'pu'sh origin main",
+        "git pu'sh' origin main",
+        // `--` end-of-options in a wrapper must not hide the wrapped push; each
+        // resolves to a plain checked push, so a receipt lets it through.
+        "command -- git push origin main",
+        "nice -- git push origin main",
+        "sudo -u root -- git push origin main",
+        "env -- git push origin main",
+    ];
+    for f in forms {
+        assert_blocked(&repo.hook(f), f);
+    }
+    // With a receipt they pass: each refusal above came from finding the push
+    // and checking it, not from refusing what the hook could not read.
+    repo.record_pass();
+    for f in forms {
+        assert_allowed(&repo.hook(f), f);
+    }
+    // xargs hands the push its arguments at run time.
+    let out = repo.hook("echo main | xargs git push origin");
+    assert_blocked(&out, "xargs");
+    assert!(
+        text(&out.stderr).contains("run time"),
+        "{}",
+        text(&out.stderr)
+    );
+    // Exec-wrappers whose option grammars are too varied to locate the wrapped
+    // command (proot's path options, parallel's `{}`/`:::`, runuser's user or
+    // `-c` string): a push under one is refused even with a receipt present,
+    // because the hook cannot vet what the wrapper actually runs. git's own
+    // pre-push hook is the backstop for these on a configured clone.
+    for f in [
+        "watch git push origin main",
+        "watch -n 5 git push origin main",
+        "proot git push origin main",
+        "proot -r / git push origin main",
+        "runuser -u me -- git push origin main",
+        "echo main | parallel git push origin {}",
+        // A git global option between `git` and `push` must not shift the push
+        // out of the wrapper's view.
+        "watch git -C . push origin main",
+        "proot git -c a=b push origin main",
+        // A wrapper running a nested shell or a run-time command cannot be
+        // vetted, so it is refused (receipt or not).
+        "watch sh -c 'git push origin main'",
+        "cmd='git push origin main'; watch sh -c \"$cmd\"",
+    ] {
+        assert_blocked(&repo.hook(f), f);
+    }
+    // But a non-push under the same wrapper is not refused: the word `push` must
+    // be a `git push` subcommand, not any argument.
+    for c in [
+        "watch git status",
+        "watch -n 5 git log --oneline",
+        "proot git log --grep push",
+        "watch git -C . status",
+    ] {
+        assert_allowed(&repo.hook(c), c);
+    }
+    // A dynamic script or command handed to a shell/eval cannot be inspected, so
+    // it is refused; a static one is walked, and a static non-push passes.
+    for f in [
+        "cmd='git push origin main'; sh -c \"$cmd\"",
+        "cmd='git push origin main'; eval \"$cmd\"",
+        "cmd='git push origin main'; bash -lc \"$cmd\"",
+    ] {
+        assert_blocked(&repo.hook(f), f);
+    }
+    for c in ["sh -c 'echo hi'", "eval echo hi", "command -v git"] {
+        assert_allowed(&repo.hook(c), c);
+    }
+    // Refused even with the receipt present: a GIT_CONFIG_* injection past
+    // `env --`, a run-time remote whose push config cannot be read, and a repo
+    // exported into the environment the hook cannot name.
+    for f in [
+        "env -- GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x git push origin main",
+        "R=origin; git push \"$R\"",
+        "GIT_DIR=/other/.git; export GIT_DIR; git push origin main",
+    ] {
+        assert_blocked(&repo.hook(f), f);
+    }
+    // A git subcommand the hook cannot resolve to a literal — assembled at run
+    // time (`$(…)`, `$'…'`, `${…}`) or by brace expansion — could be `push`
+    // spelled to slip the literal check, so it is refused, receipt or not (these
+    // run after record_pass, and stay blocked). `git diff HEAD~{1,2}` shows a
+    // brace in an argument, not the subcommand, is fine.
+    for f in [
+        "git pu$(echo)sh origin main",
+        "git $'\\x70ush' origin main",
+        "git pus${x:-h} origin main",
+        "git pu{sh,x} origin main",
+        "git $'\\x70ush' --no-verify origin main",
+    ] {
+        assert_blocked(&repo.hook(f), f);
+    }
+    for c in ["git diff HEAD~{1,2}", "git log --format=%h"] {
+        assert_allowed(&repo.hook(c), c);
+    }
+
+    // Not pushes, and never refused: a commit message written through a
+    // heredoc inside `$(…)`, with apostrophes and the word push in it, and a
+    // substitution that only reads.
+    for c in [
+        "git commit -m \"$(cat <<'EOF'\nWhy we don't git push blind\nit's 'unbalanced\nEOF\n)\"",
+        "echo \"$(git log --grep push --oneline)\"",
+        "echo `git log --grep push`",
+    ] {
+        assert_allowed(&repo.hook(c), c);
+    }
+}
+
+/// What switches git's own pre-push hook off is refused when it is tied to the
+/// push it modifies: a `core.hooksPath` override on the push (`git -c`,
+/// `--config-env`), config injected through GIT_CONFIG_* on it, an earlier `git
+/// config core.hooksPath` that persists to it, and `send-pack`, which runs no
+/// hook. Each hook-disabler is tied to a push, not scanned flat: a `--no-verify`
+/// on a sibling `git commit`, or the word `push` in a message or a `git stash
+/// push`, is not a bypass and is not refused (REQ-HARNESS-006).
+#[test]
+fn what_would_switch_the_backstop_off_is_refused() {
+    let repo = Repo::new();
+    repo.commit_all("add the receipt script");
+    repo.record_pass();
+    for f in [
+        // parallel supplies the push its command and args at run time — with no
+        // incidental --no-verify to lean on, the wrapper itself is the refusal.
+        "echo main | parallel git push origin {}",
+        "git -c core.hooksPath=/dev/null push origin main",
+        "git --config-env=core.hooksPath=NOHOOKS push origin main",
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x git push origin main",
+        "git config core.hooksPath /tmp && git push origin main",
+        // Set in a subshell, the config still lands on disk and disables the
+        // hook for the outer push.
+        "(git config core.hooksPath /tmp); git push origin main",
+        "git send-pack origin main",
+        "git-send-pack origin main",
+    ] {
+        assert_blocked(&repo.hook(f), f);
+    }
+    // A push the hook checked may carry --no-verify: the receipt is there.
+    assert_allowed(
+        &repo.hook("git push --no-verify origin main"),
+        "--no-verify on a checked push",
+    );
+    // Not bypasses, and not refused: a --no-verify that belongs to a sibling
+    // commit, the word `push` as a message or a `git stash push`, and a
+    // core.hooksPath token inside a commit message. The old flat scan refused
+    // all of these because a bare `push` word sat somewhere near a bare
+    // `--no-verify` or `core.hooksPath` word (REQ-HARNESS-006).
+    for c in [
+        "git commit -m \"never use --no-verify\" && git push origin main",
+        "git commit -m \"fix core.hooksPath handling\" && git push origin main",
+        "git commit --no-verify -m wip && git stash push",
+        "git stash push -m wip; git commit --no-verify -m x",
+        "echo push; git commit --no-verify -m x",
+        "git commit -m push -m core.hooksPath=off",
+        // A read-only `git config --get core.hooksPath` does not disable the
+        // hook, so a push after it is not refused as tampered.
+        "git config --get core.hooksPath && git push origin main",
+        // `-c alias.x` is scoped to its own git invocation, so a later `git x`
+        // (a different command) is not falsely treated as that alias.
+        "git -c alias.safe='push origin main' status; git safe",
+    ] {
+        assert_allowed(&repo.hook(c), c);
+    }
+}
+
+/// `git push` sends more than its named refspecs when told to: `--all`,
+/// `--mirror`, `--tags`, a pattern, `:`, or the remote's push config. And
+/// `-n`/`--delete` were final, though `--no-dry-run`/`--no-delete` undo them.
+#[test]
+fn a_push_that_sends_refs_it_does_not_name_is_refused() {
+    let repo = Repo::new();
+    repo.commit_all("add the receipt script");
+    repo.record_pass(); // main passed
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write("README.md", "feature work\n");
+    repo.commit_all("feature");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.git(&["tag", "v1", "main"]);
+
+    for f in [
+        "git push --all origin",
+        "git push --branches origin",
+        "git push --mirror origin",
+        "git push --tags origin",
+        "git push --follow-tags origin main",
+        "git push origin 'refs/heads/*:refs/heads/*'",
+        "git push origin :",
+        "git push origin +:",
+        "git push --frobnicate origin main",
+        "git push -n --no-dry-run origin feature",
+        "git push --delete --no-delete origin feature",
+        "git -c push.default=matching push",
+        "git -c remote.origin.push=refs/heads/feature push origin",
+    ] {
+        assert_blocked(&repo.hook(f), f);
+    }
+    repo.git(&[
+        "config",
+        "remote.origin.push",
+        "refs/heads/feature:refs/heads/feature",
+    ]);
+    assert_blocked(&repo.hook("git push origin"), "remote.origin.push");
+    assert_blocked(
+        &repo.hook("git push"),
+        "remote.origin.push, no remote named",
+    );
+    repo.git(&["config", "--unset", "remote.origin.push"]);
+
+    for c in [
+        "git push -u --atomic --force-with-lease origin main",
+        "git push origin tag v1",
+        "git push --dry-run --all origin",
+        "git push origin --delete feature",
+    ] {
+        assert_allowed(&repo.hook(c), c);
+    }
+}
+
+/// The repository checked is the one the push runs in. `--git-dir`,
+/// `--work-tree` and GIT_DIR name another; a `cd` in a subshell, a pipeline or
+/// a substitution moves nothing; a `cd` that may fail, `cd -`, and a `cd`
+/// inside if/for/{ } leave the directory unknown. The JSON `cwd` decides where
+/// the command runs, not the directory the hook process happens to start in.
+#[test]
+fn the_repository_a_push_runs_in_is_the_one_checked() {
+    let repo = Repo::new();
+    repo.commit_all("add the receipt script");
+    let at = repo.path().display().to_string();
+    let elsewhere = repo.home().to_path_buf();
+
+    for f in [
+        format!("git --git-dir={at}/.git push origin main"),
+        format!("git --git-dir {at}/.git push origin main"),
+        format!("git --work-tree={at} --git-dir={at}/.git push origin main"),
+        format!("GIT_DIR={at}/.git git push origin main"),
+        format!("export GIT_DIR={at}/.git; git push origin main"),
+    ] {
+        let out = repo.hook_in_project(&elsewhere, &f, repo.path());
+        assert_blocked(&out, &f);
+    }
+
+    // Ungated HEAD: each of these still pushes from the repository, so each
+    // must be refused. The earlier hook moved its directory and let them go.
+    for f in [
+        "(cd /); git push origin main",
+        "v=\"$(cd / && pwd)\"; git push origin main",
+        "cd / | cat; git push origin main",
+        "cd / & git push origin main",
+        "cd /nonexistent-hse-dir; git push origin main",
+        "cd - && git push origin main",
+        "if true; then cd /; fi; git push origin main",
+        "for d in /; do cd \"$d\"; done; git push origin main",
+        // A cd on the far side of `&&`/`||` runs only conditionally, so where
+        // the later push runs is not known: `cd /missing && cd /` leaves the
+        // shell in the checkout, and `cd . || cd /` never runs the `cd /`.
+        "cd /missing && cd /; git push origin main",
+        "cd . || cd /; git push origin main",
+    ] {
+        assert_blocked(&repo.hook(f), f);
+    }
+
+    // The process starts in a directory that is not HSE; the command runs in
+    // the gated checkout.
+    let out = repo.hook_elsewhere(&elsewhere, repo.path(), "git push origin main");
+    assert_blocked(&out, "JSON cwd is the checkout");
+
+    // With a receipt the checkout's own push passes, from wherever the
+    // subshell went.
+    repo.record_pass();
+    assert_allowed(&repo.hook("(cd /); git push origin main"), "subshell cd");
+    assert_allowed(
+        &repo.hook(&format!("cd {at} && git push origin main")),
+        "cd && push",
+    );
+}
+
+/// A `#` comment is not words. Apostrophes in comments hid a push, or refused
+/// a harmless command; `<<` in arithmetic was read as a heredoc and swallowed
+/// the push after it.
+#[test]
+fn comments_and_arithmetic_neither_hide_nor_invent_a_push() {
+    let repo = Repo::new();
+    repo.commit_all("add the receipt script");
+    for f in [
+        "echo x # it's here\ngit push origin main\n# don't",
+        "git push origin main  # to the upstream",
+        "(( x = 1 << 2 ))\ngit push origin main",
+        "echo $(( 1 << 2 ))\ngit push origin main",
+        "echo \\\n# a comment after a continuation\ngit push origin main",
+    ] {
+        assert_blocked(&repo.hook(f), f);
+    }
+    for c in [
+        "# don't push yet\ngit status",
+        "echo a#b # push",
+        "git log --oneline # then push later",
+    ] {
+        assert_allowed(&repo.hook(c), c);
+    }
+}
+
+/// Portability. A crash must not let a push through: Claude Code blocks only
+/// on exit 2, and bash 4.3 and older trip `set -u` on an empty array. On
+/// storage mounted noexec the receipt script is not executable, and the gate
+/// still applies. And a long command is read in time.
+#[test]
+fn the_hook_fails_closed_and_works_where_files_cannot_execute() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = Repo::new();
+    repo.commit_all("add the receipt script");
+
+    // A hook that crashes after reading the command.
+    let crashing = repo.home().join("crashing-hook.sh");
+    let hook = read(".claude/hooks/pre-push-gate.sh");
+    let marker = "CWD=\"$(json_string cwd)\" || CWD=\"$PWD\"\n";
+    assert!(
+        hook.contains(marker),
+        "the crash is injected after the cwd is read"
+    );
+    fs::write(
+        &crashing,
+        hook.replacen(marker, &format!("{marker}: \"$UNSET_ON_PURPOSE\"\n"), 1),
+    )
+    .unwrap();
+    let run = |command: &str| {
+        use std::io::Write;
+        let input = serde_json::json!({
+            "cwd": repo.path(),
+            "tool_input": { "command": command },
+        });
+        let mut child = repo
+            .cmd("bash", repo.path())
+            .arg(&crashing)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    assert_blocked(&run("git push origin main"), "a crash on a push");
+    // The crash-time "could this push?" test must also see an obfuscated push,
+    // whose text holds no `push` substring until the shell removes the quotes.
+    assert_blocked(
+        &run("git pu\"\"sh origin main"),
+        "a crash on an obfuscated push",
+    );
+    assert_allowed(
+        &run("git status && echo done"),
+        "a crash on a command that cannot push",
+    );
+
+    // Not executable, still HSE.
+    fs::set_permissions(
+        repo.path().join("scripts/gate-receipt.sh"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    assert_blocked(&repo.hook("git push origin main"), "noexec receipt script");
+
+    // A long command that mentions a push, lexed in time.
+    let long = format!(
+        "git commit -m \"{}\" && git status",
+        "a line that says push and naïve ünïcödé text. ".repeat(600)
+    );
+    let started = std::time::Instant::now();
+    let out = repo.hook(&long);
+    assert_allowed(&out, "a long commit message");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "the hook must read a {}-byte command well inside its 30 s timeout: {:?}",
+        long.len(),
+        started.elapsed()
+    );
+}
+
+/// git's own hook finds its checkout from where it is, so a push run from
+/// another directory with `--git-dir` or GIT_DIR is still checked. And a push
+/// that sends nothing hands it no lines, which is not an error.
+#[test]
+fn the_git_hook_checks_a_push_run_from_outside_the_checkout() {
+    let repo = Repo::new();
+    let remote = repo.with_git_hook_and_remote();
+    repo.commit_all("fixture with the receipt script and the git hook");
+    let git_dir = repo.path().join(".git");
+    let from_elsewhere = |args: &[&str], envs: &[(&str, &Path)]| {
+        let mut c = repo.cmd("git", repo.home());
+        c.args(args);
+        for (k, v) in envs {
+            c.env(k, v);
+        }
+        c.output().expect("git")
+    };
+    let gd = format!("--git-dir={}", git_dir.display());
+    for (args, envs) in [
+        (vec![gd.as_str(), "push", "-q", "origin", "main"], vec![]),
+        (
+            vec!["push", "-q", "origin", "main"],
+            vec![("GIT_DIR", git_dir.as_path())],
+        ),
+    ] {
+        let out = from_elsewhere(&args, &envs);
+        assert!(
+            !out.status.success(),
+            "{args:?} {envs:?}: pushed with no receipt: {}",
+            text(&out.stderr)
+        );
+        assert!(
+            text(&out.stderr).contains("scripts/gate.sh --quick"),
+            "{}",
+            text(&out.stderr)
+        );
+        assert_eq!(repo.remote_head(&remote, "main"), None);
+    }
+
+    // Gated: pushes from anywhere.
+    repo.record_pass();
+    let out = from_elsewhere(&[gd.as_str(), "push", "-q", "origin", "main"], &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    // Up to date: git calls the hook with no lines.
+    let out = from_elsewhere(&[gd.as_str(), "push", "-q", "origin", "main"], &[]);
+    assert!(
+        out.status.success(),
+        "nothing to send: {}",
+        text(&out.stderr)
     );
 }

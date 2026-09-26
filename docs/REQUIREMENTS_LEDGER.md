@@ -27582,6 +27582,207 @@ Copilot found two defects in `configure_git_hooks`, and both are fixed:
 Restoring `-type f` alone fails the test, and so does restoring the unchecked
 write.
 
+## REQ-HARNESS-006 — the push gate could be slipped past
+
+**Requirement.** A push whose exact tree the gate has not passed does not leave
+the machine — whether a Claude Code session issues it (the `PreToolUse` hook
+`.claude/hooks/pre-push-gate.sh`, which must find the push by reading the
+command line) or a person issues it from a terminal (git's own
+`.githooks/pre-push`). The command-reading hook covers the spellings it can
+read — quotes and escapes removed, wrappers and substitutions walked, the
+target repository and the refs resolved — and refuses, rather than guesses, a
+push whose target or contents it cannot pin down; git's own pre-push hook is
+the universal backstop that sees every push regardless of how the command line
+spelled it, on any clone `scripts/setup-dev.sh` configured. Neither refuses a
+harmless command whose text merely contains the word `push`.
+
+**Gap.** An independent review of the two hooks reproduced a push slipping past
+each, or a harmless command wrongly refused, along the following seams. Every
+one is now a case in `tests/agent_harness.rs`.
+
+*The Claude Code hook's settings gate.* `.claude/settings.json` matched the
+hook with `"if": "Bash(git *)"`. A push not spelled `git …` — `sh -c 'git
+push'`, `eval …`, `env -i … git push`, `timeout 60 git push`, `/usr/bin/git
+push`, a leading `VAR=x git push` — matched nothing and reached no hook.
+
+*The Claude Code hook read the command as flat text.* A push inside a command
+substitution (`$(git push …)`, backticks), after `;`/`&&`/`|`, in a subshell,
+behind `xargs`/`eval`/`sh -c`, was missed; a `#` comment or a `<<` heredoc body
+could hide a real push or fake one that was only a word in a message; a `<<` in
+arithmetic (`$(( 1 << 2 ))`) was read as a heredoc and swallowed the next line.
+
+*The Claude Code hook could be told to look at the wrong tree, or none.*
+`--git-dir`/`--work-tree`/`GIT_DIR` point git at another repository; a `cd` in
+a subshell, pipeline or substitution moves nothing, while a `cd` that can fail
+(`cd -`, `cd /nonexistent`, a `cd` inside `if`/`for`/`{ }`) leaves the working
+directory unknown — the hook resolved a directory anyway and vouched for the
+wrong tree. `--all`/`--branches`/`--mirror`/`--tags`/`--follow-tags`, a refspec
+pattern, `:` / `+:`, and `push.default`/`remote.*.push` config send refs the
+command never names, so checking the named ref proved nothing about what went.
+`send-pack`/`git-send-pack` is a push that runs no hook at all.
+
+*What would switch git's own hook off, next to a push it could not vouch for:*
+`--no-verify` (outside a push the gate had already passed), `-c
+core.hooksPath=…`, `--config-env`, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`
+config injection, and a `git config core.hooksPath …` that persists to a push
+later in the same line.
+
+*Found by the falsifier — run twice against this change, each cut refuted and
+folded in.* First cut:
+- **A quote/escape-obfuscated push.** A raw-substring shortcut
+  (`case $COMMAND in *push*`) added for speed ran before the lexer, so
+  `git pu""sh` / `git pus\h` / `git 'pu'sh` — which the shell runs as `git
+  push` after removing the quotes — held no `push` substring and exited
+  unlexed. The `fail_closed` trap used the same substring test, so a crash
+  carrying an obfuscated push also failed open. This was a regression: the
+  pre-hardening hook always lexed and caught these.
+- **A flat word-scan that refused harmless commands.** The hook-disabler
+  backstop scanned every word of the line and fired when a bare `push` word
+  (from `git stash push`, `echo push`, or a `-m push` message) sat anywhere
+  near a bare `--no-verify` (on a sibling `git commit`) or a `core.hooksPath`
+  token (in a message). `git commit --no-verify -m wip && git stash push` was
+  refused though it pushes nothing.
+- **Unknown exec-wrappers.** `watch`, `proot` (the Termux runner), `runuser`
+  and `parallel` running a `git push` were not recognized, so the
+  command-reading hook let them through (git's own hook still caught them on a
+  configured clone).
+
+Second cut (re-review of the first cut's fixes):
+- **The wrapper scan missed a git global option.** The new wrapper handling
+  refused only when `git` was *immediately* followed by `push`, so `watch git
+  -C . push` / `proot git -c a=b push` shifted the subcommand one word right
+  and slipped — a regression in the first cut's own new code. The scan now
+  skips git's global options (those that take an argument included) to the
+  subcommand.
+- **A run-time or brace-expansion git subcommand.** `git pu$(echo)sh`, `git
+  $'\x70ush'`, `git pus${x:-h}` and `git pu{sh,x}` all run `git push`, but the
+  subcommand switch returned `Ok` for a dynamic subcommand (`"$DYN"*`) and fell
+  through for a braced one — the hook refused a run-time command *name* and
+  refspec but not a run-time *subcommand* of a literal `git`. This was
+  pre-existing (the base hook allowed them too), and composed with `--no-verify`
+  into a push evading both layers. A subcommand the hook cannot resolve to a
+  literal is now refused, the same as a run-time command name
+  (`may_be_push_subcommand`).
+- **`export GIT_CONFIG_* ; git push`.** The `export` handler recognized
+  `GIT_DIR` but not `GIT_CONFIG_*`, so an exported config injection was not
+  tied to a later push. It now sets the same tamper flag a `git config
+  core.hooksPath` does.
+
+Third cut (Copilot review of the PR, 15 findings, all folded in). More
+shell-parsing gaps, each now closed and locked:
+- **`--` end-of-options in wrappers.** `command -- git push`, `nice -- git
+  push` (and, for parity, `env --`) left `--` as the "command" and never
+  reached the push. Each wrapper now consumes `--` and continues to the
+  wrapped command. (`sudo -- ` already fell through its generic option skip.)
+- **A wrapper or shell running a run-time command.** `watch sh -c "$cmd"`,
+  `sh -c "$cmd"` and `eval "$cmd"` were walked only when their script text held
+  the literal `push`; a variable-assembled script slipped. A nested shell under
+  an unparsed wrapper, and any dynamic `sh -c`/`eval`/wrapper argument, are now
+  refused in an HSE session — the hook cannot vet what it cannot read.
+- **`env --chdir=DIR` and `env -- NAME=VAL git push`.** The `=` form of
+  `--chdir` was not parsed (the push was checked against the wrong tree), and
+  assignments after `env --` were skipped (a `GIT_CONFIG_*` injection reached
+  the push unseen). Both are handled now.
+- **A run-time remote with no refspec.** `git push "$REMOTE"` looked up
+  `remote.<name>.push`/`mirror` under the unresolved name, missed it, and fell
+  back to `HEAD`. An unresolved remote is now refused.
+- **A `cd` on the far side of `&&`/`||`.** `cd /missing && cd /; git push` and
+  `cd <hse> || cd /` left the model recording a directory the shell never
+  entered. A conditional `cd`'s directory is now unknown.
+- **A bare `export GIT_DIR`.** `GIT_DIR=/x; export GIT_DIR; git push` exported
+  a value assigned earlier, which the hook had not seen; a bare `export` of a
+  repo-selecting variable now marks the directory unknown.
+- **False positives.** A `-c alias.x=…` (scoped to one invocation) was added to
+  the persistent aliases, so a later `git x` was wrongly flagged — it is now
+  command-local. A read-only `git config --get core.hooksPath` was treated as
+  tampering — only writing config now sets the tamper flag.
+- **`scripts/setup-dev.sh` swallowed the failure.** `configure_git_hooks ||
+  true` meant a non-executable hook still exited setup 0; `main` now propagates
+  the failure to the verdict while still running the rest of setup.
+
+*The git-native hook and its installer.* `.githooks/pre-push` found its
+checkout with `git rev-parse --show-toplevel`, which under `GIT_DIR`/`--git-dir`
+names the current directory rather than the checkout, so a push run from
+elsewhere passed unchecked. On storage mounted `noexec` (Android shared
+storage) git skips a non-executable hook without a word. An empty ref list (an
+up-to-date push) tripped `set -u` on bash ≤4.3 (macOS ships 3.2).
+`scripts/setup-dev.sh` wrote a **relative** `core.hooksPath` (`.githooks`),
+which git honours only when the push runs inside the checkout.
+
+**Fix.**
+- **`.claude/hooks/pre-push-gate.sh`** is rewritten around a quote-aware lexer
+  (`LC_ALL=C` for speed) that understands `#` comments, arithmetic, heredocs,
+  command substitutions and subshells, so a push is found wherever the command
+  puts it and a word in a message is never mistaken for one. **Every command is
+  lexed** — there is no raw-substring shortcut, so a quote/escape-obfuscated
+  `git pu""sh` is seen once the lexer removes the quotes. `walk_command` sees
+  through `env`/`timeout`/`nice`/`sudo`/`setsid`/`xargs`/`command` and into
+  `sh -c`/`bash -c`/`eval` bodies; `watch`/`proot`/`runuser`/`parallel`, whose
+  option grammars are too varied to locate the wrapped command, are refused
+  when the rest of the line spells a `git push` (skipping git's own global
+  options, so `git -C x push` under one is seen). A git subcommand the hook
+  cannot resolve to a literal — assembled at run time (`git pu$(echo)sh`, `git
+  $'\x70ush'`, `git pus${x:-h}`) or by brace expansion (`git pu{sh,x}`) — is
+  refused rather than guessed, the same as a run-time command name
+  (`may_be_push_subcommand`). A `--git-dir`/`--work-tree`/`GIT_DIR` or a
+  directory-changing construct whose result is not certain leaves the target
+  repository **unknown**, which is refused, not guessed. `check_push`
+  allows only options that cannot widen what is sent and refuses `--all`/
+  `--mirror`/`--tags`/patterns/`:`/push-config and `send-pack`. Every
+  hook-disabler is **tied to the push it modifies** as the command is walked —
+  `--no-verify` and `-c core.hooksPath` on the push, a `GIT_CONFIG_*`
+  environment prefix on it, and a persistent `git config core.hooksPath`
+  earlier in the line — with no flat scan, so a `--no-verify` on a sibling
+  commit or the word `push` in a message is not a false refusal. A
+  `fail_closed` trap makes any internal error exit 2 (Claude Code blocks only
+  on 2) when the command could be a push, judged by the same quote/escape-aware
+  test the lexer would apply. The JSON `cwd` decides where the command runs.
+- **`.claude/settings.json`** drops the `if` filter (the hook now runs before
+  every Bash command and decides for itself) and invokes both hooks through
+  `bash` (no reliance on the execute bit).
+- **`.githooks/pre-push`** takes its checkout from its own location
+  (`cd "$(dirname "$0")/.."`), runs the receipt script with `bash` and only
+  requires it to exist (`-f`, not `-x`), and guards the empty-array case.
+- **`scripts/setup-dev.sh`** writes an **absolute** `core.hooksPath` derived
+  from `git rev-parse --git-common-dir` (so it names the main checkout and is
+  shared by every worktree, never a linked one that can be removed), migrates
+  the old relative value, and refuses to claim success if the hook is not
+  executable where it lands.
+
+**Locks** (`tests/agent_harness.rs`). Seven cases, each reproducing a seam
+above: `a_push_behind_a_substitution_or_another_command_is_found` (which also
+carries the quote/escape-obfuscated `git pu""sh` / `git pus\h` forms and the
+`watch`/`proot`/`runuser`/`parallel` wrappers),
+`what_would_switch_the_backstop_off_is_refused` (which also asserts a
+`--no-verify` on a sibling commit, a `git stash push`, and a `core.hooksPath`
+message value are **not** refused — the flat-scan false positives),
+`a_push_that_sends_refs_it_does_not_name_is_refused`,
+`the_repository_a_push_runs_in_is_the_one_checked`,
+`comments_and_arithmetic_neither_hide_nor_invent_a_push`,
+`the_hook_fails_closed_and_works_where_files_cannot_execute` (which also crashes
+the hook while it carries an obfuscated push, to prove the fail-closed test sees
+it), and `the_git_hook_checks_a_push_run_from_outside_the_checkout`. Two existing
+cases, `the_push_gate_runs_before_every_git_command` and
+`setup_dev_enables_the_repo_hooks_only_where_that_is_safe`, gain the settings
+and absolute-path expectations. Each case also asserts the harmless twin passes
+(a receipt makes the same push go through — including the obfuscated forms; a
+word in a message is not an option; a read-only substitution is not a push), so
+the hook is not merely refusing everything.
+
+**Falsification.** The suite is 32/32 on the fix. Reverting the four hook /
+settings / installer files to their pre-hardening state (`git checkout
+<base> -- .claude/hooks/pre-push-gate.sh .claude/settings.json
+.githooks/pre-push scripts/setup-dev.sh`, where `<base>` is `94f1db8`, the tip
+before this change) and re-running the **same compiled test binary** — the
+harness drives the scripts on disk, so no recompile — fails nine cases
+(`test result: FAILED. 23 passed; 9 failed`) and no others: the seven listed
+above, `the_push_gate_runs_before_every_git_command`, and
+`setup_dev_enables_the_repo_hooks_only_where_that_is_safe`. The tests read the
+live scripts and are sensitive to the hardening, not to incidental state. (The
+first cut of this change had passed its own narrower suite while the falsifier
+found two live bypasses in it; the obfuscation and false-positive cases above
+were added so the same revert now exercises them too.)
+
 ## REQ-ACCEPT-001 — no single, commit-bound record of a device run existed
 
 **Requirement.** On-device acceptance of a commit is one command, and it
