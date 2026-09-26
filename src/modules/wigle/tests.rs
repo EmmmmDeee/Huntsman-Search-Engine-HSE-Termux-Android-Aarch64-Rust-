@@ -1526,6 +1526,139 @@ fn a_bssid_lookup_reports_how_much_of_it_ran() {
     assert!(matches!(err, crate::core::error::Error::RateLimited(_)));
 }
 
+/// Resolve a WiGLE detail round-trip against a one-shot loopback server, over
+/// the same plain-HTTP URL the search-path helper uses, so the BSSID detail
+/// classification is exercised on a real `reqwest::Response`.
+async fn answer_served(
+    status: &'static str,
+    body: &'static str,
+) -> crate::core::error::Result<crate::util::wigle::DetailAnswer> {
+    let addr = serve_once(status, body).await;
+    crate::util::wigle::get_answer(
+        &reqwest::Client::new(),
+        "user",
+        "token",
+        &format!("http://{addr}/"),
+        "wigle_test",
+    )
+    .await
+}
+
+/// REQ-WIGLE-002. The BSSID detail path used to call `util::wigle::get` +
+/// `json_scanned` directly, bypassing the search path's classification: a detail
+/// 412 became a hard HTTP error (never latching the account unverified) and a
+/// `success:false` body became `Ok(_)` the caller read as a miss — coverage's
+/// clean negative for a lookup WiGLE refused. `get_answer` classifies the status
+/// the same way the search path does, keeping a genuine 404 as the one absence.
+#[tokio::test]
+async fn a_detail_412_is_the_account_unverified_outcome_not_a_hard_error() {
+    // A 412 is WiGLE's account-unverified signal on the detail endpoint too: the
+    // distinct `Unverified` outcome, which `fetch_detail` maps to the same typed
+    // skip + account latch the search path uses — never the hard HTTP `Err` the
+    // old `util::wigle::get` produced, and never a miss.
+    match answer_served(
+        "412 Precondition Failed",
+        r#"{"success":false,"message":"Email is not verified for account."}"#,
+    )
+    .await
+    {
+        Ok(crate::util::wigle::DetailAnswer::Unverified) => {}
+        other => panic!("a detail 412 must be the Unverified outcome, got {other:?}"),
+    }
+
+    // A genuine 404 stays the one real absence.
+    match answer_served("404 Not Found", r#"{"success":true,"results":[]}"#).await {
+        Ok(crate::util::wigle::DetailAnswer::Absent) => {}
+        other => panic!("a detail 404 must be Absent, got {other:?}"),
+    }
+
+    // A 2xx is handed back for the caller to decode.
+    match answer_served("200 OK", r#"{"success":true,"results":[]}"#).await {
+        Ok(crate::util::wigle::DetailAnswer::Answer(_)) => {}
+        other => panic!("a detail 2xx must be an Answer, got {other:?}"),
+    }
+}
+
+/// REQ-WIGLE-002. A 200 detail body WiGLE marked `success:false` is WiGLE
+/// declining the lookup, in its own words — the typed refusal skip, not the
+/// `Ok(_)` miss the caller used to record as a clean negative. A `success:true`
+/// body decodes to the answer it is.
+#[tokio::test]
+async fn a_detail_success_false_body_is_a_refusal_not_a_miss() {
+    let Ok(crate::util::wigle::DetailAnswer::Answer(resp)) = answer_served(
+        "200 OK",
+        r#"{"success":false,"message":"too many queries today."}"#,
+    )
+    .await
+    else {
+        panic!("a 200 is an Answer to decode");
+    };
+    match decode_detail(resp).await {
+        Err(crate::core::error::Error::Skipped { class, reason }) => {
+            assert_eq!(class, crate::core::event::SkipClass::Unavailable);
+            assert!(
+                reason.contains("too many queries today.")
+                    && reason.contains("NOT \"nothing found\""),
+                "the detail refusal must carry WiGLE's own reason: {reason}"
+            );
+        }
+        Err(e) => panic!("expected a refusal skip, got the error {e:?}"),
+        Ok(_) => {
+            panic!("expected a refusal skip, got an Ok body — a miss coverage records as clean")
+        }
+    }
+
+    let Ok(crate::util::wigle::DetailAnswer::Answer(ok)) = answer_served(
+        "200 OK",
+        r#"{"success":true,"results":[{"netid":"AA:BB:CC:DD:EE:FF"}]}"#,
+    )
+    .await
+    else {
+        panic!("a 200 is an Answer to decode");
+    };
+    let body = decode_detail(ok)
+        .await
+        .expect("a success:true detail body is an answer")
+        .expect("success:true is not the 404 absence");
+    assert_eq!(body.success, Some(true));
+    assert_eq!(body.results.len(), 1);
+}
+
+/// REQ-WIGLE-002. The tight-box → widen decision. A non-empty tight box keeps
+/// its body and never reserves the second unit. An empty tight box widens when a
+/// unit is free; when it is not, the wider box is never asked, so the lookup is
+/// incomplete — the typed `Unavailable` skip, never the clean negative the old
+/// `else` fell through to on a half-finished lookup.
+#[test]
+fn an_empty_tight_box_with_no_widening_budget_is_a_skip_not_a_negative() {
+    // Non-empty tight box: use it as-is, and never touch the widening unit.
+    assert!(
+        !geo_after_tight(7, || panic!(
+            "a non-empty tight box must not reserve a widening unit"
+        ))
+        .expect("a non-empty tight box is an answer"),
+        "a non-empty tight box keeps its own body, no widening",
+    );
+
+    // Empty tight box, a unit free: widen.
+    assert!(
+        geo_after_tight(0, || true).expect("a reservable widening unit widens the search"),
+        "an empty tight box with a free unit widens the search",
+    );
+
+    // Empty tight box, no unit: the wider box is never asked → typed skip.
+    match geo_after_tight(0, || false) {
+        Err(crate::core::error::Error::Skipped { class, reason }) => {
+            assert_eq!(class, crate::core::event::SkipClass::Unavailable);
+            assert!(
+                reason.contains("wigle_geo") && reason.contains("NOT \"nothing found\""),
+                "a half-finished geo lookup is not a clean negative: {reason}"
+            );
+        }
+        other => panic!("expected an Unavailable skip, got {other:?}"),
+    }
+}
+
 /// Take [`BUDGET_LOCK`] from a synchronous test. Safe here because `#[test]`
 /// functions run outside any Tokio runtime; async tests `.await` the lock
 /// directly instead.

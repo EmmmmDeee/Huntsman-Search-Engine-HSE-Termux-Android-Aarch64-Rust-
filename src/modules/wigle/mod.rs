@@ -40,7 +40,7 @@ use crate::util::budget::{BudgetSnapshot, QuotaBudget};
 
 use emit::{emit_bssid_entities, emit_ssid_entities, extract_bluetooth_intel, extract_cell_intel};
 #[cfg(test)]
-use fetch::{classify_and_decode, get_with_retry, refused};
+use fetch::{classify_and_decode, decode_detail, get_with_retry, refused};
 use fetch::{fetch_detail, fetch_wigle, fetch_wigle_ssid, fetch_wigle_typed};
 
 /// The SSID classifier now lives in [`crate::util::wifi`] so the engine's
@@ -361,8 +361,10 @@ impl Module for Wigle {
         let tight = fetch_wigle(&ctx.http, user, token, lat, lon, 0.002).await?;
         // A body WiGLE refused never gets here: `classify_and_decode` returns
         // it as a typed skip, so "empty" means WiGLE answered with no rows.
-        let empty = tight.total_results.or(tight.result_count).unwrap_or(0) == 0;
-        let body = if empty && GEO_BUDGET.try_increment() {
+        let tight_rows = tight.total_results.or(tight.result_count).unwrap_or(0);
+        // Reserve the widening unit lazily — only when the tight box came back
+        // empty — so a non-empty tight box keeps the operator's second unit.
+        let body = if geo_after_tight(tight_rows, || GEO_BUDGET.try_increment())? {
             fetch_wigle(&ctx.http, user, token, lat, lon, 0.01).await?
         } else {
             tight
@@ -951,6 +953,32 @@ impl Wigle {
         let body = fetch_wigle_ssid(&ctx.http, user, token, ssid).await?;
         Ok(ssid_result(ssid, &body, &ctx.scan_id))
     }
+}
+
+/// After the tight-box geo query, decide the next step. **Pure** in its inputs
+/// (`reserve_widen` models the side-effecting `GEO_BUDGET.try_increment`, so the
+/// decision — including that a non-empty tight box never reserves — is
+/// unit-tested without a live WiGLE response).
+///
+/// * `tight_rows > 0` → `Ok(false)`: keep the tight body, and never call
+///   `reserve_widen` (the second unit is only spent when actually needed).
+/// * `tight_rows == 0` and a widening unit reserved → `Ok(true)`: widen.
+/// * `tight_rows == 0` and no unit → `Err`: the wider box is never asked, so the
+///   lookup is incomplete. Returning the empty tight body here would let the
+///   caller's `total == 0` branch settle an absence on a half-finished lookup —
+///   the exact clean-negative-for-a-partial-search error REQ-WIGLE-002 removes.
+///   It is the typed `Unavailable` skip instead.
+fn geo_after_tight(tight_rows: u64, reserve_widen: impl FnOnce() -> bool) -> Result<bool> {
+    if tight_rows > 0 {
+        return Ok(false);
+    }
+    if reserve_widen() {
+        return Ok(true);
+    }
+    Err(budget_spent(
+        &GEO_BUDGET,
+        "location search (widened radius)",
+    ))
 }
 
 /// What a finished BSSID lookup reports, given the corpora the budget left

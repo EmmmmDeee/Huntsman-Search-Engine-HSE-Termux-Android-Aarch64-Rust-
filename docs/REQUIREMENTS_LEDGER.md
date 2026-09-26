@@ -28064,3 +28064,70 @@ target test to have run, and a baseline pass comes first.
 **Also.** The new 412 test moves a process-global account latch. The tests
 that read or move that latch are serialised on `ACCOUNT_LOCK`, so a test
 asserting the default state cannot pass or fail on interleaving.
+
+**Follow-up (PR review).** The first fix routed every *search* through
+`classify_and_decode`, but two paths still reached `Ok(empty)` for a search
+that never ran, both surfaced in review:
+
+1. *The BSSID detail path bypassed the classifier.* `fetch_detail` (the WiFi /
+   Bluetooth `/detail` lookup behind `bssid_lookup`) called
+   `util::wigle::get` + `json_scanned` directly, never `classify_and_decode`.
+   So a detail HTTP 412 became a hard, un-latched `Error::module` — the account
+   was never recorded unverified — and a 200 `success:false` body decoded to an
+   `Ok(_)` the caller read as a miss, which `bssid_outcome(&[], None)` then
+   returned as `Ok(empty)` / `CleanNegative` when both corpora "missed". The
+   detail endpoint carries the SAME 412/`success:false` contract the search
+   endpoints do; the classification simply was not on that path.
+2. *An empty tight geo box with no widening budget fell through to a clean
+   negative.* The Coordinates dispatch queries a tight bounding box, then
+   widens once if it came back empty. `let body = if empty &&
+   GEO_BUDGET.try_increment() { widen } else { tight }` fell to `tight` (empty)
+   whenever the widening unit could not be reserved, and the later `total == 0`
+   branch returned `Ok(empty)`. The wider box was never asked, so a clean
+   negative was recorded for a half-finished lookup — the exact error this
+   requirement removes.
+
+**Fix (follow-up).**
+- `util::wigle` gains `get_answer`, which classifies a detail round-trip into a
+  typed `DetailAnswer`: `Absent` (404, the one genuine "no such network"),
+  `Unverified` (412), or `Answer(resp)` (a 2xx to decode); 401/403, 429, WAF
+  and other non-2xx propagate as the same typed `Err` as before. `get` and
+  `get_answer` now share one private `send_with_breaker` — a single authority
+  for the breaker gate, the send, and recording the outcome — and differ only
+  in status classification. `get`'s existing contract (a 412 folds into its
+  generic non-2xx `Err`) is preserved for its other caller (`wifi_intel`).
+- `fetch_detail` routes through `get_answer`: `Absent → Ok(None)`,
+  `Unverified → Err(account_unverified())` (the same skip + `hse doctor` latch
+  the search 412 uses), `Answer → decode_detail`. `decode_detail` applies the
+  same `success:false → refused` classification the search tail does, carrying
+  WiGLE's own `message` via the shared `refused_with_message` (also now behind
+  `refused`). `DetailResp` gains a `message` field so the detail refusal reads
+  identically to the search refusal.
+- The tight→widen decision is the pure `geo_after_tight(tight_rows,
+  reserve_widen)`: a non-empty tight box keeps its body and never reserves the
+  second unit; an empty box widens if a unit is free; an empty box with no unit
+  is the typed `Unavailable` skip, never a clean negative on a partial lookup.
+
+**Locks (follow-up)** (`src/modules/wigle/tests.rs`).
+- `a_detail_412_is_the_account_unverified_outcome_not_a_hard_error` feeds a
+  one-shot loopback server (the same `serve_once` the search tests use) to
+  `get_answer` and asserts 412 → `Unverified`, 404 → `Absent`, 200 → `Answer`.
+- `a_detail_success_false_body_is_a_refusal_not_a_miss` decodes a served
+  `success:false` body through `decode_detail` and asserts the typed refusal
+  carrying WiGLE's reason, with a `success:true` control that decodes to the
+  answer.
+- `an_empty_tight_box_with_no_widening_budget_is_a_skip_not_a_negative` pins
+  `geo_after_tight` for all three branches, including that a non-empty tight
+  box never invokes the reservation closure (`|| panic!(…)`).
+
+**Falsification (follow-up).** Each follow-up path reverted alone; the target
+test passes on the fix first, so the failure is the revert's:
+
+```
+D1  get_answer's 412 arm removed (412 falls to http_status_error)
+      a_detail_412_is_the_account_unverified_outcome_not_a_hard_error ... FAILED
+D2  decode_detail's success!=true guard removed (returns Ok(Some(body)))
+      a_detail_success_false_body_is_a_refusal_not_a_miss ... FAILED
+G1  geo_after_tight returns Ok(false) instead of Err when empty + no unit
+      an_empty_tight_box_with_no_widening_budget_is_a_skip_not_a_negative ... FAILED
+```

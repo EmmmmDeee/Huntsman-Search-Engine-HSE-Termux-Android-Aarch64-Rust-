@@ -31,9 +31,15 @@ fn account_unverified() -> crate::core::error::Error {
 /// negative — the search did not run — and not a transport fault the breaker
 /// should count, so it is the same typed `Unavailable` skip (REQ-WIGLE-002).
 pub(super) fn refused(body: &Resp) -> crate::core::error::Error {
-    let said = body
-        .message
-        .as_deref()
+    refused_with_message(body.message.as_deref())
+}
+
+/// The `success:false` refusal skip, built from WiGLE's own `message`. Shared by
+/// [`refused`] (search bodies) and [`fetch_detail`] (detail bodies) so a declined
+/// detail lookup carries the identical typed skip and wording a declined search
+/// does — the classification the BSSID path was missing (REQ-WIGLE-002).
+pub(super) fn refused_with_message(message: Option<&str>) -> crate::core::error::Error {
+    let said = message
         .map(str::trim)
         .filter(|m| !m.is_empty())
         .unwrap_or("no reason given");
@@ -221,16 +227,27 @@ pub(super) struct DetailResp {
     pub(super) success: Option<bool>,
     #[serde(default)]
     pub(super) results: Vec<Network>,
+    /// WiGLE's own explanation on a `success:false` detail body (e.g. the
+    /// email-unverified text). Carried so a declined detail lookup reports the
+    /// same worded skip a declined search does (REQ-WIGLE-002).
+    #[serde(default)]
+    pub(super) message: Option<String>,
 }
 
 /// Fetch one device address's detail record from `kind`'s corpus. `Ok(None)`
 /// is the genuine WiGLE "no such network" answer (a 404, per
-/// `util::wigle::get`); every other failure — rate-limit, auth, other non-2xx,
-/// transport, or a body-read/JSON-decode failure — propagates as `Err` instead
-/// of collapsing into the same `None`, so the caller can tell a real outage
-/// apart from a confirmed absence. Mirrors the sibling
-/// `wifi_intel::wigle::query_wigle_detail`, which already gets this right
-/// against the same `util::wigle::get` helper.
+/// [`crate::util::wigle::get_answer`]). Every non-absence outcome propagates as
+/// `Err` instead of collapsing into the same `None`, so the caller can tell a
+/// real outage from a confirmed absence — and, crucially, the detail path is now
+/// classified by the SAME conventions the search path is (REQ-WIGLE-002):
+///
+/// * a 412 is the account-unverified skip — it latches the account state for
+///   `hse doctor` (via [`account_unverified`]) exactly as the search path does,
+///   instead of the hard, un-latched HTTP error `util::wigle::get` turned it
+///   into;
+/// * a decoded body WiGLE marked `success:false` is the [`refused`] skip
+///   carrying WiGLE's own `message`, instead of an `Ok(_)` the caller read as a
+///   miss and coverage recorded as a clean negative.
 ///
 /// Per the Swagger (see [`search_bbox_url`]): a WiFi BSSID is looked up on
 /// `/api/v2/network/detail?netid=…&type=WIFI`, a Bluetooth address on its own
@@ -254,10 +271,24 @@ pub(super) async fn fetch_detail(
             ));
         }
     };
-    let Some(resp) = crate::util::wigle::get(http, user, token, &url, SRC).await? else {
-        return Ok(None);
-    };
-    crate::util::http::json_scanned::<DetailResp>(resp, SRC)
-        .await
-        .map(Some)
+    match crate::util::wigle::get_answer(http, user, token, &url, SRC).await? {
+        crate::util::wigle::DetailAnswer::Absent => Ok(None),
+        crate::util::wigle::DetailAnswer::Unverified => Err(account_unverified()),
+        crate::util::wigle::DetailAnswer::Answer(resp) => decode_detail(resp).await,
+    }
+}
+
+/// Decode a 2xx detail body, applying the same `success:false` classification
+/// the search path does: WiGLE answering `success:false` on a detail lookup is
+/// the [`refused`] skip carrying its own `message`, never an `Ok(_)` the caller
+/// reads as a miss (REQ-WIGLE-002). Split from [`fetch_detail`] so the
+/// success/refusal decision is unit-tested against a real `reqwest::Response`.
+pub(super) async fn decode_detail(
+    resp: reqwest::Response,
+) -> crate::core::error::Result<Option<DetailResp>> {
+    let body: DetailResp = crate::util::http::json_scanned(resp, SRC).await?;
+    if body.success != Some(true) {
+        return Err(refused_with_message(body.message.as_deref()));
+    }
+    Ok(Some(body))
 }
