@@ -40,6 +40,29 @@ struct CavalierResp {
     stealers: Vec<Stealer>,
 }
 
+/// The `search-by-domain` response: aggregate infostealer exposure for a
+/// domain, NOT a `stealers` list (that shape is `search-by-login`'s). Decoding
+/// it as [`CavalierResp`] failed every domain scan with ``missing field
+/// `stealers` `` (on-device, 2026-09-26: the body began
+/// `{"total":58632,"totalStealers":36582212,"employees":19,"users":58595,…`).
+/// `total`, `employees` and `users` are required, so an error envelope still
+/// fails closed (REQ-HUDSONROCK-001) rather than decoding as "no exposure".
+#[derive(Debug, Deserialize)]
+struct DomainResp {
+    /// Compromised machines with credentials for this domain.
+    total: u64,
+    /// The database-wide infostealer count (context, not about this domain).
+    #[serde(default, rename = "totalStealers")]
+    total_stealers: Option<u64>,
+    /// Compromised employees of the domain.
+    employees: u64,
+    /// Compromised users (customers) of the domain.
+    users: u64,
+    /// Compromised third-party credentials for the domain, when reported.
+    #[serde(default, alias = "third_parties")]
+    third_parties: Option<u64>,
+}
+
 #[derive(Debug, Deserialize)]
 struct Stealer {
     computer_name: Option<String>,
@@ -165,10 +188,16 @@ impl Module for HudsonRock {
                 if crate::util::domains::is_app_package_id(&target.value) {
                     return Ok(ModuleResult::new());
                 }
-                format!(
+                let url = format!(
                     "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-domain?domain={}",
                     urlencode(&target.value)
-                )
+                );
+                let Some(data): Option<DomainResp> =
+                    fetch_json_or_404(&ctx.http, SRC, &url).await?
+                else {
+                    return Ok(ModuleResult::new());
+                };
+                return Ok(build_domain_result(target, &data, &ctx.scan_id));
             }
             _ => return Ok(ModuleResult::new()),
         };
@@ -244,6 +273,44 @@ fn search_by_login_url(email: &str) -> String {
         "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-login?email={}",
         urlencode(email)
     )
+}
+
+/// Build the domain entity from a `search-by-domain` answer. **Pure.** A domain
+/// whose every reported exposure count (machines, employees, users, third
+/// parties) is zero yields nothing (absence of exposure is not a finding);
+/// any non-zero count yields one entity carrying the counts.
+fn build_domain_result(target: &Target, data: &DomainResp, scan_id: &str) -> ModuleResult {
+    if data.total == 0
+        && data.employees == 0
+        && data.users == 0
+        && data.third_parties.unwrap_or(0) == 0
+    {
+        return ModuleResult::new();
+    }
+    let mut entity = target.to_entity(BASE_CONFIDENCE, scan_id);
+    entity.tag(tags::BREACH);
+    entity.tag(tags::STEALER_LOG);
+    entity.tag(format!("stealer-count:{}", data.total));
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "Infostealer exposure: {} compromised machine(s); {} employee(s) and {} user(s) of this domain",
+            data.total, data.employees, data.users
+        ),
+    )
+    .with_attr("compromised_machines", data.total.to_string())
+    .with_attr("employees", data.employees.to_string())
+    .with_attr("users", data.users.to_string());
+    if let Some(third) = data.third_parties {
+        ev = ev.with_attr("third_parties", third.to_string());
+    }
+    if let Some(all) = data.total_stealers {
+        ev = ev.with_attr("database_total_stealers", all.to_string());
+    }
+    entity.add_evidence(ev);
+    let mut result = ModuleResult::new();
+    result.push(entity);
+    result
 }
 
 /// Build the module's entities from an already-fetched Cavalier response.
