@@ -100,6 +100,33 @@ struct SecureDns {
     delegation_signed: Option<bool>,
 }
 
+/// Vet the registry URL a bootstrap redirector's `Location` names before the
+/// one explicit hop: it must resolve against `origin`, keep its scheme (never an
+/// https → http downgrade), name a host that is not a private or reserved IP
+/// literal (hostnames are filtered by the engine's SSRF resolver at connect
+/// time; literals never reach it), and be an RDAP domain query. Anything else
+/// is refused, and the redirect is then reported as the failure it is.
+fn registry_hop(origin: &url::Url, location: &str) -> Option<url::Url> {
+    let next = origin.join(location).ok()?;
+    if next.scheme() != origin.scheme() {
+        return None;
+    }
+    match next.host()? {
+        url::Host::Ipv4(ip) => {
+            if crate::util::preflight::is_private_addr(ip.into()) {
+                return None;
+            }
+        }
+        url::Host::Ipv6(ip) => {
+            if crate::util::preflight::is_private_addr(ip.into()) {
+                return None;
+            }
+        }
+        url::Host::Domain(_) => {}
+    }
+    next.path().contains("/domain/").then_some(next)
+}
+
 const SRC: &str = "rdap_domain";
 
 /// One Domain entity per nameserver complements whois `whois-ns`. Cap at the
@@ -409,13 +436,41 @@ impl Module for RdapDomain {
         // ctx.http carries a 3 s default timeout (MODULE_TIMEOUT_MS),
         // shorter than this module's declared 15 s budget; an explicit
         // per-request timeout matches the budget we publish.
-        let resp = ctx
+        let timeout = std::time::Duration::from_millis(self.max_timeout_ms());
+        let mut resp = ctx
             .http
             .get(&url)
             .header("Accept", "application/rdap+json")
-            .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
+            .timeout(timeout)
             .send_tagged(SRC)
             .await?;
+
+        // rdap.org is a bootstrap redirector: it answers 302 with the TLD
+        // registry's own RDAP URL (`.com` → rdap.verisign.com). The engine's
+        // client deliberately refuses every cross-site redirect (a hop could
+        // replay a provider key sent under a custom header), so that 302 used
+        // to reach here as a failure on every scan. This keyless request
+        // carries no credential, so the one registry hop is followed
+        // explicitly, as the redirect policy prescribes for a module that
+        // needs a second site, after `registry_hop` has vetted it.
+        if resp.status().is_redirection() {
+            let location = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            let origin = resp.url().clone();
+            let Some(next) = location.and_then(|l| registry_hop(&origin, &l)) else {
+                return Err(crate::util::http::http_status_error(SRC, resp).await);
+            };
+            resp = ctx
+                .http
+                .get(next.as_str())
+                .header("Accept", "application/rdap+json")
+                .timeout(timeout)
+                .send_tagged(SRC)
+                .await?;
+        }
 
         let status = resp.status();
         if status.as_u16() == 404 {

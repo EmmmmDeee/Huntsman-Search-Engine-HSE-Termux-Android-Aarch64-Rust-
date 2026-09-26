@@ -375,3 +375,38 @@ use super::*;
             "a valid empty response must deserialize: {result:?}"
         );
     }
+
+    #[test]
+    fn the_domain_endpoint_decodes_its_aggregate_shape() {
+        // The on-device body (2026-09-26) began exactly like this; the module
+        // decoded it as a login response and failed with "missing field
+        // `stealers`" on every domain scan.
+        let body = r#"{"total":58632,"totalStealers":36582212,"employees":19,"users":58595,"third_parties":7,"data":{"all_urls":[]}}"#;
+        let data: DomainResp = serde_json::from_str(body).expect("domain shape decodes");
+        assert_eq!((data.total, data.employees, data.users), (58632, 19, 58595));
+        assert_eq!(data.third_parties, Some(7));
+        let target = Target::new(TargetKind::Domain, "example.com");
+        let result = build_domain_result(&target, &data, "scan");
+        assert_eq!(result.entities.len(), 1);
+        let entity = &result.entities[0];
+        assert!(entity.has_tag("breach"), "the domain must be breach-tagged");
+        let ev = entity
+            .evidence
+            .iter()
+            .find(|e| e.attributes.contains_key("employees"))
+            .expect("exposure evidence");
+        assert_eq!(ev.attributes.get("employees").map(String::as_str), Some("19"));
+        assert_eq!(ev.attributes.get("users").map(String::as_str), Some("58595"));
+    }
+
+    #[test]
+    fn a_domain_with_no_exposure_yields_nothing_and_an_error_envelope_fails_closed() {
+        let clean: DomainResp =
+            serde_json::from_str(r#"{"total":0,"employees":0,"users":0}"#).unwrap();
+        let target = Target::new(TargetKind::Domain, "example.com");
+        assert!(build_domain_result(&target, &clean, "scan").entities.is_empty());
+        // REQ-HUDSONROCK-001: an error envelope must not decode as "no exposure".
+        assert!(serde_json::from_str::<DomainResp>(r#"{"error":"rate limited"}"#).is_err());
+        // The login shape is still not a domain answer.
+        assert!(serde_json::from_str::<DomainResp>(r#"{"stealers":[]}"#).is_err());
+    }

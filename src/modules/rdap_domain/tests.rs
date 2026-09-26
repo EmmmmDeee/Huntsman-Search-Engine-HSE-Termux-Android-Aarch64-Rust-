@@ -252,3 +252,30 @@ fn build_registrar_entity_emits_org_with_iana_and_rejects_short_name() {
     // Too-short / blank names never mint an Organisation.
     assert!(build_registrar_entity("x.com", "  a ", None, "s").is_none());
 }
+
+#[test]
+fn registry_hop_follows_the_bootstrap_redirect_only_to_a_vetted_rdap_url() {
+    let origin = url::Url::parse("https://rdap.org/domain/example.com").unwrap();
+    // The live answer (2026-09-26): rdap.org → the .com registry.
+    assert_eq!(
+        registry_hop(&origin, "https://rdap.verisign.com/com/v1/domain/example.com")
+            .map(|u| u.to_string()),
+        Some("https://rdap.verisign.com/com/v1/domain/example.com".to_string())
+    );
+    // A relative Location resolves against the origin.
+    assert_eq!(
+        registry_hop(&origin, "/domain/other.com").map(|u| u.to_string()),
+        Some("https://rdap.org/domain/other.com".to_string())
+    );
+    for refused in [
+        "http://rdap.verisign.com/com/v1/domain/example.com", // downgrade
+        "https://169.254.169.254/domain/example.com",         // metadata IP
+        "https://127.0.0.1/domain/example.com",               // loopback
+        "https://10.0.0.5/domain/example.com",                // private
+        "https://[::1]/domain/example.com",                   // v6 loopback
+        "https://evil.example/login",                         // not an RDAP query
+        "ftp://rdap.verisign.com/domain/example.com",         // scheme change
+    ] {
+        assert!(registry_hop(&origin, refused).is_none(), "{refused}");
+    }
+}

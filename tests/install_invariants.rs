@@ -526,11 +526,12 @@ fn an_upgrade_purges_the_retired_local_ai_wrapper() {
         "the purge edits ~/.huntsman.env, so it must run after `hse provision` has written it"
     );
     let record = script
-        .find("HUNTSMAN_INSTALL_DIR=%s")
+        .find("hse_record_install_dir \"$KEYS_PATH\" \"$HSE_INSTALL_DIR\"")
         .expect("install.sh records HUNTSMAN_INSTALL_DIR for `hse update`");
     assert!(
-        end < record,
-        "the purge must run before the env file is rewritten for HUNTSMAN_INSTALL_DIR"
+        record < provision,
+        "HUNTSMAN_INSTALL_DIR is recorded before `hse provision`, so provision is the \
+         last writer and a re-run leaves the keys file untouched"
     );
 }
 // removed-integration-cleanup: end
@@ -1406,4 +1407,161 @@ fn every_wasm_drift_skip_states_what_the_skip_costs() {
              wasm-ui/pkg/; got {diff_lines:?}"
         );
     }
+}
+
+// ─── Re-running the installer must not churn ~/.huntsman.env ────────────────
+// On-device (2026-09-26): every re-run of the curl | bash install printed a new
+// "backed up to: ~/.huntsman.env.bak.<ts>" line. install.sh rewrote
+// HUNTSMAN_INSTALL_DIR unquoted (with its own comment) AFTER `hse provision`
+// had canonicalized the file, so the next run's provision saw a change and
+// backed it up again — forever. These tests drive the REAL installer function
+// (through its `__record_install_dir` hook) and the REAL `hse provision`
+// binary, in the order install.sh runs them, against a temp HOME.
+
+#[cfg(unix)]
+fn record_install_dir(home: &Path, dir: &str) {
+    use std::process::Command;
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let out = Command::new("bash")
+        .arg(script)
+        .arg("__record_install_dir")
+        .arg(home.join(".huntsman.env"))
+        .arg(dir)
+        .env("HOME", home)
+        .output()
+        .expect("run install.sh __record_install_dir");
+    assert!(
+        out.status.success(),
+        "record failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[cfg(unix)]
+fn provision(home: &Path) -> String {
+    use std::process::Command;
+    let out = Command::new(env!("CARGO_BIN_EXE_hse"))
+        .args(["provision", "--env-only", "--discover"])
+        .env("HOME", home)
+        .env_remove("HUNTSMAN_INSTALL_DIR")
+        .output()
+        .expect("run hse provision");
+    assert!(
+        out.status.success(),
+        "provision failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[cfg(unix)]
+fn backups(home: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(home)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".huntsman.env.bak."))
+        .collect();
+    names.sort();
+    names
+}
+
+#[cfg(unix)]
+#[test]
+fn reinstalling_leaves_the_keys_file_untouched_and_makes_no_backup() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let home = tmp.path();
+    let dir = "/data/data/com.termux/files/home/.local/share/hse";
+    let keys = home.join(".huntsman.env");
+
+    // First install: the record + provision that create the file.
+    record_install_dir(home, dir);
+    provision(home);
+    let settled = fs::read(&keys).unwrap();
+    let backups_after_first = backups(home);
+
+    // Every later install runs the same two steps: nothing may change.
+    for run in 2..=4 {
+        record_install_dir(home, dir);
+        let stdout = provision(home);
+        assert_eq!(
+            fs::read(&keys).unwrap(),
+            settled,
+            "run {run} rewrote the keys file"
+        );
+        assert_eq!(
+            backups(home),
+            backups_after_first,
+            "run {run} made a backup:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("no changes (file already current)"),
+            "run {run}: provision should report no changes:\n{stdout}"
+        );
+    }
+    let text = String::from_utf8(settled).unwrap();
+    assert_eq!(
+        text.matches("HUNTSMAN_INSTALL_DIR=").count(),
+        1,
+        "exactly one install-dir record:\n{text}"
+    );
+    assert!(
+        text.contains(&format!("HUNTSMAN_INSTALL_DIR=\"{dir}\"")),
+        "{text}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_moved_install_dir_is_rerecorded_and_then_settles() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let home = tmp.path();
+    let keys = home.join(".huntsman.env");
+    record_install_dir(home, "/old/place");
+    provision(home);
+    record_install_dir(home, "/new/place & more|chars\\x");
+    provision(home);
+    let text = fs::read_to_string(&keys).unwrap();
+    assert!(
+        text.contains("HUNTSMAN_INSTALL_DIR=\"/new/place & more|chars\\x\""),
+        "{text}"
+    );
+    assert!(
+        !text.contains("/old/place"),
+        "the old record is replaced:\n{text}"
+    );
+    let settled = fs::read(&keys).unwrap();
+    let before = backups(home);
+    record_install_dir(home, "/new/place & more|chars\\x");
+    provision(home);
+    assert_eq!(fs::read(&keys).unwrap(), settled);
+    assert_eq!(backups(home), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_existing_unquoted_record_from_an_older_installer_converges() {
+    // Devices upgraded from the old installer carry the unquoted record and
+    // its comment. One install settles them; the next is a no-op.
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let home = tmp.path();
+    let keys = home.join(".huntsman.env");
+    let dir = "/data/data/com.termux/files/home/.local/share/hse";
+    fs::write(
+        &keys,
+        format!("\n# Written by install.sh — used by `hse update`\nHUNTSMAN_INSTALL_DIR={dir}\n"),
+    )
+    .unwrap();
+    record_install_dir(home, dir);
+    provision(home);
+    let settled = fs::read(&keys).unwrap();
+    let before = backups(home);
+    record_install_dir(home, dir);
+    let stdout = provision(home);
+    assert_eq!(
+        fs::read(&keys).unwrap(),
+        settled,
+        "second install rewrote:\n{stdout}"
+    );
+    assert_eq!(backups(home), before);
 }

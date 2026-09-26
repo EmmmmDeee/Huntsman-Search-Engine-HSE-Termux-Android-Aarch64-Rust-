@@ -128,6 +128,51 @@ hse_verify_or_rollback() {
     return 0
 }
 
+# Record the install location in the keys file for `hse update`:
+#   $1  keys file (~/.huntsman.env)
+#   $2  install directory
+#
+# Idempotent by construction. It writes only when the recorded value differs,
+# and then in the canonical quoted form `hse provision` itself emits
+# (KEY="value"), so the installer and provision agree on the file and a re-run
+# leaves it untouched. Before this, every install rewrote the key unquoted
+# with its own comment after provision had canonicalized it, so the next
+# install's provision saw a changed file and backed it up again: one new
+# ~/.huntsman.env.bak.* per install, forever. A path containing `"` cannot
+# round-trip through the quoted form and is written bare, as before.
+# grep+printf rather than sed, so no character in the path is ever a sed
+# metacharacter. chmod 0600 before mv keeps the key file's mode.
+hse_record_install_dir() {
+    local keys="$1" dir="$2" current=""
+    if [[ -f "$keys" ]]; then
+        current="$(sed -n 's/^HUNTSMAN_INSTALL_DIR=//p' "$keys" | tail -n 1)"
+        current="${current#\"}"
+        current="${current%\"}"
+    fi
+    [[ -f "$keys" && "$current" == "$dir" ]] && return 0
+    local line
+    if [[ "$dir" == *'"'* ]]; then
+        line="HUNTSMAN_INSTALL_DIR=$dir"
+    else
+        line="HUNTSMAN_INSTALL_DIR=\"$dir\""
+    fi
+    {
+        grep -v '^HUNTSMAN_INSTALL_DIR=' "$keys" 2>/dev/null || true
+        printf '%s\n' "$line"
+    } > "$keys.tmp" \
+        && chmod 0600 "$keys.tmp" \
+        && mv -f "$keys.tmp" "$keys"
+}
+
+# Test hook: record the install directory in isolation (see
+# hse_record_install_dir). Inert in production for the same reason as below.
+if [[ "${1:-}" == "__record_install_dir" ]]; then
+    shift
+    __rc=0
+    hse_record_install_dir "$@" || __rc=$?
+    exit "$__rc"
+fi
+
 # Test hook: exercise hse_verify_or_rollback in isolation, without running the
 # installer. A real install (curl | bash, or ./install.sh) never passes this
 # sentinel first argument, so this branch is inert in production. Placed before
@@ -565,7 +610,7 @@ maybe_use_prebuilt() {
             fi
         done
     done < <(_prebuilt_dirs)
-    hint "No usable prebuilt in Downloads — building from source instead"
+    hint "No usable prebuilt in Downloads"
     return 1
 }
 
@@ -1816,6 +1861,11 @@ KEYS_PATH="$HOME/.huntsman.env"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 date +%s > "$LOG_DIR/hse-autoupdate.stamp" 2>/dev/null || true
 step "Configuring keys at $KEYS_PATH (canonical template + autonomous key discovery)"
+# `hse update` reads HUNTSMAN_INSTALL_DIR from the keys file to find install.sh.
+# Recorded BEFORE provision, so provision is the last writer and a re-run is a
+# no-op (no rewrite, no new backup).
+hse_record_install_dir "$KEYS_PATH" "$HSE_INSTALL_DIR" \
+    || log_warn "could not record HUNTSMAN_INSTALL_DIR in $KEYS_PATH (hse update may not find install.sh)"
 "$HSE_BIN_DIR/hse" provision --env-only --discover \
     || log_warn "hse provision failed — configure keys later: hse provision --env-only --discover"
 
@@ -1853,18 +1903,6 @@ purge_removed_integration() {
 purge_removed_integration || log_warn "retired-integration cleanup skipped (non-fatal)"
 # removed-integration-cleanup: end
 
-# ─── Record install location for `hse update` ────────────────────────────────
-# hse update reads HUNTSMAN_INSTALL_DIR from ~/.huntsman.env to find install.sh.
-# Use grep+printf instead of sed so that special characters in HSE_INSTALL_DIR
-# (e.g. & | \ in the path) are never interpreted as sed metacharacters.
-# chmod 0600 before mv preserves the key-file mode that Rust sets on creation.
-{
-    grep -v '^HUNTSMAN_INSTALL_DIR=' "$KEYS_PATH" 2>/dev/null || true
-    printf '\n# Written by install.sh — used by `hse update`\nHUNTSMAN_INSTALL_DIR=%s\n' \
-        "$HSE_INSTALL_DIR"
-} > "$KEYS_PATH.tmp" \
-    && chmod 0600 "$KEYS_PATH.tmp" \
-    && mv -f "$KEYS_PATH.tmp" "$KEYS_PATH"
 
 # ─── Verify ──────────────────────────────────────────────────────────────────
 step "Verifying installation"

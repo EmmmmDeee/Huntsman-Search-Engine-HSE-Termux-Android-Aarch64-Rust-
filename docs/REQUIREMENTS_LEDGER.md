@@ -28332,3 +28332,104 @@ D2  decode_detail's success!=true guard removed (returns Ok(Some(body)))
 G1  geo_after_tight returns Ok(false) instead of Err when empty + no unit
       an_empty_tight_box_with_no_widening_budget_is_a_skip_not_a_negative ... FAILED
 ```
+
+## REQ-INSTALL-012 — every re-install backed up ~/.huntsman.env again, and the installer announced a source build it never ran
+
+**Observed (on-device, Termux 0.118.3, 2026-09-26).** Two consecutive
+`curl … install.sh | bash` runs on the same device each printed
+`backed up to: ~/.huntsman.env.bak.<ts>.<pid>` although no key changed; the
+backups accumulate one per install, forever. Both runs also printed
+"No usable prebuilt in Downloads — building from source instead" and then
+downloaded and used the GitHub prebuilt — no source build happened.
+
+**Root cause.** `hse provision --env-only --discover` canonicalizes the keys
+file (template order; `HUNTSMAN_INSTALL_DIR="…"` quoted under the user-custom
+section) and skips the write only when the merge changes nothing. install.sh
+then rewrote `HUNTSMAN_INSTALL_DIR` unconditionally, unquoted, behind its own
+comment, AFTER provision — so every next install's provision found a
+non-canonical file, rewrote it and backed it up. The Downloads-scan message
+named the next step wrongly: the release download is tried before any build.
+
+**Fix.** `hse_record_install_dir` (install.sh) writes the key only when the
+recorded value differs, in the quoted form provision emits (a path containing
+`"` is written bare), and runs BEFORE provision, so provision is the last
+writer and a re-run touches nothing. The Downloads message now says only
+"No usable prebuilt in Downloads"; each following step announces itself.
+
+**Locks** (`tests/install_invariants.rs`, driving the REAL installer function
+through its `__record_install_dir` hook and the REAL `hse provision` binary in
+install order, against a temp HOME):
+- `reinstalling_leaves_the_keys_file_untouched_and_makes_no_backup` — runs 2–4
+  leave the file byte-identical, make no backup, and provision reports
+  "no changes"; exactly one install-dir record.
+- `a_moved_install_dir_is_rerecorded_and_then_settles` — a changed path (with
+  `& | \`) replaces the record, then settles.
+- `an_existing_unquoted_record_from_an_older_installer_converges` — an
+  upgraded device's old-form record settles after one install.
+- `an_upgrade_purges_the_retired_local_ai_wrapper` now also pins the record
+  before provision.
+
+**Falsification.** The early `return 0` removed and the old unquoted form
+restored: `reinstalling_leaves_the_keys_file_untouched_and_makes_no_backup ...
+FAILED` with "run 2 made a backup" — the device symptom. Restored: 32/32 pass.
+
+## REQ-RDAP-001 — rdap_domain failed every scan with `HTTP 302 Found`
+
+**Observed (on-device doctor, 2026-09-26).** `rdap_domain` DRIFTED: 3
+consecutive failures, `[rdap_domain] HTTP 302 Found: <empty>`.
+
+**Root cause.** `rdap.org` is a bootstrap redirector: it answers every query
+with `302 Location: <the TLD registry's RDAP URL>` (live: `.com` →
+`https://rdap.verisign.com/com/v1/domain/…`). The engine's client refuses every
+cross-site redirect by design (`util::http::ssrf::redirect_verdict` — a hop
+could replay a provider key sent under a custom header), so the 302 reached the
+module as a failure on every scan.
+
+**Fix.** The module is keyless, so — as the redirect policy prescribes for a
+module that needs a second site — it follows the one registry hop itself after
+`registry_hop` vets it: resolved against the origin, same scheme (no
+https → http), no private/reserved IP literal (hostnames stay under the SSRF
+resolver), and an RDAP `/domain/` query.
+
+**Locks.** `registry_hop_follows_the_bootstrap_redirect_only_to_a_vetted_rdap_url`
+(the live Verisign answer, a relative Location; refused: downgrade, metadata
+IP, loopback v4/v6, RFC1918, a non-RDAP path, a scheme change).
+**Live.** `hse scan --kind domain --value wikipedia.org -m rdap_domain`
+(sandbox, 2026-09-26): 1 run, 0 errored, 11 entities (3 nameservers, 6 glue
+IPs, registrar MarkMonitor Inc.) — previously the 302 failure.
+
+## REQ-ANUBIS-001 — anubis failed every scan with `HTTP 301 Moved Permanently`
+
+**Observed (on-device doctor, 2026-09-26).** `anubis` DRIFTED, `HTTP 301 Moved
+Permanently`. Live: `jldc.me/anubis/subdomains/…` → `301` →
+`https://jonlu.ca/anubis/subdomains/…` (the move this ledger recorded on
+2026-09-15, where only the Cloudflare block page was reclassified).
+
+**Fix.** The endpoint is the new host. A 301 is permanent, and the engine
+refuses the cross-site hop, so the stale URL could never succeed.
+**Live (sandbox, datacenter egress).** The module now reaches `jonlu.ca` and
+reports `bot challenge: anubis: HTTP 403 … Cloudflare` — the provider refusing
+this client, correctly classified — instead of a misleading 301. Whether a
+device's residential egress passes the wall is for the Termux acceptance run.
+
+## REQ-HUDSONROCK-002 — every domain scan failed with ``missing field `stealers` ``
+
+**Observed (on-device doctor, 2026-09-26).** `hudsonrock` DRIFTED:
+``missing field `stealers` at line 1 column 19318 (body starts:
+"{\"total\":58632,\"totalStealers\":36582212,\"employees\":19,\"users\":58595,…``.
+
+**Root cause.** `search-by-domain` answers aggregate exposure counts, not the
+`stealers` list `search-by-login` returns; both were decoded as the login shape,
+so every domain scan failed to decode a valid answer.
+
+**Fix.** `DomainResp` decodes the domain shape with `total`, `employees` and
+`users` required, so an error envelope still fails closed (REQ-HUDSONROCK-001).
+A domain with compromised employees or users yields one breach/stealer-tagged
+entity carrying the counts; zero exposure yields nothing.
+
+**Locks.** `the_domain_endpoint_decodes_its_aggregate_shape` (the on-device body
+prefix completed as JSON), and
+`a_domain_with_no_exposure_yields_nothing_and_an_error_envelope_fails_closed`
+(zero exposure → empty; `{"error":…}` and the login shape both refused).
+The live endpoint timed out from the sandbox (25 s), so live confirmation is
+for the Termux acceptance run.
