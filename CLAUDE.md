@@ -3,6 +3,15 @@
 This file is the permanent, checked-in memory for contributors (human and
 automated) working on HSE. It survives fresh checkout and is read first.
 
+## Agent execution authority
+
+[`AGENTS.md`](AGENTS.md) is the sole agent execution directive in this
+repository. It is the latest issued query and is absolute authority for
+automated engineering on HSE. Previously issued agent-execution queries
+are eliminated and must not be restored. Product evidence law remains
+[`RULE.md`](RULE.md). Platform, jurisdiction, harness, and Rust gotchas
+in this file still apply.
+
 ## Operating jurisdiction — Vietnam (permanent)
 
 HSE's **primary operating jurisdiction** and principal base for development,
@@ -19,7 +28,10 @@ established Australian support — see `src/util/domain_vn` and
 
 ## Governing documents
 
-The repository's own governing rules and specifications continue to apply:
+Agent execution: [`AGENTS.md`](AGENTS.md) — sole issued query; absolute
+authority; supersedes every earlier agent-execution contract.
+
+Product evidence law and operational specs continue to apply:
 [`RULE.md`](RULE.md) and
 [`docs/OPERATIONAL_CONSTITUTION.md`](docs/OPERATIONAL_CONSTITUTION.md).
 
