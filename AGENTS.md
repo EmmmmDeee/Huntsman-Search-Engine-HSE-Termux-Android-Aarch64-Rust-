@@ -1,69 +1,31 @@
-FRONTIER-MODEL AUTONOMOUS RUST ENGINEERING DIRECTIVE
+# AGENTS.md — Huntsman Search Engine
 
-0. MODEL-ADAPTIVE EXECUTION
+Sole agent-execution authority for this repository is the owner-issued
+query titled:
 
-This specification is designed for the strongest currently available models from:
+    FRONTIER-MODEL AUTONOMOUS RUST ENGINEERING DIRECTIVE
 
-- Anthropic Claude
-- OpenAI ChatGPT / GPT
-- xAI Grok
+Issued 2026-09-28. Absolute authority. All previously issued
+agent-execution queries are eliminated and must not be restored.
 
-Apply it to the latest and most capable model available in the current execution environment at the time of execution.
+## Canonical issued-query digest
 
-Do not bind this specification to a historical model number, release name, context-window size, tool interface, or orchestration feature.
+- SHA-256: `f286edd76a68d7769fa98f31d6f84fbebdbf1a45f806c368195c3d2da1b636af`
+- Size: 32571 bytes
+- First line: `FRONTIER-MODEL AUTONOMOUS RUST ENGINEERING DIRECTIVE`
+- Last line: `This specification must remain valid across future Claude, ChatGPT/GPT, and Grok generations without requiring model-version edits.`
 
-When a newer model supersedes the current model, apply this specification to the newer model automatically.
+The next blob that replaces this file must match that digest exactly.
+Until that blob is on `main`, the owner paste of the issued query is
+the operative text. This pointer is not a substitute for its clauses.
 
-Interpret references to capabilities dynamically according to what the executing model and environment can actually demonstrate.
+## Eliminated
 
-Exploit all available frontier capabilities that materially improve engineering quality, including where available:
+- `HUNTSMAN_UNIVERSAL_CODING_AGENT_DIRECTIVE_CLAUDE_CODE_OPTIMIZED-1.txt`
+  (removed from `main`; do not restore)
 
-- extended reasoning;
-- adaptive reasoning effort;
-- repository-scale context;
-- persistent working context;
-- code execution;
-- shell execution;
-- filesystem access;
-- repository search;
-- semantic code search;
-- Git integration;
-- compiler execution;
-- test execution;
-- benchmark execution;
-- static analysis;
-- parallel tool execution;
-- subagents;
-- specialist agents;
-- background agents;
-- isolated worktrees;
-- sandboxed execution;
-- browser or documentation retrieval;
-- external tool integrations;
-- native IDE integration;
-- MCP or equivalent tool protocols;
-- structured planning;
-- task decomposition;
-- long-running autonomous execution;
-- execution-state recovery;
-- artifact generation;
-- differential review;
-- automated verification;
-- self-review;
-- cross-agent review.
+## Not this file
 
-Never assume a capability exists merely because another model or provider supports it.
-
-Determine available capability from the current environment.
-
-Use:
-
-AVAILABLE CAPABILITY → BEST APPLICABLE EXECUTION STRATEGY
-
-not:
-
-EXPECTED PROVIDER FEATURE → ASSUMED CAPABILITY
-
-If the environment offers superior execution mechanisms to those anticipated by this specification, use them.
-
-The specification defines the objective and engineering discipline, not a ceiling on model capability.
+Product evidence law remains `RULE.md`.
+Operator query-pack generation (`src/core/query_pack`, `hse query-pack`)
+is product code, not an agent-execution query, and stays.
