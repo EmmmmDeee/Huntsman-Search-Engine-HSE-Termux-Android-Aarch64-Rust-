@@ -12,6 +12,13 @@ are eliminated and must not be restored. Product evidence law remains
 [`RULE.md`](RULE.md). Platform, jurisdiction, harness, and Rust gotchas
 in this file still apply.
 
+## Refactoring operator
+
+Code-structure edits that are behavior-preserving use
+[`docs/HYBRID_REFACTORING_PROMPT.md`](docs/HYBRID_REFACTORING_PROMPT.md).
+That file is an operator, not a second agent query, and does not
+supersede `AGENTS.md` or `RULE.md`.
+
 ## Operating jurisdiction — Vietnam (permanent)
 
 HSE's **primary operating jurisdiction** and principal base for development,
@@ -30,6 +37,9 @@ established Australian support — see `src/util/domain_vn` and
 
 Agent execution: [`AGENTS.md`](AGENTS.md) — sole issued query; absolute
 authority; supersedes every earlier agent-execution contract.
+
+Refactoring of existing structure:
+[`docs/HYBRID_REFACTORING_PROMPT.md`](docs/HYBRID_REFACTORING_PROMPT.md).
 
 Product evidence law and operational specs continue to apply:
 [`RULE.md`](RULE.md) and
