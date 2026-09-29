@@ -618,9 +618,46 @@ fn ble_radar_dependency_is_pinned_and_consumed() {
          (docs/REPOSITORY_BOUNDARY.md); also referenced in: {outside:?}"
     );
 
-    // The radar is the only git dependency: HSE takes nothing else from a repo.
-    let git_deps: Vec<&str> = manifest.lines().filter(|l| l.contains("git = ")).collect();
-    assert_eq!(git_deps.len(), 1, "unexpected git dependencies: {git_deps:?}");
+    // Bluetooth applies the same placeholder rule, from the same authority.
+    let bluetooth = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/modules/signal_radar/bluetooth.rs"
+    ))
+    .expect("signal_radar/bluetooth.rs readable");
+    assert!(
+        bluetooth.contains("bleradar_core::is_real_device_address"),
+        "signal_radar/bluetooth.rs must use the BLE Radar's `is_real_device_address`, \
+         not a local placeholder check (docs/REPOSITORY_BOUNDARY.md)"
+    );
+    assert!(
+        !bluetooth.contains("\"00:00:00:00:00:00\""),
+        "signal_radar/bluetooth.rs re-implements the placeholder-address rule"
+    );
+
+    // The radar is the only git source in anything HSE builds: every lockfile
+    // (the root workspace, which resolves the path-dependent `hse-core`, and the
+    // standalone `hse-core`, `wasm-ui` and `fuzz` workspaces) may resolve exactly
+    // the radar's repository as a git source and nothing else — a git dependency
+    // added in any member surfaces here as a `git+` source.
+    let radar_repo = "git+https://github.com/EmmmmDeee/HSE-BLE-API-";
+    for lock in ["Cargo.lock", "hse-core/Cargo.lock", "wasm-ui/Cargo.lock", "fuzz/Cargo.lock"] {
+        let text = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(lock))
+            .unwrap_or_default();
+        let foreign: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with("source = \"git+") && !l.contains(radar_repo))
+            .collect();
+        assert!(
+            foreign.is_empty(),
+            "{lock} resolves a git source other than the BLE Radar: {foreign:?}"
+        );
+        if lock == "Cargo.lock" {
+            assert!(
+                text.lines().any(|l| l.contains(radar_repo)),
+                "the root Cargo.lock must resolve the BLE Radar dependency"
+            );
+        }
+    }
 }
 
 /// The days→civil calendar conversion (Howard Hinnant's `civil_from_days`) has

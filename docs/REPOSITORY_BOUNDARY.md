@@ -7,7 +7,7 @@ Two repositories, two purposes. Each stays distinct; each uses the strongest par
 | Purpose | All-source OSINT / GEOINT / NETINT reconnaissance: 194 modules, one CLI/Web-UI binary, run in Termux on Android aarch64 | A standalone Android ARM64 wireless-intelligence app (BLE radar today) and the safe-Rust engine library behind it (`bleradar-core`) |
 | Ships | A Termux binary (`install.sh`, source build) | An installable `HSE-BLE-Radar-arm64-<version>.apk`, published as a GitHub release |
 | Owns | Modules, scan engine, correlator rules, storage, the HTTP API and UI, the installer | BLE/Wi-Fi reading rules, advertisement decoding, identity across address rotation, device history, signal/proximity math, the self-updater |
-| Does not own | Any radio-reading rule the radar owns | Any OSINT module, scan engine, or Termux tooling |
+| Does not own | A copy of any of the four delegated reading rules | Any OSINT module, scan engine, or Termux tooling |
 
 ## Dependency direction
 
@@ -18,7 +18,7 @@ BLE Radar  ──────────── nothing from HSE at build time �
 
 - HSE depends on `bleradar-core`, exactly one git dependency, pinned to a full 40-hex `rev` (never a branch or tag), allowed by `deny.toml` for that repository alone.
 - The radar never depends on HSE. Knowledge flows to it by the rule being written once, in `bleradar-core`, and pulled into HSE.
-- Neither repository copies the other's code. A rule has one authority: the radar for every reading-interpretation rule (real-vs-placeholder address, RSSI reliability tiers, 802.11 channel, proximity band, BLE address type, advertisement decoding); HSE for everything else.
+- Neither repository copies the other's code. A rule has one authority. The radar owns the reading rules delegated through the seam below (real-vs-placeholder address, Wi-Fi RSSI reliability tiers, 802.11 channel, proximity band) and the radar-side rules HSE does not use (BLE address type, advertisement decoding, identity, history). HSE owns everything else, including what it keeps deliberately: its coarse Wi-Fi band (`util::wifi::band`), its OUI vendor classification and its own address trackability tag (`util::oui`), and its cell-tower vocabulary.
 
 ## The one seam in HSE
 
