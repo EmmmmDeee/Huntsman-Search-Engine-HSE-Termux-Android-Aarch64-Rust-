@@ -22,26 +22,20 @@ pub(super) struct Ap {
     pub(super) timestamp: Option<i64>,
 }
 
-const SKIP_BSSIDS: &[&str] = &["00:00:00:00:00:00", "02:00:00:00:00:00"];
-
 /// Confidence from RSSI (dBm): stronger signal = more reliable observation.
 ///
-/// `rssi` is deserialised directly from `termux-wifi-scaninfo`'s untrusted
-/// JSON. Wi-Fi RSSI in dBm is never positive in practice (0 dBm is already
-/// an unphysical theoretical ceiling); a positive reading is a driver bug or
-/// a corrupted scan line — e.g. a raw percentage reported in place of dBm —
-/// not a strong signal, and must not score as the tightest possible fix.
-/// Mirrors the same "malformed input degrades to the worst tier, never the
-/// best" guard already applied to `util::geo::confidence_for_accuracy_m` and
-/// `device_fix::fix_confidence` for the identical externally-sourced
-/// failure mode.
+/// The tier rule — including that a positive reading (a driver bug or a raw
+/// percentage in place of dBm) is corrupt input that degrades to the worst
+/// tier, never the best — is owned by the BLE Radar
+/// ([`bleradar_core::wifi_rssi_reliability`]); this only maps its tiers onto
+/// HSE's confidence scale.
 pub(super) fn rssi_confidence(rssi: Option<i64>) -> f64 {
-    match rssi {
-        Some(r) if r > 0 => confidence::LOW_MEDIUM,
-        Some(r) if r >= -50 => confidence::VERY_HIGH_PLUS,
-        Some(r) if r >= -71 => confidence::VERY_HIGH,
-        Some(r) if r >= -86 => confidence::MEDIUM_PLUS,
-        _ => confidence::LOW_MEDIUM,
+    use bleradar_core::RssiReliability::{LowMedium, MediumPlus, VeryHigh, VeryHighPlus};
+    match bleradar_core::wifi_rssi_reliability(rssi) {
+        VeryHighPlus => confidence::VERY_HIGH_PLUS,
+        VeryHigh => confidence::VERY_HIGH,
+        MediumPlus => confidence::MEDIUM_PLUS,
+        LowMedium => confidence::LOW_MEDIUM,
     }
 }
 
@@ -60,7 +54,9 @@ pub(super) fn parse_scan(
     let mut result = ModuleResult::with_capacity(aps.len());
 
     for ap in aps {
-        if ap.bssid.is_empty() || SKIP_BSSIDS.contains(&ap.bssid.as_str()) {
+        // Not a device: an empty or malformed BSSID, or the all-zero /
+        // Android permission-masked placeholder (the BLE Radar's rule).
+        if !bleradar_core::is_real_device_address(&ap.bssid) {
             continue;
         }
 
@@ -78,10 +74,7 @@ pub(super) fn parse_scan(
         // Specific 802.11 channel from the centre frequency, via the HSE BLE
         // Radar's verified frequency↔channel map (2.4/5/6 GHz) — `util::wifi::band`
         // (used just above) derives only the coarse band, never the channel number.
-        let channel = ap
-            .frequency
-            .and_then(|f| u16::try_from(f).ok())
-            .and_then(bleradar_core::wifi_frequency_to_channel);
+        let channel = bleradar_core::wifi_channel(ap.frequency);
         if let Some(ch) = channel {
             e.tag(format!("channel:{ch}"));
         }
@@ -90,9 +83,7 @@ pub(super) fn parse_scan(
         // fabricated distance. Gives the radar the RSSI axis its Bluetooth path
         // structurally lacks (no-root Termux BT carries no RSSI), on the WiFi
         // sensor that does report it.
-        let proximity = ap
-            .rssi
-            .map(|r| super::proximity_band_str(bleradar_core::proximity_label(r as f64)));
+        let proximity = bleradar_core::wifi_proximity(ap.rssi).map(super::proximity_band_str);
         if let Some(band) = proximity {
             e.tag(format!("proximity:{band}"));
         }

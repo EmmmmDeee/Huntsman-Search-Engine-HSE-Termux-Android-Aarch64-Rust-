@@ -92,6 +92,34 @@ fn wifi_skip_placeholder_bssids() {
     assert_eq!(result.entities[1].value, "Good");
 }
 
+/// The reading rules are the BLE Radar's (`bleradar_core::sweep`), not a local
+/// copy: a hyphenated placeholder is as much a placeholder as a colon one, a
+/// string that is not a MAC is not a device, and a positive RSSI (a corrupt
+/// reading) claims no proximity band instead of the closest one.
+#[test]
+fn wifi_reading_rules_come_from_the_radar_authority() {
+    let json = br#"[
+        {"bssid":"00-00-00-00-00-00","ssid":"Bad1","rssi":-40,"frequency":2437},
+        {"bssid":"not-a-mac","ssid":"Bad2","rssi":-40,"frequency":2437},
+        {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"Corrupt","rssi":10,"frequency":2437}
+    ]"#;
+    let result =
+        wifi::parse_scan(json, "test-scan", Some(TEST_EPOCH)).expect("valid AP JSON parses");
+    let ap = &result.entities[0];
+    assert_eq!(ap.value, "aa:bb:cc:dd:ee:ff");
+    assert_eq!(
+        result.entities.len(),
+        2,
+        "only the real AP (and its SSID) survives"
+    );
+    assert!(
+        !ap.tags.iter().any(|t| t.starts_with("proximity:")),
+        "a positive RSSI must not read as the immediate band: {:?}",
+        ap.tags
+    );
+    assert!((ap.confidence - confidence::LOW_MEDIUM).abs() < 0.01);
+}
+
 #[test]
 fn wifi_parse_empty_array() {
     let result =

@@ -1,12 +1,13 @@
 //! Real-time multi-sensor signal radar — WiFi AP scan, Bluetooth scan,
 //! cell tower survey, GPS fix, and LAN ARP discovery in a single parallel pass.
 //!
-//! The RSSI-bearing WiFi sweep is enriched by the **HSE BLE Radar**
-//! (`bleradar-core`, reconstructed and verified against the BLE Radar v0.3.0
-//! oracle): its `wifi_frequency_to_channel` derives the specific 802.11 channel
-//! and its `proximity_label` reports a coarse signal-proximity band. HSE uses
-//! only the radar crate's verified `signal`/`geo` primitives — never a fabricated
-//! distance — so the radar math has one authority rather than a reimplementation.
+//! The reading-interpretation rules of the Wi-Fi and Bluetooth sweeps —
+//! real-vs-placeholder addresses, the RSSI reliability tiers, the 802.11
+//! channel, the coarse proximity band — are owned by the **HSE BLE Radar**
+//! (`bleradar-core::sweep`, the one authority; see
+//! `docs/REPOSITORY_BOUNDARY.md`). This module only parses the Termux tools'
+//! output and maps the radar's answers onto HSE entities — never a fabricated
+//! distance, and no second copy of a rule.
 //!
 //! All sensors run concurrently via `tokio::join!`.  Off-device (no Termux
 //! binaries) every termux-backed sub-sensor no-ops cleanly.  The LAN ARP

@@ -310,8 +310,8 @@ dependencies = [
 
 [[package]]
 name = "bleradar-core"
-version = "0.4.5"
-source = "git+https://github.com/EmmmmDeee/HSE-BLE-API-?rev=1e47bca0e8fa1e098ff9b022143108e055b4c960#1e47bca0e8fa1e098ff9b022143108e055b4c960"
+version = "0.6.10"
+source = "git+https://github.com/EmmmmDeee/HSE-BLE-API-?rev=98c4b089f481883445001af8262c440f3115367b#98c4b089f481883445001af8262c440f3115367b"
 
 [[package]]
 name = "block-buffer"

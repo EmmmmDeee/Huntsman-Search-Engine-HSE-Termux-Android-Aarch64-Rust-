@@ -576,14 +576,87 @@ fn ble_radar_dependency_is_pinned_and_consumed() {
     ))
     .expect("signal_radar/wifi.rs readable");
     for call in [
-        "bleradar_core::wifi_frequency_to_channel",
-        "bleradar_core::proximity_label",
+        "bleradar_core::wifi_channel",
+        "bleradar_core::wifi_proximity",
+        "bleradar_core::wifi_rssi_reliability",
+        "bleradar_core::is_real_device_address",
     ] {
         assert!(
             wifi.contains(call),
             "signal_radar/wifi.rs must use the BLE Radar's `{call}` — the radar math \
              has one authority (bleradar-core), never a local reimplementation"
         );
+    }
+    // ...and carry no second copy of a rule the radar owns.
+    for copy in ["SKIP_BSSIDS", ">= -71", ">= -86", "\"02:00:00:00:00:00\""] {
+        assert!(
+            !wifi.contains(copy),
+            "signal_radar/wifi.rs re-implements a radar rule (`{copy}`); call bleradar_core::sweep \
+             (docs/REPOSITORY_BOUNDARY.md)"
+        );
+    }
+
+    // The radar is consumed in exactly one place — the `signal_radar` module — so
+    // the boundary between the two repositories stays one seam. Using a radar
+    // rule elsewhere means changing this test and docs/REPOSITORY_BOUNDARY.md on
+    // purpose.
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&manifest_dir.join("src"), &mut files);
+    let outside: Vec<String> = files
+        .iter()
+        .filter(|f| {
+            let rel = f.strip_prefix(manifest_dir).unwrap_or(f);
+            !rel.starts_with("src/modules/signal_radar")
+                && fs::read_to_string(f).is_ok_and(|t| t.contains("bleradar_core::"))
+        })
+        .map(|f| f.strip_prefix(manifest_dir).unwrap_or(f).display().to_string())
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "bleradar-core is consumed only by src/modules/signal_radar \
+         (docs/REPOSITORY_BOUNDARY.md); also referenced in: {outside:?}"
+    );
+
+    // Bluetooth applies the same placeholder rule, from the same authority.
+    let bluetooth = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/modules/signal_radar/bluetooth.rs"
+    ))
+    .expect("signal_radar/bluetooth.rs readable");
+    assert!(
+        bluetooth.contains("bleradar_core::is_real_device_address"),
+        "signal_radar/bluetooth.rs must use the BLE Radar's `is_real_device_address`, \
+         not a local placeholder check (docs/REPOSITORY_BOUNDARY.md)"
+    );
+    assert!(
+        !bluetooth.contains("\"00:00:00:00:00:00\""),
+        "signal_radar/bluetooth.rs re-implements the placeholder-address rule"
+    );
+
+    // The radar is the only git source in anything HSE builds: every lockfile
+    // (the root workspace, which resolves the path-dependent `hse-core`, and the
+    // standalone `hse-core`, `wasm-ui` and `fuzz` workspaces) may resolve exactly
+    // the radar's repository as a git source and nothing else — a git dependency
+    // added in any member surfaces here as a `git+` source.
+    let radar_repo = "git+https://github.com/EmmmmDeee/HSE-BLE-API-";
+    for lock in ["Cargo.lock", "hse-core/Cargo.lock", "wasm-ui/Cargo.lock", "fuzz/Cargo.lock"] {
+        let text = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(lock))
+            .unwrap_or_default();
+        let foreign: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with("source = \"git+") && !l.contains(radar_repo))
+            .collect();
+        assert!(
+            foreign.is_empty(),
+            "{lock} resolves a git source other than the BLE Radar: {foreign:?}"
+        );
+        if lock == "Cargo.lock" {
+            assert!(
+                text.lines().any(|l| l.contains(radar_repo)),
+                "the root Cargo.lock must resolve the BLE Radar dependency"
+            );
+        }
     }
 }
 
