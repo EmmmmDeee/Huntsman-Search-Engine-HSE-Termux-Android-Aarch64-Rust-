@@ -59,7 +59,7 @@ struct DomainResp {
     /// Compromised users (customers) of the domain.
     users: u64,
     /// Compromised third-party credentials for the domain, when reported.
-    #[serde(default, alias = "third_parties")]
+    #[serde(default)]
     third_parties: Option<u64>,
 }
 
@@ -291,10 +291,14 @@ fn build_domain_result(target: &Target, data: &DomainResp, scan_id: &str) -> Mod
     entity.tag(tags::BREACH);
     entity.tag(tags::STEALER_LOG);
     entity.tag(format!("stealer-count:{}", data.total));
+    let third_parties = match data.third_parties {
+        Some(n) if n > 0 => format!("; {n} third-party credential(s)"),
+        _ => String::new(),
+    };
     let mut ev = Evidence::new(
         SRC,
         format!(
-            "Infostealer exposure: {} compromised machine(s); {} employee(s) and {} user(s) of this domain",
+            "Infostealer exposure: {} compromised machine(s); {} employee(s) and {} user(s) of this domain{third_parties}",
             data.total, data.employees, data.users
         ),
     )

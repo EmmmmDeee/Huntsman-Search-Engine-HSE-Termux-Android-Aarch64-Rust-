@@ -1479,6 +1479,12 @@ fn reinstalling_leaves_the_keys_file_untouched_and_makes_no_backup() {
     provision(home);
     let settled = fs::read(&keys).unwrap();
     let backups_after_first = backups(home);
+    // Even the first install makes none: provision only expanded the
+    // installer's one-line record, so a backup would hold nothing to restore.
+    assert!(
+        backups_after_first.is_empty(),
+        "the first install made a backup: {backups_after_first:?}"
+    );
 
     // Every later install runs the same two steps: nothing may change.
     for run in 2..=4 {
@@ -1569,7 +1575,7 @@ fn an_existing_unquoted_record_from_an_older_installer_converges() {
 #[cfg(unix)]
 #[test]
 fn a_path_that_cannot_round_trip_is_refused_and_the_file_is_left_alone() {
-    // The Rust keys writer rejects `"` and `\` (src/util/keys/io.rs); a
+    // The Rust keys writer rejects `"`, `\`, newline and CR (src/util/keys/io.rs); a
     // recorded value containing either would be read back differently by
     // `hse update`. The installer refuses to record it instead.
     use std::process::Command;
@@ -1579,7 +1585,7 @@ fn a_path_that_cannot_round_trip_is_refused_and_the_file_is_left_alone() {
     record_install_dir(home, "/good/place");
     let before = fs::read(&keys).unwrap();
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
-    for bad in ["/bad\\place", "/bad\"place"] {
+    for bad in ["/bad\\place", "/bad\"place", "/bad\nplace", "/bad\rplace"] {
         let out = Command::new("bash")
             .arg(&script)
             .arg("__record_install_dir")

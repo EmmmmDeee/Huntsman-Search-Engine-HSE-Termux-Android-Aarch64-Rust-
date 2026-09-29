@@ -418,6 +418,12 @@ use super::*;
                 "{body}"
             );
         }
+        // A third-party-only exposure says so, rather than reading as all zeros.
+        let data: DomainResp =
+            serde_json::from_str(r#"{"total":0,"employees":0,"users":0,"third_parties":3}"#).unwrap();
+        let result = build_domain_result(&target, &data, "scan");
+        let summary = &result.entities[0].evidence[0].summary;
+        assert!(summary.contains("3 third-party credential(s)"), "{summary}");
         // REQ-HUDSONROCK-001: an error envelope must not decode as "no exposure".
         assert!(serde_json::from_str::<DomainResp>(r#"{"error":"rate limited"}"#).is_err());
         // The login shape is still not a domain answer.

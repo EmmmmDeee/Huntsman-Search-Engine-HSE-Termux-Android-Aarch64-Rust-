@@ -208,9 +208,26 @@ fn inject_discovered(existing: &str, discovered: &[(String, String)]) -> String 
     s
 }
 
+/// Whether rewriting `original` as `merged` loses nothing: every non-blank,
+/// non-comment line of `original` is a key whose exact value `merged` still
+/// carries. Only then is a backup redundant — the fresh-install case, where the
+/// installer's one-line `HUNTSMAN_INSTALL_DIR` record is expanded to the full
+/// template. A line the merge would drop or alter (a malformed line, a changed
+/// value) always keeps the backup.
+fn rewrite_loses_nothing(original: &str, merged: &str) -> bool {
+    let kept: std::collections::HashSet<(String, String)> =
+        merged.lines().filter_map(parse_kv).collect();
+    original.lines().all(|line| {
+        let trimmed = line.trim_start();
+        trimmed.is_empty()
+            || trimmed.starts_with('#')
+            || parse_kv(line).is_some_and(|kv| kept.contains(&kv))
+    })
+}
+
 /// Write the merged content to `path` atomically (unique temp + fsync +
 /// rename), after first backing up any pre-existing file to
-/// `path + .bak.<ts>.<pid>`. File mode is 0600 on Unix; on non-Unix the
+/// `path + .bak.<ts>.<pid>` when `backup` is set. File mode is 0600 on Unix; on non-Unix the
 /// OS-default mode applies.
 ///
 /// This goes through `util::atomic_file::write` — the same hardened writer
@@ -220,8 +237,8 @@ fn inject_discovered(existing: &str, discovered: &[(String, String)]) -> String 
 /// temp, then rename a corrupt snapshot over `~/.huntsman.env`, silently
 /// dropping every key. The unique pid+seq temp also means a failed write
 /// leaves no straggler behind.
-fn write_env_file(path: &Path, contents: &str) -> Result<Option<PathBuf>> {
-    let backup = if path.exists() {
+fn write_env_file(path: &Path, contents: &str, backup: bool) -> Result<Option<PathBuf>> {
+    let backup = if backup && path.exists() {
         // Second-granularity alone collides on two runs in the same second
         // (the second copy would silently overwrite the first backup), so
         // disambiguate with the pid.
@@ -331,7 +348,9 @@ fn cmd_provision_env(dry_run: bool, discover: bool) -> Result<()> {
         return Ok(());
     }
 
-    let backup = write_env_file(&path, &merged)?;
+    // A rewrite that keeps every key and value needs no backup: the fresh
+    // install would otherwise leave a copy of the installer's one-line record.
+    let backup = write_env_file(&path, &merged, !rewrite_loses_nothing(&original, &merged))?;
     if let Some(bak) = backup {
         println!("    backed up to:   {}", bak.display());
     }

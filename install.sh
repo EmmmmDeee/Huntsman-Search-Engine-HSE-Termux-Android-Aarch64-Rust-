@@ -138,28 +138,39 @@ hse_verify_or_rollback() {
 # leaves it untouched. Before this, every install rewrote the key unquoted
 # with its own comment after provision had canonicalized it, so the next
 # install's provision saw a changed file and backed it up again: one new
-# ~/.huntsman.env.bak.* per install, forever. A path containing `"` or `\`
-# cannot round-trip through the keys file (the Rust writer rejects both,
-# src/util/keys/io.rs), so it is refused with a non-zero return — the caller
+# ~/.huntsman.env.bak.* per install, forever. A path containing `"`, `\`, a
+# newline or a CR cannot round-trip through the keys file (the Rust writer
+# rejects them, src/util/keys/io.rs), and an unreadable keys file cannot be
+# rewritten without losing its keys, so both are refused with a non-zero return — the caller
 # warns — rather than recorded in a form `hse update` would misread.
 # grep+printf rather than sed, so no character in the path is ever a sed
 # metacharacter. chmod 0600 before mv keeps the key file's mode.
 hse_record_install_dir() {
     local keys="$1" dir="$2" current=""
+    # An existing file that cannot be read would be rebuilt from nothing below,
+    # dropping every API key in it: refuse instead.
+    if [[ -e "$keys" && ! -r "$keys" ]]; then
+        return 1
+    fi
     if [[ -f "$keys" ]]; then
         current="$(sed -n 's/^HUNTSMAN_INSTALL_DIR=//p' "$keys" | tail -n 1)"
         current="${current#\"}"
         current="${current%\"}"
     fi
     [[ -f "$keys" && "$current" == "$dir" ]] && return 0
-    if [[ "$dir" == *'"'* || "$dir" == *'\'* ]]; then
+    if [[ "$dir" == *'"'* || "$dir" == *'\'* || "$dir" == *$'\n'* || "$dir" == *$'\r'* ]]; then
         return 1
     fi
     local line="HUNTSMAN_INSTALL_DIR=\"$dir\""
-    {
-        grep -v '^HUNTSMAN_INSTALL_DIR=' "$keys" 2>/dev/null || true
-        printf '%s\n' "$line"
-    } > "$keys.tmp" \
+    # umask 077 in a subshell: the temporary copy of every key is never
+    # readable by anyone else, not even before the chmod.
+    (
+        umask 077
+        {
+            grep -v '^HUNTSMAN_INSTALL_DIR=' "$keys" 2>/dev/null || true
+            printf '%s\n' "$line"
+        } > "$keys.tmp"
+    ) \
         && chmod 0600 "$keys.tmp" \
         && mv -f "$keys.tmp" "$keys"
 }

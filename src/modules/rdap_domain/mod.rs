@@ -114,18 +114,9 @@ fn registry_hop(origin: &url::Url, location: &str, domain: &str) -> Option<url::
     if next.scheme() != origin.scheme() {
         return None;
     }
-    match next.host()? {
-        url::Host::Ipv4(ip) => {
-            if crate::util::preflight::is_private_addr(ip.into()) {
-                return None;
-            }
-        }
-        url::Host::Ipv6(ip) => {
-            if crate::util::preflight::is_private_addr(ip.into()) {
-                return None;
-            }
-        }
-        url::Host::Domain(_) => {}
+    // The engine's shared IP-literal / local-domain SSRF guard.
+    if next.host().is_none() || crate::util::preflight::url_host_is_private(next.as_str()) {
+        return None;
     }
     let mut segments = next.path_segments()?.rev();
     let last = segments.next()?;

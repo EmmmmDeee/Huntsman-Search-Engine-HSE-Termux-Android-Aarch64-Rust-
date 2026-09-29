@@ -28351,8 +28351,8 @@ non-canonical file, rewrote it and backed it up. The Downloads-scan message
 named the next step wrongly: the release download is tried before any build.
 
 **Fix.** `hse_record_install_dir` (install.sh) writes the key only when the
-recorded value differs, in the quoted form provision emits (a path containing
-`"` is written bare), and runs BEFORE provision, so provision is the last
+recorded value differs, in the quoted form provision emits, and runs BEFORE
+provision, so provision is the last
 writer and a re-run touches nothing. The Downloads message now says only
 "No usable prebuilt in Downloads"; each following step announces itself.
 
@@ -28362,8 +28362,12 @@ install order, against a temp HOME):
 - `reinstalling_leaves_the_keys_file_untouched_and_makes_no_backup` — runs 2–4
   leave the file byte-identical, make no backup, and provision reports
   "no changes"; exactly one install-dir record.
-- `a_moved_install_dir_is_rerecorded_and_then_settles` — a changed path (with
-  `& | \`) replaces the record, then settles.
+- `a_moved_install_dir_is_rerecorded_and_then_settles` — a changed path
+  replaces the record, then settles. A path with `"`, `\`, a newline or a CR,
+  or an unreadable keys file, is refused and the file left alone.
+- Provision backs up the keys file only when its rewrite would lose a line or
+  change a value (`rewrite_loses_nothing`), so a fresh install — the
+  installer's one-line record expanded to the template — leaves no backup.
 - `an_existing_unquoted_record_from_an_older_installer_converges` — an
   upgraded device's old-form record settles after one install.
 - `an_upgrade_purges_the_retired_local_ai_wrapper` now also pins the record

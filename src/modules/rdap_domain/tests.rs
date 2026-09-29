@@ -273,6 +273,8 @@ fn registry_hop_follows_the_bootstrap_redirect_only_to_a_vetted_rdap_url() {
         "https://127.0.0.1/domain/example.com",               // loopback
         "https://10.0.0.5/domain/example.com",                // private
         "https://[::1]/domain/example.com",                   // v6 loopback
+        "https://localhost/domain/example.com",               // local name
+        "https://printer.local/domain/example.com",           // mDNS name
         "https://evil.example/login",                         // not an RDAP query
         "https://attacker.example/not-rdap/domain/collect",   // /domain/ mid-path
         "https://rdap.verisign.com/com/v1/domain/other.com",  // another domain
