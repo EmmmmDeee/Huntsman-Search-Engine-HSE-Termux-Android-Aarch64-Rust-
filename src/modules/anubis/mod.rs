@@ -1,6 +1,8 @@
-//! Anubis (jldc.me) — free, key-less passive-DNS subdomain aggregator.
+//! Anubis (jonlu.ca) — free, key-less passive-DNS subdomain aggregator.
 //!
-//! Endpoint: `GET https://jldc.me/anubis/subdomains/{domain}`
+//! Endpoint: `GET https://jonlu.ca/anubis/subdomains/{domain}` (moved from
+//! `jldc.me`, which now answers `301` there; the engine refuses cross-site
+//! redirects, so the old host failed every scan).
 //! Auth: None — anonymous and free (rate-limited; a failure surfaces as a module
 //! error and the engine moves on, like any other free source).
 //!
@@ -83,7 +85,7 @@ fn build_entities(names: &[String], domain_base: &str, scan_id: &str) -> Vec<Ent
             }
             e.add_evidence(Evidence::new(
                 SRC,
-                "Passive-DNS subdomain (Anubis / jldc.me)",
+                "Passive-DNS subdomain (Anubis / jonlu.ca)",
             ));
             Some(e)
         })
@@ -104,7 +106,7 @@ impl Module for Anubis {
     }
 
     fn description(&self) -> &'static str {
-        "Passive-DNS subdomain aggregation via Anubis/jldc.me (free, no key)"
+        "Passive-DNS subdomain aggregation via Anubis/jonlu.ca (free, no key)"
     }
 
     fn priority(&self) -> u8 {
@@ -141,7 +143,7 @@ impl Module for Anubis {
             return Ok(ModuleResult::new());
         };
 
-        let url = format!("https://jldc.me/anubis/subdomains/{}", urlencode(&host));
+        let url = format!("https://jonlu.ca/anubis/subdomains/{}", urlencode(&host));
 
         // Shared `fetch_json` (curl/OpenSSL fallback + circuit breaker every
         // keyless source gets on Termux/DC IPs). The endpoint answers a JSON array

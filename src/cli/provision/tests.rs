@@ -228,3 +228,31 @@ use super::*;
             "HUNTSMAN_X=\"y\"\n"
         );
     }
+
+    #[test]
+    fn a_lossless_rewrite_needs_no_backup_and_a_lossy_one_keeps_it() {
+        let template = template_for_test();
+        // The fresh install: the installer's one-line record, expanded.
+        let record = "HUNTSMAN_INSTALL_DIR=\"/data/hse\"\n";
+        assert!(rewrite_loses_nothing(record, &merge_template(record, template)));
+        // Comments and blank lines are not data.
+        let commented = "# mine\n\nHUNTSMAN_SHODAN_KEY=\"real\"\n";
+        assert!(rewrite_loses_nothing(commented, &merge_template(commented, template)));
+        // A line the merge does not carry forward keeps the backup.
+        assert!(!rewrite_loses_nothing("not a key line\n", template));
+        assert!(!rewrite_loses_nothing(
+            "HUNTSMAN_SHODAN_KEY=\"real\"\n",
+            "HUNTSMAN_SHODAN_KEY=\"other\"\n"
+        ));
+    }
+
+    #[test]
+    fn write_env_file_backs_up_only_when_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".huntsman.env");
+        std::fs::write(&path, "HUNTSMAN_INSTALL_DIR=\"/x\"\n").unwrap();
+        assert_eq!(write_env_file(&path, "A=\"1\"\n", false).unwrap(), None);
+        let bak = write_env_file(&path, "A=\"2\"\n", true).unwrap().expect("a backup");
+        assert_eq!(std::fs::read_to_string(bak).unwrap(), "A=\"1\"\n");
+    }
+
