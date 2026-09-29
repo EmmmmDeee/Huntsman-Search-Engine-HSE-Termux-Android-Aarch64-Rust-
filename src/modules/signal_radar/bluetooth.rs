@@ -45,7 +45,7 @@ pub(super) fn parse_bt_json(
     let mut result = ModuleResult::with_capacity(devices.len());
 
     for dev in devices {
-        if dev.address.is_empty() || dev.address == "00:00:00:00:00:00" {
+        if !bleradar_core::is_real_device_address(&dev.address) {
             continue;
         }
 

@@ -576,8 +576,10 @@ fn ble_radar_dependency_is_pinned_and_consumed() {
     ))
     .expect("signal_radar/wifi.rs readable");
     for call in [
-        "bleradar_core::wifi_frequency_to_channel",
-        "bleradar_core::proximity_label",
+        "bleradar_core::wifi_channel",
+        "bleradar_core::wifi_proximity",
+        "bleradar_core::wifi_rssi_reliability",
+        "bleradar_core::is_real_device_address",
     ] {
         assert!(
             wifi.contains(call),
@@ -585,6 +587,40 @@ fn ble_radar_dependency_is_pinned_and_consumed() {
              has one authority (bleradar-core), never a local reimplementation"
         );
     }
+    // ...and carry no second copy of a rule the radar owns.
+    for copy in ["SKIP_BSSIDS", ">= -71", ">= -86", "\"02:00:00:00:00:00\""] {
+        assert!(
+            !wifi.contains(copy),
+            "signal_radar/wifi.rs re-implements a radar rule (`{copy}`); call bleradar_core::sweep \
+             (docs/REPOSITORY_BOUNDARY.md)"
+        );
+    }
+
+    // The radar is consumed in exactly one place — the `signal_radar` module — so
+    // the boundary between the two repositories stays one seam. Using a radar
+    // rule elsewhere means changing this test and docs/REPOSITORY_BOUNDARY.md on
+    // purpose.
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&manifest_dir.join("src"), &mut files);
+    let outside: Vec<String> = files
+        .iter()
+        .filter(|f| {
+            let rel = f.strip_prefix(manifest_dir).unwrap_or(f);
+            !rel.starts_with("src/modules/signal_radar")
+                && fs::read_to_string(f).is_ok_and(|t| t.contains("bleradar_core::"))
+        })
+        .map(|f| f.strip_prefix(manifest_dir).unwrap_or(f).display().to_string())
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "bleradar-core is consumed only by src/modules/signal_radar \
+         (docs/REPOSITORY_BOUNDARY.md); also referenced in: {outside:?}"
+    );
+
+    // The radar is the only git dependency: HSE takes nothing else from a repo.
+    let git_deps: Vec<&str> = manifest.lines().filter(|l| l.contains("git = ")).collect();
+    assert_eq!(git_deps.len(), 1, "unexpected git dependencies: {git_deps:?}");
 }
 
 /// The days→civil calendar conversion (Howard Hinnant's `civil_from_days`) has

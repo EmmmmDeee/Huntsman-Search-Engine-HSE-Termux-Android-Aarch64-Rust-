@@ -6,6 +6,10 @@ All notable changes to this project are documented here. Format per [Keep a Chan
 
 ## [Unreleased]
 
+### Changed
+
+- `signal_radar` no longer carries its own copy of the Wi-Fi and Bluetooth reading rules; it calls the HSE BLE Radar (`bleradar-core::sweep`), now pinned to the radar's merged `main`. The placeholder-BSSID list, the RSSI reliability tiers, the 802.11 channel and the proximity band each have one authority, and a positive (corrupt) RSSI no longer claims the immediate proximity band. A hyphenated placeholder BSSID and a BSSID that is not a MAC are dropped like the colon-form placeholder. `docs/REPOSITORY_BOUNDARY.md` states what each repository owns and the one seam between them, and `tests/architecture.rs` enforces it (REQ-BOUNDARY-001).
+
 ### Fixed
 
 - AU-118 no longer calls a domain's own nameservers look-alike phishing. A `wikipedia.org` scan paired the seed with `wikimedia.org`, known only as its authoritative nameservers `ns0/ns1/ns2.wikimedia.org`, and raised a High impersonation finding. A domain seen only as `ns`-tagged nameserver hosts is now excluded from pairing; the same domain found any other way still pairs (REQ-ATTR-005).

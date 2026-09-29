@@ -257,7 +257,7 @@ hse-core = { path = "hse-core" }
 # left unused and stripped from the shipped binary by the release-profile LTO
 # (`release_profile_stays_size_optimized`), so this does not duplicate HSE's own
 # correlator/evidence authority. Its Rust 1.98 floor is why HSE's MSRV is 1.98.
-bleradar-core = { git = "https://github.com/EmmmmDeee/HSE-BLE-API-", rev = "1e47bca0e8fa1e098ff9b022143108e055b4c960" }
+bleradar-core = { git = "https://github.com/EmmmmDeee/HSE-BLE-API-", rev = "98c4b089f481883445001af8262c440f3115367b" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

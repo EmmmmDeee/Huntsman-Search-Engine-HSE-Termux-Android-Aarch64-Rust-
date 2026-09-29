@@ -28486,3 +28486,14 @@ all fixed:
   `a_path_that_cannot_round_trip_is_refused_and_the_file_is_left_alone` pins it.
 - REQ-ANUBIS-001: the description and evidence text still named `jldc.me`;
   both name `jonlu.ca` now.
+
+## REQ-BOUNDARY-001 — the radar's reading rules were copied into HSE, and could drift from their authority
+
+**Observed.** `signal_radar` re-implemented the placeholder-BSSID list and the Wi-Fi RSSI reliability tiers the HSE BLE Radar (`bleradar-core::sweep`) owns, called an old pin of the radar for channel and proximity, and had no rule about where the radar may be used. A fix on one side (a positive RSSI must not claim the closest proximity band) did not reach the other.
+
+**Root cause.** The rules were imported into the radar from HSE, but HSE kept its copy, so two repositories each held one and neither was the authority.
+
+**Fix.** `signal_radar` (Wi-Fi and Bluetooth) calls `bleradar_core::{is_real_device_address, wifi_rssi_reliability, wifi_channel, wifi_proximity}`; the dependency is pinned to the radar's merged `main`; `docs/REPOSITORY_BOUNDARY.md` records the split.
+
+**Locks.** `wifi_reading_rules_come_from_the_radar_authority` (hyphenated placeholder, non-MAC BSSID, positive RSSI) and the extended `ble_radar_dependency_is_pinned_and_consumed` (pinned to a commit, consumed only by `signal_radar`, no copy of a radar rule in `wifi.rs`, no other git dependency).
+
