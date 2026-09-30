@@ -245,7 +245,7 @@ layer consume `core`. The correlator consumes only entities + tags — so a
 module changes what the correlator can conclude *only* through the tags/evidence
 it emits (the seam REQ-PGP-001 / REQ-OPENSANCTIONS-001 both turned on).
 
-### Layer 3 — `src/modules/` (520 files, 194 provider modules)
+### Layer 3 — `src/modules/` (523 files, 196 provider modules)
 One directory per provider, each an implementation of `Module`. Registered in
 `src/modules/mod.rs` (the canonical list). Categories: People, Network, Geo,
 Breach/Stealer, Threat-Intel, Registry (AU/VN gov), Crypto, Archive, Presence,

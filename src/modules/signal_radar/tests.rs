@@ -427,6 +427,66 @@ fn wifi_readings_become_sightings_with_signal_name_and_time() {
     assert_eq!(hidden.signal_dbm, Some(-80.0));
 }
 
+/// A hyphen-separated MAC is as real a device as a colon-separated one
+/// (`bleradar_core::is_real_device_address` accepts both spellings), so its
+/// sighting must key on the same canonical `network_id` a colon-separated
+/// sighting of the identical hardware would get — otherwise the two spellings
+/// of one device split into two unrelated rows with no shared OUI. Regression
+/// for the review finding on the pre-fix code, which passed the scan's raw
+/// spelling straight to `RfSighting::new` and got `"aa-bb-cc-dd-ee-ff"`
+/// (unrecognised by `is_mac`, so left un-lowercased and un-canonicalised)
+/// instead of `"aa:bb:cc:dd:ee:ff"`.
+#[test]
+fn wifi_hyphenated_bssid_sighting_keys_on_the_canonical_colon_form() {
+    let json = br#"[{"bssid":"AA-BB-CC-DD-EE-FF","ssid":"HyphenNet","rssi":-45}]"#;
+    let r = wifi::parse_scan(json, "test-scan", Some(TEST_EPOCH)).expect("parses");
+    assert_eq!(r.sightings.len(), 1);
+    let s = &r.sightings[0];
+    assert_eq!(
+        s.network_id, "aa:bb:cc:dd:ee:ff",
+        "a hyphen-form BSSID must key the same as its colon-form spelling"
+    );
+    assert_eq!(
+        s.oui().as_deref(),
+        Some("AABBCC"),
+        "sighting_key must canonicalise before OUI extraction can see it"
+    );
+    // The observed spelling is preserved in evidence, not silently replaced.
+    let mac = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::MacAddress)
+        .expect("the BSSID entity");
+    assert_eq!(
+        mac.evidence[0].attributes.get("bssid").map(String::as_str),
+        Some("AA-BB-CC-DD-EE-FF")
+    );
+}
+
+/// Same regression as `wifi_hyphenated_bssid_sighting_keys_on_the_canonical_colon_form`,
+/// on the Bluetooth path.
+#[test]
+fn bluetooth_hyphenated_address_sighting_keys_on_the_canonical_colon_form() {
+    let json = br#"[{"address":"AA-BB-CC-DD-EE-01","name":"Headphones","type":"classic"}]"#;
+    let r = bluetooth::parse_bt_json(json, "test-scan", Some(TEST_EPOCH)).expect("parses");
+    assert_eq!(r.sightings.len(), 1);
+    let s = &r.sightings[0];
+    assert_eq!(s.network_id, "aa:bb:cc:dd:ee:01");
+    assert_eq!(s.oui().as_deref(), Some("AABBCC"));
+    let mac = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::MacAddress)
+        .expect("the address entity");
+    assert_eq!(
+        mac.evidence[0]
+            .attributes
+            .get("address")
+            .map(String::as_str),
+        Some("AA-BB-CC-DD-EE-01")
+    );
+}
+
 /// `le` is BLE; `classic`/`dual`/unknown are recorded as classic with the
 /// tool's own type kept verbatim, and a missing or blank name stays absent.
 #[test]

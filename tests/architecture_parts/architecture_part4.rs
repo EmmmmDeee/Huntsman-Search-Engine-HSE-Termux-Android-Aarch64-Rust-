@@ -599,10 +599,20 @@ fn ble_radar_dependency_is_pinned_and_consumed() {
     // The radar is consumed in exactly one place — the `signal_radar` module — so
     // the boundary between the two repositories stays one seam. Using a radar
     // rule elsewhere means changing this test and docs/REPOSITORY_BOUNDARY.md on
-    // purpose.
+    // purpose. Every source tree that could call it is walked, not just the
+    // root workspace's `src/`: `hse-core` and `wasm-ui` are separate Cargo
+    // workspaces (each with their own `bleradar-core` reachability were one
+    // added to their own `Cargo.toml`) and `fuzz/fuzz_targets` builds against
+    // this crate directly — the same trees the nearby single-authority tests
+    // (`civil_from_days_has_a_single_home`, `wifi_band_ranges_have_a_single_home`)
+    // already scan for `hse-core`, extended here to cover `wasm-ui` and `fuzz`
+    // too.
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     collect_rs_files(&manifest_dir.join("src"), &mut files);
+    collect_rs_files(&manifest_dir.join("hse-core/src"), &mut files);
+    collect_rs_files(&manifest_dir.join("wasm-ui/src"), &mut files);
+    collect_rs_files(&manifest_dir.join("fuzz/fuzz_targets"), &mut files);
     let outside: Vec<String> = files
         .iter()
         .filter(|f| {
