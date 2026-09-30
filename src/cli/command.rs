@@ -320,7 +320,7 @@ pub enum Command {
         action: BsiAction,
     },
     /// MITRE ATT&CK views over HSE's versioned `core::attack` layer (Enterprise
-    /// v17.1). HSE honestly claims coverage of one tactic — Reconnaissance
+    /// v19.2). HSE honestly claims coverage of one tactic — Reconnaissance
     /// (TA0043) — and every covered technique resolves to the modules that are
     /// its evidence. Sub-verbs: `status`, `coverage`, `gaps`, `navigator`.
     Attack {

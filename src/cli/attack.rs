@@ -1,5 +1,5 @@
 //! `hse attack <verb>` — MITRE ATT&CK views over HSE's existing, versioned
-//! [`core::attack`](crate::core::attack) layer (Enterprise v17.1).
+//! [`core::attack`](crate::core::attack) layer (Enterprise v19.2).
 //!
 //! HSE is a passive, authorised OSINT collector, so it honestly claims coverage
 //! of exactly ONE tactic — Reconnaissance (TA0043). Every "covered" technique
