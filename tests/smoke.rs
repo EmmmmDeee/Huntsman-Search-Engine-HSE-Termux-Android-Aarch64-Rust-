@@ -1686,7 +1686,8 @@ fn platform_static_attack_envelope_is_pinned() {
     // explicitly rather than drifting in silently. Two honest families:
     //   • active-solicitation / closed-source intel a passive OSINT collector
     //     never performs: the whole T1598 phishing family + T1597 (buying org
-    //     intel from a vendor);
+    //     intel from a vendor) + T1681 (searching threat-vendor data for one's
+    //     own campaign) + T1682 (querying public AI services);
     //   • parent techniques whose *sub*-techniques HSE does map but the umbrella
     //     itself is not directly claimed (T1590), plus specific sub-techniques
     //     out of scope (network trust deps, business tempo, device firmware /
@@ -1711,6 +1712,8 @@ fn platform_static_attack_envelope_is_pinned() {
         "T1598.002", // Spearphishing Attachment
         "T1598.003", // Spearphishing Link
         "T1598.004", // Spearphishing Voice
+        "T1681", // Search Threat Vendor Data (own-campaign intel; not victim targeting)
+        "T1682", // Query Public AI Services
     ];
     assert_eq!(
         gaps,
