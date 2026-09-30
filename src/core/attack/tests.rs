@@ -71,14 +71,14 @@ use super::*;
 
     #[test]
     fn tactics_are_the_complete_enterprise_matrix() {
-        // All 14 current MITRE ATT&CK Enterprise tactics, sorted and unique.
+        // All 15 current MITRE ATT&CK Enterprise tactics, sorted and unique.
         #[rustfmt::skip]
         const FULL: &[(&str, &str)] = &[
             ("TA0001", "Initial Access"),
             ("TA0002", "Execution"),
             ("TA0003", "Persistence"),
             ("TA0004", "Privilege Escalation"),
-            ("TA0005", "Defense Evasion"),
+            ("TA0005", "Stealth"),
             ("TA0006", "Credential Access"),
             ("TA0007", "Discovery"),
             ("TA0008", "Lateral Movement"),
@@ -88,6 +88,7 @@ use super::*;
             ("TA0040", "Impact"),
             ("TA0042", "Resource Development"),
             ("TA0043", "Reconnaissance"),
+            ("TA0112", "Defense Impairment"),
         ];
         let have: std::collections::BTreeMap<&str, &str> =
             TACTICS.iter().map(|t| (t.id, t.name)).collect();
@@ -108,7 +109,7 @@ use super::*;
 
     #[test]
     fn catalogue_is_substantial_and_multi_tactic() {
-        // A sanity floor: the real v17.1 Enterprise matrix is ~680 techniques
+        // A sanity floor: the real v19.2 Enterprise matrix is ~697 techniques
         // across all tactics. This guards against a truncated regeneration that
         // silently drops the framework back to a single tactic.
         assert!(
@@ -149,6 +150,7 @@ use super::*;
             "T1596", "T1596.001", "T1596.002", "T1596.003", "T1596.004", "T1596.005",
             "T1597", "T1597.001", "T1597.002",
             "T1598", "T1598.001", "T1598.002", "T1598.003", "T1598.004",
+            "T1681", "T1682",
         ];
         let have: std::collections::BTreeSet<&str> =
             reconnaissance().iter().map(|t| t.id).collect();

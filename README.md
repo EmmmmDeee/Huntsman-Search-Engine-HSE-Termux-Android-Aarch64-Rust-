@@ -423,7 +423,7 @@ respectively.
 ### MITRE ATT&CK alignment (in the data, not a side report)
 
 The tool carries the **complete** MITRE ATT&CK Enterprise matrix as reference
-vocabulary — all 14 tactics and every current technique/sub-technique (v17.1),
+vocabulary — all 15 tactics and every current technique/sub-technique (v19.2),
 as pure static data (`src/core/attack/`), so any `Tnnnn[.nnn]` id the tool emits
 resolves to its canonical name and owning tactic. But HSE only *claims coverage*
 of the one tactic it actually performs: **Reconnaissance** (TA0043). Holding the

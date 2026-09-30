@@ -8,6 +8,8 @@ All notable changes to this project are documented here. Format per [Keep a Chan
 
 ### Changed
 
+- The ATT&CK reference catalogue is regenerated from the official MITRE/CTI `ATT&CK-v19.2` Enterprise STIX bundle (SHA-256 `f7eaf37fe53b50404084fe1fe67237278f7317e61c11ad550295722d13ede259`). Navigator layers now declare attack version `19`. TA0005 is Stealth; Defense Impairment is TA0112; Reconnaissance gains T1681 and T1682 as named gaps until a module actually performs them (REQ-ATTACK-001).
+
 - `signal_radar` no longer carries its own copy of the Wi-Fi and Bluetooth reading rules; it calls the HSE BLE Radar (`bleradar-core::sweep`), now pinned to the radar's merged `main`. The placeholder-BSSID list, the RSSI reliability tiers, the 802.11 channel and the proximity band each have one authority, and a positive (corrupt) RSSI no longer claims the immediate proximity band. A hyphenated placeholder BSSID and a BSSID that is not a MAC are dropped like the colon-form placeholder. `docs/REPOSITORY_BOUNDARY.md` states what each repository owns and the one seam between them, and `tests/architecture.rs` enforces it (REQ-BOUNDARY-001).
 
 ### Fixed
