@@ -20,6 +20,7 @@ pub mod asic_director;
 pub mod asic_persons;
 pub mod au_business_id;
 pub mod au_geo;
+pub mod au_news_search;
 pub mod au_rdap;
 pub mod au_unclaimed;
 pub mod auspost;
@@ -199,6 +200,7 @@ pub mod structured_id;
 pub mod subdomain_center;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
+pub mod telegram_channel;
 // Shared Termux sensor-tool output contract (blank vs unparseable) — a
 // `pub(crate)` HELPER (no `Module` impl), consumed by signal_radar,
 // device_sensors, wifi_intel and cell_intel so the rule distinguishing "the
@@ -490,6 +492,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(bluesky_user::BlueskyUser),
             Arc::new(plc_directory::PlcDirectory),
             Arc::new(mastodon_user::MastodonUser),
+            Arc::new(telegram_channel::TelegramChannel),
             Arc::new(bitcoin::Bitcoin),
             Arc::new(gitlab_user::GitlabUser),
             Arc::new(gitea_user::GiteaUser),
@@ -609,6 +612,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(hlr_cnam::HlrCnam),
             Arc::new(netlas::Netlas),
             Arc::new(trove_au::TroveAu),
+            Arc::new(au_news_search::AuNewsSearch),
             // Genealogy / vital records / archives (live-verified wire formats).
             Arc::new(wikitree::WikiTree),
             Arc::new(openarch::OpenArch),

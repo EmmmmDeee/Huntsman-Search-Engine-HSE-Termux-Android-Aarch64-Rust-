@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **194 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **196 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -196,7 +196,7 @@ single-instance constraint (local SQLite — do not scale replicas above 1).
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 194 modules
+hse modules                                                 # list all 196 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse keys status                                             # multi-key pool: what's loaded, per source
@@ -365,9 +365,9 @@ HSE's engine.
 | Seed | Flag | Example | Modules |
 |------|------|---------|---------|
 | Email | `--kind email` | `user@example.com` | 44 |
-| Username | `--kind username` | `johndoe` | 50 |
+| Username | `--kind username` | `johndoe` | 51 |
 | Phone | `--kind phone` | `+61400000000` | 17 |
-| Full Name | `--kind name` | `Jordan Leigh Meyers` | 27 |
+| Full Name | `--kind name` | `Jordan Leigh Meyers` | 28 |
 | IP Address | `--kind ip` | `1.1.1.1` | 41 |
 | Domain | `--kind domain` | `example.com` | 61 |
 | ASN | `--kind asn` | `AS13335` | 3 |
@@ -375,7 +375,7 @@ HSE's engine.
 | Coordinates | `--kind coords` | `-27.47,153.02` | 18 |
 | Address | `--kind address` | `Nundah, QLD 4012` | 5 |
 | URL | `--kind url` | `https://example.com/page` | 25 |
-| Organisation | `--kind org` | `ACME Pty Ltd` | 26 |
+| Organisation | `--kind org` | `ACME Pty Ltd` | 27 |
 | ABN/ACN | `--kind abn` | `51824753556` | 6 |
 | MAC Address | `--kind mac` | `AA:BB:CC:DD:EE:FF` | 10 |
 | Crypto Address | `--kind crypto` | `bc1q…` | 5 |
@@ -391,7 +391,7 @@ respectively.
 
 ---
 
-## Module Overview (194 modules — 145 free, 49 key-gated/paid)
+## Module Overview (196 modules — 147 free, 49 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
