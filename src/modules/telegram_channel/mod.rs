@@ -4,17 +4,19 @@
 //! server-rendered preview of a public channel's recent posts, meant for
 //! browsers without the app. No key, no login, no rate-limit header exposed.
 //!
-//! Live-verified 2026-09-30 (the shared client follows redirects, guarded
-//! against private-IP hops by `util::http::ssrf`):
+//! Live-verified 2026-09-30:
 //!   - a real, preview-enabled channel (`t.me/s/durov`) answers 200 on the
 //!     `/s/` path itself, body containing the `tgme_channel_info` marker,
 //!     `<meta property="og:title|og:description|og:image">`, and
 //!     `<div class="tgme_header_counter">N subscribers</div>`;
 //!   - a channel that exists but has disabled the web preview (or requires
-//!     the app) 302s to `https://t.me/{handle}`, an "open in app" page with
-//!     no `tgme_channel_info` marker;
-//!   - a handle nobody owns 302s through to `https://telegram.org/`, the
-//!     generic marketing page — also no marker.
+//!     the app) 302s to `https://t.me/{handle}`, a same-site "open in app"
+//!     page the shared client follows (`util::http::ssrf::redirect_verdict`),
+//!     with no `tgme_channel_info` marker;
+//!   - a handle nobody owns 302s to `https://telegram.org/` — a *different*
+//!     registrable domain, so the shared client's cross-site redirect guard
+//!     stops there and hands back the 3xx itself; recognised explicitly (see
+//!     `process` below) rather than reaching `ok_or_absent` as an error.
 //!
 //! The last two are indistinguishable from here (Telegram does not leak
 //! existence through the redirect target), so both are treated identically:
@@ -22,12 +24,20 @@
 //! redirect would be a false negative for the disabled-preview case; the
 //! marker is the only affirmative signal this module trusts.
 //!
+//! The channel title is kept only as evidence on the confirmed `Username`,
+//! never promoted to a standalone `Person`: unlike a developer-profile
+//! module's self-reported real-name field (`profile_kit::person_from_name`'s
+//! usual caller), a Telegram channel title is written by whoever administers
+//! it and is routinely an organisation or brand ("BBC News", "Example
+//! Channel") — no signal on this page tells such a title apart from an
+//! individual's own channel (`durov` is a real example of the latter). A
+//! promoted `Person` here would be a false identity pivot with nothing behind
+//! it; the title stays legible in evidence without asserting it names a
+//! person.
+//!
 //! ATT&CK: T1593.001 Search Open Websites/Domains (social platform
 //! reconnaissance, the same technique `mastodon_user` declares for the same
-//! shape); T1589.003 when the channel title reads as a real person's name
-//! (Telegram lets an individual's account behave like a broadcast channel —
-//! `durov` is exactly this); T1589.002 for an email surfaced in the channel
-//! description.
+//! shape); T1589.002 for an email surfaced in the channel description.
 
 #[cfg(test)]
 mod tests;
@@ -77,16 +87,11 @@ impl Module for TelegramChannel {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1593.001", "T1589.002", "T1589.003"]
+        &["T1593.001", "T1589.002"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[
-            EntityKind::Username,
-            EntityKind::Person,
-            EntityKind::Url,
-            EntityKind::Email,
-        ];
+        const KINDS: &[EntityKind] = &[EntityKind::Username, EntityKind::Url, EntityKind::Email];
         KINDS
     }
 
@@ -106,6 +111,30 @@ impl Module for TelegramChannel {
 
         let url = format!("https://t.me/s/{handle}");
         let resp = ctx.http.get(&url).send_tagged(SRC).await?;
+
+        // A handle nobody owns 302s to `https://telegram.org/` — a different
+        // registrable domain than `t.me`, so the shared client's cross-site
+        // redirect guard (`util::http::ssrf::redirect_verdict`) stops at the
+        // 3xx and hands back the redirect response itself rather than
+        // following it (by design: following would replay this request's
+        // headers onto a site the caller never chose). Recognise exactly
+        // that documented redirect as "no confirmed preview" before
+        // `ok_or_absent` ever sees the status — it treats any non-2xx,
+        // non-`absent` status as an error, which would otherwise turn every
+        // unowned handle into a module error instead of the promised empty
+        // result. Any other 3xx (an unexpected destination) stays a visible
+        // error rather than being silently swallowed alongside it.
+        if resp.status().is_redirection() {
+            let location = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok());
+            if redirects_to_telegram_org(location) {
+                return Ok(ModuleResult::new());
+            }
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
+        }
+
         let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
             return Ok(ModuleResult::new());
         };
@@ -162,17 +191,10 @@ fn build_entities(handle: &str, body: &str, scan_id: &str) -> Vec<Entity> {
     ));
     result.push(url_e);
 
-    if let Some(ref name) = title
-        && let Some(mut p) = profile_kit::person_from_name(name, confidence::MEDIUM_PLUS, scan_id)
-    {
-        p.tag("telegram");
-        p.tag("derived");
-        p.add_evidence(
-            Evidence::new(SRC, format!("Telegram channel title for '@{handle}'"))
-                .with_attr("channel_url", &channel_url),
-        );
-        result.push(p);
-    }
+    // No `Person` is minted from `title` here — see the module doc for why a
+    // channel title (unlike a profile module's self-reported real name) is
+    // not reliable evidence of an individual. It stays visible via the
+    // `title` attribute on the Username evidence above.
 
     if let Some(ref desc) = description {
         for mut e in profile_kit::bio_emails(desc, 0.68, scan_id) {
@@ -189,15 +211,26 @@ fn build_entities(handle: &str, body: &str, scan_id: &str) -> Vec<Entity> {
         }
         for link in crate::util::extract::urls(desc) {
             let link = link.as_str();
-            if crate::util::url_util::host_from_url(link).as_deref() == Some("t.me") {
+            if is_own_channel_link(link, handle) {
                 continue;
             }
+            let is_telegram_pivot =
+                crate::util::url_util::host_from_url(link).as_deref() == Some("t.me");
             let mut le = Entity::new(EntityKind::Url, link, confidence::MEDIUM_SOLID, scan_id);
             le.tag("telegram");
+            if is_telegram_pivot {
+                le.tag("telegram-pivot");
+            }
             le.add_evidence(
                 Evidence::new(
                     SRC,
-                    format!("Link in Telegram channel description of '@{handle}'"),
+                    if is_telegram_pivot {
+                        format!(
+                            "Link to another Telegram channel/group in description of '@{handle}'"
+                        )
+                    } else {
+                        format!("Link in Telegram channel description of '@{handle}'")
+                    },
                 )
                 .with_attr("channel_url", &channel_url),
             );
@@ -207,6 +240,53 @@ fn build_entities(handle: &str, body: &str, scan_id: &str) -> Vec<Entity> {
 
     crate::core::entity::dedup_merge_entities(&mut result.entities);
     result.entities
+}
+
+/// True when a redirect's `Location` header points at `https://telegram.org/`
+/// (any path) — the documented destination for a handle nobody owns. `None`
+/// (no header, or one that fails to parse as a URL) is never treated as a
+/// match, so a malformed or absent `Location` on an otherwise-3xx response
+/// still surfaces as a visible error rather than being read as "absent".
+fn redirects_to_telegram_org(location: Option<&str>) -> bool {
+    location
+        .and_then(|l| url::Url::parse(l).ok())
+        .is_some_and(|u| {
+            u.host_str()
+                .is_some_and(|h| h.eq_ignore_ascii_case("telegram.org"))
+        })
+}
+
+/// True when `link` is this channel's own canonical `t.me/{handle}` address
+/// (including its `/s/{handle}` preview form, or a link to one specific post
+/// within it), the one already emitted as the canonical `Url` entity above.
+///
+/// Compared by host *and* first path segment, not by host alone: filtering
+/// every `t.me` link out of the description (the pre-fix behaviour) also
+/// discarded links to *other* Telegram channels and groups a bio mentions
+/// (`t.me/partnerchannel`) — exactly the discovery pivots this scan exists to
+/// surface, not noise to suppress.
+fn is_own_channel_link(link: &str, handle: &str) -> bool {
+    let Ok(url) = url::Url::parse(link) else {
+        return false;
+    };
+    if !url
+        .host_str()
+        .is_some_and(|h| h.eq_ignore_ascii_case("t.me"))
+    {
+        return false;
+    }
+    let mut segments = url
+        .path_segments()
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.is_empty());
+    let first = segments.next().unwrap_or("");
+    let first = if first.eq_ignore_ascii_case("s") {
+        segments.next().unwrap_or("")
+    } else {
+        first
+    };
+    first.eq_ignore_ascii_case(handle)
 }
 
 /// The `content="…"` value of the first `<meta property="{prop}" …>` element,

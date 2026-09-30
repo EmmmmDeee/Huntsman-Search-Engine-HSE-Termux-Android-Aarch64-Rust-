@@ -171,7 +171,28 @@ fn build_entities(kind: TargetKind, seed: &str, items: &[NewsItem], scan_id: &st
         return result;
     }
 
-    let any_relevant = items.iter().any(|i| item_is_relevant(i, seed));
+    // Validate and dedupe every parsed item's link, in document order,
+    // *before* applying the item cap — capping the raw list first would let
+    // an early run of invalid or repeated links silently push out a later
+    // valid, distinct article, and would let an item beyond the cap (with no
+    // URL entity ever emitted for it) still raise the seed's own confidence
+    // below if its headline happened to name the seed.
+    let mut seen_urls = std::collections::HashSet::new();
+    let eligible: Vec<&NewsItem> = items
+        .iter()
+        .filter(|item| {
+            !item.link.is_empty()
+                && crate::util::url_util::is_absolute_http_url(&item.link)
+                && seen_urls.insert(item.link.clone())
+        })
+        .collect();
+    let emitted: Vec<&NewsItem> = eligible.iter().copied().take(MAX_ITEMS).collect();
+    let truncated = eligible.len().saturating_sub(emitted.len());
+
+    // Relevance and confidence are grounded in the emitted set: an item with
+    // no supporting URL entity — filtered out above, or past the cap — must
+    // never itself be the reason the seed's confidence rises.
+    let any_relevant = emitted.iter().any(|i| item_is_relevant(i, seed));
     let headline_kind = match kind {
         TargetKind::Organisation => EntityKind::Organisation,
         _ => EntityKind::Person,
@@ -190,12 +211,21 @@ fn build_entities(kind: TargetKind, seed: &str, items: &[NewsItem], scan_id: &st
     }
     let mut ev = Evidence::new(
         SRC,
-        format!(
-            "Google News (AU edition): {} article(s) found for \"{seed}\"",
-            items.len()
-        ),
+        if truncated > 0 {
+            format!(
+                "Google News (AU edition): {} article(s) found for \"{seed}\" \
+                 ({} shown, {truncated} more truncated)",
+                eligible.len(),
+                emitted.len()
+            )
+        } else {
+            format!(
+                "Google News (AU edition): {} article(s) found for \"{seed}\"",
+                emitted.len()
+            )
+        },
     );
-    for item in items.iter().take(5) {
+    for item in emitted.iter().take(5) {
         if let Some(d) = &item.pub_date {
             ev = ev.with_attr("article", format!("{d}: {}", item.headline()));
         } else {
@@ -213,14 +243,7 @@ fn build_entities(kind: TargetKind, seed: &str, items: &[NewsItem], scan_id: &st
     headline.add_evidence(ev);
     result.push(headline);
 
-    let mut seen_urls = std::collections::HashSet::new();
-    for item in items.iter().take(MAX_ITEMS) {
-        if item.link.is_empty()
-            || !crate::util::url_util::is_absolute_http_url(&item.link)
-            || !seen_urls.insert(item.link.clone())
-        {
-            continue;
-        }
+    for item in emitted {
         let relevant = item_is_relevant(item, seed);
         let url_conf = if relevant {
             confidence::MEDIUM_HIGH

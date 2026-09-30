@@ -145,7 +145,20 @@ pub(super) fn parse_scan(
 
         // The per-sighting record beside the entity: the graph flattens the
         // reading away, the sighting keeps it (`core::rf`, REQ-RADAR-001).
-        let mut sighting = RfSighting::new(&ap.bssid, RadioKind::Wifi, RfSource::WifiRadar);
+        //
+        // Keyed by the radar's own `sighting_key`, not the scan's raw
+        // spelling: `RfSighting::network_id` is only canonicalised (lowercase,
+        // colon-separated) when it already looks like a colon-separated MAC
+        // (`canonical_network_id`/`is_mac`), so a hyphen-separated address —
+        // one `is_real_device_address` above already accepted as real — would
+        // otherwise carry a different `network_id` (and no resolvable `oui()`)
+        // than the same device seen colon-separated elsewhere. The observed
+        // spelling still reaches evidence via `bssid` above.
+        let mut sighting = RfSighting::new(
+            &bleradar_core::sighting_key(&ap.bssid).unwrap_or_else(|| ap.bssid.clone()),
+            RadioKind::Wifi,
+            RfSource::WifiRadar,
+        );
         sighting.name = ssid.map(str::to_string);
         sighting.signal_dbm = ap.rssi.map(|v| v as f64);
         sighting.observed_epoch = observed_epoch;

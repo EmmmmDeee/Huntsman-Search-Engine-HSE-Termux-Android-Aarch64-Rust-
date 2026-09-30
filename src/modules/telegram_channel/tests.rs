@@ -32,17 +32,39 @@ fn builds_username_and_url_from_a_confirmed_channel() {
     assert!(url.is_some(), "must emit the canonical channel URL");
 }
 
+/// A channel title is never promoted to a `Person`, even a real-name-shaped
+/// one like Pavel Durov's own channel: unlike a profile module's
+/// self-reported real-name field, a channel title is set by whoever
+/// administers it and is routinely an organisation ("BBC News", "Example
+/// Channel" — the latter literally this test file's own brand fixture), so
+/// nothing on this page distinguishes an individual's channel from one. The
+/// title still reaches the confirmed Username's own evidence.
 #[test]
-fn emits_person_from_a_multi_word_channel_title() {
+fn does_not_promote_the_channel_title_to_a_person() {
     let html = preview_html("Pavel Durov", "Founder of Telegram.", "10.6M subscribers");
     let ents = build_entities("durov", &html, "scan-tg-002");
-    let p = ents.iter().find(|e| e.kind == EntityKind::Person);
-    assert!(p.is_some(), "a real-name-shaped title must become a Person");
-    assert_eq!(p.expect("checked").value, "Pavel Durov");
+    assert!(
+        !ents.iter().any(|e| e.kind == EntityKind::Person),
+        "a channel title, however real-name-shaped, must never become a Person"
+    );
+    let u = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("checked");
+    assert_eq!(
+        u.evidence
+            .first()
+            .expect("checked")
+            .attributes
+            .get("title")
+            .map(String::as_str),
+        Some("Pavel Durov"),
+        "the title stays visible as evidence, just not as an inferred identity"
+    );
 }
 
 #[test]
-fn a_single_word_brand_title_does_not_become_a_person() {
+fn a_brand_title_does_not_become_a_person() {
     let html = preview_html(
         "TechCrunch",
         "Startup and technology news.",
@@ -51,7 +73,7 @@ fn a_single_word_brand_title_does_not_become_a_person() {
     let ents = build_entities("techcrunch", &html, "scan-tg-003");
     assert!(
         !ents.iter().any(|e| e.kind == EntityKind::Person),
-        "a single-token brand name must not be promoted to a Person"
+        "a brand name must not be promoted to a Person"
     );
 }
 
@@ -67,6 +89,36 @@ fn extracts_email_from_channel_description() {
         ents.iter()
             .any(|e| e.kind == EntityKind::Email && e.value == "press@example.com"),
         "must extract an email mentioned in the channel description"
+    );
+}
+
+/// Only the channel's *own* `t.me` link is suppressed; a link to a different
+/// Telegram channel or group mentioned in the bio is a discovery pivot and
+/// must be kept, tagged distinctly. Regression for the review finding on the
+/// pre-fix code, which filtered out every `t.me` link by host alone.
+#[test]
+fn preserves_links_to_other_telegram_channels_as_pivots() {
+    let html = preview_html(
+        "Example Channel",
+        "Our partner channel is https://t.me/partnerchannel, and our own link is \
+         https://t.me/examplechan.",
+        "500 subscribers",
+    );
+    let ents = build_entities("examplechan", &html, "scan-tg-005b");
+    let pivot = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Url && e.value == "https://t.me/partnerchannel")
+        .expect("a link to a different Telegram channel must be kept as a pivot");
+    assert!(pivot.has_tag("telegram-pivot"));
+    // The channel's own link, in whatever form the description mentions it,
+    // still must not be duplicated.
+    let self_link_count = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Url && e.value.contains("t.me/examplechan"))
+        .count();
+    assert_eq!(
+        self_link_count, 1,
+        "the channel's own link appears exactly once"
     );
 }
 
@@ -138,6 +190,34 @@ fn extract_subscriber_count_reads_the_counter_div() {
         Some("10.6M subscribers".to_string())
     );
     assert_eq!(extract_subscriber_count("<div>no counter here</div>"), None);
+}
+
+#[test]
+fn redirects_to_telegram_org_matches_only_that_documented_destination() {
+    assert!(redirects_to_telegram_org(Some("https://telegram.org/")));
+    assert!(redirects_to_telegram_org(Some(
+        "https://telegram.org/about"
+    )));
+    assert!(redirects_to_telegram_org(Some("https://TELEGRAM.ORG/")));
+    assert!(!redirects_to_telegram_org(Some("https://t.me/somehandle")));
+    assert!(!redirects_to_telegram_org(Some(
+        "https://evil-telegram.org/"
+    )));
+    assert!(!redirects_to_telegram_org(Some("not a url")));
+    assert!(!redirects_to_telegram_org(None));
+}
+
+#[test]
+fn is_own_channel_link_matches_the_handle_in_either_url_form() {
+    assert!(is_own_channel_link("https://t.me/durov", "durov"));
+    assert!(is_own_channel_link("https://t.me/DUROV", "durov"));
+    assert!(is_own_channel_link("https://t.me/s/durov", "durov"));
+    // A link to one specific post within the own channel is still the own
+    // channel, not an external pivot.
+    assert!(is_own_channel_link("https://t.me/durov/12345", "durov"));
+    assert!(!is_own_channel_link("https://t.me/partnerchannel", "durov"));
+    assert!(!is_own_channel_link("https://example.org/durov", "durov"));
+    assert!(!is_own_channel_link("not a url", "durov"));
 }
 
 #[test]

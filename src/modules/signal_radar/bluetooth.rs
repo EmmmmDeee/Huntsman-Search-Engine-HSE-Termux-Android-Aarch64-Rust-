@@ -101,7 +101,17 @@ pub(super) fn parse_bt_json(
         } else {
             RadioKind::BtClassic
         };
-        let mut sighting = RfSighting::new(&dev.address, radio, RfSource::BluetoothRadar);
+        // Keyed by the radar's own `sighting_key`, not the scan's raw
+        // spelling — see the identical note in `wifi.rs`'s sighting
+        // construction: a hyphen-separated address would otherwise get a
+        // `network_id` (and OUI) distinct from the same device seen
+        // colon-separated elsewhere. The observed spelling still reaches
+        // evidence via `address` above.
+        let mut sighting = RfSighting::new(
+            &bleradar_core::sighting_key(&dev.address).unwrap_or_else(|| dev.address.clone()),
+            radio,
+            RfSource::BluetoothRadar,
+        );
         sighting.name = dev
             .name
             .as_deref()
