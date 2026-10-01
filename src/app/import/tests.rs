@@ -3466,7 +3466,7 @@ async fn seeknow_bulk_keeps_source_and_builds_search_bodies() {
         "breaches": 2,
         "rows": [{
           "_source": "SeekNow • Snusbase",
-          "email": "ada2610@example.com",
+          "email": "ada2610@proton.me",
           "hash": "00346D91DD87C74089F3BFA88E13DE8101000000",
           "name": "Ada Example",
           "birthdate": "1994-10-26 00:00:00.0",
@@ -3493,7 +3493,7 @@ async fn seeknow_bulk_keeps_source_and_builds_search_bodies() {
     assert_eq!(label, "seeknow-bulk");
     let values: Vec<String> = entities.iter().map(|e| e.value.clone()).collect();
     assert!(
-        values.iter().any(|v| v == "ada2610@example.com"),
+        values.iter().any(|v| v == "ada2610@proton.me"),
         "{values:?}"
     );
     assert!(values.iter().any(|v| v == "0400000000"), "{values:?}");
@@ -3508,7 +3508,7 @@ async fn seeknow_bulk_keeps_source_and_builds_search_bodies() {
     assert!(
         queries
             .iter()
-            .any(|q| q.query == "ada2610@example.com" && q.query_type == "email"),
+            .any(|q| q.query == "ada2610@proton.me" && q.query_type == "email"),
         "{queries:?}"
     );
     assert!(
