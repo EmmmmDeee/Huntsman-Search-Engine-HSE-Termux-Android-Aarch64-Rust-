@@ -10,6 +10,7 @@ pub mod breach_consensus;
 pub mod breach_platforms;
 pub mod breach_sweep;
 pub mod cancel;
+pub mod capability;
 pub mod classifier;
 pub mod classify_module;
 pub mod community;
