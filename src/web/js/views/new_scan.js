@@ -95,6 +95,7 @@ export async function renderNewScan(v){
           <option value="">Format: auto-detect</option>
           <option value="oathnet-html">oathnet-html</option>
           <option value="oathnet-json">oathnet-json</option>
+          <option value="seeknow-bulk">seeknow-bulk</option>
           <option value="combined-search">combined-search</option>
           <option value="dossier">dossier</option>
           <option value="stealerlogs">stealerlogs</option>

@@ -4,8 +4,8 @@
 //! `use super::*` (each parser is re-exported into the parent's scope).
 
 use super::{
-    ImportFormat, MAX_IMPORT_BYTES, cmd_import, deduplicate_by_uid, detect_import_format,
-    entities_from_upload, looks_like_dossier, parse_dossier, parse_oathnet_html,
+    cmd_import, deduplicate_by_uid, detect_import_format, entities_from_upload, looks_like_dossier,
+    parse_dossier, parse_oathnet_html, ImportFormat, MAX_IMPORT_BYTES,
 };
 
 #[test]
@@ -214,11 +214,9 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     assert_eq!(label, "oathnet-json");
 
     // Malformed JSON is a clean error, not a panic.
-    assert!(
-        entities_from_upload("{ not valid json", "s", None)
-            .await
-            .is_err()
-    );
+    assert!(entities_from_upload("{ not valid json", "s", None)
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -559,10 +557,9 @@ fn hse_csv_round_trips_kind_value_confidence_tags_and_evidence() {
     // The quoted summary with an internal comma survived the RFC-4180 reader.
     assert!(p.evidence.iter().any(|ev| ev.summary.contains("Carlton")));
     // The Other("au-postcode") kind round-trips.
-    assert!(
-        ents.iter()
-            .any(|e| e.kind == EntityKind::Other("au-postcode".into()) && e.value == "2000")
-    );
+    assert!(ents
+        .iter()
+        .any(|e| e.kind == EntityKind::Other("au-postcode".into()) && e.value == "2000"));
     assert!(ents.iter().any(|e| e.kind == EntityKind::Email));
 }
 
@@ -1063,7 +1060,7 @@ https://site.example/u,Sup3rSecret!,\"12 Smith St, Carlton VIC 3053\",0412 345 6
     assert!(has(EntityKind::Person, &|v| v == "Jordan Avery"));
     assert!(has(EntityKind::Credential, &|v| v == "Sup3rSecret!")); // plaintext
     assert!(has(EntityKind::Credential, &|v| v.starts_with("$2a$"))); // hash
-    // The quoted address (internal comma) parsed as ONE field.
+                                                                      // The quoted address (internal comma) parsed as ONE field.
     assert!(has(EntityKind::Address, &|v| v
         .to_ascii_lowercase()
         .contains("carlton")));
@@ -1356,10 +1353,9 @@ async fn upload_dispatcher_routes_seeknow_summary_to_dossier() {
         .await
         .expect("should succeed");
     assert_eq!(label, "dossier");
-    assert!(
-        ents.iter()
-            .any(|e| e.kind == EntityKind::Phone && e.value == "+61412345678")
-    );
+    assert!(ents
+        .iter()
+        .any(|e| e.kind == EntityKind::Phone && e.value == "+61412345678"));
 }
 
 #[test]
@@ -1469,10 +1465,9 @@ fn import_txt_parses_victim_section_in_normal_order() {
     // Happy path unaffected: INFECTED before OSINT still parses cleanly.
     let body = "=== INFECTED MACHINES ===\nIPs: 8.8.8.8\n=== OSINT ENRICHMENT ===\nMore: x\n";
     let (ents, _) = super::parse_oathnet_txt(body, "sid");
-    assert!(
-        ents.iter()
-            .any(|e| e.kind == EntityKind::IpAddress && e.value == "8.8.8.8")
-    );
+    assert!(ents
+        .iter()
+        .any(|e| e.kind == EntityKind::IpAddress && e.value == "8.8.8.8"));
 }
 
 #[test]
@@ -1829,11 +1824,10 @@ fn stealerlogs_parses_victims_creds_and_domains() {
         && e.has_tag("log-id")));
 
     // Every emitted entity is tagged as stealer-victim import data.
-    assert!(
-        ents.iter()
-            .filter(|e| e.kind == EntityKind::Username)
-            .all(|e| e.has_tag("stealer-victim"))
-    );
+    assert!(ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .all(|e| e.has_tag("stealer-victim")));
 }
 
 const STEALER_IPV4_MAPPED_DOMAIN: &str = "Module: Stealerlogs
@@ -1906,10 +1900,9 @@ async fn upload_dispatcher_routes_stealerlogs() {
         .await
         .expect("should succeed");
     assert_eq!(label, "stealerlogs");
-    assert!(
-        ents.iter()
-            .any(|e| e.kind == EntityKind::Credential && e.value == "Hunter2pass")
-    );
+    assert!(ents
+        .iter()
+        .any(|e| e.kind == EntityKind::Credential && e.value == "Hunter2pass"));
 }
 
 // ── OathNet SEARCH REPORT parser ──────────────────────────────────────────────
@@ -2056,10 +2049,9 @@ fn oathnet_report_parses_entries_and_osint_geolocation() {
             && e.value.contains("144.9631")),
         "the OSINT IP must geolocate to coordinates"
     );
-    assert!(
-        ents.iter()
-            .any(|e| e.kind == EntityKind::Address && e.value.contains("Melbourne"))
-    );
+    assert!(ents
+        .iter()
+        .any(|e| e.kind == EntityKind::Address && e.value.contains("Melbourne")));
 
     // Only the real entry counts as a breach record (the noise block emits a
     // Person-free record but still carries an identity-less... actually it has a
@@ -2083,10 +2075,9 @@ async fn upload_dispatcher_routes_oathnet_report() {
         .await
         .expect("should succeed");
     assert_eq!(label, "oathnet-report");
-    assert!(
-        ents.iter()
-            .any(|e| e.kind == EntityKind::Person && e.value == "Jordan Avery")
-    );
+    assert!(ents
+        .iter()
+        .any(|e| e.kind == EntityKind::Person && e.value == "Jordan Avery"));
     // The shared OSINT helper ran on the report path too.
     assert!(ents.iter().any(|e| e.kind == EntityKind::Coordinates));
 }
@@ -2279,11 +2270,9 @@ fn parse_combolist_quarantines_sentinels_and_recovers_a_mis_stored_email() {
     // ...but no Password entity is minted from a sentinel or a self-echo,
     assert!(!entities.iter().any(|e| e.kind == EntityKind::Password));
     // and a password field that is itself an email is recovered as its own lead.
-    assert!(
-        entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Email && e.value == "otherperson@outlook.com")
-    );
+    assert!(entities
+        .iter()
+        .any(|e| e.kind == EntityKind::Email && e.value == "otherperson@outlook.com"));
 }
 
 // Regression: the self-echo guard used to compare the secret against the RAW
@@ -2303,16 +2292,12 @@ fn parse_combolist_self_echo_guard_compares_the_normalised_identity() {
     let (entities, _stats) = parse_combolist(body, "s");
     // Both identities are still admitted, normalised (quote/sigil stripped,
     // case-folded) exactly as `Entity::new` would produce on its own.
-    assert!(
-        entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Username && e.value == "alice.tester")
-    );
-    assert!(
-        entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Username && e.value == "bob.tester")
-    );
+    assert!(entities
+        .iter()
+        .any(|e| e.kind == EntityKind::Username && e.value == "alice.tester"));
+    assert!(entities
+        .iter()
+        .any(|e| e.kind == EntityKind::Username && e.value == "bob.tester"));
     // ...but neither line mints a Password entity: the secret in each case
     // is just the identity's own normalised form echoed back, not a real
     // credential — a raw-vs-raw comparison would have missed this and
@@ -2328,16 +2313,12 @@ fn parse_combolist_self_echo_guard_compares_the_normalised_identity() {
 fn parse_combolist_admits_a_bare_username_identity() {
     let body = "judy_tester_99:hunter2000\n";
     let (entities, stats) = parse_combolist(body, "s");
-    assert!(
-        entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Username && e.value == "judy_tester_99")
-    );
-    assert!(
-        entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Password && e.value == "hunter2000")
-    );
+    assert!(entities
+        .iter()
+        .any(|e| e.kind == EntityKind::Username && e.value == "judy_tester_99"));
+    assert!(entities
+        .iter()
+        .any(|e| e.kind == EntityKind::Password && e.value == "hunter2000"));
     assert_eq!(stats.malformed_lines, 0);
 }
 
@@ -2359,16 +2340,12 @@ async fn upload_dispatcher_routes_raw_combolist() {
         .await
         .expect("should succeed");
     assert_eq!(label, "combolist");
-    assert!(
-        entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Email && e.value == "alice.tester@gmail.com")
-    );
-    assert!(
-        entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Password && e.value == "Sup3rSecret!")
-    );
+    assert!(entities
+        .iter()
+        .any(|e| e.kind == EntityKind::Email && e.value == "alice.tester@gmail.com"));
+    assert!(entities
+        .iter()
+        .any(|e| e.kind == EntityKind::Password && e.value == "Sup3rSecret!"));
 }
 
 // ── SQL-dump import ─────────────────────────────────────────────────────────
@@ -2384,7 +2361,8 @@ async fn upload_dispatcher_routes_raw_combolist() {
 
 use super::sql_dump::{looks_like_sql_dump, parse_sql_dump};
 
-const SQL_DUMP: &str = "INSERT INTO `users` (`id`, `email`, `username`, `password`, `full_name`) VALUES\n\
+const SQL_DUMP: &str =
+    "INSERT INTO `users` (`id`, `email`, `username`, `password`, `full_name`) VALUES\n\
     (1, 'sql.tester.alpha@gmail.com', 'sqltesteralpha', 'SynthPassword1!', 'Sql TesterAlpha'),\n\
     (2, 'sql.tester.beta@outlook.com', 'sqltesterbeta', 'SynthPassword2!', 'Sql TesterBeta');\n";
 
@@ -2493,10 +2471,9 @@ fn parse_sql_dump_recovers_an_email_held_in_the_username_column() {
     // A plain handle in the login column is still a Username (unchanged).
     let handle = "INSERT INTO `users` (`username`, `password`) VALUES ('dtester', 'pw12345');\n";
     let (ents, _) = parse_sql_dump(handle, "s");
-    assert!(
-        ents.iter()
-            .any(|e| e.kind == EntityKind::Username && e.value == "dtester")
-    );
+    assert!(ents
+        .iter()
+        .any(|e| e.kind == EntityKind::Username && e.value == "dtester"));
 }
 
 /// A real `mysqldump` breach table routinely carries phone / address / IP /
@@ -2624,16 +2601,12 @@ async fn upload_dispatcher_routes_sql_dump() {
         .await
         .expect("should succeed");
     assert_eq!(label, "sql-dump");
-    assert!(
-        entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Email && e.value == "sql.tester.alpha@gmail.com")
-    );
-    assert!(
-        entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Credential && e.value == "SynthPassword1!")
-    );
+    assert!(entities
+        .iter()
+        .any(|e| e.kind == EntityKind::Email && e.value == "sql.tester.alpha@gmail.com"));
+    assert!(entities
+        .iter()
+        .any(|e| e.kind == EntityKind::Credential && e.value == "SynthPassword1!"));
 }
 
 // ── Property tests (proptest) — no-panic contract for untrusted import ────────
@@ -3086,16 +3059,12 @@ fn parse_dehashed_csv_tolerates_synonym_column_names() {
     let canonical = "id,email,username,name,database_name,password,phone\n\
                       1,jordanavery@gmail.com,javery,Jordan Avery,ExampleBreach,Hunter2pass,+61412345678\n";
     let (canon_entities, _) = parse_dehashed_csv(canonical, "s");
-    assert!(
-        canon_entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Email && e.value == "jordanavery@gmail.com")
-    );
-    assert!(
-        canon_entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Phone && e.value == "+61412345678")
-    );
+    assert!(canon_entities
+        .iter()
+        .any(|e| e.kind == EntityKind::Email && e.value == "jordanavery@gmail.com"));
+    assert!(canon_entities
+        .iter()
+        .any(|e| e.kind == EntityKind::Phone && e.value == "+61412345678"));
 }
 
 /// The detector alone, independent of the parser: a row whose IDENTITY column
@@ -3189,7 +3158,7 @@ fn a_reimported_csv_export_ignores_the_place_columns() {
 #[test]
 fn a_reimported_coordinate_is_never_finer_than_its_export() {
     use crate::core::entity::{Entity, Evidence};
-    use crate::core::place::{FixGrain, assess};
+    use crate::core::place::{assess, FixGrain};
     let mut wifi = Entity::new(EntityKind::Coordinates, "-27.481234,153.012345", 0.8, "s");
     wifi.add_evidence(
         Evidence::new("beacondb", "beaconDB Wi-Fi position").with_attr("accuracy_m", "1500"),
@@ -3239,7 +3208,7 @@ fn a_reimported_coordinate_is_never_finer_than_its_export() {
 #[test]
 fn a_redacted_export_re_imports_at_its_exported_grade() {
     use crate::core::entity::{Entity, Evidence};
-    use crate::core::place::{FixGrain, assess, describe};
+    use crate::core::place::{assess, describe, FixGrain};
     let geocode = |value: &str| {
         let mut e = Entity::new(EntityKind::Coordinates, value, 0.7, "s");
         e.add_evidence(
@@ -3293,7 +3262,7 @@ fn a_redacted_export_re_imports_at_its_exported_grade() {
 #[test]
 fn a_country_signal_re_imports_as_the_country_with_no_radius() {
     use crate::core::entity::{Entity, Evidence};
-    use crate::core::place::{FixGrain, assess};
+    use crate::core::place::{assess, FixGrain};
     let mut e = Entity::new(EntityKind::Coordinates, "-41.2865,174.7762", 0.5, "s");
     for t in ["geoint", "phone-prefix", "coarse", "country:NZ"] {
         e.tag(t);
@@ -3328,7 +3297,7 @@ fn a_country_signal_re_imports_as_the_country_with_no_radius() {
 #[test]
 fn a_city_read_under_a_country_signal_re_imports_as_the_city() {
     use crate::core::entity::{Entity, Evidence};
-    use crate::core::place::{FixBasis, FixGrain, assess};
+    use crate::core::place::{assess, FixBasis, FixGrain};
     let with = |value: &str, tags: &[&str], records: Vec<Evidence>| {
         let mut e = Entity::new(EntityKind::Coordinates, value, 0.6, "s");
         for t in tags {
@@ -3444,6 +3413,74 @@ fn two_imports_started_in_one_second_own_two_scans() {
         assert_ne!(first, second, "{tag}: one scan id for two imports");
         for sid in [&first, &second] {
             assert!(sid.starts_with(&format!("import-{tag}-")), "{sid}");
+        }
+    }
+}
+
+/// SeekNow / LeakOSINT bulk download: `{ targets, results[].rows[]._source }`.
+/// Source and breach-site labels are stripped; identity fields are kept.
+#[tokio::test]
+async fn seeknow_bulk_strips_source_and_breach_sites() {
+    let body = r#"{
+      "id": "bulk-fixture",
+      "createdAt": "2026-10-01T06:55:27.103Z",
+      "format": "json",
+      "status": "done",
+      "targets": ["Ada Example"],
+      "results": [{
+        "target": "Ada Example",
+        "type": "username",
+        "total": 1,
+        "sources": 2,
+        "breaches": 2,
+        "rows": [{
+          "_source": "SeekNow • Snusbase",
+          "email": "ada2610@example.com",
+          "hash": "00346D91DD87C74089F3BFA88E13DE8101000000",
+          "name": "Ada Example",
+          "birthdate": "1994-10-26 00:00:00.0",
+          "username": "ada-example",
+          "phone": "0400000000",
+          "address": "1 Example Parade",
+          "suburb": "Redbank",
+          "stat": "QLD",
+          "postal_code": "4301",
+          "url": "https://example.com/in/ada-example",
+          "geolocation": "-27.60,152.87",
+          "title": "PeopleData",
+          "description": "Caylon Gardiner"
+        }]
+      }]
+    }"#;
+    assert_eq!(
+        detect_import_format("bulk.json", body),
+        ImportFormat::SeeknowBulk
+    );
+    let (entities, label) = entities_from_upload(body, "scan-bulk", None)
+        .await
+        .expect("bulk parse");
+    assert_eq!(label, "seeknow-bulk");
+    let values: Vec<String> = entities.iter().map(|e| e.value.clone()).collect();
+    assert!(
+        values.iter().any(|v| v == "ada2610@example.com"),
+        "{values:?}"
+    );
+    assert!(values.iter().any(|v| v == "0400000000"), "{values:?}");
+    assert!(values.iter().any(|v| v == "ada-example"), "{values:?}");
+    assert!(
+        values.iter().any(|v| v.contains("Example Parade")),
+        "{values:?}"
+    );
+    let blob = values.join("\n");
+    assert!(!blob.contains("Snusbase"), "{blob}");
+    assert!(!blob.contains("SeekNow"), "{blob}");
+    assert!(!blob.contains("PeopleData"), "{blob}");
+    assert!(!blob.contains("LeakOSINT"), "{blob}");
+    for e in &entities {
+        for ev in &e.evidence {
+            assert_eq!(ev.source, "import:seeknow-bulk");
+            assert!(!ev.summary.contains("Snusbase"), "{}", ev.summary);
+            assert!(!ev.summary.contains("•"), "{}", ev.summary);
         }
     }
 }

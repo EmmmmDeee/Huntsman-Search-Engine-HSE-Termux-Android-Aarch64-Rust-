@@ -25,6 +25,7 @@ mod json;
 mod kml;
 mod local;
 mod oathnet_report;
+mod seeknow_bulk;
 mod sql_dump;
 mod stealer;
 #[cfg(test)]
@@ -43,6 +44,7 @@ use csv::{
 use dossier::{cmd_import_dossier, parse_dossier};
 use html::{cmd_import_html, parse_oathnet_html};
 use json::{import_json_output, parse_oathnet_json};
+use seeknow_bulk::looks_like_seeknow_bulk;
 use local::cmd_import_local_dir;
 use oathnet_report::{cmd_import_oathnet_report, looks_like_oathnet_report, parse_oathnet_report};
 use sql_dump::{cmd_import_sql_dump, looks_like_sql_dump, parse_sql_dump};
@@ -120,6 +122,9 @@ pub async fn cmd_import(path: &str, output: &str, forced: Option<ImportFormat>) 
     };
     match format {
         ImportFormat::OathnetHtml => cmd_import_html(&body, output).await,
+        ImportFormat::SeeknowBulk => {
+            seeknow_bulk::cmd_import_seeknow_bulk(&body, path, output).await
+        }
         ImportFormat::OathnetJson => {
             let doc: serde_json::Value = serde_json::from_str(&body)
                 .map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
@@ -172,6 +177,10 @@ pub enum ImportFormat {
     OathnetHtml,
     /// An OathNet JSON export (a Combined Search JSON is recognised by its shape).
     OathnetJson,
+    /// A SeekNow / LeakOSINT bulk JSON download (`targets` + `results[].rows`,
+    /// each row carrying a `_source` breach-site label). Source and breach-site
+    /// labels are stripped on ingest.
+    SeeknowBulk,
     /// A Combined Search text export (numbered records with a source/db field and identity fields).
     CombinedSearch,
     /// A breach/dossier compilation (`Entry #N:` blocks and `EMAILS:`/`PASSWORDS:` lists).
@@ -212,6 +221,7 @@ impl ImportFormat {
         match self {
             Self::OathnetHtml => "oathnet-html",
             Self::OathnetJson => "oathnet-json",
+            Self::SeeknowBulk => "seeknow-bulk",
             Self::CombinedSearch => "combined-search",
             Self::Dossier => "dossier",
             Self::Stealerlogs => "stealerlogs",
@@ -271,6 +281,11 @@ pub(crate) fn detect_import_format(path: &str, body: &str) -> ImportFormat {
     // A JSON object before the text heuristics, so a JSON body can never be
     // mis-keyed by a `looks_like_*` substring match.
     if head.starts_with('{') {
+        // SeekNow bulk downloads are `{`-leading JSON but not an OathNet export.
+        // Route them before the OathNet parser, which would otherwise import nothing.
+        if looks_like_seeknow_bulk(head) {
+            return ImportFormat::SeeknowBulk;
+        }
         return ImportFormat::OathnetJson;
     }
     if looks_like_combined_search(body) {
@@ -368,6 +383,11 @@ pub(crate) async fn entities_from_upload(
     let label = format.label();
     let (mut entities, label) = match format {
         ImportFormat::OathnetHtml => (parse_oathnet_html(body, sid), label),
+        ImportFormat::SeeknowBulk => {
+            let doc: serde_json::Value = serde_json::from_str(body)
+                .map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
+            (seeknow_bulk::parse_seeknow_bulk(&doc, sid).0, label)
+        }
         ImportFormat::OathnetJson => {
             let doc: serde_json::Value = serde_json::from_str(body)
                 .map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
