@@ -651,6 +651,10 @@ static doc can.
 
 ---
 
+## Support
+
+If this project helps you, consider [sponsoring @EmmmmDeee on GitHub Sponsors](https://github.com/sponsors/EmmmmDeee). Sponsorship pays for maintenance, test infrastructure and the API keys behind new data sources.
+
 ## Licence
 
 **Proprietary — © 2026 Huntsman Search Engine. All rights reserved.** See
