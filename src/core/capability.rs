@@ -86,7 +86,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 /// Derived capability status for a defensive ATT&CK claim.
 ///
@@ -415,11 +415,7 @@ pub fn evidence_links_canonical_json(links: &CapabilityEvidenceLinks) -> String 
         }
     }
     fn bool_json(b: bool) -> &'static str {
-        if b {
-            "true"
-        } else {
-            "false"
-        }
+        if b { "true" } else { "false" }
     }
 
     format!(
@@ -928,7 +924,10 @@ impl CapabilityLedger {
                 let status = derive_status(row.scope, &row.links);
                 let comment = format!(
                     "{} | method={} | {} | status={} | capability-ledger (not coverage)",
-                    row.name, row.method_id, row.rust_component, status.as_str()
+                    row.name,
+                    row.method_id,
+                    row.rust_component,
+                    status.as_str()
                 );
                 json!({
                     "techniqueID": tid,
@@ -1005,10 +1004,7 @@ pub fn geoint_t1614_evidence_links_v1() -> CapabilityEvidenceLinks {
     const T_HAV_HASH: &str = "util::geohash::tests::haversine_known_distance_sydney_to_melbourne";
 
     CapabilityEvidenceLinks {
-        source_ids: vec![
-            "src-util-geo".into(),
-            "src-util-geohash-distance".into(),
-        ],
+        source_ids: vec!["src-util-geo".into(), "src-util-geohash-distance".into()],
         input_ids: vec![
             "in-brisbane-coord-string:-27.4766,153.0166".into(),
             "in-sydney-melbourne-pair:(-33.8688,151.2093)->(-37.8136,144.9631)".into(),
@@ -1159,12 +1155,9 @@ pub fn identity_t1589_evidence_links_v1() -> CapabilityEvidenceLinks {
 /// both claims should be Verified (`verified_count == 2`).
 ///
 /// Returns `Ok(())` when `T1589` is present.
-pub fn apply_identity_evidence_v1(
-    ledger: &mut CapabilityLedger,
-) -> Result<(), CapabilityError> {
+pub fn apply_identity_evidence_v1(ledger: &mut CapabilityLedger) -> Result<(), CapabilityError> {
     ledger.set_links("T1589", identity_t1589_evidence_links_v1())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1214,14 +1207,7 @@ mod tests {
         let ledger = CapabilityLedger::seed_v0();
         assert_eq!(ledger.verified_count(), 0);
 
-        let in_scope = [
-            "T1590",
-            "T1596.003",
-            "T1040",
-            "T1016.002",
-            "T1614",
-            "T1589",
-        ];
+        let in_scope = ["T1590", "T1596.003", "T1040", "T1016.002", "T1614", "T1589"];
         for tid in in_scope {
             assert_eq!(
                 ledger.status_of(tid),
@@ -1231,8 +1217,7 @@ mod tests {
         }
 
         let na = [
-            "T1566", "T1598", "T1003", "T1059", "T1021", "T1486", "T1071", "T1046",
-            "T1555",
+            "T1566", "T1598", "T1003", "T1059", "T1021", "T1486", "T1071", "T1046", "T1555",
         ];
         for tid in na {
             assert_eq!(
@@ -1252,10 +1237,7 @@ mod tests {
     fn seed_rows_have_method_id() {
         let ledger = CapabilityLedger::seed_v0();
         for (tid, row) in ledger.iter() {
-            assert!(
-                !row.method_id.is_empty(),
-                "{tid} missing method_id"
-            );
+            assert!(!row.method_id.is_empty(), "{tid} missing method_id");
         }
         assert_eq!(
             ledger.get("T1596.003").map(|r| r.method_id.as_str()),
@@ -1339,8 +1321,7 @@ mod tests {
             .expect("invalidate");
         let after = ledger.status_of("T1040");
         assert!(
-            after == Some(CapabilityStatus::Unverified)
-                || after == Some(CapabilityStatus::Partial),
+            after == Some(CapabilityStatus::Unverified) || after == Some(CapabilityStatus::Partial),
             "expected Unverified or Partial after invalidate, got {after:?}"
         );
         assert_ne!(after, Some(CapabilityStatus::Verified));
@@ -1453,8 +1434,21 @@ mod tests {
             .map(|t| t["techniqueID"].as_str().unwrap())
             .collect();
         for tid in [
-            "T1003", "T1016.002", "T1021", "T1040", "T1046", "T1059", "T1071", "T1486", "T1555",
-            "T1566", "T1589", "T1590", "T1596.003", "T1598", "T1614",
+            "T1003",
+            "T1016.002",
+            "T1021",
+            "T1040",
+            "T1046",
+            "T1059",
+            "T1071",
+            "T1486",
+            "T1555",
+            "T1566",
+            "T1589",
+            "T1590",
+            "T1596.003",
+            "T1598",
+            "T1614",
         ] {
             assert!(ids.contains(&tid), "missing {tid}");
         }
@@ -1524,7 +1518,6 @@ mod tests {
         assert_eq!(tech["color"], "#fec44f");
     }
 
-
     #[test]
     fn verified_requires_independent_corroboration_level() {
         let mut links = complete_links();
@@ -1567,7 +1560,7 @@ mod tests {
     /// Smoke: coverage Navigator path still resolves (Coverage ≠ Verified).
     #[test]
     fn coverage_navigator_path_untouched() {
-        use crate::core::attack::{coverage, navigator_layer, ATTACK_VERSION};
+        use crate::core::attack::{ATTACK_VERSION, coverage, navigator_layer};
         use std::collections::BTreeMap;
 
         // Empty exercised map → honest zero coverage; proves attack::navigator_layer
@@ -1599,9 +1592,17 @@ mod tests {
     fn geoint_evidence_links_v1_are_mandatory_complete() {
         let links = geoint_t1614_evidence_links_v1();
         assert!(links.mandatory_complete());
-        assert_eq!(links.evidence_level, EvidenceLevel::IndependentCorroboration);
+        assert_eq!(
+            links.evidence_level,
+            EvidenceLevel::IndependentCorroboration
+        );
         assert!(links.corroboration_ids.len() >= 2);
-        assert!(links.test_ids.iter().all(|t| links.passed_test_ids.contains(t)));
+        assert!(
+            links
+                .test_ids
+                .iter()
+                .all(|t| links.passed_test_ids.contains(t))
+        );
         assert!(links.failed_test_ids.is_empty());
         // Cited tests are real #[test] path strings (module::tests::fn_name).
         assert!(links.test_ids.iter().any(|t| t.contains("parse_coords")));
@@ -1675,12 +1676,30 @@ mod tests {
     fn identity_evidence_links_v1_are_mandatory_complete() {
         let links = identity_t1589_evidence_links_v1();
         assert!(links.mandatory_complete());
-        assert_eq!(links.evidence_level, EvidenceLevel::IndependentCorroboration);
+        assert_eq!(
+            links.evidence_level,
+            EvidenceLevel::IndependentCorroboration
+        );
         assert!(links.corroboration_ids.len() >= 2);
-        assert!(links.test_ids.iter().all(|t| links.passed_test_ids.contains(t)));
+        assert!(
+            links
+                .test_ids
+                .iter()
+                .all(|t| links.passed_test_ids.contains(t))
+        );
         assert!(links.failed_test_ids.is_empty());
-        assert!(links.test_ids.iter().any(|t| t.contains("gmail") || t.contains("googlemail")));
-        assert!(links.test_ids.iter().any(|t| t.contains("hyphen") || t.contains("edge_punctuation")));
+        assert!(
+            links
+                .test_ids
+                .iter()
+                .any(|t| t.contains("gmail") || t.contains("googlemail"))
+        );
+        assert!(
+            links
+                .test_ids
+                .iter()
+                .any(|t| t.contains("hyphen") || t.contains("edge_punctuation"))
+        );
     }
 
     #[test]
@@ -1774,8 +1793,7 @@ mod tests {
 
         let canonical = evidence_links_canonical_json(&a);
         assert!(canonical.contains(EVIDENCE_CONTENT_HASH_SCHEMA));
-        let expected_prefix =
-            format!("{{\"schema\":\"{EVIDENCE_CONTENT_HASH_SCHEMA}\"");
+        let expected_prefix = format!("{{\"schema\":\"{EVIDENCE_CONTENT_HASH_SCHEMA}\"");
         assert!(
             canonical.starts_with(&expected_prefix),
             "canonical JSON must start with schema key; got {canonical}"
@@ -1846,12 +1864,19 @@ mod tests {
         let h_id = ledger.evidence_content_hash("T1589").expect("id hash");
         assert_eq!(h_geo.len(), 64);
         assert_eq!(h_id.len(), 64);
-        assert_ne!(h_geo, h_id, "distinct evidence chains must not share digest");
+        assert_ne!(
+            h_geo, h_id,
+            "distinct evidence chains must not share digest"
+        );
         assert_ne!(h_geo, seed_hash_t1614);
         assert_ne!(h_id, seed_hash_t1589);
 
-        let b_geo = ledger.evidence_provenance_binding("T1614").expect("geo bind");
-        let b_id = ledger.evidence_provenance_binding("T1589").expect("id bind");
+        let b_geo = ledger
+            .evidence_provenance_binding("T1614")
+            .expect("geo bind");
+        let b_id = ledger
+            .evidence_provenance_binding("T1589")
+            .expect("id bind");
         assert!(b_geo.starts_with("prov-geoint-offline-fixture-v1|sha256:"));
         assert!(b_id.starts_with("prov-identity-canonicalize-fixture-v1|sha256:"));
         assert!(b_geo.ends_with(&h_geo));
