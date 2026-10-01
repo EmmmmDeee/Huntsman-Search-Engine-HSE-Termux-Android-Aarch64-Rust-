@@ -44,7 +44,7 @@ pub const ATTACK_VERSION: &str = "19.2";
 /// Source of the last regeneration: MITRE/CTI tag `ATT&CK-v19.2`,
 /// `enterprise-attack/enterprise-attack.json`
 /// SHA-256 `f7eaf37fe53b50404084fe1fe67237278f7317e61c11ad550295722d13ede259`.
-
+///
 /// The ATT&CK **content major** version, derived from [`ATTACK_VERSION`].
 ///
 /// The ATT&CK Navigator's `versions.attack` field carries the content *major*
