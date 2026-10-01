@@ -29,6 +29,11 @@ on:
     - cron: '0 9 * * 1'   # Mondays 09:00 UTC (audit 06:00, fuzz 07:00, live-drift 08:00)
   workflow_dispatch:
   push:
+    # main only: feature/agent branch pushes were ~75% of this workflow's
+    # minutes. Advisory job, so the post-merge run on main (plus the weekly
+    # schedule and workflow_dispatch) is enough; run it by hand on a branch
+    # when a PR touches a bench-sensitive path.
+    branches: [main]
     paths:
       - 'benches/**'
       # The library surfaces the benchmarks measure. A change here can break a
