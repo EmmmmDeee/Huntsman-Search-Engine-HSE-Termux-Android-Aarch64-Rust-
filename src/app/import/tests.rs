@@ -3418,9 +3418,9 @@ fn two_imports_started_in_one_second_own_two_scans() {
 }
 
 /// SeekNow / LeakOSINT bulk download: `{ targets, results[].rows[]._source }`.
-/// Source and breach-site labels are stripped; identity fields are kept.
+/// Identity fields become a later SeekNow bulk query. Breach-site labels are kept.
 #[tokio::test]
-async fn seeknow_bulk_strips_source_and_breach_sites() {
+async fn seeknow_bulk_keeps_source_and_builds_search_bodies() {
     let body = r#"{
       "id": "bulk-fixture",
       "createdAt": "2026-10-01T06:55:27.103Z",
@@ -3471,16 +3471,29 @@ async fn seeknow_bulk_strips_source_and_breach_sites() {
         values.iter().any(|v| v.contains("Example Parade")),
         "{values:?}"
     );
-    let blob = values.join("\n");
-    assert!(!blob.contains("Snusbase"), "{blob}");
-    assert!(!blob.contains("SeekNow"), "{blob}");
-    assert!(!blob.contains("PeopleData"), "{blob}");
-    assert!(!blob.contains("LeakOSINT"), "{blob}");
-    for e in &entities {
-        for ev in &e.evidence {
-            assert_eq!(ev.source, "import:seeknow-bulk");
-            assert!(!ev.summary.contains("Snusbase"), "{}", ev.summary);
-            assert!(!ev.summary.contains("•"), "{}", ev.summary);
-        }
-    }
+    let queries = super::seeknow_bulk::bulk_query_from_doc(
+        &serde_json::from_str(body).expect("fixture json"),
+    );
+    assert!(
+        queries.iter().any(|q| q.query == "ada2610@example.com" && q.query_type == "email"),
+        "{queries:?}"
+    );
+    assert!(
+        queries.iter().any(|q| q.query == "Ada Example" && q.query_type == "name"),
+        "{queries:?}"
+    );
+    assert!(
+        queries.iter().any(|q| q.origin.contains("Snusbase")),
+        "breach-site label must survive on the query origin: {queries:?}"
+    );
+    assert!(
+        queries.iter().all(|q| q.query != "SeekNow • Snusbase"),
+        "a breach-site label is not itself a query term"
+    );
+    let sourced = entities.iter().any(|e| {
+        e.evidence.iter().any(|ev| {
+            ev.attributes.get("breach_source").is_some_and(|s| s.contains("Snusbase"))
+        })
+    });
+    assert!(sourced, "ingest must keep the breach-site label for the later stage");
 }

@@ -6,9 +6,10 @@
 //! { "id": "…", "targets": ["…"], "results": [ { "target": "…", "rows": [ { "_source": "SeekNow • Snusbase", "email": "…" } ] } ] }
 //! ```
 //!
-//! `_source` (and a dataset `title` such as `PeopleData`) names the breach site.
-//! Those labels are stripped on ingest and never become entities or evidence.
-//! Identity fields on the row are kept.
+//! `_source` names the breach site that produced the row. Ingest keeps it
+//! (evidence attribute `breach_source`). It is not a query term. A later stage
+//! turns the file's targets and identity fields into a SeekNow bulk query
+//! (`POST /api/v1/search` bodies) via [`bulk_query_from_doc`].
 
 use super::*;
 
@@ -23,8 +24,8 @@ pub(super) fn looks_like_seeknow_bulk(body: &str) -> bool {
         && body.contains("\"_source\"")
 }
 
-/// Parse a bulk export. Source and breach-site labels are dropped before any
-/// entity is built.
+/// Parse a bulk export. Breach-site labels stay on the evidence; they are not
+/// query terms and they are not dropped.
 pub(super) fn parse_seeknow_bulk(
     doc: &serde_json::Value,
     sid: &str,
@@ -58,7 +59,20 @@ pub(super) fn parse_seeknow_bulk(
                 stats.malformed_lines += 1;
                 continue;
             };
-            ingest_row(obj, sid, export_id, &mut entities, &mut stats);
+            let breach_source = obj
+                .get("_source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            ingest_row(
+                obj,
+                sid,
+                export_id,
+                &breach_source,
+                &mut entities,
+                &mut stats,
+            );
         }
     }
 
@@ -69,6 +83,7 @@ fn ingest_row(
     obj: &serde_json::Map<String, serde_json::Value>,
     sid: &str,
     export_id: &str,
+    breach_source: &str,
     entities: &mut Vec<crate::core::entity::Entity>,
     stats: &mut ImportStats,
 ) {
@@ -92,7 +107,7 @@ fn ingest_row(
             let mut e = Entity::new(EntityKind::Email, &email, confidence::VERY_HIGH, sid);
             e.tag("import");
             e.tag("seeknow-bulk");
-            e.add_evidence(evidence(export_id, format!("email {email}")));
+            e.add_evidence(evidence_sourced(export_id, breach_source, format!("email {email}")));
             entities.push(e);
             stats.emails += 1;
         }
@@ -104,7 +119,7 @@ fn ingest_row(
             let mut e = Entity::new(EntityKind::Phone, &phone, confidence::HIGH, sid);
             e.tag("import");
             e.tag("seeknow-bulk");
-            e.add_evidence(evidence(export_id, format!("phone {phone}")));
+            e.add_evidence(evidence_sourced(export_id, breach_source, format!("phone {phone}")));
             entities.push(e);
             stats.phones += 1;
         }
@@ -124,10 +139,12 @@ fn ingest_row(
         push_person(entities, stats, sid, &name, export_id, "row name");
         if let Some(dob) = field(&["birthdate", "date_of_birth"]) {
             if let Some(last) = entities.last_mut() {
-                last.add_evidence(
-                    Evidence::new("import:seeknow-bulk", format!("date of birth {dob}"))
-                        .with_attr("dob", dob),
-                );
+                let mut ev = Evidence::new("import:seeknow-bulk", format!("date of birth {dob}"))
+                    .with_attr("dob", dob);
+                if !breach_source.is_empty() {
+                    ev = ev.with_attr("breach_source", breach_source);
+                }
+                last.add_evidence(ev);
             }
         }
     }
@@ -143,7 +160,7 @@ fn ingest_row(
             let mut e = Entity::new(EntityKind::Username, &user, confidence::HIGH, sid);
             e.tag("import");
             e.tag("seeknow-bulk");
-            e.add_evidence(evidence(export_id, format!("username {user}")));
+            e.add_evidence(evidence_sourced(export_id, breach_source, format!("username {user}")));
             entities.push(e);
             stats.usernames += 1;
         }
@@ -154,7 +171,7 @@ fn ingest_row(
         let mut e = Entity::new(EntityKind::Address, &address, confidence::HIGH, sid);
         e.tag("import");
         e.tag("seeknow-bulk");
-        e.add_evidence(evidence(export_id, format!("address {address}")));
+        e.add_evidence(evidence_sourced(export_id, breach_source, format!("address {address}")));
         entities.push(e);
         stats.addresses += 1;
     }
@@ -164,7 +181,7 @@ fn ingest_row(
             let mut e = Entity::new(EntityKind::Url, &url, confidence::MEDIUM_HIGH, sid);
             e.tag("import");
             e.tag("seeknow-bulk");
-            e.add_evidence(evidence(export_id, format!("url {url}")));
+            e.add_evidence(evidence_sourced(export_id, breach_source, format!("url {url}")));
             entities.push(e);
             stats.urls += 1;
         }
@@ -176,7 +193,7 @@ fn ingest_row(
             let mut e = Entity::new(EntityKind::Coordinates, &value, confidence::MEDIUM, sid);
             e.tag("import");
             e.tag("seeknow-bulk");
-            e.add_evidence(evidence(export_id, format!("coordinates {value}")));
+            e.add_evidence(evidence_sourced(export_id, breach_source, format!("coordinates {value}")));
             entities.push(e);
             stats.coordinates += 1;
         }
@@ -189,7 +206,7 @@ fn ingest_row(
             e.tag("import");
             e.tag("seeknow-bulk");
             e.tag("hash");
-            e.add_evidence(evidence(export_id, "credential hash (breach site stripped)"));
+            e.add_evidence(evidence_sourced(export_id, breach_source, "credential hash"));
             entities.push(e);
             stats.credentials += 1;
         }
@@ -227,12 +244,129 @@ fn push_person(
 }
 
 fn evidence(export_id: &str, summary: impl Into<String>) -> crate::core::entity::Evidence {
+    evidence_sourced(export_id, "", summary)
+}
+
+fn evidence_sourced(
+    export_id: &str,
+    breach_source: &str,
+    summary: impl Into<String>,
+) -> crate::core::entity::Evidence {
     use crate::core::entity::Evidence;
     let mut ev = Evidence::new("import:seeknow-bulk", summary);
     if !export_id.is_empty() {
         ev = ev.with_attr("export_id", export_id);
     }
+    if !breach_source.is_empty() {
+        ev = ev.with_attr("breach_source", breach_source);
+    }
     ev
+}
+
+
+/// One `POST /api/v1/search` body, plus the row origin the later submit stage
+/// still has. `origin` is the file's `_source`; it is not sent as the query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SeeknowSearchQuery {
+    pub query: String,
+    pub query_type: String,
+    pub origin: String,
+}
+
+/// Build the SeekNow bulk query this file will be submitted as.
+///
+/// Terms come from `targets`, each result `target`, and row identity fields
+/// (email, username, phone, name). Breach-site labels are kept on `origin`
+/// and are not query terms. Hashes are not queried. Order is file order,
+/// de-duplicated on `(type, query)`.
+pub(crate) fn bulk_query_from_doc(doc: &serde_json::Value) -> Vec<SeeknowSearchQuery> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push = |query: &str, query_type: &str, origin: &str| {
+        let query = query.trim().trim_end_matches('\r');
+        if query.len() < 2 {
+            return;
+        }
+        let key = (query_type.to_string(), query.to_ascii_lowercase());
+        if seen.insert(key) {
+            out.push(SeeknowSearchQuery {
+                query: query.to_string(),
+                query_type: query_type.to_string(),
+                origin: origin.trim().to_string(),
+            });
+        }
+    };
+    if let Some(targets) = doc.get("targets").and_then(|v| v.as_array()) {
+        for target in targets {
+            if let Some(value) = target.as_str() {
+                push(value, "name", "");
+            }
+        }
+    }
+    let Some(results) = doc.get("results").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for result in results {
+        let result_type = result
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("name");
+        if let Some(target) = result.get("target").and_then(|v| v.as_str()) {
+            push(target, result_type, "");
+        }
+        let Some(rows) = result.get("rows").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for row in rows {
+            let Some(obj) = row.as_object() else {
+                continue;
+            };
+            let origin = obj.get("_source").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(email) = obj.get("email").and_then(|v| v.as_str()) {
+                if email.contains('@') {
+                    push(email, "email", origin);
+                }
+            }
+            for key in ["username", "nick"] {
+                if let Some(user) = obj.get(key).and_then(|v| v.as_str()) {
+                    if !user.contains('@') {
+                        push(user, "username", origin);
+                    }
+                }
+            }
+            if let Some(phone) = obj.get("phone").and_then(|v| v.as_str()) {
+                push(phone, "phone", origin);
+            }
+            if let Some(name) = obj.get("full_name").and_then(|v| v.as_str()) {
+                push(name, "name", origin);
+            } else if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+                push(name, "name", origin);
+            }
+        }
+    }
+    out
+}
+
+/// JSON document the later submit stage posts, one `/api/v1/search` body per term.
+pub(crate) fn bulk_query_document(doc: &serde_json::Value) -> serde_json::Value {
+    let queries: Vec<serde_json::Value> = bulk_query_from_doc(doc)
+        .into_iter()
+        .map(|q| {
+            serde_json::json!({
+                "endpoint": "/api/v1/search",
+                "body": {
+                    "query": q.query,
+                    "type": q.query_type,
+                    "limit": 500
+                },
+                "origin": q.origin,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "provider": "seeknow",
+        "queries": queries,
+    })
 }
 
 fn assemble_address(obj: &serde_json::Map<String, serde_json::Value>) -> String {
@@ -286,12 +420,19 @@ pub(super) async fn cmd_import_seeknow_bulk(body: &str, _path: &str, output: &st
         .and_then(|a| a.first())
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
+    let queries = bulk_query_from_doc(&doc);
     note(
         output,
         format!(
-            "Importing SeekNow bulk export: target=\"{target}\" (source and breach-site labels stripped)"
+            "Importing SeekNow bulk export: target=\"{target}\" ({} search bodies ready for a later SeekNow bulk submit; breach-site labels kept)",
+            queries.len()
         ),
     );
+    if output != "json" {
+        for q in &queries {
+            println!("  seeknow bulk query: type={} query={}", q.query_type, q.query);
+        }
+    }
     let sid = import_scan_id("seeknow-bulk");
     let (mut entities, stats) = parse_seeknow_bulk(&doc, &sid);
     deduplicate_by_uid(&mut entities);
