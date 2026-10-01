@@ -198,7 +198,7 @@ fn ingest_row(
     }
 
     if let Some(url) = field(&["url"])
-        && (url.starts_with("http://") || url.starts_with("https://"))
+        && crate::util::url_util::is_absolute_http_url(&url)
     {
         let mut e = Entity::new(EntityKind::Url, &url, confidence::MEDIUM_HIGH, sid);
         e.tag("import");
@@ -467,7 +467,7 @@ fn collect_row_idents(doc: &serde_json::Value) -> Vec<Vec<Ident>> {
                 }
             }
             if let Some(url) = obj.get("url").and_then(|v| v.as_str())
-                && (url.starts_with("http://") || url.starts_with("https://"))
+                && crate::util::url_util::is_absolute_http_url(url)
             {
                 push(IdClass::Binding, "url", url);
             }
