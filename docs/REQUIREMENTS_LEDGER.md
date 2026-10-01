@@ -28497,3 +28497,13 @@ all fixed:
 
 **Locks.** `wifi_reading_rules_come_from_the_radar_authority` (hyphenated placeholder, non-MAC BSSID, positive RSSI) and the extended `ble_radar_dependency_is_pinned_and_consumed` (pinned to a commit, consumed only by `signal_radar`, no copy of a radar rule in `wifi.rs`, no other git dependency).
 
+## REQ-ATTACK-001 — an ATT&CK catalogue bump must not silently inflate claimed coverage
+
+**Observed.** The Enterprise reference catalogue was regenerated from MITRE/CTI `ATT&CK-v19.2` (`enterprise-attack.json`, SHA-256 `f7eaf37fe53b50404084fe1fe67237278f7317e61c11ad550295722d13ede259`). That release renames TA0005 to Stealth, moves Defense Impairment to TA0112, and adds Reconnaissance techniques T1681 and T1682. Navigator layers must declare attack version `19` (the content major), not the dotted catalogue tag.
+
+**Root cause.** Reference vocabulary and claimed coverage are different surfaces. A catalogue refresh that only updates `ENTERPRISE` would let a coverage report treat new Reconnaissance ids as performed collection.
+
+**Fix.** `ATTACK_VERSION` is `19.2`. `attack_spec_major()` is the single source for the Navigator `versions.attack` field. T1681 and T1682 stay named gaps until a module actually performs them. The platform envelope pin in `tests/smoke.rs` names those two gaps.
+
+**Locks.** Catalogue drift guards (Reconnaissance slice equals TA0043; every module-map id exists; catalogue sorted and duplicate-free) and the smoke envelope pin that names T1681 and T1682. The doc comment above `attack_spec_major` stays a continuous `///` block so `clippy -D warnings` (`empty_line_after_doc_comments`) cannot go red on the pin.
+
