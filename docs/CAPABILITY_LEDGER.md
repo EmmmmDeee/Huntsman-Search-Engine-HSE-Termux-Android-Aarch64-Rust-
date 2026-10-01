@@ -68,6 +68,10 @@ Hard-fail fields on `CapabilityEvidenceLinks` (force Unverified):
 `freshness_ok` / `reproducibility_ok` default **true** on empty links so seed
 rows stay Unverified (not hard-failed).
 
+`Verified` also requires at least one `regression_lock_ids` entry. A bare
+`regression_ok = true` with no lock artifact is not a REGRESSION link, so the
+claim stays `Partial`.
+
 ## Evidence ladder (`EvidenceLevel`)
 
 Claim strength is capped by `CapabilityEvidenceLinks::evidence_level`. Order
@@ -164,6 +168,21 @@ assert_eq!(ledger.verified_count(), 1);
 
 `test_ids` are stable `module::tests::fn_name` strings matching real `#[test]`
 functions. Invalidate any cited test → auto-downgrade (Navigator loses green).
+
+v1 limits:
+
+- `passed_test_ids` are declared by the fixture. The ledger does not run tests,
+  so it does not read their results. A unit test in `capability.rs` checks that
+  every cited `test_id` still resolves to a real `#[test] fn` in the tree. A
+  failing cited test also fails `cargo test`, which is a merge gate. Binding
+  status to an execution receipt (test output plus the tested revision) is
+  future work.
+- **Scope of a Verified mapping.** On `T1614` and `T1589`, Verified means the
+  named offline *method* (`geoint.offline` and `identity.canonicalize`) is
+  evidenced. It does **not** claim end-to-end *System Location Discovery* or
+  *Gather Victim Identity Information*. ATT&CK is the interoperability key
+  here, not a statement of full technique coverage (see "Mapping ≠ Verified"
+  above).
 
 ## Second OSINT evidence claim (identity / T1589)
 

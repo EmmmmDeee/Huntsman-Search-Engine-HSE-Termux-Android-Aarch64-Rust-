@@ -303,6 +303,7 @@ impl CapabilityEvidenceLinks {
     /// - non-empty `source_ids`, `input_ids`, `output_ids`, `corroboration_ids`
     /// - `execution_record_id` and `provenance_claim_id` present
     /// - non-empty `test_ids`
+    /// - non-empty `regression_lock_ids` (REGRESSION is a mandatory chain link)
     /// - `corroboration_ok` and `regression_ok`
     /// - `freshness_ok` and `reproducibility_ok`
     /// - `evidence_level >= IndependentCorroboration` (v0 floor)
@@ -315,6 +316,7 @@ impl CapabilityEvidenceLinks {
             || self.output_ids.is_empty()
             || self.corroboration_ids.is_empty()
             || self.test_ids.is_empty()
+            || self.regression_lock_ids.is_empty()
         {
             return false;
         }
@@ -1516,6 +1518,69 @@ mod tests {
             .expect("T1016.002");
         assert_eq!(tech["score"], 50);
         assert_eq!(tech["color"], "#fec44f");
+    }
+
+    /// Cited `test_ids` must name a real `#[test] fn` in the tree, so a
+    /// renamed or deleted test cannot silently keep a claim Verified.
+    /// (`passed_test_ids` are declared, not executed; a cited test that
+    /// fails is caught by `cargo test` itself.)
+    #[test]
+    fn cited_test_ids_resolve_to_real_test_fns() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let fixtures = [
+            ("T1614", geoint_t1614_evidence_links_v1()),
+            ("T1589", identity_t1589_evidence_links_v1()),
+        ];
+        for (tid, links) in fixtures {
+            assert!(!links.test_ids.is_empty(), "{tid} cites no tests");
+            for test_id in &links.test_ids {
+                let parts: Vec<&str> = test_id.split("::").collect();
+                assert!(
+                    parts.len() >= 3 && parts[parts.len() - 2] == "tests",
+                    "{tid}: {test_id} is not a module::tests::fn path"
+                );
+                let fn_name = parts[parts.len() - 1];
+                let module = parts[..parts.len() - 2].join("/");
+                let candidates = [
+                    root.join(&module).join("tests.rs"),
+                    root.join(format!("{module}.rs")),
+                    root.join(&module).join("mod.rs"),
+                ];
+                let needle = format!("fn {fn_name}()");
+                let found = candidates.iter().any(|path| {
+                    std::fs::read_to_string(path).is_ok_and(|src| {
+                        let lines: Vec<&str> = src.lines().collect();
+                        lines
+                            .windows(2)
+                            .any(|w| w[0].trim() == "#[test]" && w[1].contains(&needle))
+                    })
+                });
+                assert!(
+                    found,
+                    "{tid}: cited test {test_id} not found as a #[test] fn"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn verified_requires_regression_lock_id() {
+        let mut links = complete_links();
+        assert_eq!(
+            derive_status(ClaimScope::InScope, &links),
+            CapabilityStatus::Verified
+        );
+        // `regression_ok = true` with no lock artifact is not a regression link.
+        links.regression_lock_ids.clear();
+        assert!(!links.mandatory_complete());
+        assert_ne!(
+            derive_status(ClaimScope::InScope, &links),
+            CapabilityStatus::Verified
+        );
+        assert_eq!(
+            derive_status(ClaimScope::InScope, &links),
+            CapabilityStatus::Partial
+        );
     }
 
     #[test]
