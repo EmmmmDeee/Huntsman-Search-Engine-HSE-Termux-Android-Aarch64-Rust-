@@ -65,7 +65,9 @@ fn main() {
 }
 
 /// Write the build-time HIBP API key default to `$OUT_DIR/hibp_embedded_key.txt`
-/// for `util::hibp::key::EmbeddedSource` to `include_str!`.
+/// for the `EMBEDDED_RAW` constant in `src/modules/hibp/key.rs`
+/// (`modules::hibp::key`) to `include_str!`; `KeyLoader::default_chain` and
+/// `EmbeddedSource` read it from there.
 ///
 /// M approved embedding the key (2026-10-02, PR feat/hibp-integration), so every
 /// binary built on a machine that has a key carries it. The file is only ever

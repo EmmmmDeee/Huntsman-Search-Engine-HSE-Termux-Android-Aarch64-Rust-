@@ -71,6 +71,10 @@ a truthy value:
 A binary without an embedded key loads its key at runtime from sources 1–3.
 Use `HUNTSMAN_HIBP_NO_EMBED=1` for any build you will share.
 
+**Any build made outside GitHub Actions for publishing must set `HSE_RELEASE=1`
+(or `HUNTSMAN_HIBP_NO_EMBED=1`)**: a build on a box where `HIBP_API_KEY` is set
+or `~/.config/hibp/api_key` exists embeds that key.
+
 ## Plan gating
 
 The stealer-log endpoints and the k-anonymity account range first read
