@@ -15,7 +15,7 @@ use super::*;
 
 /// Content sniff for the bulk envelope. Cheap on purpose: `{`-bodies are
 /// otherwise all routed to the OathNet JSON parser, which does not know this
-//! shape and would import nothing.
+/// shape and would import nothing.
 pub(super) fn looks_like_seeknow_bulk(body: &str) -> bool {
     let head = body.trim_start_matches('\u{feff}').trim_start();
     head.starts_with('{')
@@ -30,8 +30,7 @@ pub(super) fn parse_seeknow_bulk(
     doc: &serde_json::Value,
     sid: &str,
 ) -> (Vec<crate::core::entity::Entity>, ImportStats) {
-    use crate::core::confidence;
-    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::entity::Entity;
 
     let mut entities: Vec<Entity> = Vec::new();
     let mut stats = ImportStats::default();
@@ -48,7 +47,14 @@ pub(super) fn parse_seeknow_bulk(
             .unwrap_or("")
             .trim();
         if !target.is_empty() {
-            push_person(&mut entities, &mut stats, sid, target, export_id, "bulk target");
+            push_person(
+                &mut entities,
+                &mut stats,
+                sid,
+                target,
+                export_id,
+                "bulk target",
+            );
         }
         let Some(rows) = result.get("rows").and_then(|v| v.as_array()) else {
             continue;
@@ -102,50 +108,57 @@ fn ingest_row(
         None
     };
 
-    if let Some(email) = field(&["email"]) {
-        if email.contains('@') && !email.contains(' ') {
-            let mut e = Entity::new(EntityKind::Email, &email, confidence::VERY_HIGH, sid);
-            e.tag("import");
-            e.tag("seeknow-bulk");
-            e.add_evidence(evidence_sourced(export_id, breach_source, format!("email {email}")));
-            entities.push(e);
-            stats.emails += 1;
-        }
+    if let Some(email) = field(&["email"])
+        && email.contains('@')
+        && !email.contains(' ')
+    {
+        let mut e = Entity::new(EntityKind::Email, &email, confidence::VERY_HIGH, sid);
+        e.tag("import");
+        e.tag("seeknow-bulk");
+        e.add_evidence(evidence_sourced(
+            export_id,
+            breach_source,
+            format!("email {email}"),
+        ));
+        entities.push(e);
+        stats.emails += 1;
     }
 
     if let Some(phone) = field(&["phone", "mobile", "tel"]) {
-        let digits = phone.chars().filter(|c| c.is_ascii_digit()).count();
+        let digits = phone.chars().filter(char::is_ascii_digit).count();
         if digits >= 8 {
             let mut e = Entity::new(EntityKind::Phone, &phone, confidence::HIGH, sid);
             e.tag("import");
             e.tag("seeknow-bulk");
-            e.add_evidence(evidence_sourced(export_id, breach_source, format!("phone {phone}")));
+            e.add_evidence(evidence_sourced(
+                export_id,
+                breach_source,
+                format!("phone {phone}"),
+            ));
             entities.push(e);
             stats.phones += 1;
         }
     }
 
-    let person = field(&["full_name"]).or_else(|| {
-        match (field(&["name"]), field(&["surname"])) {
-            (Some(name), Some(surname)) if !name.eq_ignore_ascii_case(&surname) => {
-                Some(format!("{name} {surname}"))
-            }
-            (Some(name), _) => Some(name),
-            (None, Some(surname)) => Some(surname),
-            _ => None,
+    let person = field(&["full_name"]).or_else(|| match (field(&["name"]), field(&["surname"])) {
+        (Some(name), Some(surname)) if !name.eq_ignore_ascii_case(&surname) => {
+            Some(format!("{name} {surname}"))
         }
+        (Some(name), _) => Some(name),
+        (None, Some(surname)) => Some(surname),
+        _ => None,
     });
     if let Some(name) = person {
         push_person(entities, stats, sid, &name, export_id, "row name");
-        if let Some(dob) = field(&["birthdate", "date_of_birth"]) {
-            if let Some(last) = entities.last_mut() {
-                let mut ev = Evidence::new("import:seeknow-bulk", format!("date of birth {dob}"))
-                    .with_attr("dob", dob);
-                if !breach_source.is_empty() {
-                    ev = ev.with_attr("breach_source", breach_source);
-                }
-                last.add_evidence(ev);
+        if let Some(dob) = field(&["birthdate", "date_of_birth"])
+            && let Some(last) = entities.last_mut()
+        {
+            let mut ev = Evidence::new("import:seeknow-bulk", format!("date of birth {dob}"))
+                .with_attr("dob", dob);
+            if !breach_source.is_empty() {
+                ev = ev.with_attr("breach_source", breach_source);
             }
+            last.add_evidence(ev);
         }
     }
 
@@ -160,7 +173,11 @@ fn ingest_row(
             let mut e = Entity::new(EntityKind::Username, &user, confidence::HIGH, sid);
             e.tag("import");
             e.tag("seeknow-bulk");
-            e.add_evidence(evidence_sourced(export_id, breach_source, format!("username {user}")));
+            e.add_evidence(evidence_sourced(
+                export_id,
+                breach_source,
+                format!("username {user}"),
+            ));
             entities.push(e);
             stats.usernames += 1;
         }
@@ -171,52 +188,70 @@ fn ingest_row(
         let mut e = Entity::new(EntityKind::Address, &address, confidence::HIGH, sid);
         e.tag("import");
         e.tag("seeknow-bulk");
-        e.add_evidence(evidence_sourced(export_id, breach_source, format!("address {address}")));
+        e.add_evidence(evidence_sourced(
+            export_id,
+            breach_source,
+            format!("address {address}"),
+        ));
         entities.push(e);
         stats.addresses += 1;
     }
 
-    if let Some(url) = field(&["url"]) {
-        if url.starts_with("http://") || url.starts_with("https://") {
-            let mut e = Entity::new(EntityKind::Url, &url, confidence::MEDIUM_HIGH, sid);
-            e.tag("import");
-            e.tag("seeknow-bulk");
-            e.add_evidence(evidence_sourced(export_id, breach_source, format!("url {url}")));
-            entities.push(e);
-            stats.urls += 1;
-        }
+    if let Some(url) = field(&["url"])
+        && (url.starts_with("http://") || url.starts_with("https://"))
+    {
+        let mut e = Entity::new(EntityKind::Url, &url, confidence::MEDIUM_HIGH, sid);
+        e.tag("import");
+        e.tag("seeknow-bulk");
+        e.add_evidence(evidence_sourced(
+            export_id,
+            breach_source,
+            format!("url {url}"),
+        ));
+        entities.push(e);
+        stats.urls += 1;
     }
 
-    if let Some(geo) = field(&["geolocation"]) {
-        if let Some((lat, lon)) = split_lat_lon(&geo) {
-            let value = format!("{lat},{lon}");
-            let mut e = Entity::new(EntityKind::Coordinates, &value, confidence::MEDIUM, sid);
-            e.tag("import");
-            e.tag("seeknow-bulk");
-            e.add_evidence(evidence_sourced(export_id, breach_source, format!("coordinates {value}")));
-            entities.push(e);
-            stats.coordinates += 1;
-        }
+    if let Some(geo) = field(&["geolocation"])
+        && let Some((lat, lon)) = split_lat_lon(&geo)
+    {
+        let value = format!("{lat},{lon}");
+        let mut e = Entity::new(EntityKind::Coordinates, &value, confidence::MEDIUM, sid);
+        e.tag("import");
+        e.tag("seeknow-bulk");
+        e.add_evidence(evidence_sourced(
+            export_id,
+            breach_source,
+            format!("coordinates {value}"),
+        ));
+        entities.push(e);
+        stats.coordinates += 1;
     }
 
     // Hash material only. The breach site that produced the hash is not kept.
-    if let Some(hash) = field(&["hash", "encrypted_password"]) {
-        if hash.len() >= 16 {
-            let mut e = Entity::new(EntityKind::Credential, &hash, confidence::MEDIUM, sid);
-            e.tag("import");
-            e.tag("seeknow-bulk");
-            e.tag("hash");
-            e.add_evidence(evidence_sourced(export_id, breach_source, "credential hash"));
-            entities.push(e);
-            stats.credentials += 1;
-        }
+    if let Some(hash) = field(&["hash", "encrypted_password"])
+        && hash.len() >= 16
+    {
+        let mut e = Entity::new(EntityKind::Credential, &hash, confidence::MEDIUM, sid);
+        e.tag("import");
+        e.tag("seeknow-bulk");
+        e.tag("hash");
+        e.add_evidence(evidence_sourced(
+            export_id,
+            breach_source,
+            "credential hash",
+        ));
+        entities.push(e);
+        stats.credentials += 1;
     }
 
     // A free-text related name (sample field `description`), not a source label.
-    if let Some(related) = field(&["description"]) {
-        if related.contains(' ') && !related.contains("•") && !related.contains('@') {
-            push_person(entities, stats, sid, &related, export_id, "related name");
-        }
+    if let Some(related) = field(&["description"])
+        && related.contains(' ')
+        && !related.contains("•")
+        && !related.contains('@')
+    {
+        push_person(entities, stats, sid, &related, export_id, "related name");
     }
 }
 
@@ -263,7 +298,6 @@ fn evidence_sourced(
     ev
 }
 
-
 /// One `POST /api/v1/search` body, plus the row origins the later submit stage
 /// still has. `origin` is the file's `_source` values, joined. It is not sent
 /// as the query.
@@ -296,6 +330,7 @@ struct Ident {
 /// and do not bridge two people. Name, address, and date of birth annotate
 /// and never create a component. Breach-site labels stay on the component
 /// as origins.
+#[derive(Debug)]
 pub(crate) struct IdentityCluster {
     pub bindings: Vec<(String, String)>,
     pub supporting: Vec<(String, String)>,
@@ -335,7 +370,10 @@ pub(crate) fn resolve_identity_clusters(doc: &serde_json::Value) -> Vec<Identity
         if ident.class != IdClass::Binding {
             continue;
         }
-        let key = (ident.query_type.to_string(), ident.value.to_ascii_lowercase());
+        let key = (
+            ident.query_type.to_string(),
+            ident.value.to_ascii_lowercase(),
+        );
         if let Some(prev) = binding_at.insert(key, idx) {
             unite(&mut parent, prev, idx);
         }
@@ -393,42 +431,60 @@ fn collect_row_idents(doc: &serde_json::Value) -> Vec<Vec<Ident>> {
             let Some(obj) = row.as_object() else {
                 continue;
             };
-            let origin = obj.get("_source").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let origin = obj
+                .get("_source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let mut idents = Vec::new();
             let mut push = |class, query_type: &'static str, value: &str| {
                 let value = value.trim().trim_end_matches('\r');
                 if value.len() < 2 {
                     return;
                 }
-                idents.push(Ident { class, query_type, value: value.to_string(), origin: origin.clone() });
+                idents.push(Ident {
+                    class,
+                    query_type,
+                    value: value.to_string(),
+                    origin: origin.clone(),
+                });
             };
-            if let Some(email) = obj.get("email").and_then(|v| v.as_str()) {
-                if email.contains('@') && !email.contains(' ') {
-                    push(IdClass::Binding, "email", email);
-                }
+            if let Some(email) = obj.get("email").and_then(|v| v.as_str())
+                && email.contains('@')
+                && !email.contains(' ')
+            {
+                push(IdClass::Binding, "email", email);
             }
-            if let Some(phone) = obj.get("phone").or_else(|| obj.get("mobile")).and_then(|v| v.as_str()) {
-                let digits = phone.chars().filter(|c| c.is_ascii_digit()).count();
+            if let Some(phone) = obj
+                .get("phone")
+                .or_else(|| obj.get("mobile"))
+                .and_then(|v| v.as_str())
+            {
+                let digits = phone.chars().filter(char::is_ascii_digit).count();
                 if digits >= 8 {
                     push(IdClass::Binding, "phone", phone);
                 }
             }
-            if let Some(url) = obj.get("url").and_then(|v| v.as_str()) {
-                if url.starts_with("http://") || url.starts_with("https://") {
-                    push(IdClass::Binding, "url", url);
-                }
+            if let Some(url) = obj.get("url").and_then(|v| v.as_str())
+                && (url.starts_with("http://") || url.starts_with("https://"))
+            {
+                push(IdClass::Binding, "url", url);
             }
             for key in ["username", "nick"] {
-                if let Some(user) = obj.get(key).and_then(|v| v.as_str()) {
-                    if !user.contains('@') {
-                        push(IdClass::Supporting, "username", user);
-                    }
+                if let Some(user) = obj.get(key).and_then(|v| v.as_str())
+                    && !user.contains('@')
+                {
+                    push(IdClass::Supporting, "username", user);
                 }
             }
-            if let Some(hash) = obj.get("hash").or_else(|| obj.get("encrypted_password")).and_then(|v| v.as_str()) {
-                if hash.len() >= 16 {
-                    push(IdClass::Supporting, "hash", hash);
-                }
+            if let Some(hash) = obj
+                .get("hash")
+                .or_else(|| obj.get("encrypted_password"))
+                .and_then(|v| v.as_str())
+                && hash.len() >= 16
+            {
+                push(IdClass::Supporting, "hash", hash);
             }
             if let Some(name) = obj.get("full_name").and_then(|v| v.as_str()) {
                 push(IdClass::Annotation, "name", name);
@@ -438,7 +494,11 @@ fn collect_row_idents(doc: &serde_json::Value) -> Vec<Vec<Ident>> {
             if let Some(addr) = obj.get("address").and_then(|v| v.as_str()) {
                 push(IdClass::Annotation, "address", addr);
             }
-            if let Some(dob) = obj.get("birthdate").or_else(|| obj.get("date_of_birth")).and_then(|v| v.as_str()) {
+            if let Some(dob) = obj
+                .get("birthdate")
+                .or_else(|| obj.get("date_of_birth"))
+                .and_then(|v| v.as_str())
+            {
                 push(IdClass::Annotation, "dob", dob);
             }
             if !idents.is_empty() {
@@ -492,6 +552,10 @@ pub(crate) fn bulk_query_from_doc(doc: &serde_json::Value) -> Vec<SeeknowSearchQ
 }
 
 /// JSON document the later submit stage posts, one `/api/v1/search` body per term.
+#[expect(
+    dead_code,
+    reason = "consumed by the later SeekNow bulk submit stage, which is not wired yet"
+)]
 pub(crate) fn bulk_query_document(doc: &serde_json::Value) -> serde_json::Value {
     let clusters = resolve_identity_clusters(doc);
     let queries: Vec<serde_json::Value> = bulk_query_from_doc(doc)
@@ -504,12 +568,17 @@ pub(crate) fn bulk_query_document(doc: &serde_json::Value) -> serde_json::Value 
             })
         })
         .collect();
-    let cluster_view: Vec<serde_json::Value> = clusters.iter().map(|c| serde_json::json!({
-        "bindings": c.bindings,
-        "supporting": c.supporting.iter().filter(|(k, _)| k != "hash").collect::<Vec<_>>(),
-        "annotations": c.annotations,
-        "origins": c.origins,
-    })).collect();
+    let cluster_view: Vec<serde_json::Value> = clusters
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "bindings": c.bindings,
+                "supporting": c.supporting.iter().filter(|(k, _)| k != "hash").collect::<Vec<_>>(),
+                "annotations": c.annotations,
+                "origins": c.origins,
+            })
+        })
+        .collect();
     serde_json::json!({
         "provider": "seeknow",
         "clusters": cluster_view,
@@ -578,7 +647,10 @@ pub(super) async fn cmd_import_seeknow_bulk(body: &str, _path: &str, output: &st
     );
     if output != "json" {
         for q in &queries {
-            println!("  seeknow bulk query: type={} query={}", q.query_type, q.query);
+            println!(
+                "  seeknow bulk query: type={} query={}",
+                q.query_type, q.query
+            );
         }
     }
     let sid = import_scan_id("seeknow-bulk");
