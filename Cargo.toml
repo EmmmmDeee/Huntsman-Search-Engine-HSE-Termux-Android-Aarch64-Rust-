@@ -135,6 +135,10 @@ sha1               = "0.11"
 sha2               = "0.11"
 md-5               = "0.11"
 hex                = "0.4"
+# OS randomness for the HIBP OAuth PKCE verifier and `state`
+# (src/modules/hibp/oauth.rs). Already in the lock transitively; 0.3 is the
+# line that resolves without adding a new version.
+getrandom          = "0.3"
 # Pinned to 0.12 (current & supported) ON PURPOSE — do not bump to 0.13 without a
 # TLS-stack migration. 0.13's `rustls` feature switches trust to
 # rustls-platform-verifier, which on Android reads the OS cert store over JNI via

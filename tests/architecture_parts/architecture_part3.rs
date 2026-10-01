@@ -1557,6 +1557,8 @@ fn non_huntsman_env_reads_are_known() {
         "HSE_SQLITE_MAX_PAGES",        // storage/mod.rs `env_i64` — LIVE (PRAGMA max_page_count: BSI 200-4 on-disk growth cap, Store::apply_page_cap)
         "HSE_RESOURCE_PROFILE",        // core/platform/mod.rs const — LIVE (resource-profile override)
         "HSE_PROVIDER_COST_",          // core/module/provider.rs const prefix — LIVE family, `HSE_PROVIDER_COST_<PROVIDER_ID>`
+        "HIBP_API_KEY",                // modules/hibp/key.rs — LIVE (HIBP key, highest precedence; build.rs embed source)
+        "HIBP_RATE_LIMIT_PER_MINUTE",  // modules/hibp/rate_limit.rs — LIVE (client-side HIBP limiter, default 10/min)
     ];
 
     let mut raw = std::collections::HashSet::new();

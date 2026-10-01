@@ -16,6 +16,7 @@ use std::process::Command;
 
 fn main() {
     emit_build_provenance();
+    emit_hibp_embedded_key();
 
     let mut files: Vec<(String, u32)> = Vec::new();
     collect(Path::new("src"), &mut files);
@@ -61,6 +62,91 @@ fn main() {
     // how a given cargo version scans a directory. An earlier version of this
     // comment claimed cargo watches only a directory's DIRECT children; the
     // reference says otherwise (REQ-CACHE-002).
+}
+
+/// Write the build-time HIBP API key default to `$OUT_DIR/hibp_embedded_key.txt`
+/// for `util::hibp::key::EmbeddedSource` to `include_str!`.
+///
+/// M approved embedding the key (2026-10-02, PR feat/hibp-integration), so every
+/// binary built on a machine that has a key carries it. The file is only ever
+/// written to `OUT_DIR`, never the source tree, so the value cannot be
+/// committed. Runtime sources (env vars, the key file) still win over it.
+///
+/// Resolution: `HIBP_API_KEY`, then `$HOME/.config/hibp/api_key`, trimmed. With
+/// neither, an empty file is written and the binary has no embedded key.
+///
+/// Opt-out: `HUNTSMAN_HIBP_NO_EMBED=1`, `CI` or `HSE_RELEASE` set to a truthy
+/// value writes an empty file, so CI and published release binaries never
+/// carry a key.
+///
+/// Nothing here prints the value: no `cargo:warning`, no panic message that
+/// carries it. Only the fact that a key was or was not found could ever be
+/// reported, and it is not.
+fn emit_hibp_embedded_key() {
+    println!("cargo:rerun-if-env-changed=HIBP_API_KEY");
+    println!("cargo:rerun-if-env-changed=HOME");
+    println!("cargo:rerun-if-env-changed=HUNTSMAN_HIBP_NO_EMBED");
+    println!("cargo:rerun-if-env-changed=CI");
+    println!("cargo:rerun-if-env-changed=HSE_RELEASE");
+    let dir = std::env::var("OUT_DIR").expect("OUT_DIR set by cargo");
+    let out = Path::new(&dir).join("hibp_embedded_key.txt");
+    // Published and release builds must NOT carry the key. Skip the embed when
+    // the operator opts out (`HUNTSMAN_HIBP_NO_EMBED=1`), on any CI runner
+    // (GitHub Actions sets `CI=true`, which covers ci.yml and release.yml), or
+    // when `HSE_RELEASE` is set. Such a binary loads its key at runtime only.
+    let truthy = |name: &str| {
+        std::env::var(name)
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                !v.is_empty() && v != "0" && v != "false" && v != "no"
+            })
+            .unwrap_or(false)
+    };
+    if truthy("HUNTSMAN_HIBP_NO_EMBED") || truthy("CI") || truthy("HSE_RELEASE") {
+        if std::fs::write(&out, "").is_err() {
+            panic!("could not write the generated HIBP key file to OUT_DIR");
+        }
+        return;
+    }
+    let from_env = std::env::var("HIBP_API_KEY")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let key_file = std::env::var_os("HOME").map(|h| {
+        PathBuf::from(h)
+            .join(".config")
+            .join("hibp")
+            .join("api_key")
+    });
+    if let Some(file) = &key_file {
+        // Watch the file when it exists, else its directory (so creating the
+        // file later triggers a rebuild). A watch on a path that does not exist
+        // would rerun this script on every build.
+        if file.is_file() {
+            println!("cargo:rerun-if-changed={}", file.display());
+        } else if let Some(dir) = file.parent().filter(|d| d.is_dir()) {
+            println!("cargo:rerun-if-changed={}", dir.display());
+        }
+    }
+    let key = from_env
+        .or_else(|| {
+            key_file
+                .as_ref()
+                .and_then(|f| std::fs::read_to_string(f).ok())
+                .map(|v| v.trim().to_string())
+        })
+        .unwrap_or_default();
+    // A value with a line break or quote cannot be a real key; embed nothing
+    // rather than something malformed.
+    let key = if key.chars().any(|c| c.is_control() || c == '"') {
+        String::new()
+    } else {
+        key
+    };
+    if std::fs::write(&out, key).is_err() {
+        // Deliberately generic: the message must never carry the value.
+        panic!("could not write the generated HIBP key file to OUT_DIR");
+    }
 }
 
 /// Stamp the exact source revision into the binary as `HSE_GIT_SHA` /

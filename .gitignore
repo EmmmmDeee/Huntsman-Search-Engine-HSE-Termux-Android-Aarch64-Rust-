@@ -49,3 +49,11 @@
 .huntsman.env
 .claude/worktrees/
 .claude/settings.local.json
+
+# HIBP API key material. build.rs embeds the key from HIBP_API_KEY or
+# ~/.config/hibp/api_key into OUT_DIR only (never the source tree); these
+# patterns stop a stray local copy from ever being committed.
+hibp_api_key
+hibp_api_key.*
+hibp_embedded_key*
+hibp_oauth*.json

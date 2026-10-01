@@ -14,10 +14,30 @@
 //! breaker benches the module under its cooldown reason rather than counting a
 //! fault, and `hse doctor` / the API read it as a throttle, not an outage.
 //!
-//! Key: required, from HUNTSMAN_HIBP_KEY. HIBP has no free tier and this build
-//! embeds no credential, so an unconfigured module reports a "needs key" skip
-//! carrying the subscription URL rather than authenticating as someone else.
+//! Key: required. Resolved by [`key::KeyLoader::default_chain`] in this order:
+//! `HIBP_API_KEY`, the `HUNTSMAN_HIBP_KEY` slot, `~/.config/hibp/api_key`, then
+//! the key `build.rs` embedded at build time (none in CI or release builds).
+//! With none of them, the module reports a "needs key" skip carrying the
+//! subscription URL.
+//!
+//! The scan module above is one consumer. The full library surface (every
+//! documented v3 read endpoint, Pwned Passwords SHA-1/NTLM ranges, plan
+//! gating, the client-side rate limiter and the OAuth 2.0 + PKCE flow) is in
+//! [`client`], [`passwords`], [`rate_limit`] and [`oauth`]; see
+//! `src/modules/hibp/README.md`.
 
+pub mod client;
+pub mod error;
+pub mod key;
+mod md4;
+pub mod oauth;
+pub mod passwords;
+pub mod rate_limit;
+pub mod types;
+
+#[cfg(test)]
+#[path = "tests/lib.rs"]
+mod lib_tests;
 #[cfg(test)]
 mod tests;
 
@@ -359,7 +379,14 @@ impl Module for Hibp {
         // cascade in `api_get` advances it to the next usable pooled key when one
         // is exhausted, so a later request in the same process() starts from the
         // last key that worked instead of re-probing a burned one.
-        let mut key = ctx.key(KEY_ENV)?.to_string();
+        // Same precedence as the library client: HIBP_API_KEY, the scan's
+        // HUNTSMAN_HIBP_KEY slot, ~/.config/hibp/api_key, the build-time key.
+        let Some((loaded, origin)) = key::KeyLoader::default_chain(ctx.key_opt(KEY_ENV)).load()
+        else {
+            return Err(Error::MissingKey(KEY_ENV.into()));
+        };
+        tracing::debug!(module = SRC, origin = ?origin, "HIBP key loaded");
+        let mut key = loaded.expose().to_string();
         // Keys already burned this call — seeded so the cascade never re-hands one.
         let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut result = ModuleResult::new();
@@ -406,10 +433,15 @@ impl Hibp {
                 if ctx.cancel.is_cancelled() {
                     return Ok(None);
                 }
+                // Client-side pacing shared with the library client (default
+                // 10 req/min, HIBP_RATE_LIMIT_PER_MINUTE), on top of the 429
+                // Retry-After handling below.
+                rate_limit::RateLimiter::shared().acquire().await;
                 let resp = ctx
                     .http
                     .get(url)
                     .header("hibp-api-key", key.as_str())
+                    .header(reqwest::header::USER_AGENT, client::USER_AGENT)
                     .header("Accept", "application/json")
                     .timeout(Duration::from_secs(15))
                     .send_tagged(SRC)

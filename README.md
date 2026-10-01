@@ -619,6 +619,29 @@ diagnostic bundle") for the complete engine state in one file.
 
 ---
 
+## Have I Been Pwned (HIBP)
+
+The `hibp` module and library client cover every HIBP API v3 read endpoint
+(breaches, accounts, pastes, domains, subscription, stealer logs) and the Pwned
+Passwords SHA-1/NTLM range API. Full details: [`src/modules/hibp/README.md`](src/modules/hibp/README.md).
+
+- **Key sources, first one set wins:** `HIBP_API_KEY` → `HUNTSMAN_HIBP_KEY` →
+  `~/.config/hibp/api_key` (trimmed, `chmod 600`) → a key embedded at build time.
+  Runtime sources always override the embedded key.
+- **Build-time embed:** `build.rs` compiles in the build machine's key (from
+  `HIBP_API_KEY` or the key file) via `OUT_DIR`, never the source tree. A
+  binary built that way **contains the key**. The embed is skipped when
+  `HUNTSMAN_HIBP_NO_EMBED=1`, `CI` or `HSE_RELEASE` is set, so CI and release
+  binaries carry no key and load it at runtime.
+- **Plan gating:** stealer-log and k-anonymity account-range calls check
+  `/subscription/status` first and fail with a typed `PlanNotEntitled` error,
+  without calling the endpoint, when the plan lacks them (Core 1 has neither).
+  Pwned Passwords is free and ungated.
+- **Rate limits:** 10 requests/minute client-side by default
+  (`HIBP_RATE_LIMIT_PER_MINUTE`), and a 429's `retry-after` is honoured.
+- **OAuth:** an authorization-code + PKCE (S256) library flow for HIBP's
+  `hibp.mcp` scope / MCP resource, with dynamic client registration.
+
 ## Documentation
 
 ### 🚀 All-In-One Guides (Start Here)
