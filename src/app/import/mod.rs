@@ -44,9 +44,9 @@ use csv::{
 use dossier::{cmd_import_dossier, parse_dossier};
 use html::{cmd_import_html, parse_oathnet_html};
 use json::{import_json_output, parse_oathnet_json};
-use seeknow_bulk::looks_like_seeknow_bulk;
 use local::cmd_import_local_dir;
 use oathnet_report::{cmd_import_oathnet_report, looks_like_oathnet_report, parse_oathnet_report};
+use seeknow_bulk::looks_like_seeknow_bulk;
 use sql_dump::{cmd_import_sql_dump, looks_like_sql_dump, parse_sql_dump};
 use stealer::{cmd_import_stealerlogs, looks_like_stealerlogs, parse_stealerlogs};
 use txt::{cmd_import_txt, parse_oathnet_txt};
