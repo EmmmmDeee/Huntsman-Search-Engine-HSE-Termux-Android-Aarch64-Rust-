@@ -819,7 +819,7 @@ impl CapabilityLedger {
     pub fn evidence_content_hash(&self, technique_id: &str) -> Option<String> {
         self.rows
             .get(technique_id)
-            .map(|r| r.evidence_content_hash())
+            .map(CapabilityRow::evidence_content_hash)
     }
 
     /// Provenance binding for a row's evidence links, if present.
@@ -829,7 +829,7 @@ impl CapabilityLedger {
     pub fn evidence_provenance_binding(&self, technique_id: &str) -> Option<String> {
         self.rows
             .get(technique_id)
-            .map(|r| r.evidence_provenance_binding())
+            .map(CapabilityRow::evidence_provenance_binding)
     }
 
     /// Derived status for a technique, if present.
