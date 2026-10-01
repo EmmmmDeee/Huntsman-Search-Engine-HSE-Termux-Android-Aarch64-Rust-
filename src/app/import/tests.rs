@@ -3497,3 +3497,34 @@ async fn seeknow_bulk_keeps_source_and_builds_search_bodies() {
     });
     assert!(sourced, "ingest must keep the breach-site label for the later stage");
 }
+
+/// Binding identifiers join corpora. A same name with no shared binding stays out.
+#[test]
+fn seeknow_bulk_graph_joins_on_binding_edges_only() {
+    let body = r#"{
+      "targets": ["Ada Example"],
+      "results": [{
+        "rows": [
+          {"_source": "SeekNow • Snusbase", "email": "ada@example.com", "name": "Ada Example", "hash": "aaaaaaaaaaaaaaaaaaaa"},
+          {"_source": "LeakOSINT • Teg.com.au", "email": "ada@example.com", "username": "ada-example"},
+          {"_source": "LeakOSINT • PeopleDataLabs", "name": "Ada Example", "address": "1 Other Street"}
+        ]
+      }]
+    }"#;
+    let doc: serde_json::Value = serde_json::from_str(body).unwrap();
+    let clusters = super::seeknow_bulk::resolve_identity_clusters(&doc);
+    let joined = clusters.iter().find(|c| {
+        c.bindings.iter().any(|(k, v)| k == "email" && v == "ada@example.com")
+    });
+    let joined = joined.expect("email cluster");
+    assert!(joined.origins.iter().any(|o| o.contains("Snusbase")));
+    assert!(joined.origins.iter().any(|o| o.contains("Teg")));
+    assert!(joined.supporting.iter().any(|(k, v)| k == "username" && v == "ada-example"));
+    assert!(
+        clusters.iter().any(|c| {
+            c.bindings.is_empty()
+                && c.annotations.iter().any(|(k, v)| k == "address" && v.contains("Other"))
+        }),
+        "name-only row must not join the email component: {clusters:?}"
+    );
+}

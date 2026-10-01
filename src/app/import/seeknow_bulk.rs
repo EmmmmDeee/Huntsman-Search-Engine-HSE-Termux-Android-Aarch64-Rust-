@@ -264,8 +264,9 @@ fn evidence_sourced(
 }
 
 
-/// One `POST /api/v1/search` body, plus the row origin the later submit stage
-/// still has. `origin` is the file's `_source`; it is not sent as the query.
+/// One `POST /api/v1/search` body, plus the row origins the later submit stage
+/// still has. `origin` is the file's `_source` values, joined. It is not sent
+/// as the query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SeeknowSearchQuery {
     pub query: String,
@@ -273,12 +274,187 @@ pub(crate) struct SeeknowSearchQuery {
     pub origin: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IdClass {
+    Binding,
+    Supporting,
+    Annotation,
+}
+
+#[derive(Clone)]
+struct Ident {
+    class: IdClass,
+    query_type: &'static str,
+    value: String,
+    origin: String,
+}
+
+/// Graph resolution for one bulk file.
+///
+/// Binding identifiers (email, phone, profile URL) are the only edges that
+/// open or extend a component. Username and hash attach inside a component
+/// and do not bridge two people. Name, address, and date of birth annotate
+/// and never create a component. Breach-site labels stay on the component
+/// as origins.
+pub(crate) struct IdentityCluster {
+    pub bindings: Vec<(String, String)>,
+    pub supporting: Vec<(String, String)>,
+    pub annotations: Vec<(String, String)>,
+    pub origins: Vec<String>,
+}
+
+pub(crate) fn resolve_identity_clusters(doc: &serde_json::Value) -> Vec<IdentityCluster> {
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    fn unite(parent: &mut [usize], a: usize, b: usize) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra != rb {
+            parent[rb] = ra;
+        }
+    }
+    let grouped = collect_row_idents(doc);
+    let mut flat: Vec<Ident> = Vec::new();
+    let mut row_of: Vec<usize> = Vec::new();
+    for (row_i, row) in grouped.iter().enumerate() {
+        for ident in row {
+            row_of.push(row_i);
+            flat.push(ident.clone());
+        }
+    }
+    let mut parent: Vec<usize> = (0..flat.len()).collect();
+    let mut binding_at: std::collections::HashMap<(String, String), usize> =
+        std::collections::HashMap::new();
+    let mut bindings_in_row: Vec<Vec<usize>> = vec![Vec::new(); grouped.len()];
+    for (idx, ident) in flat.iter().enumerate() {
+        if ident.class != IdClass::Binding {
+            continue;
+        }
+        let key = (ident.query_type.to_string(), ident.value.to_ascii_lowercase());
+        if let Some(prev) = binding_at.insert(key, idx) {
+            unite(&mut parent, prev, idx);
+        }
+        bindings_in_row[row_of[idx]].push(idx);
+    }
+    for row in &bindings_in_row {
+        if let Some(first) = row.first() {
+            for other in row.iter().skip(1) {
+                unite(&mut parent, *first, *other);
+            }
+        }
+    }
+    let mut clusters: std::collections::BTreeMap<usize, IdentityCluster> =
+        std::collections::BTreeMap::new();
+    for (idx, ident) in flat.iter().enumerate() {
+        let root = if ident.class == IdClass::Binding {
+            find(&mut parent, idx)
+        } else if let Some(bind) = bindings_in_row[row_of[idx]].first() {
+            find(&mut parent, *bind)
+        } else {
+            idx
+        };
+        let cluster = clusters.entry(root).or_insert_with(|| IdentityCluster {
+            bindings: Vec::new(),
+            supporting: Vec::new(),
+            annotations: Vec::new(),
+            origins: Vec::new(),
+        });
+        let pair = (ident.query_type.to_string(), ident.value.clone());
+        let slot = match ident.class {
+            IdClass::Binding => &mut cluster.bindings,
+            IdClass::Supporting => &mut cluster.supporting,
+            IdClass::Annotation => &mut cluster.annotations,
+        };
+        if !slot.contains(&pair) {
+            slot.push(pair);
+        }
+        if !ident.origin.is_empty() && !cluster.origins.iter().any(|o| o == &ident.origin) {
+            cluster.origins.push(ident.origin.clone());
+        }
+    }
+    clusters.into_values().collect()
+}
+
+fn collect_row_idents(doc: &serde_json::Value) -> Vec<Vec<Ident>> {
+    let mut rows_out = Vec::new();
+    let Some(results) = doc.get("results").and_then(|v| v.as_array()) else {
+        return rows_out;
+    };
+    for result in results {
+        let Some(rows) = result.get("rows").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for row in rows {
+            let Some(obj) = row.as_object() else {
+                continue;
+            };
+            let origin = obj.get("_source").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let mut idents = Vec::new();
+            let mut push = |class, query_type: &'static str, value: &str| {
+                let value = value.trim().trim_end_matches('\r');
+                if value.len() < 2 {
+                    return;
+                }
+                idents.push(Ident { class, query_type, value: value.to_string(), origin: origin.clone() });
+            };
+            if let Some(email) = obj.get("email").and_then(|v| v.as_str()) {
+                if email.contains('@') && !email.contains(' ') {
+                    push(IdClass::Binding, "email", email);
+                }
+            }
+            if let Some(phone) = obj.get("phone").or_else(|| obj.get("mobile")).and_then(|v| v.as_str()) {
+                let digits = phone.chars().filter(|c| c.is_ascii_digit()).count();
+                if digits >= 8 {
+                    push(IdClass::Binding, "phone", phone);
+                }
+            }
+            if let Some(url) = obj.get("url").and_then(|v| v.as_str()) {
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    push(IdClass::Binding, "url", url);
+                }
+            }
+            for key in ["username", "nick"] {
+                if let Some(user) = obj.get(key).and_then(|v| v.as_str()) {
+                    if !user.contains('@') {
+                        push(IdClass::Supporting, "username", user);
+                    }
+                }
+            }
+            if let Some(hash) = obj.get("hash").or_else(|| obj.get("encrypted_password")).and_then(|v| v.as_str()) {
+                if hash.len() >= 16 {
+                    push(IdClass::Supporting, "hash", hash);
+                }
+            }
+            if let Some(name) = obj.get("full_name").and_then(|v| v.as_str()) {
+                push(IdClass::Annotation, "name", name);
+            } else if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+                push(IdClass::Annotation, "name", name);
+            }
+            if let Some(addr) = obj.get("address").and_then(|v| v.as_str()) {
+                push(IdClass::Annotation, "address", addr);
+            }
+            if let Some(dob) = obj.get("birthdate").or_else(|| obj.get("date_of_birth")).and_then(|v| v.as_str()) {
+                push(IdClass::Annotation, "dob", dob);
+            }
+            if !idents.is_empty() {
+                rows_out.push(idents);
+            }
+        }
+    }
+    rows_out
+}
+
 /// Build the SeekNow bulk query this file will be submitted as.
 ///
-/// Terms come from `targets`, each result `target`, and row identity fields
-/// (email, username, phone, name). Breach-site labels are kept on `origin`
-/// and are not query terms. Hashes are not queried. Order is file order,
-/// de-duplicated on `(type, query)`.
+/// Terms are the resolved binding identifiers (email, phone, profile URL) and
+/// supporting usernames, one each. The operator's `targets` are included as
+/// name queries. Row names, addresses, hashes, and breach-site labels are not
+/// query terms. Origins are kept on each item.
 pub(crate) fn bulk_query_from_doc(doc: &serde_json::Value) -> Vec<SeeknowSearchQuery> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -303,45 +479,13 @@ pub(crate) fn bulk_query_from_doc(doc: &serde_json::Value) -> Vec<SeeknowSearchQ
             }
         }
     }
-    let Some(results) = doc.get("results").and_then(|v| v.as_array()) else {
-        return out;
-    };
-    for result in results {
-        let result_type = result
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("name");
-        if let Some(target) = result.get("target").and_then(|v| v.as_str()) {
-            push(target, result_type, "");
-        }
-        let Some(rows) = result.get("rows").and_then(|v| v.as_array()) else {
-            continue;
-        };
-        for row in rows {
-            let Some(obj) = row.as_object() else {
+    for cluster in resolve_identity_clusters(doc) {
+        let origin = cluster.origins.join(" | ");
+        for (kind, value) in cluster.bindings.iter().chain(cluster.supporting.iter()) {
+            if kind == "hash" {
                 continue;
-            };
-            let origin = obj.get("_source").and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(email) = obj.get("email").and_then(|v| v.as_str()) {
-                if email.contains('@') {
-                    push(email, "email", origin);
-                }
             }
-            for key in ["username", "nick"] {
-                if let Some(user) = obj.get(key).and_then(|v| v.as_str()) {
-                    if !user.contains('@') {
-                        push(user, "username", origin);
-                    }
-                }
-            }
-            if let Some(phone) = obj.get("phone").and_then(|v| v.as_str()) {
-                push(phone, "phone", origin);
-            }
-            if let Some(name) = obj.get("full_name").and_then(|v| v.as_str()) {
-                push(name, "name", origin);
-            } else if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
-                push(name, "name", origin);
-            }
+            push(value, kind, &origin);
         }
     }
     out
@@ -349,22 +493,26 @@ pub(crate) fn bulk_query_from_doc(doc: &serde_json::Value) -> Vec<SeeknowSearchQ
 
 /// JSON document the later submit stage posts, one `/api/v1/search` body per term.
 pub(crate) fn bulk_query_document(doc: &serde_json::Value) -> serde_json::Value {
+    let clusters = resolve_identity_clusters(doc);
     let queries: Vec<serde_json::Value> = bulk_query_from_doc(doc)
         .into_iter()
         .map(|q| {
             serde_json::json!({
                 "endpoint": "/api/v1/search",
-                "body": {
-                    "query": q.query,
-                    "type": q.query_type,
-                    "limit": 500
-                },
+                "body": { "query": q.query, "type": q.query_type, "limit": 500 },
                 "origin": q.origin,
             })
         })
         .collect();
+    let cluster_view: Vec<serde_json::Value> = clusters.iter().map(|c| serde_json::json!({
+        "bindings": c.bindings,
+        "supporting": c.supporting.iter().filter(|(k, _)| k != "hash").collect::<Vec<_>>(),
+        "annotations": c.annotations,
+        "origins": c.origins,
+    })).collect();
     serde_json::json!({
         "provider": "seeknow",
+        "clusters": cluster_view,
         "queries": queries,
     })
 }
@@ -424,7 +572,7 @@ pub(super) async fn cmd_import_seeknow_bulk(body: &str, _path: &str, output: &st
     note(
         output,
         format!(
-            "Importing SeekNow bulk export: target=\"{target}\" ({} search bodies ready for a later SeekNow bulk submit; breach-site labels kept)",
+            "Importing SeekNow bulk export: target=\"{target}\" ({} resolved search bodies for a later SeekNow bulk submit; breach-site labels kept on cluster origins)",
             queries.len()
         ),
     );
