@@ -785,3 +785,67 @@ fn key_and_token_symlinks_are_refused() {
     assert_eq!(std::fs::read(&target).unwrap(), b"private-key");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn token_store_concurrent_writers_all_succeed_with_a_complete_final_document() {
+    use std::sync::Barrier;
+
+    let dir = scratch("concurrent-tokens");
+    let path = dir.join("tokens.json");
+    let sentinel = dir.join(format!("tokens.json.{}.tmp", std::process::id()));
+    std::fs::write(&sentinel, b"owned by another writer").unwrap();
+    let tokens: Vec<oauth::TokenSet> = (0..16)
+        .map(|writer| {
+            serde_json::from_value(serde_json::json!({
+                "access_token": format!("access-{writer}-{}", "a".repeat(16000)),
+                "refresh_token": format!("refresh-{writer}-{}", "r".repeat(16000)),
+                "expires_at": 123_456,
+                "scope": oauth::SCOPES
+            }))
+            .unwrap()
+        })
+        .collect();
+    let barrier = Barrier::new(tokens.len());
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = tokens
+            .iter()
+            .map(|token| {
+                let path = &path;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let store = oauth::FileTokenStore::new(path.clone());
+                    let mut results = Vec::new();
+                    for _ in 0..8 {
+                        barrier.wait();
+                        let saved = store.save(token);
+                        barrier.wait();
+                        results.push((saved, store.load()));
+                    }
+                    results
+                })
+            })
+            .collect();
+        for handle in handles {
+            for (saved, loaded) in handle.join().unwrap() {
+                assert!(saved.is_ok(), "{saved:?}");
+                assert!(tokens.contains(&loaded.unwrap()));
+            }
+        }
+    });
+    let document: oauth::TokenSet = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(tokens.contains(&document));
+    assert_eq!(
+        std::fs::read(&sentinel).unwrap(),
+        b"owned by another writer"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
