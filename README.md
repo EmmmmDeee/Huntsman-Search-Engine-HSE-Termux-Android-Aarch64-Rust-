@@ -2,7 +2,7 @@
 
 Only current version of the project. Previous trees remain in git history.
 
-Offline Rust core. No network client. No credentials. The ledger is a hash chain in `var/ledger.json`. A tampered file fails to load. A verified claim is not an ATT&CK score.
+Offline Rust core. No network client. No credentials. The ledger is a hash chain in `var/ledger.json`. A full session terminate must name that tip. A verified claim is not an ATT&CK score.
 
 ```
 cargo test

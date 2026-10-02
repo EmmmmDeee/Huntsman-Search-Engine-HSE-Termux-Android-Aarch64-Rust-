@@ -2,7 +2,7 @@
 
 Target: an unprivileged offline Rust core that records an RCVF session, refuses an unsupported claim, resolves identity only on a shared email or handle, computes geodesic distance and co-location, seals claims in a hashed ledger, and emits STIX or an ATT&CK Navigator layer only when this crate implements that technique.
 
-Ledger entries are a hash chain stored at `var/ledger.json`. `save_chain` refuses a broken chain. `load_chain` rejects a tampered file. Reordering fails `chain_intact`.
+A full terminate must name the ledger tip. An empty tip is refused. `bound_to` is false when the session tip and the chain tip differ.
 
 A verified capability is not a technique score. The binding table is empty. Haversine is not T1591. Challenge classification is not T1592.
 

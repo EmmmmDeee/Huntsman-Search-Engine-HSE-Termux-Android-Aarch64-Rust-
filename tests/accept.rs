@@ -14,9 +14,9 @@ use huntsman_recon::Error;
 #[test]
 fn terminate_refuses_empty_and_store_roundtrip() {
     let mut empty = Session::new("empty");
-    let err = empty.terminate("still unknown".into(), false).expect_err("refuse");
+    let err = empty.terminate("still unknown".into(), false, "").expect_err("refuse");
     assert!(matches!(err, Error::TerminateRefused(_)));
-    let err = empty.terminate("  ".into(), true).expect_err("residual");
+    let err = empty.terminate("  ".into(), true, "").expect_err("residual");
     assert!(matches!(err, Error::MissingField(_)));
 
     let mut session = Session::new("full");
@@ -37,7 +37,10 @@ fn terminate_refuses_empty_and_store_roundtrip() {
         evidence_level: EvidenceLevel::DirectObservation,
         does_not_show: "not the monolith".into(),
     }).unwrap();
-    session.terminate("egress blocked".into(), false).unwrap();
+    let tip = "ab".repeat(32);
+    session.terminate("egress blocked".into(), false, &tip).unwrap();
+    assert!(session.bound_to(&tip));
+    assert!(!session.bound_to("cd".repeat(32).as_str()));
 
     let root = std::env::temp_dir().join(format!("huntsman-recon-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

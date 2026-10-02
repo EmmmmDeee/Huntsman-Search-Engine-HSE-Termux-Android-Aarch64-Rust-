@@ -9,6 +9,7 @@ use huntsman_recon::classify::classify_response;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
 use huntsman_recon::identity::{resolve, PersonRecord};
 use huntsman_recon::ledger::{append, chain_intact, load_chain, save_chain, seal, Claim};
+use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
 use huntsman_recon::navigator::layer;
 use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
@@ -116,6 +117,43 @@ fn check() -> ExitCode {
     }
     if load_chain(path).ok().as_deref() != Some(entries.as_slice()) {
         return ExitCode::from(9);
+    }
+    let tip = entries.last().map(|e| e.hash.as_str()).unwrap_or("");
+    let mut session = Session::new("check");
+    session.apply_recover(
+        "offline core",
+        "chain bound to session",
+        "no network",
+        "terminate only with tip",
+    );
+    if session.add_candidate(Candidate {
+        statement: "hash chain".into(),
+        alternatives: vec!["independent hashes".into()],
+        reverse_observation: "reorder undetected".into(),
+    }).is_err() {
+        return ExitCode::from(6);
+    }
+    let _ = session.add_falsify(FalsifyRecord {
+        attack: "terminate without tip".into(),
+        test: "full terminate empty tip".into(),
+        result: "refused".into(),
+    });
+    let _ = session.add_execute(ExecuteRecord {
+        action: "check".into(),
+        observed: format!("{meters:.0}"),
+        component: "src/geoint.rs".into(),
+    });
+    let _ = session.add_verify(VerifyRecord {
+        claim: "tip binds the session".into(),
+        status: Status::Verified,
+        evidence_level: EvidenceLevel::DirectObservation,
+        does_not_show: "not a live collection".into(),
+    });
+    if session.terminate("no handset run".into(), false, "").is_ok() {
+        return ExitCode::from(6);
+    }
+    if session.terminate("no handset run".into(), false, tip).is_err() || !session.bound_to(tip) {
+        return ExitCode::from(6);
     }
     let _ = fs::write("var/navigator.json", serde_json::to_string_pretty(&nav).unwrap_or_default());
     println!("accepted techniques=0");

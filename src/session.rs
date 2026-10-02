@@ -64,6 +64,7 @@ pub struct VerifyRecord {
 pub struct Termination {
     pub partial: bool,
     pub residual_uncertainty: String,
+    pub ledger_tip: String,
     pub at_utc: String,
 }
 
@@ -156,7 +157,7 @@ impl Session {
         gaps
     }
 
-    pub fn terminate(&mut self, residual: String, partial: bool) -> Result<(), Error> {
+    pub fn terminate(&mut self, residual: String, partial: bool, ledger_tip: &str) -> Result<(), Error> {
         require_text("residual_uncertainty", &residual)?;
         if !partial {
             let gaps = self.terminate_gaps();
@@ -166,14 +167,23 @@ impl Session {
                     gaps.join(", ")
                 )));
             }
+            if !tip_is_hash(ledger_tip) {
+                return Err(Error::TerminateRefused("ledger tip is not a chain hash".into()));
+            }
         }
         self.termination = Some(Termination {
             partial,
             residual_uncertainty: residual,
+            ledger_tip: ledger_tip.to_owned(),
             at_utc: utc_now(),
         });
         self.touch();
         Ok(())
+    }
+
+    #[must_use]
+    pub fn bound_to(&self, tip: &str) -> bool {
+        self.termination.as_ref().is_some_and(|t| t.ledger_tip == tip)
     }
 
     fn touch(&mut self) {
@@ -187,6 +197,10 @@ fn require_text(name: &str, value: &str) -> Result<(), Error> {
     } else {
         Ok(())
     }
+}
+
+fn tip_is_hash(tip: &str) -> bool {
+    tip.len() == 64 && tip.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn generate_id() -> String {
