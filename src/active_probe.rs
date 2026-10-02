@@ -17,6 +17,8 @@ const PROBE_PATHS: [&str; 4] = [
     "/sitemap.xml",
     "/.well-known/security.txt",
 ];
+const MAX_PIVOTS: usize = 256;
+const MAX_PIVOT_URL_BYTES: usize = 2_048;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbeOptions {
@@ -219,6 +221,7 @@ fn extract_response_pivots(
 fn insert_pivot(pivots: &mut BTreeMap<String, String>, base: &str, source: &str, raw: &str) {
     let raw = raw.trim().trim_matches(['\'', '"', '<', '>', '(', ')']);
     if raw.is_empty()
+        || raw.len() > MAX_PIVOT_URL_BYTES
         || raw.starts_with('#')
         || raw.starts_with("mailto:")
         || raw.starts_with("javascript:")
@@ -226,9 +229,13 @@ fn insert_pivot(pivots: &mut BTreeMap<String, String>, base: &str, source: &str,
     {
         return;
     }
-    if let Ok(url) = resolve_location(base, raw) {
-        pivots.entry(url).or_insert_with(|| source.to_owned());
+    let Ok(url) = resolve_location(base, raw) else {
+        return;
+    };
+    if url.len() > MAX_PIVOT_URL_BYTES || pivots.contains_key(&url) || pivots.len() >= MAX_PIVOTS {
+        return;
     }
+    pivots.insert(url, source.to_owned());
 }
 
 fn prefixed_value<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
