@@ -5,17 +5,40 @@
 //! its `Debug` shows the credential fingerprint, which is what ledgers and logs
 //! record. Values come from a keys file (`NAME=value` lines, mode 0600) or the
 //! process environment; the file wins so a project can pin its own keys.
+//!
+//! The keys file is `--keys FILE` when given, otherwise `$HOME/.huntsman.env` when
+//! it exists (see [`Keys::resolve`]). Both go through [`Keys::load`].
 
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::OsStr;
 use std::fmt;
-use std::path::Path;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 use crate::credential_origin::CredentialFingerprint;
 use crate::error::Error;
 use crate::fsio::read_bounded;
 
 const MAX_KEYS_FILE_BYTES: u64 = 64 * 1024;
+
+/// Keys file read from `$HOME` when no `--keys FILE` is given.
+pub const DEFAULT_KEYS_FILE: &str = ".huntsman.env";
+
+/// `$HOME/.huntsman.env`, or `None` when `home` is unset or empty.
+#[must_use]
+pub fn default_keys_path(home: Option<&OsStr>) -> Option<PathBuf> {
+    let home = home.filter(|home| !home.is_empty())?;
+    Some(Path::new(home).join(DEFAULT_KEYS_FILE))
+}
+
+/// The keys for one command run, plus a warning for stderr when the default file
+/// was skipped. The warning names the path and the fix; it never holds a value.
+#[derive(Debug)]
+pub struct ResolvedKeys {
+    pub keys: Keys,
+    pub warning: Option<String>,
+}
 
 /// Is this a real credential rather than a blank or a template placeholder?
 ///
@@ -175,20 +198,11 @@ impl Keys {
     /// `Error::Store` for I/O problems or loose permissions; `Error::Invalid` for
     /// malformed content.
     pub fn load(path: &Path) -> Result<Self, Error> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(path)
-                .map_err(|e| Error::Store(format!("{}: {e}", path.display())))?
-                .permissions()
-                .mode();
-            if mode & 0o077 != 0 {
-                return Err(Error::Store(format!(
-                    "{} is accessible by group/others (mode {:o}); run chmod 600",
-                    path.display(),
-                    mode & 0o777
-                )));
-            }
+        if let Some(mode) = loose_mode(path)? {
+            return Err(Error::Store(format!(
+                "{} is accessible by group/others (mode {mode:o}); run chmod 600",
+                path.display()
+            )));
         }
         let bytes = read_bounded(path, MAX_KEYS_FILE_BYTES)?;
         let text = String::from_utf8(bytes)
@@ -196,6 +210,55 @@ impl Keys {
         let mut keys = Self::parse(&text)?;
         keys.use_env = true;
         Ok(keys)
+    }
+
+    /// Keys for a command run.
+    ///
+    /// With `explicit` (`--keys FILE`) this is exactly [`Keys::load`] on that path
+    /// and the default file is not read. Otherwise `$HOME/.huntsman.env` is loaded
+    /// with [`Keys::load`] when it exists. If it does not exist, or `home` is unset,
+    /// the result is [`Keys::from_env`], as before the default file existed. On
+    /// Unix a default file readable by group or others is not read: the result is
+    /// [`Keys::from_env`] plus a warning naming the path and `chmod 600`.
+    ///
+    /// Precedence is that of [`Keys::load`]: a slot in the file wins over the same
+    /// variable in the process environment; slots the file lacks fall back to it.
+    ///
+    /// # Errors
+    /// As [`Keys::load`] for the file that is read, and `Error::Store` when the
+    /// default path cannot be inspected for a reason other than not existing.
+    pub fn resolve(explicit: Option<&Path>, home: Option<&OsStr>) -> Result<ResolvedKeys, Error> {
+        let env_only = |warning| ResolvedKeys {
+            keys: Self::from_env(),
+            warning,
+        };
+        if let Some(path) = explicit {
+            return Ok(ResolvedKeys {
+                keys: Self::load(path)?,
+                warning: None,
+            });
+        }
+        let Some(path) = default_keys_path(home) else {
+            return Ok(env_only(None));
+        };
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {}
+            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+                return Ok(env_only(None));
+            }
+            Err(e) => return Err(Error::Store(format!("{}: {e}", path.display()))),
+        }
+        if let Some(mode) = loose_mode(&path)? {
+            return Ok(env_only(Some(format!(
+                "warning: not loading {} (mode {mode:o}): accessible by group/others; \
+                 fix with `chmod 600 ~/{DEFAULT_KEYS_FILE}`",
+                path.display()
+            ))));
+        }
+        Ok(ResolvedKeys {
+            keys: Self::load(&path)?,
+            warning: None,
+        })
     }
 
     /// File entry first, then the environment. Blank or placeholder values read as
@@ -227,6 +290,24 @@ impl fmt::Debug for Keys {
             .field("slots", &self.slots())
             .finish_non_exhaustive()
     }
+}
+
+/// The permission bits (`mode & 0o777`) when group or others have any access to
+/// `path`, `None` when it is private. Always `None` off Unix.
+#[cfg(unix)]
+fn loose_mode(path: &Path) -> Result<Option<u32>, Error> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path)
+        .map_err(|e| Error::Store(format!("{}: {e}", path.display())))?
+        .permissions()
+        .mode();
+    Ok((mode & 0o077 != 0).then_some(mode & 0o777))
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
+fn loose_mode(_path: &Path) -> Result<Option<u32>, Error> {
+    Ok(None)
 }
 
 fn unquote(v: &str) -> &str {
@@ -337,6 +418,116 @@ mod tests {
                 .get("HUNTSMAN_SURELY_UNSET_SLOT_9")
                 .is_none()
         );
+    }
+
+    /// A fresh `$HOME` stand-in; never the real home directory.
+    fn fake_home(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("huntsman-keys-home-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        dir
+    }
+
+    #[cfg(unix)]
+    fn write_mode(path: &Path, text: &str, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, text).expect("write");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    }
+
+    #[test]
+    fn default_path_needs_a_home() {
+        assert_eq!(default_keys_path(None), None);
+        assert_eq!(default_keys_path(Some(OsStr::new(""))), None);
+        assert_eq!(
+            default_keys_path(Some(OsStr::new("/h"))),
+            Some(PathBuf::from("/h/.huntsman.env"))
+        );
+    }
+
+    #[test]
+    fn missing_default_file_is_environment_only_and_silent() {
+        let home = fake_home("missing");
+        for h in [Some(home.as_os_str()), None] {
+            let resolved = Keys::resolve(None, h).expect("resolve");
+            assert!(resolved.warning.is_none());
+            assert_eq!(resolved.keys.slots(), [] as [&str; 0]);
+            assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
+        }
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_default_file_is_loaded() {
+        let home = fake_home("private");
+        write_mode(
+            &home.join(DEFAULT_KEYS_FILE),
+            "HSE_TEST_DEFAULT_KEY=TEST_ONLY_VALUE_DEFAULT\n",
+            0o600,
+        );
+        let resolved = Keys::resolve(None, Some(home.as_os_str())).expect("resolve");
+        assert!(resolved.warning.is_none());
+        assert_eq!(
+            resolved
+                .keys
+                .get("HSE_TEST_DEFAULT_KEY")
+                .expect("slot")
+                .expose(),
+            "TEST_ONLY_VALUE_DEFAULT"
+        );
+        assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readable_default_file_is_skipped_with_a_valueless_warning() {
+        let home = fake_home("loose");
+        let path = home.join(DEFAULT_KEYS_FILE);
+        for mode in [0o644, 0o640, 0o604, 0o660] {
+            write_mode(&path, "HSE_TEST_LOOSE_KEY=TEST_ONLY_VALUE_LOOSE\n", mode);
+            let resolved = Keys::resolve(None, Some(home.as_os_str())).expect("resolve");
+            assert_eq!(resolved.keys.slots(), [] as [&str; 0], "{mode:o}");
+            assert!(resolved.keys.get("HSE_TEST_LOOSE_KEY").is_none());
+            let warning = resolved.warning.expect("warning");
+            assert!(warning.contains(&path.display().to_string()), "{warning}");
+            assert!(warning.contains("chmod 600 ~/.huntsman.env"), "{warning}");
+            assert!(!warning.contains("TEST_ONLY_VALUE"), "{warning}");
+            assert!(!warning.contains("HSE_TEST_LOOSE_KEY"), "{warning}");
+        }
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_file_replaces_the_default_file() {
+        let home = fake_home("explicit");
+        write_mode(
+            &home.join(DEFAULT_KEYS_FILE),
+            "HSE_TEST_DEFAULT_ONLY=TEST_ONLY_VALUE_DEFAULT\n",
+            0o644,
+        );
+        let explicit = home.join("explicit.env");
+        write_mode(
+            &explicit,
+            "HSE_TEST_EXPLICIT=TEST_ONLY_VALUE_EXPLICIT\n",
+            0o600,
+        );
+        let resolved = Keys::resolve(Some(&explicit), Some(home.as_os_str())).expect("resolve");
+        assert!(resolved.warning.is_none(), "default file not inspected");
+        assert_eq!(resolved.keys.slots(), ["HSE_TEST_EXPLICIT"]);
+        assert!(resolved.keys.get("HSE_TEST_DEFAULT_ONLY").is_none());
+        // `--keys` keeps its own behaviour, including the hard permission error.
+        write_mode(
+            &explicit,
+            "HSE_TEST_EXPLICIT=TEST_ONLY_VALUE_EXPLICIT\n",
+            0o644,
+        );
+        let err = Keys::resolve(Some(&explicit), Some(home.as_os_str())).expect_err("loose");
+        assert!(err.to_string().contains("chmod 600"));
+        std::fs::remove_dir_all(&home).expect("cleanup");
     }
 
     #[cfg(unix)]

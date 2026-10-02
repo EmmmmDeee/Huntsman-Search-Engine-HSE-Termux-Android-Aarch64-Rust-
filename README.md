@@ -30,6 +30,13 @@ cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a 
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
 
+Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys file and the process environment. The file is `NAME=value` lines (`export`, quotes, blank lines and `#` comments allowed; placeholder values count as unset) and is parsed by `keys::Keys::load`, the same loader `keys FILE` uses.
+
+- `--keys FILE` loads exactly that file and nothing else. A file accessible by group/others is an error (exit 66, `run chmod 600`).
+- Without `--keys`, `$HOME/.huntsman.env` is loaded the same way when it exists. A missing file (or unset `HOME`) changes nothing: only the environment is used, with no output. On Unix, including Termux, a default file with `mode & 0o077 != 0` is not read: one stderr line names the path and the fix (`chmod 600 ~/.huntsman.env`) and the run continues with the environment only.
+- Precedence: a slot present in the loaded file wins over the same environment variable; slots the file lacks fall back to the environment.
+- The file is read only when a credential slot is requested. Values never appear in output, warnings or errors; only slot names, line numbers and fingerprint prefixes do.
+
 Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input, 69 `fetch` got no response, 74 artifact write failure, 77 egress policy refused the destination. `check` uses 2–11 for its individual gates.
 
 `tests/readme.rs` runs every example above (except the internet `fetch`), checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`.
