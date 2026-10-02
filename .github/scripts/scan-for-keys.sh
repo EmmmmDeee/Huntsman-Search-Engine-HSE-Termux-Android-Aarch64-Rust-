@@ -2,15 +2,24 @@
 # scan-for-keys.sh <path>... : exit 1 if any file under <path> holds key-like content.
 #
 # Used by .github/workflows/release.yml on the exact release artifacts before
-# anything is published. It reports only the file and the rule name. It never
-# prints a matched value. Binaries are scanned through `strings -a -n 8`; text
-# files are scanned as-is and also get a high-entropy check.
+# anything is published: by the read-only `build` job from the checkout, and
+# by the `publish` job from a byte-identical copy inlined in the workflow (that
+# job checks out nothing; tests/release_ci.rs keeps the two copies equal).
+# It reports only the file and the rule name. It never prints a matched value.
+# Binaries are scanned through `strings -a -n 8`; text files are scanned as-is
+# and also get a high-entropy check. Every failure mode exits non-zero: a
+# missing tool, a missing path, an unreadable file, a broken rule or an
+# entropy-check error is never reported as a clean scan.
 set -uo pipefail
 
 # Fail closed: without these the binary scan or the entropy check would
 # silently find nothing.
-for dep in strings python3 grep find; do
+for dep in strings python3 grep find sort cat mktemp; do
   command -v "$dep" >/dev/null 2>&1 || { echo "::error::scanner dependency missing: $dep"; exit 1; }
+done
+[ "$#" -gt 0 ] || { echo "::error::usage: scan-for-keys.sh <path>..."; exit 1; }
+for p in "$@"; do
+  [ -e "$p" ] || { echo "::error::scan path does not exist: $p"; exit 1; }
 done
 
 hits=0
@@ -31,9 +40,10 @@ RULES=(
   $'aws-access-key-id\tAKIA[0-9A-Z]{16}'
   $'private-key-block\t-----BEGIN [A-Z ]*PRIVATE KEY-----'
   $'bearer-token\t[Bb]earer [A-Za-z0-9._~+/-]{24,}'
-  # HIBP API keys are 32 lowercase hex. The boundaries exclude longer hex runs
-  # (40-hex commit SHAs, 64-hex sha256 digests). A stripped release binary has
-  # no 32-hex runs, so any hit is treated as an embedded key.
+  # HIBP API keys are exactly 32 lowercase hex characters. The boundaries
+  # (no hex character, of either case, on either side) exclude longer hex runs
+  # such as 40-hex commit SHAs and 64-hex sha256 digests. A stripped release
+  # binary built from main has no such run, so any hit fails the scan.
   $'hibp-key-hex\t(^|[^0-9a-fA-F])[0-9a-f]{32}([^0-9a-fA-F]|$)'
   # Credential variable names carrying a non-placeholder value.
   $'credential-assignment\t(HUNTSMAN_[A-Z0-9_]*|HIBP_[A-Z0-9_]*)(KEY|TOKEN|SECRET)["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9_./+-]{12,}'
@@ -51,6 +61,12 @@ for seg in set(re.findall(r"[A-Za-z0-9+]{24,}", txt)):
         print("hit")
 '
 
+# List files up front so a failing `find` fails the scan instead of
+# shortening it.
+list=$(mktemp) || { echo "::error::mktemp failed"; exit 1; }
+trap 'rm -f "$list"' EXIT
+find "$@" -type f -print0 >"$list" || { echo "::error::find failed on: $*"; exit 1; }
+
 scanned=0
 while IFS= read -r -d '' f; do
   scanned=$((scanned + 1))
@@ -64,7 +80,16 @@ while IFS= read -r -d '' f; do
   for rule in "${RULES[@]}"; do
     name=${rule%%$'\t'*}
     re=${rule#*$'\t'}
-    if grep -Eo -- "$re" <<<"$data" | grep -Evq -- "$ALLOW_RE"; then report "$f" "$name"; fi
+    # Collect matches first: piping `grep -o` into `grep -q` can end in
+    # SIGPIPE, which pipefail would turn into a silently missed finding.
+    matches=$(grep -Eo -- "$re" <<<"$data")
+    rc=$?
+    [ "$rc" -le 1 ] || { echo "::error::rule $name failed (grep exit $rc)"; exit 1; }
+    [ -n "$matches" ] || continue
+    kept=$(grep -Ev -- "$ALLOW_RE" <<<"$matches")
+    rc=$?
+    [ "$rc" -le 1 ] || { echo "::error::allow filter failed for rule $name (grep exit $rc)"; exit 1; }
+    [ -z "$kept" ] || report "$f" "$name"
   done
   if [ "$text" = 1 ]; then
     # Segments of 24+ chars mixing upper, lower and digits at >= 4.2 bits/char:
@@ -74,7 +99,7 @@ while IFS= read -r -d '' f; do
       [ -n "$line" ] && report "$f" "high-entropy-string"
     done <<<"$ent"
   fi
-done < <(find "$@" -type f -print0 2>/dev/null | sort -z)
+done < <(sort -z "$list")
 
 echo "rules: ${#RULES[@]} pattern rules + high-entropy (text files)"
 echo "files scanned: $scanned"

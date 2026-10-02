@@ -10,8 +10,8 @@ name: Release (prebuilt Termux aarch64 binary)
 # in-progress replacement that cannot run person lookups yet, so the legacy
 # `hse` build stays the default for users. A recon build moves `latest` only
 # when the repository variable PROMOTE_RECON_TO_LATEST is exactly 'true' (unset
-# today). When it is, `latest` is deleted and re-created only after checking
-# that it is a pre-release.
+# today). When it is, `latest` only ever moves forward along main, and is
+# deleted and re-created only after checking that it is a pre-release.
 #
 # Every release is created with `gh release create` pre-release flags and latest=false, so none can become
 # GitHub's "Latest release". This workflow never creates, edits or deletes a
@@ -22,10 +22,24 @@ name: Release (prebuilt Termux aarch64 binary)
 # every build-time embed file must be empty, and the key scan of the exact
 # artifacts must report zero findings. Otherwise nothing is published.
 #
-# Privilege split: `build` runs cargo (and every dependency build script) with
-# a read-only token, no GH_TOKEN and no persisted git credentials. Only
-# `publish` holds contents/id-token/attestations write; it never runs cargo,
-# re-verifies the downloaded bytes and re-runs the key scan before publishing.
+# Privilege split (same shape as HSE-BLE-API- release.yml):
+#   * `build` runs cargo, every dependency build script and proc-macro, and the
+#     checked-out key scanner with a read-only token, no GH_TOKEN and no
+#     persisted git credentials. It uploads dist/ and records its digests.
+#   * `publish` is the only job with contents/id-token/attestations write. It
+#     never runs on pull_request, checks out nothing and runs no repository
+#     code. It re-checks the downloaded bytes against the digests `build`
+#     recorded, re-runs the key scan from the copy inlined below (never from
+#     the artifact, which the build job could have rewritten), then attests and
+#     publishes. GH_TOKEN is passed only to the steps that call the API.
+#
+# Ordering: per-commit releases are serialised, not coalesced. The `publish`
+# job uses `queue: max`, so up to 100 pending publishes wait in FIFO order
+# instead of the default single pending slot that would drop a middle commit's
+# main-<sha7> (https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency).
+# Because that FIFO order is not guaranteed, each publish is idempotent (an
+# existing complete main-<sha7> at this commit is verified, never replaced) and
+# `latest` refuses to move to a commit that is behind the one it points at.
 #
 # History: this file lived at this path until f0a1c64 deleted it with the rest
 # of the monolith tree. #665 then edited the copy under legacy/, which GitHub
@@ -39,11 +53,12 @@ on:
       - main
   workflow_dispatch:
   # Dry run on PRs that touch the release path: same build, embed check and
-  # key scan, nothing published.
+  # key scan, nothing published, no write token requested.
   pull_request:
     paths:
       - ".github/workflows/release.yml"
       - ".github/scripts/scan-for-keys.sh"
+      - ".github/scripts/install-termux.sh"
       - ".github/actions/setup-ndk-aarch64/**"
       - "build.rs"
       - "Cargo.toml"
@@ -57,14 +72,12 @@ env:
   HUNTSMAN_HIBP_NO_EMBED: "1"
   ASSET: huntsman-recon-aarch64-linux-android
 
-# One lane for all publishing runs; never cancel an in-flight publish. PR dry
-# runs get their own lane so they can never displace a queued main publish.
-# `queue: max` keeps every pending main publish (up to 100) instead of the
-# default single pending slot, which would drop a middle commit's main-<sha7>.
+# Workflow level: a newer PR dry run replaces an older one. Every main run gets
+# its own group (the run id), so main runs are never coalesced here; only the
+# `publish` job below shares a group, with `queue: max`.
 concurrency:
-  group: release-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
-  cancel-in-progress: false
-  queue: max
+  group: release-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   resolve:
@@ -105,6 +118,8 @@ jobs:
           echo "Resolved tag=${tag} build=${build} publish=${publish}"
 
   build:
+    # Runs cargo and every dependency build script: read-only token, no
+    # GH_TOKEN, no persisted git credentials, no OIDC.
     name: Build and key-scan aarch64 Termux binary
     needs: resolve
     if: needs.resolve.outputs.build == 'true'
@@ -113,12 +128,27 @@ jobs:
       contents: read
     env:
       TAG: ${{ needs.resolve.outputs.tag }}
+    outputs:
+      asset_sha256: ${{ steps.digests.outputs.asset_sha256 }}
+      dist_sha256: ${{ steps.digests.outputs.dist_sha256 }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master (2026-08-05)
+      - name: Refuse credentials in the build environment
+        run: |
+          set -euo pipefail
+          # No GitHub token, OIDC request token or persisted git credential may
+          # reach the steps that run repository and dependency code.
+          if env | grep -E '^(GH_TOKEN|GITHUB_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN|ACTIONS_ID_TOKEN_REQUEST_URL)=' >/dev/null; then
+            echo "::error::a credential is set in the build job environment"; exit 1
+          fi
+          if git config --get-regexp '^http\..*\.extraheader$' >/dev/null; then
+            echo "::error::checkout persisted git credentials"; exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05 (Merge #182)
         with:
           toolchain: "1.87"
           targets: aarch64-linux-android
@@ -210,8 +240,20 @@ jobs:
           grep -qx "result: PASS (0 findings)" key-scan-report.txt
           mv key-scan-report.txt dist/key-scan-report.txt
 
+      - name: Record the digests of the scanned files
+        id: digests
+        run: |
+          set -euo pipefail
+          # `publish` re-checks the downloaded artifact against these values.
+          ( cd dist && find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | xargs -d '\n' sha256sum ) > "$RUNNER_TEMP/dist.sha256"
+          cat "$RUNNER_TEMP/dist.sha256"
+          {
+            echo "asset_sha256=$(sha256sum "dist/$ASSET" | cut -d' ' -f1)"
+            echo "dist_sha256=$(sha256sum "$RUNNER_TEMP/dist.sha256" | cut -d' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Upload staged release files
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-dist
           path: dist/
@@ -219,58 +261,227 @@ jobs:
           retention-days: 7
 
   publish:
+    # The only job with write scopes. Never on pull_request; checks out nothing
+    # and runs no repository code: it verifies the handed-over bytes, re-runs
+    # the inlined key scan on them, then calls the attestation action and `gh`.
     name: Publish main-channel pre-releases
     needs: [resolve, build]
-    if: needs.resolve.outputs.publish == 'true'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write     # create the tags and pre-releases
       id-token: write     # Sigstore-backed provenance
       attestations: write # record the attestation
+    # Serialise every main publish without coalescing: `queue: max` keeps up to
+    # 100 pending runs (FIFO) instead of replacing the single pending one.
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
+    concurrency:
+      group: release-publish-main
+      cancel-in-progress: false
+      queue: max
     env:
       TAG: ${{ needs.resolve.outputs.tag }}
-      GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      ASSET_SHA256: ${{ needs.build.outputs.asset_sha256 }}
+      DIST_SHA256: ${{ needs.build.outputs.dist_sha256 }}
     steps:
-      # Only the scanner script is needed here; no build, no persisted token.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/scripts
-          sparse-checkout-cone-mode: true
-
       - name: Download staged release files
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-dist
           path: dist
 
-      - name: Re-verify downloaded bytes and re-run the key scan
+      - name: Re-verify the downloaded bytes against the build job's digests
         run: |
           set -euo pipefail
-          ( cd dist && sha256sum -c "$ASSET.sha256" )
+          [ "${HSE_RELEASE:-}" = "1" ] && [ "${GITHUB_ACTIONS:-}" = "true" ] \
+            || { echo "::error::publishing requires a GitHub Actions build with HSE_RELEASE=1"; exit 1; }
+          [[ "$ASSET_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::no asset digest recorded by the build job"; exit 1; }
+          [[ "$DIST_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::no dist digest recorded by the build job"; exit 1; }
+          files=("$ASSET" "$ASSET.sha256" "$ASSET.provenance.json" key-scan-report.txt install-termux.sh)
+          for a in "${files[@]}"; do
+            [ -f "dist/$a" ] || { echo "::error::downloaded artifact is missing ${a}"; exit 1; }
+          done
+          n="$(find dist -mindepth 1 | wc -l)"
+          [ "$n" -eq "${#files[@]}" ] || { echo "::error::downloaded artifact has ${n} entries, expected exactly ${#files[@]}"; exit 1; }
+          got="$(sha256sum "dist/$ASSET" | cut -d' ' -f1)"
+          [ "$got" = "$ASSET_SHA256" ] || { echo "::error::${ASSET} sha256 ${got} != ${ASSET_SHA256} recorded by the build job"; exit 1; }
+          ( cd dist && find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | xargs -d '\n' sha256sum ) > "$RUNNER_TEMP/dist.sha256"
+          cat "$RUNNER_TEMP/dist.sha256"
+          got="$(sha256sum "$RUNNER_TEMP/dist.sha256" | cut -d' ' -f1)"
+          [ "$got" = "$DIST_SHA256" ] || { echo "::error::downloaded files differ from the ones the build job scanned"; exit 1; }
+          ( cd dist && sha256sum --strict -c "$ASSET.sha256" )
           grep -qx "result: PASS (0 findings)" dist/key-scan-report.txt
-          grep -qx "artifact_sha256: $(sha256sum "dist/$ASSET" | cut -d' ' -f1)" dist/key-scan-report.txt \
+          grep -qx "artifact_sha256: ${ASSET_SHA256}" dist/key-scan-report.txt \
             || { echo "::error::key-scan report does not describe this artifact"; exit 1; }
-          bash .github/scripts/scan-for-keys.sh dist
+          grep -qx "commit: ${GITHUB_SHA}" dist/key-scan-report.txt \
+            || { echo "::error::key-scan report does not describe this commit"; exit 1; }
+
+      # The scanner is inlined, not taken from the artifact: the artifact comes
+      # from the job that ran untrusted build code, and running a script from it
+      # here would hand that code this job's write and OIDC tokens. This copy
+      # comes from the workflow definition itself; tests/release_ci.rs requires
+      # it to be byte-identical to .github/scripts/scan-for-keys.sh.
+      - name: Re-run the key scan on the downloaded bytes (must be zero)
+        run: |
+          set -euo pipefail
+          scanner="$RUNNER_TEMP/scan-for-keys.sh"
+          cat > "$scanner" <<'SCAN_FOR_KEYS'
+          #!/usr/bin/env bash
+          # scan-for-keys.sh <path>... : exit 1 if any file under <path> holds key-like content.
+          #
+          # Used by .github/workflows/release.yml on the exact release artifacts before
+          # anything is published: by the read-only `build` job from the checkout, and
+          # by the `publish` job from a byte-identical copy inlined in the workflow (that
+          # job checks out nothing; tests/release_ci.rs keeps the two copies equal).
+          # It reports only the file and the rule name. It never prints a matched value.
+          # Binaries are scanned through `strings -a -n 8`; text files are scanned as-is
+          # and also get a high-entropy check. Every failure mode exits non-zero: a
+          # missing tool, a missing path, an unreadable file, a broken rule or an
+          # entropy-check error is never reported as a clean scan.
+          set -uo pipefail
+
+          # Fail closed: without these the binary scan or the entropy check would
+          # silently find nothing.
+          for dep in strings python3 grep find sort cat mktemp; do
+            command -v "$dep" >/dev/null 2>&1 || { echo "::error::scanner dependency missing: $dep"; exit 1; }
+          done
+          [ "$#" -gt 0 ] || { echo "::error::usage: scan-for-keys.sh <path>..."; exit 1; }
+          for p in "$@"; do
+            [ -e "$p" ] || { echo "::error::scan path does not exist: $p"; exit 1; }
+          done
+
+          hits=0
+          report() {
+            echo "FINDING file=$1 rule=$2 (value withheld)"
+            echo "::error file=$1::key-like content ($2), value withheld"
+            hits=$((hits + 1))
+          }
+
+          # name<TAB>ERE. Known provider token shapes.
+          RULES=(
+            $'openai-style-sk\t(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}'
+            $'anthropic\tsk-ant-[A-Za-z0-9_-]{20,}'
+            $'google-api-key\tAIza[0-9A-Za-z_-]{35}'
+            $'github-token\tgh[pousr]_[A-Za-z0-9]{36,}'
+            $'github-pat\tgithub_pat_[A-Za-z0-9_]{60,}'
+            $'slack-token\txox[abprs]-[A-Za-z0-9-]{10,}'
+            $'aws-access-key-id\tAKIA[0-9A-Z]{16}'
+            $'private-key-block\t-----BEGIN [A-Z ]*PRIVATE KEY-----'
+            $'bearer-token\t[Bb]earer [A-Za-z0-9._~+/-]{24,}'
+            # HIBP API keys are exactly 32 lowercase hex characters. The boundaries
+            # (no hex character, of either case, on either side) exclude longer hex runs
+            # such as 40-hex commit SHAs and 64-hex sha256 digests. A stripped release
+            # binary built from main has no such run, so any hit fails the scan.
+            $'hibp-key-hex\t(^|[^0-9a-fA-F])[0-9a-f]{32}([^0-9a-fA-F]|$)'
+            # Credential variable names carrying a non-placeholder value.
+            $'credential-assignment\t(HUNTSMAN_[A-Z0-9_]*|HIBP_[A-Z0-9_]*)(KEY|TOKEN|SECRET)["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9_./+-]{12,}'
+          )
+          ALLOW_RE='insert_[a-z0-9_]+_here|AKIAIOSFODNN7EXAMPLE|<value>|\$\{?[A-Z_]+'
+
+          ENTROPY_PY='
+          import collections, math, re, sys
+          txt = open(sys.argv[1], errors="ignore").read()
+          for seg in set(re.findall(r"[A-Za-z0-9+]{24,}", txt)):
+              if not (re.search(r"[A-Z]", seg) and re.search(r"[a-z]", seg) and re.search(r"[0-9]", seg)):
+                  continue
+              c = collections.Counter(seg); n = len(seg)
+              if -sum(v / n * math.log2(v / n) for v in c.values()) >= 4.2:
+                  print("hit")
+          '
+
+          # List files up front so a failing `find` fails the scan instead of
+          # shortening it.
+          list=$(mktemp) || { echo "::error::mktemp failed"; exit 1; }
+          trap 'rm -f "$list"' EXIT
+          find "$@" -type f -print0 >"$list" || { echo "::error::find failed on: $*"; exit 1; }
+
+          scanned=0
+          while IFS= read -r -d '' f; do
+            scanned=$((scanned + 1))
+            if grep -Iq . "$f" 2>/dev/null; then
+              text=1
+              data=$(cat "$f") || { echo "::error::cannot read $f"; exit 1; }
+            else
+              text=0
+              data=$(strings -a -n 8 "$f") || { echo "::error::strings failed on $f"; exit 1; }
+            fi
+            for rule in "${RULES[@]}"; do
+              name=${rule%%$'\t'*}
+              re=${rule#*$'\t'}
+              # Collect matches first: piping `grep -o` into `grep -q` can end in
+              # SIGPIPE, which pipefail would turn into a silently missed finding.
+              matches=$(grep -Eo -- "$re" <<<"$data")
+              rc=$?
+              [ "$rc" -le 1 ] || { echo "::error::rule $name failed (grep exit $rc)"; exit 1; }
+              [ -n "$matches" ] || continue
+              kept=$(grep -Ev -- "$ALLOW_RE" <<<"$matches")
+              rc=$?
+              [ "$rc" -le 1 ] || { echo "::error::allow filter failed for rule $name (grep exit $rc)"; exit 1; }
+              [ -z "$kept" ] || report "$f" "$name"
+            done
+            if [ "$text" = 1 ]; then
+              # Segments of 24+ chars mixing upper, lower and digits at >= 4.2 bits/char:
+              # catches base64/alnum secrets, not paths, snake_case or hex digests.
+              ent=$(python3 -c "$ENTROPY_PY" "$f") || { echo "::error::entropy check failed on $f"; exit 1; }
+              while IFS= read -r line; do
+                [ -n "$line" ] && report "$f" "high-entropy-string"
+              done <<<"$ent"
+            fi
+          done < <(sort -z "$list")
+
+          echo "rules: ${#RULES[@]} pattern rules + high-entropy (text files)"
+          echo "files scanned: $scanned"
+          echo "key scan: $hits finding(s)"
+          [ "$scanned" -gt 0 ] || { echo "::error::nothing scanned"; exit 1; }
+          [ "$hits" -eq 0 ]
+          SCAN_FOR_KEYS
+          bash "$scanner" dist
+
+      - name: Check for an existing ${{ needs.resolve.outputs.tag }}
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}"
+          files=("$ASSET" "$ASSET.sha256" "$ASSET.provenance.json" key-scan-report.txt install-termux.sh)
+          exists=false
+          if ref="$(gh api "$api/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha' 2>/dev/null)"; then
+            read -r type existing <<<"$ref"
+            [ "$type" = "commit" ] && [ "$existing" = "$GITHUB_SHA" ] \
+              || { echo "::error::tag ${TAG} already exists at ${type} ${existing}, not ${GITHUB_SHA}; refusing"; exit 1; }
+            rel="$(gh api "$api/releases/tags/${TAG}")" \
+              || { echo "::error::tag ${TAG} exists at this commit without a published release; delete the tag to re-publish"; exit 1; }
+            [ "$(jq -r .prerelease <<<"$rel")" = "true" ] || { echo "::error::${TAG} exists and is NOT a pre-release; refusing"; exit 1; }
+            for a in "${files[@]}"; do
+              d="$(jq -r --arg a "$a" '[.assets[] | select(.name == $a)] | if length == 1 then (.[0].digest // "") else "" end' <<<"$rel")"
+              [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] \
+                || { echo "::error::${TAG} exists but asset ${a} is missing or has no digest; delete the pre-release to re-publish"; exit 1; }
+            done
+            exists=true
+            echo "${TAG} was already published by an earlier run at this commit; verifying it, not replacing it." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "exists=${exists}" >> "$GITHUB_OUTPUT"
 
       - name: Attest build provenance
         id: attest
+        if: steps.existing.outputs.exists == 'false'
         continue-on-error: true
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: dist/${{ env.ASSET }}
 
       - name: Warn when attestation failed
-        if: steps.attest.outcome != 'success'
+        if: steps.existing.outputs.exists == 'false' && steps.attest.outcome != 'success'
         run: echo "::warning::attestation upload failed; the release is published without it. Re-run to retry."
 
       - name: Publish pre-release ${{ needs.resolve.outputs.tag }}
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if existing="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq .object.sha 2>/dev/null)"; then
-            [ "$existing" = "$GITHUB_SHA" ] || { echo "::error::tag ${TAG} already exists at ${existing}, not ${GITHUB_SHA}; refusing"; exit 1; }
-          fi
           files=("dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" "dist/key-scan-report.txt" "dist/install-termux.sh")
           cat > notes.md <<NOTES
           **In-progress replacement. Cannot run person lookups yet.** This is a main-channel **pre-release** of \`huntsman-recon\`, the reconstructed crate, for aarch64 Android/Termux. It is not a stable release, and it is not a drop-in replacement for \`hse\`. If you need person lookups, keep using the legacy \`hse\` binary. The installer below installs \`hse\` by default.
@@ -309,49 +520,97 @@ jobs:
 
       # OFF by default: nothing moves `latest` unless the repository variable
       # PROMOTE_RECON_TO_LATEST is exactly 'true'. Until recon can run person
-      # lookups, `latest` stays on the legacy hse build.
+      # lookups, `latest` stays on the legacy hse build. When on, `latest` only
+      # moves forward: a run whose commit is behind the one `latest` points at
+      # (an out-of-order queue) leaves it alone.
       - name: Move the rolling `latest` pre-release to this build (opt-in)
-        if: vars.PROMOTE_RECON_TO_LATEST == 'true'
+        id: latest
+        if: vars.PROMOTE_RECON_TO_LATEST == 'true' && steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}"
+          cur="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>/dev/null || true)"
+          if [ -n "$cur" ]; then
+            if [ "$cur" = "$GITHUB_SHA" ]; then status=identical; else
+              status="$(gh api "$api/compare/${cur}...${GITHUB_SHA}" --jq .status)"
+            fi
+            case "$status" in
+              ahead) echo "latest: ${cur} -> ${GITHUB_SHA} (forward)" ;;
+              identical | behind)
+                echo "latest already points at ${cur} (${status}); never moving it backwards." | tee -a "$GITHUB_STEP_SUMMARY"
+                echo "moved=false" >> "$GITHUB_OUTPUT"
+                exit 0 ;;
+              *) echo "::error::latest (${cur}) and ${GITHUB_SHA} are ${status}; refusing to move latest"; exit 1 ;;
+            esac
+          fi
           if pre="$(gh release view latest --json isPrerelease --jq .isPrerelease 2>/dev/null)"; then
             [ "$pre" = "true" ] || { echo "::error::release 'latest' exists and is NOT a pre-release; refusing"; exit 1; }
             gh release delete latest --yes --cleanup-tag
+          fi
+          # A leftover `latest` tag would make the new release reuse it instead of --target.
+          if gh api "$api/git/ref/tags/latest" >/dev/null 2>&1; then
+            gh api -X DELETE "$api/git/refs/tags/latest"
           fi
           gh release create latest \
             "dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" dist/key-scan-report.txt dist/install-termux.sh \
             --target "$GITHUB_SHA" --prerelease --latest=false \
             --title "latest main build (${TAG})" \
             --notes "Rolling pre-release: huntsman-recon build \`${GITHUB_SHA}\` (also \`${TAG}\`), promoted via PROMOTE_RECON_TO_LATEST. Not a stable release."
+          echo "moved=true" >> "$GITHUB_OUTPUT"
 
       - name: Verify published pre-releases through the API
         env:
+          GH_TOKEN: ${{ github.token }}
           PROMOTE: ${{ vars.PROMOTE_RECON_TO_LATEST == 'true' }}
+          EXISTS: ${{ steps.existing.outputs.exists }}
+          MOVED: ${{ steps.latest.outputs.moved }}
         run: |
           set -euo pipefail
-          want="$(sha256sum "dist/$ASSET" | cut -d' ' -f1)"
-          tags=("$TAG")
-          if [ "$PROMOTE" = "true" ]; then
-            tags+=(latest)
-          else
+          api="repos/${GITHUB_REPOSITORY}"
+          files=("$ASSET" "$ASSET.sha256" "$ASSET.provenance.json" key-scan-report.txt install-termux.sh)
+          fail() { echo "::error::$*"; exit 1; }
+          # Every asset must exist exactly once with a non-empty sha256 digest.
+          # mode=local: each digest must equal this run's downloaded file.
+          # mode=self (an earlier run published it): the binary's digest must
+          # equal the one its own .sha256 asset records.
+          check_release() {
+            local t="$1" mode="$2" rel sha a d want
+            rel="$(gh api "$api/releases/tags/${t}")" || fail "${t}: no published release"
+            [ "$(jq -r .prerelease <<<"$rel")" = "true" ] || fail "${t} is not a pre-release"
+            [ "$(jq -r .draft <<<"$rel")" = "false" ] || fail "${t} is a draft"
+            sha="$(gh api "$api/commits/refs/tags/${t}" --jq .sha)"
+            [ "$sha" = "$GITHUB_SHA" ] || fail "${t} points at ${sha}, not ${GITHUB_SHA}"
+            for a in "${files[@]}"; do
+              d="$(jq -r --arg a "$a" '[.assets[] | select(.name == $a)] | if length == 1 then (.[0].digest // "") else "" end' <<<"$rel")"
+              [ -n "$d" ] || fail "${t} has no digest for asset ${a}"
+              [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "${t} asset ${a} digest '${d}' is not a sha256 digest"
+              if [ "$mode" = local ]; then
+                want="sha256:$(sha256sum "dist/$a" | cut -d' ' -f1)"
+                [ "$d" = "$want" ] || fail "${t} asset ${a} digest ${d} != ${want}"
+              fi
+            done
+            if [ "$mode" = self ]; then
+              rm -rf "$RUNNER_TEMP/self" && mkdir -p "$RUNNER_TEMP/self"
+              gh release download "$t" --pattern "$ASSET.sha256" --dir "$RUNNER_TEMP/self"
+              want="sha256:$(sha256sum "$RUNNER_TEMP/self/$ASSET.sha256" | cut -d' ' -f1)"
+              d="$(jq -r --arg a "$ASSET.sha256" '.assets[] | select(.name == $a) | .digest' <<<"$rel")"
+              [ "$d" = "$want" ] || fail "${t} ${ASSET}.sha256 digest ${d} != downloaded ${want}"
+              want="sha256:$(cut -d' ' -f1 "$RUNNER_TEMP/self/$ASSET.sha256")"
+              d="$(jq -r --arg a "$ASSET" '.assets[] | select(.name == $a) | .digest' <<<"$rel")"
+              [ "$d" = "$want" ] || fail "${t} ${ASSET} digest ${d} != ${want} from its own ${ASSET}.sha256"
+            fi
+            echo "${t}: prerelease=true target=${sha} assets=${#files[@]} digests verified (${mode})" | tee -a "$GITHUB_STEP_SUMMARY"
+          }
+          if [ "$EXISTS" = "true" ]; then check_release "$TAG" self; else check_release "$TAG" local; fi
+          if [ "${MOVED:-}" = "true" ]; then
+            check_release latest local
+          elif [ "$PROMOTE" != "true" ]; then
             # Not promoted: `latest` must not point at this build.
-            lsha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/latest" --jq .sha 2>/dev/null || echo absent)"
-            [ "$lsha" != "$GITHUB_SHA" ] || { echo "::error::latest moved to this build without PROMOTE_RECON_TO_LATEST"; exit 1; }
+            lsha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>/dev/null || echo absent)"
+            [ "$lsha" != "$GITHUB_SHA" ] || fail "latest moved to this build without PROMOTE_RECON_TO_LATEST"
             echo "latest: not moved (currently ${lsha})" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
-          for t in "${tags[@]}"; do
-            rel="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${t}")"
-            [ "$(jq -r .prerelease <<<"$rel")" = "true" ] || { echo "::error::${t} is not a pre-release"; exit 1; }
-            [ "$(jq -r .draft <<<"$rel")" = "false" ] || { echo "::error::${t} is a draft"; exit 1; }
-            sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${t}" --jq .sha)"
-            [ "$sha" = "$GITHUB_SHA" ] || { echo "::error::${t} points at ${sha}, not ${GITHUB_SHA}"; exit 1; }
-            for a in "$ASSET" "$ASSET.sha256" "$ASSET.provenance.json" key-scan-report.txt install-termux.sh; do
-              local_sha="$(sha256sum "dist/$a" | cut -d' ' -f1)"
-              got="$(jq -r --arg a "$a" '.assets[] | select(.name == $a) | .digest // ""' <<<"$rel")"
-              [ -n "$got" ] || { echo "::error::${t} has no digest for asset ${a}"; exit 1; }
-              [ "$got" = "sha256:${local_sha}" ] || { echo "::error::${t} asset ${a} digest ${got} != sha256:${local_sha}"; exit 1; }
-            done
-            echo "${t}: prerelease=true target=${sha} ${ASSET} sha256:${want}" | tee -a "$GITHUB_STEP_SUMMARY"
-          done
-          latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)"
-          case "$latest" in main-*|latest) echo "::error::GitHub 'Latest release' is ${latest}"; exit 1 ;; esac
+          latest="$(gh api "$api/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          case "$latest" in main-*|latest) fail "GitHub 'Latest release' is ${latest}" ;; esac
