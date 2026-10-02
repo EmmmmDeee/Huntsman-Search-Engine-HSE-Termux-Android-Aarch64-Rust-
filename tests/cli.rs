@@ -156,6 +156,7 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
     for args in [
         &["recon"][..],
         &["recon", "nope", "x"],
+        &["recon", "crtsh", " "],
         &["recon", "stolen-tax", "  "],
         &["recon", "stolen-tax", "a@example.com", "--bogus", "f"],
     ] {

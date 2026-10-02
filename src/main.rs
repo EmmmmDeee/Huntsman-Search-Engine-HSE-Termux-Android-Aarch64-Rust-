@@ -42,6 +42,7 @@ use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
 use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
+use huntsman_recon::textnorm::escape_controls;
 
 const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | fetch URL [options] | recon crtsh TARGET|stolen-tax QUERY [--keys FILE] | keys FILE | verify LEDGER]";
 const EX_USAGE: u8 = 64;
@@ -259,6 +260,8 @@ fn recon_cmd(args: &[String]) -> ExitCode {
     }
 }
 
+/// One record per line. Values and tags come from the provider, so control
+/// characters are escaped before they reach the terminal.
 fn print_entities(entities: &[huntsman_recon::entity::Entity]) {
     for e in entities {
         println!(
@@ -267,15 +270,18 @@ fn print_entities(entities: &[huntsman_recon::entity::Entity]) {
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_owned))
                 .unwrap_or_default(),
-            e.value,
+            escape_controls(&e.value),
             e.confidence,
-            e.tags.join(",")
+            escape_controls(&e.tags.join(","))
         );
     }
 }
 
 fn crtsh_cmd(target: &str) -> ExitCode {
     let target = target.trim();
+    if target.is_empty() {
+        return fail(EX_USAGE, RECON_USAGE);
+    }
     let kind = if target.contains("://") {
         ReconTargetKind::Url
     } else if target.contains('@') {
@@ -289,7 +295,7 @@ fn crtsh_cmd(target: &str) -> ExitCode {
             print_entities(&report.entities);
             println!(
                 "query={} attempts={} entities={}",
-                report.query.as_deref().unwrap_or("none"),
+                escape_controls(report.query.as_deref().unwrap_or("none")),
                 report.attempts,
                 report.entities.len()
             );
@@ -319,7 +325,11 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
         Ok(report) => {
             print_entities(&report.entities);
             for failure in &report.failed_paths {
-                println!("failed_path={} reason={}", failure.path, failure.reason);
+                println!(
+                    "failed_path={} reason={}",
+                    failure.path,
+                    escape_controls(&failure.reason)
+                );
             }
             if let Some(secret) = keys.get(stolen_tax::KEY_SLOT) {
                 println!("credential={}", &secret.fingerprint().as_str()[..12]);

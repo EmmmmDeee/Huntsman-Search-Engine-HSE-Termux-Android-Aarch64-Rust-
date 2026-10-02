@@ -396,6 +396,22 @@ fn a_challenge_page_is_not_an_empty_answer() {
 }
 
 #[test]
+fn a_challenge_page_on_a_transient_status_is_not_retried() {
+    for code in [429u16, 502, 503] {
+        let script = Script::new(vec![status(
+            code,
+            "<html><title>Just a moment...</title>Cloudflare is checking your browser</html>",
+        )]);
+        assert_eq!(
+            run(&script, ReconTargetKind::Domain, "example.com").unwrap_err(),
+            CrtShError::NotAnAnswer(SourceOutcomeKind::BotWaf),
+            "{code}"
+        );
+        assert_eq!(script.sent(), 1, "{code}");
+    }
+}
+
+#[test]
 fn a_truncated_body_is_not_parsed_as_a_partial_answer() {
     let script = Script::new(vec![Ok(Response {
         status: 200,

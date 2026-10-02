@@ -52,9 +52,12 @@ fake-transport tested; `recon` is their command-line caller.
 
 `recon crtsh TARGET` takes a domain, URL or email, queries
 `https://crt.sh/?q=…&output=json` with a 30 s timeout, and retries only HTTP 502, 503
-and 429, at most three attempts two seconds apart. Every SAN name and non-public
-issuing CA is printed. Nothing is capped. Subdomains of the target's apex are tagged
-`subdomain`.
+and 429, at most three attempts two seconds apart (never a challenge page). It prints
+every distinct SAN name and every non-public issuing CA, and caps nothing. Three
+filters apply, as in the monolith: wildcard SANs (`*.…`), role or infrastructure
+mailboxes (`hostmaster@`, `noreply@`, …), and public-CA issuers (Let's Encrypt,
+DigiCert, …). Subdomains of the target's apex are tagged `subdomain`. Output is
+`kind<TAB>value<TAB>confidence<TAB>tags`, with control characters escaped.
 
 `recon stolen-tax QUERY [--keys FILE]` needs `HUNTSMAN_STOLEN_TAX_KEY` (keys file or
 environment; exit 66 without it, before any request). It POSTs the query to the v2

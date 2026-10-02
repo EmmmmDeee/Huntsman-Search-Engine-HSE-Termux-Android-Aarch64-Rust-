@@ -8,8 +8,9 @@
 //!
 //! crt.sh is slow and flaps: healthy JSON was measured at ~5–11 s, so requests get a
 //! 30 s timeout, and HTTP 502 / 503 / 429 are retried a bounded number of times with a
-//! fixed pause. Every other outcome (transport failure, challenge page, 404, 500,
-//! truncated or malformed body) fails once, typed.
+//! fixed pause, unless the body is a challenge page. Every other outcome
+//! (transport failure, challenge page at any status, 404, 500, a truncated or
+//! malformed 2xx body) fails once, typed.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -192,7 +193,9 @@ const fn is_transient_crt_status(status: u16) -> bool {
 
 /// One guarded GET with a bounded retry for crt.sh's transient gateway flaps:
 /// at most [`TRANSIENT_ATTEMPTS`] attempts, [`TRANSIENT_PAUSE`] apart, and only for
-/// [`is_transient_crt_status`]. The last failure is returned unchanged.
+/// [`is_transient_crt_status`] with a body that is not a challenge page (as in the
+/// monolith, a bot challenge is never retried). The last failure is returned
+/// unchanged.
 fn fetch_crt_json_with_transient_retry<T, D>(
     transport: &T,
     url: &str,
@@ -216,6 +219,12 @@ where
         let Some(response) = fetched.response else {
             return Err(CrtShError::NoResponse(fetched.outcome.kind));
         };
+        // A challenge page is a wall at any status, 429/502/503 included, and is
+        // never retried. The body is inspected directly: the shared classifier
+        // labels every 429 `RateLimited` before it looks for a challenge.
+        if crate::classify::is_challenge(&response.text()) {
+            return Err(CrtShError::NotAnAnswer(SourceOutcomeKind::BotWaf));
+        }
         if !(200..300).contains(&response.status) {
             if attempt < TRANSIENT_ATTEMPTS && is_transient_crt_status(response.status) {
                 attempt += 1;
