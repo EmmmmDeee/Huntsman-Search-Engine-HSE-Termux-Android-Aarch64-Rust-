@@ -1,0 +1,476 @@
+[
+  {
+    "name": "v2_cascade_all_paths",
+    "query": "user@example.com",
+    "paths": [
+      [
+        "snusbase",
+        {
+          "success": true,
+          "error": null,
+          "data": {
+            "size": 2,
+            "results": {
+              "DB_A": [
+                {
+                  "email": "alt@example.com",
+                  "username": "altuser",
+                  "hash": "HASH_MUST_NOT_EMIT"
+                },
+                {
+                  "email": "user@example.com",
+                  "password": "PW_MUST_NOT_EMIT"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      [
+        "osintcat",
+        {
+          "success": true,
+          "error": null,
+          "data": {
+            "breach_data": [
+              {
+                "email": "o@example.com",
+                "source": "OsintCorpus",
+                "breach_date": "2021-02-03"
+              },
+              {
+                "username": "nameless_row_user",
+                "password": "PW_MUST_NOT_EMIT"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        "hudsonrock",
+        {
+          "success": true,
+          "error": null,
+          "data": {
+            "stealers": [
+              {
+                "computer_name": "HOST-1",
+                "operating_system": "Windows 11",
+                "date_compromised": "2026-08-30T00:00:00.000Z",
+                "ip": "27.56.***.***",
+                "top_logins": [
+                  "clear@example.com"
+                ],
+                "top_passwords": [
+                  "PW_MUST_NOT_EMIT"
+                ]
+              },
+              {
+                "computer_name": "HOST-2",
+                "top_logins": []
+              },
+              {
+                "top_logins": [
+                  "hostless@example.com"
+                ],
+                "top_passwords": [
+                  "PW_MUST_NOT_EMIT"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "snusbase_two_breaches",
+    "query": "user@example.com",
+    "paths": [
+      [
+        "snusbase",
+        {
+          "success": true,
+          "error": null,
+          "data": {
+            "results": {
+              "0797_CANVA_COM_133M_DESIGN_052019": [
+                {
+                  "email": "alt@example.com",
+                  "username": "altuser",
+                  "hash": "HASH_MUST_NOT_EMIT"
+                }
+              ],
+              "0644_DROPBOX_COM_68M_HOSTING_2012": [
+                {
+                  "email": "user@example.com",
+                  "password": "PW_MUST_NOT_EMIT"
+                }
+              ]
+            },
+            "size": 2,
+            "took": 12
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "snusbase_empty_array",
+    "query": "user@example.com",
+    "paths": [
+      [
+        "snusbase",
+        {
+          "success": true,
+          "data": {
+            "took": 1.0,
+            "size": 0,
+            "results": []
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "snusbase_empty_object_and_missing_data",
+    "query": "user@example.com",
+    "paths": [
+      [
+        "snusbase",
+        {
+          "success": true,
+          "error": null,
+          "data": {
+            "results": {},
+            "size": 0
+          }
+        }
+      ],
+      [
+        "osintcat",
+        {
+          "success": true,
+          "error": null,
+          "data": null
+        }
+      ]
+    ]
+  },
+  {
+    "name": "osintcat_rows",
+    "query": "user@example.com",
+    "paths": [
+      [
+        "osintcat",
+        {
+          "success": true,
+          "data": {
+            "results_count": 2,
+            "breach_data": [
+              {
+                "email": "alt@example.com",
+                "username": "altuser",
+                "source": "ExampleBreach",
+                "breach_date": "2020-01-01",
+                "password": "PW_MUST_NOT_EMIT",
+                "hash": "HASH_MUST_NOT_EMIT"
+              },
+              {
+                "email": "user@example.com",
+                "name": "OtherCorpus"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "osintcat_empty_with_meta",
+    "query": "user@example.com",
+    "paths": [
+      [
+        "osintcat",
+        {
+          "success": true,
+          "error": null,
+          "data": {
+            "_meta": {},
+            "api": "osintcat",
+            "breach_data": [],
+            "elapsed_ms": 12,
+            "results_count": 0,
+            "timestamp": "2026-09-17T00:00:00Z"
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "osintcat_field_aliases_and_bad_rows",
+    "query": "seed@example.com",
+    "paths": [
+      [
+        "osintcat",
+        {
+          "success": true,
+          "data": {
+            "breach_data": [
+              {
+                "email": "a1@example.com",
+                "db_name": "AliasDb",
+                "breach_date": "2019-01-01"
+              },
+              {
+                "email": "a2@example.com",
+                "breach_name": "AliasTwo"
+              },
+              {
+                "username": "a3_user",
+                "database": "DbField"
+              },
+              {
+                "email": "a4@example.com",
+                "breach": "PlainBreach"
+              },
+              {
+                "email": "a5@example.com",
+                "source": "   "
+              },
+              {
+                "note": "a row with no identity and no corpus"
+              },
+              "not-an-object-row"
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "hudsonrock_stealers",
+    "query": "user@example.com",
+    "paths": [
+      [
+        "hudsonrock",
+        {
+          "success": true,
+          "data": {
+            "stealers": [
+              {
+                "computer_name": "DESKTOP-ABC",
+                "operating_system": "Windows 11",
+                "date_compromised": "2026-08-30T00:00:00.000Z",
+                "ip": "27.56.***.***",
+                "top_logins": [
+                  "clear.user@example.com",
+                  "a****@gmail.com",
+                  "",
+                  "not-an-email"
+                ],
+                "top_passwords": [
+                  "PW_MUST_NOT_EMIT",
+                  "PW_MUST_NOT_EMIT_2"
+                ]
+              },
+              {
+                "computer_name": "LAPTOP-XYZ",
+                "operating_system": "Windows 10",
+                "date_compromised": "2026-08-25T00:00:00.000Z",
+                "ip": "103.196.***.**",
+                "top_logins": [
+                  "user@example.com"
+                ],
+                "top_passwords": [
+                  "PW_MUST_NOT_EMIT"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "hudsonrock_blank_host",
+    "query": "user@example.com",
+    "paths": [
+      [
+        "hudsonrock",
+        {
+          "success": true,
+          "data": {
+            "stealers": [
+              {
+                "computer_name": "   ",
+                "operating_system": "Linux",
+                "top_logins": [
+                  "blankhost@example.com"
+                ]
+              },
+              {
+                "computer_name": "HOST-ONLY"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "cross_path_dedup",
+    "query": "seed@example.com",
+    "paths": [
+      [
+        "snusbase",
+        {
+          "success": true,
+          "data": {
+            "results": {
+              "DB_A": [
+                {
+                  "email": "alt@example.com",
+                  "username": "shared_user"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      [
+        "osintcat",
+        {
+          "success": true,
+          "data": {
+            "breach_data": [
+              {
+                "email": "other@example.com",
+                "username": "shared_user",
+                "source": "OsintCorpus"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        "hudsonrock",
+        {
+          "success": true,
+          "data": {
+            "stealers": [
+              {
+                "computer_name": "HOST-1",
+                "operating_system": "Linux",
+                "date_compromised": "2026-01-01T00:00:00Z",
+                "ip": "1.2.***.***",
+                "top_logins": [
+                  "alt@example.com",
+                  "other@example.com"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "query_echo_and_dirty_spellings",
+    "query": "User@Example.com",
+    "paths": [
+      [
+        "snusbase",
+        {
+          "success": true,
+          "data": {
+            "results": {
+              "DB_X": [
+                {
+                  "email": "user@example.com"
+                },
+                {
+                  "email": "USER@EXAMPLE.COM",
+                  "username": "jordan_m"
+                },
+                {
+                  "email": "alt@example.com",
+                  "username": "@jordan_m"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "partial_one_path_fails",
+    "query": "user@example.com",
+    "paths": [
+      [
+        "snusbase",
+        {
+          "success": true,
+          "data": {
+            "results": {
+              "DB_A": [
+                {
+                  "email": "alt@example.com"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      [
+        "osintcat",
+        {
+          "success": false,
+          "data": null,
+          "error": "database temporarily unavailable"
+        }
+      ],
+      [
+        "hudsonrock",
+        {
+          "success": true,
+          "data": {
+            "stealers": []
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "all_paths_fail",
+    "query": "user@example.com",
+    "paths": [
+      [
+        "snusbase",
+        {
+          "success": false,
+          "data": null,
+          "error": "database temporarily unavailable"
+        }
+      ],
+      [
+        "osintcat",
+        {
+          "success": false,
+          "data": null,
+          "error": "upstream overloaded"
+        }
+      ],
+      [
+        "hudsonrock",
+        {
+          "success": true,
+          "data": {
+            "stealers": "not-a-list"
+          }
+        }
+      ]
+    ]
+  }
+]
