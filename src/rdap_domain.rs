@@ -189,11 +189,10 @@ fn registrar_iana_id(entities: &[WireEntity]) -> Option<String> {
         })
         .flat_map(|entity| &entity.public_ids)
         .find(|public_id| {
-            public_id.id_type.as_deref().is_some_and(|id_type| {
-                id_type
-                    .to_ascii_lowercase()
-                    .contains("iana registrar")
-            })
+            public_id
+                .id_type
+                .as_deref()
+                .is_some_and(|id_type| id_type.to_ascii_lowercase().contains("iana registrar"))
         })
         .and_then(|public_id| public_id.identifier.clone())
         .and_then(|identifier| clean_optional(Some(identifier)))
