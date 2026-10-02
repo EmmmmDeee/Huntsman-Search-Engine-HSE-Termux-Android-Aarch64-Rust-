@@ -1,0 +1,18 @@
+{
+  "description": "Generated only from admitted ledger entries. Absence is not a zero score.",
+  "domain": "enterprise-attack",
+  "name": "huntsman-ledger",
+  "techniques": [
+    {
+      "comment": "eb94ad4a2ff5eaa643efafb4b877a1f8c8bb9fd1a5d2ad29ea98885207faa7be | src/geoint.rs | not a survey and not a live collection",
+      "enabled": true,
+      "score": 1,
+      "techniqueID": "T1591"
+    }
+  ],
+  "versions": {
+    "attack": "14",
+    "layer": "4.5",
+    "navigator": "4.9"
+  }
+}
