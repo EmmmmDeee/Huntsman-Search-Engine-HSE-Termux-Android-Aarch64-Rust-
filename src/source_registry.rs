@@ -167,7 +167,10 @@ static SOURCES: &[SourceDescriptor] = &[
         category: SourceCategory::DomainIntel,
         accepted_kinds: DOMAIN_ONLY,
         execution: ExecutionMode::SearchUrl,
-        access: SourceAccess::Account,
+        // Plain field queries such as `domain:` work without sign-in under
+        // per-IP unauthenticated search quotas (https://urlscan.io/docs/api/);
+        // only leading-wildcard and regex queries require a signed-in user.
+        access: SourceAccess::Public,
         url_template: "https://urlscan.io/search/#domain:{value}",
         reference_url: "https://urlscan.io/search/",
         evidence_role: EvidenceRole::LeadOnly,
