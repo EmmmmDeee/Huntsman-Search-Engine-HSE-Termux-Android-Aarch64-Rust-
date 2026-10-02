@@ -11,7 +11,7 @@ One crate, `huntsman-recon`. The current version lives in `src/`; the two legacy
 | `legacy/` | Byte-identical extraction of both archives. Not part of the build. |
 | `*.zip` (root) | The two legacy archives. Pinned by hash in `tests/legacy_reference.rs`; never delete, edit or move them. |
 
-Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands; `check` exercises egress, origin, placeholder and URL-redaction rules as gate 11, without a socket). A challenge page is not a hit. No paid source is called automatically; HIBP is an explicit opt-in library client. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
+Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands; `check` exercises egress, origin, placeholder and URL-redaction rules as gate 11, without a socket). A challenge page is not a hit. No paid source is called automatically; HIBP is an explicit opt-in library client, and stolen.tax runs only from an explicit `recon stolen-tax` command. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
 
 ```
 cargo test
@@ -26,13 +26,14 @@ cargo run -- coarsen -27.4698,153.0251 # one decimal place, ~11 km
 cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
+cargo run -- recon crtsh https://example.com/  # crt.sh CT names for the URL's host (network)
 ```
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
 
-Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input, 69 `fetch` got no response, 74 artifact write failure, 77 egress policy refused the destination. `check` uses 2–11 for its individual gates.
+Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or missing source key, 69 `fetch` or `recon` got no usable response, 74 artifact write failure, 77 egress policy refused the destination. `check` uses 2–11 for its individual gates.
 
-`tests/readme.rs` runs every example above (except the internet `fetch`), checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`.
+`tests/readme.rs` runs every example above (except the internet `fetch` and `recon crtsh`), checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`.
 
 `classify` also prints the causal outcome and the source-health action (`outcome=bot_waf`, `action=backoff`). A 403 challenge page is a WAF, not a credential failure. A 200 alone is `inconclusive` until rows are parsed.
 
@@ -41,6 +42,32 @@ The refactor-overlay foundations from the uploaded zip are library modules: `sou
 Rebuilt monolith utilities: `au_id` (ABN, ACN, BSB), `geohash`, `confidence` (corroboration, ancestry-aware), `redact` (coordinate coarsening, secret scrubbing). `check` exercises them as gate 10.
 
 See `docs/RECONSTRUCTION_2026-10-02.md`.
+
+## Recon sources: crt.sh and stolen.tax
+
+`huntsman_recon::crtsh` and `huntsman_recon::stolen_tax` restore M D's lost local
+commit 764ce8e on the guarded fetch layer (port source: the restore commit on the
+old tree, not the stale v1 copies in `legacy/`). Both are blocking, sync and
+fake-transport tested; `recon` is their command-line caller.
+
+`recon crtsh TARGET` takes a domain, URL or email, queries
+`https://crt.sh/?q=…&output=json` with a 30 s timeout, and retries only HTTP 502, 503
+and 429, at most three attempts two seconds apart. Every SAN name and non-public
+issuing CA is printed. Nothing is capped. Subdomains of the target's apex are tagged
+`subdomain`.
+
+`recon stolen-tax QUERY [--keys FILE]` needs `HUNTSMAN_STOLEN_TAX_KEY` (keys file or
+environment; exit 66 without it, before any request). It POSTs the query to the v2
+snusbase, osintcat and hudsonrock paths with a Bearer key sent only to
+`https://stolen.tax`, 120 s per request. It prints emails, usernames and
+`breach:`/`stealer:` markers, and never passwords, hashes or `top_passwords`. A path
+failure alongside evidence prints `partial=true` and the failed path. Every path
+failing exits 69. Each run spends paid lookups, so it is not in the examples above.
+
+`tests/fixtures/legacy_764ce8e/` holds the old-tree output recorded on the committed
+inputs. The differential tests require the port to reproduce it. The one intended
+difference is the blank-name/host guard: no `breach:osintcat`/`stealer:unknown`
+placeholder markers and no `unknown` stand-in facts.
 
 ## Opt-in HIBP library
 
