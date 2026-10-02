@@ -1,25 +1,22 @@
 # Reconstruction decision — 2026-10-02
 
-Target, independent of the tree: an unprivileged offline Rust core that records an RCVF session, refuses an unsupported claim, resolves identity only on a shared email or handle, computes geodesic distance and co-location, seals claims in a hashed ledger, and emits STIX and an ATT&CK Navigator layer only from entries that pass the gate.
+Target: an unprivileged offline Rust core that records an RCVF session, refuses an unsupported claim, resolves identity only on a shared email or handle, computes geodesic distance and co-location, seals claims in a hashed ledger, and emits STIX or an ATT&CK Navigator layer only when this crate implements that technique.
+
+A verified capability is not a technique score. The binding table is empty. Haversine is not T1591. Challenge classification is not T1592.
 
 ## Disposition
 
 | Legacy | Decision | Why |
 | --- | --- | --- |
-| `src/` recorder (huntsman v1) | MIGRATE contract, REIMPLEMENT | Terminate gaps and refuse-to-claim earned survival. Clap CLI and config reader did not; no second consumer. |
-| `hse-level1` classifier | MIGRATE invariant | 429 beats a vendor string. A challenge page is Blocked, never a result. JSON quoting a vendor path is not a wall. |
-| HSE zip (1730 entries) | PRESERVE as evidence, do not absorb | Different binary, credentials, live providers. D9 stands. |
-| SeekNow / see-know.ru keyless | REMOVE from target | NOT APPLICABLE. Paid API. No scrape. |
-| Public SearXNG JSON | Not in crate | UNVERIFIED from this egress (403/429). |
+| v1 recorder | MIGRATE contract | Terminate gaps earned survival. Clap CLI did not. |
+| Level-1 classifier | MIGRATE invariant | 429 beats a vendor string. A challenge page is Blocked. |
+| HSE monolith | REMOVE from current tree | History retained. Credentials and live providers do not earn a place. |
+| Self-assigned T1591 layer | REPLACE | Unsupported acceptance. Gate now requires an implemented binding. |
+| SeekNow keyless | REMOVE | NOT APPLICABLE. |
+| Public SearXNG JSON | Not in crate | UNVERIFIED (403/429). |
 
-## Acceptance executed
+## Acceptance
 
-`CARGO_TARGET_DIR=/tmp/huntsman-recon-target cargo test` — 13 passed (11 unit, 2 integration).
+`cargo test` — 13 passed. `huntsman-recon check` — techniques=0, Brisbane–Sydney 732379 m. `geo` prints the same distance.
 
-`cargo run` — Brisbane–Sydney haversine 732379 m inside the 700–760 km band. Navigator techniques=1. SeekNow row excluded.
-
-Workspace mount is noexec for build scripts. That is an environment limit, not a crate defect.
-
-## What this does not show
-
-No Termux aarch64 run. No live harvest. No survey-grade geodesy. No TAXII exchange. Catalog presence is not a score.
+No Termux run. No live harvest. No survey-grade geodesy. Catalog presence is not a score.

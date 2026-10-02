@@ -24,15 +24,28 @@ pub struct LedgerEntry {
 }
 
 impl Claim {
-    /// Verified, at or above direct observation, with a Rust path and a technique id.
+    /// Verified capability may exist without a technique score.
+    /// Interop requires a binding this crate implements, not a caller-supplied id.
     #[must_use]
     pub fn admits_interop(&self) -> bool {
         self.status == Status::Verified
             && self.evidence_level.admits_interop()
             && !self.component.trim().is_empty()
-            && self.technique_id.as_deref().is_some_and(valid_technique)
+            && self
+                .technique_id
+                .as_deref()
+                .is_some_and(|id| valid_technique(id) && method_implements(&self.component, id))
             && !self.does_not_show.trim().is_empty()
     }
+}
+
+/// Component path to technique id. Empty until a function in this crate performs that technique.
+/// Haversine is not T1591. Challenge classification is not T1592.
+const BINDINGS: &[(&str, &str)] = &[];
+
+#[must_use]
+pub fn method_implements(component: &str, technique: &str) -> bool {
+    BINDINGS.iter().any(|(path, id)| *path == component && *id == technique)
 }
 
 #[must_use]
@@ -90,7 +103,7 @@ mod tests {
         other.claim = "different".into();
         let b = seal(&other);
         assert_ne!(a.hash, b.hash);
-        assert!(a.claim.admits_interop());
+        assert!(!a.claim.admits_interop(), "unbound technique must not score");
         let weak = seal(&sample(Status::Unverified, EvidenceLevel::EndToEndDemonstration, Some("T1595")));
         assert!(!weak.claim.admits_interop());
         let no_tech = seal(&sample(Status::Verified, EvidenceLevel::Reproduction, None));

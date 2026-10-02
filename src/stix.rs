@@ -55,9 +55,9 @@ mod tests {
     use crate::stage::{EvidenceLevel, Status};
 
     #[test]
-    fn unverified_claim_does_not_enter_bundle() {
-        let kept = seal(&Claim {
-            claim: "kept".into(),
+    fn unbound_technique_does_not_enter_bundle() {
+        let labeled = seal(&Claim {
+            claim: "kept as a capability, not a technique".into(),
             source: "test".into(),
             component: "src/geoint.rs".into(),
             technique_id: Some("T1595".into()),
@@ -74,9 +74,7 @@ mod tests {
             evidence_level: EvidenceLevel::DirectObservation,
             does_not_show: "mapped only".into(),
         });
-        let value = bundle(&[kept, dropped]);
-        let objects = value["objects"].as_array().unwrap();
-        assert_eq!(objects.len(), 1);
-        assert_eq!(objects[0]["name"], "kept");
+        let objects = bundle(&[labeled, dropped])["objects"].as_array().unwrap().clone();
+        assert!(objects.is_empty());
     }
 }

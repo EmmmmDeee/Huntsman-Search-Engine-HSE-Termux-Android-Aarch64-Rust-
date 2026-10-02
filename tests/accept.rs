@@ -77,6 +77,6 @@ fn navigator_and_stix_drop_challenge_and_catalog() {
         .iter()
         .filter_map(|t| t["techniqueID"].as_str())
         .collect();
-    assert_eq!(ids, vec!["T1592"]);
-    assert_eq!(bundle(&[admitted, catalog])["objects"].as_array().unwrap().len(), 1);
+    assert!(ids.is_empty(), "self-labeled T1592 is not an implemented technique");
+    assert!(bundle(&[admitted, catalog])["objects"].as_array().unwrap().is_empty());
 }

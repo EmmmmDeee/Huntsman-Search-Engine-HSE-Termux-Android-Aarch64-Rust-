@@ -1,9 +1,13 @@
 # huntsman-recon
 
-This tree is the only current version of the project.
+Only current version of the project. Previous trees remain in git history.
 
-The previous Huntsman Search Engine monolith and the v1 recorder remain in git history. They are not the current source tree. Catalog rows, paid SeekNow lookup, and unverified public SearXNG JSON are not capabilities of this crate.
+Offline Rust core. No network client. No credentials. A verified claim is not an ATT&CK score: the technique binding table is empty.
 
-Build: `cargo test` (Rust 1.87+, edition 2024). No network client. No credentials.
+```
+cargo test
+cargo run -- check
+cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
+```
 
 See `docs/RECONSTRUCTION_2026-10-02.md`.
