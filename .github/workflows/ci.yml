@@ -43,26 +43,38 @@ jobs:
       - uses: ./.github/actions/setup-ndk-aarch64
         with:
           android-api: "24"
-      - name: Build aarch64 Android release binary
+      - name: Build aarch64 Android release binaries
         run: cargo build --release --locked --target aarch64-linux-android
-      - name: Verify Android ELF and stage artifact
+      - name: Verify Android ELFs and stage artifacts
         run: |
           set -euo pipefail
-          BIN="target/aarch64-linux-android/release/huntsman-recon"
+          RECON="target/aarch64-linux-android/release/huntsman-recon"
+          PROBE="target/aarch64-linux-android/release/huntsman-probe"
           TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          HEADER="$RUNNER_TEMP/huntsman-elf-header.txt"
-          PROGRAM="$RUNNER_TEMP/huntsman-elf-program.txt"
-          test -x "$BIN"
-          "$TOOLCHAIN/llvm-readelf" -h "$BIN" > "$HEADER"
-          grep -Eq 'Machine:[[:space:]]+AArch64' "$HEADER"
-          "$TOOLCHAIN/llvm-readelf" -l "$BIN" > "$PROGRAM"
-          grep -F '/system/bin/linker64' "$PROGRAM"
           mkdir -p dist
-          cp "$BIN" dist/huntsman-recon-aarch64-linux-android
+
+          verify_android_elf() {
+            local bin="$1"
+            local name="$2"
+            local header="$RUNNER_TEMP/${name}-elf-header.txt"
+            local program="$RUNNER_TEMP/${name}-elf-program.txt"
+            test -x "$bin"
+            "$TOOLCHAIN/llvm-readelf" -h "$bin" > "$header"
+            grep -Eq 'Machine:[[:space:]]+AArch64' "$header"
+            "$TOOLCHAIN/llvm-readelf" -l "$bin" > "$program"
+            grep -F '/system/bin/linker64' "$program"
+            cp "$bin" "dist/${name}-aarch64-linux-android"
+          }
+
+          verify_android_elf "$RECON" huntsman-recon
+          verify_android_elf "$PROBE" huntsman-probe
+
           (
             cd dist
             sha256sum huntsman-recon-aarch64-linux-android > huntsman-recon-aarch64-linux-android.sha256
+            sha256sum huntsman-probe-aarch64-linux-android > huntsman-probe-aarch64-linux-android.sha256
             sha256sum -c huntsman-recon-aarch64-linux-android.sha256
+            sha256sum -c huntsman-probe-aarch64-linux-android.sha256
           )
       - name: Upload main-branch handset-test artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -72,5 +84,7 @@ jobs:
           path: |
             dist/huntsman-recon-aarch64-linux-android
             dist/huntsman-recon-aarch64-linux-android.sha256
+            dist/huntsman-probe-aarch64-linux-android
+            dist/huntsman-probe-aarch64-linux-android.sha256
           if-no-files-found: error
           retention-days: 14
