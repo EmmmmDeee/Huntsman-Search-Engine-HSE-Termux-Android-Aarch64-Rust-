@@ -10,6 +10,7 @@ pub mod geoint;
 pub mod identity;
 pub mod ledger;
 pub mod navigator;
+pub mod search;
 pub mod session;
 pub mod sha256;
 pub mod stage;

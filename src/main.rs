@@ -12,12 +12,14 @@ use huntsman_recon::ledger::{append, chain_intact, load_chain, save_chain, seal,
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
 use huntsman_recon::navigator::layer;
 use huntsman_recon::stage::{EvidenceLevel, Status};
+use huntsman_recon::search::{search, Document};
 use huntsman_recon::stix::bundle;
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("geo") => geo(args.next(), args.next()),
+        Some("search") => search_cmd(args.next()),
         Some("classify") => classify(args.next(), args.next()),
         Some("check") | None => check(),
         Some(other) => {
@@ -42,6 +44,31 @@ fn geo(a: Option<String>, b: Option<String>) -> ExitCode {
     };
     println!("{:.0}", haversine_m(lat1, lon1, lat2, lon2));
     ExitCode::SUCCESS
+}
+
+fn search_cmd(query: Option<String>) -> ExitCode {
+    let Some(query) = query else {
+        eprintln!("usage: huntsman-recon search QUERY");
+        return ExitCode::from(64);
+    };
+    let docs = vec![
+        Document { id: "brisbane".into(), body: "Brisbane port radar sighting".into(), source: "fixture".into() },
+        Document { id: "sydney".into(), body: "Sydney harbour note".into(), source: "fixture".into() },
+    ];
+    let hits = search(&docs, &query);
+    if hits.is_empty() {
+        println!("hits=0");
+        return ExitCode::SUCCESS;
+    }
+    for hit in &hits {
+        println!("{}\t{}\t{}", hit.score, hit.id, hit.source);
+    }
+    ExitCode::SUCCESS
+}
+
+fn search_response_miss() -> bool {
+    use huntsman_recon::search::search_response;
+    !search_response(200, "<html>just a moment cloudflare</html>", "brisbane", "remote").is_empty()
 }
 
 fn classify(status: Option<String>, body: Option<String>) -> ExitCode {
@@ -156,6 +183,9 @@ fn check() -> ExitCode {
         return ExitCode::from(6);
     }
     let _ = fs::write("var/navigator.json", serde_json::to_string_pretty(&nav).unwrap_or_default());
+    if search_response_miss() {
+        return ExitCode::from(3);
+    }
     println!("accepted techniques=0");
     println!("brisbane_sydney_m={meters:.0}");
     ExitCode::SUCCESS
