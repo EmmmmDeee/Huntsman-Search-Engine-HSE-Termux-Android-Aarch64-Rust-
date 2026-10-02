@@ -1,0 +1,96 @@
+diff --git a/src/bin/architecture_audit/main.rs b/src/bin/architecture_audit/main.rs
+--- a/src/bin/architecture_audit/main.rs
++++ b/src/bin/architecture_audit/main.rs
+@@ -7,6 +7,7 @@
+ //! cargo run --bin architecture-audit          # audit it (default base URL)
+ //! cargo run --bin architecture-audit -- --json --out audit.json
+ //! cargo run --bin architecture-audit -- --from-dir captured/   # reproducible in CI
++//! cargo run --bin architecture-audit -- --repo-invariants .    # source/config invariants
+ //! ```
+ //!
+ //! Why the binary and not the source: `docs/AUTONOMY_CHARTER.md`'s SENSE
+@@ -62,7 +63,10 @@
+ 
+ use clap::Parser;
+ 
+-use huntsman_search_engine::util::http::build_client;
++use huntsman_search_engine::{
++    core::architectural_invariants::{InvariantStatus, audit_repository},
++    util::http::build_client,
++};
+ 
+ const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8080";
+ 
+@@ -79,6 +83,10 @@
+     /// audit is reproducible without binding a port.
+     #[arg(long)]
+     from_dir: Option<PathBuf>,
++    /// Audit source/configuration invariants rooted at this repository path
++    /// instead of loading the runtime module graph.
++    #[arg(long, value_name = "PATH")]
++    repo_invariants: Option<PathBuf>,
+     /// Emit the raw report as JSON instead of the formatted text report.
+     #[arg(long)]
+     json: bool,
+@@ -100,6 +108,10 @@
+ }
+ 
+ async fn run(args: &Args) -> Result<(), String> {
++    if let Some(root) = &args.repo_invariants {
++        return run_repository_invariants(args, root);
++    }
++
+     let (modules, graph) = load(args).await.map_err(|e| {
+         format!("could not load the module graph: {e}\n  start one with: hse serve --bind 127.0.0.1:8080")
+     })?;
+@@ -116,6 +128,50 @@
+             .map_err(|e| format!("writing {}: {e}", out.display()))?;
+     }
+     Ok(())
++}
++
++
++fn run_repository_invariants(args: &Args, root: &std::path::Path) -> Result<(), String> {
++    let report = audit_repository(root);
++    let text = if args.json {
++        serde_json::to_string_pretty(&report)
++            .map_err(|e| format!("serialising repository invariant report: {e}"))?
++    } else {
++        let mut rendered = String::new();
++        for item in &report.reports {
++            use std::fmt::Write as _;
++            let _ = writeln!(
++                rendered,
++                "{} [{:?}/{:?}] {}",
++                item.id, item.disposition, item.status, item.protected_property
++            );
++            for evidence in &item.evidence {
++                let _ = writeln!(rendered, "  - {evidence}");
++            }
++        }
++        rendered
++    };
++
++    print!("{text}");
++    if !text.ends_with('\n') {
++        println!();
++    }
++    if let Some(out) = &args.out {
++        std::fs::write(out, if text.ends_with('\n') { text.clone() } else { format!("{text}\n") })
++            .map_err(|e| format!("writing {}: {e}", out.display()))?;
++    }
++
++    let failed = report.reports.iter().any(|item| {
++        matches!(
++            item.status,
++            InvariantStatus::Violated | InvariantStatus::Blocked
++        )
++    });
++    if failed {
++        Err("repository architectural invariants are not satisfied".into())
++    } else {
++        Ok(())
++    }
+ }
+ 
+ /// Load `(modules, graph)` from a captured directory or a live server —

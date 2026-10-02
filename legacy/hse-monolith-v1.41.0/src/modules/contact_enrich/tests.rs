@@ -1,0 +1,401 @@
+use super::*;
+use crate::core::confidence;
+
+#[test]
+fn accepts_phone_and_email() {
+    let m = ContactEnrich;
+    assert!(m.accepts(&Target::new(TargetKind::Phone, "+1")));
+    assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+    assert!(!m.accepts(&Target::new(TargetKind::Username, "x")));
+    assert!(!m.accepts(&Target::new(TargetKind::Domain, "x")));
+}
+
+#[test]
+fn cost_is_free() {
+    assert!(matches!(ContactEnrich.cost(), ModuleCost::Free));
+}
+
+#[test]
+fn priority_and_timeout() {
+    let m = ContactEnrich;
+    assert_eq!(m.priority(), 85);
+    assert_eq!(m.max_timeout_ms(), 6_000);
+}
+
+#[test]
+fn parse_numverify_response() {
+    let raw = r#"{
+      "valid": true,
+      "number": "14158586273",
+      "local_format": "4158586273",
+      "international_format": "+14158586273",
+      "country_prefix": "+1",
+      "country_code": "US",
+      "country_name": "United States of America",
+      "location": "Novato",
+      "carrier": "AT&T Mobility LLC",
+      "line_type": "mobile"
+    }"#;
+    let r: NumverifyResp = serde_json::from_str(raw).expect("should succeed");
+    assert_eq!(r.valid, Some(true));
+    assert_eq!(r.country_code.as_deref(), Some("US"));
+    assert_eq!(r.carrier.as_deref(), Some("AT&T Mobility LLC"));
+    assert_eq!(r.line_type.as_deref(), Some("mobile"));
+}
+
+#[test]
+fn a_normal_validation_result_is_never_a_key_error() {
+    // valid:true and valid:false are both apilayer.net's ordinary answers
+    // ("this is/isn't a real phone number") and carry no success/error field —
+    // neither may be misread as a dead-key signal.
+    assert!(numverify_key_error_detail(&numverify(r#"{"valid": true}"#)).is_none());
+    assert!(numverify_key_error_detail(&numverify(r#"{"valid": false}"#)).is_none());
+}
+
+#[test]
+fn an_in_body_200_error_envelope_is_classified_as_a_key_error_with_its_detail() {
+    // This is the bug: apilayer.net answers an invalid/expired access_key, a
+    // plan/scope restriction, or an exhausted quota with HTTP 200 and
+    // {"success":false,"error":{...}} — never a 401/403/429 — so the status
+    // check alone can't see it. Before this fix the whole envelope
+    // deserialized to an all-None NumverifyResp and build_phone_entities
+    // silently returned empty, indistinguishable from a real "not a valid
+    // number" answer, forever, with no signal the key needed attention.
+    let body = numverify(
+        r#"{"success": false, "error": {"code": 101, "type": "invalid_access_key", "info": "You have not supplied a valid API Access Key."}}"#,
+    );
+    assert_eq!(
+        body.valid, None,
+        "the error envelope carries no valid field"
+    );
+    let detail =
+        numverify_key_error_detail(&body).expect("success:false must classify as a key error");
+    assert!(detail.contains("You have not supplied a valid API Access Key."));
+    assert!(detail.contains("101"));
+}
+
+#[test]
+fn an_in_body_200_error_with_no_message_still_classifies_as_a_key_error() {
+    let body = numverify(r#"{"success": false}"#);
+    assert_eq!(
+        numverify_key_error_detail(&body).as_deref(),
+        Some("api error")
+    );
+    let body_empty_error = numverify(r#"{"success": false, "error": {}}"#);
+    assert_eq!(
+        numverify_key_error_detail(&body_empty_error).as_deref(),
+        Some("api error")
+    );
+}
+
+#[test]
+fn parse_gravatar_response() {
+    let raw = r#"{
+      "entry": [{
+        "displayName": "John Doe",
+        "preferredUsername": "johndoe",
+        "name": {"formatted": "John Doe"},
+        "urls": [{"value": "https://example.com", "title": "Blog"}],
+        "currentLocation": "NYC",
+        "aboutMe": "dev",
+        "photos": [{"value": "https://gravatar.com/avatar/abc"}]
+      }]
+    }"#;
+    let r: ProfileResp = serde_json::from_str(raw).expect("should succeed");
+    assert_eq!(r.entry.len(), 1);
+    let e = &r.entry[0];
+    assert_eq!(e.display_name.as_deref(), Some("John Doe"));
+    assert_eq!(e.current_location.as_deref(), Some("NYC"));
+}
+
+// ── build_phone_entities (pure extraction) ─────────────────────────
+
+fn numverify(json: &str) -> NumverifyResp {
+    serde_json::from_str(json).expect("fixture is valid NumverifyResp JSON")
+}
+fn phone_target(v: &str) -> Target {
+    Target::new(TargetKind::Phone, v)
+}
+
+#[test]
+fn valid_phone_yields_tagged_entity_with_evidence() {
+    let body = numverify(
+        r#"{
+            "valid": true, "number": "14158586273", "local_format": "4158586273",
+            "international_format": "+14158586273", "country_prefix": "+1",
+            "country_code": "us", "country_name": "United States of America",
+            "location": "Novato", "carrier": "AT&T Mobility LLC", "line_type": "mobile"
+        }"#,
+    );
+    let ents = build_phone_entities(&body, &phone_target("+14158586273"), "https", "s");
+    // Now 2: the subject Phone plus the Numverify `location` promoted to an
+    // Address entity ("Novato" is 6 chars, meeting the >=3 guard).
+    assert_eq!(ents.len(), 2);
+    let e = &ents[0];
+    assert_eq!(e.kind, EntityKind::Phone);
+    assert!(e.has_tag("numverify") && e.has_tag("validated"));
+    assert!(e.has_tag("transport:https"));
+    assert!(e.has_tag("country:US"), "country code is uppercased");
+    assert!(e.has_tag("line:mobile"));
+
+    let attr = |k: &str| e.evidence[0].attributes.get(k).map(String::as_str);
+    assert_eq!(attr("transport"), Some("https"));
+    assert_eq!(attr("normalised"), Some("14158586273"));
+    assert_eq!(attr("international"), Some("+14158586273"));
+    assert_eq!(attr("country"), Some("United States of America"));
+    assert_eq!(attr("carrier"), Some("AT&T Mobility LLC"));
+    assert_eq!(attr("line_type"), Some("mobile"));
+
+    let addr = &ents[1];
+    assert_eq!(addr.kind, EntityKind::Address);
+    assert_eq!(addr.value, "Novato");
+    assert!(
+        addr.confidence < confidence::MEDIUM_HIGH,
+        "below the Gravatar Address confidence"
+    );
+    assert!(
+        addr.has_tag("numverify") && addr.has_tag("geoint") && addr.has_tag("phone-registration")
+    );
+    assert_eq!(
+        addr.evidence[0].summary,
+        "Numverify location for +14158586273"
+    );
+}
+
+#[test]
+fn invalid_phone_yields_nothing() {
+    assert!(
+        build_phone_entities(
+            &numverify(r#"{"valid":false}"#),
+            &phone_target("+1"),
+            "https",
+            "s"
+        )
+        .is_empty()
+    );
+    // A missing `valid` field is also not a confirmed-valid number.
+    assert!(build_phone_entities(&numverify(r#"{}"#), &phone_target("+1"), "http", "s").is_empty());
+}
+
+#[test]
+fn phone_blank_fields_skipped_and_transport_recorded() {
+    // Blank country_code/line_type add no tags; blank evidence fields skipped;
+    // the transport reflects the http fallback.
+    let body =
+        numverify(r#"{ "valid": true, "country_code": "", "line_type": "", "carrier": "" }"#);
+    let e = &build_phone_entities(&body, &phone_target("+61400000000"), "http", "s")[0];
+    assert!(!e.tags.iter().any(|t| t.starts_with("country:")));
+    assert!(!e.tags.iter().any(|t| t.starts_with("line:")));
+    assert!(e.has_tag("transport:http"));
+    // Only the transport attribute survives; blank optional fields are dropped.
+    assert_eq!(
+        e.evidence[0]
+            .attributes
+            .get("transport")
+            .map(String::as_str),
+        Some("http")
+    );
+    assert!(!e.evidence[0].attributes.contains_key("carrier"));
+    assert!(!e.evidence[0].attributes.contains_key("line_type"));
+}
+
+// ── build_email_entities (pure extraction) ─────────────────────────
+
+fn gravatar(json: &str) -> ProfileEntry {
+    let r: ProfileResp = serde_json::from_str(json).expect("fixture is valid ProfileResp JSON");
+    r.entry
+        .into_iter()
+        .next()
+        .expect("fixture carries an entry")
+}
+fn email_target(v: &str) -> Target {
+    Target::new(TargetKind::Email, v)
+}
+fn of_kind(ents: &[Entity], kind: EntityKind) -> Option<&Entity> {
+    ents.iter().find(|e| e.kind == kind)
+}
+
+#[test]
+fn full_gravatar_yields_email_person_username_address_and_urls() {
+    let entry = gravatar(
+        r#"{ "entry": [{
+            "displayName": "John Doe", "preferredUsername": "johndoe",
+            "name": {"formatted": "John Doe"},
+            "urls": [
+                {"value": "https://example.com", "title": "Blog"},
+                {"value": "ftp://nope", "title": "Bad"}
+            ],
+            "currentLocation": "Sydney NSW", "aboutMe": "dev",
+            "photos": [{"value": "https://gravatar.com/avatar/abc"}]
+        }] }"#,
+    );
+    let ents = build_email_entities(
+        &entry,
+        &email_target("x@example.com"),
+        "x@example.com",
+        "abc123",
+        "s",
+    );
+
+    let email = of_kind(&ents, EntityKind::Email).expect("subject email");
+    assert!(email.has_tag("gravatar"));
+    let attr = |k: &str| email.evidence[0].attributes.get(k).map(String::as_str);
+    assert_eq!(attr("md5"), Some("abc123"));
+    assert_eq!(attr("profile_url"), Some("https://www.gravatar.com/abc123"));
+    assert_eq!(attr("display_name"), Some("John Doe"));
+    assert_eq!(attr("preferred_username"), Some("johndoe"));
+    assert_eq!(attr("name"), Some("John Doe"));
+    assert_eq!(attr("bio"), Some("dev"));
+    assert_eq!(attr("avatar_url"), Some("https://gravatar.com/avatar/abc"));
+    // The urls evidence string folds every entry with a value (title-prefixed).
+    assert_eq!(
+        attr("urls"),
+        Some("Blog: https://example.com | Bad: ftp://nope")
+    );
+
+    let person = of_kind(&ents, EntityKind::Person).expect("person");
+    assert_eq!(person.value, "John Doe");
+    let user = of_kind(&ents, EntityKind::Username).expect("username");
+    assert_eq!(user.value, "johndoe");
+
+    let addr = of_kind(&ents, EntityKind::Address).expect("address");
+    assert_eq!(addr.value, "Sydney NSW");
+    assert!(addr.has_tag("geoint"));
+    // The AU state token is recognised and tags the address as AU.
+    assert!(addr.has_tag("au-state:NSW") && addr.has_tag("country:AU"));
+
+    // Only the http(s) URL becomes a Url entity; the ftp link is dropped.
+    let urls: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Url)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(urls, vec!["https://example.com"]);
+}
+
+#[test]
+fn minimal_gravatar_yields_only_the_email() {
+    // An entry with nothing usable still produces the subject email entity.
+    let entry = gravatar(r#"{ "entry": [{}] }"#);
+    let ents = build_email_entities(&entry, &email_target("x@y.com"), "x@y.com", "h", "s");
+    assert_eq!(ents.len(), 1);
+    assert_eq!(ents[0].kind, EntityKind::Email);
+    // Only md5 + profile_url evidence — no optional profile attributes.
+    let keys: Vec<&str> = ents[0].evidence[0]
+        .attributes
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, vec!["md5", "profile_url"]);
+}
+
+#[test]
+fn single_word_or_short_name_yields_no_person() {
+    // A formatted name without a space is not split into a Person.
+    let entry = gravatar(r#"{ "entry": [{ "name": {"formatted": "Cher"} }] }"#);
+    let ents = build_email_entities(&entry, &email_target("x@y.com"), "x@y.com", "h", "s");
+    assert!(of_kind(&ents, EntityKind::Person).is_none());
+    // ...but it is still recorded as the `name` attribute on the email evidence.
+    assert_eq!(
+        ents[0].evidence[0]
+            .attributes
+            .get("name")
+            .map(String::as_str),
+        Some("Cher")
+    );
+}
+
+#[test]
+fn short_username_and_location_are_skipped() {
+    // preferredUsername < 3 chars and location < 3 chars are both dropped.
+    let entry =
+        gravatar(r#"{ "entry": [{ "preferredUsername": "ab", "currentLocation": "NY" }] }"#);
+    let ents = build_email_entities(&entry, &email_target("x@y.com"), "x@y.com", "h", "s");
+    assert!(of_kind(&ents, EntityKind::Username).is_none());
+    assert!(of_kind(&ents, EntityKind::Address).is_none());
+}
+
+#[test]
+fn non_au_location_yields_address_without_state_tags() {
+    let entry = gravatar(r#"{ "entry": [{ "currentLocation": "Berlin, Germany" }] }"#);
+    let ents = build_email_entities(&entry, &email_target("x@y.com"), "x@y.com", "h", "s");
+    let addr = of_kind(&ents, EntityKind::Address).expect("address");
+    assert_eq!(addr.value, "Berlin, Germany");
+    assert!(!addr.tags.iter().any(|t| t.starts_with("au-state:")));
+    assert!(!addr.has_tag("country:AU"));
+}
+
+#[test]
+fn gravatar_hash_normalises_email_per_spec() {
+    // The official gravatar.com example: a trailing space + mixed case MUST be
+    // trimmed and lowercased before MD5, yielding the documented hash. Hashing
+    // the raw value (the bug) gives a different, never-resolving hash.
+    assert_eq!(
+        gravatar_hash("MyEmailAddress@example.com "),
+        "0bc83cb571cd1c50ba6f3e8a78ef1346"
+    );
+    // Case + whitespace variants of the same address converge to one hash.
+    assert_eq!(
+        gravatar_hash("  myemailaddress@EXAMPLE.com"),
+        "0bc83cb571cd1c50ba6f3e8a78ef1346"
+    );
+}
+
+// ── Corpus attribution (SOURCE COUNT ≠ SOURCE INDEPENDENCE) ──────────────
+
+#[test]
+fn gravatar_derived_entities_are_attributed_to_the_gravatar_corpus() {
+    // The standalone `gravatar` module fetches the same profile document. If
+    // this module stamps its own name on what it mints, the two modules'
+    // outputs merge into one entity carrying two "independent" sources for one
+    // Gravatar row, and `c_effective` pays for corroboration that never
+    // happened.
+    let entry = gravatar(
+        r#"{ "entry": [{ "preferredUsername": "cher", "name": {"formatted": "Cher"},
+             "currentLocation": "Sydney, NSW", "urls": [{"value": "https://example.com/"}] }] }"#,
+    );
+    let ents = build_email_entities(&entry, &email_target("x@y.com"), "x@y.com", "h", "s");
+    assert!(
+        ents.len() >= 3,
+        "fixture must mint several entities: {}",
+        ents.len()
+    );
+    for e in &ents {
+        for ev in &e.evidence {
+            assert_eq!(
+                ev.source,
+                crate::modules::gravatar::SRC,
+                "{:?} {} carries evidence attributed to `{}` — a Gravatar row must name Gravatar",
+                e.kind,
+                e.value,
+                ev.source
+            );
+        }
+    }
+}
+
+#[test]
+fn numverify_derived_entities_are_attributed_to_the_numverify_corpus() {
+    // Same rule for the phone path: the `numverify` module queries the same
+    // validation service, so a Numverify answer must carry Numverify's name.
+    let body = numverify(
+        r#"{"valid":true,"number":"61400000000","local_format":"0400000000",
+            "international_format":"+61400000000","country_prefix":"+61",
+            "country_code":"AU","country_name":"Australia","location":"Sydney",
+            "carrier":"Telstra","line_type":"mobile"}"#,
+    );
+    let ents = build_phone_entities(&body, &phone_target("+61400000000"), "https", "s");
+    assert!(!ents.is_empty());
+    for e in &ents {
+        for ev in &e.evidence {
+            assert_eq!(
+                ev.source,
+                crate::modules::numverify::SRC,
+                "{:?} {} carries evidence attributed to `{}` — a Numverify answer must name Numverify",
+                e.kind,
+                e.value,
+                ev.source
+            );
+        }
+    }
+}

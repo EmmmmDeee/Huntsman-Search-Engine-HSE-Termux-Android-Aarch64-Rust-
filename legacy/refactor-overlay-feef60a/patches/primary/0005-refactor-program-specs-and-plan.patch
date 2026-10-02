@@ -1,0 +1,1128 @@
+diff --git a/docs/superpowers/specs/2026-09-29-huntsman-end-to-end-refactor-program-design.md b/docs/superpowers/specs/2026-09-29-huntsman-end-to-end-refactor-program-design.md
+new file mode 100644
+--- /dev/null
++++ b/docs/superpowers/specs/2026-09-29-huntsman-end-to-end-refactor-program-design.md
+@@ -0,0 +1,640 @@
++# Huntsman Search Engine — End-to-End Refactor Program Design
++
++**Date:** 2026-09-29
++**Repository:** `EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-`
++**Audited base:** `feef60ab48ffe4be599c2ef0f678600cdaffc2aa`
++**Primary production target:** Android → Termux → ARM64/aarch64, no root
++**Implementation language:** Rust for Huntsman logic; non-Rust only where an external platform requires configuration or host glue
++**Runtime LLM dependency:** None
++**Program mode:** compatibility-preserving architectural canonicalization, not a big-bang rewrite
++
++## 1. Objective
++
++Refactor Huntsman end-to-end into one authoritative, evidence-gated, adaptive retrieval and intelligence system while preserving verified working capability and eliminating duplicated authorities, staged-but-unused semantics, memory-dependent correctness rules, false corroboration, weak failure classification, and unverified superiority claims.
++
++The refactor must assimilate prior accepted ChatGPT-derived Huntsman work only when it remains compatible with the current repository and the latest governing constraints.
++
++The desired production loop is:
++
++```text
++SEED / REQUEST
++→ CANONICAL QUERY
++→ PROVIDER CONTRACT + CAPABILITY ROUTING
++→ TYPED EXECUTION OUTCOME
++→ IMMUTABLE OBSERVATION
++→ NORMALIZATION
++→ ENTITY CANDIDATE RESOLUTION
++→ EVIDENCE + PROVENANCE ANCESTRY
++→ CLAIM / HYPOTHESIS LEDGER
++→ CONTRADICTION + INDEPENDENCE ANALYSIS
++→ CONFIDENCE / EPISTEMIC STATE
++→ CORRELATION
++→ ROI / VOI SCHEDULER
++→ NEXT-BEST PIVOT
++→ COMMIT
++→ REPEAT UNTIL EXPLICIT TERMINATION
++```
++
++The refactor succeeds only when this loop is exercised by the live production engine rather than existing merely as disconnected design types or documentation.
++
++## 2. Non-negotiable invariants
++
++1. **No fabricated findings.** Production findings must originate from real observations. Synthetic or generated data is test-harness-only.
++2. **No assumed provider contracts.** Endpoint paths, parameters, response fields, status semantics, authentication, quotas, and commercial-use claims require authoritative documentation or observed responses.
++3. **No runtime LLM.**
++4. **Rust owns Huntsman policy.** Shell/YAML/JavaScript may exist only where the host platform or UI requires them; correctness semantics remain Rust-owned whenever technically feasible.
++5. **Termux Android aarch64 is the production authority for device claims.** Host CI can establish algorithmic correctness but cannot establish Termux performance or sensor capability.
++6. **One authoritative implementation per capability.** No parallel scheduler, evidence model, provider registry, confidence engine, or duplicated policy table may survive unless independently justified.
++7. **Provenance is immutable evidence ancestry, not a presentation field.**
++8. **Derived or copied evidence never becomes independent corroboration merely because another module emitted it.**
++9. **Identity ambiguity must remain representable.** The engine may retain unresolved or contradictory candidates rather than force a merge.
++10. **Infrastructure location is not human location.**
++11. **Credential discovery is evidence, never automatic authentication authority.** Detected credentials may be classified and banked as evidence but must not be silently promoted into active provider credentials.
++12. **Persistence changes are migration-safe, restart-safe, and reversible.**
++13. **Existing operator credentials and `~/.huntsman` state survive installation, update, migration, and rollback.
++14. **Repository success is not device success.**
++15. **No capability or superiority claim exceeds demonstrated evidence.**
++16. **No semantic production cutover occurs without a characterized old path, a failing test for the new requirement, and an explicit rollback boundary.**
++17. **`unsafe_code = "forbid"` remains intact.**
++18. **The live `core::roi` + engine round loop remains the sole scheduling authority.**
++
++## 3. Current-state findings that drive this program
++
++### 3.1 Staged intelligence is stronger than live promotion semantics
++
++`src/core/intelligence.rs` already models claims, evidence, inferences, hypotheses, source lineage, temporal validity, geographic basis, contradiction, and independent-lineage promotion. It explicitly states that production scans do not construct an `IntelligenceLedger`; production still promotes through `Entity::confidence`.
++
++This is the largest architectural gap: Huntsman's strongest epistemic model is not yet the live decision authority.
++
++### 3.2 Source health is persistent but causally weak
++
++The current scraper-health path persists outcomes across scans and is consumed by engine dispatch, doctor, API, UI, and debug export. Its central classifications are currently:
++- trailing `ModuleError` streak;
++- trailing zero-yield completions from a source that previously yielded.
++
++This is useful operationally but cannot reliably distinguish transport, authentication, rate limit, WAF, redirect, protocol, schema, parser, semantic, true-zero, and upstream-outage conditions.
++
++### 3.3 Provider metadata is already canonical enough to extend
++
++`ProviderDescriptor` is already shared by modules, routing, cost gates, and ROI logic. Replace-or-parallel-registry designs are rejected. The refactor extends this contract instead.
++
++### 3.4 Architecture-audit already establishes the Rust direction
++
++The existing `architecture-audit` binary replaced an older Python architecture audit and derives runtime graph state from the actual system. Repository-level invariant checking belongs with this Rust-native audit capability rather than in a new Python/Bash subsystem.
++
++### 3.5 Current configuration contains memory-dependent correctness rules
++
++Verified examples include:
++- duplicated auto-update skip policy in production and tests with a literal “keep in sync” instruction;
++- normal CI Rust-version literals repeated beside `rust-toolchain.toml`;
++- Binaryen/wasm-opt version/checksum consumers that require synchronization;
++- Docker Rust builder compatibility with the repository toolchain.
++
++These become first-class architectural invariants or automatically checked compatibility contracts.
++
++### 3.6 Evaluation architecture is designed but not incorporated
++
++The accepted `hse eval` design already specifies:
++- M* deterministic manual-replay baseline;
++- R retrieval-only condition;
++- F full Huntsman condition;
++- feature ablations;
++- sealed truth inaccessible to condition execution;
++- deterministic statistics and bootstrap intervals;
++- false-merge / cascade hard gates;
++- explicit `PROMOTE | REPAIR | REPLACE | ROLLBACK | HOLD`;
++- host-verified versus device-verified validity classes.
++
++This design is adopted into the refactor program.
++
++## 4. Program decomposition
++
++The full request is too large for one safe implementation cycle. It is decomposed into dependency-ordered subprojects. Each subproject receives its own approved design, implementation plan, TDD cycle, regression evidence, and rollback boundary.
++
++### P0 — Baseline, invariants, and executable architecture truth
++
++Purpose:
++- make the repository itself capable of rejecting known architecture drift;
++- establish a reproducible baseline before semantic changes;
++- convert repeated “remember / keep in sync” rules into Rust-owned invariants;
++- reconcile all prior ChatGPT requirements into a machine-readable execution ledger.
++
++Outputs:
++- Rust-native repository invariant engine integrated with `architecture-audit`;
++- one executable source of truth for invariant disposition;
++- auto-update skip policy single-sourced;
++- Rust toolchain compatibility invariant;
++- Binaryen build identity invariant;
++- Docker/toolchain compatibility invariant;
++- current CI/workflow health captured without inventing success;
++- outstanding work ledger with `SATISFIED | PARTIAL | IMPLEMENT | SUPERSEDED | REJECTED | BLOCKED`.
++
++No intelligence semantics change in P0.
++
++### P1 — Evidence and claim production integration
++
++Purpose:
++- move the strongest existing epistemic model into the live scan path without an uncontrolled semantic jump.
++
++Sequence:
++1. preserve and verify the existing read-only persisted-scan `IntelligenceLedger` projection;
++2. characterize current `Entity::confidence` and correlator promotion behavior;
++3. add side-by-side production shadow evaluation;
++4. persist ledger projection and discrepancies without affecting operator-visible promotion;
++5. prove mapping, lineage, independence, contradiction, and migration behavior;
++6. cut over narrowly only after benchmark evidence and explicit gates pass.
++
++The prior immediate full cutover proposal remains rejected until shadow evidence proves equivalence or superiority.
++
++### P2 — Typed source execution and causal health
++
++Replace the generic failure reduction with a shared typed outcome taxonomy.
++
++Minimum states:
++
++```text
++SUCCESS
++VALID_ZERO
++AUTH_REQUIRED
++AUTH_REJECTED
++RATE_LIMITED
++BOT_WAF
++DNS_FAILURE
++CONNECT_FAILURE
++TLS_FAILURE
++TTFB_TIMEOUT
++BODY_TIMEOUT
++UPSTREAM_4XX
++UPSTREAM_5XX
++REDIRECT_CHANGED
++PROTOCOL_DRIFT
++INTERACTION_DRIFT
++SCHEMA_DRIFT
++PARSER_DRIFT
++SEMANTIC_DRIFT
++ZERO_YIELD_ANOMALY
++CONFIRMED_DEAD
++INCONCLUSIVE
++```
++
++Requirements:
++- transport and provider semantics remain distinct;
++- zero results are not automatically absence;
++- HTTP success is not query success;
++- query success is not parser success;
++- parser success is not entity correctness;
++- all causal states are serializable and persisted;
++- quarantine/retry policy consumes typed cause rather than a generic streak alone;
++- doctor/API/UI/debug reuse the same model;
++- positive, negative, protocol, and parser-fixture canaries prevent silent drift.
++
++### P3 — Entity resolution, provenance ancestry, and reversible identity
++
++Introduce a canonical evidence-backed resolution state:
++
++```text
++MATCH
++PROBABLE
++POSSIBLE
++NON_MATCH
++CONTRADICTED
++UNRESOLVED
++```
++
++Requirements:
++- supporting and contradicting evidence are explicit;
++- temporal and geographic compatibility participate without becoming absolute identity proof;
++- common names and weak identifiers cannot independently force merges;
++- infrastructure locations do not become subject locations;
++- merge decisions preserve reversible provenance so later evidence can split an incorrect cluster;
++- false-merge risk is measured separately from retrieval yield.
++
++Evidence independence becomes ancestry-based:
++- mirrors, recall, derived identifiers, deterministic enrichments, copied breach records, and shared upstream datasets are grouped by lineage;
++- corroboration is computed across independent ancestry, not raw module count.
++
++### P4 — Provider contracts, rights, and drift-resilient retrieval
++
++Extend existing `ProviderDescriptor`; do not create a parallel registry.
++
++Add where justified:
++- query contract;
++- positive / valid-zero semantics;
++- authentication state;
++- source lineage / upstream family;
++- expected schema/protocol identity;
++- reliability prior and observed reliability;
++- cost and quota semantics;
++- historical depth;
++- cache and recursive-use policy;
++- commercial/licensing metadata with explicit unknown state;
++- provenance requirements;
++- source-specific health classifier.
++
++Verified provider contract changes must use official documentation or observed responses.
++
++Known source-drift work such as HudsonRock schema migration, AHPRA interaction behavior, redirects, Reddit rate limiting, Wayback timeouts, and Anubis labels is handled here only after current provider behavior is re-derived.
++
++### P5 — Scheduler, budgeting, and termination semantics
++
++Retain `core::roi` and the existing engine round loop as the only scheduler.
++
++Strengthen it with:
++- typed work items;
++- explicit delayed/retry work;
++- source-health aware expected value;
++- evidence novelty / information gain;
++- provider cost;
++- identity-risk penalty;
++- coverage gap value;
++- resource budgets;
++- persistent restart state where justified.
++
++Termination becomes explicit:
++
++```text
++FixedPoint
++MaxDepth
++TimeLimit
++RequestBudget
++ProviderBudget
++ResourceLimit
++MarginalGainLimit
++Cancelled
++FatalError
++```
++
++`FixedPoint` is valid only when no admissible, delayed, in-flight, or derivable novel work remains.
++
++No second frontier or scheduler is permitted.
++
++### P6 — Evidence-first geo/radar integration
++
++Adopt the selected `EvidenceFirstGeo` principle:
++- strong independently corroborated identity/evidence must outrank weak proximity;
++- GEOINT is a bounded contribution rather than an overriding score;
++- prior selected cap is retained as an evaluation candidate, not asserted correct until `hse eval` verifies it;
++- existing `GeoConverge` remains an explicit operator-selectable strategy until replacement is proven superior.
++
++Radio Signal Radar:
++- distinguish sensor executable missing, permission denied, bridge failure, timeout, genuine empty observation, cached data, provider data, and HSE error;
++- no fabricated fallback observations;
++- local BLE/Wi-Fi/GNSS/Termux sensor evidence and WiGLE/cell-provider evidence share the same provenance and uncertainty model;
++- actual Android sensor consumption requires device verification.
++
++### P7 — Native competitive evaluation
++
++Implement accepted Rust-native `hse eval`.
++
++Core conditions:
++- **M\*** — frozen deterministic manual-replay baseline, never described as a live human;
++- **R** — retrieval/parsing/provenance with linkage/recursive intelligence disabled;
++- **F** — full production-capable Huntsman;
++- **A** — controlled ablations.
++
++Hard requirements:
++- condition-isolated databases and mutable state;
++- sealed truth inaccessible to condition execution;
++- scoring only after immutable result finalization;
++- deterministic suite hashes and result hashes;
++- false merge / false split / cascade metrics;
++- provider comparability and completeness gates;
++- worst-decile and tail-risk reporting;
++- exact verdict: `PROMOTE`, `REPAIR`, `REPLACE`, `ROLLBACK`, or `HOLD`;
++- no automatic production default change from evaluation output;
++- no superiority claim from host-only performance data.
++
++`hse benchmark` remains the authoritative scorecard for one scan; `hse eval` is the higher-level controlled comparison framework.
++
++### P8 — Storage, API, CLI, UI, installer, release, and device convergence
++
++After core semantics stabilize:
++- persist new models through canonical storage with explicit migrations;
++- retain old data readability or provide deterministic migration;
++- expose claim state, contradictions, source health, ancestry, temporal validity, and confidence explanation through existing API/UI surfaces;
++- keep UI minimal and entity-first;
++- preserve SpiderFoot compatibility where already supported;
++- fix outstanding mobile accessibility issues only when tied to touched UI surfaces;
++- preserve one canonical install/update path;
++- preserve credentials atomically across update/reinstall;
++- bind release source, binary, checksums, provenance, and installer selection to the exact revision;
++- verify Railway/generic Linux separately from Termux;
++- require real Termux aarch64 evidence for device acceptance.
++
++## 5. Reconciliation of outstanding prior ChatGPT work
++
++The following dispositions are canonical for this program.
++
++| Prior item | Disposition | Program location |
++|---|---|---|
++| Rust-only Huntsman logic | ADOPT | Global invariant |
++| Android/Termux/aarch64/no-root first-class | ADOPT | Global + P8 |
++| No runtime LLM | ADOPT | Global invariant |
++| Immediate full IntelligenceLedger semantic cutover | REJECT FOR NOW | P1 staged shadow/cutover |
++| Read-only persisted IntelligenceLedger projection | ADOPT / VERIFY CURRENT STATE | P1 |
++| Independent-lineage claim promotion | ADOPT | P1/P3 |
++| `EvidenceFirstGeo` default candidate | ADOPT AS EVALUATION CANDIDATE | P6/P7 |
++| Unbounded GEOINT dominance | REJECT | P6 |
++| Second scheduler / `BoundedFrontier` alongside live ROI | REJECT | P5 |
++| Native Rust architectural invariant compiler | ADOPT | P0 |
++| Python/Bash invariant engine | SUPERSEDED | P0 |
++| `hse eval` M*/R/F/ablation design | ADOPT | P7 |
++| Sealed-truth type boundary | ADOPT | P7 |
++| Catastrophic false-merge gate | ADOPT | P3/P7 |
++| Automatic use of discovered credentials | REJECT | Global/P4 |
++| Automatic credential harvesting as evidence | ADOPT WITH REDACTION + NO AUTO-AUTH | P4 |
++| LeakBase duplicate provider | REJECT | Already registered |
++| LeakBase-aware exposure parsing with secret suppression | IMPLEMENT IF STILL MISSING | P4 |
++| Semantic source outcome taxonomy | ADOPT | P2 |
++| Generic 3-error / 3-zero health as sole truth | SUPERSEDE | P2 |
++| Provider rights/commercial metadata | ADOPT WITH UNKNOWN STATE | P4/P7 |
++| Query-pack expansion to 10 providers | DEFER UNTIL P2-P4 CONTRACTS | P4/P7 |
++| Radio/sensor bridge verification | ADOPT | P6/P8 |
++| WiGLE/cell functionality claimed without device proof | REJECT | P6/P8 |
++| Credential persistence atomicity | ADOPT | P8 |
++| Release exact-SHA/provenance binding | ADOPT | P8 |
++| CI/release/security/trust-boundary outstanding defects | IMPORT INTO EXECUTION LEDGER | P0/P8 |
++| Historical one-off bug reports/PR defects | RE-DERIVE BEFORE FIXING | P0 then owning tranche |
++| Heavy new graph UI | REJECT | P8 |
++| Existing minimal UI + shared Rust/WASM semantics | ADOPT | P8 |
++| Runtime superiority claims without benchmark evidence | REJECT | P7 |
++
++## 6. Outstanding defect import policy
++
++Historical ChatGPT findings and old PR notes are leads, not automatically current defects.
++
++P0 imports each outstanding item with:
++- source/date;
++- affected path;
++- original evidence;
++- current reproduction status;
++- current disposition.
++
++Only a current reproduction, current code-path proof, authoritative contract mismatch, or current failing test promotes a lead into an implementation defect.
++
++This applies to previously reported:
++- Linux CI failures;
++- bench-smoke failures;
++- live API-drift failures;
++- release trust-boundary findings;
++- outage-classifier work;
++- CertSpotter budgets/errors;
++- curl redaction;
++- API 429 handling;
++- DER parsing;
++- cancellation races;
++- identity/phone token boundaries;
++- attribution/completeness issues;
++- pre-push receipt/hook edge cases;
++- UI/accessibility issues;
++- Railway deployment failures;
++- provider-label corrections.
++
++No stale issue is “fixed” solely because a prior assistant once reported it.
++
++## 7. Data model direction
++
++### Observation
++
++An immutable statement of what one execution observed.
++
++Required concepts:
++- source/provider identity;
++- query identity;
++- raw-response provenance reference or hash;
++- extraction method/version;
++- observed time;
++- original source time when known;
++- execution outcome;
++- source lineage;
++- verification status.
++
++### Evidence
++
++Evidence wraps an observation or documented derivation and carries ancestry.
++
++An evidence node can name parents but cannot erase them.
++
++### Claim
++
++A proposition about an entity or relationship.
++
++Claim promotion is computed from evidence state; callers do not set “verified” arbitrarily.
++
++### Hypothesis
++
++A competing explanatory state retained until discriminating evidence resolves it.
++
++### Entity resolution
++
++Entity linkage is a decision with provenance, not an irreversible mutation without explanation.
++
++## 8. Confidence model
++
++Do not replace current confidence with a new opaque scalar.
++
++Decompose confidence into inspectable dimensions where materially useful:
++- source authority;
++- transport integrity;
++- query execution integrity;
++- response validity;
++- extraction confidence;
++- identifier strength;
++- entity-match probability;
++- temporal compatibility;
++- geographic compatibility;
++- corroboration strength;
++- lineage independence;
++- contradiction strength;
++- freshness;
++- provenance completeness.
++
++A compatibility scalar may remain for existing callers/UI, but it is a projection of these states rather than an independent authority.
++
++## 9. Failure-layer invariant
++
++The system must not collapse these layers:
++
++```text
++BUILD SUCCESS
++≠ PROCESS EXECUTION
++≠ NETWORK SUCCESS
++≠ HTTP SUCCESS
++≠ QUERY EXECUTION
++≠ RESPONSE VALIDITY
++≠ PARSER SUCCESS
++≠ RESULT EXTRACTION
++≠ ENTITY RESOLUTION
++≠ CORROBORATION
++≠ VERIFIED FINDING
++```
++
++Every diagnostic or benchmark claim must identify which layer it actually proves.
++
++## 10. Persistence and migration
++
++Rules:
++- additive schema changes first;
++- migration transaction or explicit rollback;
++- migration idempotency;
++- restart after migration;
++- old-data read tests;
++- no credential-value logging;
++- no silent state deletion;
++- evaluation conditions use isolated stores;
++- new evidence/claim state must not corrupt existing scan history.
++
++A semantic cutover that cannot be represented compatibly receives a schema/version boundary rather than silently reinterpreting old rows.
++
++## 11. Testing strategy
++
++Every subproject uses:
++
++```text
++REPRODUCE
++→ FAILING TEST
++→ MINIMAL CHANGE
++→ PASS TARGETED TEST
++→ FALSIFY
++→ REGRESS
++→ COMPARE BASELINE
++→ RETAIN OR ROLLBACK
++```
++
++Required families as applicable:
++- unit;
++- integration;
++- property;
++- parser fixture;
++- mutation/negative;
++- architecture invariants;
++- migration;
++- restart/recovery;
++- deterministic replay;
++- fuzz;
++- live contract probes;
++- Android cross-build;
++- real Termux runtime;
++- resource-budget tests.
++
++No test may pass vacuously because its protected surface disappeared.
++
++## 12. Verification validity classes
++
++Every material acceptance record declares one:
++
++### Repository-verified
++Code/build/test/static invariant only.
++
++### Host-verified
++Executed on supported non-Android host.
++
++### Cross-build-verified
++Successfully built for `aarch64-linux-android`, not executed there.
++
++### Device-verified
++Executed on real Android + Termux + aarch64.
++
++No lower validity class is promoted linguistically into a higher one.
++
++## 13. Rollback discipline
++
++Every semantic tranche must identify:
++- previous authoritative behavior;
++- migration boundary;
++- feature/config switch where practical;
++- rollback data compatibility;
++- exact regression signal that triggers rollback.
++
++Rollback is preferred over rationalizing an unexplained material regression.
++
++## 14. Release discipline
++
++A releasable refactor state requires:
++- exact source revision recorded;
++- source/binary revision match;
++- deterministic build metadata where feasible;
++- checksum verification;
++- release artifact provenance;
++- installer selects the intended release/revision;
++- update path preserves state;
++- clean install;
++- idempotent reinstall;
++- upgrade from supported prior state;
++- rollback verification;
++- Termux device acceptance.
++
++## 15. Resource constraints
++
++The live system must remain appropriate for an Android handset in roughly the established HSE resource class.
++
++Changes must avoid:
++- unbounded graph expansion;
++- unbounded event retention in memory;
++- unbounded provider concurrency;
++- copying large raw corpora unnecessarily;
++- heavyweight runtime ML/LLM dependencies.
++
++Benchmarks record wall time, requests, memory where measurable, storage growth, and provider cost.
++
++## 16. Completion definition
++
++The program is complete only when:
++
++1. the execution ledger has no unresolved high-value item incorrectly represented as complete;
++2. staged intelligence semantics are either production-authoritative or explicitly retained as non-authoritative with benchmark justification;
++3. source failures are causally typed;
++4. identity resolution is evidence-backed and reversible;
++5. ancestry prevents false independent corroboration;
++6. one scheduler governs expansion and termination;
++7. provider contracts are machine-readable and validated;
++8. `hse eval` can empirically compare relevant candidate states;
++9. exact release/device verification succeeds;
++10. current operator workflows and stored data have no material unexplained regression;
++11. no supported capability claim exceeds its validity class.
++
++## 17. Stop conditions for each tranche
++
++Stop only on:
++- verified acceptance;
++- verified infeasibility;
++- hard external blocker;
++- non-positive marginal decision value.
++
++A green build alone is not acceptance.
++
++## 18. Program order
++
++```text
++P0 BASELINE + INVARIANTS
++→ P1 EVIDENCE SHADOW INTEGRATION
++→ P2 TYPED SOURCE HEALTH
++→ P3 IDENTITY + ANCESTRY
++→ P4 PROVIDER CONTRACTS
++→ P5 SCHEDULER + TERMINATION
++→ P6 GEO/RADAR
++→ P7 COMPETITIVE EVAL
++→ P8 STORAGE/API/UI/INSTALL/RELEASE/DEVICE CONVERGENCE
++```
++
++Tranches may overlap only where their state is independent and verification evidence cannot contaminate another tranche.
++
++## 19. Explicit exclusions
++
++This program does not:
++- rewrite Huntsman in another language;
++- create a second “v2” product tree;
++- use an LLM inside runtime;
++- auto-authenticate with discovered credentials;
++- invent source contracts;
++- silently merge unresolved identities;
++- treat a source returning zero as proof of absence without contract support;
++- claim device performance from CI/Linux;
++- replace working architecture merely because a new design is more elegant;
++- expand source count before evidence correctness and source-health foundations can measure the added value.
++
++## 20. Decision
++
++Adopt incremental canonicalization.
++
++Preserve proven working paths until their replacements pass adversarial and regression gates. Convert staged high-value architecture into live authority through shadow operation and controlled cutover. Use the native evaluation framework to decide whether major semantic changes should be promoted rather than relying on design confidence alone.
+diff --git a/docs/superpowers/specs/2026-09-29-huntsman-p0-foundation-refactor-design.md b/docs/superpowers/specs/2026-09-29-huntsman-p0-foundation-refactor-design.md
+new file mode 100644
+--- /dev/null
++++ b/docs/superpowers/specs/2026-09-29-huntsman-p0-foundation-refactor-design.md
+@@ -0,0 +1,306 @@
++# Huntsman Search Engine — P0 Foundation Refactor Design
++
++**Date:** 2026-09-29
++**Parent program:** `2026-09-29-huntsman-end-to-end-refactor-program-design.md`
++**Audited base:** `feef60ab48ffe4be599c2ef0f678600cdaffc2aa`
++**Scope:** baseline truth, Rust-native architectural invariants, outstanding-work reconciliation, verification boundaries
++**Production semantic change:** none
++
++## 1. Objective
++
++Before changing retrieval, evidence, identity, scheduling, or confidence semantics, make Huntsman capable of proving which repository state is authoritative and mechanically rejecting known architecture drift.
++
++P0 converts recurring maintenance instructions into executable Rust checks and produces the canonical outstanding-work ledger that controls later tranches.
++
++## 2. Why P0 is first
++
++The repository already contains:
++- staged evidence machinery stronger than live semantics;
++- historical unresolved defects from multiple development passes;
++- cross-file “keep in sync” rules;
++- CI/device validity distinctions;
++- older assistant findings whose current status is unknown.
++
++Beginning semantic refactoring before proving this baseline would make later regressions impossible to attribute confidently.
++
++## 3. Architecture
++
++Extend the existing Rust `architecture-audit` binary rather than creating a new tool.
++
++Proposed internal structure:
++
++```text
++src/core/architectural_invariants/
++    mod.rs
++    model.rs
++    registry.rs
++    repository.rs
++    checks.rs
++
++src/bin/architecture_audit/
++    existing audit code
++    invariant_command.rs
++
++tests/
++    architectural_invariants.rs
++```
++
++The exact split may adapt to existing repository conventions, but there is one production Rust invariant engine.
++
++## 4. Model
++
++```rust
++pub enum Disposition {
++    Invariantized,
++    Automated,
++    Procedural,
++    Blocked,
++    Superseded,
++    Obsolete,
++}
++
++pub enum InvariantStatus {
++    Satisfied,
++    Violated,
++    Blocked,
++    NotApplicable,
++}
++
++pub struct InvariantReport {
++    pub id: String,
++    pub protected_property: String,
++    pub failure_class: String,
++    pub enforcement_boundary: String,
++    pub disposition: Disposition,
++    pub status: InvariantStatus,
++    pub evidence: Vec<String>,
++}
++```
++
++The production implementation may use stronger typed identifiers or static strings where that improves correctness.
++
++## 5. Command surface
++
++Extend `architecture-audit` with repository invariant inspection while preserving existing runtime-graph audit behavior.
++
++Target interface:
++
++```text
++cargo run --bin architecture-audit -- invariants
++cargo run --bin architecture-audit -- invariants --json
++cargo run --bin architecture-audit -- invariants --repo .
++```
++
++No new runtime dependency is introduced into `hse serve` or ordinary scanning.
++
++## 6. Initial invariant conversions
++
++### INV-AUTOUPDATE-001 — auto-update skip policy
++
++Current defect:
++- production and tests contain mirrored command-policy predicates;
++- the test explicitly says to keep them synchronized.
++
++Conversion:
++- one module-level Rust predicate owns the policy;
++- runtime consumes it;
++- tests call the same predicate;
++- the duplicated predicate is deleted.
++
++Acceptance:
++- exactly one executable policy authority;
++- all current skip/non-skip behavior remains characterized;
++- a mutation adding/removing one command from a duplicate location is no longer possible because the duplicate does not exist.
++
++Disposition after acceptance: `Invariantized`.
++
++### INV-RUSTPIN-001 — project Rust version compatibility
++
++Current defect:
++- `rust-toolchain.toml` is conceptually authoritative;
++- normal workflows contain copied numeric project toolchain values;
++- MSRV and nightly fuzzing are legitimate independent toolchains.
++
++Conversion:
++- Rust invariant parsing recognizes:
++  - authoritative project channel from `rust-toolchain.toml`;
++  - declared MSRV from `Cargo.toml`;
++  - explicit nightly exception;
++- copied normal-workflow project pins are rejected unless the chosen integration mechanism derives them from the authority.
++
++Because GitHub YAML is an external platform format, small YAML glue may remain. The invariant policy itself is Rust-owned.
++
++Disposition:
++- `Invariantized` where derivation eliminates duplication;
++- `Automated` where an external syntax cannot derive the value and compatibility must be checked.
++
++### INV-DOCKER-RUST-001 — Docker builder compatibility
++
++Docker `FROM` cannot reliably read `rust-toolchain.toml`.
++
++Therefore:
++- retain the required Docker literal;
++- Rust invariant compares it with the authoritative project channel;
++- mismatch is fatal to the architecture audit/gate.
++
++Disposition: `Automated`, not falsely labeled `Invariantized`.
++
++### INV-BINARYEN-001 — byte-reproducible wasm tool identity
++
++Current defect class:
++- wasm-opt/Binaryen build identity affects byte-exact committed wasm artifacts;
++- version and checksum have been represented across multiple consumers.
++
++Target:
++- define one canonical build-tool identity;
++- consumers derive or are checked against it;
++- Rust audit owns compatibility validation;
++- no separate Python/Bash invariant engine.
++
++The exact authority location is selected during implementation after inspecting current build-script and CI capabilities. It must not add a second configuration authority merely to remove the first.
++
++## 7. Outstanding-work ledger
++
++Create one canonical machine-readable ledger owned by Rust-compatible data, with entries for prior ChatGPT findings and repository-native ledgers.
++
++Minimum fields:
++
++```text
++id
++summary
++source
++first_observed_at
++affected_paths
++requirement
++original_evidence
++current_reproduction
++current_disposition
++owning_tranche
++verification_required
++supersedes
++superseded_by
++```
++
++Allowed current dispositions:
++
++```text
++SATISFIED
++PARTIAL
++IMPLEMENT
++SUPERSEDED
++REJECTED
++BLOCKED
++UNVERIFIED
++```
++
++Historical assistant output enters as `UNVERIFIED` unless current repository evidence independently confirms it.
++
++## 8. Imported defect families
++
++P0 must import, not blindly fix:
++- current CI failures/successes by exact revision;
++- scheduled live-drift state;
++- benchmark workflow state;
++- release-pipeline trust-boundary findings;
++- API/provider drift reports;
++- parser correctness reports;
++- cancellation/concurrency reports;
++- identity/phone/name parsing reports;
++- pre-push receipt/hook defects;
++- installer/key-persistence reports;
++- UI/accessibility reports;
++- Railway/deployment reports.
++
++Each item is re-derived before implementation in its owning tranche.
++
++## 9. Non-vacuity
++
++Every repository scanner proves it still sees what it claims to protect.
++
++Examples:
++- workflow scanner asserts workflow count above an explicit structural minimum derived from the repository fixture used by the test;
++- toolchain parser has a known stale-pin negative fixture;
++- mirrored-policy detector has a deliberately duplicated fixture;
++- missing protected files are failures, not silent success;
++- parse failures are failures, not “no violations.”
++
++## 10. Testing
++
++TDD sequence:
++
++1. Write failing test that reproduces each current architecture defect.
++2. Observe the expected failure.
++3. Implement the smallest canonicalization.
++4. Observe the targeted test pass.
++5. Inject a new violation and verify failure.
++6. Test legitimate exceptions.
++7. Run full relevant regression.
++
++Minimum gates:
++- `cargo fmt --all -- --check`
++- targeted P0 tests;
++- root locked tests;
++- sibling-crate tests where affected;
++- clippy according to repository gate;
++- architecture-audit command smoke;
++- workflow validation;
++- Android cross-build if Cargo/build graph is touched.
++
++P0 itself does not claim real Termux runtime verification unless it is actually executed on device.
++
++## 11. Error handling
++
++Architecture audit errors are explicit:
++- protected file missing;
++- protected syntax unparseable;
++- invariant violated;
++- invariant blocked by unavailable information;
++- internal audit failure.
++
++“Could not inspect” must never be rendered as “satisfied.”
++
++## 12. Rollback
++
++P0 must not change scan semantics or persistent DB state.
++
++Rollback is therefore repository-local:
++- revert the P0 commit series;
++- existing runtime behavior remains intact.
++
++This low semantic risk is why P0 precedes the intelligence cutover.
++
++## 13. Acceptance criteria
++
++P0 is accepted only when:
++
++1. the existing mirrored auto-update policy fails a pre-change test;
++2. one Rust authority replaces the mirror and preserves current behavior;
++3. the repository invariant engine detects a deliberately stale project toolchain;
++4. legitimate MSRV/nightly exceptions remain valid;
++5. Docker/project toolchain mismatch is automatically detected;
++6. Binaryen build-identity duplication is either removed or automatically rejected;
++7. scanners demonstrate non-vacuity;
++8. historical ChatGPT findings are represented with explicit current disposition rather than assumed true;
++9. all relevant host-side regression gates pass;
++10. the exact tested revision is recorded;
++11. no production intelligence semantics changed.
++
++## 14. Implementation boundary
++
++P0 ends before modifying:
++- claim promotion semantics;
++- source-health outcome taxonomy;
++- entity merge semantics;
++- scheduler behavior;
++- provider parsing;
++- geo weighting;
++- persistence schema for intelligence;
++- evaluation execution.
++
++Those changes belong to later approved subprojects.
++
++## 15. Decision
++
++Implement P0 first.
++
++Its purpose is not to add user-facing capability. Its purpose is to make every subsequent end-to-end refactor more falsifiable, less memory-dependent, and safer to attribute.
+diff --git a/docs/superpowers/plans/2026-09-29-huntsman-end-to-end-refactor-plan.md b/docs/superpowers/plans/2026-09-29-huntsman-end-to-end-refactor-plan.md
+new file mode 100644
+--- /dev/null
++++ b/docs/superpowers/plans/2026-09-29-huntsman-end-to-end-refactor-plan.md
+@@ -0,0 +1,167 @@
++# Huntsman End-to-End Refactor — Dependency-Ordered Implementation Plan
++
++**Base:** `feef60ab48ffe4be599c2ef0f678600cdaffc2aa`
++**Target:** Android → Termux → ARM64/aarch64
++**Language:** Rust for Huntsman logic; host configuration only where unavoidable
++**Runtime LLM:** none
++
++## Execution rule
++
++For every task:
++
++```text
++REPRODUCE → FAILING TEST → MINIMAL CHANGE → TARGETED PASS
++→ FALSIFY → REGRESS → COMPARE → RETAIN/ROLLBACK
++```
++
++Do not advance a semantic cutover because code merely builds. Record the
++verification class: repository, host, cross-build, or real Termux device.
++
++## Tranche 0 — Compile the architectural invariants
++
++1. Apply `0001-auto-update-single-authority.patch`.
++2. Apply `0002-rust-evidence-health-eval-foundations.patch`.
++3. Apply `0003-register-refactor-core-modules.patch`.
++4. Apply `0004-architecture-audit-repository-invariants.patch`.
++5. Run formatting and the root test suite.
++6. Run:
++   `cargo run --bin architecture-audit -- --repo-invariants .`
++7. Deliberately reintroduce one stale toolchain fixture and one duplicated
++   auto-update predicate in a disposable worktree; require the invariant gate
++   to fail.
++8. Revert the mutations and require the gate to pass.
++
++Acceptance: one auto-update authority, non-vacuous Rust repository invariant
++audit, no scan semantic change.
++
++## Tranche 1 — IntelligenceLedger shadow integration
++
++Rebase and verify `metamorphic_intelligence_hse.patch` against the exact base.
++Do not replace live promotion semantics yet.
++
++Required evidence:
++- deterministic persisted scan → ledger projection;
++- existing scan remains unchanged;
++- projection records evidence ancestry and independent lineage;
++- projection round-trip is stable;
++- discrepancies between legacy confidence and ledger state are measurable.
++
++Only after `hse eval` can characterize the difference may a production cutover
++be proposed.
++
++## Tranche 2 — Causal source outcomes
++
++Integrate `core::source_outcome` at the module execution boundary.
++
++Required changes:
++- persist causal outcome alongside/behind existing module outcome events;
++- map transport errors without pretending an HTTP 2xx is query success;
++- let provider contracts refine `Inconclusive` into `Success`, `ValidZero`,
++  schema/semantic drift, etc.;
++- update scraper health to consume causal state while preserving its existing
++  API/doctor/UI consumers;
++- keep legacy streak fields during migration until compatibility is proven.
++
++Required tests:
++- auth rejection never becomes parser drift;
++- rate-limit backoff is distinct from dead-source quarantine;
++- known valid zero remains healthy;
++- zero-yield anomaly is not proof of absence;
++- source recovery clears quarantine;
++- old event histories remain readable.
++
++## Tranche 3 — Evidence ancestry and reversible identity
++
++Integrate `core::evidence_ancestry` and `core::identity_resolution`.
++
++Required changes:
++- persist root source/corpus family;
++- derived/recall/mirror evidence carries parents;
++- correlator independence counts root families, not module names;
++- identity decisions preserve support and contradiction;
++- only `Match` satisfying the merge policy can auto-merge;
++- `Probable` and `Possible` remain hypotheses.
++
++Hard gate: a false identity bridge must be detectable and reversible.
++
++## Tranche 4 — Provider contracts
++
++Extend existing `ProviderDescriptor`; do not create a second registry.
++
++Re-derive every provider change from current official documentation or observed
++responses. Revalidation patches in this bundle are inputs, not pre-approved
++truth.
++
++Priorities:
++- HudsonRock current schema;
++- AHPRA interaction contract;
++- redirects/protocol drift;
++- Reddit rate limiting;
++- Wayback timeout semantics;
++- Anubis response semantics;
++- breach corpus source-family canonicalization;
++- LeakBase safe import;
++- query-pack expansion only after contracts are verified.
++
++## Tranche 5 — Scheduler and termination
++
++Wire `core::termination` into the sole live ROI/round scheduler.
++
++Do not add another frontier.
++
++Persist explicit termination reasons:
++`FixedPoint`, `MaxDepth`, `TimeLimit`, `RequestBudget`, `ProviderBudget`,
++`ResourceLimit`, `MarginalGainLimit`, `Cancelled`, `FatalError`.
++
++`FixedPoint` requires no admissible, delayed, in-flight, or newly derivable
++work.
++
++## Tranche 6 — Evidence-first geo and radar
++
++Revalidate and apply the EvidenceFirstGeo patch only after current geo scoring
++is characterized. Treat its 5% maximum geo bonus as a benchmark candidate, not
++an unquestioned constant.
++
++Preserve explicit `GeoConverge` until `hse eval` shows a replacement is better.
++
++Sensor/radar acceptance requires real Termux device execution. Distinguish
++permission/bridge/tool/timeout/true-empty states.
++
++## Tranche 7 — Native competitive evaluation
++
++Build application/CLI orchestration around `core::eval`.
++
++Conditions:
++- M*: deterministic manual replay, never called a live human;
++- R: retrieval-only;
++- F: full Huntsman;
++- A: controlled ablations.
++
++Structural requirements:
++- condition-isolated stores;
++- runner accepts visible case, never sealed truth;
++- score only finalized results;
++- false merges and cascade size are hard non-compensatory gates;
++- deterministic artifact hashes and seeded bootstrap;
++- verdict exactly `PROMOTE | REPAIR | REPLACE | ROLLBACK | HOLD`;
++- host results never imply Termux performance.
++
++## Tranche 8 — Storage, release, and real-device convergence
++
++Revalidate the Termux artifact patch, then require:
++- migration/restart/recovery tests;
++- exact source/binary revision match;
++- checksums/provenance;
++- clean install;
++- idempotent reinstall;
++- state/credential preservation;
++- upgrade and rollback;
++- Android aarch64 cross-build;
++- real Termux `hse-test`, `hse doctor`, representative scans;
++- resource-budget evidence.
++
++## Completion
++
++The refactor is not complete while a high-impact ledger entry is marked
++`UNVERIFIED`, `PARTIAL`, or `BLOCKED` without explicit reason. No superiority
++claim ships until controlled evaluation supports it.

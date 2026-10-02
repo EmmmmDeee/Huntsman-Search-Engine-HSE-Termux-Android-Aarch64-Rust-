@@ -1,0 +1,22 @@
+{
+  "repository": "EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-",
+  "commit": "feef60ab48ffe4be599c2ef0f678600cdaffc2aa",
+  "tree": "29540ce80260cb0d5abc0d24f616909feb779e17",
+  "package_version": "1.41.0",
+  "rust_version": "1.98",
+  "rust_toolchain": "1.98.0",
+  "current_blob_shas": {
+    "src/cli/update.rs": "5ca8d8c924adefd36922f6119cc7ee832a39b4ce",
+    "src/core/mod.rs": "23876d16088d5e6a8c969df5e486461a43bcdb95",
+    "src/bin/architecture_audit/main.rs": "21a8c4bf4d7daf50a41a565c73eafbb8a9f97ea0",
+    "src/app/import/html.rs": "d0180942ba2ad23370a8f92e2eff74398420f555",
+    "src/app/import/tests.rs": "bfcfaba59fe99f5c1c58c289f568dea1f9b5ee8b",
+    "src/core/correlator/rules/breach_pii.rs": "6aa09d9188460da89de9cb16f6081beaca5a7e52",
+    "src/core/correlator/tests/part06.rs": "85a6944b06c12f95a89cb3da06a19adc49d640af",
+    ".github/workflows/ci.yml": "2a167bae5e7402df15387c8d0cf7c5550322b043",
+    "src/core/query_pack/mod.rs": "cc391566c44bf103ad09f319f53fabf57f3d0d79"
+  },
+  "remote_write": "blocked: GitHub integration HTTP 403 on branch/file writes",
+  "compiler_in_sandbox": "unavailable",
+  "device_target_in_session": "unavailable"
+}

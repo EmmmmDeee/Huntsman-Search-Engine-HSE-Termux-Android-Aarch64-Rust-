@@ -1,0 +1,752 @@
+use super::*;
+    use crate::core::module::ModuleResult;
+    use reqwest::header::HeaderMap;
+    use std::collections::VecDeque;
+
+    fn empty_state() -> CrawlState {
+        CrawlState {
+            visited: HashSet::new(),
+            queue: VecDeque::new(),
+            pages_fetched: 0,
+            disallow_rules: Vec::new(),
+            result: ModuleResult::new(),
+            external_domains: HashSet::new(),
+            subdomains: HashSet::new(),
+            emails: HashSet::new(),
+            phones: HashSet::new(),
+            tracking_ids: HashSet::new(),
+            hydration_findings: Vec::new(),
+            frameworks: HashSet::new(),
+            page_types: HashSet::new(),
+            security_headers: Vec::new(),
+            internal_links: 0,
+            external_links: 0,
+            notable_pages: Vec::new(),
+            image_urls: Vec::new(),
+            image_urls_seen: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn crawled_images_are_captured_as_exif_leads_but_never_queued() {
+        // A JPEG is not a page: it must never enter the crawl queue. But it IS a
+        // geolocation lead — `exif_geo` reads the GPS IFD out of it — so the URL
+        // has to survive as an entity rather than being discarded, which is what
+        // this arm used to do to every binary link alike.
+        let html = concat!(
+            r#"<a href="/photos/family.jpg">photo</a>"#,
+            r#"<a href="/scan.TIFF">scan</a>"#,
+            r#"<a href="/pic.heic?w=1024">heic</a>"#,
+            r#"<a href="/about.html">about</a>"#,
+        );
+        let mut state = empty_state();
+        extract_links(
+            html,
+            "https://example.com/",
+            "example.com",
+            "example.com",
+            &mut state,
+        );
+
+        assert_eq!(
+            state.image_urls,
+            vec![
+                "https://example.com/photos/family.jpg",
+                "https://example.com/scan.TIFF",
+                "https://example.com/pic.heic",
+            ],
+            "every EXIF-capable image must be captured, in discovery order"
+        );
+        // The crawl queue holds the HTML page only — never an image.
+        let queued: Vec<&str> = state.queue.iter().map(|(u, _)| u.as_str()).collect();
+        assert_eq!(queued, vec!["https://example.com/about.html"]);
+    }
+
+    #[test]
+    fn every_exif_capable_image_extension_counts_as_binary() {
+        // Regression: `BINARY_EXTENSIONS` listed jpg/tiff/webp but NOT heic,
+        // heif, jpe or jfif, so a link to one of those was treated as a page —
+        // the crawler enqueued it and spent a page-budget slot fetching and
+        // HTML-parsing binary image data. `is_binary_url` now defers to the
+        // shared `util::exif::IMAGE_EXTS`, so the two lists cannot drift apart.
+        for ext in crate::util::exif::IMAGE_EXTS {
+            let url = format!("https://example.com/photo{ext}");
+            assert!(
+                is_binary_url(&url),
+                "{ext} is fetched for EXIF, so it must never be crawled as a page"
+            );
+        }
+    }
+
+    #[test]
+    fn non_exif_binaries_are_not_captured_as_image_leads() {
+        // PNG/GIF/SVG carry no EXIF GPS in practice and are deliberately absent
+        // from `util::exif::IMAGE_EXTS`; capturing them would spend an 8 MiB
+        // fetch each to learn nothing. Non-image binaries likewise.
+        let html = concat!(
+            r#"<a href="/logo.png">png</a>"#,
+            r#"<a href="/anim.gif">gif</a>"#,
+            r#"<a href="/icon.svg">svg</a>"#,
+            r#"<a href="/report.pdf">pdf</a>"#,
+            r#"<a href="/app.zip">zip</a>"#,
+        );
+        let mut state = empty_state();
+        extract_links(
+            html,
+            "https://example.com/",
+            "example.com",
+            "example.com",
+            &mut state,
+        );
+        assert!(
+            state.image_urls.is_empty(),
+            "no EXIF-incapable binary should become a lead, got {:?}",
+            state.image_urls
+        );
+    }
+
+    #[test]
+    fn image_leads_are_capped_and_deduplicated() {
+        // A gallery page must not turn one crawl into hundreds of image fetches.
+        let mut html: String = (0..IMAGE_LEADS_CAP + 25)
+            .map(|i| format!(r#"<a href="/img{i}.jpg">i</a>"#))
+            .collect();
+        // The same photo linked twice (thumbnail + full size) is one lead.
+        html.push_str(r#"<a href="/img0.jpg">dupe</a>"#);
+        let mut state = empty_state();
+        extract_links(
+            &html,
+            "https://example.com/",
+            "example.com",
+            "example.com",
+            &mut state,
+        );
+        // Emitted leads are capped and unique.
+        assert_eq!(state.image_urls.len(), IMAGE_LEADS_CAP);
+        let mut sorted = state.image_urls.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), state.image_urls.len(), "leads must be unique");
+        // But the TRUE discovered total is retained past the cap (25 more than
+        // the cap, minus the one duplicate `/img0.jpg`), so the evidence can
+        // report the real figure rather than the saturated one.
+        assert_eq!(state.image_urls_seen.len(), IMAGE_LEADS_CAP + 25);
+    }
+
+    #[test]
+    fn extract_tracking_ids_finds_analytics_anchors() {
+        let html = r#"
+            <script>gtag('config','UA-123456-1');</script>
+            <script async src="https://www.googletagmanager.com/gtag/js?id=G-ABCDE12345"></script>
+            <!-- GTM-XYZ12 -->
+            <ins class="adsbygoogle" data-ad-client="ca-pub-1234567890123456"></ins>
+            <script>fbq('init', '987654321098765');</script>
+            <script>ym(12345678, "init", {});</script>
+            <script>hjid:1234567,hjsv:6</script>
+        "#;
+        let mut ids = HashSet::new();
+        extract_tracking_ids(html, &mut ids);
+        let got: std::collections::BTreeSet<&str> = ids.iter().map(|(v, _)| v.as_str()).collect();
+        for want in [
+            "UA-123456-1",
+            "G-ABCDE12345",
+            "GTM-XYZ12",
+            "ca-pub-1234567890123456",
+            "fb-pixel:987654321098765",
+            "yandex:12345678",
+            "hotjar:1234567",
+        ] {
+            assert!(got.contains(want), "missing {want}: {got:?}");
+        }
+        // A page with no analytics yields nothing.
+        let mut none = HashSet::new();
+        extract_tracking_ids("<html><body>plain</body></html>", &mut none);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn link_iter_extracts_only_real_hrefs() {
+        let html = r##"<a href="/a">x</a> <a href='https://b.com/c'>y</a>
+            <a href="#frag">z</a> <a href="mailto:e@x.com">m</a>
+            <a href="javascript:void(0)">j</a> <a href="">empty</a> <a>noattr</a>"##;
+        let links: Vec<&str> = LinkIter::new(html).collect();
+        assert_eq!(links, vec!["/a", "https://b.com/c"]);
+    }
+
+    #[test]
+    fn registrable_domain_takes_last_two_labels() {
+        assert_eq!(
+            extract_registrable_domain("www.example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            extract_registrable_domain("example.com").as_deref(),
+            Some("example.com")
+        );
+        // Multi-label public suffixes are handled via util::domains'
+        // curated table (not a full PSL): a.b.co.uk → b.co.uk, the registrable
+        // domain, rather than the bare suffix co.uk.
+        assert_eq!(
+            extract_registrable_domain("a.b.co.uk").as_deref(),
+            Some("b.co.uk")
+        );
+        assert_eq!(extract_registrable_domain("localhost"), None);
+    }
+
+    #[test]
+    fn binary_url_detection() {
+        assert!(is_binary_url("https://x.com/file.pdf"));
+        assert!(is_binary_url("https://x.com/IMG.PNG")); // case-insensitive
+        assert!(is_binary_url("https://x.com/a.zip?v=2")); // query stripped
+        assert!(!is_binary_url("https://x.com/page"));
+        assert!(!is_binary_url("https://x.com/article.html"));
+    }
+
+    #[test]
+    fn disallowed_matches_path_prefix() {
+        let rules = vec!["/admin".to_string(), "/private/".to_string()];
+        assert!(is_disallowed("https://x.com/admin/panel", &rules));
+        assert!(is_disallowed("https://x.com/private/x", &rules));
+        assert!(!is_disallowed("https://x.com/public", &rules));
+        // Unparseable input → empty path → no rule matches (never panics).
+        assert!(!is_disallowed("not a url", &rules));
+    }
+
+    #[test]
+    fn email_extraction_filters_assets_and_dedups() {
+        let mut emails = HashSet::new();
+        extract_emails(
+            "reach John.Doe@Example.com or sales@a.co — skip logo@2x.png and x@y.z",
+            &mut emails,
+        );
+        assert!(emails.contains("john.doe@example.com")); // lowercased
+        assert!(emails.contains("sales@a.co"));
+        assert!(!emails.iter().any(|e| e.ends_with(".png"))); // image excluded
+        assert!(!emails.contains("x@y.z")); // domain ≤3 chars rejected
+
+        let mut dup = HashSet::new();
+        extract_emails("a@b.com a@b.com", &mut dup);
+        assert_eq!(dup.len(), 1);
+    }
+
+    #[test]
+    fn email_extraction_rejects_syntactically_invalid_candidates() {
+        // Routed through the canonical validator, malformed runs the byte-scan
+        // can grab (consecutive dots, an edge dot) are no longer surfaced, while
+        // an ordinary address alongside them still is.
+        let mut emails = HashSet::new();
+        extract_emails(
+            "bad john..doe@example.com and .lead@example.com and trail.@example.com \
+             but good real.person@example.com",
+            &mut emails,
+        );
+        assert!(emails.contains("real.person@example.com"));
+        assert!(!emails.contains("john..doe@example.com")); // consecutive dots
+        assert!(!emails.contains(".lead@example.com")); // leading dot
+        assert!(!emails.contains("trail.@example.com")); // trailing-dot local
+    }
+
+    #[test]
+    fn email_extraction_keeps_a_percent_in_the_local_part() {
+        // `%` is in the canonical EMAIL_RE local class, so the byte-scanner must not
+        // truncate the mailbox at it (matching its util::extract::page_emails twin).
+        let mut emails = HashSet::new();
+        extract_emails("reach with%percent@example.com today", &mut emails);
+        assert!(
+            emails.contains("with%percent@example.com"),
+            "the %-containing mailbox must not be truncated: {emails:?}"
+        );
+    }
+
+    #[test]
+    fn email_extraction_rejects_ip_literal_and_numeric_or_short_tld_hosts() {
+        // This module's page byte-scanner is a third copy of the same email-mining
+        // logic as `util::extract::page_emails`; it must not be more permissive.
+        // The old `contains('.') && len > 3` gate admitted an IP-literal host, a
+        // numeric pseudo-TLD and a 1-char TLD as bogus `Email` entities that would
+        // then poison correlation. Routing it through the canonical
+        // `host_has_alpha_tld` (which requires a final label of ≥2 ASCII letters)
+        // rejects all three, while a genuine address alongside them still surfaces.
+        let mut emails = HashSet::new();
+        extract_emails(
+            "junk admin@10.0.0.1 and user@host.123 and short@host.c \
+             but real ops@acme.com",
+            &mut emails,
+        );
+        assert!(emails.contains("ops@acme.com"), "got {emails:?}");
+        assert!(!emails.contains("admin@10.0.0.1"), "IP-literal host leaked");
+        assert!(!emails.contains("user@host.123"), "numeric TLD leaked");
+        assert!(!emails.contains("short@host.c"), "1-char TLD leaked");
+    }
+
+    #[test]
+    fn email_extraction_filters_modern_asset_extensions_but_not_gtlds() {
+        let mut emails = HashSet::new();
+        extract_emails(
+            "sprites logo@2x.webp icon@3x.svg hero@2x.jpeg fav@2x.ico font@1x.woff2 \
+             — but real ops@acme.com and archive lover@backups.zip stay",
+            &mut emails,
+        );
+        // Retina/asset filenames the old 5-extension filter missed are now dropped.
+        for asset in [
+            "logo@2x.webp",
+            "icon@3x.svg",
+            "hero@2x.jpeg",
+            "fav@2x.ico",
+            "font@1x.woff2",
+        ] {
+            assert!(!emails.contains(asset), "asset leaked as email: {asset}");
+        }
+        // Real addresses survive — including the `.zip` gTLD, which must NOT be
+        // mistaken for a file extension.
+        assert!(emails.contains("ops@acme.com"));
+        assert!(emails.contains("lover@backups.zip"));
+    }
+
+    #[test]
+    fn phone_extraction_bounds_digit_count() {
+        let mut phones = HashSet::new();
+        extract_phones(
+            "call +1 415 555 2671 or +44 20 7946 0958, skip +123, junk +01020103",
+            &mut phones,
+        );
+        assert!(phones.contains("+14155552671"));
+        assert!(phones.iter().any(|p| p.starts_with("+44")));
+        // Practical minimum is 10 digits (no inhabited country has fewer).
+        assert!(!phones.iter().any(|p| p.len() < 11)); // '+' + 10 digits = 11 chars
+        // E.164 country codes never start with 0 — `+0…` is a scrape artifact.
+        assert!(!phones.iter().any(|p| p.starts_with("+0")));
+
+        // 7- and 8- and 9-digit strings are web-scrape noise — reject all.
+        let mut short = HashSet::new();
+        extract_phones("ring +1 234567 now", &mut short); // 7 digits
+        assert!(short.is_empty(), "7-digit must be rejected: {short:?}");
+        let mut also_short = HashSet::new();
+        extract_phones("ring +1 2345678 now", &mut also_short); // 8 digits
+        assert!(also_short.is_empty(), "8-digit must be rejected: {also_short:?}");
+        let mut nine = HashSet::new();
+        extract_phones("ring +1 23456789 now", &mut nine); // 9 digits
+        assert!(nine.is_empty(), "9-digit must be rejected: {nine:?}");
+        // 10 digits — smallest real subscriber number (Niue +683, Singapore +65, etc.)
+        let mut ok = HashSet::new();
+        extract_phones("ring +6569504420 now", &mut ok); // 10 digits, Singapore
+        assert!(ok.contains("+6569504420"));
+    }
+
+    #[test]
+    fn extractors_are_utf8_safe_on_adversarial_multibyte_html() {
+        // These run on untrusted, possibly hostile page bodies. The byte-scan
+        // indexes `body` directly, so the invariant is: multibyte UTF-8 around a
+        // match must never split a code point (no panic), a valid ASCII match is
+        // still recovered, and the non-ASCII runs themselves yield nothing.
+        let mut emails = HashSet::new();
+        // 2-/3-/4-byte chars (é, 日本語, 𝔘) abut and surround a real ASCII email,
+        // including a multibyte char immediately before the local part.
+        extract_emails(
+            "日本語语alice@example.com café résumé 𝔘 contact:bob@test.co 日本語",
+            &mut emails,
+        );
+        assert!(emails.contains("alice@example.com"), "got {emails:?}");
+        assert!(emails.contains("bob@test.co"), "got {emails:?}");
+        assert_eq!(
+            emails.len(),
+            2,
+            "multibyte noise must not fabricate: {emails:?}"
+        );
+
+        // A large delimiter-free multibyte blob with no '@' must not panic and
+        // must yield nothing (bounded, char-boundary-safe scan).
+        let blob = "日本語".repeat(50_000);
+        let mut none = HashSet::new();
+        extract_emails(&blob, &mut none);
+        assert!(none.is_empty());
+
+        // Phones: a real E.164 number surrounded by multibyte text.
+        let mut phones = HashSet::new();
+        extract_phones("☎ 日本 +1 415 555 2671 語 résumé", &mut phones);
+        assert!(phones.contains("+14155552671"), "got {phones:?}");
+        let mut pnone = HashSet::new();
+        extract_phones(&blob, &mut pnone); // must not panic
+        assert!(pnone.is_empty());
+    }
+
+    #[test]
+    fn char_class_predicates() {
+        assert!(
+            is_email_char(b'a')
+                && is_email_char(b'.')
+                && is_email_char(b'+')
+                && is_email_char(b'_')
+        );
+        assert!(!is_email_char(b'@') && !is_email_char(b' '));
+        assert!(is_domain_char(b'z') && is_domain_char(b'.') && is_domain_char(b'-'));
+        assert!(!is_domain_char(b'_') && !is_domain_char(b'@'));
+    }
+
+    #[test]
+    fn framework_detection_and_dedup() {
+        let mut f = HashSet::new();
+        detect_frameworks(
+            "<link href='/wp-content/x.css'> jQuery here and /wp-includes/y",
+            &mut f,
+        );
+        assert!(f.contains("WordPress"));
+        assert!(f.contains("jQuery"));
+        // Two WordPress markers collapse to one entry.
+        assert_eq!(f.iter().filter(|&&n| n == "WordPress").count(), 1);
+
+        let mut r = HashSet::new();
+        detect_frameworks("import React from 'react'", &mut r);
+        assert!(r.contains("React"));
+    }
+
+    #[test]
+    fn page_type_detection() {
+        let mut t = HashSet::new();
+        detect_page_types(
+            r#"<form><input type="password"><input type="file"></form><script>x</script> /admin apikey"#,
+            &mut t,
+        );
+        for want in [
+            "has_forms",
+            "login_form",
+            "file_upload",
+            "javascript",
+            "admin_panel",
+            "api_reference",
+        ] {
+            assert!(t.contains(want), "missing page type: {want}");
+        }
+        let mut none = HashSet::new();
+        detect_page_types("<p>plain text</p>", &mut none);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn security_header_audit_reports_presence() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            "content-security-policy",
+            "default-src 'self'".parse().expect("should succeed"),
+        );
+        h.insert("x-frame-options", "DENY".parse().expect("should succeed"));
+        let mut results = Vec::new();
+        audit_security_headers(&h, &mut results);
+        assert_eq!(results.len(), 6);
+        let map: std::collections::HashMap<_, _> = results.into_iter().collect();
+        assert!(map["Content-Security-Policy"]);
+        assert!(map["X-Frame-Options"]);
+        assert!(!map["Strict-Transport-Security"]);
+        assert!(!map["Referrer-Policy"]);
+    }
+
+    #[test]
+    fn extract_links_classifies_internal_external_and_subdomains() {
+        let mut state = empty_state();
+        let body = r#"<a href="/about">a</a><a href="https://sub.example.com/x">b</a>
+            <a href="https://other.org/page">c</a><a href="/logo.png">d</a>
+            <a href="ftp://example.com/f">e</a>"#;
+        extract_links(
+            body,
+            "https://example.com/",
+            "example.com",
+            "example.com",
+            &mut state,
+        );
+
+        // /about (apex) + sub.example.com (subdomain) are internal.
+        assert_eq!(state.internal_links, 2);
+        assert!(state.subdomains.contains("sub.example.com"));
+        // other.org is external.
+        assert_eq!(state.external_links, 1);
+        assert!(state.external_domains.contains("other.org"));
+        // /about is queued; binary asset and non-http scheme are not.
+        assert!(
+            state
+                .queue
+                .iter()
+                .any(|(u, _)| u.as_str() == "https://example.com/about")
+        );
+        assert!(!state.queue.iter().any(|(u, _)| u.contains("logo.png")));
+        assert!(!state.queue.iter().any(|(u, _)| u.starts_with("ftp")));
+    }
+
+    #[test]
+    fn a_linked_www_alias_of_the_target_is_not_recorded_as_a_mislabeled_subdomain() {
+        // Regression: real sites are rarely internally consistent about the
+        // www/bare-apex spelling, so a page crawled via the bare apex commonly
+        // links to its own "www." alias. "www.example.com" is a DIFFERENT raw
+        // string from both `base_host` and `target_domain` ("example.com"),
+        // and is a proper subdomain of the raw target by string shape alone —
+        // but `Entity::new` strips the leading "www." label and collapses it
+        // onto the target's own apex uid. Before this was fixed, it was
+        // inserted into `state.subdomains` and later unconditionally tagged
+        // SUBDOMAIN, mislabeling the scan's own subject as a subdomain of
+        // itself once merged.
+        let mut state = empty_state();
+        let body = r#"<a href="https://www.example.com/">a</a>"#;
+        extract_links(
+            body,
+            "https://example.com/",
+            "example.com",
+            "example.com",
+            &mut state,
+        );
+        assert!(
+            state.subdomains.is_empty(),
+            "a www-alias of the target must never be recorded as a subdomain: {:?}",
+            state.subdomains
+        );
+    }
+
+    #[test]
+    fn extract_links_refuses_private_ip_literal_links() {
+        // Worst case for the SSRF guard: the seed host IS the cloud-metadata
+        // literal, so the same-host filter would otherwise enqueue its links.
+        // The explicit egress guard must keep the queue empty regardless.
+        let mut state = empty_state();
+        let body = r#"<a href="/latest/meta-data/iam/security-credentials/">creds</a>
+            <a href="http://127.0.0.1:8080/admin">loopback</a>"#;
+        extract_links(
+            body,
+            "http://169.254.169.254/",
+            "169.254.169.254",
+            "169.254.169.254",
+            &mut state,
+        );
+        assert!(
+            state.queue.is_empty(),
+            "private/reserved IP-literal links must never be enqueued, got {:?}",
+            state.queue
+        );
+    }
+
+    #[test]
+    fn extract_api_keys_from_body_gates_length_and_rejects_non_poolable() {
+        // Hermetic characterization of the credential-harvester (previously
+        // untested despite mutating the process-global key pool). It splits the
+        // body into bare words, so it can only ever classify PREFIX keys (github,
+        // aws, …) — none of which are poolable OSINT providers — and the
+        // context-only OSINT keys never fire without surrounding text. So a
+        // web-scraped key is correctly NEVER added to the pool here. We scope to a
+        // unique domain so the assertion is isolated from any concurrent test.
+        let pool = crate::util::key_pool::global_pool();
+        let domain = "crawlutil-test.example";
+        let scraped = || -> usize {
+            pool.snapshot()
+                .services
+                .values()
+                .flatten()
+                .filter(|e| {
+                    e.discovered_by
+                        .as_deref()
+                        .is_some_and(|d| d == format!("web_crawler:{domain}"))
+                })
+                .count()
+        };
+        assert_eq!(scraped(), 0, "precondition: a clean pool for this domain");
+
+        // (1) Length gate: shorter than `found_keys::MIN_TOKEN` (16) is never
+        //     classified.
+        extract_api_keys_from_body("short ghp_x", domain);
+        // (2) A VALID github token is classified by identify_api_key but github is
+        //     not a poolable provider, so pool.add rejects it.
+        extract_api_keys_from_body(
+            "github_token=ghp_aBc1deFG2HiJK3lmnoPqrStUVwXyZA end",
+            domain,
+        );
+        // (3) An obvious placeholder is rejected by identify_api_key outright.
+        extract_api_keys_from_body("ghp_your_token_here_xxxxxxxxxxxx", domain);
+
+        assert_eq!(
+            scraped(),
+            0,
+            "web_crawler must not add length-gated / non-poolable keys to the global pool"
+        );
+
+        // Defensive cleanup: if a future detection change DID add anything for this
+        // domain, remove it so the global pool stays hermetic (in-memory only).
+        for (svc, entries) in pool.snapshot().services {
+            for e in entries {
+                if e.discovered_by.as_deref() == Some(&format!("web_crawler:{domain}")) {
+                    pool.remove(&svc, &e.value);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn extract_api_keys_from_body_does_not_truncate_at_the_old_200_char_cap() {
+        // Regression test for the merge onto `found_keys::key_tokens`: this
+        // harvester used to hand-roll a `16..=200` char window, silently
+        // dropping any longer real-world key/PAT/JWT. The shared tokenizer's
+        // cap is `found_keys::MAX_TOKEN` (4096), so a 234-char BinaryEdge-shaped
+        // token (poolable — proving it went all the way through classification
+        // AND `pool.add`) must now be picked up.
+        let pool = crate::util::key_pool::global_pool();
+        let domain = "crawlutil-longkey-test.example";
+        let long_key = format!(
+            "bp0_{}",
+            "oHBvRPOIvGrv5iFlbCBFNOgmBjMtpsiaOclRz3AwzKsbVRJN9wVGFYGW2WmQzCudiH7YFjS1on43XkMtECqOxSF2O3GYRdo1XKXWNqRs7rpEmoKiuPKdYR7osjOrU1xxDO0CzUZREN68k4tUNpfZ46pdJQIPvjiQvlb5lZXOIgfFwD3HJoKyrbmEYYmdhQj38AruHr4iwRxpVHSbKdA9u4uQgwLg6G3oT1ogmM"
+        );
+        assert!(
+            long_key.len() > 200 && long_key.len() <= crate::util::found_keys::MAX_TOKEN,
+            "fixture must exceed the old 200-char cap and fit under the real one"
+        );
+
+        extract_api_keys_from_body(&format!("prefix {long_key} suffix"), domain);
+
+        let found = pool
+            .snapshot()
+            .services
+            .get("binaryedge")
+            .into_iter()
+            .flatten()
+            .any(|e| e.value == long_key);
+        if found {
+            pool.remove("binaryedge", &long_key);
+        }
+        assert!(
+            found,
+            "a >200-char poolable key must survive the tokenizer's length gate"
+        );
+    }
+
+/// A cancelled scan must stop generating outbound requests against a
+/// third-party host.
+///
+/// `probe_config_leaks` runs BEFORE the crawl loop that polls `ctx.cancel`, and
+/// it fans 103 paths out over a 16-permit semaphore — about seven waves. With
+/// no cancel check, an operator who pressed Ctrl-C kept the remaining waves
+/// firing at someone else's server until they all completed.
+///
+/// Hermetic: a loopback listener counts connections; a plain
+/// `reqwest::Client::new()` (not `build_client()`, whose SSRF resolver filters
+/// loopback); no `ModuleContext`.
+#[tokio::test]
+async fn a_cancelled_scan_stops_probing_for_config_leaks() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let hits = Arc::new(AtomicU32::new(0));
+    let hits_srv = Arc::clone(&hits);
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            hits_srv.fetch_add(1, Ordering::SeqCst);
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        }
+    });
+
+    // Cancelled BEFORE the call — every task must bail at its cancel check.
+    let cancel = crate::core::cancel::CancelHandle::new();
+    cancel.cancel();
+
+    let seed = format!("http://{addr}/");
+    let leaks = super::probe_config_leaks(
+        &reqwest::Client::new(),
+        &seed,
+        "127.0.0.1",
+        &cancel,
+    )
+    .await;
+
+    assert!(
+        leaks.is_empty(),
+        "a cancelled sweep must yield nothing, got {leaks:?}"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "a cancelled sweep must not send a single request to the target host"
+    );
+}
+
+#[test]
+fn config_leak_paths_excludes_standards_based_public_files() {
+    // Regression: `/.well-known/security.txt` (RFC 9116), `/crossdomain.xml`,
+    // and `/clientaccesspolicy.xml` (the legacy Flash/Silverlight
+    // cross-domain policy convention) are files a security-conscious site
+    // PUBLISHES DELIBERATELY. A 200 there is the opposite of a leak signal —
+    // probing them alongside genuine secret-leak candidates meant any site
+    // following the RFC 9116 best practice got reported as
+    // "config_leak: exposed file discovered".
+    for path in [
+        "/.well-known/security.txt",
+        "/crossdomain.xml",
+        "/clientaccesspolicy.xml",
+    ] {
+        assert!(
+            !super::CONFIG_LEAK_PATHS.contains(&path),
+            "{path} is intentionally public and must not be probed as a config leak"
+        );
+    }
+}
+
+/// The config-leak sweep must probe the seed's PORT, not just its host.
+///
+/// `host_root` was built with `url::Url::host_str()`, which returns the host
+/// WITHOUT the port. A seed of `http://example.com:8080/` therefore probed
+/// `http://example.com/.env` — a different service on a different port, or
+/// nothing at all. Every one of the 103 probes went to the wrong endpoint
+/// whenever the seed carried a non-default port, so the sweep silently found
+/// nothing for those targets while looking like it had run.
+#[tokio::test]
+async fn config_leak_probes_target_the_seed_port_not_just_the_host() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let hits = Arc::new(AtomicU32::new(0));
+    let hits_srv = Arc::clone(&hits);
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            hits_srv.fetch_add(1, Ordering::SeqCst);
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        }
+    });
+
+    // The listener is on an EPHEMERAL port, so it is only reachable if the port
+    // survives into `host_root`. Pre-fix these requests went to port 80.
+    let seed = format!("http://{addr}/some/deep/path");
+    let leaks = super::probe_config_leaks(
+        &reqwest::Client::new(),
+        &seed,
+        "127.0.0.1",
+        &crate::core::cancel::CancelHandle::new(),
+    )
+    .await;
+
+    assert_eq!(
+        hits.load(Ordering::SeqCst) as usize,
+        super::CONFIG_LEAK_PATHS.len(),
+        "every probe must reach the seed's port — none may be sent to the \
+         default port for the scheme"
+    );
+    // 404 everywhere, so nothing is reported: the port fix must not invent hits.
+    assert!(leaks.is_empty(), "404s yield no leaks, got {leaks:?}");
+}
