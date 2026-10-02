@@ -5,9 +5,11 @@ One crate, `huntsman-recon`. The current version lives in `src/`; the two legacy
 | Path | Contents |
 | --- | --- |
 | `src/` | The crate: library modules plus the `huntsman-recon` binary (`main.rs`). |
-| `tests/` | Acceptance, CLI, local-HTTP and legacy-reference integration tests, plus `readme.rs` and `dispositions.rs`, which check this README and `docs/DISPOSITIONS.md` against the binary and `legacy/`. |
+| `tests/` | Acceptance, CLI, local-HTTP and legacy-reference integration tests; `hibp_build.rs` (build-time key embedding rules); `android_ci.rs` (the CI workflow keeps the aarch64 Android cross-build and its artifact); plus `readme.rs` and `dispositions.rs`, which check this README and `docs/DISPOSITIONS.md` against the binary and `legacy/`. |
 | `var/` | Artifacts written by `check` (`ledger.json`, `navigator.json`, `stix-bundle.json`). CI fails if `check` changes them. |
 | `docs/` | `RECONSTRUCTION_2026-10-02.md` (decisions and falsification passes) and `DISPOSITIONS.md` (per-file accounting of every legacy file). |
+| `.github/` | `workflows/ci.yml` (tests on Rust 1.87 and stable; aarch64 Android cross-build) and `actions/setup-ndk-aarch64` (NDK compiler and linker environment). |
+| `CHANGELOG.md` | Notable changes, Keep a Changelog format. |
 | `legacy/` | Byte-identical extraction of both archives. Not part of the build. |
 | `*.zip` (root) | The two legacy archives. Pinned by hash in `tests/legacy_reference.rs`; never delete, edit or move them. |
 
@@ -30,9 +32,23 @@ cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a 
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
 
-Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input, 69 `fetch` got no response, 74 artifact write failure, 77 egress policy refused the destination. `check` uses 2–11 for its individual gates.
+Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or unconfigured credential, 69 `fetch` got no response, 74 artifact write failure, 77 `fetch` refused the request (egress policy or malformed URL or redirect target). `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print the usage line.
 
 `tests/readme.rs` runs every example above (except the internet `fetch`), checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`.
+
+`fetch URL` options (defaults in brackets):
+
+| Option | Effect |
+| --- | --- |
+| `--body` | Print the response body after the status line. |
+| `--allow-private` | Lift the egress policy (otherwise only public addresses are reachable; loopback, private, link-local and metadata addresses exit 77). |
+| `--keys FILE` | Read credential slots from a `NAME=value` file (mode 600 or stricter, at most 64 KiB); slots it lacks fall back to the process environment. Without it, slots come from the environment only. |
+| `--bearer SLOT` | Send slot `SLOT` as `Authorization: Bearer`. |
+| `--header NAME=SLOT` | Send slot `SLOT` in header `NAME`. Only one of `--bearer`/`--header` per fetch. |
+| `--max-redirects N` | Follow at most `N` redirects, 0–20 [5]. A credential is only sent to the origin it was approved for. |
+| `--timeout SECS` | Per-request timeout, 1–600 [20]. |
+
+Slot names are upper-case environment-variable names (`A-Z`, `0-9`, `_`; starting with a letter; at most 64 characters). Keys are read at run time only: from the environment, or from a file you name with `--keys` / `keys FILE`. No keys file is loaded implicitly; to use `~/.huntsman.env`, pass it explicitly (`--keys ~/.huntsman.env`, mode 600). Blank values and template placeholders (`insert_key_here`, `<your-key>`, `changeme`, `xxxx`) count as not configured. Output shows a 12-hex-digit fingerprint prefix, never a key value.
 
 `classify` also prints the causal outcome and the source-health action (`outcome=bot_waf`, `action=backoff`). A 403 challenge page is a WAF, not a credential failure. A 200 alone is `inconclusive` until rows are parsed.
 
@@ -41,6 +57,37 @@ The refactor-overlay foundations from the uploaded zip are library modules: `sou
 Rebuilt monolith utilities: `au_id` (ABN, ACN, BSB), `geohash`, `confidence` (corroboration, ancestry-aware), `redact` (coordinate coarsening, secret scrubbing). `check` exercises them as gate 10.
 
 See `docs/RECONSTRUCTION_2026-10-02.md`.
+
+## Build and install
+
+Toolchain: the crate's MSRV is Rust 1.87 (`rust-version` in `Cargo.toml`); CI tests Rust 1.87 and current stable. The owner's reference toolchain is Rust 1.98.0. The repository has no `rust-toolchain.toml`, so rustup uses your default toolchain.
+
+On the device, in Termux (unverified on a handset):
+
+```
+pkg install rust clang   # ring (via rustls) needs a C compiler
+cargo build --release --locked
+./target/release/huntsman-recon check
+```
+
+Cross-build for Android aarch64 (what the `android-aarch64` CI job does, API level 24):
+
+```
+rustup target add aarch64-linux-android
+export TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
+export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+HUNTSMAN_HIBP_NO_EMBED=1 cargo build --release --locked --target aarch64-linux-android
+```
+
+The reference NDK is 27.3.13750724. CI uses the runner's `ANDROID_NDK_LATEST_HOME` and does not pin an NDK version. Set `HUNTSMAN_HIBP_NO_EMBED=1` (CI does) for any binary that leaves your machine, so no key is embedded (see below).
+
+### Downloads
+
+Each push to `main` uploads a CI artifact named `huntsman-recon-aarch64-linux-android`: the binary plus its `.sha256`, kept for 14 days. Download it from the workflow run's page, or with `gh run download <run-id> -n huntsman-recon-aarch64-linux-android`. Check it with `sha256sum -c huntsman-recon-aarch64-linux-android.sha256`, then copy it into Termux's home directory and `chmod +x` it.
+
+The current workflow publishes no GitHub Release. The `main-<sha7>` pre-releases on the Releases page predate the reconstruction and ship the legacy `hse` binary, not `huntsman-recon`. Release policy: only pre-releases (`main-<sha7>` plus a rolling `latest`); a stable release needs the owner's explicit approval and is never automatic.
 
 ## Opt-in HIBP library
 
