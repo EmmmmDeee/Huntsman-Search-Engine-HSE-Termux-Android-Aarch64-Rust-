@@ -27,12 +27,7 @@ fn probe_binary_refuses_active_network_without_explicit_authorization() {
 #[test]
 fn probe_binary_rejects_zero_request_budget_before_network() {
     let out = Command::new(env!("CARGO_BIN_EXE_huntsman-probe"))
-        .args([
-            "--authorized",
-            "--max-requests",
-            "0",
-            "https://example.com",
-        ])
+        .args(["--authorized", "--max-requests", "0", "https://example.com"])
         .output()
         .expect("run huntsman-probe with zero budget");
     assert_eq!(out.status.code(), Some(64));
