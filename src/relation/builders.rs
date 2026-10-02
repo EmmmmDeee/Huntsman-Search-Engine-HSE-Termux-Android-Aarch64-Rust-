@@ -1132,7 +1132,7 @@ mod tests {
             "s",
         )];
         let after = derive_coreferences(&[user, email], &prior, "s");
-        assert!(after.is_empty());
+        assert!(after.is_empty(), "{after:?}");
     }
 
     #[test]
@@ -1142,7 +1142,7 @@ mod tests {
             .checked_sub(Duration::from_millis(1))
             .expect("subtracting one millisecond from now is always valid");
         let rels = derive_all_within_budget(&[domain], "s", Some(deadline));
-        assert!(rels.is_empty());
+        assert!(rels.is_empty(), "{rels:?}");
     }
 
     #[test]

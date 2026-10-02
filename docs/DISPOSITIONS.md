@@ -1,9 +1,19 @@
 # Legacy dispositions
 
-Every legacy file is accounted for per area (rebuilt, merged, or pending). Evidence source: `legacy/`. Do not delete the archives or `legacy/`.
+Per-file accounting of the HSE monolith (`legacy/hse-monolith-v1.41.0/`) against the current crate, grouped by area. Decisions: REBUILT / REIMPLEMENT (new code, legacy kept as oracle), MERGED (folded into an existing owner or its tests), PARTIAL, PENDING / NOT YET REBUILT, NOT APPLICABLE. Refactor-overlay items are dispositioned in `RECONSTRUCTION_2026-10-02.md` (third pass).
 
-<!-- attack.md -->
-# attack disposition
+Evidence source: `legacy/` and the two root zip archives. Never delete, edit or move them.
+
+## Contents
+
+1. [ATT&CK, assurance and analytics](#attck-assurance-and-analytics)
+2. [Entity, relation and correlator core](#entity-relation-and-correlator-core)
+3. [Geo, geometry and RF](#geo-geometry-and-rf)
+4. [Parsers and signals](#parsers-and-signals)
+5. [Validation, domains and text](#validation-domains-and-text)
+6. [Not yet dispositioned](#not-yet-dispositioned)
+
+## ATT&CK, assurance and analytics
 
 | Legacy path | Lines | Decision | New module | Defect found / evidence or reason |
 | --- | ---: | --- | --- | --- |
@@ -34,111 +44,147 @@ Every legacy file is accounted for per area (rebuilt, merged, or pending). Evide
 | `src/core/trust/mod.rs` | 276 | REBUILT | `src/trust.rs` | Damped trust propagation was rebuilt as deterministic graph logic. |
 | `src/core/trust/tests.rs` | 271 | MERGED | `src/trust.rs` tests | Legacy trust cases were folded into current unit tests. |
 
-## Notes
+### Notes
 
-- `src/ledger.rs` was not edited. If the parent wants new ATT&CK bindings later, they must still be added explicitly there; nothing in the rebuilt catalog infers evidence.
+- ATT&CK bindings live only in `src/ledger.rs` (`BINDINGS`) and must be added there explicitly; nothing in the rebuilt catalog infers evidence.
 - `src/stix.rs` and `src/eval/*` were reviewed for overlap. No code change was required in this pass.
-- `src/attack_catalog.rs` was generated mechanically from legacy `src/core/attack/mod.rs` in this working copy, then validated by tests. It was not hand-retyped.
-- Policy-change review: no assigned legacy file in this area had been marked NOT APPLICABLE solely because of network or credentials. The one omitted I/O-bound legacy behavior was `assurance/continuity.rs` source-tree scanning; it is now rebuilt behind `SourceTree`/`FsSourceTree`, with unit tests using a fake tree and no live network added in this area.
+- `src/attack_catalog.rs` was generated mechanically from legacy `src/core/attack/mod.rs` and validated by tests. It was not hand-retyped.
+- Policy-change review: no legacy file in this area had been marked NOT APPLICABLE solely because of network or credentials. The one omitted I/O-bound legacy behavior was `assurance/continuity.rs` source-tree scanning; it is now rebuilt behind `SourceTree`/`FsSourceTree`, with unit tests using a fake tree and no live network added in this area.
 
-<!-- entity.md -->
-Implemented the entity/evidence-core slice directly in the repo build and refactored it onto shared owners instead of adding parallel helpers.
+## Entity, relation and correlator core
 
-What changed:
-- Expanded `src/intelligence.rs` into a claim/evidence/inference/provider ledger while keeping the aggregate report API.
-- Replaced the minimal `src/cross_scan.rs` history summary with a bridge-analysis model using the shared repo types and an injected `CrossScanStore` boundary.
-- Kept provenance mandatory on evidence through the entity model and preserved secret hygiene by storing provider credential fingerprints only.
-- Used the shared HTTP boundary already present in the repo (`crate::http::{Request, Response, Transport}`) and did not introduce duplicate request/response types.
-- Removed or folded small redundancies while making the full crate pass `cargo clippy --all-targets --locked -- -D warnings` and `cargo test`.
-- Added a consolidated `src/relation/` module on top of the entity model with legacy relation taxonomy, structural/resolution/registration/name-lineage/handle/coreference/shared-selector/profile-link builders, affiliation helpers, duplicate collapse, and relation-graph utilities.
-- Added a consolidated pure `src/correlator.rs` with one rule trait + registry, cached rule context, severity/ranking, candidate quarantine, and rebuilt high-value rule families/oracles (`AU-001/002/003/019/021/060/062/063/070/071/109/110`).
-- Ported representative legacy differential-oracle tests for relation builders/graph and correlator helpers/rules into the current crate test suite.
+| Legacy path | Decision | Current owner / status | Notes |
+| --- | --- | --- | --- |
+| `hse-core/src/lib.rs` | REBUILT | `src/entity.rs`, `src/confidence.rs`, `src/lib.rs` | Entity/evidence/confidence surface rebuilt onto the current crate exports. |
+| `hse-core/src/tags.rs` | REBUILT | `src/tags.rs` | Canonical tag vocabulary rebuilt as the current shared owner. |
+| `hse-core/src/tests.rs` | MERGED | `src/entity.rs`, `src/confidence.rs`, `src/tags.rs` tests | Legacy behaviour restated in current unit tests instead of a parallel legacy test file. |
+| `util/union_find.rs` | REBUILT | `src/union_find.rs` | Deterministic grouping/union logic rebuilt directly. |
+| `util/canonical.rs` | REBUILT | `src/canonical.rs` | Canonical forms consolidated into the crate's shared owner. |
+| `util/json.rs` | REBUILT | `src/json.rs` | Stable JSON canonicalisation/sorting rebuilt as pure logic. |
+| `util/timefmt.rs` | REBUILT | `src/timefmt.rs` | Timestamp parsing/formatting rebuilt as pure helpers. |
+| `core/graph/mod.rs` | REBUILT | `src/graph.rs` | Current structural graph rebuilt on top of the entity model. |
+| `core/graph/tests.rs` | MERGED | `src/graph.rs` tests | Legacy graph invariants folded into current tests. |
+| `core/gexf/mod.rs` | REBUILT | `src/gexf.rs` | GEXF export rebuilt for the current graph model. |
+| `core/gexf/tests.rs` | MERGED | `src/gexf.rs` tests | Legacy output invariants carried into current tests. |
+| `core/path/mod.rs` | REBUILT | `src/path.rs` | Path-finding rebuilt over the current graph surface. |
+| `core/path/tests.rs` | MERGED | `src/path.rs` tests | Legacy path oracle cases merged into unit tests. |
+| `core/pivot/mod.rs` | REBUILT | `src/pivot.rs` | Pivot scoring/reach logic rebuilt as pure graph analytics. |
+| `core/pivot/tests.rs` | MERGED | `src/pivot.rs` tests | Representative pivot invariants ported. |
+| `core/community/mod.rs` | REBUILT | `src/community.rs` | Community partition helpers rebuilt as pure graph logic. |
+| `core/community/tests.rs` | MERGED | `src/community.rs` tests | Legacy community expectations merged into current tests. |
+| `core/coref/mod.rs` | REBUILT | `src/coref.rs`, `src/identity_resolution.rs` | Deterministic coref clustering rebuilt and separated from ancestry-aware merge policy. |
+| `core/coref/tests.rs` | MERGED | `src/coref.rs`, `src/identity_resolution.rs` tests | Legacy coref behaviours carried into unit tests. |
+| `core/diff/mod.rs` | REBUILT | `src/diff.rs` | Entity/relation diff logic rebuilt as pure comparison helpers. |
+| `core/diff/tests.rs` | MERGED | `src/diff.rs` tests | Legacy diff invariants merged into tests. |
+| `core/timeline/mod.rs` | REBUILT | `src/timeline.rs` | Timeline reconstruction rebuilt on the entity/evidence model. |
+| `core/timeline/tests.rs` | MERGED | `src/timeline.rs` tests | Legacy timeline behaviours carried into unit tests. |
+| `core/snake_graph.rs` | REBUILT | `src/snake_graph.rs` | Deterministic graph rendering rebuilt. |
+| `core/resolve/mod.rs` | REBUILT | `src/resolve.rs`, `src/identity_resolution.rs`, `src/evidence_ancestry.rs` | Exact-key resolution, ancestry-aware support counting, and reversible merge policy now split across the current owners. |
+| `core/resolve/tests.rs` | MERGED | `src/resolve.rs`, `src/identity_resolution.rs`, `src/evidence_ancestry.rs` tests | Legacy resolution oracles folded into current tests. |
+| `core/profiles/mod.rs` | REBUILT | `src/profiles.rs` | Profile aggregation rebuilt over current timeline/exposure primitives. |
+| `core/profiles/tests.rs` | MERGED | `src/profiles.rs` tests | Legacy profile expectations merged into unit tests. |
+| `core/leads/mod.rs` | REBUILT | `src/leads.rs` | Lead ranking/selection rebuilt over current entities. |
+| `core/leads/tests.rs` | MERGED | `src/leads.rs` tests | Legacy lead-ordering invariants merged into tests. |
+| `core/intelligence.rs` | REBUILT | `src/intelligence.rs` | Rebuilt as a richer pure ledger/report surface. |
+| `core/exposure/mod.rs` | REBUILT | `src/exposure.rs` | Exposure scoring rebuilt on current entities/tags. |
+| `core/exposure/tests.rs` | MERGED | `src/exposure.rs` tests | Legacy exposure expectations merged into tests. |
+| `core/cross_scan.rs` | REBUILT | `src/cross_scan.rs` | Cross-scan bridge analysis rebuilt with an injected store boundary. |
+| `core/classifier.rs` | REBUILT | `src/classifier.rs` | Structural entity classification rebuilt as pure logic. |
+| `core/classify_module.rs` | REBUILT | `src/classify_module.rs` | Module-level classification/actionability rebuilt. |
+| `src/confidence.rs` (current owner) | MERGED OWNER | `src/confidence.rs` | Extended with legacy confidence/verification vocabulary and kept as the single owner. |
+| `src/evidence_ancestry.rs` (current owner) | MERGED OWNER | `src/evidence_ancestry.rs` | Kept as the single owner for independent-root support counting. |
+| `src/identity_resolution.rs` (current owner) | MERGED OWNER | `src/identity_resolution.rs` | Kept as the single owner for reversible, ancestry-aware merge decisions. |
 
-Files intentionally not edited:
-- `src/classify.rs`
-- `src/session.rs`
-- `src/stage.rs`
-- `src/http.rs`
-- `src/fetch.rs`
-- `src/keys.rs`
-- `src/egress.rs`
-- `src/main.rs`
+### Relation rebuild accounting
 
-Validation:
-- `cargo clippy --all-targets --locked -- -D warnings`
-- `cargo test`
+These legacy files are now represented by `src/relation/`, but not yet fully rebuilt feature-for-feature. They remain explicitly accounted for here.
 
-Cleanup:
-- No scratch `wt-*` tree remains in the repository.
+| Legacy path | Lines | Decision | Current owner / status |
+| --- | ---: | --- | --- |
+| `core/relation/mod.rs` | 84 | PARTIAL | `src/relation/mod.rs` exports the rebuilt surface, but the full legacy scope is not complete yet. |
+| `core/relation/types.rs` | 296 | PARTIAL | `src/relation/types.rs` rebuilds the taxonomy/idempotent relation ids and identity-binding semantics. |
+| `core/relation/builders.rs` | 1741 | PARTIAL | `src/relation/builders.rs` rebuilds structural/resolution/registration/name-lineage/handle/coref/shared-selector/residency/association subsets; remaining families still need parity. |
+| `core/relation/graph.rs` | 1962 | PARTIAL | `src/relation/graph.rs` rebuilds provenance chains, strongest paths, cluster resolution, brokers, and templates; remaining graph behaviours still need parity. |
+| `core/relation/affiliation.rs` | 771 | PARTIAL | `src/relation/affiliation.rs` rebuilds officer/employment/membership/control/operator/org-identity subsets; full legacy coverage is incomplete. |
+| `core/relation/social_extract.rs` | 400 | PARTIAL | `src/relation/social_extract.rs` rebuilds supported profile-link extraction shapes, not the full legacy extractor surface. |
+| `core/relation/tests.rs` | 1929 | PARTIAL ORACLE | Representative builder/graph/profile differential cases were ported into current unit tests; the full oracle set is not yet ported. |
+| `core/relation/affiliation/tests.rs` | 831 | PARTIAL ORACLE | Affiliation-specific legacy oracles are only partially covered by the rebuilt tests so far. |
 
-Legacy files still not fully rebuilt feature-for-feature (line counts from the monolith snapshot):
-- `core/relation/affiliation.rs` — 771 lines
-- `core/relation/affiliation/tests.rs` — 831 lines
-- `core/relation/builders.rs` — 1741 lines
-- `core/relation/graph.rs` — 1962 lines
-- `core/relation/social_extract.rs` — 400 lines
-- `core/relation/tests.rs` — 1929 lines
-- `core/correlator/mod.rs` — 864 lines
-- `core/correlator/perf.rs` — 155 lines
-- `core/correlator/rules/assoc.rs` — 608 lines
-- `core/correlator/rules/breach.rs` — 1385 lines
-- `core/correlator/rules/breach_pii.rs` — 1744 lines
-- `core/correlator/rules/broker.rs` — 204 lines
-- `core/correlator/rules/creator_exposure.rs` — 204 lines
-- `core/correlator/rules/crypto.rs` — 175 lines
-- `core/correlator/rules/dating_exposure.rs` — 201 lines
-- `core/correlator/rules/device_constellation.rs` — 186 lines
-- `core/correlator/rules/device_track.rs` — 191 lines
-- `core/correlator/rules/gap.rs` — 647 lines
-- `core/correlator/rules/geo/chain.rs` — 470 lines
-- `core/correlator/rules/geo/cluster.rs` — 307 lines
-- `core/correlator/rules/geo/jurisdiction.rs` — 418 lines
-- `core/correlator/rules/geo/mod.rs` — 664 lines
-- `core/correlator/rules/geo/profile.rs` — 516 lines
-- `core/correlator/rules/handle_variant.rs` — 380 lines
-- `core/correlator/rules/identity/account/broker.rs` — 353 lines
-- `core/correlator/rules/identity/account/handle.rs` — 505 lines
-- `core/correlator/rules/identity/account/key.rs` — 190 lines
-- `core/correlator/rules/identity/account/mod.rs` — 53 lines
-- `core/correlator/rules/identity/account/platform.rs` — 637 lines
-- `core/correlator/rules/identity/account/tracking.rs` — 222 lines
-- `core/correlator/rules/identity/cluster.rs` — 416 lines
-- `core/correlator/rules/identity/mod.rs` — 22 lines
-- `core/correlator/rules/infra.rs` — 882 lines
-- `core/correlator/rules/infra_closure.rs` — 306 lines
-- `core/correlator/rules/integrity.rs` — 183 lines
-- `core/correlator/rules/locale.rs` — 123 lines
-- `core/correlator/rules/location/mod.rs` — 1494 lines
-- `core/correlator/rules/location/tests.rs` — 562 lines
-- `core/correlator/rules/lookalike.rs` — 274 lines
-- `core/correlator/rules/mod.rs` — 672 lines
-- `core/correlator/rules/multipath.rs` — 484 lines
-- `core/correlator/rules/org.rs` — 1157 lines
-- `core/correlator/rules/payid.rs` — 93 lines
-- `core/correlator/rules/resolved.rs` — 213 lines
-- `core/correlator/rules/reuse_closure.rs` — 472 lines
-- `core/correlator/rules/robust.rs` — 175 lines
-- `core/correlator/rules/sim.rs` — 101 lines
-- `core/correlator/rules/template.rs` — 247 lines
-- `core/correlator/rules/tests.rs` — 502 lines
-- `core/correlator/rules/transitive.rs` — 348 lines
-- `core/correlator/tests.rs` — 816 lines
-- `core/correlator/tests/part02.rs` — 809 lines
-- `core/correlator/tests/part03.rs` — 796 lines
-- `core/correlator/tests/part04.rs` — 812 lines
-- `core/correlator/tests/part05.rs` — 788 lines
-- `core/correlator/tests/part06.rs` — 835 lines
-- `core/correlator/tests/part07.rs` — 803 lines
-- `core/correlator/tests/part08.rs` — 795 lines
-- `core/correlator/tests/part09.rs` — 825 lines
-- `core/correlator/tests/part10.rs` — 812 lines
-- `core/correlator/tests/part11.rs` — 790 lines
-- `core/correlator/tests/part12.rs` — 810 lines
-- `core/correlator/tests/part13.rs` — 786 lines
-- `core/correlator/tests/part14.rs` — 761 lines
-- `core/correlator/tests/part15.rs` — 59 lines
+### Correlator rebuild accounting
 
-<!-- geo.md -->
+These legacy files are now represented primarily by `src/correlator.rs`, but many rule families remain only partially rebuilt. Every file remains explicitly accounted for.
+
+| Legacy path | Lines | Decision | Current owner / status |
+| --- | ---: | --- | --- |
+| `core/correlator/mod.rs` | 864 | PARTIAL | `src/correlator.rs` rebuilds rule context, severity/ranking, candidate quarantine, registry, and a high-value subset of rules. |
+| `core/correlator/perf.rs` | 155 | NOT YET REBUILT | No dedicated perf harness has been recreated yet. |
+| `core/correlator/rules/mod.rs` | 672 | PARTIAL | Consolidated into one trait + registry in `src/correlator.rs`; full legacy rule inventory still outstanding. |
+| `core/correlator/rules/tests.rs` | 502 | PARTIAL ORACLE | Representative helper/rule oracles were ported into `src/correlator.rs` tests; the full legacy oracle set is not yet ported. |
+| `core/correlator/rules/assoc.rs` | 608 | NOT YET REBUILT | Accounted for; full association rule family still outstanding. |
+| `core/correlator/rules/breach.rs` | 1385 | PARTIAL | `AU-001`, `AU-019`, and `AU-021` style breach/exposure subsets are rebuilt; the rest of the family remains outstanding. |
+| `core/correlator/rules/breach_pii.rs` | 1744 | NOT YET REBUILT | Accounted for; full breach-PII rule family still outstanding. |
+| `core/correlator/rules/broker.rs` | 204 | PARTIAL | Connection-broker logic subset rebuilt as `AU-070`; full parity still outstanding. |
+| `core/correlator/rules/creator_exposure.rs` | 204 | NOT YET REBUILT | Accounted for; rule family still outstanding. |
+| `core/correlator/rules/crypto.rs` | 175 | NOT YET REBUILT | Accounted for; rule family still outstanding. |
+| `core/correlator/rules/dating_exposure.rs` | 201 | NOT YET REBUILT | Accounted for; rule family still outstanding. |
+| `core/correlator/rules/device_constellation.rs` | 186 | NOT YET REBUILT | Accounted for; rule family still outstanding. |
+| `core/correlator/rules/device_track.rs` | 191 | NOT YET REBUILT | Accounted for; rule family still outstanding. |
+| `core/correlator/rules/gap.rs` | 647 | PARTIAL | Single-path corroboration-gap subset rebuilt as `AU-063`; remaining gap logic still outstanding. |
+| `core/correlator/rules/geo/mod.rs` | 664 | NOT YET REBUILT | Accounted for; geo rule family still outstanding. |
+| `core/correlator/rules/geo/chain.rs` | 470 | NOT YET REBUILT | Accounted for; geo-chain rule family still outstanding. |
+| `core/correlator/rules/geo/cluster.rs` | 307 | NOT YET REBUILT | Accounted for; geo-cluster rule family still outstanding. |
+| `core/correlator/rules/geo/jurisdiction.rs` | 418 | NOT YET REBUILT | Accounted for; jurisdiction rule family still outstanding. |
+| `core/correlator/rules/geo/profile.rs` | 516 | NOT YET REBUILT | Accounted for; geo-profile rule family still outstanding. |
+| `core/correlator/rules/handle_variant.rs` | 380 | NOT YET REBUILT | Accounted for; numeric/variant handle rule family still outstanding. |
+| `core/correlator/rules/identity/mod.rs` | 22 | PARTIAL | Consolidated into `src/correlator.rs`; only a subset of identity rules is rebuilt. |
+| `core/correlator/rules/identity/cluster.rs` | 416 | PARTIAL | Identity-cluster subset rebuilt as `AU-002`, `AU-060`, and `AU-071`; full parity still outstanding. |
+| `core/correlator/rules/identity/account/mod.rs` | 53 | PARTIAL | Consolidated into `src/correlator.rs`; account-level rule surface is incomplete. |
+| `core/correlator/rules/identity/account/broker.rs` | 353 | NOT YET REBUILT | Accounted for; account-broker rule family still outstanding. |
+| `core/correlator/rules/identity/account/handle.rs` | 505 | NOT YET REBUILT | Accounted for; account-handle rule family still outstanding. |
+| `core/correlator/rules/identity/account/key.rs` | 190 | NOT YET REBUILT | Accounted for; account-key rule family still outstanding. |
+| `core/correlator/rules/identity/account/platform.rs` | 637 | NOT YET REBUILT | Accounted for; account-platform rule family still outstanding. |
+| `core/correlator/rules/identity/account/tracking.rs` | 222 | NOT YET REBUILT | Accounted for; account-tracking rule family still outstanding. |
+| `core/correlator/rules/infra.rs` | 882 | PARTIAL | Shared-hosting-IP subset rebuilt as `AU-110`; remaining infra rules still outstanding. |
+| `core/correlator/rules/infra_closure.rs` | 306 | NOT YET REBUILT | Accounted for; infra-closure rule family still outstanding. |
+| `core/correlator/rules/integrity.rs` | 183 | NOT YET REBUILT | Accounted for; integrity rule family still outstanding. |
+| `core/correlator/rules/locale.rs` | 123 | NOT YET REBUILT | Accounted for; locale rule family still outstanding. |
+| `core/correlator/rules/lookalike.rs` | 274 | NOT YET REBUILT | Accounted for; lookalike rule family still outstanding. |
+| `core/correlator/rules/multipath.rs` | 484 | PARTIAL | Multi-path corroboration subset rebuilt as `AU-062`; full parity still outstanding. |
+| `core/correlator/rules/org.rs` | 1157 | PARTIAL | Shared-registrant/operator subset rebuilt as `AU-109`; the rest of the org rule family remains outstanding. |
+| `core/correlator/rules/payid.rs` | 93 | NOT YET REBUILT | Accounted for; PAYID rule family still outstanding. |
+| `core/correlator/rules/resolved.rs` | 213 | NOT YET REBUILT | Accounted for; resolved-identity rule family still outstanding. |
+| `core/correlator/rules/reuse_closure.rs` | 472 | NOT YET REBUILT | Accounted for; reuse-closure rule family still outstanding. |
+| `core/correlator/rules/robust.rs` | 175 | PARTIAL | Robust identity-cluster subset rebuilt as `AU-071`; remaining logic still outstanding. |
+| `core/correlator/rules/sim.rs` | 101 | NOT YET REBUILT | Accounted for; SIM rule family still outstanding. |
+| `core/correlator/rules/template.rs` | 247 | NOT YET REBUILT | Accounted for; generalized pathway-template rule family still outstanding. |
+| `core/correlator/rules/transitive.rs` | 348 | PARTIAL | Transitive identity-closure subset rebuilt as `AU-060`; remaining logic still outstanding. |
+| `core/correlator/tests.rs` | 816 | PARTIAL ORACLE | Representative engine-wide invariants were ported into `src/correlator.rs` tests; the full oracle is not yet ported. |
+| `core/correlator/rules/location/mod.rs` | 1494 | NOT YET REBUILT | Accounted for; location rule family still outstanding. |
+| `core/correlator/rules/location/tests.rs` | 562 | NOT YET REBUILT | Accounted for with the unported geo/location rule family. |
+| `core/correlator/tests/part02.rs` | 809 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part03.rs` | 796 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part04.rs` | 812 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part05.rs` | 788 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part06.rs` | 835 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part07.rs` | 803 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part08.rs` | 795 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part09.rs` | 825 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part10.rs` | 812 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part11.rs` | 790 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part12.rs` | 810 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part13.rs` | 786 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part14.rs` | 761 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+| `core/correlator/tests/part15.rs` | 59 | NOT YET PORTED | Accounted for; full split test suite still outstanding. |
+
+### Notes
+
+- `src/intelligence.rs` is a claim/evidence/inference/provider ledger; `src/cross_scan.rs` is bridge analysis behind an injected `CrossScanStore`.
+- Evidence keeps mandatory provenance; provider credentials are stored as fingerprints only.
+- Network-facing code uses the shared `crate::http::{Request, Response, Transport}` boundary; no parallel request/response types.
+- `src/correlator.rs` has one rule trait and registry, cached rule context, severity/ranking and candidate quarantine; rebuilt rules: `AU-001/002/003/019/021/060/062/063/070/071/109/110`.
+
+## Geo, geometry and RF
+
 | legacy path | lines | decision | new module | defect found/evidence or reason |
 | --- | ---: | --- | --- | --- |
 | `src/util/geo/mod.rs` | 650 | MERGED | `src/geoint.rs`, `src/geo.rs` | Rebuilt pure parsing/validation, AU-state partition, locality/postcode lookups, confidence ladder, and family-distance helpers. Legacy mixed in monolith `Entity` birth/tag helpers; those are left out here. |
@@ -177,12 +223,9 @@ Legacy files still not fully rebuilt feature-for-feature (line counts from the m
 | `src/util/postcode_au/mod.rs` | 265 | REBUILT (subset) | `src/postcode_au.rs`, `src/geo.rs` | Rebuilt JSON parsing, offline centroid fallback, and the newly in-scope online postcode-locality lookup behind the shared `crate::http::{Request, Response, Transport}` boundary. Bulk gazetteer breadth still remains `PENDING-PROVENANCE`. |
 | `src/util/postcode_au/tests.rs` | 147 | MERGED (subset) | `src/postcode_au.rs`, `src/geo.rs` | Ported postcode shape/range/fallback cases and added fake-transport tests implementing the shared `Transport` trait for the restored online lookup boundary. |
 
-<!-- parsers.md -->
-# Parsers disposition
+## Parsers and signals
 
-Permanent legacy references: the two repo-root zip archives are pinned and were not touched. They remain the source reference for future rebuilds.
-
-## Rebuilt in this area
+### Rebuilt in this area
 
 - `src/atproto.rs`
 - `src/breach.rs`
@@ -204,7 +247,7 @@ Also touched for shared-owner cleanup only:
 - `src/http.rs` query helper reuse
 - `src/lib.rs` module registration
 
-## Newly in scope after policy change
+### Newly in scope after policy change
 
 Rebuilt behind shared crate boundaries (`crate::http::{Request, Response, Transport}` and `fetch`) while keeping pure logic unit-testable:
 
@@ -217,7 +260,7 @@ Rebuilt behind shared crate boundaries (`crate::http::{Request, Response, Transp
 
 Credentials are allowed, but artifacts/logs still keep fingerprint-only hygiene.
 
-## File-by-file
+### File-by-file
 
 | Legacy file | New module | Decision | Why |
 | --- | --- | --- | --- |
@@ -284,13 +327,14 @@ Credentials are allowed, but artifacts/logs still keep fingerprint-only hygiene.
 | `core/module/provider_tests.rs` | `src/module.rs` tests | MERGED | Pure pricing/descriptor cases restated as unit tests. |
 | `core/module/tests.rs` | `src/module.rs` tests | PARTIAL | Pure metadata tests rebuilt; runtime/context tests requiring async/runtime crates were not ported. |
 
-## Notes
+### Notes
 
 - `circuit::BreakerState` and `assurance::ControlState` are not duplicates: one is runtime request throttling state, the other is governance/control evidence state.
 - Shared parsing cleanup moved duplicate record-tag parsing for DMARC/SPF into `src/signals.rs`.
 - `key_health` now reuses the crate’s key hygiene path instead of inventing a separate fingerprint scheme.
 
-<!-- validation.md -->
+## Validation, domains and text
+
 | legacy path | lines | decision | new module | defect found / evidence or reason |
 | --- | ---: | --- | --- | --- |
 | core/validation/confusable.rs | 263 | MERGED | src/validation.rs | Rebuilt invisible-strip, skeleton, mixed-script, and gibberish checks; merged the pairwise lookalike primitives from util/confusable here so the duplicate confusable logic cannot drift again. |
@@ -324,10 +368,31 @@ Credentials are allowed, but artifacts/logs still keep fingerprint-only hygiene.
 | util/dns.rs | 224 | REBUILT | src/dns.rs | Kept the pure label/RNAME helpers and moved the runtime resolver path onto the shared `crate::http::Transport` boundary with ordered DoH failover across Cloudflare/Quad9/Google so the newly in-scope path stays separately unit-testable. |
 | core/xml.rs | 53 | REBUILT | src/xml.rs | Rebuilt the one-pass XML escaper that drops XML-illegal controls instead of double-escaping or preserving them. |
 
-Policy-change note (network/credentials now allowed):
+### Notes
+
+Policy change (network and credentials now allowed):
 - Newly in scope and rebuilt behind injectable boundaries:
   - `util/postcode_au` online postcode lookup path via `src/postcode_au.rs::localities_with` on `crate::http::Transport`
   - `util/dns` resolver-pool/failover path via `src/dns.rs::{resolver_config, resolve_with_pool}` on `crate::http::Transport`
 - Pure parsing, scoring, and policy remain separately unit-testable; tests use fakes and do not perform live network calls.
 - No credential values are logged or embedded in tests/artifacts; these boundaries carry plain request/response data only.
 - Redundancies removed during the shared-HTTP refactor: identity/email/phone canonicalisation now delegates to the shared canonical/validation owners; postcode shape/range checks now live in `src/postcode_au.rs`; DNS label/RNAME helpers now live only in `src/dns.rs`.
+
+## Not yet dispositioned
+
+Legacy `src/` files of the monolith that no section above lists yet (895 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
+
+| Legacy area | Files not listed | Of |
+| --- | ---: | ---: |
+| `src/modules/` (providers) | 542 | 542 |
+| `src/util/` | 116 | 213 |
+| `src/core/` | 49 | 203 |
+| `src/app/` | 45 | 45 |
+| `src/web/` | 44 | 44 |
+| `src/cli/` | 40 | 40 |
+| `src/api/` | 24 | 24 |
+| `src/bin/` | 14 | 14 |
+| `src/storage/` | 9 | 9 |
+| `src/audit/` | 5 | 5 |
+| `src/selftest/` | 3 | 3 |
+| crate root (`lib.rs`, `main.rs`, `lib_tests.rs`, `main_tests.rs`) | 4 | 4 |

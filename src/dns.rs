@@ -415,6 +415,7 @@ mod tests {
             soa_rname_to_email(r"hostmaster\.ops.example.com."),
             "hostmaster.ops@example.com"
         );
-        assert!(soa_rname_to_email("invalid").is_empty());
+        let email = soa_rname_to_email("invalid");
+        assert!(email.is_empty(), "{email:?}");
     }
 }

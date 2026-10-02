@@ -434,7 +434,8 @@ mod tests {
         assert_eq!(out[0].last_ts, 200);
 
         let randomised = [sweep("s1", 100, &[obs(RND)]), sweep("s2", 200, &[obs(RND)])];
-        assert!(recurring_devices(&randomised, 2).is_empty());
+        let recurring = recurring_devices(&randomised, 2);
+        assert!(recurring.is_empty(), "{recurring:?}");
 
         let owned = [
             sweep("s1", 100, &[bonded(HW1)]),
@@ -448,7 +449,8 @@ mod tests {
                 }],
             ),
         ];
-        assert!(recurring_devices(&owned, 2).is_empty());
+        let recurring = recurring_devices(&owned, 2);
+        assert!(recurring.is_empty(), "{recurring:?}");
     }
 
     #[test]
@@ -507,7 +509,7 @@ mod tests {
         assert_eq!(first.new, vec![lc(HW1)]);
         let second = radar.apply_tick(&[obs(HW1), obs(HW2)], BtReadOutcome::Read);
         assert_eq!(second.evicted, vec![lc(HW1)]);
-        assert!(second.departed.is_empty());
+        assert!(second.departed.is_empty(), "{:?}", second.departed);
 
         let mut dense = BtRadarState::with_capacity(4);
         let macs: Vec<String> = (0..20u32)
@@ -515,7 +517,7 @@ mod tests {
             .collect();
         let sightings: Vec<SweepObservation> = macs.iter().map(|mac| obs(mac)).collect();
         let delta = dense.apply_tick(&sightings, BtReadOutcome::Read);
-        assert!(!delta.evicted.is_empty());
+        assert!(!delta.evicted.is_empty(), "20 sightings into capacity 4");
         for mac in delta.new.iter().chain(delta.present.iter()) {
             assert!(dense.presence_of(mac).is_some());
             assert!(!delta.evicted.contains(mac));
@@ -523,7 +525,7 @@ mod tests {
         assert_eq!(dense.len(), 4);
 
         let ranked = dense.tracks_ranked();
-        assert!(!ranked.is_empty());
+        assert!(!ranked.is_empty(), "a full radar ranks no tracks");
     }
 
     #[test]

@@ -418,7 +418,8 @@ mod tests {
             parse("v=spf1 ip4:198.51.100.0/24 include:_spf.example.com -all").expect("SPF record");
         assert_eq!(record.all_policy(), AllPolicy::HardFail);
         assert_eq!(record.dns_lookup_count(), 1);
-        assert!(record.issues().is_empty());
+        let issues = record.issues();
+        assert!(issues.is_empty(), "{issues:?}");
         assert_eq!(
             record.lists_ip("198.51.100.17".parse().expect("ip")),
             Some(Qualifier::Pass)

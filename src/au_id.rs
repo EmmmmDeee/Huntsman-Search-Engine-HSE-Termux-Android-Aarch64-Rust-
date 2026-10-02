@@ -500,6 +500,7 @@ mod tests {
             company_names("Ashton & Co Pty Ltd & Berg Pty Ltd"),
             vec!["Ashton & Co Pty Ltd", "Berg Pty Ltd"]
         );
-        assert!(company_names("Jane Citizen").is_empty());
+        let names = company_names("Jane Citizen");
+        assert!(names.is_empty(), "{names:?}");
     }
 }

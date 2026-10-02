@@ -459,7 +459,8 @@ mod tests {
             handles,
             vec!["ada.lovelace".to_string(), "adalovelace".to_string()]
         );
-        assert!(alias_handles("support@example.com").is_empty());
+        let handles = alias_handles("support@example.com");
+        assert!(handles.is_empty(), "{handles:?}");
     }
 
     #[test]

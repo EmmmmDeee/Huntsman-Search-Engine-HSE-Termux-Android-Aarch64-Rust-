@@ -783,7 +783,8 @@ mod tests {
         assert_eq!(graph.modules_for(TargetKind::Email).len(), 1);
         assert_eq!(graph.modules_for(TargetKind::Domain).len(), 2);
         assert_eq!(graph.modules_for(TargetKind::Url).len(), 2);
-        assert!(graph.modules_for(TargetKind::Coordinates).is_empty());
+        let coordinate_modules = graph.modules_for(TargetKind::Coordinates);
+        assert!(coordinate_modules.is_empty(), "{coordinate_modules:?}");
         assert_eq!(graph.module_count_for(TargetKind::Domain), 2);
         assert!((graph.richness_for(TargetKind::Domain) - 1.0).abs() < f64::EPSILON);
         assert!(graph.richness_for(TargetKind::Coordinates).abs() < f64::EPSILON);
@@ -809,7 +810,8 @@ mod tests {
         assert!(kinds.contains(&TargetKind::Domain));
         assert!(kinds.contains(&TargetKind::Url));
         assert!(ValueGatedNoOverride.accepts(&Target::new(TargetKind::Domain, "ato.gov.au")));
-        assert!(consumes_via_probe(&ValueGatedNoOverride).is_empty());
+        let consumed = consumes_via_probe(&ValueGatedNoOverride);
+        assert!(consumed.is_empty(), "{consumed:?}");
         assert_eq!(ValueGatedWithOverride.consumes(), vec![TargetKind::Domain]);
     }
 
@@ -831,7 +833,11 @@ mod tests {
                 .iter()
                 .any(|kind| kind == "credential")
         );
-        assert!(summary.edges[1].pivots_to.is_empty());
+        assert!(
+            summary.edges[1].pivots_to.is_empty(),
+            "{:?}",
+            summary.edges[1].pivots_to
+        );
     }
 
     #[test]
@@ -863,7 +869,8 @@ mod tests {
         assert!(reachable.contains(&TargetKind::IpAddress));
         let module_indexes = reachable_modules(&graph, &modules, &[TargetKind::Email]);
         assert_eq!(module_indexes, vec![0, 1, 2]);
-        assert!(unreachable_modules(&graph, &modules, &[TargetKind::Email]).is_empty());
+        let unreachable = unreachable_modules(&graph, &modules, &[TargetKind::Email]);
+        assert!(unreachable.is_empty(), "{unreachable:?}");
         assert_eq!(coverage_from(&graph, &modules, TargetKind::Email), (3, 3));
         assert_eq!(
             fully_wired(&graph, &modules),

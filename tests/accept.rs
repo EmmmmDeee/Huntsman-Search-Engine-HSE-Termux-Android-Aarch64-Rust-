@@ -96,12 +96,9 @@ fn navigator_and_stix_drop_challenge_and_catalog() {
         ids.is_empty(),
         "self-labeled T1592 is not an implemented technique"
     );
-    assert!(
-        bundle(&[admitted, catalog])["objects"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    let stix = bundle(&[admitted, catalog]);
+    let objects = stix["objects"].as_array().unwrap();
+    assert!(objects.is_empty(), "{objects:?}");
 }
 
 /// Committed artifacts must be what the current code produces: an intact v2 chain,
@@ -111,8 +108,9 @@ fn committed_artifacts_match_current_gates() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("var");
     let entries =
         huntsman_recon::ledger::load_chain(&root.join("ledger.json")).expect("ledger verifies");
-    assert!(!entries.is_empty());
-    assert!(huntsman_recon::ledger::admitted(&entries).is_empty());
+    assert!(!entries.is_empty(), "var/ledger.json has no entries");
+    let admitted = huntsman_recon::ledger::admitted(&entries);
+    assert!(admitted.is_empty(), "{admitted:?}");
     for (file, key) in [
         ("navigator.json", "techniques"),
         ("stix-bundle.json", "objects"),

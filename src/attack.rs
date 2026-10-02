@@ -327,8 +327,8 @@ mod tests {
                 assert_eq!(sub.len(), 3, "{}", item.id);
                 assert!(sub.bytes().all(|byte| byte.is_ascii_digit()));
             }
-            assert!(!item.name.is_empty());
-            assert!(!item.tactics.is_empty());
+            assert!(!item.name.is_empty(), "{} has no name", item.id);
+            assert!(!item.tactics.is_empty(), "{} has no tactic", item.id);
             for shortname in item.tactics {
                 assert!(TACTICS.iter().any(|tac| tac.shortname == *shortname));
             }
