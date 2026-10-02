@@ -1,0 +1,37 @@
+name: Setup Android NDK aarch64 cross-compile env
+description: Configure the GitHub-hosted Android NDK toolchain for aarch64-linux-android.
+
+inputs:
+  android-api:
+    description: Android API level to target
+    required: false
+    default: "24"
+
+runs:
+  using: composite
+  steps:
+    - name: Export Android aarch64 toolchain
+      shell: bash
+      env:
+        ANDROID_API: ${{ inputs.android-api }}
+      run: |
+        set -euo pipefail
+        test -n "${ANDROID_NDK_LATEST_HOME:-}" || {
+          echo "ANDROID_NDK_LATEST_HOME is unset" >&2
+          exit 1
+        }
+        TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        CLANG="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
+        test -x "$CLANG" || {
+          echo "Android aarch64 clang not found: $CLANG" >&2
+          exit 1
+        }
+        test -x "$TOOLCHAIN/llvm-ar" || {
+          echo "Android llvm-ar not found" >&2
+          exit 1
+        }
+        {
+          echo "CC_aarch64_linux_android=$CLANG"
+          echo "AR_aarch64_linux_android=$TOOLCHAIN/llvm-ar"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CLANG"
+        } >> "$GITHUB_ENV"
