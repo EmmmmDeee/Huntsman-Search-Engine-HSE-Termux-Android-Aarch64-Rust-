@@ -50,9 +50,13 @@ jobs:
           set -euo pipefail
           BIN="target/aarch64-linux-android/release/huntsman-recon"
           TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          HEADER="$RUNNER_TEMP/huntsman-elf-header.txt"
+          PROGRAM="$RUNNER_TEMP/huntsman-elf-program.txt"
           test -x "$BIN"
-          "$TOOLCHAIN/llvm-readelf" -h "$BIN" | grep -Eq 'Machine:[[:space:]]+AArch64'
-          "$TOOLCHAIN/llvm-readelf" -l "$BIN" | grep -F '/system/bin/linker64'
+          "$TOOLCHAIN/llvm-readelf" -h "$BIN" > "$HEADER"
+          grep -Eq 'Machine:[[:space:]]+AArch64' "$HEADER"
+          "$TOOLCHAIN/llvm-readelf" -l "$BIN" > "$PROGRAM"
+          grep -F '/system/bin/linker64' "$PROGRAM"
           mkdir -p dist
           cp "$BIN" dist/huntsman-recon-aarch64-linux-android
           (
