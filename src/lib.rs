@@ -72,6 +72,7 @@ pub mod postcode_au;
 pub mod profiles;
 pub mod query_frontier;
 pub mod radar;
+pub mod rdap_domain;
 pub mod recon;
 pub mod redact;
 pub mod relation;
