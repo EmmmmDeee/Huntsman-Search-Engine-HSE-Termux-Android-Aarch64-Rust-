@@ -18,14 +18,22 @@ fn expands_only_verified_entities_into_ranked_next_actions() {
     let frontier = rank_entity_frontier(&[weak, email]);
 
     assert!(!frontier.is_empty());
-    assert!(frontier.iter().all(|candidate| candidate.basis_classification == "verified"));
+    assert!(
+        frontier
+            .iter()
+            .all(|candidate| candidate.basis_classification == "verified")
+    );
     assert!(frontier.iter().any(|candidate| {
         candidate.kind == ActionKind::ExactSearch && candidate.query == "alice@example.com"
     }));
     assert!(frontier.iter().any(|candidate| {
         candidate.kind == ActionKind::DomainLookup && candidate.query == "example.com"
     }));
-    assert!(frontier.iter().all(|candidate| !candidate.query.contains("maybe-alice")));
+    assert!(
+        frontier
+            .iter()
+            .all(|candidate| !candidate.query.contains("maybe-alice"))
+    );
 }
 
 #[test]
@@ -61,7 +69,11 @@ fn duplicate_entities_do_not_multiply_the_same_query() {
         .collect();
 
     assert_eq!(exact.len(), 1);
-    assert_eq!(exact[0].basis_uids.len(), 1, "same canonical entity is one evidentiary basis");
+    assert_eq!(
+        exact[0].basis_uids.len(),
+        1,
+        "same canonical entity is one evidentiary basis"
+    );
 }
 
 #[test]
