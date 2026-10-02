@@ -55,15 +55,17 @@ Status counts: REIMPLEMENTED 2, PARTIAL 10, NOT YET REBUILT 11 (21 of 23 rows ar
 
 ## ARCHITECTURE
 
-CURRENT. One package, one library (`src/lib.rs`) and one binary (`src/main.rs`, no CLI framework). The table is the module map: every compiled top-level module appears once. A module may use modules in its own layer or a lower one, never a higher one. Measured from `crate::` references outside `#[cfg(test)]` at `1ea6c304`, there are no upward edges. Two dependency cycles exist inside a layer: `address_au`–`canonical`–`domains`–`textnorm`–`validation` (L3) and `attack`–`attack_catalog` (L5).
+CURRENT. One package, one library (`src/lib.rs`) and one binary (`src/main.rs`, no CLI framework). The table is the module map: every module `src/lib.rs` declares appears in exactly one layer row. A module may use modules in its own layer or a lower one, never a higher one. Dependencies are the `crate::` paths (`use`, `pub use`, groups and inline paths, plus `super::` paths that reach the crate root) in compiled code outside `#[cfg(test)]`, measured at `1ea6c304`:
+- Upward edges: none.
+- Dependency cycles: `address_au`–`canonical`–`domains`–`textnorm`–`validation` (L3); `attack`–`attack_catalog` (L5).
 
 | Layer | Modules | Role |
 | --- | --- | --- |
 | L0 primitives | `error`, `sha256`, `json`, `timefmt`, `union_find`, `tags`, `xml`, `uid`, `stage`, `event`, `fsio`, `signals`, `place`, `geohash`, `redact`, `termination`, `circuit`, `oui_ieee`, `oui`, `radar` | Pure helpers, bounded file I/O (`fsio`), retry and cache state (`circuit`) |
 | L1 evidence core | `evidence_ancestry`, `confidence`, `identity_resolution`, `resolve`, `eval` | Ancestry graph, independent-family counting, merge gate, scoring |
 | L2 network boundary | `classify`, `source_outcome`, `egress`, `credential_origin`, `http`, `keys`, `fetch`, `fetch_cli` | The only network path (see BOUNDARIES) |
-| L3 normalisation | `textnorm`, `canonical`, `validation`, `domains`, `address_au`, `au_id`, `breach`, `spf`, `dmarc`, `tlsrpt` | Canonical forms, validators, record parsers |
-| L4 source clients | `ckan`, `mediawiki`, `atproto`, `dns`, `postcode_au`, `hibp`, `service_defs`, `key_health`, `scraper_health`, `recon` | Request builders and response parsers; network only via an injected `http::Transport` |
+| L3 normalisation | `textnorm`, `canonical`, `validation`, `domains`, `address_au`, `postcode_au`, `au_id`, `breach`, `spf`, `dmarc`, `tlsrpt` | Canonical forms, validators, record parsers; `postcode_au` also has one postcode lookup over an injected `http::Transport` (its only crate dependency is `http`), and `au_id` re-exports it (`src/au_id.rs:13`) |
+| L4 source clients | `ckan`, `mediawiki`, `atproto`, `dns`, `hibp`, `service_defs`, `key_health`, `scraper_health`, `recon` | Request builders and response parsers; network only via an injected `http::Transport` |
 | L5 entity model and analysis | `entity`, `identity`, `relation`, `graph`, `coref`, `correlator`, `cross_scan`, `dependency`, `module`, `attack`, `attack_catalog`, `exposure`, `profiles`, `leads`, `timeline`, `community`, `diff`, `path`, `pivot`, `intelligence`, `classifier`, `classify_module` | Entities, evidence, relations, correlation rules |
 | L6 GEOINT and RF | `geo`, `geometry`, `rf`, `geoint` | Coordinates, places, RF sightings |
 | L7 records and outputs | `ledger`, `session`, `store`, `stix`, `navigator`, `search`, `gexf`, `snake_graph` | Hash-chained ledger, session store, exports, local search |
