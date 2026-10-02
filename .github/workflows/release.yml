@@ -385,14 +385,23 @@ jobs:
                   print("hit")
           '
 
-          # List files up front so a failing `find` fails the scan instead of
-          # shortening it.
-          list=$(mktemp) || { echo "::error::mktemp failed"; exit 1; }
-          trap 'rm -f "$list"' EXIT
-          find "$@" -type f -print0 >"$list" || { echo "::error::find failed on: $*"; exit 1; }
+          # Build and check the sorted file list before scanning anything, so a failing
+          # or truncating `find` or `sort` fails the scan (exit 2) instead of silently
+          # shortening it. Never read the list through a process substitution: its exit
+          # status would be lost.
+          list=$(mktemp) || { echo "::error::mktemp failed"; exit 2; }
+          sorted=$(mktemp) || { rm -f "$list"; echo "::error::mktemp failed"; exit 2; }
+          trap 'rm -f "$list" "$sorted"' EXIT
+          find "$@" -type f -print0 >"$list" || { echo "::error::find failed on: $*; refusing to scan a partial file list"; exit 2; }
+          sort -z "$list" >"$sorted" || { echo "::error::sort failed; refusing to scan a partial file list"; exit 2; }
+          mapfile -d '' -t found <"$list" || { echo "::error::cannot read the file list"; exit 2; }
+          mapfile -d '' -t files <"$sorted" || { echo "::error::cannot read the sorted file list"; exit 2; }
+          [ "${#files[@]}" -eq "${#found[@]}" ] \
+            || { echo "::error::sort returned ${#files[@]} of ${#found[@]} files; refusing to scan a partial file list"; exit 2; }
+          [ "${#files[@]}" -gt 0 ] || { echo "::error::nothing scanned: no files under $*"; exit 2; }
 
           scanned=0
-          while IFS= read -r -d '' f; do
+          for f in "${files[@]}"; do
             scanned=$((scanned + 1))
             if grep -Iq . "$f" 2>/dev/null; then
               text=1
@@ -423,7 +432,7 @@ jobs:
                 [ -n "$line" ] && report "$f" "high-entropy-string"
               done <<<"$ent"
             fi
-          done < <(sort -z "$list")
+          done
 
           echo "rules: ${#RULES[@]} pattern rules + high-entropy (text files)"
           echo "files scanned: $scanned"

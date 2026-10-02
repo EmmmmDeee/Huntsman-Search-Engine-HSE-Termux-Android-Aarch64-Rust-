@@ -399,9 +399,17 @@ fn scanner_tools_present() -> bool {
 }
 
 fn run_scan(dir: &Path, path_env: Option<&Path>) -> (Option<i32>, String) {
+    run_script(Path::new(SCAN), dir, path_env.map(Path::as_os_str))
+}
+
+fn run_script(
+    script: &Path,
+    dir: &Path,
+    path_env: Option<&std::ffi::OsStr>,
+) -> (Option<i32>, String) {
     let bash = tool("bash").expect("bash must be available");
     let mut cmd = Command::new(bash);
-    cmd.arg(SCAN).arg(dir);
+    cmd.arg(script).arg(dir);
     if let Some(p) = path_env {
         cmd.env("PATH", p);
     }
@@ -591,7 +599,7 @@ fn scanner_fails_closed_on_a_missing_or_empty_path() {
     }
     let empty = scratch("empty");
     let (code, text) = scan(&empty);
-    assert_eq!(code, Some(1), "an empty tree must not pass:\n{text}");
+    assert_eq!(code, Some(2), "an empty tree must not pass:\n{text}");
     assert!(text.contains("nothing scanned"), "{text}");
     let missing = empty.join("does-not-exist");
     let (code, text) = scan(&missing);
@@ -873,4 +881,109 @@ fn installer_replaces_the_binary_atomically_and_only_after_verification() {
         !src.contains("install -m 0755 \"$tmp/$ASSET\" \"$PREFIX/bin/$DEST_NAME\""),
         "must not write straight onto the live binary"
     );
+}
+
+/// The scanner copy inlined in the publish job, de-indented.
+fn inlined_scanner() -> String {
+    let wf = release();
+    let start = "          cat > \"$scanner\" <<'SCAN_FOR_KEYS'\n";
+    let end = "\n          SCAN_FOR_KEYS\n";
+    let from = wf.find(start).expect("publish must inline the scanner") + start.len();
+    let to = from
+        + wf[from..]
+            .find(end)
+            .expect("inlined scanner must be terminated");
+    wf[from..to]
+        .lines()
+        .map(|l| l.get(10..).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+#[test]
+fn both_scanner_copies_fail_closed_when_find_or_sort_fails_or_truncates() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let real_sort = tool("sort").expect("sort must be installed");
+    let real_find = tool("find").expect("find must be installed");
+    let root = scratch("partial-list");
+    // `a-clean.json` sorts first, so a one-entry prefix omits the planted file.
+    let fixture = root.join("dist");
+    fs::create_dir_all(&fixture).unwrap();
+    fs::write(fixture.join("a-clean.json"), "{\"ok\":true}\n").unwrap();
+    let ghp = fake_ghp();
+    fs::write(
+        fixture.join("z-secret.bin"),
+        [b"\x00 t=".as_slice(), ghp.as_bytes(), b" \x00\xfe"].concat(),
+    )
+    .unwrap();
+    let inline = root.join("inlined-scan-for-keys.sh");
+    fs::write(&inline, inlined_scanner()).unwrap();
+    let real_path = std::env::var("PATH").unwrap_or_default();
+    let scripts = [PathBuf::from(SCAN), inline];
+
+    // Positive control: with the real tools both copies find the planted token.
+    for script in &scripts {
+        let (code, text) = run_script(script, &fixture, None);
+        assert_eq!(
+            code,
+            Some(1),
+            "{}: control must find the token:\n{text}",
+            script.display()
+        );
+        assert!(
+            text.contains("rule=github-token (value withheld)"),
+            "{text}"
+        );
+    }
+
+    // Each fake prints only the first NUL-terminated entry of the real output.
+    let cases = [
+        (
+            "sort",
+            &real_sort,
+            1,
+            "sort failed; refusing to scan a partial file list",
+        ),
+        (
+            "sort",
+            &real_sort,
+            0,
+            "sort returned 1 of 2 files; refusing to scan a partial file list",
+        ),
+        ("find", &real_find, 1, "find failed on:"),
+    ];
+    for (name, real, exit, message) in cases {
+        let fakes = root.join(format!("fake-{name}-{exit}"));
+        fs::create_dir_all(&fakes).unwrap();
+        write_exec(
+            &fakes.join(name),
+            &format!(
+                "#!/usr/bin/env bash\n\"{}\" \"$@\" | head -z -n 1\nexit {exit}\n",
+                real.display()
+            ),
+        );
+        let path = std::ffi::OsString::from(format!("{}:{real_path}", fakes.display()));
+        for script in &scripts {
+            let ctx = format!("{} with fake {name} exiting {exit}", script.display());
+            let (code, text) = run_script(script, &fixture, Some(&path));
+            assert_eq!(code, Some(2), "{ctx} must fail closed with exit 2:\n{text}");
+            assert!(
+                text.contains(message),
+                "{ctx}: expected {message:?}:\n{text}"
+            );
+            assert!(
+                !text.contains("key scan: 0 finding(s)"),
+                "{ctx} must not report a clean scan:\n{text}"
+            );
+            assert!(
+                !text.contains("files scanned:"),
+                "{ctx} must not scan a prefix:\n{text}"
+            );
+            assert_redacted(&text, &ghp, &ctx);
+        }
+    }
+    let _ = fs::remove_dir_all(&root);
 }
