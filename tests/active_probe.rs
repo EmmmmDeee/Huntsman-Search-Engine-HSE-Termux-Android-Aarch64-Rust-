@@ -96,7 +96,8 @@ fn probes_a_deterministic_bounded_surface_and_extracts_pivots() {
     assert!(pivot_urls.contains(&"https://example.com/public"));
     assert!(pivot_urls.contains(&"https://example.com/sitemap.xml"));
 
-    let seen: Vec<_> = f.seen.borrow().iter().map(|r| r.url.as_str()).collect();
+    let recorded = f.seen.borrow();
+    let seen: Vec<_> = recorded.iter().map(|r| r.url.as_str()).collect();
     assert_eq!(
         seen,
         vec![
