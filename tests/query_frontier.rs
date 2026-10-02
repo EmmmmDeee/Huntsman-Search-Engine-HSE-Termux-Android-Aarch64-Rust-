@@ -17,7 +17,7 @@ fn expands_only_verified_entities_into_ranked_next_actions() {
 
     let frontier = rank_entity_frontier(&[weak, email]);
 
-    assert!(!frontier.is_empty());
+    assert_ne!(frontier.len(), 0);
     assert!(
         frontier
             .iter()
@@ -90,5 +90,5 @@ fn frontier_is_deterministic_across_input_order() {
 fn credentials_and_api_keys_never_become_queries() {
     let credential = verified(EntityKind::Credential, "super-secret", "operator");
     let api_key = verified(EntityKind::ApiKey, "deadbeef", "operator");
-    assert!(rank_entity_frontier(&[credential, api_key]).is_empty());
+    assert_eq!(rank_entity_frontier(&[credential, api_key]), Vec::new());
 }
