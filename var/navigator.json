@@ -1,0 +1,11 @@
+{
+  "description": "Generated only from admitted ledger entries. Absence is not a zero score.",
+  "domain": "enterprise-attack",
+  "name": "huntsman-ledger",
+  "techniques": [],
+  "versions": {
+    "attack": "14",
+    "layer": "4.5",
+    "navigator": "4.9"
+  }
+}

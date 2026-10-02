@@ -1,0 +1,28 @@
+[
+  {
+    "prev": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "10f05d305f6212f4148440ac53147eacc660429ae148b7534ef9e08268a55332",
+    "claim": {
+      "claim": "brisbane-sydney haversine 732379 m inside band",
+      "source": "published city centroids",
+      "component": "src/geoint.rs",
+      "technique_id": "T1591",
+      "status": "verified",
+      "evidence_level": "direct_observation",
+      "does_not_show": "not T1591 and not a survey"
+    }
+  },
+  {
+    "prev": "10f05d305f6212f4148440ac53147eacc660429ae148b7534ef9e08268a55332",
+    "hash": "ceb5a84f5b2090ae8c94ea330ae41f565134f0543fbe7f5e67181cc38e1bfdd1",
+    "claim": {
+      "claim": "challenge page is not a result",
+      "source": "src/classify.rs",
+      "component": "src/classify.rs",
+      "technique_id": null,
+      "status": "verified",
+      "evidence_level": "reproduction",
+      "does_not_show": "does not bypass the wall"
+    }
+  }
+]
