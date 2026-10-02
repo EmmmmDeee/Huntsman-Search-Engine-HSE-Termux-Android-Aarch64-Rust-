@@ -19,6 +19,7 @@ cargo run -- check                     # self-acceptance; regenerates var/*.json
 cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
 cargo run -- search "brisbane port"    # built-in fixture
 cargo run -- search "brisbane port" docs/
+cargo run -- sources example.com       # classify + build curated routes; no network
 cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
 cargo run -- id "53 004 085 616"        # ABN/ACN/BSB, strict grouping
 cargo run -- geohash -27.4698,153.0251 9
@@ -29,6 +30,8 @@ cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a 
 ```
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
+
+`sources` is offline routing, not collection. It classifies the input using the existing Huntsman classifier and renders only compatible, independently curated public/browser search routes from `source_registry`. Generated routes are `LeadOnly`: a URL is never corroborating evidence by itself. External catalogue code or data is not embedded.
 
 Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input, 69 `fetch` got no response, 74 artifact write failure, 77 egress policy refused the destination. `check` uses 2–11 for its individual gates.
 
