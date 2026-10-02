@@ -551,7 +551,8 @@ mod tests {
 
     #[test]
     fn coherence_groups_chain_through_intermediates() {
-        assert!(coherent_groups(&[], 5.0).is_empty());
+        let none = coherent_groups(&[], 5.0);
+        assert!(none.is_empty(), "{none:?}");
         let groups = coherent_groups(&[SYDNEY, SYDNEY_NEARBY], 5.0);
         assert_eq!(groups, vec![vec![0, 1]]);
         assert!(is_coherent(&[SYDNEY, SYDNEY_NEARBY], 5.0));

@@ -175,17 +175,17 @@ mod tests {
         let hits = search(&docs(), "brisbane port");
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, "c");
-        assert!(search(&docs(), "").is_empty());
-        assert!(
-            search_response(
-                200,
-                "<html>just a moment cloudflare</html>",
-                "brisbane",
-                "remote"
-            )
-            .is_empty()
+        let termless = search(&docs(), "");
+        assert!(termless.is_empty(), "{termless:?}");
+        let challenged = search_response(
+            200,
+            "<html>just a moment cloudflare</html>",
+            "brisbane",
+            "remote",
         );
-        assert!(search_response(429, "brisbane port", "brisbane", "remote").is_empty());
+        assert!(challenged.is_empty(), "{challenged:?}");
+        let throttled = search_response(429, "brisbane port", "brisbane", "remote");
+        assert!(throttled.is_empty(), "{throttled:?}");
         let parsed = search_response(200, "brisbane port open", "brisbane port", "remote");
         assert_eq!(parsed.len(), 1);
     }

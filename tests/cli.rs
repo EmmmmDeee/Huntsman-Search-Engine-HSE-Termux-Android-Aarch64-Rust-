@@ -64,7 +64,7 @@ fn failures_exit_nonzero() {
     for query in ["", "a", "- !"] {
         let out = bin().args(["search", query]).output().unwrap();
         assert_eq!(out.status.code(), Some(64), "{query:?} is not hits=0");
-        assert!(out.stdout.is_empty());
+        assert!(out.stdout.is_empty(), "{:?}", out.stdout);
     }
     assert_eq!(bin().arg("nope").output().unwrap().status.code(), Some(64));
     assert_eq!(

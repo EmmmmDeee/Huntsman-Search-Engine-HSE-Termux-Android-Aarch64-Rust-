@@ -109,12 +109,9 @@ mod tests {
         let techniques = value["techniques"].as_array().unwrap();
         assert_eq!(techniques.len(), 1);
         assert_eq!(techniques[0]["techniqueID"], "T1595.001");
-        assert!(
-            layer_with(&[entry], &[("src/x.rs", "T1595")])["techniques"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        let parent_only = layer_with(&[entry], &[("src/x.rs", "T1595")]);
+        let techniques = parent_only["techniques"].as_array().unwrap();
+        assert!(techniques.is_empty(), "{techniques:?}");
     }
 
     #[test]
@@ -129,7 +126,8 @@ mod tests {
             does_not_show: "no method".into(),
         });
         let value = layer(&[mapped]);
-        assert!(value["techniques"].as_array().unwrap().is_empty());
+        let techniques = value["techniques"].as_array().unwrap();
+        assert!(techniques.is_empty(), "{techniques:?}");
     }
 
     #[test]

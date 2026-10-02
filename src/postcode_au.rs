@@ -207,7 +207,8 @@ mod tests {
         let localities = parse(mixed);
         assert_eq!(localities.len(), 1);
         assert_eq!(localities[0].suburb, "Good");
-        assert!(parse("not json").is_empty());
+        let parsed = parse("not json");
+        assert!(parsed.is_empty(), "{parsed:?}");
     }
 
     #[test]
@@ -236,7 +237,7 @@ mod tests {
         assert_eq!(request.method, Method::Get);
         assert_eq!(request.url, "https://api.zippopotam.us/au/4552");
         assert_eq!(request.header_value("accept"), Some("application/json"));
-        assert!(request.body.is_empty());
+        assert!(request.body.is_empty(), "{:?}", request.body);
 
         let fallback = localities_with(
             "4552",
@@ -257,17 +258,15 @@ mod tests {
             })]),
         );
         assert_eq!(empty.len(), 3);
-        assert!(
-            localities_with(
-                "bad",
-                &FakeTransport::new(vec![Ok(Response {
-                    status: 200,
-                    headers: Vec::new(),
-                    body: Vec::new(),
-                    truncated: false,
-                })])
-            )
-            .is_empty()
+        let unshaped = localities_with(
+            "bad",
+            &FakeTransport::new(vec![Ok(Response {
+                status: 200,
+                headers: Vec::new(),
+                body: Vec::new(),
+                truncated: false,
+            })]),
         );
+        assert!(unshaped.is_empty(), "{unshaped:?}");
     }
 }

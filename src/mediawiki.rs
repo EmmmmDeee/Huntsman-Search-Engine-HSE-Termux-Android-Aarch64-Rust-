@@ -46,7 +46,7 @@ mod tests {
             r#"{"error":{"code":"maxlag","info":"Waiting for a database server"}}"#,
         )
         .expect("response");
-        assert!(response.items.is_empty());
+        assert!(response.items.is_empty(), "{:?}", response.items);
         let err = MwError::check(&response.error, "wiki_test").expect_err("must error");
         let text = err.to_string();
         assert!(text.contains("wiki_test"));
@@ -60,7 +60,7 @@ mod tests {
         assert!(MwError::check(&ok.error, "wiki_test").is_ok());
 
         let empty: Response = serde_json::from_str(r#"{"items":[]}"#).expect("response");
-        assert!(empty.items.is_empty());
+        assert!(empty.items.is_empty(), "{:?}", empty.items);
         assert!(MwError::check(&empty.error, "wiki_test").is_ok());
     }
 }

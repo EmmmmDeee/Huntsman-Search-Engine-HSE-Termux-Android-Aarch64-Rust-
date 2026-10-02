@@ -922,10 +922,9 @@ mod tests {
             mk("c@x.com", "2024-02-28"),
             mk("d@x.com", "2024-03-30"),
         ];
-        assert!(
-            rule_au_019_temporal_breach_cluster(&RuleContext::new(&chained, &[]), "scan", 0)
-                .is_empty()
-        );
+        let chained_result =
+            rule_au_019_temporal_breach_cluster(&RuleContext::new(&chained, &[]), "scan", 0);
+        assert!(chained_result.is_empty(), "{chained_result:?}");
     }
 
     #[test]
@@ -977,7 +976,8 @@ mod tests {
                 false,
             ));
         }
-        assert!(rule_au_002_identity_cluster(&RuleContext::new(&big, &[]), "scan", 0).is_empty());
+        let findings = rule_au_002_identity_cluster(&RuleContext::new(&big, &[]), "scan", 0);
+        assert!(findings.is_empty(), "{findings:?}");
         let small = vec![
             ent(EntityKind::Email, "me@x.com", 0.85, "s", false),
             ent(EntityKind::Username, "me", 0.7, "s", false),
@@ -992,7 +992,8 @@ mod tests {
             ent(EntityKind::Username, "me", 0.3, "s", false),
             ent(EntityKind::Phone, "15551112222", 0.3, "s", false),
         ];
-        assert!(rule_au_002_identity_cluster(&RuleContext::new(&weak, &[]), "scan", 0).is_empty());
+        let findings = rule_au_002_identity_cluster(&RuleContext::new(&weak, &[]), "scan", 0);
+        assert!(findings.is_empty(), "{findings:?}");
     }
 
     #[test]

@@ -98,12 +98,9 @@ mod tests {
         assert!(parts[3].starts_with('8'), "{id}");
         assert_eq!(objects[0]["pattern"], r"[file:name = 'src/it\'s\\x.rs']");
         assert_eq!(objects[0]["external_references"][0]["external_id"], "T1595");
-        assert!(
-            bundle_with(&[entry], &[])["objects"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        let unbound = bundle_with(&[entry], &[]);
+        let objects = unbound["objects"].as_array().unwrap();
+        assert!(objects.is_empty(), "{objects:?}");
     }
 
     #[test]
@@ -130,6 +127,6 @@ mod tests {
             .as_array()
             .unwrap()
             .clone();
-        assert!(objects.is_empty());
+        assert!(objects.is_empty(), "{objects:?}");
     }
 }

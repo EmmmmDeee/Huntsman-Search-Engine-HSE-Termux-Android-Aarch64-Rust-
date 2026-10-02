@@ -99,7 +99,8 @@ mod tests {
         let near = colocated(&fixes, 2_000.0, 200);
         assert!(near.iter().any(|fix| fix.left == "a" && fix.right == "b"));
         assert!(near.iter().all(|fix| fix.left != "c" && fix.right != "c"));
-        assert!(colocated(&fixes, 2_000.0, 10).is_empty());
+        let pairs = colocated(&fixes, 2_000.0, 10);
+        assert!(pairs.is_empty(), "{pairs:?}");
     }
 
     #[test]
@@ -132,7 +133,8 @@ mod tests {
                 at_unix: i64::MAX,
             },
         ];
-        assert!(colocated(&fixes, 1.0, u64::MAX - 1).is_empty());
+        let pairs = colocated(&fixes, 1.0, u64::MAX - 1);
+        assert!(pairs.is_empty(), "{pairs:?}");
         assert_eq!(colocated(&fixes, 1.0, u64::MAX).len(), 1);
     }
 
