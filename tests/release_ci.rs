@@ -642,3 +642,107 @@ fn attestation_warning_does_not_promise_a_retry() {
     assert!(!wf.contains("Re-run to retry"));
     assert!(wf.contains("A re-run will not add it"));
 }
+
+/// One synthetic positive per pattern rule, assembled at runtime.
+fn rule_fixtures() -> Vec<(&'static str, String)> {
+    vec![
+        ("openai-style-sk", format!("sk-{}", "Ab1_".repeat(6))),
+        ("anthropic", format!("sk-ant-{}", "Zz9-".repeat(6))),
+        ("google-api-key", format!("AIza{}", "Q7x-".repeat(9))),
+        ("github-token", fake_ghp()),
+        ("github-pat", format!("github_pat_{}", "11AB_".repeat(13))),
+        ("slack-token", format!("xoxb-{}", "12ab-".repeat(4))),
+        ("aws-access-key-id", format!("AKIA{}", "Q2W3E4R5T6Y7U8I9")),
+        (
+            "private-key-block",
+            format!("-----BEGIN {} PRIVATE KEY-----", "EC"),
+        ),
+        ("bearer-token", format!("Bearer {}", "Ab3.".repeat(7))),
+        ("hibp-key-hex", fake_hex32()),
+        (
+            "credential-assignment",
+            format!("HIBP_API_KEY={}", "Zq8.".repeat(4)),
+        ),
+    ]
+}
+
+/// The rule names declared in the scanner's RULES array.
+fn scanner_rule_names() -> Vec<String> {
+    fs::read_to_string(SCAN)
+        .expect("key scanner must exist")
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("$'"))
+        .filter_map(|l| l.split_once("\\t").map(|(name, _)| name.to_owned()))
+        .collect()
+}
+
+#[test]
+fn every_scanner_rule_has_a_synthetic_positive_fixture() {
+    let mut declared = scanner_rule_names();
+    let mut covered: Vec<String> = rule_fixtures()
+        .into_iter()
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    declared.sort();
+    covered.sort();
+    assert_eq!(declared.len(), 11, "unexpected rule count: {declared:?}");
+    assert_eq!(
+        declared, covered,
+        "every rule in {SCAN} needs a behavioural fixture"
+    );
+}
+
+#[test]
+fn scanner_detects_every_rule_in_binaries_and_text_without_printing_values() {
+    if !scanner_tools_present() {
+        return;
+    }
+    for (rule, value) in rule_fixtures() {
+        for (ext, bytes) in [
+            (
+                "bin",
+                [b"\x00\x01 k=".as_slice(), value.as_bytes(), b" \x00\xff"].concat(),
+            ),
+            ("txt", format!("k = {value}\n").into_bytes()),
+        ] {
+            let dir = scratch(&format!("rule-{rule}-{ext}"));
+            clean_fixture(&dir);
+            let file = format!("planted.{ext}");
+            fs::write(dir.join(&file), &bytes).unwrap();
+            let (code, text) = scan(&dir);
+            assert_eq!(code, Some(1), "{rule} ({ext}) must fail the scan:\n{text}");
+            assert!(
+                text.contains(&format!("rule={rule} (value withheld)")),
+                "{rule} ({ext}) must be reported by its own rule:\n{text}"
+            );
+            assert_redacted(&text, &value, &format!("{rule} ({ext})"));
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+}
+
+#[test]
+fn scanner_flags_a_high_entropy_string_in_text_without_printing_it() {
+    if !scanner_tools_present() {
+        return;
+    }
+    // 32 distinct base58 characters mixing upper, lower and digits: 5 bits/char.
+    let alphabet: Vec<char> = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        .chars()
+        .collect();
+    let value: String = (0..32)
+        .map(|i| alphabet[(i * 7) % alphabet.len()])
+        .collect();
+    let dir = scratch("entropy");
+    clean_fixture(&dir);
+    fs::write(dir.join("e.json"), format!("{{\"v\":\"{value}\"}}\n")).unwrap();
+    let (code, text) = scan(&dir);
+    assert_eq!(code, Some(1), "a high-entropy string must fail:\n{text}");
+    assert!(
+        text.contains("rule=high-entropy-string (value withheld)"),
+        "{text}"
+    );
+    assert!(text.contains("key scan: 1 finding(s)"), "{text}");
+    assert_redacted(&text, &value, "high-entropy");
+    let _ = fs::remove_dir_all(&dir);
+}
