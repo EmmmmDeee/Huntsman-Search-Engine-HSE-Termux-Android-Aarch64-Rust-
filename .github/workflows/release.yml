@@ -136,8 +136,12 @@ jobs:
           TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           mkdir -p dist
           "$TOOLCHAIN/llvm-strip" -o "dist/$ASSET" "$BIN"
-          "$TOOLCHAIN/llvm-readelf" -h "dist/$ASSET" | grep -Eq 'Machine:[[:space:]]+AArch64'
-          "$TOOLCHAIN/llvm-readelf" -l "dist/$ASSET" | grep -F '/system/bin/linker64'
+          # Write readelf output to files first: `readelf | grep -q` under
+          # pipefail fails with LLVM's exit 74 when grep closes the pipe early.
+          "$TOOLCHAIN/llvm-readelf" -h "dist/$ASSET" > "$RUNNER_TEMP/elf-header.txt"
+          grep -Eq 'Machine:[[:space:]]+AArch64' "$RUNNER_TEMP/elf-header.txt"
+          "$TOOLCHAIN/llvm-readelf" -l "dist/$ASSET" > "$RUNNER_TEMP/elf-program.txt"
+          grep -F '/system/bin/linker64' "$RUNNER_TEMP/elf-program.txt"
           ndk="$(sed -n 's/^Pkg.Revision *= *//p' "$ANDROID_NDK_LATEST_HOME/source.properties" | head -n1)"
           cat > "dist/$ASSET.provenance.json" <<JSON
           {
