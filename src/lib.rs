@@ -83,6 +83,7 @@ pub mod sha256;
 pub mod signals;
 pub mod snake_graph;
 pub mod source_outcome;
+pub mod source_registry;
 pub mod spf;
 pub mod stage;
 pub mod stix;
