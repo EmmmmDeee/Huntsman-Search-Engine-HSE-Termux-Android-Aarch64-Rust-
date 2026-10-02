@@ -318,6 +318,7 @@ fn symlinked_default_file_is_refused_even_when_the_target_is_private() {
     assert!(warning.starts_with("warning: "), "{err}");
     assert!(warning.contains(&path.display().to_string()), "{err}");
     assert!(warning.contains("symlink"), "{err}");
+    assert!(!warning.contains("chmod"), "chmod follows the link: {err}");
     assert!(!err.contains("TEST_ONLY_VALUE"), "a file value was printed");
     assert_eq!(
         lines.collect::<Vec<_>>(),
@@ -371,4 +372,64 @@ fn unusable_default_file_fails_closed_even_with_the_slot_in_the_environment() {
         );
     }
     std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// `HOME=.`, `HOME=relative/dir` and `HOME=` never pick up a file relative to the
+/// working directory: one short warning, then the environment, as with no `HOME`.
+#[cfg(unix)]
+#[test]
+fn relative_or_empty_home_skips_auto_load_with_one_warning() {
+    let cwd = fake_home("relative-cwd");
+    write_mode(
+        &cwd.join(".huntsman.env"),
+        &format!("{SLOT}=TEST_ONLY_VALUE_CWD\n"),
+        0o600,
+    );
+    std::fs::create_dir_all(cwd.join("relative/dir")).unwrap();
+    write_mode(
+        &cwd.join("relative/dir/.huntsman.env"),
+        &format!("{SLOT}=TEST_ONLY_VALUE_CWD_SUB\n"),
+        0o600,
+    );
+    let run = |home: &str, port: u16, env_value: Option<&str>| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"));
+        cmd.args([
+            "fetch",
+            &format!("http://127.0.0.1:{port}/"),
+            "--allow-private",
+            "--bearer",
+            SLOT,
+        ])
+        .current_dir(&cwd)
+        .env("HOME", home)
+        .env_remove(SLOT);
+        if let Some(value) = env_value {
+            cmd.env(SLOT, value);
+        }
+        cmd.output().unwrap()
+    };
+    for home in [".", "relative/dir", ""] {
+        let out = run(home, closed_port(), None);
+        assert_eq!(out.status.code(), Some(66), "{home:?}: {}", stderr(&out));
+        assert_eq!(
+            stderr(&out),
+            format!(
+                "warning: not loading ~/.huntsman.env: HOME is not an absolute path\n\
+                 invalid input: credential {SLOT} is not configured\n"
+            ),
+            "{home:?}"
+        );
+
+        // The environment still supplies the slot; the cwd file is not sent.
+        let (port, server) = serve_once();
+        let out = run(home, port, Some("TEST_ONLY_VALUE_ENV"));
+        assert_eq!(out.status.code(), Some(0), "{home:?}: {}", stderr(&out));
+        let request = server.join().unwrap();
+        assert!(
+            request.contains("Bearer TEST_ONLY_VALUE_ENV\r\n"),
+            "{home:?}"
+        );
+        assert!(!request.contains("TEST_ONLY_VALUE_CWD"), "{home:?}");
+    }
+    std::fs::remove_dir_all(&cwd).unwrap();
 }

@@ -26,11 +26,12 @@ const MAX_KEYS_FILE_BYTES: u64 = 64 * 1024;
 /// Keys file read from `$HOME` when no `--keys FILE` is given.
 pub const DEFAULT_KEYS_FILE: &str = ".huntsman.env";
 
-/// `$HOME/.huntsman.env`, or `None` when `home` is unset or empty.
+/// `$HOME/.huntsman.env`, or `None` when `home` is unset, empty or relative. A
+/// relative `HOME` would make the default file depend on the working directory.
 #[must_use]
 pub fn default_keys_path(home: Option<&OsStr>) -> Option<PathBuf> {
-    let home = home.filter(|home| !home.is_empty())?;
-    Some(Path::new(home).join(DEFAULT_KEYS_FILE))
+    let home = Path::new(home?);
+    home.is_absolute().then(|| home.join(DEFAULT_KEYS_FILE))
 }
 
 /// The keys for one command run, plus a warning for stderr when the default file
@@ -224,7 +225,8 @@ impl Keys {
     /// and the default file is not read. Otherwise `$HOME/.huntsman.env` is parsed
     /// with the same parser when it exists and passes the default-file gate. If it
     /// does not exist, or `home` is unset, the result is [`Keys::from_env`], as
-    /// before the default file existed.
+    /// before the default file existed. An empty or relative `home` also gives
+    /// [`Keys::from_env`], plus one warning that does not print the `HOME` value.
     ///
     /// The gate decides on `lstat` (the path is never followed): a symlink, a
     /// non-regular file, a file owned by another uid, a file accessible by group
@@ -251,8 +253,13 @@ impl Keys {
             keys: Self::from_env(),
             warning,
         };
-        let Some(path) = default_keys_path(home) else {
+        let Some(home) = home else {
             return Ok(env_only(None));
+        };
+        let Some(path) = default_keys_path(Some(home)) else {
+            return Ok(env_only(Some(format!(
+                "warning: not loading ~/{DEFAULT_KEYS_FILE}: HOME is not an absolute path"
+            ))));
         };
         match load_default_file(&path)? {
             None => Ok(env_only(None)),
@@ -313,9 +320,9 @@ enum DefaultFileRefusal {
 impl DefaultFileRefusal {
     fn reason(self) -> String {
         match self {
-            Self::Symlink => format!(
-                "it is a symlink; replace it with a regular file (`chmod 600 ~/{DEFAULT_KEYS_FILE}`) or pass --keys"
-            ),
+            Self::Symlink => "it is a symlink; remove the symlink and create a regular file \
+                 owned by you with mode 600, or pass --keys"
+                .to_owned(),
             Self::NotRegularFile => "it is not a regular file".to_owned(),
             Self::ForeignOwner {
                 file_uid,
@@ -406,6 +413,14 @@ fn current_uid() -> Option<u32> {
 }
 
 /// `None` when `path` does not exist; otherwise the parsed file or the refusal.
+///
+/// The open uses default flags. `O_NOFOLLOW` (and `O_NONBLOCK`) could be set with
+/// `OpenOptionsExt::custom_flags`, which is safe Rust; the obstacle is the flag
+/// values, which differ per architecture (e.g. `O_NOFOLLOW` on `x86_64` vs `aarch64`)
+/// and would need the `libc` crate or a hard-coded per-target table. Instead the
+/// opened descriptor must be the inode `lstat` saw and pass the gate again. The
+/// residual gap: a regular file swapped for a FIFO between `lstat` and `open`
+/// makes `open` block before the re-check; that needs write access to `$HOME`.
 fn load_default_file(path: &Path) -> Result<Option<Result<Keys, DefaultFileRefusal>>, Error> {
     let store = |e: std::io::Error| Error::Store(format!("{}: {e}", path.display()));
     let linked = match std::fs::symlink_metadata(path) {
@@ -603,9 +618,15 @@ mod tests {
     }
 
     #[test]
-    fn default_path_needs_a_home() {
+    fn default_path_needs_an_absolute_home() {
         assert_eq!(default_keys_path(None), None);
-        assert_eq!(default_keys_path(Some(OsStr::new(""))), None);
+        for relative in ["", ".", "relative/dir", " ", "./h"] {
+            assert_eq!(
+                default_keys_path(Some(OsStr::new(relative))),
+                None,
+                "{relative:?}"
+            );
+        }
         assert_eq!(
             default_keys_path(Some(OsStr::new("/h"))),
             Some(PathBuf::from("/h/.huntsman.env"))
@@ -622,6 +643,23 @@ mod tests {
             assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
         }
         std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_or_empty_home_is_skipped_with_a_short_warning() {
+        for home in [".", "relative/dir", ""] {
+            let resolved = Keys::resolve(None, Some(OsStr::new(home))).expect("resolve");
+            assert_eq!(resolved.keys.slots(), [] as [&str; 0], "{home:?}");
+            assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
+            let warning = resolved.warning.expect("warning");
+            assert_eq!(
+                warning,
+                "warning: not loading ~/.huntsman.env: HOME is not an absolute path"
+            );
+        }
+        let unset = Keys::resolve(None, None).expect("resolve");
+        assert!(unset.warning.is_none(), "unset HOME stays silent");
     }
 
     #[cfg(unix)]
@@ -776,6 +814,15 @@ mod tests {
         let warning = resolved.warning.expect("warning");
         assert!(warning.contains(&path.display().to_string()), "{warning}");
         assert!(warning.contains("symlink"), "{warning}");
+        assert!(
+            warning.contains("regular file owned by you with mode 600"),
+            "{warning}"
+        );
+        assert!(warning.contains("--keys"), "{warning}");
+        assert!(
+            !warning.contains("chmod"),
+            "chmod follows the link: {warning}"
+        );
         assert!(!warning.contains("TEST_ONLY_VALUE"), "{warning}");
         assert!(
             !warning.contains(&target.display().to_string()),
