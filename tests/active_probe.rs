@@ -138,6 +138,33 @@ fn cross_origin_redirect_is_reported_but_never_followed() {
 }
 
 #[test]
+fn utf8_lines_cannot_panic_prefix_parsing() {
+    let f = Fake::new(vec![
+        Ok(resp(200, &[("content-type", "text/html")], "root")),
+        Ok(resp(
+            200,
+            &[("content-type", "text/plain")],
+            "aéééé\nSitemap: https://example.com/a\n",
+        )),
+    ]);
+
+    let report = probe(
+        &f,
+        "https://example.com",
+        &ProbeOptions { max_requests: 2 },
+        100,
+    )
+    .expect("non-ASCII robots lines must not panic");
+
+    assert!(
+        report
+            .pivots
+            .iter()
+            .any(|pivot| pivot.url == "https://example.com/a")
+    );
+}
+
+#[test]
 fn request_budget_is_a_hard_stop() {
     let f = Fake::new(vec![
         Ok(resp(200, &[], "root")),
