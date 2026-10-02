@@ -40,6 +40,11 @@ Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys fi
   - accessible by group/others (`mode & 0o077 != 0`; fix with `chmod 600 ~/.huntsman.env`).
 
   The file is read through the descriptor that was opened. That descriptor must be the same device/inode `lstat` saw and must pass the same checks, so a swap between the check and the read is refused rather than followed.
+- Fail-closed cases are separate from the refusals above. They apply only to a default file that passes those checks, and they return an error instead of a warning. A fetch that requests a credential then exits 66, even if the slot is set in the environment:
+  - a malformed line (`keys line N: ...`, line number only);
+  - content that is not UTF-8;
+  - a file over 64 KiB;
+  - any I/O error other than "not found" (for example a mode-`200` file the owner cannot open, or a `$HOME` that cannot be searched).
 - Precedence: a slot present in the loaded file wins over the same environment variable; slots the file lacks fall back to the environment.
 - The file is read only when a credential slot is requested. Values never appear in output, warnings or errors; only slot names, line numbers and fingerprint prefixes do.
 

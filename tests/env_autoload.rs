@@ -328,3 +328,47 @@ fn symlinked_default_file_is_refused_even_when_the_target_is_private() {
     );
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+/// Content and I/O failures are not refusals: a credentialed fetch stops with exit
+/// 66 instead of silently falling back to the environment, and stderr names the
+/// problem (path or line number) without any value.
+#[cfg(unix)]
+#[test]
+fn unusable_default_file_fails_closed_even_with_the_slot_in_the_environment() {
+    let home = fake_home("failclosed");
+    let path = home.join(".huntsman.env");
+    let oversized = format!("{SLOT}={}\n", "TEST_ONLY_VALUE_".repeat(5000));
+    let cases: [(&[u8], u32, &str); 4] = [
+        (
+            b"TEST_ONLY_VALUE_NOT_A_PAIR\n",
+            0o600,
+            "keys line 1: expected NAME=value",
+        ),
+        (oversized.as_bytes(), 0o600, "exceeds 65536 bytes"),
+        (b"HSE_X=TEST_ONLY_VALUE_\xff\n", 0o600, "not utf-8"),
+        (b"HSE_X=TEST_ONLY_VALUE_UNOPENABLE\n", 0o200, ""),
+    ];
+    for (body, mode, expected) in cases {
+        std::fs::write(&path, body).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        if mode == 0o200 && std::fs::File::open(&path).is_ok() {
+            continue; // running as root: an owner-unreadable file still opens
+        }
+        let out = fetch(&home, closed_port(), &[], Some("TEST_ONLY_VALUE_ENV"));
+        let err = stderr(&out);
+        assert_eq!(out.status.code(), Some(66), "{mode:o}: {err}");
+        assert!(err.contains(expected), "{mode:o}: {err}");
+        if mode == 0o200 {
+            assert!(err.contains(&path.display().to_string()), "{err}");
+        }
+        assert!(!err.contains("TEST_ONLY_VALUE"), "a value was printed");
+        assert!(
+            !err.starts_with("warning: "),
+            "not a warn-and-continue case"
+        );
+    }
+    std::fs::remove_dir_all(&home).unwrap();
+}
