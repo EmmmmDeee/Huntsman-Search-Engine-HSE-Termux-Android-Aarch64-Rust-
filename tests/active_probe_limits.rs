@@ -46,7 +46,10 @@ fn hostile_page_cannot_amplify_pivots_without_bound() {
     )
     .expect("bounded active probe");
 
-    assert!(report.pivots.len() <= 256, "pivot count must be hard bounded");
+    assert!(
+        report.pivots.len() <= 256,
+        "pivot count must be hard bounded"
+    );
     assert!(
         report.pivots.iter().all(|pivot| pivot.url.len() <= 2_048),
         "oversized pivot URLs must be rejected"
