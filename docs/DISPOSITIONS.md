@@ -11,7 +11,8 @@ Evidence source: `legacy/` and the two root zip archives. Never delete, edit or 
 3. [Geo, geometry and RF](#geo-geometry-and-rf)
 4. [Parsers and signals](#parsers-and-signals)
 5. [Validation, domains and text](#validation-domains-and-text)
-6. [Not yet dispositioned](#not-yet-dispositioned)
+6. [Providers restored from 764ce8e](#providers-restored-from-764ce8e)
+7. [Not yet dispositioned](#not-yet-dispositioned)
 
 ## ATT&CK, assurance and analytics
 
@@ -378,13 +379,23 @@ Policy change (network and credentials now allowed):
 - No credential values are logged or embedded in tests/artifacts; these boundaries carry plain request/response data only.
 - Redundancies removed during the shared-HTTP refactor: identity/email/phone canonicalisation now delegates to the shared canonical/validation owners; postcode shape/range checks now live in `src/postcode_au.rs`; DNS label/RNAME helpers now live only in `src/dns.rs`.
 
+## Providers restored from 764ce8e
+
+The rows name the v1.41.0 files under `legacy/`, but the port source is newer: M D's lost local commit 764ce8e, restored on the old tree as `1dfb5c9d` (base `98c77fd`), plus M D's uncommitted blank-name/host guard. The v1 copies in `legacy/` (stolen.tax v1 `GET api.stolen.tax` with an `Api-Key` header; crt.sh with an 8 s budget and no transient retry) are stale and were not ported. Evidence for both rows: `tests/fixtures/legacy_764ce8e/*_expected.json` was recorded by running the old-tree code on the committed `*_cases.json` inputs, and `src/crtsh/differential.rs` and `src/stolen_tax/differential.rs` check that the port reproduces it.
+
+| Legacy path | Lines | Decision | New module | Defect found / evidence or reason |
+| --- | ---: | --- | --- | --- |
+| `src/modules/crtsh/mod.rs` | 382 | REIMPLEMENT | `src/crtsh.rs` | Migrated from 764ce8e onto the guarded `fetch` layer: 30 s timeout, at most 3 attempts 2 s apart for HTTP 502/503/429 only, no redirects, typed `CrtShError` for challenge pages, truncated and malformed bodies. Reuses `recon::ReconTargetKind` (the prior crt.sh equivalent in `src/recon.rs`), `domains::{host_from_url, classify_domain_candidate, is_infrastructure_email}` and `canonical::canonical_email` instead of copying them. The differential test matches every legacy record, value, confidence, tag and evidence attribute, with nothing capped. |
+| `src/modules/crtsh/tests.rs` | 345 | MERGED | `src/crtsh/tests.rs`, `src/crtsh/differential.rs` | All 23 legacy cases ported as fake-transport tests. Module-trait metadata cases (`accepts`, `cost`, `description`, `produces`) have no equivalent in this crate and became query-shape and entity-kind assertions. Added cases for retry bounds, challenge pages, truncation and redirects. |
+| `src/modules/stolen_tax/mod.rs` | 485 | REIMPLEMENT | `src/stolen_tax.rs` | Migrated from 764ce8e plus the guard: v2 `POST https://stolen.tax/api/v2/index.php?path=…` to the snusbase, osintcat and hudsonrock paths with `Authorization: Bearer`, bound to that origin by `fetch::Credential`. Password, hash and `top_passwords` fields are never declared. A partial cascade is declared, and an empty cascade with any path failure is an error. The differential test matches the legacy output except for the guard: no `breach:osintcat` or `stealer:unknown` placeholder markers, and no `unknown` stand-in facts. Not carried over: key-pool rotation (this crate has one key per slot), a `SERVICE_DEFS` entry (its probe would spend a paid lookup), and the 120 s module budget (now 120 s per request). |
+
 ## Not yet dispositioned
 
-Legacy `src/` files of the monolith that no section above lists yet (895 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
+Legacy `src/` files of the monolith that no section above lists yet (892 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
 
 | Legacy area | Files not listed | Of |
 | --- | ---: | ---: |
-| `src/modules/` (providers) | 542 | 542 |
+| `src/modules/` (providers) | 539 | 542 |
 | `src/util/` | 116 | 213 |
 | `src/core/` | 49 | 203 |
 | `src/app/` | 45 | 45 |

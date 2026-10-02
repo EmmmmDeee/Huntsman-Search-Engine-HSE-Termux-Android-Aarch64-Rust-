@@ -150,3 +150,51 @@ fn identifier_geohash_and_coarsen_commands() {
     );
     assert_eq!(run(&["coarsen", "999,999"]).0, Some(65));
 }
+
+#[test]
+fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
+    for args in [
+        &["recon"][..],
+        &["recon", "nope", "x"],
+        &["recon", "crtsh", " "],
+        &["recon", "stolen-tax", "  "],
+        &["recon", "stolen-tax", "a@example.com", "--bogus", "f"],
+    ] {
+        let out = bin().args(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(64), "{args:?}");
+    }
+
+    // No key anywhere: exit 66 naming the slot, without touching the network.
+    let out = bin()
+        .args(["recon", "stolen-tax", "a@example.com"])
+        .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(66));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("HUNTSMAN_STOLEN_TAX_KEY"));
+    assert_eq!(out.stdout.len(), 0);
+
+    // A keys file without the slot, and an unreadable keys file, are both 66.
+    let dir = scratch("recon");
+    let keys = dir.join("keys.env");
+    fs::write(
+        &keys,
+        "OTHER_KEY=k3y-8f2a91\nHUNTSMAN_STOLEN_TAX_KEY=changeme\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&keys, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    for file in [keys.clone(), dir.join("absent.env")] {
+        let out = bin()
+            .args(["recon", "stolen-tax", "a@example.com", "--keys"])
+            .arg(&file)
+            .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(66), "{}", file.display());
+    }
+    let _ = fs::remove_dir_all(&dir);
+}

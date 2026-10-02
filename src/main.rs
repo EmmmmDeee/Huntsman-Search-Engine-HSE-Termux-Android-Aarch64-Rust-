@@ -10,6 +10,7 @@ use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use huntsman_recon::crtsh::{self, CrtShError};
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::error::Error;
 use huntsman_recon::evidence_ancestry::{
@@ -30,6 +31,7 @@ use huntsman_recon::identity_resolution::{
 use huntsman_recon::keys::{Keys, is_configured_value};
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::navigator::layer;
+use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
@@ -38,9 +40,11 @@ use huntsman_recon::source_outcome::{
 };
 use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
+use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
+use huntsman_recon::textnorm::escape_controls;
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | fetch URL [options] | recon crtsh TARGET|stolen-tax QUERY [--keys FILE] | keys FILE | verify LEDGER]";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -59,6 +63,7 @@ fn main() -> ExitCode {
         Some("search") => search_cmd(args.next(), args.next()),
         Some("classify") => classify(args.next(), args.next()),
         Some("fetch") => fetch_cmd(&args.collect::<Vec<_>>()),
+        Some("recon") => recon_cmd(&args.collect::<Vec<_>>()),
         Some("keys") => keys_cmd(args.next()),
         Some("verify") => verify(args.next()),
         Some("check") | None => check(),
@@ -238,6 +243,111 @@ fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
         approval_provenance: "operator supplied --bearer/--header on the command line".into(),
     })?;
     Ok(Some(Credential::new(authority, secret, style.clone())?))
+}
+
+const RECON_USAGE: &str =
+    "usage: huntsman-recon recon crtsh TARGET | recon stolen-tax QUERY [--keys FILE]";
+
+/// One source lookup, printed as `kind<TAB>value<TAB>confidence<TAB>tags` lines.
+fn recon_cmd(args: &[String]) -> ExitCode {
+    match args {
+        [source, target] if source == "crtsh" => crtsh_cmd(target),
+        [source, query] if source == "stolen-tax" => stolen_tax_cmd(query, None),
+        [source, query, flag, file] if source == "stolen-tax" && flag == "--keys" => {
+            stolen_tax_cmd(query, Some(file))
+        }
+        _ => fail(EX_USAGE, RECON_USAGE),
+    }
+}
+
+/// One record per line. Values and tags come from the provider, so control
+/// characters are escaped before they reach the terminal.
+fn print_entities(entities: &[huntsman_recon::entity::Entity]) {
+    for e in entities {
+        println!(
+            "{}\t{}\t{:.2}\t{}",
+            serde_json::to_value(&e.kind)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+            escape_controls(&e.value),
+            e.confidence,
+            escape_controls(&e.tags.join(","))
+        );
+    }
+}
+
+fn crtsh_cmd(target: &str) -> ExitCode {
+    let target = target.trim();
+    if target.is_empty() {
+        return fail(EX_USAGE, RECON_USAGE);
+    }
+    let kind = if target.contains("://") {
+        ReconTargetKind::Url
+    } else if target.contains('@') {
+        ReconTargetKind::Email
+    } else {
+        ReconTargetKind::Domain
+    };
+    let transport = UreqTransport::new(&crtsh::transport_config());
+    match crtsh::lookup(&transport, kind, target, "cli") {
+        Ok(report) => {
+            print_entities(&report.entities);
+            println!(
+                "query={} attempts={} entities={}",
+                escape_controls(report.query.as_deref().unwrap_or("none")),
+                report.attempts,
+                report.entities.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e @ CrtShError::Refused(_)) => fail(EX_NOPERM, &e.to_string()),
+        Err(e) => fail(EX_UNAVAILABLE, &e.to_string()),
+    }
+}
+
+fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
+    if query.trim().is_empty() {
+        return fail(EX_USAGE, RECON_USAGE);
+    }
+    let keys = match keys_file {
+        Some(path) => match Keys::load(Path::new(path)) {
+            Ok(keys) => keys,
+            Err(e) => return fail(EX_NOINPUT, &e.to_string()),
+        },
+        None => Keys::from_env(),
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let transport = UreqTransport::new(&stolen_tax::transport_config());
+    match stolen_tax::lookup(&transport, &keys, query, "cli", now) {
+        Ok(report) => {
+            print_entities(&report.entities);
+            for failure in &report.failed_paths {
+                println!(
+                    "failed_path={} reason={}",
+                    failure.path,
+                    escape_controls(&failure.reason)
+                );
+            }
+            if let Some(secret) = keys.get(stolen_tax::KEY_SLOT) {
+                println!("credential={}", &secret.fingerprint().as_str()[..12]);
+            }
+            println!(
+                "entities={} partial={}",
+                report.entities.len(),
+                report.truncation.is_some()
+            );
+            if let Some(note) = &report.truncation {
+                println!("truncation={note}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e @ StolenTaxError::MissingKey) => fail(EX_NOINPUT, &e.to_string()),
+        Err(e @ StolenTaxError::Refused(_)) => fail(EX_NOPERM, &e.to_string()),
+        Err(e @ StolenTaxError::Failed(_)) => fail(EX_UNAVAILABLE, &e.to_string()),
+    }
 }
 
 fn keys_cmd(path: Option<String>) -> ExitCode {
