@@ -1,6 +1,6 @@
 # Architecture
 
-Target design for the first-principles reconstruction of Huntsman as the single package `huntsman-recon`. Every statement is labelled. **CURRENT** means it is true of `main` at `1ea6c304` and can be checked in `src/`, `tests/` or CI. **PLANNED** means it is a target that no code on `main` implements yet. `tests/architecture_doc.rs` checks the module map against `src/` and `src/lib.rs`, the section order, and the capability status counts.
+Target design for the first-principles reconstruction of Huntsman as the single package `huntsman-recon`. Every statement about the code is labelled. **CURRENT** means it is true of `main` at `1ea6c304` and can be checked in `src/`, `tests/` or CI. **PLANNED** means it is a target that no code on `main` implements yet. The CAPABILITIES status column is CURRENT, MIGRATION POLICY is a rule set for every reconstruction PR, and ORDERED BACKLOG is PLANNED. `tests/architecture_doc.rs` checks the module map against `src/` and `src/lib.rs`, the section order, and the capability status counts.
 
 The capability oracle is git commit `7dca720` (root crate `huntsman-search-engine` v1.41.0, binary `hse`, last published release `main-7dca720`). `legacy/hse-monolith-v1.41.0/` is a different, earlier snapshot of the same monolith (its `src/` differs from `7dca720` in 677 paths: 56 present in only one tree, 621 with different bytes). It is used for per-file accounting in `docs/DISPOSITIONS.md`, and as the oracle only where `7dca720` lacks a path (`src/modules/au_people/` and `src/modules/au_electoral/`, both deleted in #635). Nothing under `legacy/` is ever modified.
 
@@ -80,7 +80,7 @@ CURRENT:
 - The transport never follows redirects (`max_redirects(0)`). `fetch::fetch` follows them and sends a credential only to the origin it was approved for.
 - A credential is built only from a `credential_origin::AuthenticationAuthority`; a secret found in collected data cannot authenticate a request.
 - Bodies are read under a byte cap and flagged `truncated`. Sensitive headers never appear in `Debug` output, and diagnostics pass through `redact::scrub_secrets`.
-- `keys` reads a mode-600 file and prints slot names and fingerprint prefixes, never values.
+- `keys` refuses a keys file that group or others can access (`mode & 0o077 != 0`; 600 or stricter passes) and prints slot names and fingerprint prefixes, never values.
 - L4 clients take `&dyn http::Transport` (or an `Arc<dyn Transport + Send + Sync>` for `hibp`). Tests inject fakes; production uses `UreqTransport`.
 
 PLANNED: every new source goes through `fetch` and the guarded transport; no module adds a second HTTP client. Every change to `egress`, `http`, `fetch`, `keys`, `credential_origin`, `hibp` key handling or `build.rs` requires Security & Secrets Bot review.
@@ -162,6 +162,7 @@ PLANNED, live receipts: one run per source against the real service, recording t
 
 ## MIGRATION POLICY
 
+Rules for every reconstruction PR from this one on:
 - Restoration only. NO removals until there is a differential test against legacy `7dca720` covering the capability being replaced.
 - One capability per PR, with its tests, its README example (enforced by `tests/readme.rs`) and its CAPABILITIES row update.
 - Port behaviour, not structure: legacy is the oracle, not a source to copy wholesale. Async code is rewritten as blocking code over `http::Transport`.
@@ -170,7 +171,8 @@ PLANNED, live receipts: one run per source against the real service, recording t
 
 ## ORDERED BACKLOG
 
-1. People-lookup pipeline, end to end: CLI command, fetch, provider, parse, evidence, merge decision, saved file, `verify`, output and exit codes. It needs at least one keyless public people source (candidate: `asic_persons` over data.gov.au CKAN) and one live keyless run with a receipt tied to the commit. In flight: `feat/recon-lineage-merge-rule` (REFACTOR Bot) and the HIBP CLI PR (Software Development Bot).
+PLANNED, in this order. "In flight" means work has started on that branch; none of it is on `main` yet.
+1. People-lookup pipeline, end to end: CLI command, fetch, provider, parse, evidence, merge decision, saved file, `verify`, output and exit codes. It needs at least one keyless public people source (candidate: `asic_persons` over data.gov.au CKAN) and one live keyless run with a receipt tied to the commit. In flight: `feat/recon-lineage-merge-rule` (REFACTOR Bot) and the HIBP CLI PR (`feat/hibp-cli`, Software Development Bot).
 2. Port `au_people`, `asic_persons` and HIBP first, each with a differential test against legacy output.
 3. stolen.tax and crt.sh (`feat/recon-stolen-tax-v2-crtsh`, in flight).
 4. Compile the 8 orphan modules (G8, `chore/g8-orphan-modules`, #675, in flight).
