@@ -20,11 +20,13 @@
 //! never written anywhere.
 //!
 //! Output is `key=value` lines: a `source=HIBP` header with the attribution
-//! HIBP's licence requires, `results=N`, then one block per record with every
-//! model field (`none` when HIBP sent no value). For `breach`, `breaches`,
-//! `account` and `pastes` a 404 is `results=0`, not an error; `subscription`
-//! and `password-range` treat a 404 as an error (exit 69). Values are escaped (`\\`, `\n`, `\r`, `\t`) so each field stays on
-//! one line.
+//! HIBP's licence requires, `results=N`, `query=` (the address as sent, for
+//! `account` and `pastes`), then one block per record with every model field.
+//! A field HIBP sent as null or omitted prints as `<none>`; an empty string
+//! prints as `key=`; a literal `<none>` value prints as `\<none>`. Values are
+//! escaped (`\\`, `\n`, `\r`, `\t`) so each field stays on one line. For
+//! `breach`, `breaches`, `account` and `pastes` a 404 is `results=0`, not an
+//! error; `subscription` and `password-range` treat a 404 as an error (exit 69).
 
 use std::fmt::{self, Display, Write as _};
 use std::io::{BufRead, Read as _, Write};
@@ -32,7 +34,7 @@ use std::io::{BufRead, Read as _, Write};
 use super::client::{Auth, HibpClient, HibpConfig};
 use super::error::HibpError;
 use super::key::{ApiKey, KeyLoader, KeyOrigin};
-use super::passwords::PasswordHashMode;
+use super::passwords::{PasswordHashMode, wipe};
 use super::types::{
     BreachModel, BreachedAccountOptions, BreachesFilter, PasteModel, SubscriptionStatus,
 };
@@ -225,13 +227,20 @@ impl HibpCommand {
             truncate_response: Some(false),
             ..BreachedAccountOptions::default()
         };
-        Ok(breach_list(&client.breached_account(email, &options)?))
+        let models = client.breached_account(email, &options)?;
+        let mut out = header("api-v3", HIBP_ATTRIBUTION, models.len());
+        line(&mut out, "query", email.trim());
+        for model in &models {
+            write_breach(&mut out, model);
+        }
+        Ok(out)
     }
 
     fn pastes(&self, email: &str) -> Outcome {
         let (client, _) = self.keyed()?;
         let pastes = client.paste_account(email)?;
         let mut out = header("api-v3", HIBP_ATTRIBUTION, pastes.len());
+        line(&mut out, "query", email.trim());
         for paste in &pastes {
             write_paste(&mut out, paste);
         }
@@ -253,10 +262,11 @@ impl HibpCommand {
 
     fn password(&self, stdin: &mut dyn BufRead) -> Outcome {
         let password = read_password(stdin)?;
-        let count = self
+        let counted = self
             .public()
-            .check_password(&password, PasswordHashMode::Sha1)?;
-        drop(password);
+            .check_password(&password, PasswordHashMode::Sha1);
+        wipe(password.into_bytes());
+        let count = counted?;
         let mut out = header("pwned-passwords", PASSWORDS_ATTRIBUTION, 1);
         line(&mut out, "mode", "sha1");
         line(&mut out, "count", count);
@@ -274,33 +284,46 @@ impl HibpCommand {
 }
 
 /// One line of stdin without its terminator. The error text never includes
-/// what was read.
+/// what was read, and every rejected buffer is wiped.
 fn read_password(stdin: &mut dyn BufRead) -> Result<String, Failure> {
-    let mut bytes = Vec::new();
-    // Room for the limit plus a two-byte `\r\n` terminator; the limit applies
-    // to the content after the terminator is stripped.
-    stdin
+    // Room for the limit plus a two-byte `\r\n` terminator, allocated once so
+    // growth never leaves an unwiped copy behind. The limit applies to the
+    // content after the terminator is stripped.
+    let cap = usize::try_from(MAX_PASSWORD_BYTES + 2).unwrap_or(usize::MAX);
+    let mut bytes = Vec::with_capacity(cap);
+    if stdin
         .take(MAX_PASSWORD_BYTES + 2)
         .read_until(b'\n', &mut bytes)
-        .map_err(|_| HibpError::InvalidInput("could not read the password from stdin".into()))?;
+        .is_err()
+    {
+        wipe(bytes);
+        return Err(
+            HibpError::InvalidInput("could not read the password from stdin".into()).into(),
+        );
+    }
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
         if bytes.last() == Some(&b'\r') {
             bytes.pop();
         }
     }
-    if bytes.len() as u64 > MAX_PASSWORD_BYTES {
-        return Err(HibpError::InvalidInput(format!(
+    let rejected = if bytes.is_empty() {
+        Some("no password on stdin".to_owned())
+    } else if bytes.len() as u64 > MAX_PASSWORD_BYTES {
+        Some(format!(
             "password on stdin is longer than {MAX_PASSWORD_BYTES} bytes"
         ))
-        .into());
+    } else {
+        None
+    };
+    if let Some(reason) = rejected {
+        wipe(bytes);
+        return Err(HibpError::InvalidInput(reason).into());
     }
-    let password = String::from_utf8(bytes)
-        .map_err(|_| HibpError::InvalidInput("password on stdin is not UTF-8".into()))?;
-    if password.is_empty() {
-        return Err(HibpError::InvalidInput("no password on stdin".into()).into());
-    }
-    Ok(password)
+    String::from_utf8(bytes).map_err(|e| {
+        wipe(e.into_bytes());
+        HibpError::InvalidInput("password on stdin is not UTF-8".into()).into()
+    })
 }
 
 fn origin_label(origin: &KeyOrigin) -> String {
@@ -330,83 +353,140 @@ fn breach_list(models: &[BreachModel]) -> String {
     out
 }
 
+/// Every [`BreachModel`] field. The destructuring has no `..`, so a field
+/// added to the model is a compile error here until it is printed.
 fn write_breach(out: &mut String, b: &BreachModel) {
+    let BreachModel {
+        name,
+        title,
+        domain,
+        breach_date,
+        added_date,
+        modified_date,
+        pwn_count,
+        description,
+        logo_path,
+        attribution,
+        data_classes,
+        is_verified,
+        is_fabricated,
+        is_sensitive,
+        is_retired,
+        is_spam_list,
+        is_malware,
+        is_stealer_log,
+        is_subscription_free,
+    } = b;
     out.push('\n');
-    line(out, "breach", &b.name);
-    line(out, "title", opt(b.title.as_ref()));
-    line(out, "domain", opt(b.domain.as_ref()));
-    line(out, "breach_date", opt(b.breach_date.as_ref()));
-    line(out, "added_date", opt(b.added_date.as_ref()));
-    line(out, "modified_date", opt(b.modified_date.as_ref()));
-    line(out, "pwn_count", opt(b.pwn_count.as_ref()));
-    line(out, "data_classes", b.data_classes.len());
-    for class in &b.data_classes {
+    line(out, "breach", name);
+    line_opt(out, "title", title.as_ref());
+    line_opt(out, "domain", domain.as_ref());
+    line_opt(out, "breach_date", breach_date.as_ref());
+    line_opt(out, "added_date", added_date.as_ref());
+    line_opt(out, "modified_date", modified_date.as_ref());
+    line_opt(out, "pwn_count", pwn_count.as_ref());
+    line(out, "data_classes", data_classes.len());
+    for class in data_classes {
         line(out, "data_class", class);
     }
     for (key, value) in [
-        ("is_verified", b.is_verified),
-        ("is_fabricated", b.is_fabricated),
-        ("is_sensitive", b.is_sensitive),
-        ("is_retired", b.is_retired),
-        ("is_spam_list", b.is_spam_list),
-        ("is_malware", b.is_malware),
-        ("is_stealer_log", b.is_stealer_log),
-        ("is_subscription_free", b.is_subscription_free),
+        ("is_verified", is_verified),
+        ("is_fabricated", is_fabricated),
+        ("is_sensitive", is_sensitive),
+        ("is_retired", is_retired),
+        ("is_spam_list", is_spam_list),
+        ("is_malware", is_malware),
+        ("is_stealer_log", is_stealer_log),
+        ("is_subscription_free", is_subscription_free),
     ] {
-        line(out, key, opt(value.as_ref()));
+        line_opt(out, key, value.as_ref());
     }
-    line(out, "attribution", opt(b.attribution.as_ref()));
-    line(out, "logo_path", opt(b.logo_path.as_ref()));
-    line(out, "description", opt(b.description.as_ref()));
+    line_opt(out, "attribution", attribution.as_ref());
+    line_opt(out, "logo_path", logo_path.as_ref());
+    line_opt(out, "description", description.as_ref());
 }
 
+/// Every [`PasteModel`] field (exhaustive destructuring, as above).
 fn write_paste(out: &mut String, p: &PasteModel) {
+    let PasteModel {
+        source,
+        id,
+        title,
+        date,
+        email_count,
+    } = p;
     out.push('\n');
-    line(out, "paste_source", opt(p.source.as_ref()));
-    line(out, "paste_id", opt(p.id.as_ref()));
-    line(out, "title", opt(p.title.as_ref()));
-    line(out, "date", opt(p.date.as_ref()));
-    line(out, "email_count", opt(p.email_count.as_ref()));
+    line_opt(out, "paste_source", source.as_ref());
+    line_opt(out, "paste_id", id.as_ref());
+    line_opt(out, "title", title.as_ref());
+    line_opt(out, "date", date.as_ref());
+    line_opt(out, "email_count", email_count.as_ref());
 }
 
+/// Every [`SubscriptionStatus`] field (exhaustive destructuring, as above).
 fn write_subscription(out: &mut String, s: &SubscriptionStatus) {
-    line(out, "subscription_name", &s.subscription_name);
-    line(out, "description", opt(s.description.as_ref()));
-    line(out, "subscribed_until", opt(s.subscribed_until.as_ref()));
-    line(out, "rpm", opt(s.rpm.as_ref()));
-    line(
+    let SubscriptionStatus {
+        subscription_name,
+        description,
+        subscribed_until,
+        rpm,
+        domain_search_max_breached_accounts,
+        max_breached_domains,
+        includes_stealer_logs,
+        includes_bulk_domain_add,
+        includes_auto_subdomain_verification,
+        includes_customer_domains,
+        includes_k_anon,
+    } = s;
+    line(out, "subscription_name", subscription_name);
+    line_opt(out, "description", description.as_ref());
+    line_opt(out, "subscribed_until", subscribed_until.as_ref());
+    line_opt(out, "rpm", rpm.as_ref());
+    line_opt(
         out,
         "domain_search_max_breached_accounts",
-        opt(s.domain_search_max_breached_accounts.as_ref()),
+        domain_search_max_breached_accounts.as_ref(),
     );
-    line(
-        out,
-        "max_breached_domains",
-        opt(s.max_breached_domains.as_ref()),
-    );
+    line_opt(out, "max_breached_domains", max_breached_domains.as_ref());
     for (key, value) in [
-        ("includes_stealer_logs", s.includes_stealer_logs),
-        ("includes_bulk_domain_add", s.includes_bulk_domain_add),
+        ("includes_stealer_logs", includes_stealer_logs),
+        ("includes_bulk_domain_add", includes_bulk_domain_add),
         (
             "includes_auto_subdomain_verification",
-            s.includes_auto_subdomain_verification,
+            includes_auto_subdomain_verification,
         ),
-        ("includes_customer_domains", s.includes_customer_domains),
-        ("includes_k_anon", s.includes_k_anon),
+        ("includes_customer_domains", includes_customer_domains),
+        ("includes_k_anon", includes_k_anon),
     ] {
-        line(out, key, opt(value.as_ref()));
+        line_opt(out, key, value.as_ref());
     }
 }
 
-fn opt<T: Display>(value: Option<&T>) -> String {
-    value.map_or_else(|| "none".into(), ToString::to_string)
+/// Printed for a field HIBP sent as null or omitted. A string value that is
+/// literally `<none>` is printed as `\<none>`, so the two never collide.
+const ABSENT: &str = "<none>";
+
+/// `key=value\n` for an optional field: [`ABSENT`] when there is no value.
+fn line_opt<T: Display>(out: &mut String, key: &str, value: Option<&T>) {
+    if let Some(v) = value {
+        line(out, key, v);
+    } else {
+        out.push_str(key);
+        out.push('=');
+        out.push_str(ABSENT);
+        out.push('\n');
+    }
 }
 
-/// `key=value\n`, with `\`, newline, carriage return and tab escaped.
+/// `key=value\n`, with `\`, newline, carriage return and tab escaped, and a
+/// literal `<none>` written as `\<none>`.
 fn line(out: &mut String, key: &str, value: impl Display) {
     let value = value.to_string();
     out.push_str(key);
     out.push('=');
+    if value == ABSENT {
+        out.push('\\');
+    }
     for c in value.chars() {
         match c {
             '\\' => out.push_str("\\\\"),

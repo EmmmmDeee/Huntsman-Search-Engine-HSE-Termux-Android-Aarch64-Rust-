@@ -16,7 +16,7 @@ use huntsman_recon::hibp::key::{EmbeddedSource, KeyLoader};
 use huntsman_recon::hibp::passwords::{PasswordHashMode, hash_password};
 use huntsman_recon::hibp::rate_limit::RateLimiter;
 use huntsman_recon::hibp::{HibpClient, HibpConfig};
-use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
+use huntsman_recon::http::{Method, Request, Response, Transport, TransportFailure};
 
 const KEY: &str = "fake-hibp-key-5f0c1d2e3a4b";
 const PASSWORD: &str = "correct horse battery staple";
@@ -40,8 +40,14 @@ impl Fake {
         });
     }
 
+    /// Every request seen so far. Every endpoint the command uses is a GET, so a
+    /// request with any other method fails the calling test here.
     fn requests(&self) -> Vec<Request> {
-        self.requests.lock().unwrap().clone()
+        let requests = self.requests.lock().unwrap().clone();
+        for request in &requests {
+            assert_eq!(request.method, Method::Get, "{}", request.url);
+        }
+        requests
     }
 }
 
@@ -144,7 +150,7 @@ fn assert_attributed(stdout: &str, results: usize) {
 }
 
 #[test]
-fn t1589_002_breach_by_name_prints_every_field_with_attribution_and_no_key() {
+fn catalogue_breach_by_name_prints_every_field_with_attribution_and_no_key() {
     let (cmd, fake) = command(Some(KEY));
     fake.push(200, ADOBE, &[]);
     let out = run(&cmd, &["breach", "Adobe"], "");
@@ -168,7 +174,7 @@ fn t1589_002_breach_by_name_prints_every_field_with_attribution_and_no_key() {
 }
 
 #[test]
-fn t1589_002_breach_not_found_404_is_no_results() {
+fn catalogue_breach_not_found_404_is_no_results() {
     let (cmd, fake) = command(None);
     fake.push(404, "", &[]);
     let out = run(&cmd, &["breach", "NoSuchBreach"], "");
@@ -178,7 +184,7 @@ fn t1589_002_breach_not_found_404_is_no_results() {
 }
 
 #[test]
-fn t1589_002_breaches_catalogue_is_complete_and_domain_filter_is_sent() {
+fn catalogue_breaches_are_complete_and_domain_filter_is_sent() {
     let (cmd, fake) = command(None);
     let many: Vec<String> = (0..250)
         .map(|i| format!(r#"{{"Name":"Breach{i}","DataClasses":["Passwords"]}}"#))
@@ -191,7 +197,7 @@ fn t1589_002_breaches_catalogue_is_complete_and_domain_filter_is_sent() {
         assert!(out.stdout.contains(&format!("\nbreach=Breach{i}\n")));
     }
     assert_eq!(out.stdout.matches("data_class=Passwords").count(), 250);
-    assert_eq!(out.stdout.matches("title=none").count(), 250);
+    assert_eq!(out.stdout.matches("title=<none>").count(), 250);
 
     fake.push(200, &format!("[{ADOBE}]"), &[]);
     let out = run(&cmd, &["breaches", "--domain", "adobe.com"], "");
@@ -213,9 +219,10 @@ fn t1589_002_breaches_catalogue_is_complete_and_domain_filter_is_sent() {
 fn t1589_002_breached_account_asks_for_the_full_model_with_the_key() {
     let (cmd, fake) = command(Some(KEY));
     fake.push(200, &format!("[{ADOBE}]"), &[]);
-    let out = run(&cmd, &["account", "a+b@example.com"], "");
+    let out = run(&cmd, &["account", " a+b@example.com "], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 1);
+    assert_eq!(out.stdout.lines().nth(4), Some("query=a+b@example.com"));
     for want in ADOBE_LINES {
         assert!(out.stdout.lines().any(|l| l == want), "missing {want:?}");
     }
@@ -235,6 +242,12 @@ fn t1589_002_breached_account_404_is_no_results() {
     let out = run(&cmd, &["account", "nobody@example.com"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 0);
+    assert!(
+        out.stdout
+            .ends_with("results=0\nquery=nobody@example.com\n"),
+        "{}",
+        out.stdout
+    );
     assert_never_shown(&out, KEY);
 }
 
@@ -249,6 +262,7 @@ fn t1589_002_pastes_print_every_paste_field_and_404_is_no_results() {
     let out = run(&cmd, &["pastes", "a@example.com"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 2);
+    assert_eq!(out.stdout.lines().nth(4), Some("query=a@example.com"));
     for want in [
         "paste_source=Pastebin",
         "paste_id=8Q0BvKD8",
@@ -257,8 +271,8 @@ fn t1589_002_pastes_print_every_paste_field_and_404_is_no_results() {
         "email_count=139",
         "paste_source=Pastie",
         "paste_id=7152479",
-        "title=none",
-        "date=none",
+        "title=<none>",
+        "date=<none>",
         "email_count=30",
     ] {
         assert!(out.stdout.lines().any(|l| l == want), "missing {want:?}");
@@ -267,6 +281,11 @@ fn t1589_002_pastes_print_every_paste_field_and_404_is_no_results() {
     let out = run(&cmd, &["pastes", "a@example.com"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 0);
+    assert!(
+        out.stdout.ends_with("results=0\nquery=a@example.com\n"),
+        "{}",
+        out.stdout
+    );
     let requests = fake.requests();
     assert_eq!(
         requests[0].url,
@@ -300,6 +319,7 @@ fn t1589_001_password_range_lists_every_suffix_without_a_key() {
         ]
     );
     let request = &fake.requests()[0];
+    assert_eq!(request.method, Method::Get);
     assert_eq!(request.url, "https://api.pwnedpasswords.com/range/21BD1");
     assert_eq!(request.header_value("Add-Padding"), Some("true"));
     assert!(request.header_value("hibp-api-key").is_none());
@@ -328,6 +348,7 @@ fn t1589_001_password_sends_only_the_5_char_prefix_and_matches_locally() {
     let requests = fake.requests();
     assert_eq!(requests.len(), 1, "exactly one request");
     let request = &requests[0];
+    assert_eq!(request.method, Method::Get);
     assert_eq!(
         request.url,
         format!("https://api.pwnedpasswords.com/range/{prefix}")
@@ -432,7 +453,7 @@ fn subscription_prints_every_status_field_and_the_key_source_not_the_key() {
         "subscribed_until=2027-01-01T00:00:00",
         "rpm=10",
         "domain_search_max_breached_accounts=100",
-        "max_breached_domains=none",
+        "max_breached_domains=<none>",
         "includes_stealer_logs=true",
         "includes_bulk_domain_add=false",
         "includes_auto_subdomain_verification=false",
@@ -471,25 +492,65 @@ fn t1589_002_keyed_subcommands_without_a_key_fail_cleanly_and_send_nothing() {
 }
 
 #[test]
-fn t1589_002_rate_limited_429_surfaces_retry_after() {
+fn t1589_002_account_429_surfaces_retry_after() {
     let (cmd, fake) = command(Some(KEY));
     fake.push(429, KEY, &[("retry-after", "3600")]);
     let out = run(&cmd, &["account", "a@example.com"], "");
     assert_eq!(out.code, 69);
+    assert_eq!(out.stdout, "");
     assert!(out.stderr.contains("HTTP 429"), "{}", out.stderr);
     assert!(out.stderr.contains("retry_after=3600s"), "{}", out.stderr);
     assert_never_shown(&out, KEY);
+    assert_eq!(fake.requests().len(), 1, "no retry with a zero budget");
+}
 
+#[test]
+fn t1589_001_password_range_429_surfaces_retry_after() {
+    let (cmd, fake) = command(None);
     fake.push(429, "", &[("Retry-After", "7")]);
     let out = run(&cmd, &["password-range", "21BD1"], "");
     assert_eq!(out.code, 69);
+    assert_eq!(out.stdout, "");
+    assert!(out.stderr.contains("HTTP 429"), "{}", out.stderr);
     assert!(out.stderr.contains("retry_after=7s"), "{}", out.stderr);
+    assert_eq!(
+        fake.requests().len(),
+        1,
+        "Pwned Passwords 429 is not retried"
+    );
+}
 
+#[test]
+fn catalogue_breach_429_without_retry_after_reports_unknown() {
+    let (cmd, fake) = command(None);
     fake.push(429, "", &[]);
     let out = run(&cmd, &["breach", "Adobe"], "");
     assert_eq!(out.code, 69);
     assert!(out.stderr.contains("retry_after=unknown"), "{}", out.stderr);
-    assert_eq!(fake.requests().len(), 3, "no retry with a zero budget");
+    assert_eq!(fake.requests().len(), 1, "no retry with a zero budget");
+}
+
+#[test]
+fn t1589_002_absent_empty_and_literal_none_paste_fields_are_distinct() {
+    let (cmd, fake) = command(Some(KEY));
+    fake.push(
+        200,
+        r#"[{"Source":"Pastebin","Id":"","Title":"<none>","Date":null}]"#,
+        &[],
+    );
+    let out = run(&cmd, &["pastes", "a@example.com"], "");
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let lines: Vec<&str> = out.stdout.lines().skip(6).collect();
+    assert_eq!(
+        lines,
+        [
+            "paste_source=Pastebin",
+            "paste_id=",
+            "title=\\<none>",
+            "date=<none>",
+            "email_count=<none>",
+        ]
+    );
 }
 
 #[test]

@@ -374,8 +374,11 @@ impl HibpClient {
     pub fn check_password(&self, password: &str, mode: PasswordHashMode) -> Result<u64, HibpError> {
         let hash = passwords::hash_password(password, mode);
         let (prefix, suffix) = hash.split_at(5);
-        let entries = self.pwned_passwords_range(prefix, mode, true)?;
-        Ok(passwords::count_for(&entries, suffix))
+        let count = self
+            .pwned_passwords_range(prefix, mode, true)
+            .map(|entries| passwords::count_for(&entries, suffix));
+        passwords::wipe(hash.into_bytes());
+        count
     }
 
     // ── Internals ───────────────────────────────────────────────────────
