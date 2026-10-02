@@ -7,6 +7,7 @@ name = "huntsman-recon"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.87"
+default-run = "huntsman-recon"
 license = "MIT OR Apache-2.0"
 publish = false
 description = "RCVF ledger with identity, GEOINT, STIX, and Navigator gates and a guarded fetch layer"
