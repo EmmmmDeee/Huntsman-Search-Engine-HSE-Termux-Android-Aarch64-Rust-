@@ -28,3 +28,49 @@ jobs:
         run: |
           cargo run --locked -- check
           git diff --exit-code -- var/
+
+  android-aarch64:
+    name: Android aarch64 cross-build
+    runs-on: ubuntu-latest
+    env:
+      HUNTSMAN_HIBP_NO_EMBED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.87"
+          targets: aarch64-linux-android
+      - uses: ./.github/actions/setup-ndk-aarch64
+        with:
+          android-api: "24"
+      - name: Build aarch64 Android release binary
+        run: cargo build --release --locked --target aarch64-linux-android
+      - name: Verify Android ELF and stage artifact
+        run: |
+          set -euo pipefail
+          BIN="target/aarch64-linux-android/release/huntsman-recon"
+          TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          HEADER="$RUNNER_TEMP/huntsman-elf-header.txt"
+          PROGRAM="$RUNNER_TEMP/huntsman-elf-program.txt"
+          test -x "$BIN"
+          "$TOOLCHAIN/llvm-readelf" -h "$BIN" > "$HEADER"
+          grep -Eq 'Machine:[[:space:]]+AArch64' "$HEADER"
+          "$TOOLCHAIN/llvm-readelf" -l "$BIN" > "$PROGRAM"
+          grep -F '/system/bin/linker64' "$PROGRAM"
+          mkdir -p dist
+          cp "$BIN" dist/huntsman-recon-aarch64-linux-android
+          (
+            cd dist
+            sha256sum huntsman-recon-aarch64-linux-android > huntsman-recon-aarch64-linux-android.sha256
+            sha256sum -c huntsman-recon-aarch64-linux-android.sha256
+          )
+      - name: Upload main-branch handset-test artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: huntsman-recon-aarch64-linux-android
+          path: |
+            dist/huntsman-recon-aarch64-linux-android
+            dist/huntsman-recon-aarch64-linux-android.sha256
+          if-no-files-found: error
+          retention-days: 14
