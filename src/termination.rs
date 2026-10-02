@@ -1,4 +1,4 @@
-//! Explicit scan termination semantics.
+//! Explicit scan termination semantics. From refactor overlay feef60a (P5).
 //!
 //! "Fixed point" means no admissible, delayed, in-flight, or newly derivable
 //! work remains. A bounded stop is recorded under the bound that actually
@@ -38,6 +38,7 @@ impl FrontierState {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)] // independent external signals, not a state enum
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TerminationSignals {
     pub cancelled: bool,
@@ -50,7 +51,10 @@ pub struct TerminationSignals {
     pub marginal_gain_below_floor: bool,
 }
 
-/// Resolve one explicit reason using a deterministic severity/causality order.
+/// Resolve one explicit reason. Fatal error and cancellation are events and always win.
+/// A bound (resource, time, budgets, depth, marginal gain) is reported only when work
+/// actually remained: a bound that stopped nothing is not the reason for stopping,
+/// and an empty frontier is a true fixed point. Bounds are ordered by severity.
 #[must_use]
 pub const fn decide_termination(
     frontier: FrontierState,
@@ -60,6 +64,8 @@ pub const fn decide_termination(
         Some(TerminationReason::FatalError)
     } else if signals.cancelled {
         Some(TerminationReason::Cancelled)
+    } else if frontier.is_fixed_point() {
+        Some(TerminationReason::FixedPoint)
     } else if signals.resource_limit_reached {
         Some(TerminationReason::ResourceLimit)
     } else if signals.time_limit_reached {
@@ -72,8 +78,6 @@ pub const fn decide_termination(
         Some(TerminationReason::MaxDepth)
     } else if signals.marginal_gain_below_floor {
         Some(TerminationReason::MarginalGainLimit)
-    } else if frontier.is_fixed_point() {
-        Some(TerminationReason::FixedPoint)
     } else {
         None
     }
@@ -99,13 +103,31 @@ mod tests {
     fn budget_stop_is_not_mislabeled_fixed_point() {
         assert_eq!(
             decide_termination(
-                FrontierState::default(),
+                FrontierState {
+                    admissible_work: 3,
+                    ..FrontierState::default()
+                },
                 TerminationSignals {
                     request_budget_exhausted: true,
                     ..TerminationSignals::default()
                 }
             ),
             Some(TerminationReason::RequestBudget)
+        );
+    }
+
+    #[test]
+    fn falsify_unused_bound_does_not_hide_fixed_point() {
+        assert_eq!(
+            decide_termination(
+                FrontierState::default(),
+                TerminationSignals {
+                    marginal_gain_below_floor: true,
+                    max_depth_reached: true,
+                    ..TerminationSignals::default()
+                }
+            ),
+            Some(TerminationReason::FixedPoint)
         );
     }
 }

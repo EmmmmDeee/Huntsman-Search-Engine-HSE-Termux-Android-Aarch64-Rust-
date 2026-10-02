@@ -18,4 +18,8 @@ cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 
 Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input, 74 artifact write failure. `check` uses 2–9 for its individual gates.
 
+`classify` also prints the causal outcome and the source-health action (`outcome=bot_waf`, `action=backoff`). A 403 challenge page is a WAF, not a credential failure. A 200 alone is `inconclusive` until rows are parsed.
+
+The refactor-overlay foundations from the uploaded zip are library modules: `source_outcome` (causal fetch outcome), `evidence_ancestry` (mirrors of one dump count once), `identity_resolution` (non-compensatory merge gate over ancestry), `termination` (fixed point vs bounds), `credential_origin` (found credentials are evidence, never authority), and `eval` (deterministic scoring, bootstrap, promote/hold verdict). `check` exercises them as gate 5.
+
 See `docs/RECONSTRUCTION_2026-10-02.md`.

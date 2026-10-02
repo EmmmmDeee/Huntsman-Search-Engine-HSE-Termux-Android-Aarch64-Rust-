@@ -22,12 +22,13 @@ impl XorShift64 {
     }
 
     fn index(&mut self, len: usize) -> usize {
-        (self.next() as usize) % len
+        let len = u64::try_from(len).unwrap_or(u64::MAX);
+        usize::try_from(self.next() % len).unwrap_or(0)
     }
 }
 
 fn mean(values: &[f64]) -> f64 {
-    values.iter().copied().sum::<f64>() / values.len() as f64
+    values.iter().copied().sum::<f64>() / super::count_f64(values.len())
 }
 
 /// Deterministic seeded non-parametric bootstrap of the mean.
@@ -37,10 +38,7 @@ pub fn bootstrap_mean_ci(
     seed: u64,
     iterations: usize,
 ) -> Option<BootstrapInterval> {
-    if values.is_empty()
-        || iterations == 0
-        || values.iter().any(|value| !value.is_finite())
-    {
+    if values.is_empty() || iterations == 0 || values.iter().any(|value| !value.is_finite()) {
         return None;
     }
 

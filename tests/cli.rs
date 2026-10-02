@@ -73,3 +73,21 @@ fn failures_exit_nonzero() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn classify_reports_causal_outcome_and_action() {
+    let run = |status: &str, body: &str| {
+        let out = bin().args(["classify", status, body]).output().unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let waf = run("403", "<html>checking your browser cloudflare</html>");
+    assert!(waf.ends_with("outcome=bot_waf\naction=backoff\n"), "{waf}");
+    let auth = run("403", "key revoked");
+    assert!(
+        auth.ends_with("outcome=auth_rejected\naction=require_credential\n"),
+        "{auth}"
+    );
+    let ok = run("200", "{}");
+    assert!(ok.ends_with("outcome=inconclusive\naction=retry\n"), "{ok}");
+}

@@ -6,15 +6,25 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use huntsman_recon::classify::classify_response;
+use huntsman_recon::evidence_ancestry::{
+    EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
+};
 use huntsman_recon::fsio::write_atomic;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
 use huntsman_recon::identity::{PersonRecord, resolve};
+use huntsman_recon::identity_resolution::{
+    AutoMergePolicy, IdentityResolutionDecision, ResolutionState,
+};
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::navigator::layer;
 use huntsman_recon::search::{Document, load_dir, search, search_response};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
+use huntsman_recon::source_outcome::{
+    SourceHealthAction, SourceOutcomeKind, classify_fetch, recommended_action,
+};
 use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
+use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
 const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | search QUERY [DIR] | classify STATUS BODY | verify LEDGER]";
 const EX_USAGE: u8 = 64;
@@ -103,7 +113,22 @@ fn classify(status: Option<String>, body: Option<String>) -> ExitCode {
     let Ok(status) = status.parse::<u16>() else {
         return fail(EX_DATAERR, "bad status");
     };
+    let kind = classify_fetch(status, &body);
     println!("{:?}", classify_response(status, &body));
+    println!(
+        "outcome={}",
+        serde_json::to_value(kind)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    );
+    println!(
+        "action={}",
+        serde_json::to_value(recommended_action(kind))
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    );
     ExitCode::SUCCESS
 }
 
@@ -251,6 +276,76 @@ fn check_offline_gates() -> Gate {
         },
     ]);
     gate(4, people.len() == 2, "shared name merged identities")?;
+    check_overlay_gates()
+}
+
+/// Refactor-overlay foundations: a WAF is not an auth failure, mirrors count once,
+/// delayed work is not a fixed point.
+fn check_overlay_gates() -> Gate {
+    let waf = classify_fetch(403, "<html>checking your browser cloudflare</html>");
+    gate(
+        5,
+        waf == SourceOutcomeKind::BotWaf,
+        "403 challenge not classified as bot/WAF",
+    )?;
+    gate(
+        5,
+        recommended_action(waf) != SourceHealthAction::RequireCredential,
+        "WAF demanded credentials",
+    )?;
+
+    let mut graph = EvidenceAncestryGraph::default();
+    let nodes: [(&str, &str, &[&str]); 4] = [
+        ("dump", "Adobe 2013", &[]),
+        ("mirror-a", "provider-a", &["dump"]),
+        ("mirror-b", "provider-b", &["dump"]),
+        ("registry", "company registry", &[]),
+    ];
+    for (id, family, parents) in nodes {
+        graph
+            .insert(EvidenceAncestryNode {
+                id: id.into(),
+                source_family: family.into(),
+                parents: parents.iter().copied().map(EvidenceNodeId::from).collect(),
+                derived: !parents.is_empty(),
+            })
+            .map_err(|e| (5, e.to_string()))?;
+    }
+    let mirrors = IdentityResolutionDecision {
+        left_entity_uid: "a".into(),
+        right_entity_uid: "b".into(),
+        state: ResolutionState::Match,
+        probability: Some(0.99),
+        supporting: vec!["mirror-a".into(), "mirror-b".into()],
+        contradicting: vec![],
+        temporal_conflict: false,
+        geographic_conflict: false,
+        decided_at_unix: 0,
+    };
+    gate(
+        5,
+        !mirrors.allows_automatic_merge(&graph, AutoMergePolicy::default()),
+        "mirrors manufactured corroboration",
+    )?;
+    let independent = IdentityResolutionDecision {
+        supporting: vec!["mirror-a".into(), "registry".into()],
+        ..mirrors
+    };
+    gate(
+        5,
+        independent.allows_automatic_merge(&graph, AutoMergePolicy::default()),
+        "independent roots refused",
+    )?;
+
+    let delayed = FrontierState {
+        delayed_retry_work: 1,
+        ..FrontierState::default()
+    };
+    gate(
+        5,
+        decide_termination(delayed, TerminationSignals::default()).is_none(),
+        "delayed work called a fixed point",
+    )?;
     Ok(())
 }
 

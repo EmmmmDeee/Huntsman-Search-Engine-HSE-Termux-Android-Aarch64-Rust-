@@ -33,6 +33,7 @@ impl Default for EvalPolicy {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)] // independent preconditions checked by decide()
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ComparisonEvidence {
     pub complete: bool,
@@ -50,7 +51,14 @@ pub struct ComparisonEvidence {
 
 #[must_use]
 pub fn decide(evidence: ComparisonEvidence, policy: EvalPolicy) -> Decision {
-    if !evidence.complete || !evidence.comparable {
+    let measured = [
+        evidence.primary_gain,
+        evidence.primary_ci_low,
+        evidence.evidence_completeness_delta,
+        evidence.worst_decile_delta,
+        evidence.cost_ratio,
+    ];
+    if !evidence.complete || !evidence.comparable || !measured.iter().all(|m| m.is_finite()) {
         return Decision::Hold;
     }
     if evidence.severe_regression {
@@ -101,10 +109,7 @@ mod tests {
     fn false_merge_regression_blocks_promotion() {
         let mut evidence = robust_gain();
         evidence.false_merge_delta = 1;
-        assert_eq!(
-            decide(evidence, EvalPolicy::default()),
-            Decision::Repair
-        );
+        assert_eq!(decide(evidence, EvalPolicy::default()), Decision::Repair);
     }
 
     #[test]
@@ -126,9 +131,16 @@ mod tests {
     fn severe_regression_rolls_back() {
         let mut evidence = robust_gain();
         evidence.severe_regression = true;
-        assert_eq!(
-            decide(evidence, EvalPolicy::default()),
-            Decision::Rollback
-        );
+        assert_eq!(decide(evidence, EvalPolicy::default()), Decision::Rollback);
+    }
+
+    #[test]
+    fn falsify_non_finite_measurement_cannot_promote() {
+        let mut evidence = robust_gain();
+        evidence.primary_gain = f64::INFINITY;
+        assert_eq!(decide(evidence, EvalPolicy::default()), Decision::Hold);
+        let mut evidence = robust_gain();
+        evidence.cost_ratio = f64::NEG_INFINITY;
+        assert_eq!(decide(evidence, EvalPolicy::default()), Decision::Hold);
     }
 }

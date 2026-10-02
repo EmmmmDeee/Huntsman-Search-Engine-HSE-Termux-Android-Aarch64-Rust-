@@ -42,3 +42,27 @@ Each fix below started with a test that failed against the previous code.
 Verification: `cargo test` gives 33 passed (28 unit, 3 accept, 2 CLI). Tests pass on MSRV 1.87 and on stable. `clippy --all-targets -D warnings` with pedantic is clean. `cargo fmt --check` is clean. CI runs all of these and fails if `check` changes `var/`.
 
 Still unresolved: no Termux handset run. The ATT&CK binding table is still empty, so the STIX indicator shape (`malicious-activity`) has never been exercised against a real binding.
+
+## Third pass — zip contents
+
+Both archives were extracted from `91f2533` and judged item by item.
+
+**`Huntsman-Search-Engine-HSE-…-main.zip`** is the HSE v1.41.0 monolith (1727 files, network providers, credential handling, Rust 1.98). It is not restored. It conflicts with this crate's contract of no network client and no paid source, and the overlay's own `VERIFICATION.json` says it was never compiled against it.
+
+**`Huntsman-HSE-EndToEnd-Refactor-feef60a.zip`** is the refactor overlay. Its `VERIFICATION.json` reported cargo, fmt, clippy, and tests as BLOCKED, so none of it had been compiled before this pass. It was imported verbatim first (21 tests passed), then attacked.
+
+| Overlay item | Disposition | Falsification evidence (test failed on the overlay code, passes now) |
+| --- | --- | --- |
+| `source_outcome` | REIMPLEMENT | A 403 Cloudflare page mapped to `AuthRejected` → `RequireCredential`. Added `classify_fetch(status, body)`, which reuses `classify::is_challenge`; a status-only 403 is `Upstream4xx`. `success(0)` auto-accepted as `ValidZero`; it is now `Inconclusive` and `valid_zero()` must be explicit. A differential test is run against `classify::classify_response`. |
+| `evidence_ancestry` | REIMPLEMENT | A diamond DAG was walked exponentially (the test hung). A derived node with no parent was accepted as a root. `"  Adobe   2013 "` and `"ADOBE 2013"` counted as two families. Now an iterative three-colour DFS (200k-deep chain, no stack overflow), `DerivedWithoutParent`, and `canonical_family` (breach-corpus normalisation from patch 0007). A missing parent fails closed. |
+| `identity_resolution` | REIMPLEMENT | Two mirrors of one dump labelled with different family strings passed the two-source merge gate. Support is now a list of ancestry node ids. `allows_automatic_merge(&graph, policy)` counts independent root families, is non-compensatory, and fails closed on unknown ancestry. |
+| `termination` | REIMPLEMENT | An unused bound hid a true fixed point. Fatal error and cancel win; an empty frontier wins over bounds; delayed retry work is never a fixed point. |
+| `credential_origin` | REIMPLEMENT | `fingerprint: String` accepted a raw password, including via serde. Now a `CredentialFingerprint` that holds only 64 lowercase hex (domain-tagged SHA-256, equality key only), with Debug redacted. There is still no conversion to `AuthenticationAuthority`. |
+| `eval/` (model, score, stats, verdict, integrity) | MIGRATE + fix | NaN completeness propagated into the score. `+∞` primary gain promoted. Both now hold or zero. `as usize` / `as f64` casts were replaced (32-bit truncation). `integrity` uses the in-tree `sha256`. |
+| `architectural_invariants`, `bin/architecture_audit`, patch 0004 | NOT APPLICABLE | Enforce monolith directory layout (`src/core`, `src/modules`) that does not exist here. CI clippy `-D warnings` plus tests are this crate's invariant gate. |
+| `cli/update.rs`, patch 0001 (self-update) | REMOVE | Network self-update contradicts the no-network contract. |
+| Patches 0003 (core registration), 0006 (LeakBase HTML import), 0008 (Termux artifact CI) | NOT APPLICABLE | Target files exist only in the monolith. |
+| Patch 0007 | PARTIAL | Only the breach-corpus canonicalisation was adopted (`canonical_family`). |
+| `revalidation-required/` 0100, 0110, 0140, `superseded-reference` | NOT ADOPTED | The overlay itself marks them do-not-batch-promote. The 5 % geo cap is unvalidated. Superseded by definition. |
+
+`check` gate 5 holds the integrated contract: a 403 challenge is `BotWaf` and never demands credentials; two mirrors of one dump cannot auto-merge, while two independent roots can; delayed retry work is not a fixed point.

@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use super::count_f64;
 use super::model::{FinalizedConditionResult, IdentityCluster, SealedTruth};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,12 +32,12 @@ fn precision_recall<T: Ord>(
     let precision = if observed.is_empty() {
         if truth.is_empty() { 1.0 } else { 0.0 }
     } else {
-        true_positive as f64 / observed.len() as f64
+        count_f64(true_positive) / count_f64(observed.len())
     };
     let recall = if truth.is_empty() {
         1.0
     } else {
-        true_positive as f64 / truth.len() as f64
+        count_f64(true_positive) / count_f64(truth.len())
     };
     (precision, recall, false_positive, false_negative)
 }
@@ -54,10 +55,7 @@ fn cluster_pairs(clusters: &[IdentityCluster]) -> BTreeSet<(String, String)> {
     pairs
 }
 
-fn false_merge_cascade(
-    observed: &[IdentityCluster],
-    truth: &[IdentityCluster],
-) -> usize {
+fn false_merge_cascade(observed: &[IdentityCluster], truth: &[IdentityCluster]) -> usize {
     let truth_by_member: std::collections::BTreeMap<&str, &str> = truth
         .iter()
         .flat_map(|cluster| {
@@ -92,17 +90,12 @@ pub fn score_case(truth: &SealedTruth, result: &FinalizedConditionResult) -> Cas
         precision_recall(&result.entity_ids, &truth.entity_ids);
     let (relation_precision, relation_recall, _, _) =
         precision_recall(&result.relations, &truth.relations);
-    let (claim_precision, claim_recall, _, _) =
-        precision_recall(&result.claims, &truth.claims);
+    let (claim_precision, claim_recall, _, _) = precision_recall(&result.claims, &truth.claims);
 
     let observed_pairs = cluster_pairs(&result.identity_clusters);
     let truth_pairs = cluster_pairs(&truth.identity_clusters);
-    let (
-        identity_pair_precision,
-        identity_pair_recall,
-        false_merge_pairs,
-        false_split_pairs,
-    ) = precision_recall(&observed_pairs, &truth_pairs);
+    let (identity_pair_precision, identity_pair_recall, false_merge_pairs, false_split_pairs) =
+        precision_recall(&observed_pairs, &truth_pairs);
 
     CaseScore {
         entity_precision,
@@ -119,20 +112,23 @@ pub fn score_case(truth: &SealedTruth, result: &FinalizedConditionResult) -> Cas
             &result.identity_clusters,
             &truth.identity_clusters,
         ),
-        evidence_completeness: result.evidence_completeness.clamp(0.0, 1.0),
+        evidence_completeness: if result.evidence_completeness.is_finite() {
+            result.evidence_completeness.clamp(0.0, 1.0)
+        } else {
+            0.0
+        },
         completed: result.completed,
         comparable: result.comparable,
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // exact 0.0/1.0 sentinels are the contract under test
 mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::eval::{
-        ClaimTruth, EvalCondition, IdentityCluster, RelationTruth,
-    };
+    use crate::eval::{ClaimTruth, EvalCondition, IdentityCluster, RelationTruth};
 
     fn set(values: &[&str]) -> BTreeSet<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
@@ -177,5 +173,30 @@ mod tests {
         assert_eq!(score.entity_recall, 1.0);
         assert!(score.false_merge_pairs > 0);
         assert_eq!(score.max_false_merge_cascade, 3);
+    }
+
+    #[test]
+    fn falsify_nan_completeness_is_not_propagated() {
+        let truth = SealedTruth {
+            entity_ids: set(&[]),
+            identity_clusters: vec![],
+            relations: BTreeSet::new(),
+            claims: BTreeSet::new(),
+        };
+        let result = FinalizedConditionResult {
+            case_id: "nan".into(),
+            condition: EvalCondition::Full,
+            entity_ids: set(&[]),
+            identity_clusters: vec![],
+            relations: BTreeSet::new(),
+            claims: BTreeSet::new(),
+            evidence_completeness: f64::NAN,
+            request_count: 0,
+            wall_time_ms: 0,
+            provider_cost_usd: 0.0,
+            completed: true,
+            comparable: true,
+        };
+        assert_eq!(score_case(&truth, &result).evidence_completeness, 0.0);
     }
 }
