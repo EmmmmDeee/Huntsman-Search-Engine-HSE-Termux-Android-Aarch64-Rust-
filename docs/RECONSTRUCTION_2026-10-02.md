@@ -1,5 +1,7 @@
 # Reconstruction decision — 2026-10-02
 
+Passes are recorded in order; a later pass supersedes an earlier one. In particular, the seventh pass reversed the second: the legacy zip archives are back in the repository root and extracted into `legacy/`, and network access is allowed through the guarded `egress`/`http`/`fetch`/`keys` layer.
+
 Target: an unprivileged Rust core that records an RCVF session, refuses an unsupported claim, resolves identity only on a shared email or handle, computes geodesic distance and co-location, seals claims in a hashed ledger, and emits STIX or an ATT&CK Navigator layer only when this crate implements that technique.
 
 Search is local retrieval over operator-supplied documents. Every query term must match. A challenge page or a 429 is not a hit. Paid SeekNow and public SearXNG JSON are not sources.
@@ -120,3 +122,10 @@ Verification: 103 unit, 3 accept, 5 CLI tests pass on stable and on MSRV 1.87. `
 - Both legacy archives are permanent reference: kept in the repository root and extracted byte-identically into `legacy/`; `tests/legacy_reference.rs` pins their hashes and file counts.
 - Parallel rebuilds merged duplicated helpers into single owners (canonical forms, domains, dates, coordinates, module metadata). Per-file accounting: `docs/DISPOSITIONS.md`.
 - Not finished: remaining legacy `core/correlator` and `core/relation` files (see dispositions), and `modules/*` network providers.
+
+## Eighth pass: CI and repository organisation
+
+- `main` CI failed on `test (stable)`: Rust 1.99 clippy added `assert_is_empty`, which rejects 39 bare `assert!(x.is_empty())` / `assert!(!x.is_empty())` test assertions under `-D warnings`. Each now prints the offending value (or context) on failure. Clean on Rust 1.99, 1.98 and MSRV 1.87.
+- `README.md` said the archives lived only in git history; it now matches the seventh pass and maps the tree.
+- `docs/DISPOSITIONS.md` is one document with one section per area. The entity section was a work log; it is replaced by the per-file table formerly in `docs/dispositions/entity.md` (now removed), with the missing `core/correlator/rules/location/mod.rs` row added. The intro claimed every legacy file was accounted for; 894 of 1146 monolith `src/` files are not, and a new section counts them by area.
+- Open pull requests were judged against the reconstructed `main`. None applies: #663 (bench-smoke on main only) has an empty diff because `main` deleted `bench-smoke.yml`; #665 (release pre-release policy, `scripts/scan-for-keys.sh`) edits `release.yml`, which no longer exists, for the monolith's `hse-aarch64-linux-android` binary; #662 (HIBP v3) adds `src/modules/hibp/` to the monolith layout and uses a paid key, against "No paid source". Decision: close all three. Rebuild HIBP, if wanted, as a new module on `fetch`/`keys`.
