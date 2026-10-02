@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
 use huntsman_recon::identity::{resolve, PersonRecord};
-use huntsman_recon::ledger::{append, chain_intact, seal, Claim};
+use huntsman_recon::ledger::{append, chain_intact, load_chain, save_chain, seal, Claim};
 use huntsman_recon::navigator::layer;
 use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
@@ -110,6 +110,13 @@ fn check() -> ExitCode {
         return ExitCode::from(8);
     }
     let _ = fs::create_dir_all("var");
+    let path = std::path::Path::new("var/ledger.json");
+    if save_chain(path, &entries).is_err() {
+        return ExitCode::from(9);
+    }
+    if load_chain(path).ok().as_deref() != Some(entries.as_slice()) {
+        return ExitCode::from(9);
+    }
     let _ = fs::write("var/navigator.json", serde_json::to_string_pretty(&nav).unwrap_or_default());
     println!("accepted techniques=0");
     println!("brisbane_sydney_m={meters:.0}");
