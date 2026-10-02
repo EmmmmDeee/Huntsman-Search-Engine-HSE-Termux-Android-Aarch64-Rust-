@@ -5,8 +5,11 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::error::Error;
+
+static TEMP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 fn store_err(path: &Path, e: &std::io::Error) -> Error {
     Error::Store(format!("{}: {e}", path.display()))
@@ -56,6 +59,15 @@ pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
 /// # Errors
 /// `Error::Store` on a symlink, a body over `max` bytes, or IO failure.
 pub fn write_atomic(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
+    write_atomic_mode(path, body, max, false)
+}
+
+/// Atomically write a secret file, creating it mode 600 on Unix before any bytes land.
+pub fn write_atomic_private(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
+    write_atomic_mode(path, body, max, true)
+}
+
+fn write_atomic_mode(path: &Path, body: &[u8], max: u64, private: bool) -> Result<(), Error> {
     if body.len() as u64 > max {
         return Err(Error::Store(format!(
             "{}: exceeds {max} bytes",
@@ -72,23 +84,49 @@ pub fn write_atomic(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
     let name = path
         .file_name()
         .ok_or_else(|| Error::Store(format!("{}: no file name", path.display())))?;
-    let mut tmp_name = name.to_os_string();
-    tmp_name.push(format!(".{}.tmp", std::process::id()));
-    let tmp = parent.join(tmp_name);
+    let (mut file, tmp) = create_temp_file(&parent, name, private, &TEMP_SEQUENCE)?;
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|e| store_err(&tmp, &e))?;
         file.write_all(body).map_err(|e| store_err(&tmp, &e))?;
         file.sync_all().map_err(|e| store_err(&tmp, &e))?;
         fs::rename(&tmp, path).map_err(|e| store_err(path, &e))
     })();
+    drop(file);
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+fn create_temp_file(
+    parent: &Path,
+    name: &std::ffi::OsStr,
+    private: bool,
+    sequence: &AtomicUsize,
+) -> Result<(File, PathBuf), Error> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    loop {
+        let mut tmp_name = name.to_os_string();
+        tmp_name.push(format!(
+            ".{}.{}.tmp",
+            std::process::id(),
+            sequence.fetch_add(1, Ordering::Relaxed)
+        ));
+        let tmp = parent.join(tmp_name);
+        match options.open(&tmp) {
+            Ok(file) => return Ok((file, tmp)),
+            // A stale file or another writer owns this name; never remove it.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(store_err(&tmp, &e)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -121,6 +159,48 @@ mod tests {
             "no temp file left behind"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn temp_collisions_are_retried_without_touching_existing_files() {
+        let dir = scratch("collision");
+        let name = std::ffi::OsStr::new("tokens.json");
+        let sequence = AtomicUsize::new(0);
+        let sentinels: Vec<_> = (0..2)
+            .map(|id| dir.join(format!("tokens.json.{}.{id}.tmp", std::process::id())))
+            .collect();
+        for sentinel in &sentinels {
+            fs::write(sentinel, b"owned by another writer").unwrap();
+        }
+        let (file, tmp) = create_temp_file(&dir, name, true, &sequence).unwrap();
+        assert_eq!(
+            tmp,
+            dir.join(format!("tokens.json.{}.2.tmp", std::process::id()))
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        for sentinel in &sentinels {
+            assert_eq!(fs::read(sentinel).unwrap(), b"owned by another writer");
+        }
+        drop(file);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_rename_cleans_up_only_its_own_temp_file() {
+        let dir = scratch("rename-failure");
+        let path = dir.join("tokens.json");
+        fs::create_dir(&path).unwrap();
+        let sentinel = dir.join(format!("tokens.json.{}.tmp", std::process::id()));
+        fs::write(&sentinel, b"owned by another writer").unwrap();
+        assert!(write_atomic_private(&path, b"{}", 10).is_err());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"owned by another writer");
+        assert!(path.is_dir());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]
