@@ -746,3 +746,131 @@ fn scanner_flags_a_high_entropy_string_in_text_without_printing_it() {
     assert_redacted(&text, &value, "high-entropy");
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// install-termux.sh: run it offline against a fake `curl` and `uname`.
+
+fn write_exec(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, body).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Runs the installer for the recon channel with the given release assets.
+/// Returns (exit code, output, `$PREFIX/bin` entries).
+fn run_installer(name: &str, binary: &[u8], sha_line: &str) -> (Option<i32>, String, PathBuf) {
+    let root = scratch(&format!("install-{name}"));
+    let assets = root.join("assets");
+    let fakes = root.join("fakes");
+    let prefix = root.join("prefix");
+    for d in [&assets, &fakes, &prefix.join("bin"), &root.join("tmp")] {
+        fs::create_dir_all(d).unwrap();
+    }
+    let asset = "huntsman-recon-aarch64-linux-android";
+    fs::write(assets.join(asset), binary).unwrap();
+    fs::write(assets.join(format!("{asset}.sha256")), sha_line).unwrap();
+    fs::write(prefix.join("bin/huntsman-recon"), b"old build\n").unwrap();
+    write_exec(
+        &fakes.join("curl"),
+        "#!/usr/bin/env bash\nout=\"\"; url=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -o) out=\"$2\"; shift 2 ;;\n    --proto) shift 2 ;;\n    -*) shift ;;\n    *) url=\"$1\"; shift ;;\n  esac\ndone\ncp \"$FAKE_ASSETS/${url##*/}\" \"$out\"\n",
+    );
+    write_exec(&fakes.join("uname"), "#!/usr/bin/env bash\necho aarch64\n");
+    let path = format!(
+        "{}:{}",
+        fakes.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new(tool("bash").expect("bash must be available"))
+        .arg(INSTALL)
+        .env("PATH", path)
+        .env("PREFIX", &prefix)
+        .env("TMPDIR", root.join("tmp"))
+        .env("FAKE_ASSETS", &assets)
+        .env("HUNTSMAN_CHANNEL", "recon")
+        .env("HUNTSMAN_RELEASE_TAG", "main-0a1b2c3")
+        .output()
+        .expect("bash must run");
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    (out.status.code(), text, root)
+}
+
+fn sha256_hex(path: &Path) -> String {
+    let out = Command::new("sha256sum").arg(path).output().unwrap();
+    String::from_utf8(out.stdout).unwrap()[..64].to_owned()
+}
+
+fn bin_entries(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(root.join("prefix/bin"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn installer_replaces_the_binary_atomically_and_only_after_verification() {
+    let tools = ["sha256sum", "install", "mktemp", "mv", "cut", "cp"];
+    if tools.iter().any(|t| tool(t).is_none()) {
+        assert!(std::env::var_os("CI").is_none(), "CI must have coreutils");
+        eprintln!("skipping: coreutils missing");
+        return;
+    }
+    let asset = "huntsman-recon-aarch64-linux-android";
+    let new_build = b"\x7fELF new recon build\n";
+    let probe = scratch("install-probe");
+    fs::write(probe.join("b"), new_build).unwrap();
+    let good = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
+    let _ = fs::remove_dir_all(&probe);
+
+    // Verified: replaced in place, mode 0755, no staging file left behind.
+    let (code, text, root) = run_installer("ok", new_build, &good);
+    assert_eq!(code, Some(0), "{text}");
+    let dest = root.join("prefix/bin/huntsman-recon");
+    assert_eq!(fs::read(&dest).unwrap(), new_build);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&dest).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
+    assert_eq!(
+        bin_entries(&root),
+        ["huntsman-recon"],
+        "no staging leftovers"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    // Mismatch: the existing binary is untouched and nothing is staged.
+    let bad = format!("{}  {asset}\n", "0".repeat(64));
+    let (code, text, root) = run_installer("bad", new_build, &bad);
+    assert_ne!(code, Some(0), "a sha256 mismatch must fail:\n{text}");
+    assert_eq!(
+        fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
+        b"old build\n"
+    );
+    assert_eq!(
+        bin_entries(&root),
+        ["huntsman-recon"],
+        "no staging leftovers"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let src = fs::read_to_string(INSTALL).unwrap();
+    for required in [
+        "stage=\"$PREFIX/bin/.${DEST_NAME}.install.$$\"",
+        "install -m 0755 \"$tmp/$ASSET\" \"$stage\"",
+        "mv -f \"$stage\" \"$dest\"",
+    ] {
+        assert!(
+            src.contains(required),
+            "{INSTALL} must contain {required:?}"
+        );
+    }
+    assert!(
+        !src.contains("install -m 0755 \"$tmp/$ASSET\" \"$PREFIX/bin/$DEST_NAME\""),
+        "must not write straight onto the live binary"
+    );
+}
