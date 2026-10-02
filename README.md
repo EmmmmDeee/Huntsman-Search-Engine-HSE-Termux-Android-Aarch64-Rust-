@@ -2,7 +2,7 @@
 
 Only current version of the project. Previous trees remain in git history.
 
-Offline Rust core. No network client. No credentials. A verified claim is not an ATT&CK score: the technique binding table is empty.
+Offline Rust core. No network client. No credentials. Claims form a hash chain. A verified claim is not an ATT&CK score: the technique binding table is empty.
 
 ```
 cargo test

@@ -2,6 +2,8 @@
 
 Target: an unprivileged offline Rust core that records an RCVF session, refuses an unsupported claim, resolves identity only on a shared email or handle, computes geodesic distance and co-location, seals claims in a hashed ledger, and emits STIX or an ATT&CK Navigator layer only when this crate implements that technique.
 
+Ledger entries are a hash chain. Reordering or dropping an entry fails `chain_intact`. Independent per-claim hashes were replaced because they could not detect that.
+
 A verified capability is not a technique score. The binding table is empty. Haversine is not T1591. Challenge classification is not T1592.
 
 ## Disposition

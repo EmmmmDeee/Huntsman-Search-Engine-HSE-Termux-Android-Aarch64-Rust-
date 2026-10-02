@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
 use huntsman_recon::identity::{resolve, PersonRecord};
-use huntsman_recon::ledger::{seal, Claim};
+use huntsman_recon::ledger::{append, chain_intact, seal, Claim};
 use huntsman_recon::navigator::layer;
 use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
@@ -86,7 +86,22 @@ fn check() -> ExitCode {
         evidence_level: EvidenceLevel::DirectObservation,
         does_not_show: "not T1591 and not a survey".into(),
     });
-    let entries = vec![geo];
+    let wall = append(
+        &geo.hash,
+        &Claim {
+            claim: "challenge page is not a result".into(),
+            source: "src/classify.rs".into(),
+            component: "src/classify.rs".into(),
+            technique_id: None,
+            status: Status::Verified,
+            evidence_level: EvidenceLevel::Reproduction,
+            does_not_show: "does not bypass the wall".into(),
+        },
+    );
+    let entries = vec![geo, wall];
+    if !chain_intact(&entries) {
+        return ExitCode::from(9);
+    }
     let nav = layer(&entries);
     if nav["techniques"].as_array().is_none_or(|a| !a.is_empty()) {
         return ExitCode::from(7);
