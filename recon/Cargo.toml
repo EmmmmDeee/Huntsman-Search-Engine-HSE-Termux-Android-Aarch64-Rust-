@@ -1,0 +1,23 @@
+# Reconstructed huntsman. Single package. No workspace.
+# Offline: no tokio, no reqwest, no native deps.
+# sha256 is in-tree so the evidence hash does not need a crate.
+
+[package]
+name = "huntsman-recon"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Offline RCVF ledger with identity, GEOINT, STIX, and Navigator gates"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = "warn"
