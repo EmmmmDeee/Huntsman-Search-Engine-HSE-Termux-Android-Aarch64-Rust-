@@ -126,14 +126,13 @@ fn account_and_paste_options_models_and_not_found() {
         Some("42")
     );
     fake.push(404, "");
-    assert!(
-        client
-            .breached_account("a@example.com", &BreachedAccountOptions::default())
-            .unwrap()
-            .is_empty()
-    );
+    let breaches = client
+        .breached_account("a@example.com", &BreachedAccountOptions::default())
+        .unwrap();
+    assert!(breaches.is_empty(), "{breaches:?}");
     fake.push(404, "");
-    assert!(client.paste_account("a@example.com").unwrap().is_empty());
+    let pastes = client.paste_account("a@example.com").unwrap();
+    assert!(pastes.is_empty(), "{pastes:?}");
     fake.push(404, "");
     assert!(client.breach("Absent").unwrap().is_none());
 }
@@ -184,7 +183,8 @@ fn missing_key_and_invalid_input_make_no_requests() {
     );
     assert!(client.breached_account_by_hash(" ").is_err());
     assert!(client.breach(" ").is_err());
-    assert!(fake.requests().is_empty());
+    let requests = fake.requests();
+    assert!(requests.is_empty(), "{requests:?}");
 }
 
 #[test]
@@ -206,7 +206,8 @@ fn configured_untrusted_origin_is_refused_before_sending_a_key() {
         );
         assert!(client.paste_account("a@example.com").is_err());
     }
-    assert!(fake.requests().is_empty());
+    let requests = fake.requests();
+    assert!(requests.is_empty(), "{requests:?}");
 }
 
 #[test]
@@ -268,12 +269,8 @@ fn plan_fetch_errors_do_not_reach_gated_endpoint_or_poison_cache() {
     assert!(client.stealer_logs_by_email("a@example.com").is_err());
     status(&fake, true, true);
     fake.push(200, "[]");
-    assert!(
-        client
-            .stealer_logs_by_email("a@example.com")
-            .unwrap()
-            .is_empty()
-    );
+    let stealer_logs = client.stealer_logs_by_email("a@example.com").unwrap();
+    assert!(stealer_logs.is_empty(), "{stealer_logs:?}");
     assert_eq!(fake.requests().len(), 3);
 }
 
@@ -533,7 +530,8 @@ fn retry_zero_then_success() {
         .headers
         .push(("retry-after".into(), "0".into()));
     fake.push(200, "[]");
-    assert!(client.paste_account("a@example.com").unwrap().is_empty());
+    let pastes = client.paste_account("a@example.com").unwrap();
+    assert!(pastes.is_empty(), "{pastes:?}");
     assert_eq!(fake.requests().len(), 2);
 }
 
