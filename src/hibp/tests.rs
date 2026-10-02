@@ -672,7 +672,9 @@ fn oauth_error_redaction_truncation_and_origin_fail_closed() {
 }
 
 fn scratch(name: &str) -> std::path::PathBuf {
-    let path = std::path::PathBuf::from("target/hibp-tests")
+    // Unit tests have no CARGO_TARGET_TMPDIR; never write under the source tree.
+    let path = std::env::temp_dir()
+        .join("huntsman-hibp-tests")
         .join(format!("{name}-{}", std::process::id()));
     std::fs::create_dir_all(&path).unwrap();
     path
