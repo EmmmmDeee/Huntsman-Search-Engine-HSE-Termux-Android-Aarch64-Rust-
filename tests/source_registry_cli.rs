@@ -90,3 +90,30 @@ fn sources_refuses_a_bare_at_sign() {
     assert_eq!(out.status.code(), Some(65));
     assert_eq!(out.stdout, [] as [u8; 0]);
 }
+
+#[test]
+fn sources_routes_decimal_coordinates_to_maps() {
+    let out = bin()
+        .args(["sources", "-27.4698, 153.0251"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        stdout,
+        "kind=coordinates confidence=0.850 routes=1\n\
+         source=google_maps execution=search_url access=public \
+         url=https://www.google.com/maps?q=-27.4698%2C153.0251\n"
+    );
+}
+
+#[test]
+fn sources_refuses_out_of_range_coordinates() {
+    let out = bin().args(["sources", "91.0,0.0"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    assert_eq!(out.stdout, [] as [u8; 0]);
+}

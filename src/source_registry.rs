@@ -325,6 +325,17 @@ mod tests {
     }
 
     #[test]
+    fn coordinates_route_to_maps() {
+        let routes = routes_for(&EntityKind::Coordinates, "-27.4698,153.0251");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].source_id, "google_maps");
+        assert_eq!(
+            routes[0].url,
+            "https://www.google.com/maps?q=-27.4698%2C153.0251"
+        );
+    }
+
+    #[test]
     fn human_query_is_rfc3986_encoded() {
         let routes = routes_for(&EntityKind::Person, "Ada Lovelace");
         assert_ne!(routes, [] as [SourceRoute; 0]);
