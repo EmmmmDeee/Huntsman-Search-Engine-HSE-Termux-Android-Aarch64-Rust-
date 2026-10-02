@@ -5,12 +5,7 @@ use huntsman_recon::intelligence::{
     IntelligenceLedger, SourceAuthority, SourceLineage,
 };
 
-fn evidence(
-    id: &str,
-    provider: &str,
-    digest: &str,
-    root_families: &[&str],
-) -> EvidenceRecord {
+fn evidence(id: &str, provider: &str, digest: &str, root_families: &[&str]) -> EvidenceRecord {
     EvidenceRecord {
         id: EvidenceId::from(id),
         subject_uid: "subject".into(),
