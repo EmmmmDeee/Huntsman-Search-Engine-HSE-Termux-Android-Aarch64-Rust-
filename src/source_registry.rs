@@ -232,7 +232,12 @@ pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
     let encoded = percent_encode_component(value);
     SOURCES
         .iter()
-        .filter(|source| source.accepted_kinds.iter().any(|candidate| candidate == kind))
+        .filter(|source| {
+            source
+                .accepted_kinds
+                .iter()
+                .any(|candidate| candidate == kind)
+        })
         .map(|source| SourceRoute {
             source_id: source.id,
             source_name: source.name,
@@ -283,7 +288,11 @@ mod tests {
     fn domain_fans_out_without_turning_routes_into_evidence() {
         let routes = routes_for(&EntityKind::Domain, "example.com");
         assert!(routes.len() >= 5);
-        assert!(routes.iter().all(|route| route.evidence_role == EvidenceRole::LeadOnly));
+        assert!(
+            routes
+                .iter()
+                .all(|route| route.evidence_role == EvidenceRole::LeadOnly)
+        );
         assert!(routes.iter().any(|route| route.source_id == "wayback"));
         assert!(routes.iter().any(|route| route.source_id == "crtsh"));
     }
@@ -292,7 +301,15 @@ mod tests {
     fn human_query_is_rfc3986_encoded() {
         let routes = routes_for(&EntityKind::Person, "Ada Lovelace");
         assert!(!routes.is_empty());
-        assert!(routes.iter().all(|route| route.url.contains("Ada%20Lovelace")));
-        assert!(routes.iter().all(|route| !route.url.contains("Ada Lovelace")));
+        assert!(
+            routes
+                .iter()
+                .all(|route| route.url.contains("Ada%20Lovelace"))
+        );
+        assert!(
+            routes
+                .iter()
+                .all(|route| !route.url.contains("Ada Lovelace"))
+        );
     }
 }
