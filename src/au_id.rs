@@ -10,6 +10,20 @@
 
 use crate::error::Error;
 
+pub use crate::{address_au, postcode_au};
+
+const COMPANY_SUFFIXES: &[&str] = &[
+    " PTY LTD ",
+    " LIMITED ",
+    " LTD ",
+    " PTY ",
+    " INCORPORATED ",
+    " INC ",
+    " NL ",
+    " & CO ",
+    " AND CO ",
+];
+
 /// Digits of `raw`, or `None` unless it is ASCII digits optionally grouped by
 /// single spaces or hyphens. No leading, trailing, or doubled separator.
 fn grouped_digits(raw: &str) -> Option<Vec<u8>> {
@@ -93,6 +107,82 @@ pub fn derive_acn(raw: &str) -> Option<String> {
     let d = grouped_digits(raw).filter(|d| abn_ok(d))?;
     let tail = &d[2..];
     acn_ok(tail).then(|| digits_to_string(tail))
+}
+
+/// Heuristic: does `name` carry an Australian corporate legal-form suffix?
+#[must_use]
+pub fn looks_like_company(name: &str) -> bool {
+    let folded: String = name
+        .to_uppercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '&' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let mut padded = String::with_capacity(folded.len() + 2);
+    padded.push(' ');
+    for (index, word) in folded.split_whitespace().enumerate() {
+        if index > 0 {
+            padded.push(' ');
+        }
+        padded.push_str(word);
+    }
+    padded.push(' ');
+    COMPANY_SUFFIXES
+        .iter()
+        .any(|suffix| padded.contains(suffix))
+}
+
+/// Split a register owner string into individually ABN-resolvable company names.
+#[must_use]
+pub fn company_names(owner: &str) -> Vec<String> {
+    let normalised = owner.replace(" AND ", " & ").replace(" and ", " & ");
+    let mut segments: Vec<String> = Vec::new();
+    for segment in normalised.split('&') {
+        let trimmed = segment.trim();
+        let first = trimmed
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('.')
+            .to_uppercase();
+        if matches!(first.as_str(), "CO" | "COMPANY") && !segments.is_empty() {
+            if let Some(previous) = segments.last_mut() {
+                previous.push_str(" & ");
+                previous.push_str(trimmed);
+            }
+        } else {
+            segments.push(trimmed.to_string());
+        }
+    }
+    let parts: Vec<String> = segments
+        .into_iter()
+        .map(|part| match part.find("- SEE") {
+            Some(index) => part[..index].trim().to_string(),
+            None => part.trim().to_string(),
+        })
+        .filter(|part| part.len() >= 4 && looks_like_company(part))
+        .collect();
+    if parts.len() >= 2 {
+        let mut out = Vec::new();
+        for part in parts {
+            if !out.contains(&part) {
+                out.push(part);
+                if out.len() >= 5 {
+                    break;
+                }
+            }
+        }
+        out
+    } else if looks_like_company(owner) {
+        vec![owner.trim().to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Bare six-digit BSB from `NNNNNN`, `NNN-NNN`, or `NNN NNN`. Any other grouping
@@ -395,5 +485,21 @@ mod tests {
         );
         assert!(classify("hello").is_err());
         assert!(classify("51824753557").is_err());
+    }
+
+    #[test]
+    fn company_detection_and_splitting_are_merged_here() {
+        assert!(looks_like_company("Acme Holdings Pty Ltd"));
+        assert!(looks_like_company("Smith & Co"));
+        assert!(!looks_like_company("Incandescent Bay"));
+        assert_eq!(
+            company_names("Alpha Pty Ltd & Beta Pty Ltd"),
+            vec!["Alpha Pty Ltd", "Beta Pty Ltd"]
+        );
+        assert_eq!(
+            company_names("Ashton & Co Pty Ltd & Berg Pty Ltd"),
+            vec!["Ashton & Co Pty Ltd", "Berg Pty Ltd"]
+        );
+        assert!(company_names("Jane Citizen").is_empty());
     }
 }

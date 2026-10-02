@@ -1,7 +1,15 @@
-//! GEOINT on operator-supplied fixes. WGS84 sphere. No live geolocation.
+//! GEOINT on operator-supplied fixes plus rebuilt legacy geo support.
 
 use crate::error::Error;
 
+pub use crate::geo;
+pub use crate::geometry;
+pub use crate::oui;
+pub use crate::postcode_au;
+pub use crate::radar;
+pub use crate::rf;
+
+#[cfg(test)]
 const EARTH_M: f64 = 6_371_000.0;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,25 +33,13 @@ pub struct CoLocation {
 /// # Errors
 /// `Error::Invalid` when the pair is malformed or out of range.
 pub fn parse_latlon(raw: &str) -> Result<(f64, f64), Error> {
-    let (a, b) = raw
-        .split_once(',')
-        .ok_or_else(|| Error::Invalid("expected lat,lon".into()))?;
-    let lat: f64 = a.trim().parse().map_err(|_| Error::Invalid("lat".into()))?;
-    let lon: f64 = b.trim().parse().map_err(|_| Error::Invalid("lon".into()))?;
-    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
-        return Err(Error::Invalid("coordinate out of range".into()));
-    }
-    Ok((lat, lon))
+    crate::geohash::parse_coords(raw)
+        .ok_or_else(|| Error::Invalid("coordinate out of range".into()))
 }
 
 #[must_use]
 pub fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let p1 = lat1.to_radians();
-    let p2 = lat2.to_radians();
-    let dp = (lat2 - lat1).to_radians();
-    let dl = (lon2 - lon1).to_radians();
-    let h = (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
-    2.0 * EARTH_M * h.clamp(0.0, 1.0).sqrt().asin()
+    crate::geohash::haversine_km(lat1, lon1, lat2, lon2) * 1000.0
 }
 
 #[must_use]
@@ -72,11 +68,10 @@ mod tests {
 
     #[test]
     fn brisbane_sydney_band() {
-        // Published city centroids, not a survey. Band is the acceptance, not a claim of survey grade.
         let (blat, blon) = parse_latlon("-27.4698,153.0251").unwrap();
         let (slat, slon) = parse_latlon("-33.8688,151.2093").unwrap();
-        let m = haversine_m(blat, blon, slat, slon);
-        assert!(m > 700_000.0 && m < 760_000.0, "{m}");
+        let meters = haversine_m(blat, blon, slat, slon);
+        assert!(meters > 700_000.0 && meters < 760_000.0, "{meters}");
     }
 
     #[test]
@@ -102,15 +97,13 @@ mod tests {
             },
         ];
         let near = colocated(&fixes, 2_000.0, 200);
-        assert!(near.iter().any(|c| c.left == "a" && c.right == "b"));
-        assert!(near.iter().all(|c| c.right != "c" && c.left != "c"));
-        let stale = colocated(&fixes, 2_000.0, 10);
-        assert!(stale.is_empty());
+        assert!(near.iter().any(|fix| fix.left == "a" && fix.right == "b"));
+        assert!(near.iter().all(|fix| fix.left != "c" && fix.right != "c"));
+        assert!(colocated(&fixes, 2_000.0, 10).is_empty());
     }
 
     #[test]
-    fn antipodes_are_half_the_circumference_not_nan() {
-        // h rounds to 1 + 1 ulp for these pairs. The clamp keeps asin in domain on any libm.
+    fn antipodes_are_half_circumference_not_nan() {
         let half = std::f64::consts::PI * EARTH_M;
         for (lat, lon) in [
             (-59.811_333_000_000_005, -55.338_965),
@@ -118,8 +111,8 @@ mod tests {
             (0.0, 0.0),
         ] {
             let other = if lon > 0.0 { lon - 180.0 } else { lon + 180.0 };
-            let m = haversine_m(lat, lon, -lat, other);
-            assert!((m - half).abs() < 1.0, "{lat},{lon}: {m}");
+            let meters = haversine_m(lat, lon, -lat, other);
+            assert!((meters - half).abs() < 1.0, "{lat},{lon}: {meters}");
         }
     }
 

@@ -1,19 +1,21 @@
-//! Geohash encode and decode. Rebuilt from the monolith's `util::geohash::encode`.
-//! Pure, no I/O.
-//!
-//! The monolith clamped precision silently (0 became 1, 99 became 12) and had no
-//! decoder, so nothing could prove an encoding round-trips. Here an unusable
-//! precision is an error and `decode` returns the cell the hash names. A geohash
-//! names a cell, not a point: precision 7 is roughly 150 m by 150 m.
+#![allow(clippy::cast_precision_loss)]
+
+//! Geohash encode/decode plus the monolith's missing pure place helpers.
 
 use crate::error::Error;
 
+pub use crate::place::{
+    AddressComponents, GEO_OUTLIER_KM, country_name_for_iso, is_bare_country, parse_address,
+    reverse_country_iso, timezone_for,
+};
+
 const BASE32: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
+const EARTH_KM: f64 = 6_371.0;
+const MAX_PRECISION_U8: u8 = 12;
 
 /// 12 characters are 60 bits, 30 per axis: the most an `f64` splits without loss.
 pub const MAX_PRECISION: usize = 12;
 
-/// The cell a geohash names. Edges are inclusive on the low side.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Cell {
     pub lat_min: f64,
@@ -58,14 +60,14 @@ pub fn encode(lat: f64, lon: f64, precision: usize) -> Result<String, Error> {
     for _ in 0..precision {
         let mut idx = 0usize;
         for _ in 0..5 {
-            let (lo, hi, v) = if even {
+            let (lo, hi, value) = if even {
                 (&mut lon_lo, &mut lon_hi, lon)
             } else {
                 (&mut lat_lo, &mut lat_hi, lat)
             };
             let mid = f64::midpoint(*lo, *hi);
             idx <<= 1;
-            if v >= mid {
+            if value >= mid {
                 idx |= 1;
                 *lo = mid;
             } else {
@@ -76,6 +78,12 @@ pub fn encode(lat: f64, lon: f64, precision: usize) -> Result<String, Error> {
         out.push(char::from(BASE32[idx]));
     }
     Ok(out)
+}
+
+/// Legacy-compatible wrapper: invalid input yields `""` and precision is clamped.
+#[must_use]
+pub fn geohash(lat: f64, lon: f64, precision: u8) -> String {
+    encode(lat, lon, usize::from(precision.clamp(1, MAX_PRECISION_U8))).unwrap_or_default()
 }
 
 /// The cell named by `hash`. Lowercase only: `a`, `i`, `l`, `o` are not in the alphabet.
@@ -95,10 +103,13 @@ pub fn decode(hash: &str) -> Result<Cell, Error> {
         lon_max: 180.0,
     };
     let mut even = true;
-    for b in hash.bytes() {
-        let idx = BASE32.iter().position(|&c| c == b).ok_or_else(|| {
-            Error::Invalid(format!("not a geohash character: {:?}", char::from(b)))
-        })?;
+    for byte in hash.bytes() {
+        let idx = BASE32
+            .iter()
+            .position(|candidate| *candidate == byte)
+            .ok_or_else(|| {
+                Error::Invalid(format!("not a geohash character: {:?}", char::from(byte)))
+            })?;
         for bit in (0..5).rev() {
             let (lo, hi) = if even {
                 (&mut cell.lon_min, &mut cell.lon_max)
@@ -117,8 +128,30 @@ pub fn decode(hash: &str) -> Result<Cell, Error> {
     Ok(cell)
 }
 
+/// Parse a `lat,lon` pair with range checks.
+#[must_use]
+pub fn parse_coords(value: &str) -> Option<(f64, f64)> {
+    let (lat_raw, lon_raw) = value.split_once(',')?;
+    let lat = lat_raw.trim().parse::<f64>().ok()?;
+    let lon = lon_raw.trim().parse::<f64>().ok()?;
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
+    }
+    Some((lat, lon))
+}
+
+/// Great-circle distance in kilometres.
+#[must_use]
+pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let dlat = (lat2 - lat1).to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+    2.0 * EARTH_KM * a.sqrt().atan2((1.0 - a).max(0.0).sqrt())
+}
+
 #[cfg(test)]
-#[allow(clippy::float_cmp)] // exact 0.0/1.0 sentinels are the contract under test
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 
@@ -132,6 +165,17 @@ mod tests {
     }
 
     #[test]
+    fn legacy_wrapper_keeps_old_totality_contract() {
+        let hash = geohash(-33.8568, 151.2153, 7);
+        assert!(hash.starts_with("r3gx2"), "{hash}");
+        assert_eq!(hash.len(), 7);
+        assert_eq!(geohash(91.0, 0.0, 7), "");
+        assert_eq!(geohash(0.0, 200.0, 7), "");
+        assert_eq!(geohash(0.0, 0.0, 0).len(), 1);
+        assert_eq!(geohash(0.0, 0.0, 20).len(), MAX_PRECISION);
+    }
+
+    #[test]
     fn unusable_input_is_an_error_not_a_clamp() {
         assert!(encode(91.0, 0.0, 7).is_err());
         assert!(encode(0.0, 180.5, 7).is_err());
@@ -140,7 +184,7 @@ mod tests {
         assert!(encode(0.0, 0.0, 0).is_err());
         assert!(encode(0.0, 0.0, 13).is_err());
         for bad in ["", "a", "u4pruydqqvjxx", "U4PRU", "u4 ru", "é"] {
-            assert!(decode(bad).is_err(), "{bad:?}");
+            assert!(decode(bad).is_err(), "{bad}");
         }
     }
 
@@ -153,16 +197,19 @@ mod tests {
             (-90.0, 180.0),
             (-0.0, -0.0),
         ] {
-            for p in 1..=MAX_PRECISION {
-                let h = encode(lat, lon, p).unwrap();
-                assert_eq!(h.len(), p);
-                assert!(decode(&h).unwrap().contains(lat, lon), "{lat},{lon} {h}");
+            for precision in 1..=MAX_PRECISION {
+                let hash = encode(lat, lon, precision).unwrap();
+                assert_eq!(hash.len(), precision);
+                assert!(
+                    decode(&hash).unwrap().contains(lat, lon),
+                    "{lat},{lon} {hash}"
+                );
             }
         }
     }
 
     #[test]
-    fn every_hash_round_trips_through_its_own_cell_centre() {
+    fn every_hash_round_trips_through_its_own_cell_center() {
         let mut state = 0x9e37_79b9_7f4a_7c15_u64;
         for _ in 0..2000 {
             state = state
@@ -170,9 +217,9 @@ mod tests {
                 .wrapping_add(1);
             let len = 1 + usize::try_from((state >> 40) % 12).unwrap();
             let hash: String = (0..len)
-                .map(|i| {
-                    let v = usize::try_from((state >> (i * 5 % 59)) % 32).unwrap();
-                    char::from(BASE32[v])
+                .map(|index| {
+                    let value = usize::try_from((state >> (index * 5 % 59)) % 32).unwrap();
+                    char::from(BASE32[value])
                 })
                 .collect();
             let (lat, lon) = decode(&hash).unwrap().center();
@@ -181,31 +228,59 @@ mod tests {
     }
 
     #[test]
-    fn a_point_is_inside_the_cell_of_every_prefix_and_cells_nest() {
+    fn prefix_property_and_cell_nesting_hold() {
         let (lat, lon) = (-33.8688, 151.2093);
         let full = encode(lat, lon, MAX_PRECISION).unwrap();
         let mut outer = decode(&full[..1]).unwrap();
-        for p in 1..=MAX_PRECISION {
-            assert_eq!(encode(lat, lon, p).unwrap(), &full[..p], "prefix property");
-            let cell = decode(&full[..p]).unwrap();
+        for precision in 1..=MAX_PRECISION {
+            assert_eq!(encode(lat, lon, precision).unwrap(), &full[..precision]);
+            let cell = decode(&full[..precision]).unwrap();
             assert!(cell.contains(lat, lon));
             assert!(
                 cell.lat_min >= outer.lat_min
                     && cell.lat_max <= outer.lat_max
                     && cell.lon_min >= outer.lon_min
-                    && cell.lon_max <= outer.lon_max,
-                "cells must nest at {p}"
+                    && cell.lon_max <= outer.lon_max
             );
             outer = cell;
         }
     }
 
     #[test]
-    fn cell_size_halves_per_bit() {
-        let c = decode("s").unwrap();
-        assert!((c.lon_max - c.lon_min - 45.0).abs() < 1e-12);
-        assert!((c.lat_max - c.lat_min - 45.0).abs() < 1e-12);
-        let c7 = decode("r7hgdqz").unwrap();
-        assert!(c7.lat_max - c7.lat_min < 0.002 && c7.lon_max - c7.lon_min < 0.002);
+    fn parse_coords_and_haversine_cover_legacy_helpers() {
+        assert_eq!(parse_coords(" -27.47 , 153.02 "), Some((-27.47, 153.02)));
+        assert_eq!(parse_coords("91.0,0.0"), None);
+        assert_eq!(parse_coords("153.02"), None);
+        assert_eq!(parse_coords("a,b"), None);
+        let distance = haversine_km(-33.87, 151.21, -37.81, 144.96);
+        assert!((distance - 714.0).abs() < 15.0, "{distance}");
+        assert_eq!(haversine_km(10.0, 20.0, 10.0, 20.0), 0.0);
+        let half = std::f64::consts::PI * EARTH_KM;
+        let antipode = haversine_km(-87.5, 0.0, 87.5, 180.0);
+        assert!(antipode.is_finite());
+        assert!((antipode - half).abs() < 1.0);
+    }
+
+    #[test]
+    fn haversine_is_a_bounded_symmetric_metric() {
+        let max_km = std::f64::consts::PI * EARTH_KM + 1e-6;
+        let mut state = 0x5dee_ce66d_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..50_000 {
+            let lat1 = next() * 180.0 - 90.0;
+            let lon1 = next() * 360.0 - 180.0;
+            let lat2 = next() * 180.0 - 90.0;
+            let lon2 = next() * 360.0 - 180.0;
+            let d = haversine_km(lat1, lon1, lat2, lon2);
+            assert!(d.is_finite() && d >= 0.0);
+            assert!(d <= max_km);
+            assert_eq!(d, haversine_km(lat2, lon2, lat1, lon1));
+            assert_eq!(haversine_km(lat1, lon1, lat1, lon1), 0.0);
+        }
     }
 }

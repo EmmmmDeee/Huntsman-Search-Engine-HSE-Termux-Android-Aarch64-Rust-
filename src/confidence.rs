@@ -15,6 +15,11 @@
 //! never raise a tier. Depth decay refuses a base above 1, which would have
 //! amplified confidence.
 
+use std::collections::BTreeSet;
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
 use crate::evidence_ancestry::{AncestryError, EvidenceAncestryGraph, EvidenceNodeId};
 
 /// Boost per `ln n` in the multiplicative term.
@@ -26,7 +31,7 @@ pub const VERIFIED_MIN: f64 = 0.75;
 /// Lower bound of the Probable tier.
 pub const PROBABLE_MIN: f64 = 0.40;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Classification {
     Candidate,
     Probable,
@@ -34,6 +39,10 @@ pub enum Classification {
 }
 
 impl Classification {
+    pub const VERIFIED_MIN: f64 = VERIFIED_MIN;
+    pub const PROBABLE_MIN: f64 = PROBABLE_MIN;
+    pub const COUNT: u8 = 3;
+
     /// A non-finite value is `Candidate`, the conservative tier.
     #[must_use]
     pub fn from_effective(c_eff: f64) -> Self {
@@ -54,6 +63,37 @@ impl Classification {
             Self::Verified => "VERIFIED",
         }
     }
+
+    #[must_use]
+    pub fn from_c_eff(c_eff: f64) -> Self {
+        Self::from_effective(c_eff)
+    }
+
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Candidate => 0,
+            Self::Probable => 1,
+            Self::Verified => 2,
+        }
+    }
+}
+
+impl fmt::Display for Classification {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationMethod {
+    EmailLinked,
+    PlatformVerified,
+    ActivityProof,
+    SelfDisclosed,
+    LinkedProfile,
+    Unverified,
 }
 
 fn unit(x: f64) -> f64 {
@@ -71,6 +111,20 @@ pub fn effective(confidence: f64, sources: u32) -> f64 {
     let decay = CORROBORATION_DOUBT_DECAY.max(1.0 - c);
     let agreement = 1.0 - (1.0 - c) * decay.powf(n - 1.0);
     multiplicative.max(agreement).clamp(c, 1.0)
+}
+
+#[must_use]
+pub fn effective_from_distinct_sources<'a>(
+    confidence: f64,
+    sources: impl IntoIterator<Item = &'a str>,
+) -> f64 {
+    let count = sources
+        .into_iter()
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+        .collect::<BTreeSet<_>>()
+        .len();
+    effective(confidence, u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 /// [`effective`] with `n` taken as independent root families behind `support`.

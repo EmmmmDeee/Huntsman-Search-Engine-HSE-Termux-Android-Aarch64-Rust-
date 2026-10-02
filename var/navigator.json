@@ -4,7 +4,7 @@
   "name": "huntsman-ledger",
   "techniques": [],
   "versions": {
-    "attack": "14",
+    "attack": "17",
     "layer": "4.5",
     "navigator": "4.9"
   }

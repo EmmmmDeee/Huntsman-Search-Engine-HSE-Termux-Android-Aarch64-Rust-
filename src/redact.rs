@@ -10,7 +10,7 @@
 //! and touching spans are merged, and each merged span becomes one mask.
 //! Coarsening is not anonymisation: ~11 km still places a person in a suburb.
 
-use crate::geoint::parse_latlon;
+use crate::geohash::parse_coords;
 
 /// Fixed and content-free: no length hint, no prefix.
 pub const REDACTED: &str = "[redacted]";
@@ -30,7 +30,7 @@ fn round1(x: f64) -> String {
 /// can land exactly on a bound (89.96 gives 90.0), which is still valid.
 #[must_use]
 pub fn coarsen_latlon(raw: &str) -> Option<String> {
-    let (lat, lon) = parse_latlon(raw).ok()?;
+    let (lat, lon) = parse_coords(raw)?;
     Some(format!("{},{}", round1(lat), round1(lon)))
 }
 
@@ -116,8 +116,8 @@ mod tests {
         ] {
             let once = coarsen_latlon(raw).unwrap();
             assert_eq!(coarsen_latlon(&once).as_deref(), Some(once.as_str()));
-            let (a, b) = parse_latlon(raw).unwrap();
-            let (c, d) = parse_latlon(&once).unwrap();
+            let (a, b) = parse_coords(raw).unwrap();
+            let (c, d) = parse_coords(&once).unwrap();
             assert!(
                 (a - c).abs() <= 0.05 + 1e-9 && (b - d).abs() <= 0.05 + 1e-9,
                 "{raw}"
