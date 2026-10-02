@@ -70,6 +70,7 @@ pub mod pivot;
 pub mod place;
 pub mod postcode_au;
 pub mod profiles;
+pub mod query_frontier;
 pub mod radar;
 pub mod recon;
 pub mod redact;
