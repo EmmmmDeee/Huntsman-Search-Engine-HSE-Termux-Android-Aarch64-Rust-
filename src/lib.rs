@@ -53,6 +53,7 @@ pub mod graph;
 pub mod hibp;
 pub mod http;
 pub mod identity;
+pub mod identity_benchmark;
 pub mod identity_resolution;
 pub mod intelligence;
 pub mod json;
