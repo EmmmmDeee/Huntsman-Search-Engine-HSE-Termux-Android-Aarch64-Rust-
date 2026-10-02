@@ -19,6 +19,6 @@ A verified capability is not a technique score. The binding table is empty. Have
 
 ## Acceptance
 
-`cargo test` — 13 passed. `huntsman-recon check` — techniques=0, Brisbane–Sydney 732379 m. `geo` prints the same distance.
+`cargo test` — 17 passed on 2026-10-02 follow-on (15 unit, 2 accept). `huntsman-recon check` — techniques=0, Brisbane–Sydney 732379 m. `geo` prints the same distance. Operator directory search skips non-text and challenge pages.
 
 No Termux run. No live harvest. No survey-grade geodesy. Catalog presence is not a score.
