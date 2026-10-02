@@ -14,9 +14,10 @@ fn store_err(path: &Path, e: &std::io::Error) -> Error {
 
 fn refuse_symlink(path: &Path) -> Result<(), Error> {
     match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            Err(Error::Store(format!("{}: refusing symlink", path.display())))
-        }
+        Ok(meta) if meta.file_type().is_symlink() => Err(Error::Store(format!(
+            "{}: refusing symlink",
+            path.display()
+        ))),
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(store_err(path, &e)),
@@ -32,14 +33,20 @@ pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
     let file = File::open(path).map_err(|e| store_err(path, &e))?;
     let meta = file.metadata().map_err(|e| store_err(path, &e))?;
     if !meta.is_file() {
-        return Err(Error::Store(format!("{}: not a regular file", path.display())));
+        return Err(Error::Store(format!(
+            "{}: not a regular file",
+            path.display()
+        )));
     }
     let mut body = Vec::new();
     file.take(max.saturating_add(1))
         .read_to_end(&mut body)
         .map_err(|e| store_err(path, &e))?;
     if body.len() as u64 > max {
-        return Err(Error::Store(format!("{}: exceeds {max} bytes", path.display())));
+        return Err(Error::Store(format!(
+            "{}: exceeds {max} bytes",
+            path.display()
+        )));
     }
     Ok(body)
 }
@@ -50,7 +57,10 @@ pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
 /// `Error::Store` on a symlink, a body over `max` bytes, or IO failure.
 pub fn write_atomic(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
     if body.len() as u64 > max {
-        return Err(Error::Store(format!("{}: exceeds {max} bytes", path.display())));
+        return Err(Error::Store(format!(
+            "{}: exceeds {max} bytes",
+            path.display()
+        )));
     }
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
@@ -100,8 +110,16 @@ mod tests {
         assert_eq!(read_bounded(&path, 5).unwrap(), b"12345");
         assert!(read_bounded(&path, 4).is_err());
         assert!(write_atomic(&path, b"123456", 5).is_err());
-        assert_eq!(read_bounded(&path, 5).unwrap(), b"12345", "refused write leaves the old file");
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "no temp file left behind");
+        assert_eq!(
+            read_bounded(&path, 5).unwrap(),
+            b"12345",
+            "refused write leaves the old file"
+        );
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            1,
+            "no temp file left behind"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -115,7 +133,11 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(read_bounded(&link, 10).is_err());
         assert!(write_atomic(&link, b"[]", 10).is_err());
-        assert_eq!(fs::read(&target).unwrap(), b"{}", "symlink target untouched");
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            b"{}",
+            "symlink target untouched"
+        );
         let real = dir.join("real");
         fs::create_dir_all(&real).unwrap();
         let linked_dir = dir.join("linked");

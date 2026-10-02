@@ -78,14 +78,18 @@ const PHRASES: &[&[&str]] = &[
 #[must_use]
 pub fn looks_like_document(body: &str) -> bool {
     let head = body.trim_start();
-    OPENERS.iter().any(|opener| head.len() >= opener.len() && head[..opener.len()].eq_ignore_ascii_case(opener))
+    OPENERS.iter().any(|opener| {
+        head.len() >= opener.len() && head[..opener.len()].eq_ignore_ascii_case(opener)
+    })
 }
 
 #[must_use]
 pub fn challenge_signature_present(body: &str) -> bool {
     let lower = body.to_ascii_lowercase();
     VENDOR.iter().any(|n| lower.contains(n))
-        || PHRASES.iter().any(|set| set.iter().all(|t| lower.contains(t)))
+        || PHRASES
+            .iter()
+            .any(|set| set.iter().all(|t| lower.contains(t)))
 }
 
 #[must_use]
@@ -98,26 +102,37 @@ pub fn is_json_body(body: &str) -> bool {
 /// that merely quotes a vendor path.
 #[must_use]
 pub fn is_challenge(body: &str) -> bool {
-    challenge_signature_present(body) && !(is_json_body(body) && !looks_like_document(body))
+    challenge_signature_present(body) && (!is_json_body(body) || looks_like_document(body))
 }
 
 #[must_use]
 pub fn classify_response(status: u16, body: &str) -> FetchOutcome {
     if status == 429 {
-        return FetchOutcome::RateLimited { status, detail: snippet(body) };
+        return FetchOutcome::RateLimited {
+            status,
+            detail: snippet(body),
+        };
     }
     if is_challenge(body) {
-        return FetchOutcome::Blocked { status, detail: snippet(body) };
+        return FetchOutcome::Blocked {
+            status,
+            detail: snippet(body),
+        };
     }
     if !(200..300).contains(&status) {
-        return FetchOutcome::Failed { detail: format!("HTTP {status}: {}", snippet(body)) };
+        return FetchOutcome::Failed {
+            detail: format!("HTTP {status}: {}", snippet(body)),
+        };
     }
     FetchOutcome::Parsed
 }
 
 fn snippet(body: &str) -> String {
     let trimmed = body.trim();
-    let end = trimmed.char_indices().nth(180).map_or(trimmed.len(), |(i, _)| i);
+    let end = trimmed
+        .char_indices()
+        .nth(180)
+        .map_or(trimmed.len(), |(i, _)| i);
     trimmed[..end].to_owned()
 }
 
@@ -141,7 +156,11 @@ mod tests {
 
     #[test]
     fn reddit_block_opens_as_a_document() {
-        assert!(looks_like_document("<body class=theme-beta>blocked by network security"));
-        assert!(is_challenge("<body class=theme-beta>blocked by network security"));
+        assert!(looks_like_document(
+            "<body class=theme-beta>blocked by network security"
+        ));
+        assert!(is_challenge(
+            "<body class=theme-beta>blocked by network security"
+        ));
     }
 }

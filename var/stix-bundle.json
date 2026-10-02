@@ -1,28 +1,5 @@
 {
   "id": "bundle--00000000-0000-4000-8000-000000000001",
-  "objects": [
-    {
-      "confidence": 80,
-      "created": "2026-10-02T00:00:00.000Z",
-      "external_references": [
-        {
-          "description": "eb94ad4a2ff5eaa643efafb4b877a1f8c8bb9fd1a5d2ad29ea98885207faa7be",
-          "external_id": "T1591",
-          "source_name": "huntsman-ledger"
-        }
-      ],
-      "id": "indicator--eb94ad4a-2ff5-4aa6-83ef-afb4b877a1f8",
-      "indicator_types": [
-        "malicious-activity"
-      ],
-      "modified": "2026-10-02T00:00:00.000Z",
-      "name": "brisbane-sydney haversine 732379 m inside band",
-      "pattern": "[file:name = 'src/geoint.rs']",
-      "pattern_type": "stix",
-      "spec_version": "2.1",
-      "type": "indicator",
-      "valid_from": "2026-10-02T00:00:00.000Z"
-    }
-  ],
+  "objects": [],
   "type": "bundle"
 }

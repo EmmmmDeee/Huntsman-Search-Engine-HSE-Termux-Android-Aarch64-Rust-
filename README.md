@@ -1,16 +1,21 @@
 # huntsman
 
-Only current version of the project. Previous trees remain in git history.
+Only the current version of the project lives here. Earlier trees, the HSE monolith, and the uploaded legacy zip archives stay in git history (commit `91f2533`).
 
 Local search over operator-supplied documents. A challenge page is not a hit. No paid source. No network client. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
 
 ```
 cargo test
-cargo run -- search "brisbane port"
+cargo run -- check                     # self-acceptance; regenerates var/*.json
+cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
+cargo run -- search "brisbane port"    # built-in fixture
 cargo run -- search "brisbane port" docs/
-cargo run -- check
+cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
+cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 ```
 
-`search` without a directory uses the built-in fixture. A directory loads `.txt` and `.md` only. A challenge page in that directory is skipped, not scored.
+`search DIR` loads `.txt` and `.md` from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
+
+Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input, 74 artifact write failure. `check` uses 2–9 for its individual gates.
 
 See `docs/RECONSTRUCTION_2026-10-02.md`.

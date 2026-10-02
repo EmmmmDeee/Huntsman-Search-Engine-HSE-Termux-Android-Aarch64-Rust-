@@ -19,6 +19,8 @@ pub mod stix;
 pub mod store;
 
 pub use error::Error;
-pub use ledger::{admitted, append, chain_intact, load_chain, save_chain, seal, Claim, LedgerEntry};
+pub use ledger::{
+    Claim, LedgerEntry, admitted, append, chain_intact, load_chain, save_chain, seal,
+};
 pub use session::Session;
 pub use stage::{EvidenceLevel, Status};

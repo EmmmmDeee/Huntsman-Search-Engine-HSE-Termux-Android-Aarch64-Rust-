@@ -1,7 +1,7 @@
 //! ATT&CK Navigator layer. Techniques appear only when a ledger entry admits interop.
 //! A catalog row is not a score.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ledger::LedgerEntry;
 
@@ -31,7 +31,7 @@ pub fn layer(entries: &[LedgerEntry]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::{seal, Claim};
+    use crate::ledger::{Claim, seal};
     use crate::stage::{EvidenceLevel, Status};
 
     #[test]
@@ -39,7 +39,7 @@ mod tests {
         let mapped = seal(&Claim {
             claim: "appears in ATT&CK".into(),
             source: "catalog".into(),
-            component: "".into(),
+            component: String::new(),
             technique_id: Some("T1589".into()),
             status: Status::Verified,
             evidence_level: EvidenceLevel::Assertion,

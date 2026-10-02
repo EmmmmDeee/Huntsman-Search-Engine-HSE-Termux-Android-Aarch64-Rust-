@@ -25,7 +25,9 @@ pub struct CoLocation {
 /// # Errors
 /// `Error::Invalid` when the pair is malformed or out of range.
 pub fn parse_latlon(raw: &str) -> Result<(f64, f64), Error> {
-    let (a, b) = raw.split_once(',').ok_or_else(|| Error::Invalid("expected lat,lon".into()))?;
+    let (a, b) = raw
+        .split_once(',')
+        .ok_or_else(|| Error::Invalid("expected lat,lon".into()))?;
     let lat: f64 = a.trim().parse().map_err(|_| Error::Invalid("lat".into()))?;
     let lon: f64 = b.trim().parse().map_err(|_| Error::Invalid("lon".into()))?;
     if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
@@ -80,9 +82,24 @@ mod tests {
     #[test]
     fn outside_radius_or_window_is_not_colocation() {
         let fixes = vec![
-            Fix { id: "a".into(), lat: -27.47, lon: 153.02, at_unix: 1_000 },
-            Fix { id: "b".into(), lat: -27.47, lon: 153.03, at_unix: 1_100 },
-            Fix { id: "c".into(), lat: -33.87, lon: 151.21, at_unix: 1_050 },
+            Fix {
+                id: "a".into(),
+                lat: -27.47,
+                lon: 153.02,
+                at_unix: 1_000,
+            },
+            Fix {
+                id: "b".into(),
+                lat: -27.47,
+                lon: 153.03,
+                at_unix: 1_100,
+            },
+            Fix {
+                id: "c".into(),
+                lat: -33.87,
+                lon: 151.21,
+                at_unix: 1_050,
+            },
         ];
         let near = colocated(&fixes, 2_000.0, 200);
         assert!(near.iter().any(|c| c.left == "a" && c.right == "b"));
@@ -95,7 +112,11 @@ mod tests {
     fn antipodes_are_half_the_circumference_not_nan() {
         // h rounds to 1 + 1 ulp for these pairs. The clamp keeps asin in domain on any libm.
         let half = std::f64::consts::PI * EARTH_M;
-        for (lat, lon) in [(-59.811_333_000_000_005, -55.338_965), (20.542_294, -6.566_629_000_000_006), (0.0, 0.0)] {
+        for (lat, lon) in [
+            (-59.811_333_000_000_005, -55.338_965),
+            (20.542_294, -6.566_629_000_000_006),
+            (0.0, 0.0),
+        ] {
             let other = if lon > 0.0 { lon - 180.0 } else { lon + 180.0 };
             let m = haversine_m(lat, lon, -lat, other);
             assert!((m - half).abs() < 1.0, "{lat},{lon}: {m}");
@@ -105,8 +126,18 @@ mod tests {
     #[test]
     fn extreme_timestamps_do_not_overflow() {
         let fixes = vec![
-            Fix { id: "a".into(), lat: 0.0, lon: 0.0, at_unix: i64::MIN },
-            Fix { id: "b".into(), lat: 0.0, lon: 0.0, at_unix: i64::MAX },
+            Fix {
+                id: "a".into(),
+                lat: 0.0,
+                lon: 0.0,
+                at_unix: i64::MIN,
+            },
+            Fix {
+                id: "b".into(),
+                lat: 0.0,
+                lon: 0.0,
+                at_unix: i64::MAX,
+            },
         ];
         assert!(colocated(&fixes, 1.0, u64::MAX - 1).is_empty());
         assert_eq!(colocated(&fixes, 1.0, u64::MAX).len(), 1);

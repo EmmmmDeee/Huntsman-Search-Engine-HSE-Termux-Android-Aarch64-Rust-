@@ -29,7 +29,7 @@ pub struct Cluster {
 #[must_use]
 pub fn canonical_name(raw: &str) -> String {
     raw.split_whitespace()
-        .map(|w| w.to_ascii_lowercase())
+        .map(str::to_ascii_lowercase)
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -41,7 +41,10 @@ pub fn canonical_email(raw: &str) -> Option<String> {
     if local.is_empty() || !valid_domain(domain) {
         return None;
     }
-    if !local.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-')) {
+    if !local
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
+    {
         return None;
     }
     Some(format!("{local}@{domain}"))
@@ -70,7 +73,10 @@ pub fn canonical_handle(raw: &str) -> Option<String> {
     if trimmed.is_empty() || trimmed.len() > 40 {
         return None;
     }
-    if !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
         return None;
     }
     Some(trimmed)
@@ -91,8 +97,14 @@ pub fn resolve(records: &[PersonRecord]) -> Vec<Cluster> {
         raw.iter().filter_map(|v| canon(v)).collect()
     }
     let n = records.len();
-    let emails: Vec<HashSet<String>> = records.iter().map(|r| keys(&r.emails, canonical_email)).collect();
-    let handles: Vec<HashSet<String>> = records.iter().map(|r| keys(&r.handles, canonical_handle)).collect();
+    let emails: Vec<HashSet<String>> = records
+        .iter()
+        .map(|r| keys(&r.emails, canonical_email))
+        .collect();
+    let handles: Vec<HashSet<String>> = records
+        .iter()
+        .map(|r| keys(&r.handles, canonical_handle))
+        .collect();
     let mut parent: Vec<usize> = (0..n).collect();
     let mut links = Vec::new();
     for i in 0..n {
@@ -163,13 +175,33 @@ mod tests {
 
     #[test]
     fn malformed_email_domain_is_not_a_link() {
-        for bad in ["x@.", "x@a..b", "x@.com", "x@com.", "x@a b.com", "x@a_b.com"] {
+        for bad in [
+            "x@.",
+            "x@a..b",
+            "x@.com",
+            "x@com.",
+            "x@a b.com",
+            "x@a_b.com",
+        ] {
             assert_eq!(canonical_email(bad), None, "{bad}");
         }
-        assert_eq!(canonical_email(" X@Mail-1.Example.COM "), Some("x@mail-1.example.com".into()));
+        assert_eq!(
+            canonical_email(" X@Mail-1.Example.COM "),
+            Some("x@mail-1.example.com".into())
+        );
         let records = vec![
-            PersonRecord { id: "a".into(), name: "A".into(), emails: vec!["x@.".into()], handles: vec![] },
-            PersonRecord { id: "b".into(), name: "B".into(), emails: vec!["X@.".into()], handles: vec![] },
+            PersonRecord {
+                id: "a".into(),
+                name: "A".into(),
+                emails: vec!["x@.".into()],
+                handles: vec![],
+            },
+            PersonRecord {
+                id: "b".into(),
+                name: "B".into(),
+                emails: vec!["X@.".into()],
+                handles: vec![],
+            },
         ];
         assert_eq!(resolve(&records).len(), 2);
     }
@@ -178,29 +210,70 @@ mod tests {
     fn duplicate_record_ids_keep_links_in_their_own_cluster() {
         // Old filter matched links by id string, so duplicate ids leaked links across clusters.
         let records = vec![
-            PersonRecord { id: "x".into(), name: String::new(), emails: vec!["p@ex.com".into()], handles: vec![] },
-            PersonRecord { id: "y".into(), name: String::new(), emails: vec!["p@ex.com".into()], handles: vec![] },
-            PersonRecord { id: "x".into(), name: String::new(), emails: vec![], handles: vec!["q".into()] },
-            PersonRecord { id: "y".into(), name: String::new(), emails: vec![], handles: vec!["q".into()] },
+            PersonRecord {
+                id: "x".into(),
+                name: String::new(),
+                emails: vec!["p@ex.com".into()],
+                handles: vec![],
+            },
+            PersonRecord {
+                id: "y".into(),
+                name: String::new(),
+                emails: vec!["p@ex.com".into()],
+                handles: vec![],
+            },
+            PersonRecord {
+                id: "x".into(),
+                name: String::new(),
+                emails: vec![],
+                handles: vec!["q".into()],
+            },
+            PersonRecord {
+                id: "y".into(),
+                name: String::new(),
+                emails: vec![],
+                handles: vec!["q".into()],
+            },
         ];
         let clusters = resolve(&records);
         assert_eq!(clusters.len(), 2);
-        let reasons: Vec<Vec<&str>> =
-            clusters.iter().map(|c| c.links.iter().map(|l| l.reason.as_str()).collect()).collect();
+        let reasons: Vec<Vec<&str>> = clusters
+            .iter()
+            .map(|c| c.links.iter().map(|l| l.reason.as_str()).collect())
+            .collect();
         assert_eq!(reasons, [vec!["shared_email"], vec!["shared_handle"]]);
     }
 
     #[test]
     fn transitive_handle_then_email_is_one_cluster() {
         let records = vec![
-            PersonRecord { id: "a".into(), name: String::new(), emails: vec![], handles: vec!["h".into(), "hh".into()] },
-            PersonRecord { id: "b".into(), name: String::new(), emails: vec!["m@ex.com".into()], handles: vec!["@HH".into()] },
-            PersonRecord { id: "c".into(), name: String::new(), emails: vec!["M@EX.com".into()], handles: vec![] },
+            PersonRecord {
+                id: "a".into(),
+                name: String::new(),
+                emails: vec![],
+                handles: vec!["h".into(), "hh".into()],
+            },
+            PersonRecord {
+                id: "b".into(),
+                name: String::new(),
+                emails: vec!["m@ex.com".into()],
+                handles: vec!["@HH".into()],
+            },
+            PersonRecord {
+                id: "c".into(),
+                name: String::new(),
+                emails: vec!["M@EX.com".into()],
+                handles: vec![],
+            },
         ];
         let clusters = resolve(&records);
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].members, ["a", "b", "c"]);
-        let reasons: Vec<&str> = clusters[0].links.iter().map(|l| l.reason.as_str()).collect();
+        let reasons: Vec<&str> = clusters[0]
+            .links
+            .iter()
+            .map(|l| l.reason.as_str())
+            .collect();
         assert_eq!(reasons, ["shared_handle", "shared_email"]);
     }
 

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::error::Error;
 use crate::fsio::{read_bounded, write_atomic};
-use crate::session::{valid_session_id, Session};
+use crate::session::{Session, valid_session_id};
 
 const MAX_BYTES: u64 = 1_048_576;
 
@@ -26,10 +26,17 @@ impl Store {
         if !valid_session_id(&session.id) {
             return Err(Error::Invalid(format!("unsafe session id: {}", session.id)));
         }
-        let path = self.root.join("sessions").join(format!("{}.json", session.id));
+        let path = self
+            .root
+            .join("sessions")
+            .join(format!("{}.json", session.id));
         let body = serde_json::to_vec_pretty(session).map_err(|e| Error::Store(e.to_string()))?;
         write_atomic(&path, &body, MAX_BYTES)?;
-        write_atomic(&self.root.join("current.txt"), session.id.as_bytes(), MAX_BYTES)?;
+        write_atomic(
+            &self.root.join("current.txt"),
+            session.id.as_bytes(),
+            MAX_BYTES,
+        )?;
         Ok(path)
     }
 

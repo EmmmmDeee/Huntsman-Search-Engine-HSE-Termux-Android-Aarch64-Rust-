@@ -52,7 +52,9 @@ const BINDINGS: &[(&str, &str)] = &[];
 
 #[must_use]
 pub fn method_implements(component: &str, technique: &str) -> bool {
-    BINDINGS.iter().any(|(path, id)| *path == component && *id == technique)
+    BINDINGS
+        .iter()
+        .any(|(path, id)| *path == component && *id == technique)
 }
 
 #[must_use]
@@ -124,7 +126,10 @@ pub fn chain_intact(entries: &[LedgerEntry]) -> bool {
 
 #[must_use]
 pub fn admitted(entries: &[LedgerEntry]) -> Vec<&LedgerEntry> {
-    entries.iter().filter(|e| e.claim.admits_interop()).collect()
+    entries
+        .iter()
+        .filter(|e| e.claim.admits_interop())
+        .collect()
 }
 
 const MAX_LEDGER_BYTES: u64 = 1_048_576;
@@ -147,7 +152,8 @@ pub fn save_chain(path: &Path, entries: &[LedgerEntry]) -> Result<(), Error> {
 /// `Error::Store` for IO, size, symlink, or JSON failure; `Error::Invalid` for a broken chain.
 pub fn load_chain(path: &Path) -> Result<Vec<LedgerEntry>, Error> {
     let body = read_bounded(path, MAX_LEDGER_BYTES)?;
-    let entries: Vec<LedgerEntry> = serde_json::from_slice(&body).map_err(|e| Error::Store(e.to_string()))?;
+    let entries: Vec<LedgerEntry> =
+        serde_json::from_slice(&body).map_err(|e| Error::Store(e.to_string()))?;
     if !chain_intact(&entries) {
         return Err(Error::Invalid("ledger chain broken".into()));
     }
@@ -174,12 +180,23 @@ mod tests {
 
     #[test]
     fn hash_changes_when_claim_changes_and_gate_rejects_unverified() {
-        let a = seal(&sample(Status::Verified, EvidenceLevel::DirectObservation, Some("T1595")));
-        let mut other = sample(Status::Verified, EvidenceLevel::DirectObservation, Some("T1595"));
+        let a = seal(&sample(
+            Status::Verified,
+            EvidenceLevel::DirectObservation,
+            Some("T1595"),
+        ));
+        let mut other = sample(
+            Status::Verified,
+            EvidenceLevel::DirectObservation,
+            Some("T1595"),
+        );
         other.claim = "different".into();
         let b = seal(&other);
         assert_ne!(a.hash, b.hash);
-        assert!(!a.claim.admits_interop(), "unbound technique must not score");
+        assert!(
+            !a.claim.admits_interop(),
+            "unbound technique must not score"
+        );
         let weak = seal(&sample(
             Status::Unverified,
             EvidenceLevel::EndToEndDemonstration,
@@ -198,15 +215,41 @@ mod tests {
         let mut b = a.clone();
         b.claim = "a".into();
         b.source = "b\nc".into();
-        assert_ne!(seal(&a).hash, seal(&b).hash, "moving a newline across fields must change the hash");
+        assert_ne!(
+            seal(&a).hash,
+            seal(&b).hash,
+            "moving a newline across fields must change the hash"
+        );
         let none = sample(Status::Verified, EvidenceLevel::DirectObservation, None);
         let empty = sample(Status::Verified, EvidenceLevel::DirectObservation, Some(""));
-        assert_ne!(seal(&none).hash, seal(&empty).hash, "absent technique is not an empty technique");
+        assert_ne!(
+            seal(&none).hash,
+            seal(&empty).hash,
+            "absent technique is not an empty technique"
+        );
+    }
+
+    #[test]
+    fn preimage_layout_is_pinned() {
+        // Changing this vector orphans every saved ledger. Bump PREIMAGE_TAG if it must change.
+        let entry = seal(&sample(
+            Status::Verified,
+            EvidenceLevel::DirectObservation,
+            Some("T1595"),
+        ));
+        assert_eq!(
+            entry.hash,
+            "29f35d985c3eac5b648f2ce8ccdaf6b8468ff4c14ae9fe6ad90d242489759a7c"
+        );
     }
 
     #[test]
     fn reorder_breaks_the_chain() {
-        let first = seal(&sample(Status::Verified, EvidenceLevel::DirectObservation, None));
+        let first = seal(&sample(
+            Status::Verified,
+            EvidenceLevel::DirectObservation,
+            None,
+        ));
         let mut second_claim = sample(Status::Partial, EvidenceLevel::PrimaryEvidence, None);
         second_claim.claim = "second".into();
         let second = append(&first.hash, &second_claim);
@@ -220,7 +263,11 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("ledger.json");
-        let entry = seal(&sample(Status::Verified, EvidenceLevel::DirectObservation, None));
+        let entry = seal(&sample(
+            Status::Verified,
+            EvidenceLevel::DirectObservation,
+            None,
+        ));
         save_chain(&path, &[entry]).unwrap();
         assert!(load_chain(&path).is_ok());
         let mut raw = fs::read_to_string(&path).unwrap();

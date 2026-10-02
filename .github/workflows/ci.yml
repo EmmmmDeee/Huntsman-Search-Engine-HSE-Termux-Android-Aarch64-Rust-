@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: ["1.87", stable]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+        if: matrix.toolchain == 'stable'
+      - run: cargo clippy --all-targets --locked -- -D warnings
+        if: matrix.toolchain == 'stable'
+      - run: cargo test --locked
+      - name: check leaves committed artifacts unchanged
+        run: |
+          cargo run --locked -- check
+          git diff --exit-code -- var/

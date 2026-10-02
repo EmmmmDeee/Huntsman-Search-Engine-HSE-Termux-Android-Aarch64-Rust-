@@ -83,7 +83,8 @@ pub fn search(docs: &[Document], query: &str) -> Vec<Hit> {
 /// `Error::Store` when the directory itself cannot be read. An unreadable
 /// directory is not an empty result.
 pub fn load_dir(dir: &Path) -> Result<Loaded, Error> {
-    let entries = std::fs::read_dir(dir).map_err(|e| Error::Store(format!("{}: {e}", dir.display())))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| Error::Store(format!("{}: {e}", dir.display())))?;
     let mut loaded = Loaded::default();
     for entry in entries {
         let entry = entry.map_err(|e| Error::Store(format!("{}: {e}", dir.display())))?;
@@ -93,15 +94,19 @@ pub fn load_dir(dir: &Path) -> Result<Loaded, Error> {
             continue;
         }
         let shown = path.display().to_string();
-        let skip = |reason: String| Skipped { path: shown.clone(), reason };
+        let skip = |reason: String| Skipped {
+            path: shown.clone(),
+            reason,
+        };
         let body = match read_bounded(&path, MAX_DOC_BYTES) {
-            Ok(bytes) => match String::from_utf8(bytes) {
-                Ok(body) => body,
-                Err(_) => {
+            Ok(bytes) => {
+                if let Ok(body) = String::from_utf8(bytes) {
+                    body
+                } else {
                     loaded.skipped.push(skip("not utf-8".into()));
                     continue;
                 }
-            },
+            }
             Err(e) => {
                 loaded.skipped.push(skip(e.to_string()));
                 continue;
@@ -111,8 +116,14 @@ pub fn load_dir(dir: &Path) -> Result<Loaded, Error> {
             loaded.skipped.push(skip("challenge page".into()));
             continue;
         }
-        let id = path.file_name().map_or_else(|| "doc".to_owned(), |n| n.to_string_lossy().into_owned());
-        loaded.docs.push(Document { id, body, source: shown });
+        let id = path
+            .file_name()
+            .map_or_else(|| "doc".to_owned(), |n| n.to_string_lossy().into_owned());
+        loaded.docs.push(Document {
+            id,
+            body,
+            source: shown,
+        });
     }
     loaded.docs.sort_by(|a, b| a.id.cmp(&b.id));
     loaded.skipped.sort_by(|a, b| a.path.cmp(&b.path));
@@ -126,7 +137,11 @@ pub fn search_response(status: u16, body: &str, query: &str, source: &str) -> Ve
         return Vec::new();
     }
     search(
-        &[Document { id: source.to_owned(), body: body.to_owned(), source: source.to_owned() }],
+        &[Document {
+            id: source.to_owned(),
+            body: body.to_owned(),
+            source: source.to_owned(),
+        }],
         query,
     )
 }
@@ -137,9 +152,21 @@ mod tests {
 
     fn docs() -> Vec<Document> {
         vec![
-            Document { id: "a".into(), body: "Brisbane radar sighting at the port".into(), source: "local".into() },
-            Document { id: "b".into(), body: "Sydney harbour note".into(), source: "local".into() },
-            Document { id: "c".into(), body: "Brisbane port schedule port".into(), source: "local".into() },
+            Document {
+                id: "a".into(),
+                body: "Brisbane radar sighting at the port".into(),
+                source: "local".into(),
+            },
+            Document {
+                id: "b".into(),
+                body: "Sydney harbour note".into(),
+                source: "local".into(),
+            },
+            Document {
+                id: "c".into(),
+                body: "Brisbane port schedule port".into(),
+                source: "local".into(),
+            },
         ]
     }
 
@@ -149,7 +176,15 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, "c");
         assert!(search(&docs(), "").is_empty());
-        assert!(search_response(200, "<html>just a moment cloudflare</html>", "brisbane", "remote").is_empty());
+        assert!(
+            search_response(
+                200,
+                "<html>just a moment cloudflare</html>",
+                "brisbane",
+                "remote"
+            )
+            .is_empty()
+        );
         assert!(search_response(429, "brisbane port", "brisbane", "remote").is_empty());
         let parsed = search_response(200, "brisbane port open", "brisbane port", "remote");
         assert_eq!(parsed.len(), 1);
@@ -158,8 +193,16 @@ mod tests {
     #[test]
     fn non_ascii_words_are_whole_terms() {
         let docs = vec![
-            Document { id: "rich".into(), body: "Rich harbour".into(), source: "local".into() },
-            Document { id: "zurich".into(), body: "Zürich station, MÜNCHEN".into(), source: "local".into() },
+            Document {
+                id: "rich".into(),
+                body: "Rich harbour".into(),
+                source: "local".into(),
+            },
+            Document {
+                id: "zurich".into(),
+                body: "Zürich station, MÜNCHEN".into(),
+                source: "local".into(),
+            },
         ];
         let hits = search(&docs, "zürich");
         assert_eq!(hits.len(), 1, "{hits:?}");
@@ -175,7 +218,11 @@ mod tests {
         std::fs::write(root.join("port.txt"), "Brisbane port schedule").unwrap();
         std::fs::write(root.join("other.md"), "Sydney harbour note").unwrap();
         std::fs::write(root.join("skip.bin"), "Brisbane port").unwrap();
-        std::fs::write(root.join("wall.txt"), "<html>just a moment cloudflare brisbane port</html>").unwrap();
+        std::fs::write(
+            root.join("wall.txt"),
+            "<html>just a moment cloudflare brisbane port</html>",
+        )
+        .unwrap();
         std::fs::write(root.join("latin1.txt"), b"Brisbane port \xff").unwrap();
         let loaded = load_dir(&root).unwrap();
         let docs = loaded.docs;
@@ -187,11 +234,17 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "port.txt");
         let _ = std::fs::remove_dir_all(&root);
-        assert!(load_dir(&root).is_err(), "missing dir is an error, not hits=0");
+        assert!(
+            load_dir(&root).is_err(),
+            "missing dir is an error, not hits=0"
+        );
     }
 
     #[test]
     fn repeated_query_term_does_not_double_score() {
-        assert_eq!(search(&docs(), "port")[0].score, search(&docs(), "port port")[0].score);
+        assert_eq!(
+            search(&docs(), "port")[0].score,
+            search(&docs(), "port port")[0].score
+        );
     }
 }
