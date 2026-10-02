@@ -1,0 +1,310 @@
+{
+  "oracle": {
+    "repository": "EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-",
+    "commit": "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
+    "rule": [
+      "src/core/breach_consensus.rs: run_consensus_pass, ConsensusResult::is_corroborated, supported_ceiling",
+      "src/core/correlator/rules/breach_pii.rs: breach_corpus_key"
+    ],
+    "capture": "git archive of the oracle commit; a #[cfg(test)] module appended to src/core/breach_consensus.rs built one Email entity per fixture, added one Evidence per observation (collector as source, attributes verbatim), ran run_consensus_pass and wrote these fields. Toolchain 1.98.0 (the oracle's rust-toolchain.toml). The capture module is not committed anywhere.",
+    "supported_ceiling_0_to_3": [
+      0.7,
+      0.7,
+      0.9,
+      1.0
+    ]
+  },
+  "fixtures": [
+    {
+      "name": "same_dump_two_collectors",
+      "observations": [
+        {
+          "collector": "hibp",
+          "attributes": {
+            "breach": "Adobe"
+          }
+        },
+        {
+          "collector": "dehashed",
+          "attributes": {
+            "dbname": "Adobe"
+          }
+        }
+      ],
+      "legacy": {
+        "breach_corpus_key": [
+          "Adobe",
+          "Adobe"
+        ],
+        "confirming_sources": [
+          "Adobe"
+        ],
+        "source_count": 1,
+        "is_corroborated": false,
+        "supported_ceiling": 0.7
+      }
+    },
+    {
+      "name": "two_independent_dumps",
+      "observations": [
+        {
+          "collector": "hibp",
+          "attributes": {
+            "breach": "Adobe"
+          }
+        },
+        {
+          "collector": "dehashed",
+          "attributes": {
+            "dbname": "LinkedIn"
+          }
+        }
+      ],
+      "legacy": {
+        "breach_corpus_key": [
+          "Adobe",
+          "LinkedIn"
+        ],
+        "confirming_sources": [
+          "Adobe",
+          "LinkedIn"
+        ],
+        "source_count": 2,
+        "is_corroborated": true,
+        "supported_ceiling": 0.9
+      }
+    },
+    {
+      "name": "one_collector_two_dumps",
+      "observations": [
+        {
+          "collector": "dehashed",
+          "attributes": {
+            "dbname": "Adobe"
+          }
+        },
+        {
+          "collector": "dehashed",
+          "attributes": {
+            "dbname": "LinkedIn"
+          }
+        }
+      ],
+      "legacy": {
+        "breach_corpus_key": [
+          "Adobe",
+          "LinkedIn"
+        ],
+        "confirming_sources": [
+          "Adobe",
+          "LinkedIn"
+        ],
+        "source_count": 2,
+        "is_corroborated": true,
+        "supported_ceiling": 0.9
+      }
+    },
+    {
+      "name": "aggregator_source_db",
+      "observations": [
+        {
+          "collector": "see_know",
+          "attributes": {
+            "source_db": "Canva"
+          }
+        },
+        {
+          "collector": "see_know",
+          "attributes": {
+            "source_db": "MyFitnessPal"
+          }
+        }
+      ],
+      "legacy": {
+        "breach_corpus_key": [
+          "Canva",
+          "MyFitnessPal"
+        ],
+        "confirming_sources": [
+          "Canva",
+          "MyFitnessPal"
+        ],
+        "source_count": 2,
+        "is_corroborated": true,
+        "supported_ceiling": 0.9
+      }
+    },
+    {
+      "name": "three_dumps_four_collectors",
+      "observations": [
+        {
+          "collector": "hibp",
+          "attributes": {
+            "breach": "Adobe"
+          }
+        },
+        {
+          "collector": "leakcheck",
+          "attributes": {
+            "breach": "Adobe"
+          }
+        },
+        {
+          "collector": "snusbase",
+          "attributes": {
+            "dbname": "LinkedIn"
+          }
+        },
+        {
+          "collector": "oathnet",
+          "attributes": {
+            "dbname": "Canva"
+          }
+        }
+      ],
+      "legacy": {
+        "breach_corpus_key": [
+          "Adobe",
+          "Adobe",
+          "LinkedIn",
+          "Canva"
+        ],
+        "confirming_sources": [
+          "Adobe",
+          "Canva",
+          "LinkedIn"
+        ],
+        "source_count": 3,
+        "is_corroborated": true,
+        "supported_ceiling": 1.0
+      }
+    },
+    {
+      "name": "dbname_takes_precedence",
+      "observations": [
+        {
+          "collector": "oathnet",
+          "attributes": {
+            "dbname": "Adobe",
+            "breach": "LinkedIn"
+          }
+        },
+        {
+          "collector": "hibp",
+          "attributes": {
+            "breach": "Adobe"
+          }
+        }
+      ],
+      "legacy": {
+        "breach_corpus_key": [
+          "Adobe",
+          "Adobe"
+        ],
+        "confirming_sources": [
+          "Adobe"
+        ],
+        "source_count": 1,
+        "is_corroborated": false,
+        "supported_ceiling": 0.7
+      }
+    },
+    {
+      "name": "unattributed_collectors",
+      "observations": [
+        {
+          "collector": "hibp",
+          "attributes": {}
+        },
+        {
+          "collector": "dehashed",
+          "attributes": {}
+        }
+      ],
+      "legacy": {
+        "breach_corpus_key": [
+          "hibp",
+          "dehashed"
+        ],
+        "confirming_sources": [
+          "dehashed",
+          "hibp"
+        ],
+        "source_count": 2,
+        "is_corroborated": true,
+        "supported_ceiling": 0.9
+      },
+      "intentional_difference": {
+        "recon_families": 0,
+        "reason": "legacy breach_corpus_key falls back to the collector name (Evidence.source) when the record names no corpus, so two collectors become two corpora. Lineage must come from the response: an unattributed record contributes zero families."
+      }
+    },
+    {
+      "name": "case_and_whitespace_variant",
+      "observations": [
+        {
+          "collector": "hibp",
+          "attributes": {
+            "breach": "Adobe"
+          }
+        },
+        {
+          "collector": "dehashed",
+          "attributes": {
+            "dbname": "ADOBE "
+          }
+        }
+      ],
+      "legacy": {
+        "breach_corpus_key": [
+          "Adobe",
+          "ADOBE "
+        ],
+        "confirming_sources": [
+          "ADOBE ",
+          "Adobe"
+        ],
+        "source_count": 2,
+        "is_corroborated": true,
+        "supported_ceiling": 0.9
+      },
+      "intentional_difference": {
+        "recon_families": 1,
+        "reason": "legacy compares raw attribute strings, so \"Adobe\" and \"ADOBE \" are two corpora. Recon canonicalises families (whitespace collapsed, lowercase, as evidence_ancestry::canonical_family already does), so formatting cannot manufacture a second family."
+      }
+    },
+    {
+      "name": "dump_plus_registry",
+      "observations": [
+        {
+          "collector": "hibp",
+          "attributes": {
+            "breach": "Adobe"
+          }
+        },
+        {
+          "collector": "abn_lookup",
+          "attributes": {
+            "registry": "ABR"
+          }
+        }
+      ],
+      "legacy": {
+        "breach_corpus_key": [
+          "Adobe",
+          "abn_lookup"
+        ],
+        "confirming_sources": [
+          "Adobe"
+        ],
+        "source_count": 1,
+        "is_corroborated": false,
+        "supported_ceiling": 0.7
+      },
+      "intentional_difference": {
+        "recon_families": 2,
+        "reason": "legacy breach consensus only counts breach corpora (is_breach_source), so a registry attestation is outside its count. Recon lineage counts any upstream named in the response (dataset, registry, canonical source), so a dump plus an independent registry is two families."
+      }
+    }
+  ]
+}

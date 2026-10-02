@@ -76,3 +76,7 @@ randomness comes from `/dev/urandom`. Token stores support memory or bounded,
 atomic mode-600 files. Debug/errors omit keys, tokens and upstream error bodies.
 All integration evidence here is offline fake-transport testing; live HIBP and
 Termux handset acceptance remain unverified.
+
+## Lineage and the automatic-merge rule
+
+`huntsman_recon::lineage::resolve_with_lineage` takes parsed observations and candidate merge decisions. It reads each record's lineage from its response fields (breach/dataset name, registry, canonical source), never from the collector name, so two collectors relaying one dataset count as one family. It returns every observation and every candidate. A candidate auto-merges only with two independent families and a present, in-range match probability of at least 0.90 (legacy `breach_consensus` parity). Otherwise it is held, with every reason stated. `check` gate 5 runs it. See `docs/LINEAGE.md`.
