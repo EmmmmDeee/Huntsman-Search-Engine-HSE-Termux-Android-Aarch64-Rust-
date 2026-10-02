@@ -1,0 +1,330 @@
+//! HTTP server fingerprint via a single HEAD request.
+//!
+//! Captures the response headers that reliably identify the running
+//! stack — `Server`, `X-Powered-By`, `X-Generator`, etc. — plus the
+//! security-posture headers (`X-Frame-Options`, `Content-Security-Policy`,
+//! `Strict-Transport-Security`, `X-AspNet-Version`).
+//!
+//! Tries HTTPS first, falls back to plain HTTP. Even 4xx/5xx responses
+//! leak useful headers so we only abort if the host refuses both
+//! schemes outright.
+//!
+//! Tagged outputs (`nginx`, `apache`, `iis`, `cloudflare`, `wordpress`)
+//! let the Browse tab filter on stack family.
+
+use async_trait::async_trait;
+
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    error::Result,
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::http::RequestBuilderExt;
+
+const SRC: &str = "webserver_banner";
+
+pub struct WebserverBanner;
+
+/// Headers we surface as evidence. Lower-case because `reqwest`
+/// canonicalises header names that way internally.
+const FINGERPRINT_HEADERS: &[&str] = &[
+    "server",
+    "x-powered-by",
+    "x-generator",
+    "x-aspnet-version",
+    "x-aspnetmvc-version",
+    "x-frame-options",
+    "content-security-policy",
+    "strict-transport-security",
+    "via",
+    "cf-ray",
+    "x-amz-cf-id",
+    "x-served-by",
+    "x-cache",
+];
+
+/// The subset of [`FINGERPRINT_HEADERS`] that directly reveal the underlying
+/// stack, framework, or CDN identity — a banner value, a generator tag, or a
+/// CDN-specific request-id header. The rest (`x-frame-options`,
+/// `content-security-policy`, `strict-transport-security`, `via`, `x-cache`)
+/// are purely security-posture / caching headers present on countless
+/// unrelated stacks and confirm nothing distinctive by themselves. Used by
+/// [`banner_confidence`] so a response that only sent a generic security
+/// header doesn't earn the same confidence as one that named its actual
+/// server software.
+const IDENTIFYING_HEADERS: &[&str] = &[
+    "server",
+    "x-powered-by",
+    "x-generator",
+    "x-aspnet-version",
+    "x-aspnetmvc-version",
+    "cf-ray",
+    "x-amz-cf-id",
+    "x-served-by",
+];
+
+#[async_trait]
+impl Module for WebserverBanner {
+    fn name(&self) -> &'static str {
+        "webserver_banner"
+    }
+
+    fn description(&self) -> &'static str {
+        "HTTP header fingerprinting — probes response banners to unmask the web server and detect the underlying tech stack"
+    }
+
+    fn priority(&self) -> u8 {
+        36
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url
+        )
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        // Two HEAD attempts (HTTPS → HTTP fallback). Each on a fresh
+        // socket if the connection pool is empty.
+        6_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Web
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // A single HEAD with no body fetched can't "search" content (T1594),
+        // so drop the Web default. What it does: fingerprint server/stack
+        // headers (T1592.002) and tag CDN providers via cf-ray/x-amz-cf-id/
+        // x-served-by (T1596.004) — same single-header mechanism as
+        // `waf_detect`, overridden for the same reason.
+        &["T1592.002", "T1596.004"]
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        // Domain / IpAddress targets are re-emitted as-is via `to_entity`; a
+        // Url target is rebased to its host `Domain` (see `banner_entity`) —
+        // the probe only ever HEADs the domain root, never the URL's path.
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
+        KINDS
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let Some((host, port)) = extract_host_port(target.kind, &target.value) else {
+            return Ok(ModuleResult::new());
+        };
+
+        let port_suffix = port.map_or(String::new(), |p| format!(":{p}"));
+        // Whether ANY scheme got a response at all, and the first transport
+        // failure if none did. Without this the `continue` below discarded
+        // every transport error and the loop fell through to `Ok(empty)` —
+        // making "the host is unreachable / TLS failed / the proxy refused"
+        // indistinguishable from "the host answered and published no
+        // fingerprint headers". Those are opposite facts, and the second is a
+        // real negative finding while the first is no observation at all.
+        // (REQ-WEBBANNER-001.)
+        let mut answered = false;
+        let mut first_failure: Option<crate::core::error::Error> = None;
+        for scheme in ["https", "http"] {
+            let url = format!("{scheme}://{host}{port_suffix}/");
+            let resp = match ctx.http.head(&url).send_tagged(SRC).await {
+                Ok(r) => r,
+                Err(e) => {
+                    if first_failure.is_none() {
+                        first_failure = Some(e);
+                    }
+                    continue;
+                }
+            };
+            answered = true;
+            let status = resp.status();
+            let captured = capture_headers(resp.headers());
+            // Surface any API keys leaked in response headers (credentials are
+            // high-value seeds) before deciding whether the banner is useful.
+            resp.headers()
+                .values()
+                .filter_map(|v| v.to_str().ok())
+                .for_each(|val| {
+                    crate::util::http::scan_for_api_keys_with_source(val, "http_header");
+                });
+            if captured.is_empty() {
+                continue;
+            }
+
+            let mut entity =
+                banner_entity(target, &host, banner_confidence(&captured), &ctx.scan_id);
+            entity.tag(crate::core::tags::WEB);
+            apply_stack_tags(&mut entity, &captured);
+
+            // Fold each captured header into the evidence VERBATIM. Full-fidelity
+            // policy: a discovered banner/header is stored exactly as the server
+            // returned it, never clipped — the operator must see the authentic
+            // result. The header count and each value's length are already bounded
+            // upstream by the HTTP client's header limits, so the row stays sane
+            // without truncating any real value.
+            let ev = captured.iter().fold(
+                Evidence::new(SRC, format!("HTTP headers from {scheme} HEAD of {host}"))
+                    .with_attr("scheme", scheme)
+                    .with_attr("status", status.as_u16().to_string()),
+                |ev, (h, v)| ev.with_attr(h.as_str(), v.as_str()),
+            );
+            entity.add_evidence(ev);
+
+            let mut result = ModuleResult::new();
+            result.push(entity);
+            return Ok(result);
+        }
+        // Both schemes failed at transport: nothing was observed, so there is
+        // no negative to report. Propagating the first failure lets the
+        // breaker, the doctor and the live-drift sweep read "unreachable"
+        // instead of banking a clean negative for a host never reached.
+        if !answered && let Some(e) = first_failure {
+            return Err(e);
+        }
+        Ok(ModuleResult::new())
+    }
+}
+
+/// Build the entity this module's banner evidence attaches to. **Pure**.
+///
+/// For a `Domain`/`IpAddress` target this is just `target.to_entity()` — the
+/// probe HEADs exactly that value. For a `Url` target, `extract_host_port`
+/// already discards the path (the probe always HEADs the domain *root*,
+/// never the URL's path — see `process`), so re-emitting the full URL via
+/// `to_entity()` would falsely claim THIS SPECIFIC PATH was verified: every
+/// guessed profile URL on the same host (real or not) produces byte-identical
+/// banner evidence, so it corroborates nothing about the path and must not be
+/// attached to the path-specific `Url` entity. A live scan against a guessed
+/// username handle showed exactly this: `webserver_banner` counted as one of
+/// several "independent sources" corroborating a specific
+/// `https://<platform>/<guessed-handle>` entity, when all it had actually
+/// confirmed was that `<platform>`'s webserver responds to `/` — true for
+/// every handle guessed against that platform, corroborating nothing
+/// path-specific. Emit a `Domain` entity keyed on the host instead, the only
+/// thing this module actually confirms.
+fn banner_entity(target: &Target, host: &str, confidence: f64, scan_id: &str) -> Entity {
+    if target.kind == TargetKind::Url {
+        Entity::new(EntityKind::Domain, host, confidence, scan_id)
+    } else {
+        target.to_entity(confidence, scan_id)
+    }
+}
+
+/// Resolve a target to the `(host, optional port)` to probe. **Pure** (no
+/// network/IO): a `Url` is parsed and its host + explicit port taken; any other
+/// kind is used verbatim. Returns `None` for an unparseable URL or a host that is
+/// empty or path-shaped (contains `/`), the cases where there is nothing to HEAD.
+fn extract_host_port(kind: TargetKind, value: &str) -> Option<(String, Option<u16>)> {
+    let (host, port) = match kind {
+        TargetKind::Url => {
+            let u = url::Url::parse(value.trim()).ok()?;
+            (u.host_str().unwrap_or("").to_string(), u.port())
+        }
+        _ => (value.trim().to_string(), None),
+    };
+    if host.is_empty() || host.contains('/') {
+        return None;
+    }
+    Some((host, port))
+}
+
+/// Confidence for a captured header set. **Pure**.
+///
+/// Regression: every non-empty capture used to get the same flat
+/// [`confidence::HIGH_PLUSPLUS_PLUS`], whether it was an actual stack banner
+/// (`server: nginx/1.24.0`) or nothing but a generic security-posture header
+/// like `x-frame-options: SAMEORIGIN` — present on countless unrelated
+/// stacks and revealing nothing distinctive about this one. A response with
+/// at least one [`IDENTIFYING_HEADERS`] entry keeps the high-confidence
+/// verdict; a capture made up entirely of generic headers is confirmed
+/// present but identifies nothing, so it sits at [`confidence::MEDIUM_PLUS`]
+/// instead. `captured` is assumed non-empty (the caller already skips an
+/// empty capture).
+fn banner_confidence(captured: &[(String, String)]) -> f64 {
+    if captured
+        .iter()
+        .any(|(h, _)| IDENTIFYING_HEADERS.contains(&h.as_str()))
+    {
+        confidence::HIGH_PLUSPLUS_PLUS
+    } else {
+        confidence::MEDIUM_PLUS
+    }
+}
+
+fn capture_headers(h: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
+    FINGERPRINT_HEADERS
+        .iter()
+        .filter_map(|name| {
+            let s = h.get(*name)?.to_str().ok()?;
+            (!s.is_empty()).then(|| ((*name).to_string(), s.to_string()))
+        })
+        .collect()
+}
+
+fn apply_stack_tags(e: &mut Entity, headers: &[(String, String)]) {
+    // Only IDENTIFYING_HEADERS values feed the blob. Its own doc already says
+    // why: the rest are "purely security-posture / caching headers present on
+    // countless unrelated stacks and confirm nothing distinctive by
+    // themselves" — but that distinction was applied to `banner_confidence`
+    // and NOT here, in the function that makes the actual vendor claims.
+    //
+    // `content-security-policy` is the pointed one: a CSP ENUMERATES OTHER
+    // PEOPLE'S DOMAINS by design. Any site that loads a script from
+    // `cdnjs.cloudflare.com` — routine — named Cloudflare in its CSP and was
+    // tagged `cloudflare`, asserting a CDN in front of a site that may have
+    // none. `strict-transport-security` and `x-frame-options` are the same
+    // class of non-evidence. (REQ-WEBBANNER-001.)
+    let blob: String = headers
+        .iter()
+        .filter(|(h, _)| IDENTIFYING_HEADERS.contains(&h.as_str()))
+        .map(|(_, v)| v.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join("|");
+    // Name-presence checks stay on the full capture: they assert a header
+    // EXISTS rather than reading a value, and each one used below
+    // (`cf-ray`, `x-amz-cf-id`, `x-served-by`) is itself identifying.
+    let names: Vec<&str> = headers.iter().map(|(n, _)| n.as_str()).collect();
+    if blob.contains("nginx") {
+        e.tag("nginx");
+    }
+    if blob.contains("apache") {
+        e.tag("apache");
+    }
+    if blob.contains("microsoft-iis") || blob.contains("iis/") {
+        e.tag("iis");
+    }
+    if blob.contains("cloudflare") || names.contains(&"cf-ray") {
+        e.tag("cloudflare");
+    }
+    if names.contains(&"x-amz-cf-id") {
+        e.tag("aws-cloudfront");
+    }
+    // `x-served-by` only. `x-cache` is named in IDENTIFYING_HEADERS' own doc as
+    // a generic caching header, and it is emitted by Varnish, CloudFront,
+    // Akamai and nginx's proxy cache among others — naming Fastly from it
+    // asserts one vendor from a signal shared by its competitors.
+    if names.contains(&"x-served-by") {
+        e.tag("fastly");
+    }
+    if blob.contains("wordpress") {
+        e.tag("wordpress");
+    }
+    if blob.contains("drupal") {
+        e.tag("drupal");
+    }
+    if blob.contains("php") {
+        e.tag("php");
+    }
+    if blob.contains("aspnet") || names.contains(&"x-aspnet-version") {
+        e.tag("aspnet");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
+}

@@ -1,0 +1,168 @@
+{
+  "head" : {
+    "vars" : [ "place", "placeLabel", "location", "dist" ]
+  },
+  "results" : {
+    "bindings" : [ {
+      "place" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q2154104"
+      },
+      "location" : {
+        "datatype" : "http://www.opengis.net/ont/geosparql#wktLiteral",
+        "type" : "literal",
+        "value" : "Point(151.215 -33.8569)"
+      },
+      "dist" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#double",
+        "type" : "literal",
+        "value" : "0.03"
+      },
+      "placeLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Fort Macquarie"
+      }
+    }, {
+      "place" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q249179"
+      },
+      "location" : {
+        "datatype" : "http://www.opengis.net/ont/geosparql#wktLiteral",
+        "type" : "literal",
+        "value" : "Point(151.215 -33.856666666)"
+      },
+      "dist" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#double",
+        "type" : "literal",
+        "value" : "0.031"
+      },
+      "placeLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Bennelong Point"
+      }
+    }, {
+      "place" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q2000115"
+      },
+      "location" : {
+        "datatype" : "http://www.opengis.net/ont/geosparql#wktLiteral",
+        "type" : "literal",
+        "value" : "Point(151.2149 -33.857061111)"
+      },
+      "dist" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#double",
+        "type" : "literal",
+        "value" : "0.047"
+      },
+      "placeLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Sydney Opera House Grand Organ"
+      }
+    }, {
+      "place" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q45178"
+      },
+      "location" : {
+        "datatype" : "http://www.opengis.net/ont/geosparql#wktLiteral",
+        "type" : "literal",
+        "value" : "Point(151.214897 -33.857058)"
+      },
+      "dist" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#double",
+        "type" : "literal",
+        "value" : "0.047"
+      },
+      "placeLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Sydney Opera House"
+      }
+    }, {
+      "place" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q5471570"
+      },
+      "location" : {
+        "datatype" : "http://www.opengis.net/ont/geosparql#wktLiteral",
+        "type" : "literal",
+        "value" : "Point(151.214757 -33.857617)"
+      },
+      "dist" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#double",
+        "type" : "literal",
+        "value" : "0.104"
+      },
+      "placeLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Fort Macquarie Tram Depot"
+      }
+    }, {
+      "place" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q60034675"
+      },
+      "location" : {
+        "datatype" : "http://www.opengis.net/ont/geosparql#wktLiteral",
+        "type" : "literal",
+        "value" : "Point(151.215797971 -33.85791356)"
+      },
+      "dist" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#double",
+        "type" : "literal",
+        "value" : "0.132"
+      },
+      "placeLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Man O'War Steps"
+      }
+    }, {
+      "place" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q110122550"
+      },
+      "location" : {
+        "datatype" : "http://www.opengis.net/ont/geosparql#wktLiteral",
+        "type" : "literal",
+        "value" : "Point(151.21456 -33.85838)"
+      },
+      "dist" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#double",
+        "type" : "literal",
+        "value" : "0.188"
+      },
+      "placeLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Tarpeian Rock"
+      }
+    }, {
+      "place" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q118108696"
+      },
+      "location" : {
+        "datatype" : "http://www.opengis.net/ont/geosparql#wktLiteral",
+        "type" : "literal",
+        "value" : "Point(151.214062118 -33.85822503)"
+      },
+      "dist" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#double",
+        "type" : "literal",
+        "value" : "0.195"
+      },
+      "placeLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Opera Bar"
+      }
+    } ]
+  }
+}

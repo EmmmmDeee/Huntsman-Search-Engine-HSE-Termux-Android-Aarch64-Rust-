@@ -1,0 +1,479 @@
+//! `core::coref` — cross-identifier **co-reference scoring** (people-centric
+//! identity resolution).
+//!
+//! Three existing layers resolve identity in HSE, each from a different angle:
+//!
+//! * [`crate::core::resolve::suggest_merges`] collapses two spellings of the
+//!   *same identifier* (Gmail dot-blindness, phone notation, name token order)
+//!   into one entity — record-level **de-duplication** of one kind.
+//! * The exact-UID correlator fuses values that normalise identically.
+//! * [`crate::core::relation::graph::resolve_identity_clusters`] groups
+//!   identities that are already joined by **relation edges** (union-find over
+//!   the relation graph).
+//!
+//! None of them answers the people-centric question an investigator actually
+//! asks of a pile of raw selectors: *do this **email** and this **username**, or
+//! this **phone** and this **person**, belong to the **same individual**?* —
+//! when no relation edge exists yet and the two are different kinds, so neither
+//! dedup nor the exact matcher can see it. This module fills that gap with a
+//! graded, multi-signal **record-linkage** score over every pair of
+//! identity-bearing entities.
+//!
+//! # The score — independent signals fused by noisy-OR
+//! Each pair accrues evidence from orthogonal signals, combined as
+//! `1 − ∏(1 − wᵢ)` so independent corroboration *compounds* (two weak signals
+//! beat either alone) without ever exceeding 1.0:
+//!
+//! * **handle-equivalence** (`0.80`) — the two sides name the same handle
+//!   (`jsmith` ↔ `jsmith@gmail.com`): the strongest single cross-kind tie.
+//!   Between two account handles (Email/Username) that means a shared
+//!   [`account_keys`] key — every separator kept, Gmail dots excepted — so
+//!   `_ianthorpe_` ↔ `ianthorpe` is NOT equivalent; with a Person or Phone on
+//!   either side it is [`crate::core::scan::identity_norm`] equality. **Not
+//!   applied between two mailboxes at different domains** — see "Different
+//!   mailboxes" below.
+//! * **name-token-match** (`0.62`) — one side is a `Person` whose every name
+//!   token (≥3 chars) appears in the other's canonical handle (`John Smith` ↔
+//!   `johnsmith_au`), with ≥2 tokens so a bare shared first name can't fire it.
+//!   (The 3-char floor closes a narrower collision the ≥2-tokens rule alone
+//!   didn't: two 2-char tokens can be nothing more than an unrelated handle's
+//!   own letter run spelled out — see [`string_signal`]'s `name_token` comment.)
+//! * **substring-overlap** (`0.45`) — the handles share a ≥4-char run
+//!   ([`crate::core::scan::identity_overlaps`]) without being equal.
+//! * **shared-source** (`1 − 0.7ᵏ`, k = shared corroborating sources) —
+//!   the pair co-occurs in `k` independent corroborating sources. Deliberately
+//!   sub-threshold for a single shared source (k=1 → 0.30): one common crawl
+//!   source is weak co-occurrence, but several compound into a real tie, and it
+//!   lifts any string signal it accompanies.
+//!
+//! The three string signals are mutually exclusive (only the strongest tier
+//! fires); **shared-source** is orthogonal and stacks on top.
+//!
+//! # A shared surname is not a shared identity
+//!
+//! No string signal fires between two `Person`s whose names are structurally
+//! incompatible ([`crate::core::scan::person_names_compatible`] — a different
+//! given name beside the same surname), nor between a `Person` and a handle that
+//! does not spell the name ([`crate::core::scan::handle_names_person`] — the
+//! given name or its initial beside the surname, from a word start). Every
+//! relative and namesake shares the surname, a ≥4-char run: a real "Ian Thorpe"
+//! scan scored "Ian Thorpe" ↔ "Megan Thorpe" 0.811 (substring-overlap fused with
+//! three shared module names) and "Ian Thorpe" ↔ `damianthorpe` a 0.62
+//! name-token match (REQ-IDENTITY-GATE-002). Veto-only; a mononym keeps the
+//! plain ladder.
+//!
+//! # Different mailboxes are different accounts
+//!
+//! No string signal fires between two email addresses at different domains.
+//! [`identity_norm`] keeps only the local part, so every `jstewart@*` in a scan
+//! normalises to `jstewart` and compares equal to every other — and a real
+//! report showed the result: ~200 pairs asserting that one named individual held
+//! mailboxes at an aerospace firm, a national navy, a university and dozens of
+//! unrelated employers, each at `0.86` (handle-equivalence `0.80` fused with a
+//! single shared source `0.30`), on a page that simultaneously reported 0%
+//! corroboration.
+//!
+//! Two mailboxes at different domains are by construction different accounts.
+//! They may still belong to one person, but a shared local part is not the
+//! evidence that shows it — for a common name it is barely evidence at all. Such
+//! a pair can still surface here, since **shared-source** alone reaches `0.657`
+//! at three independent sources; it must simply be earned by corroboration
+//! rather than granted by a coincidence of spelling.
+//!
+//! The suppression covers the whole string ladder rather than just the top tier,
+//! because two identical handles also satisfy `substring-overlap` — demoting
+//! instead of suppressing would still clear [`DEFAULT_MIN_SCORE`] once fused
+//! with one shared source, and would have changed nothing.
+//!
+//! A known adjacent weakness, stated because it is not addressed here: a common
+//! handle weakens *cross-kind* matches by the same logic (`jstewart` the
+//! username against `jstewart@navy.mil`), but cross-kind linking is what
+//! handle-equivalence exists for, and the evidence in hand covers the
+//! email↔email case only. Narrowing further would need a frequency signal —
+//! how many distinct domains carry a handle within the scan — not a wider ban.
+//!
+//! # Read-only, pure, deterministic
+//! [`resolve_coreferences`] borrows the entity slice immutably, allocates its
+//! own state, performs no I/O, and mutates nothing — every hypothesis is a
+//! suggestion the caller may ignore. Output is a pure function of the input
+//! multiset: candidates are sorted by score (then UID pair), so shuffling the
+//! input yields identical output. Conservative by design — a pair below
+//! `min_score` is simply absent, so a namesake with no shared source and a
+//! different handle never appears.
+
+use crate::core::entity::{Entity, EntityKind};
+use crate::core::relation::graph::is_identity_kind;
+use crate::core::scan::{
+    handle_names_person, identity_norm, identity_overlaps, person_names_compatible,
+};
+use crate::util::canonical::{email_account_keys, username_account_key};
+
+/// Weight of an exact canonical-handle match — the strongest cross-kind tie.
+const W_HANDLE_EQUIV: f64 = 0.80;
+/// Weight of a `Person`'s name tokens all appearing in the other's handle.
+const W_NAME_TOKEN: f64 = 0.62;
+/// Weight of a ≥4-char shared substring that is not a full handle match.
+const W_SUBSTRING: f64 = 0.45;
+/// Per-shared-source decay base: the shared-source signal is `1 − BASE^k`.
+const SHARED_SOURCE_BASE: f64 = 0.7;
+
+/// The strength, in `[0, 1)`, of `k` shared evidence items between two
+/// entities: `1 − 0.7^k` (k=1 → 0.300, k=2 → 0.510, k=3 → 0.657). Each extra
+/// shared item adds less, and no count ever reaches certainty.
+///
+/// One definition for every consumer that turns "how much do these two share"
+/// into a weight on the same `[0, 1]` scale as a confidence: the co-reference
+/// scorer below, and the GEXF export's co-occurrence edge weight (which used to
+/// write the raw count, so one shared record at 1.0 outweighed every typed
+/// relation at ≤ 0.95 in Gephi's weighted degree and modularity).
+#[must_use]
+pub(crate) fn shared_evidence_weight(k: usize) -> f64 {
+    1.0 - SHARED_SOURCE_BASE.powi(i32::try_from(k).unwrap_or(i32::MAX))
+}
+/// Default emission threshold — a pair must reach this fused score to surface.
+pub const DEFAULT_MIN_SCORE: f64 = 0.55;
+
+/// A scored hypothesis that two **distinct** identity entities refer to the same
+/// individual — the output of [`resolve_coreferences`]. Carries enough to render
+/// the link and explain *why* it was proposed, without re-deriving the score.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CoReference {
+    /// UID of the lexicographically-smaller endpoint (stable orientation).
+    pub uid_a: String,
+    /// UID of the larger endpoint.
+    pub uid_b: String,
+    /// Value of `uid_a`'s entity (for display).
+    pub value_a: String,
+    /// Value of `uid_b`'s entity (for display).
+    pub value_b: String,
+    /// Kind of `uid_a`'s entity.
+    pub kind_a: EntityKind,
+    /// Kind of `uid_b`'s entity.
+    pub kind_b: EntityKind,
+    /// Fused noisy-OR co-reference score in `0.0..=1.0`; higher = more likely the
+    /// same individual.
+    pub score: f64,
+    /// The signals that fired, strongest-first — the human-readable basis.
+    pub signals: Vec<&'static str>,
+}
+
+/// The lower-cased domain of `value` if it is shaped like an email address.
+///
+/// Deliberately strict: exactly one `@`, with a non-empty local part and a
+/// domain containing a dot. A username that merely contains `@`, or a bare
+/// handle, yields `None` and is left to the ordinary string ladder — the
+/// cross-domain suppression must only fire when both sides really are mailboxes,
+/// because suppressing a genuine cross-kind match would lose real links.
+fn email_domain(value: &str) -> Option<&str> {
+    let (local, domain) = value.trim().split_once('@')?;
+    if local.is_empty() || domain.contains('@') || !domain.contains('.') {
+        return None;
+    }
+    Some(domain)
+}
+
+/// True when `a` and `b` are both email addresses ([`email_domain`]) at
+/// DIFFERENT domains — by construction two different accounts, whose shared
+/// local part is not evidence of one person (see the module docs, "Different
+/// mailboxes are different accounts"). The ONE statement of that rule:
+/// [`string_signal`] reads it to withhold every string tier, and
+/// [`crate::core::relation::builders::derive_handles`] reads it to withhold the
+/// structural `AliasOf` it would otherwise assert between the same pair.
+pub(crate) fn mailboxes_at_different_domains(a: &str, b: &str) -> bool {
+    matches!(
+        (email_domain(a), email_domain(b)),
+        (Some(dom_a), Some(dom_b)) if !dom_a.eq_ignore_ascii_case(dom_b)
+    )
+}
+
+/// The account keys `e` answers to when it is an account HANDLE — an `Email`
+/// ([`email_account_keys`]: its literal local part, plus the dot-free form for
+/// Gmail) or a `Username` ([`username_account_key`]: case and whitespace
+/// folded, every separator kept) — or `None` for any other kind.
+///
+/// The one reading of "these two handles are the same account" for the
+/// identity layer: [`string_signal`]'s handle-equivalence tier between two
+/// handles, and [`crate::core::relation::builders::derive_handles`]'s
+/// structural `AliasOf`, both require a shared key. Both used to compare
+/// [`identity_norm`] forms, which keep only alphanumerics, so Instagram
+/// `_ianthorpe_` and GitHub `ianthorpe` — two accounts the resolver keeps
+/// apart (REQ-RESOLVE-001) — were asserted `AliasOf` (Copilot review of #649).
+pub(crate) fn account_keys(e: &Entity) -> Option<Vec<String>> {
+    match e.kind {
+        EntityKind::Email => Some(email_account_keys(&e.value)),
+        EntityKind::Username => Some(username_account_key(&e.value).into_iter().collect()),
+        _ => None,
+    }
+}
+
+/// The strongest string-similarity signal between two canonical handles, as
+/// `(weight, label)`, or `None` when the handles are unrelated. Tiers are
+/// mutually exclusive: an exact match never also counts as an overlap.
+///
+/// `a_is_person` / `b_is_person` enable the name-token tier, which only applies
+/// when one side is a `Person` (a multi-token legal name embedded in the other's
+/// handle). `norm_a` / `norm_b` are the pre-computed [`identity_norm`] forms;
+/// `keys_a` / `keys_b` the pre-computed [`account_keys`].
+#[allow(clippy::too_many_arguments)]
+fn string_signal(
+    raw_a: &str,
+    raw_b: &str,
+    norm_a: &str,
+    norm_b: &str,
+    keys_a: Option<&[String]>,
+    keys_b: Option<&[String]>,
+    a_is_person: bool,
+    b_is_person: bool,
+) -> Option<(f64, &'static str)> {
+    if norm_a.is_empty() || norm_b.is_empty() {
+        return None;
+    }
+    // Two mailboxes at DIFFERENT domains are, by construction, different
+    // accounts. A shared local part between them is not evidence of one person;
+    // for a common name it is barely evidence of anything.
+    //
+    // [`identity_norm`] keeps only the local part, so every `jstewart@*` in a
+    // scan normalises to `jstewart` and compares equal. A real report showed
+    // what that costs: ~200 pairs asserting one named individual held mailboxes
+    // at an aerospace firm, a national navy, a university and dozens of
+    // unrelated employers, each scored 0.86 — `W_HANDLE_EQUIV` (0.80) fused with
+    // a single shared source (0.30) — on a page simultaneously reporting 0%
+    // corroboration. Those are defamatory-grade claims about a real person, and
+    // they drown the genuine links in the dossier.
+    //
+    // The suppression covers the whole string ladder, not just the top tier:
+    // `jstewart` and `jstewart` also satisfy [`identity_overlaps`], so demoting
+    // to `W_SUBSTRING` (0.45) would still clear `DEFAULT_MIN_SCORE` once fused
+    // with one shared source (0.615) and change nothing. Such a pair can still
+    // surface — `shared-source` alone reaches 0.657 at three independent
+    // sources — but it must now be earned by corroboration rather than granted
+    // by a coincidence of spelling.
+    //
+    // Deliberately narrow: this is the email↔email case the evidence covers.
+    // Cross-KIND matches (`jsmith` ↔ `jsmith@gmail.com`) are what
+    // `W_HANDLE_EQUIV` was designed for and are left alone, though a common
+    // handle weakens those too — see the module docs.
+    if mailboxes_at_different_domains(raw_a, raw_b) {
+        return None;
+    }
+    // A Person's name is structured (given name + surname), and a surname is
+    // shared by every relative and namesake — so no string tier may fire where
+    // that structure says "someone else" (REQ-IDENTITY-GATE-002, scan
+    // `7258fc07`, target "Ian Thorpe"):
+    //   * two Persons whose names are incompatible
+    //     ([`person_names_compatible`] `Some(false)`): "Ian Thorpe" and "Megan
+    //     Thorpe" share the ≥4-char run `anthorpe`, and the substring tier
+    //     (0.45) fused with three shared module names (0.657) reached 0.811 —
+    //     over the graph-promotion floor, so they were asserted `SameAs`;
+    //   * a Person and a handle that does not SPELL the name
+    //     ([`handle_names_person`] `Some(false)`): the name-token tier's plain
+    //     containment scored "Ian Thorpe" ↔ `damianthorpe` (and `brianthorpe`,
+    //     `christianthorpe`) a 0.62 match with no corroboration at all, and the
+    //     substring tier tied the subject to a relative's `aidan_thorpe`.
+    // Veto-only: an unstructured name (`None`) keeps the ladder below, and no
+    // pair gains a signal it did not have. A phone never string-matches a name
+    // in the first place, so the handle veto costs it nothing. Shared-source is
+    // orthogonal and untouched — corroboration can still surface the pair as a
+    // lead in the read-only view.
+    let person_veto = |person: &str, other: &str, other_is_person: bool| {
+        if other_is_person {
+            person_names_compatible(person, other) == Some(false)
+        } else {
+            handle_names_person(person, other) == Some(false)
+        }
+    };
+    if (a_is_person && person_veto(raw_a, raw_b, b_is_person))
+        || (b_is_person && person_veto(raw_b, raw_a, a_is_person))
+    {
+        return None;
+    }
+    // Handle equivalence. Between two account handles (Email/Username) it
+    // means ONE ACCOUNT, so it requires a shared account key: `identity_norm`
+    // keeps only alphanumerics, and comparing it made Instagram `_ianthorpe_`
+    // and GitHub `ianthorpe` "equal" at 0.80 — exactly the promotion floor, so
+    // `derive_coreferences` re-emitted as `AliasOf` the false merge the
+    // resolver and `derive_handles` withhold (Copilot review of #649). A pair
+    // that differs only by a separator falls to the tiers below: the substring
+    // tier (0.45) still surfaces it as a lead, below the promotion floor
+    // unless independent sources corroborate it.
+    //
+    // With a Person or a Phone on either side the `identity_norm` equality
+    // stands: a name carries no separators to preserve (the person veto above
+    // already gates it), and a phone's separators are notation, not part of
+    // an account's name.
+    let handle_equivalent = match (keys_a, keys_b) {
+        (Some(ka), Some(kb)) => ka.iter().any(|k| kb.contains(k)),
+        _ => norm_a == norm_b,
+    };
+    if handle_equivalent {
+        return Some((W_HANDLE_EQUIV, "handle-equivalence"));
+    }
+    // Name-token match: a Person's every token (≥3 chars), of which there are ≥2,
+    // is a substring of the OTHER side's canonical handle.
+    //
+    // The ≥2-tokens rule guards against a bare shared first name firing this
+    // tier, but a 2-char floor left a narrower collision open: a 2-char given
+    // name plus a 2-char surname (routine for short Vietnamese/Chinese names —
+    // "Vy Le", "An Vu") can be nothing more than the literal decomposition of
+    // an unrelated handle's own 4-letter run. `resolve_coreferences(["Vy Le"
+    // (Person), "levy2024" (Username)], ...)` scored 0.62 name-token-match
+    // with ZERO corroborating evidence: `identity_norm("levy2024")` contains
+    // both "le" (offset 0) and "vy" (offset 2) as adjacent, overlapping
+    // substrings of the very run ("levy") that spells them out, no
+    // word-boundary check required. Raising the per-token floor to 3
+    // characters closes that specific collision surface while leaving the
+    // tier's only passing example (`"John"`/`"Smith"`, 4/5 chars) untouched;
+    // a genuinely short name is still reachable via `shared-source`
+    // corroboration, matching this codebase's default of favouring a missed
+    // link over a false one.
+    let name_token = |person: &str, handle_norm: &str| -> bool {
+        let tokens: Vec<String> = person
+            .split_whitespace()
+            .map(identity_norm)
+            .filter(|t| t.len() >= 3)
+            .collect();
+        tokens.len() >= 2 && tokens.iter().all(|t| handle_norm.contains(t.as_str()))
+    };
+    if (a_is_person && name_token(raw_a, norm_b)) || (b_is_person && name_token(raw_b, norm_a)) {
+        return Some((W_NAME_TOKEN, "name-token-match"));
+    }
+    if identity_overlaps(raw_a, raw_b) {
+        return Some((W_SUBSTRING, "substring-overlap"));
+    }
+    None
+}
+
+/// Combine independent signal weights by noisy-OR: `1 − ∏(1 − wᵢ)`. Independent
+/// corroboration compounds (two 0.5 signals → 0.75) and the result never exceeds
+/// 1.0. Order-independent. An empty iterator yields `0.0`.
+fn noisy_or(weights: impl IntoIterator<Item = f64>) -> f64 {
+    1.0 - weights
+        .into_iter()
+        .fold(1.0, |acc, w| acc * (1.0 - w.clamp(0.0, 1.0)))
+}
+
+/// Resolve graded **co-reference** hypotheses over the identity-bearing entities
+/// in `entities`: every pair of distinct [`is_identity_kind`] entities whose
+/// fused multi-signal score reaches `min_score`, strongest-first.
+///
+/// This is the people-centric record-linkage layer described in the module docs
+/// — it links *different* selectors (an email and a username, a phone and a
+/// person) that belong to one individual, complementing (never replacing) the
+/// same-identifier dedup of [`crate::core::resolve::suggest_merges`] and the
+/// relation-graph clustering of
+/// [`crate::core::relation::graph::resolve_identity_clusters`]. Pure, read-only
+/// and deterministic; truncated to `limit`. Pass `min_score = 0.0` to surface
+/// every co-occurring pair, or [`DEFAULT_MIN_SCORE`] for the conservative default.
+///
+/// O(N²) over the identity entities (the same order as the subject-network
+/// synthesis), each pair scored in near-constant time.
+#[must_use]
+pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -> Vec<CoReference> {
+    // Project to the identity entities once, pre-computing the per-entity fields
+    // every pair re-reads: canonical handle, person flag, corroborating sources.
+    struct Node<'a> {
+        e: &'a Entity,
+        norm: String,
+        keys: Option<Vec<String>>,
+        is_person: bool,
+        sources: std::collections::HashSet<&'a str>,
+    }
+    // Bound the O(N²) sweep. An imported breach/stealer dossier can seat 10^5+
+    // identity entities; scoring every pair of those would pin a blocking-pool
+    // thread for minutes. `entities` arrives confidence-ranked, so `.take` keeps
+    // the strongest identities — a deterministic prefix (mirrors the
+    // import-enrichment entity ceiling of 5_000).
+    const MAX_COREF_NODES: usize = 5_000;
+    let nodes: Vec<Node> = entities
+        .iter()
+        .filter(|e| is_identity_kind(&e.kind))
+        .map(|e| Node {
+            e,
+            norm: identity_norm(&e.value),
+            keys: account_keys(e),
+            is_person: e.kind == EntityKind::Person,
+            sources: e.corroborating_sources(),
+        })
+        .take(MAX_COREF_NODES)
+        .collect();
+
+    // Bound peak memory to ~`limit`, not O(N²): in a single-source dump every
+    // pair shares that source (a >0 score), so an all-pairs `out` would allocate
+    // billions of CoReferences before the final truncate → OOM. Trim down to the
+    // top `limit` whenever the buffer fills; the survivors are exactly what the
+    // final sort would keep, so the result is unchanged.
+    let trim_at = limit.saturating_mul(4).max(4096);
+    let mut out: Vec<CoReference> = Vec::new();
+    for (i, a) in nodes.iter().enumerate() {
+        for b in &nodes[i + 1..] {
+            // Stable orientation: smaller UID is endpoint A.
+            let (lo, hi) = if a.e.uid <= b.e.uid { (a, b) } else { (b, a) };
+
+            let mut signals: Vec<&'static str> = Vec::new();
+            let mut weights: Vec<f64> = Vec::new();
+
+            if let Some((w, label)) = string_signal(
+                &lo.e.value,
+                &hi.e.value,
+                &lo.norm,
+                &hi.norm,
+                lo.keys.as_deref(),
+                hi.keys.as_deref(),
+                lo.is_person,
+                hi.is_person,
+            ) {
+                signals.push(label);
+                weights.push(w);
+            }
+
+            let shared = lo.sources.intersection(&hi.sources).count();
+            if shared > 0 {
+                weights.push(shared_evidence_weight(shared));
+                signals.push("shared-source");
+            }
+
+            if signals.is_empty() {
+                continue;
+            }
+            let score = noisy_or(weights.iter().copied());
+            if score + f64::EPSILON < min_score {
+                continue;
+            }
+            out.push(CoReference {
+                uid_a: lo.e.uid.clone(),
+                uid_b: hi.e.uid.clone(),
+                value_a: lo.e.value.clone(),
+                value_b: hi.e.value.clone(),
+                kind_a: lo.e.kind.clone(),
+                kind_b: hi.e.kind.clone(),
+                score,
+                signals,
+            });
+            if out.len() >= trim_at {
+                out.sort_by(coref_order);
+                out.truncate(limit);
+            }
+        }
+    }
+
+    // Strongest-first; deterministic UID-pair tie-break.
+    out.sort_by(coref_order);
+    out.truncate(limit);
+    out
+}
+
+/// Ordering for [`resolve_coreferences`] results: strongest score first, then a
+/// deterministic UID-pair tie-break. Shared by the in-loop trim and the final
+/// sort so the bounded buffer keeps exactly the pairs the final sort would.
+fn coref_order(x: &CoReference, y: &CoReference) -> std::cmp::Ordering {
+    y.score
+        .partial_cmp(&x.score)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| x.uid_a.cmp(&y.uid_a))
+        .then_with(|| x.uid_b.cmp(&y.uid_b))
+}
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
+}

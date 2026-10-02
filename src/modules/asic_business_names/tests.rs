@@ -1,0 +1,216 @@
+use super::*;
+
+const REC: &str = r#"{
+  "BN_NAME":"A Cut Above Painting & Texture Coating","BN_STATUS":"Registered",
+  "BN_REG_DT":"04/12/2019","BN_ABN":"86634681397","BN_STATE_OF_REG":"QLD"}"#;
+
+fn rec(json: &str) -> Map<String, Value> {
+    serde_json::from_str(json).expect("should succeed")
+}
+
+#[test]
+fn emits_registered_name_and_holder_abn() {
+    let mut seen = std::collections::HashSet::new();
+    let mut r = ModuleResult::new();
+    emit_business_name(&rec(REC), "scan", &mut seen, &mut r);
+    let e = &r.entities;
+
+    let org = e
+        .iter()
+        .find(|x| x.kind == EntityKind::Organisation)
+        .expect("organisation");
+    assert_eq!(org.value, "A Cut Above Painting & Texture Coating");
+    assert!(org.has_tag("business-name") && org.has_tag("status:registered"));
+
+    let abn = e
+        .iter()
+        .find(|x| x.kind == EntityKind::AbnAcn)
+        .expect("abn");
+    assert_eq!(
+        abn.value.chars().filter(char::is_ascii_digit).collect::<String>(),
+        "86634681397"
+    );
+}
+
+#[test]
+fn registered_state_emits_au_state_address() {
+    // BN_STATE_OF_REG was parsed into evidence but never became a geo anchor; it
+    // must now emit a "{state}, Australia" Address tagged au-state, like the
+    // sibling AU registries, so the jurisdiction reaches the AU geo correlators.
+    let mut seen = std::collections::HashSet::new();
+    let mut r = ModuleResult::new();
+    emit_business_name(&rec(REC), "scan", &mut seen, &mut r);
+    let addr = r
+        .entities
+        .iter()
+        .find(|x| x.kind == EntityKind::Address)
+        .expect("BN_STATE_OF_REG must emit an AU-state Address");
+    assert_eq!(addr.value, "QLD, Australia");
+    assert!(addr.has_tag("au-state:QLD") && addr.has_tag("country:AU"));
+}
+
+#[test]
+fn abn_is_deduped_across_records() {
+    let mut seen = std::collections::HashSet::new();
+    let mut r = ModuleResult::new();
+    // Same holder ABN under two different trading names.
+    emit_business_name(&rec(REC), "scan", &mut seen, &mut r);
+    let rec2 = rec(REC.replace("Texture Coating", "Texture Coatings").as_str());
+    emit_business_name(&rec2, "scan", &mut seen, &mut r);
+    assert_eq!(
+        r.entities
+            .iter()
+            .filter(|x| x.kind == EntityKind::AbnAcn)
+            .count(),
+        1,
+        "the shared ABN must be emitted once"
+    );
+    // But both registered names are surfaced.
+    assert_eq!(
+        r.entities
+            .iter()
+            .filter(|x| x.kind == EntityKind::Organisation)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn checksum_invalid_abn_is_not_emitted_as_a_pivot() {
+    // "11111111111" has the right digit count (11) but fails the ATO mod-89
+    // checksum (util::abn::is_valid_abn) — ASIC's own export can carry a
+    // data-entry typo, and a mere digit count must not be trusted as a real
+    // ABN pivot.
+    let mut seen = std::collections::HashSet::new();
+    let mut r = ModuleResult::new();
+    let bad = rec(&REC.replace("86634681397", "11111111111"));
+    emit_business_name(&bad, "scan", &mut seen, &mut r);
+    assert!(
+        !r.entities.iter().any(|x| x.kind == EntityKind::AbnAcn),
+        "a checksum-invalid ABN must not be emitted as a pivot"
+    );
+    // The registered-name finding itself is unaffected.
+    assert!(r.entities.iter().any(|x| x.kind == EntityKind::Organisation));
+}
+
+#[test]
+fn name_matching_requires_all_tokens() {
+    assert!(record_name_matches(&rec(REC), "Cut Above Painting"));
+    assert!(!record_name_matches(&rec(REC), "Smith Plumbing"));
+}
+
+#[test]
+fn name_matching_is_whole_word_not_substring() {
+    // Regression: a raw `.contains()` token check let a short query token
+    // land as a SUBSTRING of an unrelated business name — "reef" inside
+    // "Reeftown" — attributing a completely different real business's ABN
+    // and registration to the queried name.
+    let reeftown = rec(r#"{"BN_NAME":"Reeftown Financial Trading Consultancy"}"#);
+    assert!(
+        !record_name_matches(&reeftown, "Reef Trading Co"),
+        "\"reef\"/\"trading\" must not match as substrings of an unrelated business name"
+    );
+}
+
+#[test]
+fn is_truncated_compares_the_page_against_ckans_own_total_not_max_hits() {
+    // Regression: the old computation counted `total_matches` over `records`,
+    // which the query's own `limit=MAX_HITS` already caps — so comparing that
+    // count against MAX_HITS was a tautological `false` no matter how many
+    // rows CKAN actually held. `is_truncated` must be driven by CKAN's own
+    // reported total instead.
+    assert!(
+        !is_truncated(50, 50),
+        "a server total equal to the page size is not truncated"
+    );
+    assert!(
+        !is_truncated(MAX_HITS as u64, MAX_HITS),
+        "a full page exactly matching MAX_HITS, with no more rows on the \
+         server, is not truncated"
+    );
+    assert!(
+        is_truncated(300, MAX_HITS),
+        "a server total of 300 against a MAX_HITS=100 page must be \
+         reported truncated — this is the exact case the old \
+         records.len()-bounded comparison could never detect"
+    );
+    assert!(
+        is_truncated(51, 50),
+        "even one extra row beyond the fetched page counts as truncated"
+    );
+}
+
+#[test]
+fn is_free_keyless_corporate_module() {
+    let m = AsicBusinessNames;
+    assert!(matches!(m.cost(), crate::core::module::ModuleCost::Free));
+    assert_eq!(m.category(), ModuleCategory::Corporate);
+    assert!(!m.attack_techniques().is_empty());
+    assert!(m.accepts(&Target::new(TargetKind::Organisation, "Acme Plumbing")));
+    assert!(!m.accepts(&Target::new(TargetKind::FullName, "Jane Citizen")));
+}
+
+/// Live end-to-end proof against the REAL ASIC Business Names dataset — no mock.
+/// Run with
+/// `cargo test -p huntsman-search-engine asic_business_names_live -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "hits the live data.gov.au ASIC datastore; run manually"]
+async fn asic_business_names_live_resolves_a_name() {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "live".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let r = AsicBusinessNames
+        .process(&Target::new(TargetKind::Organisation, "Cut Above Painting"), &ctx)
+        .await
+        .expect("live ASIC query must not error");
+    eprintln!("asic_business_names live: {} entities", r.entities.len());
+    assert!(
+        r.entities.iter().any(|e| e.kind == EntityKind::Organisation
+            && e.value.to_ascii_lowercase().contains("painting")
+            && e.has_tag("business-name")),
+        "expected at least one matching registered business name"
+    );
+}
+
+// ── the page's completeness, declared before the no-match return ────────────
+
+fn near_misses(n: usize) -> Vec<Map<String, Value>> {
+    (0..n)
+        .map(|i| rec(&format!(r#"{{"BN_NAME":"Cut Price Painting Supplies {i}"}}"#)))
+        .collect()
+}
+
+#[test]
+fn a_full_page_with_no_whole_word_match_is_truncated_not_a_clean_negative() {
+    // FAILS before the fix — see the identical lock in `asic_banned_orgs`.
+    let page = near_misses(MAX_HITS);
+    assert!(
+        !page.iter().any(|r| record_name_matches(r, "Cut Above Painting")),
+        "premise: no row on the page is the queried business name"
+    );
+    let r = business_names_result(&page, 900, "Cut Above Painting", "s");
+    assert!(r.entities.is_empty());
+    let why = r.truncation.expect("a page CKAN says is partial is not a clean negative");
+    assert!(why.starts_with(&format!("{MAX_HITS} of 900")), "{why}");
+}
+
+#[test]
+fn a_short_page_with_no_match_stays_a_clean_negative() {
+    let r = business_names_result(&near_misses(4), 4, "Cut Above Painting", "s");
+    assert!(r.entities.is_empty());
+    assert!(r.truncation.is_none(), "{:?}", r.truncation);
+}
+
+#[test]
+fn a_matched_partial_page_keeps_its_finding_and_declares_the_rest() {
+    let mut page = near_misses(MAX_HITS - 1);
+    page.push(rec(REC));
+    let r = business_names_result(&page, 900, "Cut Above Painting", "s");
+    assert!(r.entities.iter().any(|e| e.has_tag("truncated")));
+    assert!(r.truncation.is_some());
+}

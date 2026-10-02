@@ -1,0 +1,855 @@
+//! Search-engine helpers — URL classification and normalisation.
+//!
+//! Reaches the other helper groups and shared imports through `use super::*`.
+
+use super::*;
+use crate::util::url_util::is_tracking_param_key;
+
+pub(in crate::modules::search_engines) fn extract_path_username(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let segments: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
+    // Several `SOCIAL_HOSTS` members spell their profile root as `/@handle`
+    // (tiktok, medium, mastodon.social, threads.net, modern youtube) — the very
+    // hosts documented as "first path segment is the user handle". The `@` is a
+    // route marker, not part of the handle, and leaving it in made the charset
+    // test below reject every one of those real handles.
+    let first = *segments.first()?;
+    let candidate = first.strip_prefix('@').unwrap_or(first);
+    if candidate.len() >= 3
+        && candidate.len() <= 40
+        && candidate
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
+// ─── URL helpers ────────────────────────────────────────────────────────────
+
+pub(in crate::modules::search_engines) fn extract_host(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_lowercase))
+        .unwrap_or_default()
+}
+
+pub(in crate::modules::search_engines) const ENGINE_DOMAINS: &[&str] = &[
+    "duckduckgo.com",
+    "startpage.com",
+    "mojeek.com",
+    "brave.com",
+    "yahoo.com",
+    "bing.com",
+    "google.com",
+    "yandex.com",
+    "yandex.ru",
+    "yandex.net",
+    "yimg.com",
+    "search.yahoo.com",
+    "r.search.yahoo.com",
+    "cc.bingj.com",
+    "aol.com",
+    "search.aol.com",
+    "oath.com",
+    "gstatic.com",
+    "googleapis.com",
+    "googleusercontent.com",
+    "schema.org",
+    "w3.org",
+    "imgs.search.brave.com",
+    "ecosia.org",
+    "qwant.com",
+    "api.qwant.com",
+    "dogpile.com",
+    "swisscows.com",
+    "system1.com",
+    // you.com's own CDN chrome (`<link rel="dns-prefetch"
+    // href="https://cdn.you.com"/>`) — a real live capture
+    // (`fetch/testdata/you_kylo4kylo.html`) showed this leaking through as a
+    // fake organic hit because `you.com` itself was never in this list (only
+    // its cousins were), even though the generic href-extraction pass reads
+    // ANY `href=` attribute, not just `<a>` result anchors.
+    "you.com",
+    // MetaGer's own homepage/language-switcher/footer chrome — a real live
+    // capture (`fetch/testdata/metager_kylo4kylo.html`) showed EVERY hit the
+    // parser extracted from a genuine `eingabe=` response was one of these,
+    // not a single actual organic result. `metager.de` is a distinct TLD from
+    // `metager.org` (not covered by the same entry) and hosts the
+    // `maps.metager.de`/`gitlab.metager.de` sub-products; `suma-ev.de` is
+    // MetaGer's own nonprofit operator, self-disclosed on the captured page
+    // itself ("MetaGer is developed and run by our nonprofit organization,
+    // SUMA-EV"); `hetzner.de` and `wecanhelp.de` appear only as MetaGer's own
+    // about-page hosting-provider sustainability credit and donation-affiliate
+    // widget respectively in this same capture — engine-adjacent chrome, the
+    // same category as the app-store/Tor entries below, not a claim that
+    // either is never a legitimate third-party finding elsewhere.
+    "metager.org",
+    "metager.de",
+    "suma-ev.de",
+    "hetzner.de",
+    "wecanhelp.de",
+    "flocdn.com",
+    "cookielaw.org",
+    "onetrust.com",
+    "syndicatedsearch.goog",
+    "microsoftonline.com",
+    "msn.com",
+    // Engine-adjacent infrastructure that appears in their chrome
+    "teleguard.com",
+    "shdw.me",
+    "unpkg.com",
+    "torproject.org",
+    "mastodon.social",
+    "discord.com",
+    "apple.com",
+    "play.google.com",
+    "apps.apple.com",
+    "itunes.apple.com",
+    "microsoft.com",
+    "support.microsoft.com",
+];
+
+pub(in crate::modules::search_engines) fn is_engine_domain(host: &str) -> bool {
+    ENGINE_DOMAINS
+        .iter()
+        .any(|d| crate::util::domains::is_or_subdomain_of(host, d))
+}
+
+/// Domains that are generic infrastructure / unrelated to any target.
+/// These appear in search result pages from engine chrome, ads, or
+/// generic navigation links, never as OSINT-relevant findings.
+pub(in crate::modules::search_engines) fn is_generic_domain(domain: &str) -> bool {
+    const GENERIC: &[&str] = &[
+        "amazonaws.com",
+        "androidpolice.com",
+        "britannica.com",
+        "builtin.com",
+        "christiantoday.com",
+        "cloudflare.com",
+        "co.za",
+        "contactout.com",
+        "dol.gov",
+        "dpd.com",
+        "emailsherlock.com",
+        "f6s.com",
+        "fitfit.fitness",
+        "forbes.com",
+        "gardenweb.com",
+        "hexomatic.com",
+        "hunter.io",
+        "littlecaesars.com",
+        "mapquest.com",
+        "martindale.com",
+        "nolo.com",
+        "office.com",
+        "outlook.com",
+        "reversecontact.com",
+        "stvincentipa.com",
+        "tomba.io",
+        "usps.com",
+        "wikihow.com",
+        "windowsreport.com",
+        "zoominfo.com",
+    ];
+    GENERIC.contains(&domain)
+}
+
+/// People-search / username-aggregator / lookup-tooling domains. These are the
+/// search's OWN instruments — the username dork ladder explicitly queries
+/// `site:peekyou.com`, `site:spokeo.com`, … — so a *bare* aggregator domain in
+/// the results is noise, never the target's own asset, and must not become a
+/// `Domain` finding. A *specific* profile page on one of them
+/// (`peekyou.com/<handle>`) is still emitted as a `Url` entity by the
+/// path-match gate; this only drops the bare-domain noise. Surfaced by a
+/// statistical pass over a live `kylo4kylo` run, where ~15 of 84 domains were
+/// such aggregators.
+pub(in crate::modules::search_engines) fn is_search_tooling_domain(domain: &str) -> bool {
+    const TOOLING: &[&str] = &[
+        // people-search aggregators
+        "411.com",
+        "anywho.com",
+        "beenverified.com",
+        "fastpeoplesearch.com",
+        "idcrawl.com",
+        "intelius.com",
+        "locatefamily.com",
+        "melissa.com",
+        "familytreenow.com",
+        "neighborwho.com",
+        "nuwber.com",
+        "peekyou.com",
+        "peoplefinder.com",
+        "peoplefinders.com",
+        "peoplesearch.com",
+        "pipl.com",
+        "propertychecker.com",
+        "propertyshark.com",
+        "quickpeoplelookup.com",
+        "radaris.com",
+        "rocketreach.co",
+        "searchpeoplefree.com",
+        "spokeo.com",
+        "thatsthem.com",
+        "truepeoplesearch.com",
+        "usphonebook.com",
+        "whitepages.com",
+        "whitepages.com.au",
+        // genealogy aggregators — same shape as people-search
+        "ancestry.com",
+        "familysearch.org",
+        "geni.com",
+        "wikitree.com",
+        // obituary / funeral-notice aggregators — a name + locality search
+        // (e.g. a common name in a small town) floods these with hits for a
+        // DIFFERENT, often deceased, person; never the subject's asset.
+        "cdclarkfuneralhome.com",
+        "dignitymemorial.com",
+        "echovita.com",
+        "everloved.com",
+        "findagrave.com",
+        "legacy.com",
+        "tributearchive.com",
+        // breach / leak lookup aggregators — these are the search's OWN breach
+        // instruments (the email dork ladder queries them); a bare result host
+        // here is noise, never the subject's asset. The specific breach hit is
+        // already surfaced by the breach modules with real evidence.
+        "breachdirectory.org",
+        "ghostbin.co",
+        "leakcheck.io",
+        "paste.ee",
+        "scamsurvivors.com",
+        "scatteredsecrets.com",
+        "snusbase.com",
+        // privacy search engines that appear as result hosts of meta-queries
+        "brave.app",
+        "ecosia.co",
+        "ecosia.org",
+        "metager.org",
+        // anti-spam / generic reference databases — a bare host here is noise,
+        // never the subject's own asset
+        "cleantalk.org",
+        "wikipedia.org",
+        // username-availability / cross-platform lookup tools
+        "check-username.com",
+        "checkusernames.com",
+        "instantusername.com",
+        "knowem.com",
+        "namecheckr.com",
+        "namechk.com",
+        "usernamegenerator.com",
+        "whatsmyname.app",
+    ];
+    let d = domain.trim().to_lowercase();
+    let d = d.strip_prefix("www.").unwrap_or(&d);
+    TOOLING.contains(&d)
+}
+
+/// True when `host` is a court / judgment / legislation record host — the set
+/// the AU public-records dorks in [`queries`](super::super::queries) deliberately
+/// target (`site:austlii.edu.au`, `site:courts.qld.gov.au`, the state supreme
+/// courts, `site:jade.io`). A hit there is a **document** — a judgment, a court
+/// list, a piece of legislation — that names every party, witness and officer in
+/// it, not a record about the subject alone. Callers tag such a `Url`
+/// [`SOURCE_DOCUMENT`](crate::core::tags::SOURCE_DOCUMENT) so the engine surfaces
+/// it as evidence to read and never pivots into the strangers it lists, matching
+/// the discipline the `austlii` module applies to its own hits.
+///
+/// A listed host itself or a subdomain of it counts (so a `www.`/court
+/// subdomain matches). `host` is expected already lowercased, as
+/// [`extract_host`] returns it (every caller passes that); matching is via the
+/// crate's canonical allocation-free [`crate::util::domains::is_or_subdomain_of`]
+/// rather than a per-entry `ends_with(format!(".{c}"))`, which allocates on this
+/// per-result hot path and is the idiom the repo consolidated away.
+pub(in crate::modules::search_engines) fn is_court_record_host(host: &str) -> bool {
+    // The registrable judgment/court/legislation hosts the AU dorks query. Kept
+    // in lockstep with `queries::build_queries_fullname`'s court dorks — a host
+    // added there should be added here so its hits are treated as documents.
+    const COURT_HOSTS: &[&str] = &[
+        "austlii.edu.au",
+        "jade.io",
+        "courts.qld.gov.au",
+        "ecourts.justice.nsw.gov.au",
+        "supremecourt.vic.gov.au",
+        "supremecourt.wa.gov.au",
+        "courts.sa.gov.au",
+        "supremecourt.tas.gov.au",
+        "courts.act.gov.au",
+        "supremecourt.nt.gov.au",
+    ];
+    COURT_HOSTS
+        .iter()
+        .any(|c| crate::util::domains::is_or_subdomain_of(host, c))
+}
+
+pub(in crate::modules::search_engines) fn is_tracking_url(url: &str) -> bool {
+    // One cached aho-corasick (Teddy/SIMD) pass over the raw URL instead of
+    // allocating a lowercased copy and running up to 19 separate `contains` scans.
+    // Every pattern is lowercase ASCII, so ASCII-case-insensitive matching is
+    // equivalent to the former `url.to_lowercase()` + `contains`, with no allocation.
+    static TRACKING: std::sync::LazyLock<crate::util::scan::MatchSet> =
+        std::sync::LazyLock::new(|| {
+            crate::util::scan::MatchSet::new_ascii_ci([
+                "r.search.yahoo.com",
+                "duckduckgo.com/y.js",
+                "clickserve",
+                "ad.doubleclick",
+                "googleads",
+                "r.bing.com",
+                "th.bing.com",
+                "cc.bingj.com",
+                "yandex.com/clck",
+                "ecosia.org/newtab",
+                "dogpile.com/click",
+                "swisscows.com/api",
+                "/privacy-policy",
+                "/terms-of-use",
+                "/terms-of-service",
+                "guce.yahoo.com",
+                "guce.aol.com",
+                "advertising.yahoo.com",
+                "feedback.yahoo.com",
+                // Dogpile's and Swisscows' own official social-media accounts —
+                // unlike their SERP chrome (already covered by the
+                // `dogpile.com`/`swisscows.com` `ENGINE_DOMAINS` entries), these
+                // sit on generic third-party platforms (facebook/instagram/
+                // linkedin/twitter) this codebase can't blanket-exclude without
+                // also hiding a real target's own genuine profile on those same
+                // platforms. Real live captures (`fetch/testdata/
+                // dogpile_kylo4kylo.html`, `swisscows_kylo4kylo.html`) showed
+                // every one of these leaking through as fake "organic" hits for
+                // an unrelated query — Dogpile's mascot page and Swisscows'
+                // branded handles are specific, known, never-the-subject's-own
+                // URLs, so a full-path match is safe here in a way a bare
+                // `facebook.com` entry would not be.
+                "facebook.com/arfiefromdogpile",
+                "facebook.com/swisscows",
+                "instagram.com/swisscows.official",
+                "linkedin.com/company/swisscows",
+                "twitter.com/swisscows_ch",
+                // Startpage's own official social-media accounts — same
+                // category as Dogpile's/Swisscows' above (generic third-party
+                // platforms, so a bare-domain `ENGINE_DOMAINS` entry would also
+                // hide a real target's own genuine profile there). A real live
+                // capture (`fetch/testdata/startpage_kylo4kylo.html`) showed
+                // all 4 leaking through as fake "organic" hits for an
+                // unrelated query.
+                "x.com/startpage",
+                "instagram.com/startpage/",
+                "facebook.com/startpagesearch",
+                "reddit.com/r/startpagesearch",
+            ])
+        });
+    TRACKING.is_match(url)
+}
+
+pub(in crate::modules::search_engines) fn is_non_name_word(s: &str) -> bool {
+    const BLOCKED: &[&str] = &[
+        "about",
+        "amp",
+        "ancientfaces",
+        "and",
+        "blog",
+        "com",
+        "find",
+        "for",
+        "from",
+        "github",
+        "has",
+        "his",
+        "home",
+        "how",
+        "img",
+        "info",
+        "into",
+        "its",
+        "linkedin",
+        "locatefamily",
+        "may",
+        "named",
+        "net",
+        "new",
+        "not",
+        "now",
+        "old",
+        "one",
+        "org",
+        "our",
+        "out",
+        "own",
+        "page",
+        "per",
+        "photos",
+        "profile",
+        "public",
+        "results",
+        "search",
+        "shop",
+        "site",
+        "surname",
+        "the",
+        "their",
+        "this",
+        "was",
+        "web",
+        "who",
+        "with",
+        "www",
+        "you",
+        "your",
+    ];
+    BLOCKED.contains(&s)
+}
+
+pub(in crate::modules::search_engines) fn is_navigation_path(s: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "about",
+        "api",
+        "browse",
+        "business",
+        "careers",
+        "channel",     // youtube.com/channel/<id>
+        "collections", // github.com/collections/<name>
+        "company",
+        "contact",
+        "create",
+        "creator",
+        "creators",
+        "dir",
+        "download",
+        "events",
+        "explore",
+        "features",
+        "feed",
+        "followers",
+        "following",
+        "foryou",
+        "gists", // github.com/gists
+        "groups",
+        "help",
+        "home",
+        "jobs",
+        "legal",
+        "live",
+        "log-in",
+        "marketplace",
+        "media",
+        "messenger",
+        "music",
+        "myspace",
+        "news",
+        "notifications",
+        "orgs", // github.com/orgs/<org>
+        "people",
+        "photos",
+        "popular",
+        "posts",
+        "privacy",
+        "profile", // bsky.app/profile/<handle>, facebook.com/profile.php
+        // LinkedIn directory prefix: `linkedin.com/pub/dir/First/Last` is a
+        // people-search URL, not a profile — its first path segment `pub`
+        // (with `dir`) must never become a "username".
+        "pub",
+        "reel",
+        "reels",
+        "settings",
+        "shorts",
+        "sponsors", // github.com/sponsors/<login>
+        "status",
+        "stories",
+        "support",
+        "tag",
+        "tags",
+        "terms",
+        "topics",
+        "tpm",
+        "trends",
+        "user",
+        "users",
+        "video",
+        "videos",
+        "watch",
+        "web",
+        "wiki",
+    ];
+    const CONTAINS: &[&str] = &[
+        "login",
+        "signup",
+        "signin",
+        "signout",
+        "logout",
+        "register",
+        "getstarted",
+        "official",
+        "dogpile",
+        "swisscows",
+        "qwant",
+        "instagram",
+        "facebook",
+        "twitter",
+        "youtube",
+        "tiktok",
+        "ecosia",
+        ".php",
+        ".html",
+        ".asp",
+    ];
+    EXACT.contains(&s)
+        || s.starts_with("search")
+        || s.starts_with("public")
+        || s.starts_with("upload")
+        || s.starts_with("discover")
+        || CONTAINS.iter().any(|n| s.contains(n))
+}
+
+/// Structural URL/web tokens that are never a meaningful target identifier.
+/// Dropping them keeps a `Url` target (whose value is split into path tokens)
+/// from turning `https`/`www`/`ssl`/a TLD into a "term" that then matches every
+/// unrelated page carrying that token — e.g. a target of `…/why-use-https` made
+/// `https` a term that matched every HTTPS-explainer page in the relevance gate.
+fn is_web_stopword(w: &str) -> bool {
+    matches!(
+        w,
+        "http"
+            | "https"
+            | "www"
+            | "com"
+            | "org"
+            | "net"
+            | "edu"
+            | "gov"
+            | "html"
+            | "htm"
+            | "php"
+            | "aspx"
+            | "asp"
+            | "jsp"
+            | "ssl"
+            | "tls"
+    )
+}
+
+/// Extract the meaningful search terms from a target value.
+/// For email: uses the local part (before @). For names: each word.
+/// Filters to ≥3 chars (dropping structural web stopwords) and lowercases.
+/// Used by every relevance gate.
+pub(in crate::modules::search_engines) fn target_terms(target: &Target) -> Vec<String> {
+    let seed = match target.kind {
+        TargetKind::Email => crate::core::validation::email_local(&target.value),
+        _ => &target.value,
+    };
+    seed.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3 && !is_web_stopword(w))
+        .map(String::from)
+        .collect()
+}
+
+/// Code-repository hosts whose first path segment is the account *owner* (the
+/// identity-bearing handle), and whose later segments name a repository, branch
+/// or file — content that merely *belongs* to that owner.
+const REPO_HOSTS: &[&str] = &["github.com", "gitlab.com", "bitbucket.org"];
+
+/// True when a code-repo URL matched a target term only in a NON-owner segment
+/// (a repository / file name), while the owner handle itself shares nothing with
+/// the target — i.e. a project that happens to be named after the subject's term,
+/// not the subject's own account.
+///
+/// A live "Haigen Bamford" scan surfaced `github.com/ExponentiAI/HAIGEN` (an AI
+/// project under the org `ExponentiAI`): it matched on the repo name "HAIGEN"
+/// but the owner is unrelated. `github.com/Haigen` (owner == term) and
+/// `github.com/haigenbamford/repo` (owner contains a term) are the subject's own
+/// accounts and are NOT off-target. Hosts outside [`REPO_HOSTS`] never match.
+pub(in crate::modules::search_engines) fn is_offtarget_repo_url(
+    url: &str,
+    terms: &[String],
+) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let host = parsed.host_str().unwrap_or("").trim_start_matches("www.");
+    if !REPO_HOSTS.contains(&host) {
+        return false;
+    }
+    let segments: Vec<&str> = parsed.path().split('/').filter(|s| !s.is_empty()).collect();
+    // Need an owner + at least one deeper segment to be a repo/file URL.
+    if segments.len() < 2 {
+        return false;
+    }
+    let owner = segments[0].to_lowercase();
+    let term_in = |s: &str| {
+        terms
+            .iter()
+            .filter(|t| t.len() >= 4)
+            .any(|t| s.contains(t.as_str()))
+    };
+    let owner_matches = term_in(&owner);
+    let deeper_matches = segments[1..].iter().any(|s| term_in(&s.to_lowercase()));
+    // Off-target only when the owner is unrelated yet a deeper segment matched.
+    !owner_matches && deeper_matches
+}
+
+/// The lowercased path of `url`, or `""` when it does not parse — the shared
+/// input of the URL-path relevance gates below, so a person and an organisation
+/// read the same path the same way.
+fn url_path_lower(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .map(|u| u.path().to_lowercase())
+        .unwrap_or_default()
+}
+
+/// Check whether a URL's path names a **person / username** target as a whole
+/// path token (≥4 chars). For an [`TargetKind::Organisation`] target use
+/// [`url_matches_org_target`] instead — an org's identity is a conjunction, not
+/// a single anchor.
+pub(in crate::modules::search_engines) fn url_matches_target(url: &str, terms: &[String]) -> bool {
+    let path = url_path_lower(url);
+    if path.len() < 4 {
+        return false;
+    }
+    let significant: Vec<&str> = terms
+        .iter()
+        .map(String::as_str)
+        .filter(|w| w.len() >= 4)
+        .collect();
+    match significant.split_last() {
+        None => false,
+        // A single distinctive token (email handle, username, one-word name): a
+        // path hit is sufficient — that token IS the identity. As a whole path
+        // token, never a raw substring: `path.contains("mike")` matched a
+        // stranger's `/mikeoxlong` and filed it as the handle `mike`'s own page
+        // at 0.50 (REQ-SEARCH-004, the URL-path sibling of REQ-SEARCH-003's
+        // snippet gate). `/mike`, `/mike-smith`, `/users/mike` still match.
+        Some((only, [])) => names_word_token(&path, only),
+        // A multi-part term set (an email local part `alice.smith`, a mononym
+        // `FullName` the person parser could not split): the LAST significant
+        // token is the distinctive anchor. A common FIRST token alone
+        // cross-attributes different people (a "Cindy He" UNSW staff page
+        // matched "Cindy Haynes"), so require the last one in the path. As a
+        // whole token: `haynes` names `/cindy-haynes`, never `/haynesville`.
+        // A structured person name goes through [`url_matches_person_target`]
+        // and a multi-part handle through [`url_matches_handle_target`], which
+        // require the given name / every handle part as well.
+        Some((surname, _given)) => names_word_token(&path, surname),
+    }
+}
+
+/// Check whether a URL's path names a **person** `full_name` target: the
+/// surname with a compatible given name beside it, read by the identity gate's
+/// own parser ([`crate::core::scan::text_names_person`]) — `/in/ian-thorpe-4b0`,
+/// `/i-thorpe` and `/thorpe-ian` name "Ian Thorpe"; `/Bill-Thorpe/Florida` and
+/// `/Mark-Thorpe` do not. The surname alone is every relative's and
+/// namesake's: a live "Ian Thorpe" scan minted thirteen Spokeo pages for Bill,
+/// David, Ivan, Mark and other Thorpes as the subject's own `Url`s at 0.50 on
+/// it (REQ-SEARCH-008). A mononym, which has no given/surname structure, falls
+/// back to [`url_matches_target`].
+pub(in crate::modules::search_engines) fn url_matches_person_target(
+    url: &str,
+    full_name: &str,
+    terms: &[String],
+) -> bool {
+    match crate::core::scan::text_names_person(&url_path_lower(url), full_name) {
+        Some(named) => named,
+        None => url_matches_target(url, terms),
+    }
+}
+
+/// Check whether a URL's path names a **username** target. A handle of two or
+/// more parts (`ian_thorpe` → `ian`, `thorpe`) is named only by the conjunction
+/// of its parts as whole path tokens — the same shape as the Organisation gate
+/// ([`url_matches_org_target`]): one part alone is a different handle
+/// (`/thorpe`, `/mark.thorpe.9`), REQ-SEARCH-008. A single-part handle IS its
+/// own anchor and keeps [`url_matches_target`].
+pub(in crate::modules::search_engines) fn url_matches_handle_target(
+    url: &str,
+    terms: &[String],
+) -> bool {
+    if terms.len() < 2 {
+        return url_matches_target(url, terms);
+    }
+    let path = url_path_lower(url);
+    terms.iter().all(|t| names_word_token(&path, t))
+}
+
+/// Check whether a URL's path names an **organisation** target. An org's
+/// identity is the *conjunction* of its distinctive (non-corporate-form)
+/// tokens, never any single one — the URL-path analog of
+/// [`names_the_subject`](super::super::build)'s Organisation branch
+/// (REQ-SEARCH-005). The control `Duraje Ceremo Pty Ltd` shares only `ceremo`
+/// with a stranger's `facebook.com/sougi.ceremo`; the person-name gate
+/// ([`url_matches_target`]) took the last significant token (`ceremo`) as a
+/// surname and minted that page as the org's own `Url` at 0.50 — a fabrication
+/// for a company nobody holds, the URL-path sibling of REQ-SEARCH-005's
+/// snippet-gate fabrication, caught by the Organisation known-negative control
+/// (REQ-SEARCH-006). Require EVERY distinctive token as a whole path token, so a
+/// different company that shares only one is not the subject; fall back to the
+/// whole significant set when the name is nothing but corporate-form words.
+pub(in crate::modules::search_engines) fn url_matches_org_target(
+    url: &str,
+    terms: &[String],
+) -> bool {
+    let path = url_path_lower(url);
+    if path.len() < 4 {
+        return false;
+    }
+    let significant: Vec<&str> = terms
+        .iter()
+        .map(String::as_str)
+        .filter(|w| w.len() >= 4)
+        .collect();
+    let distinctive: Vec<&str> = significant
+        .iter()
+        .copied()
+        .filter(|t| !is_generic_org_token(t))
+        .collect();
+    let required = if distinctive.is_empty() {
+        &significant
+    } else {
+        &distinctive
+    };
+    !required.is_empty() && required.iter().all(|t| names_word_token(&path, t))
+}
+
+/// Count how many DISTINCT engines returned each canonical URL, keyed by the
+/// same [`canonicalize_url`] key `dedup_results` uses.
+///
+/// This MUST be computed from the PRE-dedup results: `dedup_results` keeps only
+/// the first `SearchResult` per canonical URL, so counting engines from the
+/// deduped slice always yields 1 and silently defeats the multi-engine
+/// corroboration boost (a URL independently returned by N engines should credit
+/// N, not 1). `build_entities` takes the resulting map and reads it for each
+/// emitted entity's `corroboration`, while still iterating the deduped slice for
+/// entity emission (so per-result snippet text isn't double-counted).
+///
+/// The inner per-key `HashSet<&str>` deduplicates the engine names (the same
+/// engine returning a URL twice — e.g. across paginated queries — counts once);
+/// the returned `u32` is its cardinality, capped well within range.
+pub(in crate::modules::search_engines) fn url_engine_counts(
+    results: &[SearchResult],
+) -> std::collections::HashMap<String, u32> {
+    let mut sets: std::collections::HashMap<String, HashSet<&str>> =
+        std::collections::HashMap::new();
+    for r in results {
+        sets.entry(canonicalize_url(&r.url))
+            .or_default()
+            .insert(r.engine);
+    }
+    sets.into_iter()
+        .map(|(url, engines)| (url, engines.len() as u32))
+        .collect()
+}
+
+pub(in crate::modules::search_engines) fn dedup_results(
+    mut results: Vec<SearchResult>,
+) -> Vec<SearchResult> {
+    let mut seen = HashSet::new();
+    results.retain(|r| {
+        let key = canonicalize_url(&r.url);
+        seen.insert(key)
+    });
+    results
+}
+
+/// Dedup / cross-engine-corroboration KEY for a result URL (the stored URL is
+/// never altered). Drops the fragment, a trailing slash, and known
+/// tracking/analytics query params (via the shared
+/// [`crate::util::url_util::is_tracking_param_key`] — the same denylist
+/// `core::entity`'s `Url` UID normalisation strips, so a URL is never treated
+/// as tracking-tagged here but content-distinct there or vice versa) — but
+/// KEEPS content-bearing params, so distinct pages such as `…/watch?v=A` vs
+/// `…/watch?v=B` or `…?id=1` vs `…?id=2` are not collapsed into one
+/// (collapsing them would silently *omit* real results). Kept params are
+/// sorted so param order can't defeat dedup.
+pub(in crate::modules::search_engines) fn canonicalize_url(url: &str) -> String {
+    let url = url.split('#').next().unwrap_or(url); // drop fragment first
+    let (base, query) = url.split_once('?').map_or((url, ""), |(b, q)| (b, q));
+    let base = base.trim_end_matches('/');
+    let mut kept: Vec<&str> = query
+        .split('&')
+        .filter(|kv| !kv.is_empty() && !is_tracking_param_key(kv.split('=').next().unwrap_or(kv)))
+        .collect();
+    if kept.is_empty() {
+        return base.to_string();
+    }
+    kept.sort_unstable();
+    format!("{base}?{}", kept.join("&"))
+}
+
+pub(in crate::modules::search_engines) fn extract_registrable(host: &str) -> String {
+    crate::util::domains::registrable_domain(host).unwrap_or_else(|| host.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_web_stopword ──────────────────────────────────────────────────────
+
+    #[test]
+    fn is_web_stopword_matches_structural_url_tokens() {
+        for w in [
+            "http", "https", "www", "com", "org", "net", "edu", "gov", "html", "htm", "php",
+            "aspx", "asp", "jsp", "ssl", "tls",
+        ] {
+            assert!(is_web_stopword(w), "expected `{w}` to be a web stopword");
+        }
+    }
+
+    #[test]
+    fn is_web_stopword_allows_real_terms() {
+        assert!(!is_web_stopword("alice"));
+        assert!(!is_web_stopword("bamford"));
+        assert!(!is_web_stopword("profile"));
+    }
+
+    // ── is_tracking_param_key (shared with core::entity — see util::url_util) ──
+
+    #[test]
+    fn is_tracking_param_matches_utm_and_click_ids() {
+        // Any `utm_*` campaign param.
+        assert!(is_tracking_param_key("utm_source"));
+        assert!(is_tracking_param_key("utm_medium"));
+        // Known click-tracking / analytics ids.
+        for k in [
+            "fbclid", "gclid", "gclsrc", "dclid", "msclkid", "yclid", "mc_cid", "mc_eid", "igshid",
+            "_ga", "_gl",
+        ] {
+            assert!(
+                is_tracking_param_key(k),
+                "expected `{k}` to be a tracking param"
+            );
+        }
+        // Case-insensitive (the key is lowercased first).
+        assert!(is_tracking_param_key("UTM_SOURCE"));
+        assert!(is_tracking_param_key("GCLID"));
+    }
+
+    #[test]
+    fn is_tracking_param_allows_content_params() {
+        for k in ["id", "q", "v", "page", "query"] {
+            assert!(
+                !is_tracking_param_key(k),
+                "expected `{k}` to be a content param, not tracking"
+            );
+        }
+    }
+
+    #[test]
+    fn canonicalize_url_now_also_strips_params_the_old_local_list_missed() {
+        // Regression guard for the list-unification: these params were absent
+        // from this module's old standalone `is_tracking_param` but were
+        // already in `core::entity`'s (larger) `URL_TRACKING_PARAMS` — so a
+        // URL varying only in one of them used to dedup as one entity but as
+        // two distinct search results. Now both consumers share one list.
+        for param in ["twclid", "igsh", "mibextid", "vero_id", "spm", "icid"] {
+            assert_eq!(
+                canonicalize_url(&format!("https://example.com/page?id=1&{param}=x")),
+                "https://example.com/page?id=1",
+                "`{param}` should now be stripped as tracking noise"
+            );
+        }
+    }
+}

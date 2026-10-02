@@ -1,0 +1,642 @@
+//! Bidirectional geocoding via OpenStreetMap Nominatim.
+//!
+//! Merges forward (Address → Coordinates) and reverse (Coordinates → Address)
+//! geocoding into a single module.  The process() method dispatches based on
+//! target kind:
+//!
+//!   * `TargetKind::Address`     → forward geocode (Nominatim /search)
+//!   * `TargetKind::Coordinates` → reverse geocode (Nominatim /reverse)
+//!
+//! Free, no API key.  Nominatim usage policy: max 1 request per second,
+//! must include a valid User-Agent identifying the application.
+
+#[cfg(test)]
+mod tests;
+
+use async_trait::async_trait;
+use serde::Deserialize;
+
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    error::{Error, Result},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::http::RequestBuilderExt;
+use crate::util::http::urlencode;
+
+// ── Nominatim response types (forward) ──────────────────────────────
+
+#[derive(Deserialize)]
+pub(super) struct NominatimResult {
+    #[serde(default)]
+    pub(super) lat: Option<String>,
+    #[serde(default)]
+    pub(super) lon: Option<String>,
+    #[serde(default)]
+    pub(super) display_name: Option<String>,
+    #[serde(default, rename = "type")]
+    pub(super) place_type: Option<String>,
+    /// Only populated when the request carries `addressdetails=1` (the forward
+    /// `/search` call always sets it) — same shared shape as the reverse
+    /// `/reverse` response, folded via [`fold_address_attrs`].
+    #[serde(default)]
+    pub(super) address: Option<NominatimAddr>,
+}
+
+// ── Nominatim response types (reverse) ──────────────────────────────
+
+#[derive(Deserialize)]
+pub(super) struct NominatimResp {
+    pub(super) display_name: Option<String>,
+    /// The `jsonv2` top-level name of the OSM object the point landed on — at
+    /// `zoom=18` usually a shop, restaurant or amenity. Recorded as evidence
+    /// (`nearest_feature`), never used as part of the address value.
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    pub(super) address: Option<NominatimAddr>,
+    /// Where the matched OSM object itself lies (`jsonv2` sends both as
+    /// strings; a number is accepted too). Recorded as `matched_lat` /
+    /// `matched_lon` so a reader can measure how far the "nearest address" is
+    /// from the point that was asked about: at `zoom=18` Nominatim answers with
+    /// the nearest object it indexes, which in a park or a paddock can be a
+    /// street hundreds of metres away. The place label
+    /// (`core::place::describe`) prints a house number or a road only when that
+    /// offset is small against the fix's own error bar (REQ-GEOLABEL-002).
+    #[serde(default)]
+    pub(super) lat: Option<serde_json::Value>,
+    /// See [`NominatimResp::lat`].
+    #[serde(default)]
+    pub(super) lon: Option<serde_json::Value>,
+    /// Nominatim's search rank of the matched object: 30 is an address point
+    /// or a building, 26–27 a street, 16–25 a suburb or a town. Recorded as
+    /// `place_rank`; a house number is only ever read off an object ranked at
+    /// least 28 (a building or an address point), never off a street.
+    #[serde(default)]
+    pub(super) place_rank: Option<u32>,
+}
+
+/// A `jsonv2` coordinate field — a string (`"-33.868"`) or, from a proxy that
+/// re-encodes, a number — as a finite `f64`.
+fn json_degrees(v: Option<&serde_json::Value>) -> Option<f64> {
+    let x = match v? {
+        serde_json::Value::String(s) => s.trim().parse::<f64>().ok()?,
+        serde_json::Value::Number(n) => n.as_f64()?,
+        _ => return None,
+    };
+    x.is_finite().then_some(x)
+}
+
+#[derive(Deserialize)]
+pub(super) struct NominatimAddr {
+    pub(super) road: Option<String>,
+    pub(super) house_number: Option<String>,
+    pub(super) suburb: Option<String>,
+    pub(super) city: Option<String>,
+    pub(super) town: Option<String>,
+    pub(super) village: Option<String>,
+    pub(super) municipality: Option<String>,
+    pub(super) county: Option<String>,
+    pub(super) state: Option<String>,
+    pub(super) postcode: Option<String>,
+    pub(super) country: Option<String>,
+    pub(super) country_code: Option<String>,
+}
+
+// ── Module ──────────────────────────────────────────────────────────
+
+pub(super) const SRC: &str = "geocode";
+
+/// Returned when Nominatim answers 2xx with a body that will not decode AND the
+/// curl fallback also fails to produce one.
+///
+/// A `const`, not a `format!`, and deliberately so — see the call site: the
+/// serde message would both trip the engine's text-matched rate-limit heuristic
+/// and quote the response body into a persisted event.
+const UNDECODABLE_MSG: &str = "Nominatim returned a success status whose body did not decode, and the curl fallback did not produce a usable answer either";
+
+/// Returned when neither transport answered at all.
+const NO_ANSWER_MSG: &str =
+    "Nominatim did not answer and the curl fallback did not produce a usable answer either";
+
+pub struct Geocode;
+
+#[async_trait]
+impl Module for Geocode {
+    fn name(&self) -> &'static str {
+        "geocode"
+    }
+
+    fn description(&self) -> &'static str {
+        "Bidirectional geocoding via OpenStreetMap Nominatim — resolves Address ↔ Coordinates both ways"
+    }
+
+    fn priority(&self) -> u8 {
+        21
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Address | TargetKind::Coordinates)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        // The module does exactly one thing bidirectionally: resolve
+        // Address↔Coordinates via OSM Nominatim, producing Coordinates/Address
+        // entities with street/suburb/city/state/postcode/country evidence — a
+        // direct, tight fit for "Determine Physical Locations." It touches no
+        // DNS/WHOIS/certificate/CDN/scan database (Nominatim is a geocoding
+        // lookup, not one of the T1596 technical-database subtypes), no
+        // identity/employee/network data, so no additional technique is
+        // implicated.
+        ModuleCategory::Geo
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates, EntityKind::Address];
+        KINDS
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        8_000
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        match target.kind {
+            TargetKind::Address => self.forward(target, ctx).await,
+            TargetKind::Coordinates => self.reverse(target, ctx).await,
+            _ => Ok(ModuleResult::new()),
+        }
+    }
+}
+
+impl Geocode {
+    // ── Forward geocode: Address → Coordinates ──────────────────────
+
+    async fn forward(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let addr = target.value.trim();
+        if addr.is_empty() || addr.len() <= 2 {
+            return Ok(ModuleResult::new());
+        }
+        // A bare country name geocodes to the country CENTROID — the middle of
+        // the whole nation, not the subject's location — yet it arrives as a
+        // precise-looking fix and cascades into the geo-convergence rules (a
+        // coarse carrier-country signal inventing a street-level location, as a
+        // live +61 phone scan reproduced). Refuse to mint a coordinate from it;
+        // a finer address (street / suburb / comma-qualified) still geocodes.
+        if crate::util::place_grain::is_bare_country(addr) {
+            return Ok(ModuleResult::new());
+        }
+
+        let url = format!(
+            "https://nominatim.openstreetmap.org/search?q={}&format=json&limit=5&addressdetails=1",
+            urlencode(addr)
+        );
+
+        let resp = ctx
+            .http
+            .get(&url)
+            .header(
+                "User-Agent",
+                "huntsman-search-engine/1.0 (+https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)",
+            )
+            .send()
+            .await;
+
+        // The `reverse` leg below already gets this right — `send_tagged` + `?`, an
+        // explicit status check, and a `map_err` on the decode. This leg, in the
+        // same module, used `unwrap_or_default()` on BOTH decodes and
+        // `Ok(ModuleResult::new())` when the fallback found nothing, so provider
+        // drift, a throttle and a total outage all arrived as "this address does
+        // not geocode" — a substantive negative about the subject's location.
+        //
+        // The curl fallback is deliberate and kept: Nominatim throttles the
+        // shared client hard enough that a second transport genuinely rescues
+        // the answer. What changes is only what happens when it does not.
+        //
+        // The line drawn here is decode-SUCCESS-with-zero-results (Nominatim
+        // answering `[]` for an address it cannot place — a real negative, and
+        // the common case) versus decode-FAILURE (a WAF interstitial or a schema
+        // change — not an answer at all). Same distinction as opencellid's
+        // 404-versus-401.
+        let results: Vec<NominatimResult> = match resp {
+            Ok(r) if r.status().is_success() => {
+                match crate::util::http::json_scanned::<Vec<NominatimResult>>(r, SRC).await {
+                    Ok(v) => v,
+                    // A clean 2xx whose body will not parse: try the other
+                    // transport before concluding anything, then fail closed.
+                    //
+                    // The serde message is deliberately NOT interpolated, for two
+                    // separate reasons. Its Display ends "at line 1 column N", and
+                    // the engine classifies module errors by TEXT — `is_rate_limited`
+                    // splits on non-alphanumerics and matches the bare tokens `429`
+                    // and `402`, so a decode failure at column 429 would trip a
+                    // 600-second rate-limit cooldown on a schema-drift coincidence.
+                    // And serde's `invalid type` errors quote the offending VALUE,
+                    // which lands in a `ModuleError` event persisted to the events
+                    // table. The decode error is still visible in the log via
+                    // `json_scanned` itself (credential-redacted there).
+                    Err(_) => forward_via_curl(&url)
+                        .await
+                        .ok_or_else(|| Error::module(SRC, UNDECODABLE_MSG))?,
+                }
+            }
+            // Transport error or a non-success status. Deliberately does NOT
+            // format the `reqwest::Error`: its Display embeds the request URL,
+            // which here carries the searched address.
+            _ => forward_via_curl(&url)
+                .await
+                .ok_or_else(|| Error::module(SRC, NO_ANSWER_MSG))?,
+        };
+
+        let mut result = ModuleResult::new();
+
+        if let Some(first) = results.first()
+            && let (Some(lat_str), Some(lon_str)) = (&first.lat, &first.lon)
+            && let (Ok(lat), Ok(lon)) = (lat_str.parse::<f64>(), lon_str.parse::<f64>())
+            && crate::util::geo::is_valid_coords(lat, lon)
+        {
+            let coords = format!("{lat:.6},{lon:.6}");
+            let is_ambiguous = results.len() > 1;
+            let mut e = build_forward_entity(
+                lat,
+                lon,
+                &coords,
+                first.address.as_ref(),
+                &ctx.scan_id,
+                is_ambiguous,
+            );
+            let mut ev = Evidence::new(SRC, format!("Geocoded \"{addr}\" \u{2192} {coords}"))
+                .with_attr("input_address", addr)
+                .with_attr("latitude", lat_str)
+                .with_attr("longitude", lon_str);
+            if let Some(dn) = &first.display_name {
+                ev = ev.with_attr("display_name", dn);
+            }
+            if let Some(pt) = &first.place_type {
+                ev = ev.with_attr("place_type", pt);
+            }
+            if let Some(addr) = &first.address {
+                ev = fold_address_attrs(ev, addr);
+            }
+            if is_ambiguous {
+                ev = ev.with_attr("candidates_count", results.len().to_string());
+            }
+            e.add_evidence(ev);
+            result.push(e);
+        }
+
+        Ok(result)
+    }
+
+    // ── Reverse geocode: Coordinates → Address ──────────────────────
+
+    async fn reverse(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
+
+        let url = format!(
+            "https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
+        );
+
+        let resp = ctx
+            .http
+            .get(&url)
+            .header("Accept", "application/json")
+            .send_tagged("geocode")
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
+        }
+
+        let data: NominatimResp = crate::util::http::json_scanned(resp, SRC).await?;
+
+        let mut result = ModuleResult::new();
+        if let Some(e) = build_reverse_entity(lat, lon, &data, &ctx.scan_id) {
+            result.push(e);
+        }
+        Ok(result)
+    }
+}
+
+/// The fallback transport for the forward leg: fetch through `curl` and decode.
+///
+/// `Some` only on a SUCCESSFUL decode — `None` covers both "curl could not
+/// reach Nominatim" and "curl returned something that is not a Nominatim
+/// response". Collapsing those two into one `None` is deliberate: the caller
+/// treats either as "the fallback did not answer", and neither is evidence
+/// about the address itself.
+///
+/// Note that an empty result list is `Some(vec![])`, NOT `None`. Nominatim
+/// answering `[]` is a real, decodable negative about an address it cannot
+/// place, and must stay distinguishable from a transport or parse failure.
+async fn forward_via_curl(url: &str) -> Option<Vec<NominatimResult>> {
+    let body = crate::util::curl::fetch(url, crate::MODULE_TIMEOUT_MS).await?;
+    decode_forward_body(&body)
+}
+
+/// The decode half of [`forward_via_curl`], split out so the `Some`/`None`
+/// boundary is unit-testable without spawning curl.
+///
+/// This is the boundary the whole fail-closed change turns on: `Some(vec![])`
+/// for a decodable empty answer (a real negative about the address) versus
+/// `None` for a body that is not a Nominatim response at all.
+fn decode_forward_body(body: &str) -> Option<Vec<NominatimResult>> {
+    serde_json::from_str(body).ok()
+}
+
+/// Build the forward-geocode Coordinates entity, shaping confidence and tags by
+/// AU relevance of the resolved point via [`au_relevance`] — the same
+/// country-code-first classification `build_reverse_entity` uses, rather than
+/// the offline [`crate::util::geo::is_in_australia`] bounding box alone.
+/// Regression: the box is deliberately coarse and has a known false-positive
+/// band (e.g. Rote Island/West Timor, Indonesia) that it misreads as Western
+/// Australia; Nominatim's own `address.country_code` is authoritative when
+/// present and must win over the box, exactly as the reverse leg already does.
+/// A fix classified `InAustralia` is a strong on-region anchor
+/// (confidence::HIGH_PLUS, `au-relevant`); anything else (a genuinely
+/// off-region country, or no country code and outside the box) is demoted to
+/// a candidate (confidence::LOW, `off-region` + `candidate`) so it sits below
+/// the confidence::MEDIUM expansion floor and is quarantined from confirmed
+/// correlations — an ambiguous address string can't drag an AU-focused scan
+/// off-region. When multiple candidates exist (ambiguity detected), the
+/// unambiguous confidence is downgraded: an AU-relevant fix drops from
+/// HIGH_PLUS to MEDIUM_HIGH (still on-region but marked ambiguous), and
+/// off-region stays at LOW. Pure (no I/O); the caller attaches evidence.
+#[must_use]
+pub(super) fn build_forward_entity(
+    lat: f64,
+    lon: f64,
+    coords: &str,
+    addr: Option<&NominatimAddr>,
+    scan_id: &str,
+    is_ambiguous: bool,
+) -> Entity {
+    let in_au = au_relevance(lat, lon, addr) == AuRelevance::InAustralia;
+    let confidence = match (in_au, is_ambiguous) {
+        (true, true) => confidence::MEDIUM_HIGH,
+        (true, false) => confidence::HIGH_PLUS,
+        (false, _) => confidence::LOW,
+    };
+    let mut e = Entity::new(EntityKind::Coordinates, coords, confidence, scan_id);
+    e.tag("geocoded");
+    if in_au {
+        e.tag("au-relevant");
+        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+            e.tag(format!("au-state:{state}"));
+        }
+        if is_ambiguous {
+            e.tag("ambiguous");
+        }
+    } else {
+        e.tag("off-region");
+        e.tag("candidate");
+    }
+    e
+}
+
+/// AU-relevance verdict for a reverse-geocoded coordinate, deciding how much an
+/// off-region fix may anchor an Australia-focused scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AuRelevance {
+    /// Resolved in Australia (by Nominatim country code, or by bounding box when
+    /// the code is absent) — a strong, on-region anchor.
+    InAustralia,
+    /// Resolved to a known country that is not Australia — a candidate-grade
+    /// lead that AU-focused correlation rules (confidence ≥ confidence::MEDIUM) must not
+    /// anchor on, so it can't pull an investigation off-region.
+    OffRegion,
+    /// Region could not be determined (no country code, not in the AU box) —
+    /// kept at a neutral, middling confidence.
+    Unknown,
+}
+
+/// Classify a reverse-geocoded fix for AU relevance. The Nominatim country code
+/// is authoritative when present; otherwise we fall back to the offline
+/// [`crate::util::geo::is_in_australia`] bounding box so a bare coordinate seed
+/// is still gated.
+pub(super) fn au_relevance(lat: f64, lon: f64, addr: Option<&NominatimAddr>) -> AuRelevance {
+    match addr.and_then(|a| a.country_code.as_deref()) {
+        Some(cc) if cc.eq_ignore_ascii_case("au") => AuRelevance::InAustralia,
+        Some(_) => AuRelevance::OffRegion,
+        None if crate::util::geo::is_in_australia(lat, lon) => AuRelevance::InAustralia,
+        None => AuRelevance::Unknown,
+    }
+}
+
+/// The street line of a Nominatim address breakdown: `"{house_number} {road}"`,
+/// or the road alone. The one rule for both the `street` evidence attribute
+/// ([`fold_address_attrs`]) and the reverse-geocode value
+/// ([`reverse_address_value`]), so the two cannot drift.
+fn street_line(addr: &NominatimAddr) -> Option<String> {
+    let road = addr
+        .road
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())?;
+    Some(match addr.house_number.as_deref().map(str::trim) {
+        Some(n) if !n.is_empty() => format!("{n} {road}"),
+        _ => road.to_string(),
+    })
+}
+
+/// The nearest proper address a reverse lookup resolved, built from
+/// Nominatim's STRUCTURED fields — street, locality (suburb, then
+/// city/town/village/municipality, case-insensitive duplicates dropped),
+/// state, postcode, country — each its own comma-separated part, or `None`
+/// when neither a road nor a locality resolved.
+///
+/// Never `display_name`. At `zoom=18` that string starts with whatever OSM
+/// object occupies the point — "Kazan Dining, 25, Martin Place, Wynyard,
+/// Sydney, …" — so the Address value led with a restaurant, and
+/// `util::geohash::parse_address` (which reads a leading part without a digit
+/// as the city) recorded `addr_city = "Kazan Dining"` (REQ-GEO-010). The POI is
+/// the business at the point, not part of anyone's address; it goes to
+/// evidence as `nearest_feature`. Nor a `"-"` placeholder when nothing
+/// resolved: no address is emitted then.
+pub(super) fn reverse_address_value(addr: &NominatimAddr) -> Option<String> {
+    let street = street_line(addr);
+    let mut localities: Vec<&str> = Vec::new();
+    for l in [
+        addr.suburb.as_deref(),
+        addr.city
+            .as_deref()
+            .or(addr.town.as_deref())
+            .or(addr.village.as_deref())
+            .or(addr.municipality.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .filter(|l| !l.is_empty())
+    {
+        if !localities.iter().any(|seen| seen.eq_ignore_ascii_case(l)) {
+            localities.push(l);
+        }
+    }
+    if street.is_none() && localities.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    parts.extend(street);
+    parts.extend(localities.into_iter().map(String::from));
+    parts.extend(
+        [
+            addr.state.as_deref(),
+            addr.postcode.as_deref(),
+            addr.country.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(String::from),
+    );
+    Some(parts.join(", "))
+}
+
+/// Build the reverse-geocode Address entity — the NEAREST ADDRESS to a point —
+/// shaping confidence and tags by [`au_relevance`]. `None` when Nominatim
+/// resolved no street or locality ([`reverse_address_value`]). Pure (no I/O)
+/// so the AU-gating is unit-tested directly.
+///
+/// Rated below Verified even in Australia (`HIGH_PLUS`, the forward leg's and
+/// Photon's reverse tier). A nearest-feature lookup cannot tell a GPS fix from
+/// the city centroid a search snippet produced — the module sees only the
+/// target's `lat,lon` — so one lookup on a centroid was a single-source
+/// VERIFIED (0.78) street address: house-number precision manufactured from a
+/// city name (REQ-GEO-010). Tagged `nearest-address` beside `reverse-geocoded`
+/// so a reader knows the value is the closest address to a point, not an
+/// address anyone reported.
+#[must_use]
+pub(super) fn build_reverse_entity(
+    lat: f64,
+    lon: f64,
+    data: &NominatimResp,
+    scan_id: &str,
+) -> Option<Entity> {
+    let value = data.address.as_ref().and_then(reverse_address_value)?;
+    let relevance = au_relevance(lat, lon, data.address.as_ref());
+
+    let confidence = match relevance {
+        AuRelevance::InAustralia => confidence::HIGH_PLUS,
+        AuRelevance::Unknown => confidence::MEDIUM_HIGH,
+        AuRelevance::OffRegion => confidence::LOW,
+    };
+
+    let mut entity = Entity::new(EntityKind::Address, &value, confidence, scan_id);
+    entity.tag("geoint");
+    entity.tag("reverse-geocoded");
+    entity.tag("nearest-address");
+    match relevance {
+        AuRelevance::InAustralia => {
+            entity.tag("country:AU");
+            entity.tag("au-relevant");
+            if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+                entity.tag(format!("au-state:{state}"));
+            }
+        }
+        AuRelevance::OffRegion => entity.tag("candidate"),
+        AuRelevance::Unknown => {}
+    }
+
+    // Inferred, not observed: the nearest address to a point is a lookup BY the
+    // point, and nobody reported the subject at it. The flag is what renders
+    // the record "(inferred)" in the dossier and the debug bundle
+    // (REQ-GEOLABEL-006).
+    let mut ev = Evidence::new(SRC, format!("Reverse geocode for {lat},{lon}"))
+        .with_attr("latitude", lat.to_string())
+        .with_attr("longitude", lon.to_string())
+        .with_attr("source", "OpenStreetMap Nominatim")
+        .with_inferred(true);
+    if let Some(feature) = data
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        ev = ev.with_attr("nearest_feature", feature);
+    }
+    if let Some(dn) = data.display_name.as_deref() {
+        ev = ev.with_attr("display_name", dn);
+    }
+
+    if let Some(addr) = &data.address {
+        ev = fold_address_attrs(ev, addr);
+        // The on-region `country:AU` tag is set above; for off-region fixes
+        // record the resolved country so the lead stays explainable.
+        if let Some(cc) = addr.country_code.as_deref()
+            && !cc.eq_ignore_ascii_case("au")
+        {
+            entity.tag(format!("country:{}", cc.to_uppercase()));
+        }
+    }
+
+    if let (Some(mlat), Some(mlon)) = (
+        json_degrees(data.lat.as_ref()),
+        json_degrees(data.lon.as_ref()),
+    ) {
+        ev = ev
+            .with_attr("matched_lat", format!("{mlat:.6}"))
+            .with_attr("matched_lon", format!("{mlon:.6}"));
+    }
+    if let Some(rank) = data.place_rank {
+        ev = ev.with_attr("place_rank", rank.to_string());
+    }
+
+    entity.add_evidence(ev);
+    Some(entity)
+}
+
+/// Fold a Nominatim `address` breakdown (city/state/country/postcode/street/
+/// suburb/county) into evidence attributes. Shared by both the forward
+/// (`/search?addressdetails=1`) and reverse (`/reverse?addressdetails=1`)
+/// geocode paths so a structured address hit is reported identically
+/// regardless of which direction produced it — single-sourced, not
+/// hand-duplicated per call site. Pure (no I/O), directly unit-tested.
+pub(super) fn fold_address_attrs(mut ev: Evidence, addr: &NominatimAddr) -> Evidence {
+    let city = addr
+        .city
+        .as_deref()
+        .or(addr.town.as_deref())
+        .or(addr.village.as_deref())
+        .or(addr.municipality.as_deref());
+
+    if let Some(c) = city {
+        ev = ev.with_attr("city", c);
+    }
+    if let Some(s) = addr.state.as_deref() {
+        ev = ev.with_attr("state", s);
+    }
+    if let Some(c) = addr.country.as_deref() {
+        ev = ev.with_attr("country", c);
+    }
+    if let Some(cc) = addr.country_code.as_deref() {
+        ev = ev.with_attr("country_code", cc.to_uppercase());
+    }
+    if let Some(p) = addr.postcode.as_deref() {
+        ev = ev.with_attr("postcode", p);
+    }
+    if let Some(street) = street_line(addr) {
+        ev = ev.with_attr("street", street);
+    }
+    // The house number and the road SEPARATELY, beside the combined `street`:
+    // the place label (`core::place::describe`) may name the road of a
+    // street-grain fix but never its house number (REQ-GEOLABEL-002), and
+    // splitting a combined "25 Martin Place" back apart would be a guess.
+    for (key, part) in [
+        ("house_number", addr.house_number.as_deref()),
+        ("road", addr.road.as_deref()),
+    ] {
+        if let Some(v) = part.map(str::trim).filter(|v| !v.is_empty()) {
+            ev = ev.with_attr(key, v);
+        }
+    }
+    if let Some(sub) = addr.suburb.as_deref() {
+        ev = ev.with_attr("suburb", sub);
+    }
+    if let Some(county) = addr.county.as_deref() {
+        ev = ev.with_attr("county", county);
+    }
+    ev
+}

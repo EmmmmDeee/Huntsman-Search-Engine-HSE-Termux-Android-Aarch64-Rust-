@@ -1,0 +1,55 @@
+# Cargo configuration for Huntsman Search Engine
+# Primary target: Termux Android aarch64 (no root)
+
+# ── aarch64 (the ACTUAL triple every shipped build uses) ───────────────────
+# Both CI (`.github/workflows/ci.yml` / `release.yml`, via the NDK's aarch64
+# clang) and a Termux on-device build compile for `aarch64-linux-android` —
+# Termux runs on Android/bionic, not glibc, so its `rust` package's host
+# triple is `aarch64-linux-android` too. This target key previously read
+# `aarch64-unknown-linux-gnu`, a triple NONE of those builds ever use, so the
+# whole block below was silently dead: it never reached the shipped binary.
+#
+# `target-cpu=native` is deliberately NOT here, even though it's genuinely
+# safe for an on-device Termux build (same machine compiles and runs it) — CI
+# cross-compiles this exact triple from an x86_64 GitHub runner via the NDK,
+# and `-C target-cpu=native` queries the COMPILING host's CPU regardless of
+# the target architecture; asking for "native" while emitting aarch64 code
+# from an x86_64 host is invalid and would break that cross-compile. A rustflag
+# keyed on the target triple can't distinguish "native" from "cross" — both
+# share this triple — so the native-only flag lives instead in `install.sh`'s
+# on-device build invocation (always host==target there, unconditionally
+# safe), and only the flags safe under EITHER path stay here.
+#
+# `target-feature=+crt-static` is intentionally NOT set: Termux uses a
+# shared libc (bionic via NDK), and static-linking libc causes ABI mismatches
+# with dlopen()/threads on Android. The default dynamic link is correct.
+[target.aarch64-linux-android]
+rustflags = [
+    # Link-time optimisation hint: prefer smaller code on a phone's limited
+    # flash. Works in tandem with `opt-level = "s"` in [profile.release].
+    # Architecture/host-independent (a linker behaviour, not CPU detection),
+    # so this is safe for both the on-device build and CI's cross-compile.
+    "-C", "link-arg=-Wl,--as-needed",
+]
+
+# Keep x86_64 (CI / dev laptops) at a sane baseline — no native-only flags
+# that would break cross-compilation or reproducibility.
+[target.x86_64-unknown-linux-gnu]
+rustflags = []
+
+# ── Build parallelism ───────────────────────────────────────────────────────
+# On a typical phone (8 cores / ~6 GB RAM) the default job count (= logical
+# CPUs) is fine for the `fast` profile (16 codegen-units, LTO off). For the
+# full `release` profile the linker step is the bottleneck anyway, so we
+# leave `jobs` unset and let Cargo auto-detect.
+
+# ── Incremental compilation ─────────────────────────────────────────────────
+# Disable incremental for release/fast builds: the generated `.d` dependency
+# files and rmeta cache eat several hundred MB on a phone's internal storage,
+# and HSE's release builds are clean-room (CI, install.sh) not incremental
+# iteration. Dev builds keep Cargo's default (incremental = true).
+[profile.release]
+incremental = false
+
+[profile.fast]
+incremental = false

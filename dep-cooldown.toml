@@ -1,0 +1,42 @@
+# Dependency cooldown security policy for `dep-cooldown` (see
+# src/bin/dep_cooldown/main.rs, scripts/gate.sh, .github/workflows/audit.yml).
+#
+# A freshly published crate version is exactly the moment a supply-chain
+# compromise (a stolen publish token, a hijacked maintainer account) is most
+# likely to slip through unnoticed — RustSec/crates.io typically catch and
+# yank a malicious release within days, not hours. This policy fails the gate
+# on any crates.io dependency in Cargo.lock whose currently-locked version was
+# published more recently than `cooldown_days`, unless explicitly allow-listed
+# below.
+
+# Commented out rather than set to 4: the tool's own built-in default
+# (DEFAULT_COOLDOWN_DAYS in src/bin/dep_cooldown/policy.rs) is already 4, and
+# leaving this unset avoids two sources of truth for the same number that
+# could silently drift apart. Uncomment to actually override the default.
+# cooldown_days = 4
+
+# Scoped, expiring exceptions for a version that genuinely needs to land
+# before it clears the window (e.g. an urgent RUSTSEC fix) — mirrors
+# deny.toml's `[advisories] ignore` convention: name each exception
+# explicitly and say why, never blanket-disable the check. Matches by exact
+# version only, so allow-listing today's release does not exempt tomorrow's.
+#
+# [[allow]]
+# name = "example-crate"
+# version = "1.2.3"
+# reason = "RUSTSEC-XXXX-XXXX fix, reviewed manually YYYY-MM-DD"
+
+# chacha20 0.10.1 was YANKED from crates.io (2026-08-27); deny.toml's
+# `[advisories] yanked = "deny"` therefore fails the graph on it, forcing the
+# move to the fixed 0.10.2. That release is <4 days old, so it also trips this
+# cooldown gate — the two supply-chain policies bind against each other here.
+# The trigger is a maintainer YANK (a retraction signal), not the fresh-publish
+# compromise risk this cooldown guards against, and 0.10.2 is chacha20's own
+# next patch reached only transitively (hickory-resolver -> hickory-proto ->
+# rand -> chacha20), with no first-party use of the crate. Deliberate, reviewed
+# upgrade to escape the yank now; exact-version scoped, so it lapses the moment
+# the lock moves off 0.10.2. Reviewed 2026-08-28.
+[[allow]]
+name = "chacha20"
+version = "0.10.2"
+reason = "escape yanked 0.10.1 (deny.toml yanked=deny); 0.10.2 is the fixed release, transitive-only via hickory-resolver->rand; reviewed 2026-08-28"

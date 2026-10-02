@@ -1,0 +1,79 @@
+use super::*;
+
+    #[test]
+    fn parse_proxy_list_trims_and_drops_blanks() {
+        assert_eq!(
+            parse_proxy_list(" socks5://a:1 , , http://b:2 "),
+            vec!["socks5://a:1".to_string(), "http://b:2".to_string()]
+        );
+        assert!(parse_proxy_list("").is_empty());
+        assert!(parse_proxy_list("  ,  ").is_empty());
+    }
+
+    #[test]
+    fn parse_dns_providers_filters_to_known() {
+        assert_eq!(
+            parse_dns_providers("cloudflare, GOOGLE, nope, quad9"),
+            vec!["cloudflare", "google", "quad9"]
+        );
+        assert!(parse_dns_providers("bogus,").is_empty());
+    }
+
+    #[test]
+    fn unknown_dns_providers_reports_the_silently_dropped_typos() {
+        // The exact tokens parse_dns_providers drops must be recoverable so the
+        // resolver builder can warn instead of leaving a misspelled provider to
+        // silently fall back to the system resolver. Original spelling and order
+        // are preserved; blanks are not "unknown"; every valid provider (any
+        // case) is recognised so a correct config produces no false warning.
+        assert_eq!(
+            unknown_dns_providers("cloudflare, clouflare, GOOGLE, nope, quad9"),
+            vec!["clouflare".to_string(), "nope".to_string()]
+        );
+        assert!(unknown_dns_providers("cloudflare, google, quad9").is_empty());
+        assert!(unknown_dns_providers("CloudFlare,  QUAD9 ,Google").is_empty());
+        assert!(unknown_dns_providers("  ,  ,").is_empty());
+    }
+
+    #[test]
+    fn proxy_host_extracts_bare_host() {
+        assert_eq!(
+            proxy_host("socks5://127.0.0.1:9050").as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            proxy_host("http://user:pass@proxy.example:3128").as_deref(),
+            Some("proxy.example")
+        );
+        assert_eq!(proxy_host("host:1080").as_deref(), Some("host"));
+        assert_eq!(proxy_host("barehost").as_deref(), Some("barehost"));
+        assert_eq!(
+            proxy_host("[2001:db8::1]:1080").as_deref(),
+            Some("2001:db8::1")
+        );
+        assert_eq!(proxy_host("   "), None);
+    }
+
+    #[test]
+    fn host_matches_infra_is_case_and_dot_insensitive() {
+        let infra = vec!["proxy.example".to_string(), "1.1.1.1".to_string()];
+        assert!(host_matches_infra("PROXY.example.", &infra));
+        assert!(host_matches_infra("1.1.1.1", &infra));
+        assert!(!host_matches_infra("other.example", &infra));
+        // No configured infra ⇒ never matches (default behaviour unchanged).
+        assert!(!host_matches_infra("proxy.example", &[]));
+    }
+
+    #[test]
+    fn dns_resolver_ips_are_flagged_as_infra() {
+        // A configured rotation resolver's anycast IP must be unscannable.
+        let infra: Vec<String> = DNS_PROVIDER_IPS
+            .iter()
+            .find(|(n, _)| *n == "cloudflare")
+            .expect("should succeed")
+            .1
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert!(host_matches_infra("1.1.1.1", &infra));
+    }

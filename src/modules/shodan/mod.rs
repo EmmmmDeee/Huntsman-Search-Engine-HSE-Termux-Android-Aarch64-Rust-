@@ -1,0 +1,634 @@
+//! Shodan — combined free InternetDB + paid host-API module.
+//!
+//! **Free path (always):**
+//! `GET https://internetdb.shodan.io/{ip}` — open ports, CVEs, CPEs,
+//! hostnames, tags for any public IPv4. No credentials needed.
+//!
+//! **Paid path (when `HUNTSMAN_SHODAN_KEY` is set):**
+//! `GET https://api.shodan.io/shodan/host/{ip}?key={KEY}` — detailed
+//! service-scan data, org/ISP/ASN/OS, and PTR hostnames.
+//!
+//! **One path per IP.** With no key, InternetDB answers. With a key, the
+//! paid host API answers — and when Shodan refuses the key itself (`401`/`403`,
+//! the answer a dead, revoked or under-privileged key gets), the module answers
+//! from InternetDB anyway, after the refusal is reported to the key pool. A
+//! configured key is an upgrade and must never leave the module worse than
+//! keyless: before this, a refused key turned a working InternetDB lookup into
+//! a module error (REQ-KEYFLOOR-001).
+
+#[cfg(test)]
+mod tests;
+
+use async_trait::async_trait;
+use serde::Deserialize;
+
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    error::Result,
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
+    scan::{Target, TargetKind},
+    tags,
+};
+use crate::util::http::RequestBuilderExt;
+use crate::util::http::urlencode;
+
+pub(super) const KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY";
+
+/// The free, keyless InternetDB endpoint root (`GET {base}/{ip}`).
+const INTERNETDB_BASE: &str = "https://internetdb.shodan.io";
+
+/// The paid host API root (`GET {base}/shodan/host/{ip}?key=…`). A parameter of
+/// [`Shodan::lookup`] so the keyed → keyless fallback runs against a loopback
+/// server in tests.
+const API_BASE: &str = "https://api.shodan.io";
+
+// ── Paid API response ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub(super) struct HostResp {
+    #[serde(default)]
+    pub(super) hostnames: Vec<String>,
+    #[serde(default)]
+    pub(super) ports: Vec<u32>,
+    #[serde(default)]
+    pub(super) vulns: Vec<String>,
+    #[serde(default)]
+    pub(super) last_update: Option<String>,
+    #[serde(default)]
+    pub(super) org: Option<String>,
+    #[serde(default)]
+    pub(super) isp: Option<String>,
+    #[serde(default)]
+    pub(super) asn: Option<String>,
+    #[serde(default)]
+    pub(super) country_name: Option<String>,
+    #[serde(default)]
+    pub(super) country_code: Option<String>,
+    #[serde(default)]
+    pub(super) city: Option<String>,
+    /// Shodan's own geolocation of the host. When present and real (guarded by
+    /// [`crate::util::geo::is_valid_coords`]), this is a far better fix than the
+    /// address-derived centroid the module falls back to — the paid record's
+    /// highest-precision location signal, previously discarded.
+    #[serde(default)]
+    pub(super) latitude: Option<f64>,
+    #[serde(default)]
+    pub(super) longitude: Option<f64>,
+    /// Registrable domains Shodan associates with the host's hostnames
+    /// (`["google.com", …]`) — apex-domain pivots the module used to drop.
+    #[serde(default)]
+    pub(super) domains: Vec<String>,
+    #[serde(default)]
+    pub(super) os: Option<String>,
+    /// Shodan's host classification tags (`compromised`, `malware`,
+    /// `honeypot`, `self-signed`, `vpn`, `cloud`, `cdn`, …). The free
+    /// InternetDB path already surfaces these; the paid host record carries
+    /// them too, so drop-parity would silently lose a keyed operator's
+    /// highest-value threat signal.
+    #[serde(default)]
+    pub(super) tags: Vec<String>,
+}
+
+// ── Free InternetDB response ─────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub(super) struct InternetDbResp {
+    #[serde(default)]
+    pub(super) ip: Option<String>,
+    #[serde(default)]
+    pub(super) ports: Vec<u16>,
+    #[serde(default)]
+    pub(super) hostnames: Vec<String>,
+    #[serde(default)]
+    pub(super) cpes: Vec<String>,
+    #[serde(default)]
+    pub(super) vulns: Vec<String>,
+    #[serde(default)]
+    pub(super) tags: Vec<String>,
+}
+
+// ── Module impl ──────────────────────────────────────────────────────
+
+pub(super) const SRC: &str = "shodan";
+
+pub struct Shodan;
+
+#[async_trait]
+impl Module for Shodan {
+    fn name(&self) -> &'static str {
+        "shodan"
+    }
+    fn description(&self) -> &'static str {
+        "Shodan host intelligence — probes free InternetDB, escalating to the paid API when keyed"
+    }
+    fn priority(&self) -> u8 {
+        105
+    }
+
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::Free
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::IpAddress)
+    }
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
+    }
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Shodan IS a scan database (T1596.005) and gathers IP address info
+        // (T1590.005) — both covered by the Infrastructure default. But it
+        // also maps hosts to their country-level Address (T1591.001 Physical
+        // Locations) and identifies the ASN operator as an Organisation
+        // (T1591.002 Business Relationships) — both absent from the default.
+        &["T1590.005", "T1591.001", "T1591.002", "T1596.005"]
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        // Free + paid Shodan paths emit IP host context: domains (PTR/SAN
+        // hostnames), ASN labels, plus the dominant ISP/org as Organisation
+        // and the host's country as Address. Neither endpoint returns a URL
+        // field, so Url is not listed.
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Domain,
+            EntityKind::Asn,
+            EntityKind::Organisation,
+            EntityKind::Address,
+            EntityKind::Coordinates,
+            EntityKind::IpAddress,
+        ];
+        KINDS
+    }
+    fn max_timeout_ms(&self) -> u64 {
+        10_000
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let ip = target.value.trim();
+        if ip.is_empty() {
+            return Ok(ModuleResult::new());
+        }
+
+        self.lookup(API_BASE, INTERNETDB_BASE, ip, ctx).await
+    }
+}
+
+impl Shodan {
+    /// The module's whole request path, with both endpoint roots injectable.
+    ///
+    /// Keyed: the paid host record, a strict superset of InternetDB's (org,
+    /// ISP, ASN, OS, country + everything InternetDB has), so InternetDB is not
+    /// also asked. But the key is optional and InternetDB needs none, so a key
+    /// Shodan REFUSES must not cost the operator the keyless answer: the
+    /// refusal is already reported to the pool by [`crate::util::http::keyed_answer`]
+    /// (the key reads `Invalid` on the key-health views and the next scan
+    /// rotates past it), logged here, and the lookup continues on InternetDB
+    /// (REQ-KEYFLOOR-001). Only the refusal falls back: a throttle or an outage
+    /// on the paid API stays the module's error, and the refusal is never read
+    /// as "Shodan holds nothing" — the answer, if any, is InternetDB's own.
+    async fn lookup(
+        &self,
+        api_base: &str,
+        internetdb_base: &str,
+        ip: &str,
+        ctx: &ModuleContext,
+    ) -> Result<ModuleResult> {
+        let mut result = ModuleResult::new();
+        if let Some(key) = ctx.key_opt(KEY_ENV) {
+            let Some(status) = self.query_paid(api_base, ip, key, ctx, &mut result).await? else {
+                return Ok(result);
+            };
+            tracing::warn!(
+                target: "huntsman::shodan",
+                status,
+                "Shodan refused the configured key; answering from keyless InternetDB (REQ-KEYFLOOR-001)"
+            );
+        }
+        self.query_internetdb(internetdb_base, ip, ctx, &mut result)
+            .await?;
+        Ok(result)
+    }
+
+    /// Query the free InternetDB endpoint. A `404` is InternetDB's documented
+    /// "No information available" for an address it has never scanned — the one
+    /// clean negative. A transport failure, a throttle (`429`), an outage (5xx)
+    /// or an unreadable body is a failed lookup and is the module's error:
+    /// before this every one of them was swallowed with a debug line and the
+    /// scan recorded "no open ports, no CVEs" for the address
+    /// (`docs/PROVIDER_SWEEP_BACKLOG.md` #39).
+    async fn query_internetdb(
+        &self,
+        base: &str,
+        ip: &str,
+        ctx: &ModuleContext,
+        result: &mut ModuleResult,
+    ) -> crate::core::error::Result<()> {
+        let resp = ctx
+            .http
+            .get(format!("{base}/{}", urlencode(ip)))
+            .header("Accept", "application/json")
+            .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
+            .send_tagged(SRC)
+            .await?;
+
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
+            tracing::debug!(target: "huntsman::shodan", ip, "internetdb: no information available (404)");
+            return Ok(());
+        };
+
+        let body: InternetDbResp = crate::util::http::json_scanned(resp, SRC).await?;
+
+        if body.ports.is_empty()
+            && body.vulns.is_empty()
+            && body.hostnames.is_empty()
+            && body.cpes.is_empty()
+            && body.tags.is_empty()
+        {
+            return Ok(());
+        }
+
+        // Enrich the originating IP with port/vuln summary.
+        let mut entity = Entity::new(
+            EntityKind::IpAddress,
+            ip,
+            confidence::AUTHORITATIVE,
+            &ctx.scan_id,
+        );
+        entity.tag("shodan-internetdb");
+        if !body.vulns.is_empty() {
+            entity.tag(crate::core::tags::VULNERABLE);
+        }
+
+        // Full-fidelity policy: surface EVERY open port of the target host.
+        let mut ports_sorted: Vec<u16> = body.ports.clone();
+        ports_sorted.sort_unstable();
+        ports_sorted.dedup();
+        let ports_csv = ports_sorted
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut ev = Evidence::new(
+            SRC,
+            format!(
+                "Shodan InternetDB: {} port(s), {} CVE(s), {} hostname(s)",
+                body.ports.len(),
+                body.vulns.len(),
+                body.hostnames.len()
+            ),
+        )
+        .with_attr("ports", ports_csv)
+        .with_attr("port_count", body.ports.len().to_string());
+
+        if !body.vulns.is_empty() {
+            let v: Vec<&str> = body.vulns.iter().map(std::string::String::as_str).collect();
+            ev = ev
+                .with_attr("vulns", v.join(","))
+                .with_attr("vuln_count", body.vulns.len().to_string());
+        }
+        if !body.cpes.is_empty() {
+            let c: Vec<&str> = body.cpes.iter().map(std::string::String::as_str).collect();
+            ev = ev.with_attr("cpes", c.join(","));
+        }
+        if !body.tags.is_empty() {
+            ev = ev.with_attr("tags", body.tags.join(","));
+            body.tags
+                .iter()
+                .for_each(|t| entity.tag(format!("shodan:{t}")));
+        }
+        if let Some(canonical_ip) = body.ip.as_deref() {
+            ev = ev.with_attr("ip", canonical_ip);
+        }
+        entity.add_evidence(ev);
+        result.push(entity);
+
+        // Emit Domain entities for observed PTR / SAN hostnames — all of them
+        // (full-fidelity policy: every discovered hostname becomes an entity).
+        result.extend(
+            body.hostnames
+                .iter()
+                .map(|host| host.trim().trim_end_matches('.'))
+                .filter(|host| {
+                    !host.is_empty()
+                        && host.parse::<std::net::IpAddr>().is_err()
+                        && host.contains('.')
+                        && !host.contains(char::is_whitespace)
+                })
+                .map(|host| {
+                    let mut d = Entity::new(
+                        EntityKind::Domain,
+                        host,
+                        confidence::HIGH_PLUSPLUS,
+                        &ctx.scan_id,
+                    );
+                    d.tag("shodan-internetdb");
+                    d.tag("ptr");
+                    d.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("Hostname associated with {ip} per Shodan InternetDB"),
+                        )
+                        .with_attr("ip", ip),
+                    );
+                    d
+                }),
+        );
+        Ok(())
+    }
+
+    /// Query the paid Shodan host API. `Ok(None)` when Shodan answered (a
+    /// record, or `404`'s clean "not in Shodan"); `Ok(Some(status))` when it
+    /// refused the key — already reported to the pool — so the caller can fall
+    /// back to InternetDB; `Err` for every other failure (a `429` throttle, an
+    /// outage, an unreadable body).
+    async fn query_paid(
+        &self,
+        base: &str,
+        ip: &str,
+        key: &str,
+        ctx: &ModuleContext,
+        result: &mut ModuleResult,
+    ) -> Result<Option<u16>> {
+        use crate::util::http::KeyedAnswer;
+        let url = format!(
+            "{base}/shodan/host/{}?key={}",
+            urlencode(ip),
+            urlencode(key),
+        );
+        let resp = ctx.http.get(&url).send_tagged(SRC).await?;
+        let resp = match crate::util::http::keyed_answer(SRC, key, ctx, resp).await? {
+            KeyedAnswer::Found(resp) => resp,
+            KeyedAnswer::Absent => return Ok(None),
+            KeyedAnswer::KeyRejected { status, .. } => return Ok(Some(status)),
+        };
+        let body: HostResp = crate::util::http::json_decode(SRC, resp).await?;
+        result.extend(build_paid_entities(ip, body, &ctx.scan_id));
+        Ok(None)
+    }
+}
+
+/// Map a decoded paid Shodan host record to its entities. **Pure** (no
+/// network/IO), so the coordinate-precedence (real host fix over country
+/// centroid), the null-island guard, and the domain/ASN/org pivots are all
+/// unit-testable directly. Mirrors the pure-`build_entities` convention used by
+/// the sibling IP modules (`ipinfo`, `criminal_ip`).
+fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
+    let mut result: Vec<Entity> = Vec::new();
+
+    let mut entity = target_entity(ip, scan_id);
+    entity.tag("shodan");
+    if !body.vulns.is_empty() {
+        entity.tag(crate::core::tags::VULNERABLE);
+    }
+    if let Some(c) = body.country_code.as_deref() {
+        entity.tag(format!("country:{}", c.to_uppercase()));
+    }
+    if let Some(os) = body.os.as_deref() {
+        entity.tag(format!("os:{os}"));
+    }
+
+    let mut ev = [
+        ("org", body.org.as_deref()),
+        ("isp", body.isp.as_deref()),
+        ("asn", body.asn.as_deref()),
+        ("city", body.city.as_deref()),
+        ("country", body.country_name.as_deref()),
+        ("country_code", body.country_code.as_deref()),
+        ("os", body.os.as_deref()),
+        ("last_update", body.last_update.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
+        Evidence::new(SRC, format!("Shodan host record for {ip}")),
+        |ev, (key, v)| ev.with_attr(key, v),
+    );
+    if !body.ports.is_empty() {
+        let mut ports = body.ports;
+        ports.sort_unstable();
+        ev = ev
+            .with_attr("port_count", ports.len().to_string())
+            .with_attr(
+                "open_ports",
+                // Full-fidelity policy: every open port of the target host.
+                ports
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+    }
+    if !body.vulns.is_empty() {
+        ev = ev
+            .with_attr("vuln_count", body.vulns.len().to_string())
+            .with_attr(
+                "top_vulns",
+                // Full-fidelity policy: every CVE reported for the target host.
+                body.vulns
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+    }
+    // Host classification tags — parity with the free InternetDB path
+    // (evidence attr + per-tag `shodan:<tag>` entity tag so graph rules can
+    // pivot on `compromised`/`malware`/`honeypot`/… without parsing the CSV).
+    if !body.tags.is_empty() {
+        ev = ev.with_attr("tags", body.tags.join(","));
+        body.tags
+            .iter()
+            .for_each(|t| entity.tag(format!("shodan:{t}")));
+    }
+    entity.add_evidence(ev);
+    result.push(entity);
+
+    // Each PTR hostname becomes a Domain entity.
+    result.extend(
+        body.hostnames
+            .into_iter()
+            .filter(|host| !host.is_empty())
+            .map(|host| {
+                let mut d = Entity::new(
+                    EntityKind::Domain,
+                    &host,
+                    confidence::HIGH_PLUSPLUS_PLUS,
+                    scan_id,
+                );
+                d.tag("shodan");
+                d.tag(tags::PTR);
+                d.add_evidence(
+                    Evidence::new(SRC, format!("Hostname known for {ip}")).with_attr("ip", ip),
+                );
+                d
+            }),
+    );
+
+    // Registrable domains Shodan ties to the host — apex-domain pivots
+    // distinct from the PTR hostnames above (`google.com` vs `dns.google`).
+    result.extend(
+        body.domains
+            .into_iter()
+            .filter(|dom| !dom.is_empty())
+            .map(|dom| {
+                let mut d =
+                    Entity::new(EntityKind::Domain, &dom, confidence::HIGH_PLUSPLUS, scan_id);
+                d.tag("shodan");
+                d.add_evidence(
+                    Evidence::new(SRC, format!("Domain associated with {ip}")).with_attr("ip", ip),
+                );
+                d
+            }),
+    );
+
+    let org_lc = body
+        .org
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    if let Some(org) = &body.org
+        && !org.is_empty()
+    {
+        let mut oe = Entity::new(
+            EntityKind::Organisation,
+            org,
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
+        oe.tag("shodan");
+        oe.add_evidence(Evidence::new(SRC, format!("Organisation for {ip}")));
+        result.push(oe);
+    }
+    // ISP is a distinct OSINT pivot when it differs from org (e.g. org="AWS
+    // EC2", isp="Amazon.com" — the provider layer above the customer org).
+    if let Some(isp) = &body.isp {
+        let isp = isp.trim();
+        let isp_lc = isp.to_ascii_lowercase();
+        if !isp.is_empty() && org_lc.as_deref() != Some(isp_lc.as_str()) {
+            let mut ie = Entity::new(EntityKind::Organisation, isp, confidence::HIGH, scan_id);
+            ie.tag("shodan");
+            ie.tag("isp");
+            ie.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
+            result.push(ie);
+        }
+    }
+    if let Some(asn) = &body.asn
+        && !asn.is_empty()
+    {
+        // Shared, byte-identical ASN birth (see `util::geo::ip_asn_entity`) —
+        // single-sourced so the `0.80` + `ASN for {ip}` evidence can't drift
+        // from the other IP-geo providers; the provider tag layers on after.
+        let mut ae = crate::util::geo::ip_asn_entity(asn, SRC, ip, scan_id);
+        ae.tag("shodan");
+        result.push(ae);
+    }
+    // Prefer Shodan's own host coordinates (guarded so the `(0,0)`
+    // placeholder is never trusted) over the coarse address-derived centroid — a
+    // real per-host fix, not a city-centroid approximation.
+    let real_coords = match (body.latitude, body.longitude) {
+        (Some(lat), Some(lon)) if crate::util::geo::is_valid_coords(lat, lon) => Some((lat, lon)),
+        _ => None,
+    };
+    // Suppressed when the host IP is a CDN/anycast edge (the geo — real fix,
+    // address-derived fallback, and Address alike — is the datacentre, not
+    // the subject) — parity with the sibling IP-geo modules. ASN/Organisation
+    // above are unaffected. Checked once and applied to both the real-fix and
+    // the address-derived-fallback/Address block below, so an untrusted IP
+    // doesn't fall through to the fallback path when its real fix is suppressed.
+    let geo_trusted = crate::core::validation::untrusted_ip_geo_reason(ip).is_none();
+    if geo_trusted && let Some((lat, lon)) = real_coords {
+        let coord_val = format!("{lat:.4},{lon:.4}");
+        let mut c = Entity::new(
+            EntityKind::Coordinates,
+            &coord_val,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
+        c.tag("shodan");
+        c.tag("geoint");
+        c.add_evidence(
+            Evidence::new(SRC, format!("Shodan host coordinates for {ip}")).with_attr("ip", ip),
+        );
+        result.push(c);
+    }
+    if geo_trusted
+        && let Some(country) = &body.country_name
+        && !country.is_empty()
+    {
+        // City sharpens the address when Shodan carries it ("City, Country");
+        // otherwise the country alone, as before. Composed BEFORE the geocode
+        // below, which reads this same string — see the comment there.
+        let addr_val = match body
+            .city
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(city) => crate::util::geo::compose_address(city, "", country),
+            None => country.clone(),
+        };
+        // An address-derived centroid only as a fallback — never in addition to
+        // a real fix, which would plant a second, coarser coordinate for one
+        // host.
+        //
+        // This geocodes the COMPOSED address, not `country` alone. `city_coords`
+        // is a gazetteer of cities: its 143 rows are city names and not one is a
+        // country, not even a city-state, so a bare country name resolves to
+        // nothing and this leg could never fire (REQ-SHODAN-002). Shodan's own
+        // `city` field was right there — composed into the Address two lines up,
+        // exported, and never read by the one consumer that could use it. Passing
+        // the composed string makes the fallback live at CITY grain, which is the
+        // grain the gazetteer actually has; a response carrying only a country
+        // still resolves to nothing, exactly as before.
+        if real_coords.is_none()
+            && let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr_val)
+        {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW_MEDIUM,
+                scan_id,
+            );
+            c.tag("shodan");
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.add_evidence(
+                Evidence::new(SRC, format!("Geocode of {addr_val} for {ip}")).with_attr("ip", ip),
+            );
+            result.push(c);
+        }
+        // Never above the fix just emitted for this same host. On the real-fix
+        // path the module already sits below it (0.55 under 0.60); on the
+        // address-derived FALLBACK path it did not — 0.55 against a centroid
+        // graded 0.45, a 0.10 inversion, and the Address is the very string the
+        // centroid was looked up from (REQ-IPGEO-001). That guard was built for
+        // this path and never ran while the path was dead (REQ-SHODAN-002); it
+        // engages now.
+        let fix = result
+            .iter()
+            .rev()
+            .find(|e| e.kind == EntityKind::Coordinates);
+        let mut addr = crate::util::geo::coarse_provider_address(
+            &addr_val,
+            confidence::MEDIUM_HIGH,
+            fix,
+            scan_id,
+        );
+        addr.tag("shodan");
+        addr.tag("geoint");
+        addr.add_evidence(Evidence::new(SRC, format!("Location for {ip}")));
+        result.push(addr);
+    }
+
+    result
+}
+
+/// Helper to build an IP entity from a raw IP string.
+pub(super) fn target_entity(ip: &str, scan_id: &str) -> Entity {
+    Entity::new(
+        EntityKind::IpAddress,
+        ip,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    )
+}

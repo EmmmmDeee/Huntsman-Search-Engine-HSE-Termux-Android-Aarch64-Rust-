@@ -1,0 +1,479 @@
+//! Minimal HTML→text helpers shared across modules.
+//!
+//! Not a full parser; just enough to feed plain text to regex-based
+//! extractors (addresses, phones, emails, profile URLs) when the page
+//! body is fetched as raw HTML.
+
+use std::sync::OnceLock;
+
+use memchr::memchr;
+use regex::Regex;
+
+/// Strip `<script>`/`<style>` blocks, remove remaining tags, and decode
+/// the most common HTML entities. Returns plain text suitable for
+/// regex extraction.
+pub fn strip_html(html: &str) -> String {
+    static SCRIPT: OnceLock<Regex> = OnceLock::new();
+    static STYLE: OnceLock<Regex> = OnceLock::new();
+    static TAG: OnceLock<Regex> = OnceLock::new();
+    let script = SCRIPT.get_or_init(|| {
+        Regex::new(r"(?is)<script[^>]*>.*?</script>").expect("constant script regex")
+    });
+    let style = STYLE
+        .get_or_init(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").expect("constant style regex"));
+    let tag = TAG.get_or_init(|| Regex::new(r"(?s)<[^>]+>").expect("constant html-tag regex"));
+    let no_script = script.replace_all(html, " ");
+    let no_style = style.replace_all(&no_script, " ");
+    let no_tags = tag.replace_all(&no_style, " ");
+    decode_entities(&no_tags)
+}
+
+/// Strip HTML **tags only** — drop every `<…>` span and keep the text between,
+/// with no entity decoding and no `<script>`/`<style>` special-casing. A single
+/// left-to-right character scan (an `in_tag` toggle), so it never allocates a
+/// regex and is safe on arbitrary bytes.
+///
+/// This is the deliberately-minimal counterpart to [`strip_html`]: use it for a
+/// well-formed table cell whose text is already entity-free (the ACMA register
+/// and AHPRA practitioner ArcGIS/HTML tables), where decoding entities or
+/// excising script blocks would be wasted work. Reach for [`strip_html`] instead
+/// on a full page body that may carry entities or embedded script/style. One
+/// definition so the modules that each hand-rolled this exact `in_tag` loop stay
+/// in agreement.
+///
+/// ```
+/// use huntsman_search_engine::util::html::strip_tags_plain;
+///
+/// assert_eq!(strip_tags_plain("<td>Jane <b>Doe</b></td>"), "Jane Doe");
+/// assert_eq!(strip_tags_plain("no tags"), "no tags");
+/// ```
+#[must_use]
+pub fn strip_tags_plain(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Split an HTML fragment into table rows of trimmed, tag-stripped `<td>` cell
+/// text — one inner `Vec` per `<tr>`, in document order.
+///
+/// A deliberately small, dependency-free scanner (no HTML crate) for the simple
+/// server-rendered result tables the AU-register scrapers consume: it walks
+/// `<tr>…</tr>` spans and, within each, `<td …>…</td>` spans, running each cell
+/// through [`strip_tags_plain`] and trimming. Rows are returned verbatim,
+/// including short (`< N` cell) and header rows — each caller applies its own
+/// column count and header-drop policy, since those differ per register. `<th>`
+/// header cells are intentionally not collected, so a header row yields an empty
+/// (dropped-by-the-caller) cell vector, exactly as the hand-rolled copies did.
+///
+/// One definition so the modules that each hand-rolled this identical `<tr>`/
+/// `<td>` walk (`ahpra`; `acma_rrl` until its endpoint was retired) stay in agreement.
+///
+/// ```
+/// use huntsman_search_engine::util::html::table_rows;
+///
+/// let html = "<table><tr><td>Jane <b>Doe</b></td><td> 42 </td></tr></table>";
+/// assert_eq!(table_rows(html), vec![vec!["Jane Doe".to_string(), "42".to_string()]]);
+/// ```
+#[must_use]
+pub fn table_rows(html: &str) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    let mut remaining = html;
+    while let Some(row_start) = remaining.find("<tr") {
+        remaining = &remaining[row_start + 3..];
+        let Some(row_end) = remaining.find("</tr>") else {
+            break;
+        };
+        let row = &remaining[..row_end];
+        remaining = &remaining[row_end + 5..];
+
+        let mut cells = Vec::new();
+        let mut r = row;
+        while let Some(td_start) = r.find("<td") {
+            r = &r[td_start..];
+            let Some(td_content_start) = r.find('>') else {
+                break;
+            };
+            r = &r[td_content_start + 1..];
+            let Some(td_end) = r.find("</td>") else { break };
+            let cell = &r[..td_end];
+            cells.push(strip_tags_plain(cell).trim().to_string());
+            r = &r[td_end + 5..];
+        }
+        rows.push(cells);
+    }
+    rows
+}
+
+/// True when `html` looks like an HTML document rather than a JSON/text payload.
+///
+/// Deliberately conservative — it requires an actual document opener at the very
+/// start (`<!doctype …`, `<html …`, or a bare `<head …` / `<body …`, which only
+/// HTML documents open with), not merely an angle bracket somewhere. A JSON
+/// error body that happens to quote markup in a message field must keep its
+/// verbatim treatment, so "contains `<html`" would be the wrong test; XML, RSS
+/// and Atom open with `<?xml`, `<rss`, `<feed`, none of which is accepted.
+/// Reddit's network-security block page (observed 2026-09-15) opens with
+/// `<body class=theme-beta>` and no doctype at all, so a 403 carrying it was
+/// neither summarised (raw markup became the error snippet) nor classified.
+#[must_use]
+pub fn looks_like_document(html: &str) -> bool {
+    // `find_ascii_ci(…) == Some(0)` rather than `to_lowercase().starts_with(…)`:
+    // allocation-free, and it keeps every offset in this module derived from the
+    // original string (see [`title`] for why that matters).
+    use crate::util::str_util::find_ascii_ci;
+    let head = html.trim_start();
+    ["<!doctype html", "<html", "<head", "<body"]
+        .iter()
+        .any(|opener| find_ascii_ci(head, opener) == Some(0))
+}
+
+/// The document's `<title>` text — decoded and whitespace-collapsed — or `None`
+/// when there is no non-empty title.
+///
+/// For a CDN/WAF/origin error page the title is by far the most informative
+/// line in the document: Cloudflare answers an unreachable origin with
+/// `<title>example.com | 523: Origin is unreachable</title>` while the first
+/// several hundred characters of the same page are doctype and IE conditional
+/// comments carrying no diagnostic content at all.
+#[must_use]
+pub fn title(html: &str) -> Option<String> {
+    // `find_ascii_ci`, NOT `to_lowercase().find(…)`: `to_lowercase` is not
+    // byte-length-preserving (`İ` → `i̇`, `ẞ` → `ß`), so an offset taken from a
+    // lowercased copy can land mid-codepoint when used to slice the original and
+    // panic. Error bodies are fully upstream-controlled, so that input is
+    // reachable by anything an upstream chooses to return. See the helper's own
+    // docs — it exists for exactly this panic class.
+    use crate::util::str_util::find_ascii_ci;
+    let open = find_ascii_ci(html, "<title")?;
+    // Skip any attributes on the tag itself.
+    let after_open = open + html[open..].find('>')? + 1;
+    let close = after_open + find_ascii_ci(&html[after_open..], "</title>")?;
+    let text = collapse_whitespace(&decode_entities(&html[after_open..close]));
+    (!text.is_empty()).then_some(text)
+}
+
+/// Collapse every run of ASCII whitespace to a single space and trim the ends.
+///
+/// Tag-stripped markup is mostly inter-element whitespace, so the raw output of
+/// [`strip_html`] is unusable in a one-line message without this.
+#[must_use]
+pub fn collapse_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Decode HTML entities in a single left-to-right pass: the named entities real
+/// markup uses (`&amp; &lt; &gt; &quot; &apos; &nbsp;`, plus the common
+/// typography/symbol set — see [`decode_one_entity`]) and ANY numeric character
+/// reference — decimal `&#8217;` or hex `&#x2019;` (curly quotes, en/em dashes,
+/// nbsp). Each `&…;` is consumed exactly once, so the escaped text `&amp;lt;`
+/// round-trips to the literal `&lt;` (never double-decodes to `<`), and a
+/// bare/unknown/malformed `&…;` is emitted verbatim. The single, shared decoder
+/// for the whole codebase — `search_engines` delegates here so a title decoded in
+/// a module matches one decoded in core/util.
+/// The longest entity body this decoder will accept, in bytes — the text between
+/// `&` and `;`. The longest thing [`decode_one_entity`] recognises is a numeric
+/// character reference (`#x1F600`), and every named entity in its table is
+/// shorter. It bounds the `;` SEARCH, not just the result, which is what keeps
+/// the pass linear; see the comment in [`decode_entities`].
+const MAX_ENTITY_BODY: usize = 10;
+
+pub fn decode_entities(s: &str) -> String {
+    if memchr(b'&', s.as_bytes()).is_none() {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = memchr(b'&', rest.as_bytes()) {
+        out.push_str(&rest[..amp]);
+        let inner = &rest[amp + 1..]; // text after the '&'
+        // Look for the terminating `;` ONLY within the longest body that could
+        // possibly be accepted.
+        //
+        // Scanning the whole remainder and rejecting afterwards — which is what
+        // `memchr(b';', inner.as_bytes()) && semi <= MAX_ENTITY_BODY` did — made
+        // this QUADRATIC in the number of ampersands. On a `&` with no `;` after
+        // it, memchr walked every remaining byte, the length test then rejected
+        // the hit, and the cursor advanced a single byte to do it all again. A
+        // body of N bare ampersands cost N scans of O(N).
+        //
+        // That is reachable from untrusted input on the primary target: the
+        // sitemap module hands this the whole `<loc>` span of a document the scan
+        // target serves, and `fetch_capped` admits 5 MiB. `tokio::time::timeout`
+        // does not bound it either — this is a synchronous CPU-bound call with no
+        // await point to cancel at, so the per-module budget cannot interrupt it.
+        // Measured on the equivalent transformation: 128 KB of `&` took 3.85 s
+        // before and 1.53 ms after, with time quadrupling per doubling of input.
+        //
+        // Bounding the SEARCH instead of the RESULT is exactly equivalent: the
+        // old code accepted a hit only when the first `;` was within
+        // `MAX_ENTITY_BODY`, and a window of that size finds precisely those
+        // hits. Every `&` now costs at most a `MAX_ENTITY_BODY + 1` byte scan, so
+        // the pass is linear.
+        let window = inner.len().min(MAX_ENTITY_BODY + 1);
+        // `&` and `;` are single-byte ASCII so their byte offsets are valid char boundaries.
+        if let Some(semi) = memchr(b';', &inner.as_bytes()[..window])
+            && let Some(ch) = decode_one_entity(&inner[..semi])
+        {
+            out.push(ch);
+            rest = &inner[semi + 1..];
+            continue;
+        }
+        out.push('&');
+        rest = inner;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Decode a single entity body (text between `&` and `;`) to its character, or
+/// `None` if unrecognised/malformed. Named set covers real markup — the base
+/// XML five plus the "smart typography" and common-symbol entities real sites
+/// use in page titles/breadcrumbs (`&rsaquo;`/`&raquo;` breadcrumb separators,
+/// curly quotes, dashes, `&hellip;`, `&copy;`/`&reg;`/`&trade;`, currency
+/// signs) — a real scraped title (`au.zenbu.org &rsaquo; entry &rsaquo; …`)
+/// leaked the raw `&rsaquo;` into decoded output before this was added, since
+/// it has no numeric fallback (real markup used the named form, not
+/// `&#8250;`). Named entity names ARE case-sensitive per the HTML5 spec
+/// (`&Dagger;` and `&dagger;` are different characters), matched as such here.
+/// Numeric references (`#8217`, `#x2019`) are decoded generically for anything
+/// not in this table.
+fn decode_one_entity(body: &str) -> Option<char> {
+    match body {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        // Normalise NBSP to a regular space so decoded text stays word-splittable.
+        "nbsp" => Some(' '),
+        // Smart-quote / dash / ellipsis typography — pervasive in real page
+        // titles and body text (news sites, blogs, breadcrumbs).
+        "ldquo" => Some('\u{201C}'),  // “
+        "rdquo" => Some('\u{201D}'),  // ”
+        "lsquo" => Some('\u{2018}'),  // ‘
+        "rsquo" => Some('\u{2019}'),  // ’
+        "mdash" => Some('\u{2014}'),  // —
+        "ndash" => Some('\u{2013}'),  // –
+        "hellip" => Some('\u{2026}'), // …
+        // Angle-quote breadcrumb separators (`Home &raquo; Products …`) and
+        // guillemets — the exact gap a real scraped title hit (see doc above).
+        "laquo" => Some('\u{00AB}'),  // «
+        "raquo" => Some('\u{00BB}'),  // »
+        "lsaquo" => Some('\u{2039}'), // ‹
+        "rsaquo" => Some('\u{203A}'), // ›
+        // Common symbols that turn up in titles/footers (copyright notices,
+        // measurements, bullet lists).
+        "copy" => Some('\u{00A9}'),   // ©
+        "reg" => Some('\u{00AE}'),    // ®
+        "trade" => Some('\u{2122}'),  // ™
+        "deg" => Some('\u{00B0}'),    // °
+        "plusmn" => Some('\u{00B1}'), // ±
+        "times" => Some('\u{00D7}'),  // ×
+        "divide" => Some('\u{00F7}'), // ÷
+        "middot" => Some('\u{00B7}'), // ·
+        "bull" => Some('\u{2022}'),   // •
+        "sect" => Some('\u{00A7}'),   // §
+        "para" => Some('\u{00B6}'),   // ¶
+        "dagger" => Some('\u{2020}'), // †
+        "Dagger" => Some('\u{2021}'), // ‡
+        "euro" => Some('\u{20AC}'),   // €
+        "pound" => Some('\u{00A3}'),  // £
+        "cent" => Some('\u{00A2}'),   // ¢
+        "yen" => Some('\u{00A5}'),    // ¥
+        _ => {
+            let num = body.strip_prefix('#')?;
+            let cp = match num.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => num.parse::<u32>().ok()?,
+            };
+            char::from_u32(cp)
+        }
+    }
+}
+
+/// High-confidence anti-bot / CAPTCHA *vendor* fingerprints. Each string is
+/// specific enough that it essentially only appears when the actual challenge
+/// widget or script is embedded, so a single match is decisive. Compared
+/// case-insensitively, so every entry MUST be lowercase.
+///
+/// Kept data-driven (rather than a chain of `||`) so a new interstitial
+/// vendor is a one-line addition with a matching test, and so the matcher
+/// stays a strict superset of the block pages observed in the wild.
+pub const CHALLENGE_VENDOR_SIGNATURES: &[&str] = &[
+    // Cloudflare managed challenge / Turnstile / "Just a moment" interstitial
+    "challenges.cloudflare.com",
+    // The interstitial's challenge LOADER, `/cdn-cgi/challenge-platform/h/<x>/
+    // orchestrate/…` (a live "Just a moment..." on 2026-09-23 loaded
+    // `/h/g/orchestrate/chl_page/v1?ray=…`). Never the bare
+    // `/cdn-cgi/challenge-platform` prefix: Bot Management injects its
+    // JavaScript-detection snippet — `window.__CF$cv$params={…};
+    // a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js'` — into EVERY
+    // HTML page a Cloudflare zone serves, so the prefix read AHPRA's real
+    // 169 KB register page, under its own title, as a wall (REQ-AHPRA-002,
+    // 2026-09-23). A `/scripts/…` reference is the zone, not a refusal.
+    "/cdn-cgi/challenge-platform/h/",
+    "cf-chl-", // cf-chl-opt / cf-chl-bypass challenge tokens
+    // Google reCAPTCHA + the classic "/sorry/" rate-limit interstitial
+    "/recaptcha/api",
+    "g-recaptcha",
+    "grecaptcha",
+    "/sorry/index",
+    // hCaptcha
+    "hcaptcha.com",
+    "h-captcha",
+    // DataDome
+    "captcha-delivery.com",
+    "datadome",
+    // PerimeterX / HUMAN
+    "perimeterx",
+    "px-captcha",
+    "_pxhd",
+    // FunCaptcha / Arkose Labs
+    "funcaptcha",
+    "arkoselabs",
+    // Yandex SmartCaptcha
+    "smartcaptcha",
+    "showcaptcha",
+    // DuckDuckGo anomaly interstitial / generic retry wall
+    "anomaly-modal",
+    "httpservice/retry",
+    // Radware Bot Manager (formerly ShieldSquare) — the "Radware Captcha Page"
+    // interstitial served under validate.perfdrive.com. imlive.com answered the
+    // runner's known-negative control with exactly this page: a 200 whose body
+    // carries none of the site's own not-found markers, so the social probe read
+    // it as a verified profile for a handle nobody holds (REQ-PROBE-004,
+    // 2026-09-16 — perfdrive.com ×3, "Radware Captcha Page", shieldsquare in the
+    // live body). Each string is WAF-specific — a real profile page never
+    // references the challenge domain or names the vendor's captcha.
+    "perfdrive.com",
+    "shieldsquare",
+    "radware captcha",
+];
+
+/// Lower-confidence challenge *phrases*. Each entry is an AND-set: every
+/// token must be present for the page to count as a block. Requiring two
+/// independent tokens keeps a real results page that merely *mentions* one
+/// phrase (e.g. a SERP whose snippets discuss Cloudflare, or an article on
+/// "unusual traffic" in analytics) from being misread as a block — the
+/// previous single-substring detector flagged exactly those false positives.
+/// Multi-word phrases specific enough on their own are single-element sets.
+/// All tokens MUST be lowercase.
+pub const CHALLENGE_PHRASE_SETS: &[&[&str]] = &[
+    &["just a moment", "cloudflare"],
+    &["attention required", "cloudflare"],
+    &["checking your browser", "cloudflare"],
+    &["unusual traffic", "network"], // Google: "...unusual traffic from your computer network"
+    &["before you continue", "consent"],
+    &["request unsuccessful", "incapsula"], // Imperva / Incapsula
+    &["are not a robot"],
+    &["verify you are human"],
+    // Mojeek 403 anti-bot page ("your network appears to be sending automated
+    // queries so we can't process your search"); also a historical Google block
+    // phrasing. Specific enough to stand alone — a real SERP does not announce
+    // that it is refusing automated queries.
+    &["sending automated queries"],
+    &["enable javascript and cookies to continue"],
+    &["access to this page has been denied"], // PerimeterX classic block page
+    // Akamai Bot Manager block page: "Your request has been blocked. … A high
+    // volume of simultaneous submissions from your network … Reference Number:
+    // 18.…" — ACMA's register answered the sandbox with it on 2026-09-15 (a
+    // 403 under the origin's own host); no vendor string appears in the page.
+    &["your request has been blocked", "reference number"],
+    // Reddit's own network-security block page (2026-09-15, a 403 on the Atom
+    // feed from GitHub's runner and on `about.json` from the sandbox):
+    // "You've been blocked by network security. If you think you've been
+    // blocked by mistake, file a ticket below…". No vendor string; the page
+    // opens with a bare `<body class=theme-beta>`.
+    &["blocked by network security"],
+    // F5 BIG-IP ASM, the appliance behind AHPRA's register (live 2026-09-15
+    // and 2026-09-18): a 200 whose whole visible text is "Please enable
+    // JavaScript to view the page content. Your support ID is: <digits>".
+    // Its two standard block bodies, each as an AND-set of two independent
+    // F5 markers — a real page may carry a `<noscript>` telling the reader to
+    // enable JavaScript, or quote a support ID, but not both.
+    //
+    // Until this, both AHPRA captures were caught ONLY by the incidental
+    // `/cdn-cgi/challenge-platform` asset reference their page happens to
+    // carry (the register also fronts with Cloudflare). F5 ASM had no
+    // signature of its own, so any F5-walled host without a Cloudflare front
+    // answered a 200 wall that read as the document — for ahpra, "the subject
+    // is not a registered health practitioner". That reference is Cloudflare's
+    // always-injected JSD script, which no longer counts at all
+    // (REQ-AHPRA-002), so these two sets are now what reads that wall as one.
+    &["enable javascript to view the page content", "support id"],
+    &["the requested url was rejected", "support id"],
+];
+
+/// True when `body` is an anti-bot challenge, CAPTCHA or WAF block page — the
+/// provider's edge refusing *this* client — rather than the content the
+/// request asked for.
+///
+/// Two-tier match: a single high-confidence [`CHALLENGE_VENDOR_SIGNATURES`]
+/// fingerprint is decisive; otherwise an entire AND-set in
+/// [`CHALLENGE_PHRASE_SETS`] must match. The one such classifier in the crate:
+/// the search-engine fetcher reads a challenged SERP as blocked (never
+/// "empty", never "down"), and the shared HTTP layer types the same pages as
+/// [`crate::core::error::Error::BotChallenge`] — from
+/// [`crate::util::http::http_status_error`] for a `403 Attention Required! |
+/// Cloudflare` or `Just a moment...` (both answered to GitHub's runner on
+/// 2026-09-15, for `anubis` and `austlii`, and filed as the providers being
+/// down), and from the JSON decode helpers for a challenge served with a 2xx
+/// where JSON was expected. Two detectors would drift apart; this one is why
+/// a page a search engine recognises as a wall is never an "outage" to a
+/// registry lookup.
+#[must_use]
+pub fn is_challenge_page(body: &str) -> bool {
+    challenge_signature_present(body)
+}
+
+/// True when `body` is an HTML *document* that [`is_challenge_page`] recognises
+/// — the shape a 2xx wall takes. The document test is what keeps a text or
+/// JSON payload that merely mentions a vendor path (a crawl index listing a
+/// `/cdn-cgi/challenge-platform/…` URL, a host list) from being read as a wall:
+/// every interstitial and block page opens with `<!doctype html>` / `<html`,
+/// data never does. The predicate every 2xx body reader shares —
+/// `util::http`'s text seams, the username / streaming probes, the AU
+/// registers that read their own HTML — so one wall reads the same everywhere.
+#[must_use]
+pub fn is_challenge_document(body: &str) -> bool {
+    looks_like_document(body) && challenge_signature_present(body)
+}
+
+fn challenge_signature_present(body: &str) -> bool {
+    // First tier: any single high-confidence vendor signature, matched
+    // ASCII-case-insensitively against the RAW body in one cached aho-corasick
+    // (Teddy/SIMD) pass. Every signature is lowercase ASCII, so this is equivalent
+    // to the old `body.to_lowercase()` + case-sensitive match — but WITHOUT
+    // allocating a full Unicode-lowercased copy of every fetched body — this
+    // runs on every search-engine response and on every error body the shared
+    // HTTP layer classifies.
+    static VENDOR_AC: std::sync::LazyLock<crate::util::scan::MatchSet> =
+        std::sync::LazyLock::new(|| {
+            crate::util::scan::MatchSet::new_ascii_ci(CHALLENGE_VENDOR_SIGNATURES)
+        });
+    if VENDOR_AC.is_match(body) {
+        return true;
+    }
+    // Second tier: an entire AND-set of lowercase-ASCII phrase tokens must be
+    // present. `find_ascii_ci` (memchr/NEON, PR #220) matches each token
+    // case-insensitively over the raw body — equivalent to `lower.contains(tok)`
+    // with no allocation.
+    CHALLENGE_PHRASE_SETS.iter().any(|set| {
+        set.iter()
+            .all(|tok| crate::util::str_util::find_ascii_ci(body, tok).is_some())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
+}

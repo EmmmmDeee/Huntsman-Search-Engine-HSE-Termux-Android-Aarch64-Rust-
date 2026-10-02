@@ -1,0 +1,452 @@
+//! Australian administrative & statistical geography for a coordinate. Free, no
+//! API key.
+//!
+//! Every point in Australia falls inside a nested set of official boundaries
+//! published by the ABS in the Australian Statistical Geography Standard
+//! (ASGS). This module resolves a coordinate against the ABS's public ArcGIS
+//! boundary service (point-in-polygon, no key) to attribute it to:
+//!
+//! * **Postcode** (POA) and **suburb / locality** (SAL) — the human-meaningful
+//!   "where",
+//! * **Local Government Area** (LGA) — the council,
+//! * **Commonwealth electoral division** (CED) — the federal electorate,
+//! * **State electoral division** (SED) — the state electorate,
+//! * **Remoteness Area** (RA) — the Major-Cities…Very-Remote classification,
+//! * **Statistical Areas** (SA2 / SA4) — the ABS census small area and the
+//!   labour-market region it sits in, and
+//! * **Mesh-block land use** — the finest ASGS unit's category (Residential /
+//!   Commercial / Industrial / …): is this coordinate a home or a business?
+//!
+//! plus the state/territory. This is foundational GEOINT that applies to
+//! essentially every Australian address: it turns a bare lat/lon (e.g. the
+//! coordinate [`crate::modules::geocode`] resolves from an address) into the
+//! administrative and political geography around it — councils and electorates
+//! the keyed OSINT stacks don't surface. A coordinate outside Australia is
+//! skipped before any request (a clean miss). No mock: the boundaries are
+//! queried live from the ABS's own service.
+
+use async_trait::async_trait;
+use futures::future::join_all;
+use serde::Deserialize;
+use serde_json::{Map, Value};
+
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    error::Result,
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::geo::parse_coords;
+use crate::util::http::{RequestBuilderExt, UA_BROWSER, read_text, urlencode};
+
+const SRC: &str = "au_geo";
+/// ABS ASGS Edition 3 (2021) public ArcGIS service root.
+const BASE: &str = "https://geo.abs.gov.au/arcgis/rest/services/ASGS2021";
+
+/// One ASGS boundary layer to resolve, with the attribute fields it exposes.
+struct LayerSpec {
+    /// Service path segment (`CED`, `LGA`, …).
+    path: &'static str,
+    /// JSON attribute holding the region name.
+    name_field: &'static str,
+    /// JSON attribute holding the region code.
+    code_field: &'static str,
+    /// `Other(_)` entity kind tag emitted for this layer.
+    kind: &'static str,
+    /// Snake-case evidence-attribute key for the coordinate roll-up.
+    attr_key: &'static str,
+    /// Human-readable label for evidence summaries.
+    label: &'static str,
+    /// Confidence for the emitted region entity.
+    conf: f64,
+}
+
+/// The high-value, broadly-applicable layers, resolved together. Order is the
+/// contract between [`AuGeo::process`]'s concurrent fetch and [`assemble`].
+const LAYERS: &[LayerSpec] = &[
+    LayerSpec {
+        path: "POA",
+        name_field: "poa_name_2021",
+        code_field: "poa_code_2021",
+        kind: "au-postcode",
+        attr_key: "au_postcode",
+        label: "postcode",
+        conf: confidence::VERY_HIGH_PLUS,
+    },
+    LayerSpec {
+        path: "SAL",
+        name_field: "sal_name_2021",
+        code_field: "sal_code_2021",
+        kind: "au-suburb",
+        attr_key: "au_suburb",
+        label: "suburb/locality",
+        conf: confidence::EXPERT,
+    },
+    LayerSpec {
+        path: "LGA",
+        name_field: "lga_name_2021",
+        code_field: "lga_code_2021",
+        kind: "au-lga",
+        attr_key: "au_lga",
+        label: "local government area",
+        conf: confidence::VERY_HIGH_PLUS,
+    },
+    LayerSpec {
+        path: "CED",
+        name_field: "ced_name_2021",
+        code_field: "ced_code_2021",
+        kind: "au-federal-electorate",
+        attr_key: "au_federal_electorate",
+        label: "federal electoral division",
+        conf: confidence::VERY_HIGH_PLUS,
+    },
+    LayerSpec {
+        path: "SED",
+        name_field: "sed_name_2021",
+        code_field: "sed_code_2021",
+        kind: "au-state-electorate",
+        attr_key: "au_state_electorate",
+        label: "state electoral division",
+        conf: confidence::EXPERT,
+    },
+    LayerSpec {
+        path: "RA",
+        name_field: "ra_name_2021",
+        code_field: "ra_code_2021",
+        kind: "au-remoteness",
+        attr_key: "au_remoteness",
+        label: "remoteness area",
+        conf: confidence::EXPERT,
+    },
+    LayerSpec {
+        path: "SA2",
+        name_field: "sa2_name_2021",
+        code_field: "sa2_code_2021",
+        kind: "au-sa2",
+        attr_key: "au_sa2",
+        label: "statistical area level 2",
+        conf: confidence::HIGH_PLUSPLUS_PLUS,
+    },
+    LayerSpec {
+        path: "SA4",
+        name_field: "sa4_name_2021",
+        code_field: "sa4_code_2021",
+        kind: "au-sa4",
+        attr_key: "au_sa4",
+        label: "statistical area level 4",
+        conf: confidence::HIGH_PLUSPLUS_PLUS,
+    },
+    LayerSpec {
+        // The finest ASGS unit carries a land-use category (Residential /
+        // Commercial / Industrial / Parkland / …) — a "what kind of place is
+        // this coordinate" signal: is an address a home or a business?
+        path: "MB",
+        name_field: "mb_category_2021",
+        code_field: "mb_code_2021",
+        kind: "au-land-use",
+        attr_key: "au_land_use",
+        label: "mesh-block land use",
+        conf: confidence::HIGH_PLUSPLUS_PLUS,
+    },
+];
+
+pub struct AuGeo;
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct QueryResp {
+    features: Vec<Feature>,
+    /// REQ-AUGEO-001: ArcGIS/Esri REST returns logical errors as HTTP 200 with an
+    /// `{"error":{"code":…,"message":…}}` envelope. Without this field serde
+    /// silently dropped the unrecognized `error` key and the envelope decoded to
+    /// an empty-`features` miss — defeating the fail-closed guard in
+    /// `query_layer`. Mirrors `qld_cadastre::QueryResp::error`.
+    error: Option<ArcgisError>,
+}
+
+/// The ArcGIS/Esri REST HTTP-200 error envelope (see [`QueryResp::error`]).
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct ArcgisError {
+    code: i64,
+    message: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct Feature {
+    attributes: Map<String, Value>,
+}
+
+#[async_trait]
+impl Module for AuGeo {
+    fn name(&self) -> &'static str {
+        "au_geo"
+    }
+
+    fn description(&self) -> &'static str {
+        "Australian geolocation recon — resolves a coordinate to postcode, suburb, LGA, and federal & state electorate via ABS ASGS"
+    }
+
+    fn priority(&self) -> u8 {
+        70
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        // Kind-only; the AU bounding-box gate is applied in process() so a
+        // non-Australian coordinate issues no request.
+        matches!(t.kind, TargetKind::Coordinates)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        // Point-in-polygon lookup of ABS ASGS boundaries (postcode, suburb, LGA,
+        // electorates, remoteness, SA2/SA4, mesh-block land use) — a tight fit
+        // for the category default's T1591.001 mapping; no override needed.
+        ModuleCategory::Geo
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        // Also emits `Other("au-postcode" | "au-suburb" | "au-lga" |
+        // "au-federal-electorate" | "au-state-electorate")`, which cannot live in
+        // a `const` slice; the enriched pivot is the seed Coordinates.
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
+        KINDS
+    }
+
+    fn derives_from_target(&self) -> bool {
+        // Every region/parcel this module reports is a lookup of the queried
+        // point, so the engine caps it one derivation step below that point's
+        // own confidence (REQ-GEO-012).
+        true
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        15_000
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut result = ModuleResult::new();
+        // A malformed coordinate is the target's fault and is reported as such
+        // (the same `?` as qld_cadastre) — never an empty result that reads as
+        // "no Australian geography here".
+        let (lat, lon) = parse_coords(&target.value)?;
+        // Australia (mainland + Tasmania) bounding box — a point outside it has
+        // no ASGS coverage, so it is a typed `NotApplicable` skip before any
+        // request, never `Ok(empty)` (which coverage reads as "no Australian
+        // geography for this point": the 2026-09-15 sweep's
+        // `empty au_geo (coordinates 40.7128,-74.0060)`).
+        if !(-44.0..=-9.5).contains(&lat) || !(112.0..=154.5).contains(&lon) {
+            return Err(crate::core::error::Error::skipped(
+                crate::core::event::SkipClass::NotApplicable,
+                format!(
+                    "{lat},{lon} is outside Australia; the ABS ASGS layers cover Australia only"
+                ),
+            ));
+        }
+
+        // ArcGIS points are x,y = lon,lat.
+        let geom = urlencode(&format!("{lon},{lat}"));
+        // Resolve every layer concurrently (join_all preserves LAYERS order).
+        let resolved = join_all(LAYERS.iter().map(|spec| query_layer(ctx, &geom, spec))).await;
+
+        // A point outside a given layer's coverage is `Ok(None)`; a real ABS
+        // outage (host down, WAF 403, non-2xx) is `Err`. Tolerate partial
+        // failures and genuine misses — but if EVERY layer hard-failed, the ABS
+        // service is down, so surface that instead of silently reporting the
+        // point as having no Australian geography (cf. the total-failure
+        // surfacing in au_unclaimed / api_key_probe).
+        if !resolved.is_empty() && resolved.iter().all(Result::is_err) {
+            return Err(resolved
+                .into_iter()
+                .find_map(Result::err)
+                .expect("all-Err implies at least one Err"));
+        }
+        let resolved: Vec<Option<(String, String, Option<String>)>> =
+            resolved.into_iter().map(|r| r.ok().flatten()).collect();
+
+        assemble(&target.value, &resolved, &ctx.scan_id, &mut result);
+        Ok(result)
+    }
+}
+
+/// Query one ASGS layer for the polygon containing the point. `Ok(None)` is a
+/// genuine miss (a 200 with no feature covering the point); `Err` is a real ABS
+/// outage (transport failure or non-2xx, incl. the WAF's 403). The caller
+/// tolerates a partial failure but surfaces a total one.
+async fn query_layer(
+    ctx: &ModuleContext,
+    geom: &str,
+    spec: &LayerSpec,
+) -> Result<Option<(String, String, Option<String>)>> {
+    let url = format!(
+        "{BASE}/{}/MapServer/0/query?geometry={geom}&geometryType=esriGeometryPoint\
+         &inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=*&returnGeometry=false&f=json",
+        spec.path
+    );
+    // The ABS WAF 403s a request with no User-Agent — present the browser UA the
+    // sibling AU registry scrapers use.
+    let resp = ctx
+        .http
+        .get(&url)
+        .header("User-Agent", UA_BROWSER)
+        .send_tagged(SRC)
+        .await?;
+    if !resp.status().is_success() {
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
+    }
+    let body = read_text(SRC, resp).await?;
+    // Fail closed on BOTH an undecodable body (WAF page / truncated JSON) AND the
+    // Esri HTTP-200 `{"error":{…}}` envelope (REQ-AUGEO-001). Collapsing either to
+    // `Ok(None)` fails OPEN — the point reports as having no Australian geography
+    // AND records a circuit-breaker success, so a systematic upstream 200-error is
+    // indistinguishable from a genuine miss and never trips outage detection. A
+    // genuine empty feature list stays a real miss (`parse_feature`'s `None`).
+    decode_layer_body(&body)?;
+    Ok(parse_feature(&body, spec.name_field, spec.code_field))
+}
+
+/// Decode an ArcGIS layer-query body, failing **closed** on both an undecodable
+/// body and the Esri HTTP-200 `{"error":{…}}` envelope, so neither can
+/// masquerade as a "no coverage" miss. Pure, so both fail-closed paths are
+/// unit-tested without a network — REQ-AUGEO-001, mirroring
+/// `qld_cadastre::features_or_error`.
+fn decode_layer_body(body: &str) -> Result<QueryResp> {
+    // A truly undecodable body (WAF HTML, truncated JSON) fails closed. The serde
+    // error is deliberately NOT interpolated: a column number could trip the
+    // engine's `429`/`402` rate-limit text match, and serde quotes offending
+    // values into the unredacted `ModuleError` event.
+    let resp: QueryResp = serde_json::from_str(body).map_err(|_| {
+        crate::core::error::Error::module(
+            SRC,
+            "ArcGIS layer query returned a success status whose body did not decode \
+             as a feature response (WAF page or truncated body)",
+        )
+    })?;
+    // Before `QueryResp::error` existed, serde silently dropped the unrecognized
+    // `error` key and this envelope decoded to an empty-`features` miss — the
+    // exact fail-OPEN the guard comment claimed to prevent but the old
+    // `is_err()`-only check never could catch.
+    if let Some(err) = resp.error {
+        return Err(crate::core::error::Error::module(
+            SRC,
+            format!(
+                "ArcGIS layer query error [{}]: {}",
+                err.code,
+                err.message.trim()
+            ),
+        ));
+    }
+    Ok(resp)
+}
+
+/// Extract `(name, code, state)` from a layer-query response's first feature.
+/// Pure — unit-tested against fixtures.
+fn parse_feature(
+    body: &str,
+    name_field: &str,
+    code_field: &str,
+) -> Option<(String, String, Option<String>)> {
+    let resp: QueryResp = serde_json::from_str(body).ok()?;
+    let attrs = resp.features.into_iter().next()?.attributes;
+    let name = attr_str(&attrs, name_field)?;
+    let code = attr_str(&attrs, code_field).unwrap_or_default();
+    let state = attr_str(&attrs, "state_name_2021");
+    Some((name, code, state))
+}
+
+/// Read an attribute as a string, accepting both JSON string and number values.
+fn attr_str(m: &Map<String, Value>, k: &str) -> Option<String> {
+    match m.get(k)? {
+        Value::String(s) => (!s.is_empty()).then(|| s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Build entities from the resolved layers (aligned with [`LAYERS`]): one
+/// `Other` region entity per hit, and the seed coordinate enriched with the
+/// full administrative roll-up. Pure — unit-tested against fixtures.
+fn assemble(
+    coord: &str,
+    resolved: &[Option<(String, String, Option<String>)>],
+    scan_id: &str,
+    result: &mut ModuleResult,
+) {
+    let mut roll_up = Evidence::new(SRC, "Australian ASGS geography (ABS, point-in-polygon)")
+        .with_attr("source", "abs-asgs-2021")
+        .with_attr("coordinates", coord);
+    let mut state: Option<String> = None;
+    let mut any = false;
+
+    for (spec, res) in LAYERS.iter().zip(resolved.iter()) {
+        let Some((name, code, st)) = res else {
+            continue;
+        };
+        any = true;
+        if state.is_none() {
+            state = st.clone();
+        }
+        roll_up = roll_up.with_attr(spec.attr_key, name);
+
+        let mut e = Entity::new(
+            EntityKind::Other(spec.kind.to_string()),
+            name,
+            spec.conf,
+            scan_id,
+        );
+        e.tag("au");
+        e.tag("asgs");
+        e.tag(spec.kind);
+        e.add_evidence(
+            Evidence::new(SRC, format!("ASGS {}: {name}", spec.label))
+                .with_attr("asgs_code", code)
+                .with_attr("layer", spec.path)
+                .with_attr("coordinates", coord),
+        );
+        result.push(e);
+    }
+
+    if !any {
+        return;
+    }
+    if let Some(s) = &state {
+        roll_up = roll_up.with_attr("au_state", s);
+    }
+    // Annotate the queried coordinate. The GREATEST-merge folds this onto the
+    // existing Coordinates entity, and GREATEST means it only adds tags and
+    // evidence when it carries the confidence FLOOR — it used to carry
+    // HIGH_PLUSPLUS_PLUS (0.85), which lifted a 0.72 known-city centroid to 0.85
+    // and, counted as an independent source alongside overpass / sunrise_sunset
+    // / qld_cadastre / wigle, graded it VERIFIED at c_eff 1.00 (scan 7258fc07,
+    // REQ-GEO-008). Which ASGS regions a point lies in is a lookup keyed ON the
+    // point, not a sighting of the subject there, so the roll-up is an
+    // annotation (`Evidence::as_annotation`) and never corroborates.
+    let mut coord_e = Entity::new(
+        EntityKind::Coordinates,
+        coord,
+        confidence::DERIVED_FLOOR,
+        scan_id,
+    );
+    coord_e.tag("au");
+    coord_e.tag("geoint");
+    coord_e.tag("asgs");
+    // `coord_state()` (core::correlator::rules::geo) prefers an `au-state:XX`
+    // tag over its own coarse rectangular-bbox fallback — without this tag the
+    // exact ABS point-in-polygon state answer above is discarded and AU-056/
+    // AU-085 jurisdiction cross-checks silently re-derive a less precise one.
+    if let Some(code) = state
+        .as_deref()
+        .and_then(crate::util::address_au::state_code)
+    {
+        coord_e.tag(format!("au-state:{code}"));
+        coord_e.tag("country:AU");
+    }
+    coord_e.add_evidence(roll_up.as_annotation());
+    result.push(coord_e);
+}
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
+}

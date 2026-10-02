@@ -1,0 +1,328 @@
+//! Persistence for [`crate::core::rf::RfSighting`] — the per-sighting RF record
+//! a wardriving capture or a radar sweep produces. Kept in its own table
+//! (`rf_sightings`), separate from the generic `entities` graph: see the
+//! `CREATE TABLE` comment in `storage::mod` for why.
+
+use rusqlite::params;
+
+use crate::core::error::Result;
+use crate::core::link::LinkState;
+use crate::core::rf::{RadioKind, RfDeviceRow, RfSighting, RfSource, RfSummary, RfTrackPoint};
+
+impl super::Store {
+    /// Persist a batch of sightings for one scan under one transaction —
+    /// mirrors `insert_stealer_rows_batch`'s all-or-nothing batch-commit shape.
+    /// A no-op (not an error) on an empty slice, so an importer can call it
+    /// unconditionally.
+    ///
+    /// `locally_admin` and `oui` are derived here, once, rather than at every
+    /// read: they are pure functions of the address, so computing them on write
+    /// keeps every reader consistent and lets the index on `oui` do its job.
+    pub fn insert_rf_sightings_batch(&self, scan_id: &str, rows: &[RfSighting]) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO rf_sightings(scan_id, network_id, radio, source, locally_admin,
+                                          oui, device_class, name, encryption, observed_at,
+                                          observed_epoch, signal_dbm, accuracy_m,
+                                          latitude, longitude, raw_type)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            )?;
+            for r in rows {
+                let la = match r.address_kind() {
+                    crate::core::rf::AddressKind::Randomised => Some(1_i64),
+                    crate::core::rf::AddressKind::Fixed => Some(0_i64),
+                    crate::core::rf::AddressKind::NotAnAddress => None,
+                };
+                // A position that failed validation is stored as absent rather
+                // than as the null island, so `with_position` counts fixes the
+                // receiver actually had.
+                let (lat, lon) = if r.has_usable_position() {
+                    (r.latitude, r.longitude)
+                } else {
+                    (None, None)
+                };
+                stmt.execute(params![
+                    scan_id,
+                    r.network_id,
+                    r.radio.as_db_str(),
+                    r.source.as_db_str(),
+                    la,
+                    r.oui(),
+                    r.device_class,
+                    r.name,
+                    r.encryption,
+                    r.observed_at,
+                    r.observed_epoch,
+                    r.signal_dbm,
+                    r.accuracy_m,
+                    lat,
+                    lon,
+                    r.raw_type,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(rows.len())
+    }
+
+    /// Every device in a scan, strongest first.
+    ///
+    /// Deterministic: signal descending with NULLs last, then `network_id`, so
+    /// devices the receiver never got a level for still have a stable place
+    /// rather than floating to the top.
+    pub fn rf_devices_for_scan(&self, scan_id: &str) -> Result<Vec<RfDeviceRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT network_id, radio, locally_admin, oui, device_class, name,
+                    sightings, distinct_fixes, first_epoch, last_epoch,
+                    best_signal_dbm, worst_signal_dbm, best_accuracy_m,
+                    best_latitude, best_longitude
+               FROM rf_devices
+              WHERE scan_id = ?1
+              ORDER BY best_signal_dbm IS NULL, best_signal_dbm DESC, network_id ASC",
+        )?;
+        let mapped = stmt.query_map(params![scan_id], |r| {
+            let locally_administered = r.get::<_, Option<i64>>(2)?.map(|v| v == 1);
+            let oui: Option<String> = r.get(3)?;
+            // Only a real hardware address earns a vendor; see the field docs.
+            let vendor = match (locally_administered, oui.as_deref()) {
+                (Some(false), Some(prefix)) => {
+                    let info = crate::util::oui::lookup_prefix(prefix);
+                    (info.vendor != "Unknown").then_some(info.vendor)
+                }
+                _ => None,
+            };
+            Ok(RfDeviceRow {
+                network_id: r.get(0)?,
+                radio: RadioKind::from_db_str(&r.get::<_, String>(1)?),
+                locally_administered,
+                vendor,
+                oui,
+                device_class: r.get(4)?,
+                name: r.get(5)?,
+                sightings: r.get(6)?,
+                distinct_fixes: r.get(7)?,
+                first_epoch: r.get(8)?,
+                last_epoch: r.get(9)?,
+                best_signal_dbm: r.get(10)?,
+                worst_signal_dbm: r.get(11)?,
+                best_accuracy_m: r.get(12)?,
+                best_latitude: r.get(13)?,
+                best_longitude: r.get(14)?,
+            })
+        })?;
+        Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Every sighting of one device, oldest first. This is the movement track:
+    /// the same address heard repeatedly, with where and how loudly each time.
+    pub fn rf_sightings_for_device(
+        &self,
+        scan_id: &str,
+        network_id: &str,
+    ) -> Result<Vec<RfSighting>> {
+        let canonical = crate::core::rf::canonical_network_id(network_id);
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT network_id, radio, source, device_class, name, encryption,
+                    observed_at, observed_epoch, signal_dbm, accuracy_m,
+                    latitude, longitude, raw_type
+               FROM rf_sightings
+              WHERE scan_id = ?1 AND network_id = ?2
+              ORDER BY observed_epoch IS NULL, observed_epoch ASC, id ASC",
+        )?;
+        let mapped = stmt.query_map(params![scan_id, canonical], |r| {
+            Ok(RfSighting {
+                network_id: r.get(0)?,
+                radio: RadioKind::from_db_str(&r.get::<_, String>(1)?),
+                source: RfSource::from_db_str(&r.get::<_, String>(2)?),
+                device_class: r.get(3)?,
+                name: r.get(4)?,
+                encryption: r.get(5)?,
+                observed_at: r.get(6)?,
+                observed_epoch: r.get(7)?,
+                signal_dbm: r.get(8)?,
+                accuracy_m: r.get(9)?,
+                latitude: r.get(10)?,
+                longitude: r.get(11)?,
+                raw_type: r.get(12)?,
+            })
+        })?;
+        Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Every sighting of one device across every scan, oldest first, capped to
+    /// the newest `limit` — the movement record across a whole radar session
+    /// (one scan per iteration) or a wardriving day, where
+    /// [`rf_sightings_for_device`](Self::rf_sightings_for_device) is one
+    /// sweep's. Served by `idx_rf_network`, not a table scan. Readings without a
+    /// time come first: they cannot be placed on the timeline, and hiding them
+    /// would make the track look complete.
+    pub fn rf_device_track(&self, network_id: &str, limit: usize) -> Result<Vec<RfTrackPoint>> {
+        let canonical = crate::core::rf::canonical_network_id(network_id);
+        let cap = i64::try_from(limit).unwrap_or(i64::MAX);
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT scan_id, network_id, radio, source, device_class, name, encryption,
+                    observed_at, observed_epoch, signal_dbm, accuracy_m,
+                    latitude, longitude, raw_type
+               FROM rf_sightings
+              WHERE network_id = ?1
+              ORDER BY observed_epoch IS NULL, observed_epoch DESC, id DESC
+              LIMIT ?2",
+        )?;
+        let mapped = stmt.query_map(params![canonical, cap], |r| {
+            Ok(RfTrackPoint {
+                scan_id: r.get(0)?,
+                sighting: RfSighting {
+                    network_id: r.get(1)?,
+                    radio: RadioKind::from_db_str(&r.get::<_, String>(2)?),
+                    source: RfSource::from_db_str(&r.get::<_, String>(3)?),
+                    device_class: r.get(4)?,
+                    name: r.get(5)?,
+                    encryption: r.get(6)?,
+                    observed_at: r.get(7)?,
+                    observed_epoch: r.get(8)?,
+                    signal_dbm: r.get(9)?,
+                    accuracy_m: r.get(10)?,
+                    latitude: r.get(11)?,
+                    longitude: r.get(12)?,
+                    raw_type: r.get(13)?,
+                },
+            })
+        })?;
+        let mut rows = mapped.collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.reverse();
+        Ok(rows)
+    }
+
+    /// One sweep's link state (REQ-RESILIENCE-002). One row per sweep; a
+    /// second write for the same scan is a second observation and is kept —
+    /// the reader takes the latest.
+    pub fn insert_wifi_link(&self, scan_id: &str, link: &LinkState) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO wifi_links(scan_id, observed_epoch, connected, ssid, bssid, signal_dbm,
+                                    ip, link_speed_mbps, supplicant_state)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                scan_id,
+                link.observed_epoch,
+                i64::from(link.connected),
+                link.ssid,
+                link.bssid.as_deref().map(str::to_lowercase),
+                link.signal_dbm,
+                link.ip,
+                link.link_speed_mbps,
+                link.supplicant_state,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The latest link state recorded for a sweep, or `None` when it recorded
+    /// none — a sweep from before the record existed, or one that did not run
+    /// `device_sensors`. The caller tells the two apart from the sweep, not
+    /// from this answer.
+    pub fn wifi_link_for_scan(&self, scan_id: &str) -> Result<Option<LinkState>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT observed_epoch, connected, ssid, bssid, signal_dbm, ip, link_speed_mbps,
+                    supplicant_state
+               FROM wifi_links WHERE scan_id = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![scan_id])?;
+        Ok(match rows.next()? {
+            Some(r) => Some(LinkState {
+                observed_epoch: r.get(0)?,
+                connected: r.get::<_, i64>(1)? != 0,
+                ssid: r.get(2)?,
+                bssid: r.get(3)?,
+                signal_dbm: r.get(4)?,
+                ip: r.get(5)?,
+                link_speed_mbps: r.get(6)?,
+                supplicant_state: r.get(7)?,
+            }),
+            None => None,
+        })
+    }
+
+    /// Names carried by more than one radio, largest installation first.
+    pub fn rf_shared_names(&self, scan_id: &str) -> Result<Vec<(String, i64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT name, radios FROM rf_shared_names
+              WHERE scan_id = ?1 ORDER BY radios DESC, name ASC",
+        )?;
+        let mapped = stmt.query_map(params![scan_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The scan of the most recent sighting, or `None` when nothing has been
+    /// recorded. Lets the CLI default to "the survey you just ran" instead of
+    /// making the operator paste an id they never saw.
+    ///
+    /// Ordered by sighting id, not by timestamp: a capture can carry an older
+    /// wall clock than a sweep imported after it, and "most recently recorded"
+    /// is the question being asked.
+    pub fn rf_latest_scan_id(&self) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare_cached("SELECT scan_id FROM rf_sightings ORDER BY id DESC LIMIT 1")?;
+        let mut rows = stmt.query([])?;
+        Ok(match rows.next()? {
+            Some(r) => Some(r.get(0)?),
+            None => None,
+        })
+    }
+
+    /// Scan-level totals in one query.
+    pub fn rf_summary(&self, scan_id: &str) -> Result<RfSummary> {
+        let conn = self.conn.lock();
+        // Device-level counts come from the rollup view and sighting-level ones
+        // from the table, because a device is counted once however often it was
+        // heard — mixing the two grains is the classic way this summary lies.
+        let mut stmt = conn.prepare_cached(
+            "SELECT
+               (SELECT COUNT(*) FROM rf_sightings WHERE scan_id = ?1),
+               (SELECT COUNT(*) FROM rf_devices   WHERE scan_id = ?1),
+               (SELECT COUNT(*) FROM rf_devices   WHERE scan_id = ?1 AND radio = 'wifi'),
+               (SELECT COUNT(*) FROM rf_devices   WHERE scan_id = ?1 AND radio = 'ble'),
+               (SELECT COUNT(*) FROM rf_devices   WHERE scan_id = ?1 AND radio = 'bt'),
+               (SELECT COUNT(*) FROM rf_devices   WHERE scan_id = ?1 AND radio = 'cell'),
+               (SELECT COUNT(*) FROM rf_devices   WHERE scan_id = ?1 AND locally_admin = 0),
+               (SELECT COUNT(*) FROM rf_devices   WHERE scan_id = ?1 AND locally_admin = 1),
+               (SELECT COUNT(*) FROM rf_devices   WHERE scan_id = ?1 AND name IS NOT NULL),
+               (SELECT COUNT(*) FROM rf_devices   WHERE scan_id = ?1 AND best_latitude IS NOT NULL),
+               (SELECT MIN(observed_epoch) FROM rf_sightings WHERE scan_id = ?1),
+               (SELECT MAX(observed_epoch) FROM rf_sightings WHERE scan_id = ?1)",
+        )?;
+        let s = stmt.query_row(params![scan_id], |r| {
+            Ok(RfSummary {
+                sightings: r.get(0)?,
+                devices: r.get(1)?,
+                wifi: r.get(2)?,
+                ble: r.get(3)?,
+                bt: r.get(4)?,
+                cellular: r.get(5)?,
+                fixed_address: r.get(6)?,
+                randomised_address: r.get(7)?,
+                named: r.get(8)?,
+                with_position: r.get(9)?,
+                first_epoch: r.get(10)?,
+                last_epoch: r.get(11)?,
+            })
+        })?;
+        Ok(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    include!("signal_tests.rs");
+}

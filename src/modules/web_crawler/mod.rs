@@ -1,0 +1,825 @@
+//! Unified web crawler — supersedes SpiderFoot 4.0's sfp_spider + sfp_pageinfo
+//! + sfp_webframework + sfp_webserver in a single async BFS crawler.
+//!
+//! Capabilities (all executed in one `process()` call):
+//!   1. **Recursive BFS crawl** — async concurrent page fetching within the
+//!      target domain, bounded by depth (3) and page count (60). Respects
+//!      robots.txt `Disallow` rules and filters binary file extensions.
+//!   2. **Link discovery** — extracts internal links (same domain), external
+//!      links (other domains), and subdomain links. Each discovered subdomain
+//!      becomes a Domain entity for expansion.
+//!   3. **Content extraction** — emails, phones, and API keys found in page
+//!      bodies are emitted as entities with source provenance.
+//!   4. **Page classification** — login forms, admin panels, file upload
+//!      forms, and password fields are detected and tagged.
+//!   5. **Framework fingerprinting** — detects 25+ web frameworks and
+//!      technologies from HTML content (WordPress, React, Angular, Vue,
+//!      jQuery, Bootstrap, Next.js, Django, Laravel, Rails, etc.).
+//!   6. **Security header audit** — checks for HSTS, CSP, X-Frame-Options,
+//!      X-Content-Type-Options, Permissions-Policy from the seed response.
+//!
+//! Design principles:
+//!   - Zero additional dependencies — uses reqwest (already in Cargo.toml)
+//!     and string-based extraction (same approach as SpiderFoot's regex).
+//!   - Bounded memory — visited set is capped, page bodies are processed
+//!     and discarded (not accumulated).
+//!   - Termux-friendly — 4 concurrent requests, 200ms inter-request delay,
+//!     64 KB body cap per page. Total wall-time stays under 60s for typical
+//!     sites.
+
+use std::collections::{HashSet, VecDeque};
+
+use async_trait::async_trait;
+use url::Url;
+
+use crate::core::{
+    classifier::Classified,
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    error::{Error, Result},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+    tags,
+};
+use crate::util::http::RequestBuilderExt;
+
+const SRC: &str = "web_crawler";
+
+pub struct WebCrawler;
+
+pub(super) const MAX_PAGES: usize = 60;
+pub(super) const MAX_DEPTH: u32 = 3;
+const BODY_CAP: usize = 65_536;
+const INTER_REQUEST_MS: u64 = 200;
+const URL_TARGET_MAX_PAGES: usize = 5;
+const URL_TARGET_MAX_DEPTH: u32 = 1;
+
+pub(super) const BINARY_EXTENSIONS: &[&str] = &[
+    "png", "gif", "jpg", "jpeg", "tiff", "tif", "webp", "svg", "ico", "pdf", "doc", "docx", "xls",
+    "xlsx", "ppt", "pptx", "csv", "zip", "gz", "tar", "bz2", "rar", "7z", "iso", "mp3", "mp4",
+    "avi", "mov", "flv", "mpg", "mpeg", "mkv", "wmv", "exe", "bin", "dmg", "msi", "deb", "rpm",
+    "woff", "woff2", "ttf", "eot", "otf", "css", "map",
+];
+
+/// Cap on image URLs surfaced as EXIF leads from one crawl.
+///
+/// Each lead becomes a `Url` entity the expansion loop may hand to
+/// `modules::exif_geo`, which fetches up to 8 MiB per image — so an unbounded
+/// gallery page would turn one crawl into hundreds of downloads. The count of
+/// images actually seen is recorded on the crawl evidence either way, so hitting
+/// this cap is visible in the output rather than silent.
+const IMAGE_LEADS_CAP: usize = 40;
+
+const NOTABLE_PAGES_CAP: usize = 20;
+const NOTABLE_PAGE_TYPES: &[&str] = &["login_form", "file_upload", "admin_panel", "api_reference"];
+
+/// How the crawl seed was supplied — which together decide what this crawl is
+/// entitled to ATTRIBUTE, as opposed to merely observe.
+///
+/// Grouped rather than passed as two loose booleans because they are one
+/// decision: a whole-domain scan owns its findings about the site, a profile
+/// URL on a shared platform owns none of them.
+#[derive(Clone, Copy)]
+pub(super) struct SeedShape {
+    /// The seed is a specific URL (e.g. a profile page), not a whole domain.
+    is_url_target: bool,
+    /// The seed is a profile URL on a shared platform (instagram.com/x,
+    /// onlyfans.com/x). Site-ownership claims must be suppressed: the platform's
+    /// domain, stack, subdomains, CDN images and outbound links describe the
+    /// platform, not the subject. False for an explicit Domain scan, which is a
+    /// deliberate infrastructure request.
+    shared_profile_host: bool,
+}
+
+pub(super) struct CrawlState {
+    pub(super) visited: HashSet<String>,
+    pub(super) queue: VecDeque<(String, u32)>,
+    pages_fetched: usize,
+    disallow_rules: Vec<String>,
+    pub(super) result: ModuleResult,
+    // Aggregated discovery
+    pub(super) external_domains: HashSet<String>,
+    pub(super) subdomains: HashSet<String>,
+    pub(super) emails: HashSet<String>,
+    pub(super) phones: HashSet<String>,
+    /// `(canonical_id, provider)` web-analytics IDs seen across crawled pages.
+    pub(super) tracking_ids: HashSet<(String, String)>,
+    /// Entities mined from embedded SPA hydration JSON (Next.js/Nuxt), one
+    /// batch per page; deduplicated once against the whole crawl in
+    /// `build_entities` (mirroring `classifier::extract`'s own dedup key).
+    pub(super) hydration_findings: Vec<Classified>,
+    pub(super) frameworks: HashSet<&'static str>,
+    pub(super) page_types: HashSet<&'static str>,
+    pub(super) security_headers: Vec<(&'static str, bool)>,
+    internal_links: usize,
+    external_links: usize,
+    pub(super) notable_pages: Vec<String>,
+    /// Image URLs discovered on crawled pages, in discovery order.
+    ///
+    /// These are NEVER enqueued for crawling — a JPEG is not a page — but each
+    /// is an EXIF lead: `modules::exif_geo` accepts an image `Url` target and
+    /// reads the GPS IFD out of it. Held here and emitted as entities in
+    /// [`build_entities`] so the expansion loop can dispatch them.
+    ///
+    /// Bounded by `IMAGE_LEADS_CAP`; the true discovered total lives in
+    /// [`CrawlState::image_urls_seen`], which is what the evidence reports.
+    pub(super) image_urls: Vec<String>,
+    /// EVERY distinct image URL the crawl saw, including those past
+    /// `IMAGE_LEADS_CAP`.
+    ///
+    /// Kept separately because `image_urls` saturates at the cap, so its length
+    /// cannot distinguish "found exactly 40 images" from "found 400 and kept
+    /// 40". Reporting only the capped figure would present a truncated list as a
+    /// complete one — the crawl's own output must state how many images it
+    /// actually found. Unbounded in principle but small in practice: link
+    /// extraction only ever sees `MAX_PAGES` bodies, each capped at `BODY_CAP`
+    /// bytes, and the module already keeps comparable sets for emails, phones
+    /// and external domains.
+    pub(super) image_urls_seen: HashSet<String>,
+}
+
+#[async_trait]
+impl Module for WebCrawler {
+    fn name(&self) -> &'static str {
+        "web_crawler"
+    }
+
+    fn description(&self) -> &'static str {
+        "Recursive web-crawler recon — sweeps a site and fingerprints its underlying framework"
+    }
+
+    fn priority(&self) -> u8 {
+        20
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Domain | TargetKind::Url)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Web
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // The category default only covers the BFS site-crawl (T1594) and
+        // framework fingerprinting (T1592.002), but probe_config_leaks() also
+        // actively probes known credential/secret-leak paths for VERY_HIGH_PLUS
+        // ApiKey entities (T1589.001), and extract_emails() harvests page-body
+        // addresses into first-class Email entities (T1589.002). Superset of
+        // the category default, so coverage never regresses.
+        &["T1594", "T1592.002", "T1589.001", "T1589.002"]
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Email,
+            EntityKind::Url,
+            EntityKind::Domain,
+            EntityKind::Phone,
+            EntityKind::ApiKey,
+            EntityKind::TrackingId,
+            // Every kind below is reachable ONLY via the hydration-JSON path
+            // (see `hydration.rs`): `extract_hydration_entities` calls
+            // `core::classifier::extract` over each JSON string leaf and
+            // `build_entities` (below) mints the entity as `Entity::new(c.kind
+            // .clone(), ...)` — a VARIABLE kind, not a literal `EntityKind::X`
+            // token, so it is invisible to the architecture guard
+            // (`every_literal_constructed_entity_kind_is_declared_in_produces`)
+            // that would otherwise catch a missing declaration here. There is
+            // no confidence or kind filter on that path at all, so `classify`
+            // can hand back the `EntityKind` for ANY of its 19 `TargetKind`
+            // variants — this list is every one of them, not just the three
+            // (IpAddress, AbnAcn, Username) a prior pass added after noticing
+            // just those in practice.
+            EntityKind::IpAddress,
+            EntityKind::AbnAcn,
+            EntityKind::Username,
+            EntityKind::Person,
+            EntityKind::Asn,
+            EntityKind::Cidr,
+            EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Organisation,
+            EntityKind::MacAddress,
+            EntityKind::CryptoAddress,
+            EntityKind::DeviceId,
+            EntityKind::Ssid,
+        ];
+        KINDS
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        60_000
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let is_url_target = target.kind == TargetKind::Url;
+
+        let (seed, domain) = if is_url_target {
+            let raw = target.value.trim().to_string();
+            if raw.is_empty() {
+                return Ok(ModuleResult::new());
+            }
+            let parsed =
+                Url::parse(&raw).map_err(|e| Error::module(SRC, format!("bad URL target: {e}")))?;
+            let host = parsed
+                .host_str()
+                .ok_or_else(|| Error::module(SRC, "URL has no host"))?
+                .to_lowercase();
+            (raw, host)
+        } else {
+            let d = target.value.trim().to_lowercase();
+            if d.is_empty() {
+                return Ok(ModuleResult::new());
+            }
+            let s = resolve_seed(&ctx.http, &d).await?;
+            (s, d)
+        };
+
+        let max_pages = if is_url_target {
+            URL_TARGET_MAX_PAGES
+        } else {
+            MAX_PAGES
+        };
+        let max_depth = if is_url_target {
+            URL_TARGET_MAX_DEPTH
+        } else {
+            MAX_DEPTH
+        };
+
+        let seed_url =
+            Url::parse(&seed).map_err(|e| Error::module(SRC, format!("bad seed URL: {e}")))?;
+        let base_host = seed_url.host_str().unwrap_or(&domain).to_lowercase();
+        // A profile URL on a SHARED platform (instagram.com/x, onlyfans.com/x,
+        // github.com/x) is evidence about that ACCOUNT — it says nothing about
+        // who owns the platform. Crawling it previously minted the platform's
+        // own domain as a VERY_HIGH_PLUS subject Domain and then attributed the
+        // platform's stack, analytics IDs and config-leak surface to the
+        // subject, so a person scan ended up mapping Instagram's estate.
+        // Keep harvesting profile-visible subject data; quarantine every
+        // site-OWNERSHIP pivot. An explicit Domain scan is untouched: asking to
+        // scan `instagram.com` is a deliberate infrastructure request.
+        let seed_shape = SeedShape {
+            is_url_target,
+            shared_profile_host: is_url_target && crate::core::scan::is_mega_domain(&domain),
+        };
+        let shared_profile_host = seed_shape.shared_profile_host;
+
+        let mut state = CrawlState {
+            visited: HashSet::with_capacity(MAX_PAGES),
+            queue: VecDeque::with_capacity(MAX_PAGES),
+            pages_fetched: 0,
+            disallow_rules: Vec::new(),
+            result: ModuleResult::new(),
+            external_domains: HashSet::new(),
+            subdomains: HashSet::new(),
+            emails: HashSet::new(),
+            phones: HashSet::new(),
+            tracking_ids: HashSet::new(),
+            hydration_findings: Vec::new(),
+            frameworks: HashSet::new(),
+            page_types: HashSet::new(),
+            security_headers: Vec::new(),
+            internal_links: 0,
+            external_links: 0,
+            notable_pages: Vec::new(),
+            image_urls: Vec::new(),
+            image_urls_seen: HashSet::new(),
+        };
+
+        fetch_robots(&ctx.http, &seed_url, &mut state.disallow_rules).await;
+        // Config-leak probing is an ownership question ("is THIS site leaking
+        // its own secrets?"). Against a shared platform it is both meaningless
+        // for the subject and needless traffic at someone else's estate.
+        let leaks = if shared_profile_host {
+            Vec::new()
+        } else {
+            probe_config_leaks(&ctx.http, seed_url.as_str(), &domain, &ctx.cancel).await
+        };
+
+        // Convert each discovered key into an ApiKey entity so it shows up
+        // in the operator's scan results and triggers AU-021 correlation.
+        // Also tag the parent Domain with config-leak so downstream rules
+        // can prioritise it.
+        let mut domain_was_leaky = false;
+        for (path, bytes, keys) in &leaks {
+            domain_was_leaky = true;
+            for (service, key_val) in keys {
+                let roi = crate::util::key_roi::classify(service);
+                let mut e = Entity::new(
+                    EntityKind::ApiKey,
+                    key_val,
+                    confidence::VERY_HIGH_PLUS,
+                    &ctx.scan_id,
+                );
+                e.tag("api-key");
+                e.tag("config-leak");
+                e.tag("web-crawler");
+                e.tag(format!("service:{service}"));
+                e.tag(format!("roi:{}", roi.label()));
+                if roi == crate::util::key_roi::KeyRoi::Multiplier {
+                    e.tag("force-multiplier");
+                }
+                e.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("API key ({service}) exposed at {domain}{path}"),
+                    )
+                    .with_attr("service", *service)
+                    .with_attr("roi_tier", roi.label())
+                    .with_attr("exposure_path", path.as_str())
+                    .with_attr("file_size_bytes", bytes.to_string()),
+                );
+                state.result.push(e);
+            }
+        }
+        if domain_was_leaky {
+            // Emit a meta-evidence entry on the domain even before the
+            // main crawl runs. The Domain entity is still built below;
+            // we just remember to tag it.
+            state.frameworks.insert("config-leak-detected");
+        }
+
+        let seed_for_entities = seed.clone();
+        state.queue.push_back((seed, 0));
+
+        while let Some((url, depth)) = state.queue.pop_front() {
+            if state.pages_fetched >= max_pages || ctx.cancel.is_cancelled() {
+                break;
+            }
+            if state.visited.contains(&url) {
+                continue;
+            }
+            state.visited.insert(url.clone());
+
+            // SSRF egress guard (defense in depth): never fetch a discovered
+            // link whose host is a private/reserved IP literal (loopback,
+            // RFC1918, 169.254 cloud-metadata, …). `extract_links` keeps the
+            // queue on the seed host and the HTTP client's DNS resolver vets
+            // hostnames, but an IP-literal link bypasses the resolver — so the
+            // guard is enforced explicitly here rather than left implicit in the
+            // same-host filter, which a future change could loosen.
+            if crate::util::preflight::url_host_is_private(&url) {
+                continue;
+            }
+
+            if is_disallowed(&url, &state.disallow_rules) {
+                continue;
+            }
+
+            let resp = match ctx.http.get(&url).send_tagged(SRC).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!(url = %url, error = %e, "web_crawler: fetch failed");
+                    continue;
+                }
+            };
+
+            let status = resp.status();
+            if status.as_u16() == 429 || status.as_u16() == 503 {
+                tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                continue;
+            }
+            if !status.is_success() {
+                continue;
+            }
+
+            let headers = resp.headers().clone();
+            if state.pages_fetched == 0 {
+                audit_security_headers(&headers, &mut state.security_headers);
+            }
+
+            let ct = headers
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if !ct.contains("text/html")
+                && !ct.contains("text/plain")
+                && !ct.contains("application/xhtml")
+            {
+                continue;
+            }
+
+            // Stream the (untrusted) page body and STOP at BODY_CAP. A plain
+            // `resp.text()` buffers the WHOLE body first — a hostile multi-GB page
+            // would OOM the device before any truncation. `read_body_capped` never
+            // accumulates beyond the cap, and decodes UTF-8-lossy so there's no
+            // mid-codepoint panic at the boundary (web_crawler runs under
+            // catch_unwind, where such a panic would silently void all findings).
+            let Some(body) = crate::util::http::read_body_capped(resp, BODY_CAP).await else {
+                continue;
+            };
+
+            state.pages_fetched += 1;
+
+            detect_frameworks(&body, &mut state.frameworks);
+
+            let mut per_page_types: HashSet<&'static str> = HashSet::new();
+            detect_page_types(&body, &mut per_page_types);
+            if state.notable_pages.len() < NOTABLE_PAGES_CAP
+                && per_page_types
+                    .iter()
+                    .any(|pt| NOTABLE_PAGE_TYPES.contains(pt))
+            {
+                state.notable_pages.push(url.clone());
+            }
+            state.page_types.extend(per_page_types);
+
+            extract_emails(&body, &mut state.emails);
+            extract_phones(&body, &mut state.phones);
+            // Emails/phones on a profile page are subject data and are kept.
+            // Analytics IDs and embedded API keys belong to the PLATFORM's own
+            // pages — attributing them to the subject is the misattribution
+            // this guard exists to stop.
+            if !shared_profile_host {
+                extract_tracking_ids(&body, &mut state.tracking_ids);
+                extract_api_keys_from_body(&body, &domain);
+            }
+            state
+                .hydration_findings
+                .extend(extract_hydration_entities(&body));
+
+            if depth < max_depth {
+                extract_links(&body, &url, &base_host, &domain, &mut state);
+            }
+
+            if state.pages_fetched < max_pages {
+                tokio::time::sleep(std::time::Duration::from_millis(INTER_REQUEST_MS)).await;
+            }
+        }
+
+        build_entities(
+            &domain,
+            &base_host,
+            &ctx.scan_id,
+            max_depth,
+            seed_shape,
+            &seed_for_entities,
+            &mut state,
+        );
+        Ok(state.result)
+    }
+}
+
+mod crawl_util;
+use crawl_util::*;
+
+mod hydration;
+use hydration::extract_hydration_entities;
+
+fn build_entities(
+    domain: &str,
+    _base_host: &str,
+    scan_id: &str,
+    max_depth: u32,
+    seed: SeedShape,
+    seed_url: &str,
+    state: &mut CrawlState,
+) {
+    let SeedShape {
+        is_url_target,
+        shared_profile_host,
+    } = seed;
+    // Both attestations below — the seed `Url` and the site `Domain` — are
+    // stamped VERY_HIGH_PLUS and tagged `CRAWLED`, i.e. "this page/site was
+    // fetched and examined". The crawl loop `continue`s past every failure
+    // (non-2xx, a non-HTML content type, a body read that returns None), so a
+    // domain that is entirely unreachable, WAF-walled, or serves no HTML
+    // reaches here with `pages_fetched == 0` and used to emit both anyway —
+    // a 0.90 "crawled" claim whose own evidence string reads "0 pages".
+    // Nothing was observed, so nothing is attested. (REQ-WEBCRAWLER-001; same
+    // class as REQ-CERTINTEL-001, a finding minted from a probe leg that never
+    // actually examined anything.)
+    //
+    // Everything else these two blocks carry — the tech stack, page types,
+    // link counts, subdomains, image leads — is read out of page BODIES, so it
+    // is empty at zero pages and costs nothing to withhold. The one signal
+    // that can survive is the security-header audit (it runs on the first 2xx,
+    // before the content-type gate), and it is deliberately dropped with the
+    // rest: a header reading taken from a response the crawler could not use
+    // is not a crawl, and surfacing it would need its own entity at its own
+    // rung rather than riding a `crawled` attestation.
+    //
+    // Subject data found ON pages (emails, phones, hydration) is emitted
+    // further down, outside both blocks, and is unaffected.
+    if is_url_target && state.pages_fetched > 0 {
+        let mut url_entity = Entity::new(
+            EntityKind::Url,
+            seed_url,
+            confidence::VERY_HIGH_PLUS,
+            scan_id,
+        );
+        url_entity.tag(tags::WEB);
+        url_entity.tag(tags::CRAWLED);
+        // The detected stack is the PLATFORM's, not the subject's — tagging a
+        // profile URL `tech:next-js` says Instagram uses Next.js, which is not
+        // a finding about the person being investigated.
+        if !shared_profile_host {
+            for fw in &state.frameworks {
+                url_entity.tag(format!("tech:{}", fw.to_lowercase().replace(' ', "-")));
+            }
+        }
+        url_entity.add_evidence(
+            Evidence::new(
+                SRC,
+                format!(
+                    "Single-page harvest of {seed_url}: {} pages",
+                    state.pages_fetched
+                ),
+            )
+            .with_attr("pages_crawled", state.pages_fetched.to_string())
+            .with_attr("emails_found", state.emails.len().to_string())
+            .with_attr("phones_found", state.phones.len().to_string()),
+        );
+        state.result.push(url_entity);
+    }
+
+    // ── Site-OWNERSHIP attribution ──────────────────────────────────────
+    // Everything below claims something about who owns/operates this SITE:
+    // the domain itself, its tech stack and security posture, its
+    // subdomains, the images it hosts, and the domains it links out to.
+    // For a profile URL on a shared platform none of that belongs to the
+    // subject, so the whole section is skipped. Subject data observed ON
+    // the page (emails, phones, hydration values) is emitted below either
+    // way — that is what a profile crawl is actually for.
+    if !shared_profile_host && state.pages_fetched > 0 {
+        // Main domain entity with crawl summary
+        let mut entity = Entity::new(
+            EntityKind::Domain,
+            domain,
+            confidence::VERY_HIGH_PLUS,
+            scan_id,
+        );
+        entity.tag(tags::WEB);
+        entity.tag(tags::CRAWLED);
+
+        for fw in &state.frameworks {
+            entity.tag(format!("tech:{}", fw.to_lowercase().replace(' ', "-")));
+        }
+        for pt in &state.page_types {
+            entity.tag(format!("page:{pt}"));
+        }
+
+        // Security header tags
+        let missing_headers: Vec<&str> = state
+            .security_headers
+            .iter()
+            .filter(|(_, present)| !present)
+            .map(|(name, _)| *name)
+            .collect();
+        if !missing_headers.is_empty() {
+            entity.tag(tags::MISSING_SECURITY_HEADERS);
+        }
+
+        let mut capped_images: Option<(usize, usize)> = None;
+        let mut ev = Evidence::new(
+            SRC,
+            format!(
+                "Crawled {domain}: {} pages, {} internal links, {} external links",
+                state.pages_fetched, state.internal_links, state.external_links
+            ),
+        )
+        .with_attr("pages_crawled", state.pages_fetched.to_string())
+        .with_attr("internal_links", state.internal_links.to_string())
+        .with_attr("external_links", state.external_links.to_string())
+        .with_attr("max_depth", max_depth.to_string());
+
+        if !state.frameworks.is_empty() {
+            let mut fws: Vec<&str> = state.frameworks.iter().copied().collect();
+            fws.sort_unstable();
+            ev = ev.with_attr("frameworks", fws.join(", "));
+        }
+        if !state.page_types.is_empty() {
+            let mut pts: Vec<&str> = state.page_types.iter().copied().collect();
+            pts.sort_unstable();
+            ev = ev.with_attr("page_types", pts.join(", "));
+        }
+        if !state.notable_pages.is_empty() {
+            ev = ev.with_attr("notable_pages", state.notable_pages.join(" | "));
+        }
+        ev = ev.with_attr("subdomains_found", state.subdomains.len().to_string());
+        ev = ev.with_attr("emails_found", state.emails.len().to_string());
+        ev = ev.with_attr("phones_found", state.phones.len().to_string());
+        // Report the TRUE discovered total (not the capped, emitted count), so a
+        // crawl that hit `IMAGE_LEADS_CAP` shows how many images it actually found
+        // rather than presenting the truncated list as complete. When the total
+        // exceeds what was emitted, say so explicitly.
+        ev = ev.with_attr("image_leads_found", state.image_urls_seen.len().to_string());
+        ev = ev.with_attr("image_leads_emitted", state.image_urls.len().to_string());
+        if state.image_urls_seen.len() > state.image_urls.len() {
+            ev = ev.with_attr("image_leads_capped", IMAGE_LEADS_CAP.to_string());
+            // The same fact, reported once at the PROVIDER level so
+            // `core::coverage` can see it. `image_leads_capped` annotates an
+            // entity in the dossier and had no reader outside this file — it was
+            // one of the five private truncation vocabularies REQ-COVERAGE-001
+            // found, and this is its migration onto the shared mechanism. The
+            // crawler knows BOTH counts, so the total is stated rather than
+            // reported unknown (REQ-WEBCRAWLER-003).
+            capped_images = Some((state.image_urls.len(), state.image_urls_seen.len()));
+        }
+
+        if !missing_headers.is_empty() {
+            ev = ev.with_attr("missing_security_headers", missing_headers.join(", "));
+        }
+        let present_headers: Vec<&str> = state
+            .security_headers
+            .iter()
+            .filter(|(_, present)| *present)
+            .map(|(name, _)| *name)
+            .collect();
+        if !present_headers.is_empty() {
+            ev = ev.with_attr("present_security_headers", present_headers.join(", "));
+        }
+
+        entity.add_evidence(ev);
+        state.result.push(entity);
+        if let Some((emitted, total)) = capped_images {
+            state
+                .result
+                .mark_truncated(emitted, Some(total), "the image-lead cap");
+        }
+
+        // Image URLs — EXIF leads for `modules::exif_geo`, which accepts an image
+        // `Url` target and reads the GPS IFD out of it. Emitted as entities because
+        // only a typed entity becomes a scan target: until now the crawler found
+        // these links and discarded them, so any coordinates embedded in a site's
+        // own photographs were lost. Discovery order is already deterministic (the
+        // crawl walks pages in queue order and links in document order), so no sort
+        // is needed to keep output stable.
+        //
+        // Confidence is LOW: the image was merely present on a crawled page, which
+        // is no evidence that it depicts — or was taken by — the subject. It sits
+        // above the expansion floor so the EXIF fetch runs, and below MEDIUM so
+        // nothing downstream reads the mere presence of a photo as a link. Whatever
+        // `exif_geo` recovers carries its own, independently-earned confidence.
+        let image_leads: Vec<Entity> = state
+            .image_urls
+            .iter()
+            .map(|u| {
+                let mut e = Entity::new(EntityKind::Url, u, confidence::LOW, scan_id);
+                e.tag(tags::WEB);
+                e.tag("image");
+                e.tag("exif-lead");
+                e.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Image linked from {domain} — EXIF-geolocation lead"),
+                    )
+                    .with_attr("discovered_by", "web_crawler")
+                    .with_attr("source_domain", domain),
+                );
+                e
+            })
+            .collect();
+        state.result.extend(image_leads);
+
+        // Subdomain entities — feed back into expansion. Sorted before emission so
+        // the HashSet's randomised iteration order never leaks into entity order
+        // (the same determinism-leak class fixed for `reddit_user`/`hacker_news`).
+        let mut subs: Vec<&str> = state.subdomains.iter().map(String::as_str).collect();
+        subs.sort_unstable();
+        state.result.extend(subs.into_iter().map(|sub| {
+            let mut e = Entity::new(EntityKind::Domain, sub, confidence::CORROBORATED, scan_id);
+            e.tag(tags::WEB);
+            e.tag(tags::SUBDOMAIN);
+            e.add_evidence(
+                Evidence::new(SRC, format!("Subdomain discovered by crawling {domain}"))
+                    .with_attr("parent_domain", domain),
+            );
+            e
+        }));
+
+        // External domain entities — sorted for the same reason.
+        let mut exts: Vec<&str> = state.external_domains.iter().map(String::as_str).collect();
+        exts.sort_unstable();
+        state.result.extend(exts.into_iter().map(|ext| {
+            let mut e = Entity::new(EntityKind::Domain, ext, confidence::MEDIUM, scan_id);
+            e.tag(tags::EXTERNAL);
+            e.add_evidence(
+                Evidence::new(SRC, format!("External domain linked from {domain}"))
+                    .with_attr("source_domain", domain),
+            );
+            e
+        }));
+    }
+
+    // Email entities. A crawl that scrapes an implausible number of distinct
+    // addresses has hit a directory / forum / comment-thread dump, not the
+    // subject's contacts — emitting them floods the graph with strangers (a real
+    // scan pulled ~100 unrelated emails off one comment page). Above the dump
+    // threshold the whole batch is co-occurrence noise, so suppress it; a normal
+    // contact/about page (a handful of addresses) passes through.
+    const CONTACT_DUMP_LIMIT: usize = 20;
+    if state.emails.len() <= CONTACT_DUMP_LIMIT {
+        let mut emails: Vec<&str> = state.emails.iter().map(String::as_str).collect();
+        emails.sort_unstable();
+        state.result.extend(emails.into_iter().map(|email| {
+            let mut e = Entity::new(EntityKind::Email, email, confidence::VERY_HIGH, scan_id);
+            e.tag(tags::WEB_SCRAPED);
+            e.add_evidence(
+                Evidence::new(SRC, format!("Email found on {domain}"))
+                    .with_attr("source_domain", domain),
+            );
+            e
+        }));
+    }
+
+    // Tracking-ID entities (web-analytics affiliate pivot). The id is a hard
+    // identifier, so confidence is high (confidence::HIGH_PLUSPLUS); the `source_domain` attr lets the
+    // correlator count how many distinct sites carry the same id (shared id ⇒
+    // common ownership). When two crawled domains share an id, both emit the same
+    // TrackingId value → it merges to one entity, raising corroboration.
+    let mut tracking_ids: Vec<&(String, String)> = state.tracking_ids.iter().collect();
+    tracking_ids.sort_unstable();
+    state
+        .result
+        .extend(tracking_ids.into_iter().map(|(id, provider)| {
+            let mut e = Entity::new(
+                EntityKind::TrackingId,
+                id.as_str(),
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
+            e.tag(tags::WEB_SCRAPED);
+            e.tag("web-analytics");
+            e.add_evidence(
+                Evidence::new(SRC, format!("{provider} tracking id {id} on {domain}"))
+                    .with_attr("provider", provider)
+                    .with_attr("source_domain", domain),
+            );
+            e
+        }));
+
+    // Phone entities — same dump guard (a page with dozens of numbers is a
+    // directory, not the subject's).
+    if state.phones.len() <= CONTACT_DUMP_LIMIT {
+        let mut phones: Vec<&str> = state.phones.iter().map(String::as_str).collect();
+        phones.sort_unstable();
+        state.result.extend(phones.into_iter().map(|phone| {
+            let mut e = Entity::new(EntityKind::Phone, phone, confidence::VERY_HIGH, scan_id);
+            e.tag(tags::WEB_SCRAPED);
+            e.add_evidence(
+                Evidence::new(SRC, format!("Phone found on {domain}"))
+                    .with_attr("source_domain", domain),
+            );
+            e
+        }));
+    }
+
+    // Hydration-JSON-derived entities (Next.js/Nuxt embedded SPA data; see
+    // hydration.rs). Deduplicated across the whole crawl on the same
+    // (kind, ascii-lowercased value) key `classifier::extract` uses internally
+    // per call — a batch is collected per page, so the same nav/footer value
+    // repeated across pages would otherwise duplicate. Same dump guard as
+    // emails/phones: a heavily-labelled page (e.g. a product catalogue) could
+    // otherwise flood the graph with unrelated structured values.
+    const HYDRATION_DUMP_LIMIT: usize = 20;
+    let mut seen_hydration: HashSet<String> = HashSet::new();
+    let mut hydration: Vec<&Classified> = Vec::new();
+    for c in &state.hydration_findings {
+        // `.to_ascii_lowercase()` case-folds but does not replicate
+        // `core::entity::normalise`'s kind-specific canonicalisation (e.g. its
+        // MacAddress arm reformats to colon-separated hex), so two hydration
+        // leaves that classify to the same kind and normalise to the same
+        // value — e.g. a MAC printed "AA:BB:CC:DD:EE:FF" on one page and
+        // "aa-bb-cc-dd-ee-ff" on another — each earned their own dedup slot
+        // despite colliding on the same uid once `Entity::new` constructs them.
+        let key = format!(
+            "{}\u{1}{}",
+            c.kind,
+            crate::core::entity::normalise(&c.kind, &c.value)
+        );
+        if seen_hydration.insert(key) {
+            hydration.push(c);
+        }
+    }
+    if hydration.len() <= HYDRATION_DUMP_LIMIT {
+        // `EntityKind` has no `Ord` impl, so sort on the value alone — after the
+        // dedup pass above, (kind, value) pairs are already unique, so this is
+        // still a total, deterministic order (a `HashSet`'s iteration order
+        // never leaks into emission order).
+        hydration.sort_unstable_by(|a, b| a.value.cmp(&b.value));
+        state.result.extend(hydration.into_iter().map(|c| {
+            let mut e = Entity::new(c.kind.clone(), &c.value, c.confidence, scan_id);
+            e.tag(tags::WEB_SCRAPED);
+            e.tag("hydration-json");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "Found in {domain}'s embedded SPA hydration data ({} signal)",
+                        c.signal
+                    ),
+                )
+                .with_attr("source_domain", domain)
+                .with_attr("signal", c.signal),
+            );
+            e
+        }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
+}

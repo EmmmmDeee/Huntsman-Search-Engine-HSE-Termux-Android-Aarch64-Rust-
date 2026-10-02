@@ -1,0 +1,150 @@
+name: Security audit
+
+# Supply-chain check (FTA finding E2.5): reports RUSTSEC vulnerabilities and
+# licence/ban violations in the locked dependency graph.
+#
+# Deliberately a SEPARATE workflow from ci.yml, and PATH-FILTERED rather than
+# advisory: a freshly published advisory in a transitive dependency must not
+# block an unrelated feature PR. The path filter is what buys that — a PR that
+# does not touch the dependency graph never triggers this workflow at all — so
+# it can run on `pull_request` and still not gate unrelated work.
+#
+# It runs on a PR that CHANGES dependencies (so a new dependency is reviewed
+# before it merges, not after), on the same paths on push, on the weekly
+# schedule for the whole graph regardless of what changed, and on dispatch.
+#
+# Running on PRs is only meaningful because the tools below are version-pinned:
+# an unpinned `cargo install` would make this gate's verdict depend on whatever
+# was published that morning.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Mondays 06:00 UTC
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'deny.toml'
+      - '.github/workflows/audit.yml'
+  push:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'deny.toml'
+      - 'dep-cooldown.toml'
+      - 'src/bin/dep_cooldown/**'
+      - '.github/workflows/audit.yml'
+
+# Least privilege: the job only reads the checked-out tree + the public
+# advisory DB. No write scopes.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: cargo audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    steps:
+      # Pin to the PR's real head rather than the stale-prone
+      # `refs/pull/N/merge` default — see ci.yml's checkout for the full
+      # rationale and the observed failure.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.98.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
+
+      # Install cargo-audit directly rather than via a third-party action —
+      # mirrors ci.yml's choice to call shellcheck directly after a
+      # master-pinned action drift broke an unrelated job (see ci.yml).
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      # Exits non-zero on any RUSTSEC vulnerability in the locked graph.
+      # Unmaintained / yanked crates print as warnings without failing the run.
+      - name: Audit dependencies
+        run: cargo audit
+
+      # hse-core and wasm-ui (src/api/routes/mod.rs's already-live wasm-ui/pkg
+      # output) are path dependencies of the root crate but deliberately NOT
+      # `[workspace]` members (see each crate's own Cargo.toml comment), so
+      # each keeps its own separate Cargo.lock — `cargo audit` above, run at
+      # the repo root, never sees either one. This glob's own `pull_request`/
+      # `push` path filters already cover both manifests (`**/Cargo.{toml,
+      # lock}`); the tool invocations below just needed to catch up.
+      - name: Audit dependencies (hse-core)
+        run: cargo audit -f hse-core/Cargo.lock
+
+      - name: Audit dependencies (wasm-ui)
+        run: cargo audit -f wasm-ui/Cargo.lock
+
+      # Supply-chain policy beyond advisories: license governance, banned /
+      # wildcard crates, duplicate versions (warn), and dependency sources.
+      # Config + rationale live in deny.toml. Installed directly for the same
+      # action-pinning-drift reason cargo-audit is (see comment above).
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+
+      - name: Check supply-chain policy
+        run: cargo deny check
+
+      # Same crate-graph gap as the audit steps above. Both sibling crates
+      # reuse the root `deny.toml` (`--config`) rather than each carrying its
+      # own copy — one policy for one project, and neither crate's small,
+      # well-established dependency set (serde/sha2/hex; wasm-bindgen/js-sys/
+      # web-sys) has any reason to diverge from it.
+      - name: Check supply-chain policy (hse-core)
+        run: cargo deny --manifest-path hse-core/Cargo.toml --config deny.toml check
+
+      - name: Check supply-chain policy (wasm-ui)
+        run: cargo deny --manifest-path wasm-ui/Cargo.toml --config deny.toml check
+
+      # Unused-dependency hygiene. `--with-metadata` resolves library names so
+      # crates whose lib name differs from the package name (e.g. kamadak-exif →
+      # `exif`, md-5 → `md5`) are not mis-flagged; the locked graph is clean
+      # under this flag, so a regression here means a genuinely unused crate.
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --version 0.9.2 --locked
+
+      - name: Check for unused dependencies
+        run: cargo machete --with-metadata
+
+      # Same crate-graph gap as the audit/deny steps above — cargo-machete
+      # walks a crate graph from a manifest, so hse-core's and wasm-ui's own
+      # dependencies (not the root's) need their own directory argument.
+      - name: Check for unused dependencies (hse-core)
+        run: cargo machete --with-metadata hse-core
+
+      - name: Check for unused dependencies (wasm-ui)
+        run: cargo machete --with-metadata wasm-ui
+
+      # Freshness/cooldown gate: fails on a crates.io dependency in Cargo.lock
+      # published more recently than the cooldown window in dep-cooldown.toml
+      # (unless explicitly allow-listed there) — a compromised publish is most
+      # likely to slip through unnoticed in its first few days, so this buys
+      # real detection time on top of the known-vulnerability check above.
+      # Built from this repo's own source (src/bin/dep_cooldown/), not an
+      # external tool, so there is no separate install step.
+      - name: Check dependency cooldown
+        run: cargo run --locked --bin dep-cooldown --features dep-cooldown
+
+      # Same crate-graph gap as every step above, plus the same shared-policy
+      # reasoning as `deny.toml`: reuse the root `dep-cooldown.toml` rather
+      # than fork it, pointed at each sibling crate's own lockfile via
+      # `--lockfile`.
+      - name: Check dependency cooldown (hse-core)
+        run: cargo run --locked --bin dep-cooldown --features dep-cooldown -- --lockfile hse-core/Cargo.lock --policy dep-cooldown.toml
+
+      - name: Check dependency cooldown (wasm-ui)
+        run: cargo run --locked --bin dep-cooldown --features dep-cooldown -- --lockfile wasm-ui/Cargo.lock --policy dep-cooldown.toml
