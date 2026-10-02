@@ -1,0 +1,254 @@
+name: Release (prebuilt Termux aarch64 binary)
+
+# Main-channel pre-releases for the reconstructed `huntsman-recon` crate.
+#
+# Every push to main (and a manual workflow_dispatch on main) cross-builds the
+# aarch64 Android/Termux binary and publishes it as:
+#   * `main-<sha7>`: immutable per-commit PRE-RELEASE, and
+#   * `latest`:      rolling PRE-RELEASE, moved to the newest main build.
+# Both are created with make_latest=false, so neither can become GitHub's
+# "Latest release". This workflow never creates, edits or deletes a stable
+# release: it has no tag trigger and no stable code path. The only release it
+# ever deletes is the rolling `latest`, and only after checking that it is a
+# pre-release.
+#
+# Publish gate: the build must run on GitHub Actions with HSE_RELEASE=1 (which,
+# with CI and HUNTSMAN_HIBP_NO_EMBED, disables build.rs HIBP key embedding),
+# every build-time embed file must be empty, and the key scan of the exact
+# artifacts must report zero findings. Otherwise nothing is published.
+#
+# History: this file lived at this path until f0a1c64 deleted it with the rest
+# of the monolith tree. #665 then edited the copy under legacy/, which GitHub
+# never runs, so main pushes after 7dca720 published nothing. The asset names
+# are `huntsman-recon-*`, not the monolith's `hse-*`, so the legacy install.sh
+# and in-app updater (which fetch `hse-aarch64-linux-android`) never pick up a
+# different program by name.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  # Dry run on PRs that touch the release path: same build, embed check and
+  # key scan, nothing published.
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/scripts/scan-for-keys.sh"
+      - ".github/actions/setup-ndk-aarch64/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+permissions:
+  contents: read
+
+env:
+  HSE_RELEASE: "1"
+  HUNTSMAN_HIBP_NO_EMBED: "1"
+  ASSET: huntsman-recon-aarch64-linux-android
+
+# One lane for all publishing runs; never cancel an in-flight publish. PR dry
+# runs get their own lane so they can never displace a queued main publish.
+concurrency:
+  group: release-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve main-channel tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+      build: ${{ steps.t.outputs.build }}
+      publish: ${{ steps.t.outputs.publish }}
+    steps:
+      - id: t
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REF: ${{ github.ref }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          tag="main-${GITHUB_SHA:0:7}"
+          [[ "$tag" =~ ^main-[0-9a-f]{7}$ ]] || { echo "::error::bad tag ${tag}"; exit 1; }
+          build=true
+          publish=true
+          if [ "$GH_EVENT_NAME" = "pull_request" ]; then
+            publish=false
+            echo "Pull request: dry run (build + embed check + key scan), nothing is published." | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$GH_REF" != "refs/heads/main" ]; then
+            echo "::error::main-channel releases are built from refs/heads/main only (got ${GH_REF})"
+            exit 1
+          elif gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" >/dev/null 2>&1; then
+            build=false
+            publish=false
+            echo "Release ${tag} already exists; nothing to publish." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          {
+            echo "tag=${tag}"
+            echo "build=${build}"
+            echo "publish=${publish}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=${tag} build=${build} publish=${publish}"
+
+  termux-binary:
+    name: Build, key-scan and publish aarch64 Termux binary
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # create the tags and pre-releases
+      id-token: write     # Sigstore-backed provenance
+      attestations: write # record the attestation
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.87"
+          targets: aarch64-linux-android
+
+      - uses: ./.github/actions/setup-ndk-aarch64
+        with:
+          android-api: "24"
+
+      - name: Build aarch64 Android release binary
+        run: cargo build --release --locked --target aarch64-linux-android
+
+      - name: Require empty build-time key embed
+        run: |
+          set -euo pipefail
+          mapfile -t embeds < <(find target/aarch64-linux-android/release/build -path '*/out/hibp_embedded_key.txt' -type f)
+          [ "${#embeds[@]}" -gt 0 ] || { echo "::error::no hibp_embedded_key.txt found; cannot prove the embed is empty"; exit 1; }
+          for f in "${embeds[@]}"; do
+            [ ! -s "$f" ] || { echo "::error file=${f}::build-time HIBP key embed is NOT empty; refusing to publish"; exit 1; }
+            echo "empty: ${f}"
+          done
+
+      - name: Verify Android ELF, strip and stage
+        run: |
+          set -euo pipefail
+          BIN="target/aarch64-linux-android/release/huntsman-recon"
+          TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          mkdir -p dist
+          "$TOOLCHAIN/llvm-strip" -o "dist/$ASSET" "$BIN"
+          "$TOOLCHAIN/llvm-readelf" -h "dist/$ASSET" | grep -Eq 'Machine:[[:space:]]+AArch64'
+          "$TOOLCHAIN/llvm-readelf" -l "dist/$ASSET" | grep -F '/system/bin/linker64'
+          ndk="$(sed -n 's/^Pkg.Revision *= *//p' "$ANDROID_NDK_LATEST_HOME/source.properties" | head -n1)"
+          cat > "dist/$ASSET.provenance.json" <<JSON
+          {
+            "artifact": "${ASSET}",
+            "repository": "${GITHUB_REPOSITORY}",
+            "commit": "${GITHUB_SHA}",
+            "release_tag": "${TAG}",
+            "run": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
+            "cargo_lock_sha256": "$(sha256sum Cargo.lock | cut -d' ' -f1)",
+            "rustc": "$(rustc --version)",
+            "target": "aarch64-linux-android",
+            "android_api": 24,
+            "ndk": "${ndk}",
+            "hse_release": "${HSE_RELEASE}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          JSON
+          ( cd dist && sha256sum "$ASSET" > "$ASSET.sha256" && sha256sum -c "$ASSET.sha256" )
+          cat "dist/$ASSET.provenance.json"
+
+      - name: Key check on the final artifacts (must be zero)
+        run: |
+          set -euo pipefail
+          [ "${HSE_RELEASE:-}" = "1" ] && [ "${GITHUB_ACTIONS:-}" = "true" ] \
+            || { echo "::error::publishing requires a GitHub Actions build with HSE_RELEASE=1"; exit 1; }
+          {
+            echo "key-scan report"
+            echo "artifact: ${ASSET}"
+            echo "artifact_sha256: $(sha256sum "dist/$ASSET" | cut -d' ' -f1)"
+            echo "commit: ${GITHUB_SHA}"
+            echo "release_tag: ${TAG}"
+            echo "run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "build_time_hibp_embed: empty (checked)"
+            set +e
+            bash .github/scripts/scan-for-keys.sh dist 2>&1
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then echo "result: PASS (0 findings)"; else echo "result: FAIL"; fi
+          } | tee key-scan-report.txt
+          grep -qx "result: PASS (0 findings)" key-scan-report.txt
+          mv key-scan-report.txt dist/key-scan-report.txt
+
+      - name: Attest build provenance
+        id: attest
+        if: needs.resolve.outputs.publish == 'true'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/${{ env.ASSET }}
+
+      - name: Warn when attestation failed
+        if: needs.resolve.outputs.publish == 'true' && steps.attest.outcome != 'success'
+        run: echo "::warning::attestation upload failed; the release is published without it. Re-run to retry."
+
+      - name: Publish pre-release ${{ needs.resolve.outputs.tag }}
+        if: needs.resolve.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          if existing="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq .object.sha 2>/dev/null)"; then
+            [ "$existing" = "$GITHUB_SHA" ] || { echo "::error::tag ${TAG} already exists at ${existing}, not ${GITHUB_SHA}; refusing"; exit 1; }
+          fi
+          files=("dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" "dist/key-scan-report.txt")
+          cat > notes.md <<NOTES
+          Main-channel **pre-release** of \`huntsman-recon\` for aarch64 Android/Termux. Not a stable release.
+
+          Built from commit \`${GITHUB_SHA}\` by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}.
+
+          \`\`\`bash
+          curl -fsSL -O https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ASSET}
+          curl -fsSL -O https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ASSET}.sha256
+          sha256sum -c ${ASSET}.sha256
+          gh attestation verify ${ASSET} --repo ${GITHUB_REPOSITORY}
+          \`\`\`
+
+          Built with HSE_RELEASE=1 (no build-time key embedding). \`key-scan-report.txt\` is the zero-finding key scan of these exact files.
+          No Termux handset run is claimed.
+          NOTES
+          gh release create "$TAG" "${files[@]}" \
+            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "$TAG" --notes-file notes.md
+
+      - name: Move the rolling `latest` pre-release to this build
+        if: needs.resolve.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          if pre="$(gh release view latest --json isPrerelease --jq .isPrerelease 2>/dev/null)"; then
+            [ "$pre" = "true" ] || { echo "::error::release 'latest' exists and is NOT a pre-release; refusing"; exit 1; }
+            gh release delete latest --yes --cleanup-tag
+          fi
+          gh release create latest \
+            "dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" dist/key-scan-report.txt \
+            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "latest main build (${TAG})" \
+            --notes "Rolling pre-release: the newest main build, currently \`${GITHUB_SHA}\` (also \`${TAG}\`). Not a stable release. Verify with \`sha256sum -c ${ASSET}.sha256\`."
+
+      - name: Verify published pre-releases through the API
+        if: needs.resolve.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          want="$(sha256sum "dist/$ASSET" | cut -d' ' -f1)"
+          for t in "$TAG" latest; do
+            rel="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${t}")"
+            [ "$(jq -r .prerelease <<<"$rel")" = "true" ] || { echo "::error::${t} is not a pre-release"; exit 1; }
+            [ "$(jq -r .draft <<<"$rel")" = "false" ] || { echo "::error::${t} is a draft"; exit 1; }
+            sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${t}" --jq .sha)"
+            [ "$sha" = "$GITHUB_SHA" ] || { echo "::error::${t} points at ${sha}, not ${GITHUB_SHA}"; exit 1; }
+            got="$(jq -r --arg a "$ASSET" '.assets[] | select(.name == $a) | .digest // ""' <<<"$rel")"
+            if [ -n "$got" ]; then
+              [ "$got" = "sha256:${want}" ] || { echo "::error::${t} asset digest ${got} != sha256:${want}"; exit 1; }
+            fi
+            echo "${t}: prerelease=true target=${sha} ${ASSET} sha256:${want}" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+          latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          case "$latest" in main-*|latest) echo "::error::GitHub 'Latest release' is ${latest}"; exit 1 ;; esac
