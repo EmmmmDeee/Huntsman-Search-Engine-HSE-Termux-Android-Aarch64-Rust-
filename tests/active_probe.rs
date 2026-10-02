@@ -50,7 +50,10 @@ fn probes_a_deterministic_bounded_surface_and_extracts_pivots() {
                 ("server", "nginx"),
                 ("content-type", "text/html"),
                 ("strict-transport-security", "max-age=31536000"),
-                ("content-security-policy", "default-src 'self' https://cdn.example.net"),
+                (
+                    "content-security-policy",
+                    "default-src 'self' https://cdn.example.net",
+                ),
             ],
             r#"<html><head><title>Example Portal</title></head><body>
 <a href="/login">Login</a><script src="https://cdn.example.net/app.js"></script>
@@ -78,7 +81,10 @@ fn probes_a_deterministic_bounded_surface_and_extracts_pivots() {
 
     assert_eq!(report.requests_made, 4);
     assert_eq!(report.observations.len(), 4);
-    assert_eq!(report.observations[0].outcome, SourceOutcomeKind::Inconclusive);
+    assert_eq!(
+        report.observations[0].outcome,
+        SourceOutcomeKind::Inconclusive
+    );
     assert_eq!(report.fingerprint.title.as_deref(), Some("Example Portal"));
     assert_eq!(report.fingerprint.server.as_deref(), Some("nginx"));
     assert!(report.fingerprint.hsts);
