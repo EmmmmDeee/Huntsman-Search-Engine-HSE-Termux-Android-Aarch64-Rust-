@@ -2,7 +2,7 @@
 //!
 //! The probe reuses Huntsman's guarded transport and causal outcome model. It visits
 //! a fixed, tiny same-origin surface, extracts passive fingerprints and pivot
-//! candidates, and never auto-traverses discovered pivots.
+//! candidates, and never auto-traverses discovered pivots or redirects.
 
 use std::collections::BTreeMap;
 
@@ -17,7 +17,6 @@ const PROBE_PATHS: [&str; 4] = [
     "/sitemap.xml",
     "/.well-known/security.txt",
 ];
-const MAX_REDIRECTS_PER_REQUEST: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbeOptions {
@@ -68,8 +67,8 @@ pub struct ProbeReport {
     pub pivots: Vec<ProbePivot>,
 }
 
-/// Probe a deliberately small HTTP surface. Discovered pivots are reported only;
-/// they are never fetched by this function.
+/// Probe a deliberately small HTTP surface. Discovered pivots and redirect targets
+/// are reported only; they are never fetched by this function.
 pub fn probe<T: Transport + ?Sized>(
     transport: &T,
     seed_url: &str,
@@ -94,21 +93,10 @@ pub fn probe<T: Transport + ?Sized>(
             transport,
             Request::get(requested_url.clone()),
             None,
-            &FetchOptions {
-                max_redirects: MAX_REDIRECTS_PER_REQUEST,
-            },
+            &FetchOptions { max_redirects: 0 },
             "active_probe",
             now_unix,
         )?;
-
-        if fetched.final_url != requested_url {
-            insert_pivot(
-                &mut pivots,
-                &fetched.final_url,
-                "redirect_final",
-                &fetched.final_url,
-            );
-        }
 
         let (bytes, truncated) = if let Some(response) = fetched.response.as_ref() {
             fingerprint_response(&mut fingerprint, response);
@@ -178,6 +166,12 @@ fn extract_response_pivots(
     path: &str,
     response: &Response,
 ) {
+    if matches!(response.status, 301 | 302 | 303 | 307 | 308) {
+        if let Some(location) = response.header_value("location") {
+            insert_pivot(pivots, final_url, "redirect_location", location);
+        }
+    }
+
     let text = response.text();
     for raw in extract_attr_values(&text, "href") {
         insert_pivot(pivots, final_url, "html_href", &raw);
