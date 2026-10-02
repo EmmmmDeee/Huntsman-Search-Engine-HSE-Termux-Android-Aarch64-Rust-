@@ -68,5 +68,8 @@ release yet. Release policy: only pre-releases (`main-<sha7>` plus a rolling
 - SeekNow bulk import build on the pre-reconstruction tree (#661).
 - `src/hibp/key.rs` documentation no longer refers to `~/.huntsman.env` or a
   `ModuleContext`, neither of which this crate has.
+- README said `check` gate 5 exercises `credential_origin` and `eval`; it
+  exercises `source_outcome`, `evidence_ancestry`, `identity_resolution` and
+  `termination` only.
 - `docs/RECONSTRUCTION_2026-10-02.md` names the archives as committed and
   gives the monolith archive's file count (1314 files, 1727 zip entries).

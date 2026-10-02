@@ -32,7 +32,7 @@ cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a 
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
 
-Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or unconfigured credential, 69 `fetch` got no response, 74 artifact write failure, 77 `fetch` refused the request (egress policy or malformed URL or redirect target). `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print the usage line.
+Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch` got no response, 74 artifact write failure, 77 `fetch` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here). `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print the usage line.
 
 `tests/readme.rs` runs every example above (except the internet `fetch`), checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`.
 
@@ -52,7 +52,7 @@ Slot names are upper-case environment-variable names (`A-Z`, `0-9`, `_`; startin
 
 `classify` also prints the causal outcome and the source-health action (`outcome=bot_waf`, `action=backoff`). A 403 challenge page is a WAF, not a credential failure. A 200 alone is `inconclusive` until rows are parsed.
 
-The refactor-overlay foundations from the uploaded zip are library modules: `source_outcome` (causal fetch outcome), `evidence_ancestry` (mirrors of one dump count once), `identity_resolution` (non-compensatory merge gate over ancestry), `termination` (fixed point vs bounds), `credential_origin` (found credentials are evidence, never authority), and `eval` (deterministic scoring, bootstrap, promote/hold verdict). `check` exercises them as gate 5.
+The refactor-overlay foundations from the uploaded zip are library modules: `source_outcome` (causal fetch outcome), `evidence_ancestry` (mirrors of one dump count once), `identity_resolution` (non-compensatory merge gate over ancestry), `termination` (fixed point vs bounds), `credential_origin` (found credentials are evidence, never authority), and `eval` (deterministic scoring, bootstrap, promote/hold verdict). `check` gate 5 exercises four of them: `source_outcome` (a 403 Cloudflare challenge page is `BotWaf`, and its recommended action is not `RequireCredential`); `evidence_ancestry` with `identity_resolution` (two mirrors of one dump cannot auto-merge two identities, while a mirror plus an independent registry root can); and `termination` (delayed retry work is not a fixed point). Gate 5 does not exercise `credential_origin` or `eval`. The binary uses `credential_origin` in `fetch` (the operator-approved credential authority) and for the fingerprints that `fetch` and `keys` print. `eval` is not used by the binary at all; only its unit tests exercise it.
 
 Rebuilt monolith utilities: `au_id` (ABN, ACN, BSB), `geohash`, `confidence` (corroboration, ancestry-aware), `redact` (coordinate coarsening, secret scrubbing). `check` exercises them as gate 10.
 
@@ -74,7 +74,9 @@ Cross-build for Android aarch64 (what the `android-aarch64` CI job does, API lev
 
 ```
 rustup target add aarch64-linux-android
-export TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"   # CI sets ANDROID_NDK_LATEST_HOME
+: "${NDK:?set ANDROID_NDK_LATEST_HOME or ANDROID_NDK_HOME to the NDK root}"
+export TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
 export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
