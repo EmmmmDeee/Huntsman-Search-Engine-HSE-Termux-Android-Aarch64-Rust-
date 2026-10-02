@@ -10,6 +10,7 @@
     clippy::missing_panics_doc
 )]
 
+pub mod active_probe;
 pub mod address_au;
 pub mod atproto;
 pub mod attack;
