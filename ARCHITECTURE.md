@@ -1,6 +1,6 @@
 # Architecture
 
-Target design for the first-principles reconstruction of Huntsman as the single package `huntsman-recon`. Every statement about the code is labelled. **CURRENT** means it is true of `main` at `1ea6c304` and can be checked in `src/`, `tests/` or CI. **PLANNED** means it is a target that no code on `main` implements yet. The CAPABILITIES status column is CURRENT, MIGRATION POLICY is a rule set for every reconstruction PR, and ORDERED BACKLOG is PLANNED. `tests/architecture_doc.rs` checks the module map against `src/` and `src/lib.rs`, the section order, and the capability status counts.
+Target design for the first-principles reconstruction of Huntsman as the single package `huntsman-recon`. Every statement about the code is labelled. **CURRENT** means it is true of `main` at `1ea6c304` and can be checked in `src/`, `tests/` or CI. **PLANNED** means it is a target that no code on `main` implements yet. The CAPABILITIES status column is CURRENT, MIGRATION POLICY is a rule set for every reconstruction PR, and ORDERED BACKLOG is PLANNED. `tests/architecture_doc.rs` checks the module map against the module tree `src/lib.rs` compiles (layer placement, the "Not compiled" row, upward edges and cycles), the section order, and the CAPABILITIES rows (pinned numbers and names, statuses, acceptance criteria and counts).
 
 The capability oracle is git commit `7dca720` (root crate `huntsman-search-engine` v1.41.0, binary `hse`, last published release `main-7dca720`). `legacy/hse-monolith-v1.41.0/` is a different, earlier snapshot of the same monolith (its `src/` differs from `7dca720` in 677 paths: 56 present in only one tree, 621 with different bytes). It is used for per-file accounting in `docs/DISPOSITIONS.md`, and as the oracle only where `7dca720` lacks a path (`src/modules/au_people/` and `src/modules/au_electoral/`, both deleted in #635). Nothing under `legacy/` is ever modified.
 
@@ -55,7 +55,7 @@ Status counts: REIMPLEMENTED 2, PARTIAL 10, NOT YET REBUILT 11 (21 of 23 rows ar
 
 ## ARCHITECTURE
 
-CURRENT. One package, one library (`src/lib.rs`) and one binary (`src/main.rs`, no CLI framework). The table is the module map: every module `src/lib.rs` declares appears in exactly one layer row. A module may use modules in its own layer or a lower one, never a higher one. Dependencies are the `crate::` paths (`use`, `pub use`, groups and inline paths, plus `super::` paths that reach the crate root) in compiled code outside `#[cfg(test)]`, measured at `1ea6c304`:
+CURRENT. One package, one library (`src/lib.rs`) and one binary (`src/main.rs`, no CLI framework). The table is the module map: every module `src/lib.rs` declares appears in exactly one layer row. A module may use modules in its own layer or a lower one, never a higher one. Dependencies are the `crate::` paths (`use`, `pub use`, groups and inline paths, plus `super::` paths that reach the crate root) in compiled code outside `#[cfg(test)]`; `tests/architecture_doc.rs` recomputes them and fails if either line below is wrong:
 - Upward edges: none.
 - Dependency cycles: `address_au`–`canonical`–`domains`–`textnorm`–`validation` (L3); `attack`–`attack_catalog` (L5).
 
@@ -110,7 +110,7 @@ CURRENT:
 - A challenge page is never a result. A self-labelled ATT&CK technique never enters Navigator or STIX (`check` gates).
 - `check` regenerates `var/*.json` byte-identically (CI runs `git diff --exit-code -- var/`).
 - The two root zip archives are pinned by SHA-256 (`tests/legacy_reference.rs`). `legacy/` is never modified.
-- The README examples, usage line, exit codes and gate range match the binary (`tests/readme.rs`); `docs/DISPOSITIONS.md` counts match `legacy/` (`tests/dispositions.rs`); this file's module map matches `src/` (`tests/architecture_doc.rs`).
+- The README examples, usage line, exit codes and gate range match the binary (`tests/readme.rs`); `docs/DISPOSITIONS.md` counts match `legacy/` (`tests/dispositions.rs`); this file's module map, dependency claims and capability rows match `src/` (`tests/architecture_doc.rs`).
 
 PLANNED:
 - Mirrors of one dataset count as one source, whatever the collectors are called.
