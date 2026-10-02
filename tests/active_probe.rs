@@ -111,6 +111,33 @@ fn probes_a_deterministic_bounded_surface_and_extracts_pivots() {
 }
 
 #[test]
+fn cross_origin_redirect_is_reported_but_never_followed() {
+    let f = Fake::new(vec![Ok(resp(
+        302,
+        &[("location", "https://outside.example/path")],
+        "",
+    ))]);
+
+    let report = probe(
+        &f,
+        "https://example.com",
+        &ProbeOptions { max_requests: 1 },
+        100,
+    )
+    .expect("redirect is observed without leaving authorization scope");
+
+    assert_eq!(f.seen.borrow().len(), 1);
+    assert_eq!(f.seen.borrow()[0].url, "https://example.com/");
+    let pivot = report
+        .pivots
+        .iter()
+        .find(|pivot| pivot.url == "https://outside.example/path")
+        .expect("redirect target is retained as a pivot");
+    assert!(!pivot.same_origin);
+    assert_eq!(pivot.source, "redirect_location");
+}
+
+#[test]
 fn request_budget_is_a_hard_stop() {
     let f = Fake::new(vec![
         Ok(resp(200, &[], "root")),
