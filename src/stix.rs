@@ -1,7 +1,7 @@
 //! STIX 2.1 bundle generated only from ledger entries that pass the interop gate.
 //! Ids are deterministic from the entry hash. Empty admission yields an empty object list.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ledger::LedgerEntry;
 
@@ -51,7 +51,7 @@ fn stix_id(hash: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::{seal, Claim};
+    use crate::ledger::{Claim, seal};
     use crate::stage::{EvidenceLevel, Status};
 
     #[test]
@@ -74,7 +74,10 @@ mod tests {
             evidence_level: EvidenceLevel::DirectObservation,
             does_not_show: "mapped only".into(),
         });
-        let objects = bundle(&[labeled, dropped])["objects"].as_array().unwrap().clone();
+        let objects = bundle(&[labeled, dropped])["objects"]
+            .as_array()
+            .unwrap()
+            .clone();
         assert!(objects.is_empty());
     }
 }

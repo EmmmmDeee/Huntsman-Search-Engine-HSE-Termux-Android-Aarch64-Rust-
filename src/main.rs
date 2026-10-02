@@ -1,19 +1,37 @@
 //! Operable offline binary. No hardcoded workspace path.
-//! `check` fails if a self-labeled technique enters Navigator.
+//! `check` fails if a self-labeled technique enters Navigator or STIX.
 
 use std::env;
-use std::fs;
+use std::path::Path;
 use std::process::ExitCode;
 
 use huntsman_recon::classify::classify_response;
+use huntsman_recon::evidence_ancestry::{
+    EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
+};
+use huntsman_recon::fsio::write_atomic;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
-use huntsman_recon::identity::{resolve, PersonRecord};
-use huntsman_recon::ledger::{append, chain_intact, load_chain, save_chain, seal, Claim};
-use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
+use huntsman_recon::identity::{PersonRecord, resolve};
+use huntsman_recon::identity_resolution::{
+    AutoMergePolicy, IdentityResolutionDecision, ResolutionState,
+};
+use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::navigator::layer;
+use huntsman_recon::search::{Document, load_dir, search, search_response};
+use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
+use huntsman_recon::source_outcome::{
+    SourceHealthAction, SourceOutcomeKind, classify_fetch, recommended_action,
+};
 use huntsman_recon::stage::{EvidenceLevel, Status};
-use huntsman_recon::search::{search, Document};
 use huntsman_recon::stix::bundle;
+use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
+
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | search QUERY [DIR] | classify STATUS BODY | verify LEDGER]";
+const EX_USAGE: u8 = 64;
+const EX_DATAERR: u8 = 65;
+const EX_NOINPUT: u8 = 66;
+const EX_IOERR: u8 = 74;
+const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -21,26 +39,30 @@ fn main() -> ExitCode {
         Some("geo") => geo(args.next(), args.next()),
         Some("search") => search_cmd(args.next(), args.next()),
         Some("classify") => classify(args.next(), args.next()),
+        Some("verify") => verify(args.next()),
         Some("check") | None => check(),
-        Some(other) => {
-            eprintln!("unknown command: {other}");
-            ExitCode::from(64)
+        Some("help" | "-h" | "--help") => {
+            println!("{USAGE}");
+            ExitCode::SUCCESS
         }
+        Some(other) => fail(EX_USAGE, &format!("unknown command: {other}\n{USAGE}")),
     }
+}
+
+fn fail(code: u8, msg: &str) -> ExitCode {
+    eprintln!("{msg}");
+    ExitCode::from(code)
 }
 
 fn geo(a: Option<String>, b: Option<String>) -> ExitCode {
     let (Some(a), Some(b)) = (a, b) else {
-        eprintln!("usage: huntsman-recon geo LAT,LON LAT,LON");
-        return ExitCode::from(64);
+        return fail(EX_USAGE, "usage: huntsman-recon geo LAT,LON LAT,LON");
     };
     let Ok((lat1, lon1)) = parse_latlon(&a) else {
-        eprintln!("bad coordinate: {a}");
-        return ExitCode::from(65);
+        return fail(EX_DATAERR, &format!("bad coordinate: {a}"));
     };
     let Ok((lat2, lon2)) = parse_latlon(&b) else {
-        eprintln!("bad coordinate: {b}");
-        return ExitCode::from(65);
+        return fail(EX_DATAERR, &format!("bad coordinate: {b}"));
     };
     println!("{:.0}", haversine_m(lat1, lon1, lat2, lon2));
     ExitCode::SUCCESS
@@ -48,21 +70,35 @@ fn geo(a: Option<String>, b: Option<String>) -> ExitCode {
 
 fn search_cmd(query: Option<String>, dir: Option<String>) -> ExitCode {
     let Some(query) = query else {
-        eprintln!("usage: huntsman-recon search QUERY [DIR]");
-        return ExitCode::from(64);
+        return fail(EX_USAGE, "usage: huntsman-recon search QUERY [DIR]");
     };
     let docs = if let Some(dir) = dir {
-        huntsman_recon::search::load_dir(std::path::Path::new(&dir))
+        match load_dir(Path::new(&dir)) {
+            Ok(loaded) => {
+                for skipped in &loaded.skipped {
+                    eprintln!("skipped\t{}\t{}", skipped.path, skipped.reason);
+                }
+                loaded.docs
+            }
+            Err(e) => return fail(EX_NOINPUT, &e.to_string()),
+        }
     } else {
         vec![
-            Document { id: "brisbane".into(), body: "Brisbane port radar sighting".into(), source: "fixture".into() },
-            Document { id: "sydney".into(), body: "Sydney harbour note".into(), source: "fixture".into() },
+            Document {
+                id: "brisbane".into(),
+                body: "Brisbane port radar sighting".into(),
+                source: "fixture".into(),
+            },
+            Document {
+                id: "sydney".into(),
+                body: "Sydney harbour note".into(),
+                source: "fixture".into(),
+            },
         ]
     };
     let hits = search(&docs, &query);
     if hits.is_empty() {
         println!("hits=0");
-        return ExitCode::SUCCESS;
     }
     for hit in &hits {
         println!("{}\t{}\t{}", hit.score, hit.id, hit.source);
@@ -70,45 +106,81 @@ fn search_cmd(query: Option<String>, dir: Option<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn search_response_miss() -> bool {
-    use huntsman_recon::search::search_response;
-    !search_response(200, "<html>just a moment cloudflare</html>", "brisbane", "remote").is_empty()
-}
-
 fn classify(status: Option<String>, body: Option<String>) -> ExitCode {
     let (Some(status), Some(body)) = (status, body) else {
-        eprintln!("usage: huntsman-recon classify STATUS BODY");
-        return ExitCode::from(64);
+        return fail(EX_USAGE, "usage: huntsman-recon classify STATUS BODY");
     };
     let Ok(status) = status.parse::<u16>() else {
-        eprintln!("bad status");
-        return ExitCode::from(65);
+        return fail(EX_DATAERR, "bad status");
     };
-    let outcome = classify_response(status, &body);
-    println!("{outcome:?}");
+    let kind = classify_fetch(status, &body);
+    println!("{:?}", classify_response(status, &body));
+    println!(
+        "outcome={}",
+        serde_json::to_value(kind)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    );
+    println!(
+        "action={}",
+        serde_json::to_value(recommended_action(kind))
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    );
     ExitCode::SUCCESS
 }
 
+fn verify(path: Option<String>) -> ExitCode {
+    let Some(path) = path else {
+        return fail(EX_USAGE, "usage: huntsman-recon verify LEDGER");
+    };
+    match load_chain(Path::new(&path)) {
+        Ok(entries) => {
+            println!("entries={}", entries.len());
+            println!("admitted={}", admitted(&entries).len());
+            println!("tip={}", entries.last().map_or("none", |e| e.hash.as_str()));
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(EX_DATAERR, &e.to_string()),
+    }
+}
+
+/// Self-acceptance. Each gate has its own exit code; every artifact is regenerated, never left stale.
 fn check() -> ExitCode {
-    let (blat, blon) = parse_latlon("-27.4698,153.0251").expect("latlon");
-    let (slat, slon) = parse_latlon("-33.8688,151.2093").expect("latlon");
+    match run_check() {
+        Ok(meters) => {
+            println!("accepted techniques=0");
+            println!("brisbane_sydney_m={meters:.0}");
+            ExitCode::SUCCESS
+        }
+        Err((code, msg)) => fail(code, &format!("check failed: {msg}")),
+    }
+}
+
+type Gate = Result<(), (u8, String)>;
+
+fn gate(code: u8, ok: bool, msg: &str) -> Gate {
+    if ok {
+        Ok(())
+    } else {
+        Err((code, msg.to_owned()))
+    }
+}
+
+fn run_check() -> Result<f64, (u8, String)> {
+    let (blat, blon) = parse_latlon("-27.4698,153.0251").map_err(|e| (2, e.to_string()))?;
+    let (slat, slon) = parse_latlon("-33.8688,151.2093").map_err(|e| (2, e.to_string()))?;
     let meters = haversine_m(blat, blon, slat, slon);
-    if !(700_000.0..760_000.0).contains(&meters) {
-        return ExitCode::from(2);
-    }
-    if classify_response(200, "<html>just a moment cloudflare</html>").is_result() {
-        return ExitCode::from(3);
-    }
-    if classify_response(429, "challenges.cloudflare.com").is_wall() {
-        return ExitCode::from(3);
-    }
-    let people = resolve(&[
-        PersonRecord { id: "a".into(), name: "Same".into(), emails: vec!["a@ex.com".into()], handles: vec![] },
-        PersonRecord { id: "b".into(), name: "Same".into(), emails: vec!["b@ex.com".into()], handles: vec![] },
-    ]);
-    if people.len() != 2 {
-        return ExitCode::from(4);
-    }
+    gate(
+        2,
+        (700_000.0..760_000.0).contains(&meters),
+        "brisbane-sydney outside band",
+    )?;
+
+    check_offline_gates()?;
+
     let geo = seal(&Claim {
         claim: format!("brisbane-sydney haversine {meters:.0} m inside band"),
         source: "published city centroids".into(),
@@ -131,25 +203,154 @@ fn check() -> ExitCode {
         },
     );
     let entries = vec![geo, wall];
-    if !chain_intact(&entries) {
-        return ExitCode::from(9);
-    }
+    gate(9, chain_intact(&entries), "fresh chain not intact")?;
+
     let nav = layer(&entries);
-    if nav["techniques"].as_array().is_none_or(|a| !a.is_empty()) {
-        return ExitCode::from(7);
+    gate(
+        7,
+        nav["techniques"].as_array().is_some_and(Vec::is_empty),
+        "self-labeled technique entered Navigator",
+    )?;
+    let stix = bundle(&entries);
+    gate(
+        8,
+        stix["objects"].as_array().is_some_and(Vec::is_empty),
+        "self-labeled technique entered STIX",
+    )?;
+
+    let ledger_path = Path::new("var/ledger.json");
+    save_chain(ledger_path, &entries).map_err(|e| (9, e.to_string()))?;
+    let reloaded = load_chain(ledger_path).map_err(|e| (9, e.to_string()))?;
+    gate(9, reloaded == entries, "ledger round-trip mismatch")?;
+    let tip = entries.last().map_or("", |e| e.hash.as_str());
+
+    check_session(meters, tip)?;
+
+    for (name, value) in [
+        ("var/navigator.json", &nav),
+        ("var/stix-bundle.json", &stix),
+    ] {
+        let body = serde_json::to_vec_pretty(value).map_err(|e| (EX_IOERR, e.to_string()))?;
+        write_atomic(Path::new(name), &body, MAX_ARTIFACT_BYTES)
+            .map_err(|e| (EX_IOERR, e.to_string()))?;
     }
-    if !bundle(&entries)["objects"].as_array().is_none_or(Vec::is_empty) {
-        return ExitCode::from(8);
+    Ok(meters)
+}
+
+/// Classifier, search, and identity gates. No network.
+fn check_offline_gates() -> Gate {
+    gate(
+        3,
+        !classify_response(200, "<html>just a moment cloudflare</html>").is_result(),
+        "challenge scored as result",
+    )?;
+    gate(
+        3,
+        !classify_response(429, "challenges.cloudflare.com").is_wall(),
+        "429 classified as wall",
+    )?;
+    gate(
+        3,
+        search_response(
+            200,
+            "<html>just a moment cloudflare</html>",
+            "brisbane",
+            "remote",
+        )
+        .is_empty(),
+        "challenge page produced a hit",
+    )?;
+
+    let people = resolve(&[
+        PersonRecord {
+            id: "a".into(),
+            name: "Same".into(),
+            emails: vec!["a@ex.com".into()],
+            handles: vec![],
+        },
+        PersonRecord {
+            id: "b".into(),
+            name: "Same".into(),
+            emails: vec!["b@ex.com".into()],
+            handles: vec![],
+        },
+    ]);
+    gate(4, people.len() == 2, "shared name merged identities")?;
+    check_overlay_gates()
+}
+
+/// Refactor-overlay foundations: a WAF is not an auth failure, mirrors count once,
+/// delayed work is not a fixed point.
+fn check_overlay_gates() -> Gate {
+    let waf = classify_fetch(403, "<html>checking your browser cloudflare</html>");
+    gate(
+        5,
+        waf == SourceOutcomeKind::BotWaf,
+        "403 challenge not classified as bot/WAF",
+    )?;
+    gate(
+        5,
+        recommended_action(waf) != SourceHealthAction::RequireCredential,
+        "WAF demanded credentials",
+    )?;
+
+    let mut graph = EvidenceAncestryGraph::default();
+    let nodes: [(&str, &str, &[&str]); 4] = [
+        ("dump", "Adobe 2013", &[]),
+        ("mirror-a", "provider-a", &["dump"]),
+        ("mirror-b", "provider-b", &["dump"]),
+        ("registry", "company registry", &[]),
+    ];
+    for (id, family, parents) in nodes {
+        graph
+            .insert(EvidenceAncestryNode {
+                id: id.into(),
+                source_family: family.into(),
+                parents: parents.iter().copied().map(EvidenceNodeId::from).collect(),
+                derived: !parents.is_empty(),
+            })
+            .map_err(|e| (5, e.to_string()))?;
     }
-    let _ = fs::create_dir_all("var");
-    let path = std::path::Path::new("var/ledger.json");
-    if save_chain(path, &entries).is_err() {
-        return ExitCode::from(9);
-    }
-    if load_chain(path).ok().as_deref() != Some(entries.as_slice()) {
-        return ExitCode::from(9);
-    }
-    let tip = entries.last().map(|e| e.hash.as_str()).unwrap_or("");
+    let mirrors = IdentityResolutionDecision {
+        left_entity_uid: "a".into(),
+        right_entity_uid: "b".into(),
+        state: ResolutionState::Match,
+        probability: Some(0.99),
+        supporting: vec!["mirror-a".into(), "mirror-b".into()],
+        contradicting: vec![],
+        temporal_conflict: false,
+        geographic_conflict: false,
+        decided_at_unix: 0,
+    };
+    gate(
+        5,
+        !mirrors.allows_automatic_merge(&graph, AutoMergePolicy::default()),
+        "mirrors manufactured corroboration",
+    )?;
+    let independent = IdentityResolutionDecision {
+        supporting: vec!["mirror-a".into(), "registry".into()],
+        ..mirrors
+    };
+    gate(
+        5,
+        independent.allows_automatic_merge(&graph, AutoMergePolicy::default()),
+        "independent roots refused",
+    )?;
+
+    let delayed = FrontierState {
+        delayed_retry_work: 1,
+        ..FrontierState::default()
+    };
+    gate(
+        5,
+        decide_termination(delayed, TerminationSignals::default()).is_none(),
+        "delayed work called a fixed point",
+    )?;
+    Ok(())
+}
+
+/// RCVF recorder gate: full terminate refuses an empty tip and binds to the real one.
+fn check_session(meters: f64, tip: &str) -> Gate {
     let mut session = Session::new("check");
     session.apply_recover(
         "offline core",
@@ -157,40 +358,45 @@ fn check() -> ExitCode {
         "no network",
         "terminate only with tip",
     );
-    if session.add_candidate(Candidate {
-        statement: "hash chain".into(),
-        alternatives: vec!["independent hashes".into()],
-        reverse_observation: "reorder undetected".into(),
-    }).is_err() {
-        return ExitCode::from(6);
-    }
-    let _ = session.add_falsify(FalsifyRecord {
-        attack: "terminate without tip".into(),
-        test: "full terminate empty tip".into(),
-        result: "refused".into(),
-    });
-    let _ = session.add_execute(ExecuteRecord {
-        action: "check".into(),
-        observed: format!("{meters:.0}"),
-        component: "src/geoint.rs".into(),
-    });
-    let _ = session.add_verify(VerifyRecord {
-        claim: "tip binds the session".into(),
-        status: Status::Verified,
-        evidence_level: EvidenceLevel::DirectObservation,
-        does_not_show: "not a live collection".into(),
-    });
-    if session.terminate("no handset run".into(), false, "").is_ok() {
-        return ExitCode::from(6);
-    }
-    if session.terminate("no handset run".into(), false, tip).is_err() || !session.bound_to(tip) {
-        return ExitCode::from(6);
-    }
-    let _ = fs::write("var/navigator.json", serde_json::to_string_pretty(&nav).unwrap_or_default());
-    if search_response_miss() {
-        return ExitCode::from(3);
-    }
-    println!("accepted techniques=0");
-    println!("brisbane_sydney_m={meters:.0}");
-    ExitCode::SUCCESS
+    let recorded = session
+        .add_candidate(Candidate {
+            statement: "hash chain".into(),
+            alternatives: vec!["independent hashes".into()],
+            reverse_observation: "reorder undetected".into(),
+        })
+        .and_then(|()| {
+            session.add_falsify(FalsifyRecord {
+                attack: "terminate without tip".into(),
+                test: "full terminate empty tip".into(),
+                result: "refused".into(),
+            })
+        })
+        .and_then(|()| {
+            session.add_execute(ExecuteRecord {
+                action: "check".into(),
+                observed: format!("{meters:.0}"),
+                component: "src/geoint.rs".into(),
+            })
+        })
+        .and_then(|()| {
+            session.add_verify(VerifyRecord {
+                claim: "tip binds the session".into(),
+                status: Status::Verified,
+                evidence_level: EvidenceLevel::DirectObservation,
+                does_not_show: "not a live collection".into(),
+            })
+        });
+    recorded.map_err(|e| (6, e.to_string()))?;
+    gate(
+        6,
+        session
+            .terminate("no handset run".into(), false, "")
+            .is_err(),
+        "terminate accepted empty tip",
+    )?;
+    session
+        .terminate("no handset run".into(), false, tip)
+        .map_err(|e| (6, e.to_string()))?;
+    gate(6, session.bound_to(tip), "session not bound to tip")?;
+    Ok(())
 }

@@ -1,11 +1,12 @@
 //! Hash-chained evidence ledger. Each hash covers the previous hash plus the claim.
 //! A dropped or reordered entry breaks `chain_intact`. Interop is still a binding, not a label.
 
-use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::Error;
+use crate::fsio::{read_bounded, write_atomic};
 use crate::sha256::{hex32, sha256};
 use crate::stage::{EvidenceLevel, Status};
 
@@ -51,7 +52,9 @@ const BINDINGS: &[(&str, &str)] = &[];
 
 #[must_use]
 pub fn method_implements(component: &str, technique: &str) -> bool {
-    BINDINGS.iter().any(|(path, id)| *path == component && *id == technique)
+    BINDINGS
+        .iter()
+        .any(|(path, id)| *path == component && *id == technique)
 }
 
 #[must_use]
@@ -68,21 +71,40 @@ pub fn seal(claim: &Claim) -> LedgerEntry {
     append(GENESIS, claim)
 }
 
+/// Hash preimage domain tag. Bump when the preimage layout changes.
+const PREIMAGE_TAG: &[u8] = b"huntsman-ledger-v2";
+
+/// Unambiguous preimage: every field is length-prefixed, and an absent technique
+/// is distinct from an empty one. No field content can shift a field boundary.
+fn preimage(prev: &str, claim: &Claim) -> Vec<u8> {
+    fn field(out: &mut Vec<u8>, value: &[u8]) {
+        out.extend_from_slice(&(value.len() as u64).to_be_bytes());
+        out.extend_from_slice(value);
+    }
+    let mut out = Vec::with_capacity(256);
+    field(&mut out, PREIMAGE_TAG);
+    field(&mut out, prev.as_bytes());
+    field(&mut out, claim.claim.as_bytes());
+    field(&mut out, claim.source.as_bytes());
+    field(&mut out, claim.component.as_bytes());
+    match &claim.technique_id {
+        None => out.push(0),
+        Some(id) => {
+            out.push(1);
+            field(&mut out, id.as_bytes());
+        }
+    }
+    field(&mut out, claim.status.as_str().as_bytes());
+    field(&mut out, claim.evidence_level.as_str().as_bytes());
+    field(&mut out, claim.does_not_show.as_bytes());
+    out
+}
+
 #[must_use]
 pub fn append(prev: &str, claim: &Claim) -> LedgerEntry {
-    let canonical = format!(
-        "{prev}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        claim.claim,
-        claim.source,
-        claim.component,
-        claim.technique_id.clone().unwrap_or_default(),
-        claim.status.as_str(),
-        claim.evidence_level.as_str(),
-        claim.does_not_show
-    );
     LedgerEntry {
         prev: prev.to_owned(),
-        hash: hex32(&sha256(canonical.as_bytes())),
+        hash: hex32(&sha256(&preimage(prev, claim))),
         claim: claim.clone(),
     }
 }
@@ -103,35 +125,35 @@ pub fn chain_intact(entries: &[LedgerEntry]) -> bool {
 }
 
 #[must_use]
-pub fn admitted<'a>(entries: &'a [LedgerEntry]) -> Vec<&'a LedgerEntry> {
-    entries.iter().filter(|e| e.claim.admits_interop()).collect()
+pub fn admitted(entries: &[LedgerEntry]) -> Vec<&LedgerEntry> {
+    entries
+        .iter()
+        .filter(|e| e.claim.admits_interop())
+        .collect()
 }
 
 const MAX_LEDGER_BYTES: u64 = 1_048_576;
 
+/// Persist a chain atomically. A broken chain is never written.
+///
+/// # Errors
+/// `Error::Invalid` for a broken chain; `Error::Store` for IO, size, or symlink refusal.
 pub fn save_chain(path: &Path, entries: &[LedgerEntry]) -> Result<(), Error> {
     if !chain_intact(entries) {
         return Err(Error::Invalid("refusing to write a broken chain".into()));
     }
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|e| Error::Store(e.to_string()))?;
-        }
-    }
     let body = serde_json::to_vec_pretty(entries).map_err(|e| Error::Store(e.to_string()))?;
-    if body.len() as u64 > MAX_LEDGER_BYTES {
-        return Err(Error::Store("ledger exceeds 1 MiB".into()));
-    }
-    fs::write(path, body).map_err(|e| Error::Store(e.to_string()))
+    write_atomic(path, &body, MAX_LEDGER_BYTES)
 }
 
+/// Load a chain and verify every link.
+///
+/// # Errors
+/// `Error::Store` for IO, size, symlink, or JSON failure; `Error::Invalid` for a broken chain.
 pub fn load_chain(path: &Path) -> Result<Vec<LedgerEntry>, Error> {
-    let meta = fs::metadata(path).map_err(|e| Error::Store(e.to_string()))?;
-    if meta.len() > MAX_LEDGER_BYTES {
-        return Err(Error::Store("ledger exceeds 1 MiB".into()));
-    }
-    let body = fs::read(path).map_err(|e| Error::Store(e.to_string()))?;
-    let entries: Vec<LedgerEntry> = serde_json::from_slice(&body).map_err(|e| Error::Store(e.to_string()))?;
+    let body = read_bounded(path, MAX_LEDGER_BYTES)?;
+    let entries: Vec<LedgerEntry> =
+        serde_json::from_slice(&body).map_err(|e| Error::Store(e.to_string()))?;
     if !chain_intact(&entries) {
         return Err(Error::Invalid("ledger chain broken".into()));
     }
@@ -140,6 +162,8 @@ pub fn load_chain(path: &Path) -> Result<Vec<LedgerEntry>, Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     fn sample(status: Status, level: EvidenceLevel, technique: Option<&str>) -> Claim {
@@ -156,12 +180,23 @@ mod tests {
 
     #[test]
     fn hash_changes_when_claim_changes_and_gate_rejects_unverified() {
-        let a = seal(&sample(Status::Verified, EvidenceLevel::DirectObservation, Some("T1595")));
-        let mut other = sample(Status::Verified, EvidenceLevel::DirectObservation, Some("T1595"));
+        let a = seal(&sample(
+            Status::Verified,
+            EvidenceLevel::DirectObservation,
+            Some("T1595"),
+        ));
+        let mut other = sample(
+            Status::Verified,
+            EvidenceLevel::DirectObservation,
+            Some("T1595"),
+        );
         other.claim = "different".into();
         let b = seal(&other);
         assert_ne!(a.hash, b.hash);
-        assert!(!a.claim.admits_interop(), "unbound technique must not score");
+        assert!(
+            !a.claim.admits_interop(),
+            "unbound technique must not score"
+        );
         let weak = seal(&sample(
             Status::Unverified,
             EvidenceLevel::EndToEndDemonstration,
@@ -173,8 +208,48 @@ mod tests {
     }
 
     #[test]
+    fn field_boundaries_and_absent_technique_are_unambiguous() {
+        let mut a = sample(Status::Verified, EvidenceLevel::DirectObservation, None);
+        a.claim = "a\nb".into();
+        a.source = "c".into();
+        let mut b = a.clone();
+        b.claim = "a".into();
+        b.source = "b\nc".into();
+        assert_ne!(
+            seal(&a).hash,
+            seal(&b).hash,
+            "moving a newline across fields must change the hash"
+        );
+        let none = sample(Status::Verified, EvidenceLevel::DirectObservation, None);
+        let empty = sample(Status::Verified, EvidenceLevel::DirectObservation, Some(""));
+        assert_ne!(
+            seal(&none).hash,
+            seal(&empty).hash,
+            "absent technique is not an empty technique"
+        );
+    }
+
+    #[test]
+    fn preimage_layout_is_pinned() {
+        // Changing this vector orphans every saved ledger. Bump PREIMAGE_TAG if it must change.
+        let entry = seal(&sample(
+            Status::Verified,
+            EvidenceLevel::DirectObservation,
+            Some("T1595"),
+        ));
+        assert_eq!(
+            entry.hash,
+            "29f35d985c3eac5b648f2ce8ccdaf6b8468ff4c14ae9fe6ad90d242489759a7c"
+        );
+    }
+
+    #[test]
     fn reorder_breaks_the_chain() {
-        let first = seal(&sample(Status::Verified, EvidenceLevel::DirectObservation, None));
+        let first = seal(&sample(
+            Status::Verified,
+            EvidenceLevel::DirectObservation,
+            None,
+        ));
         let mut second_claim = sample(Status::Partial, EvidenceLevel::PrimaryEvidence, None);
         second_claim.claim = "second".into();
         let second = append(&first.hash, &second_claim);
@@ -188,7 +263,11 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("ledger.json");
-        let entry = seal(&sample(Status::Verified, EvidenceLevel::DirectObservation, None));
+        let entry = seal(&sample(
+            Status::Verified,
+            EvidenceLevel::DirectObservation,
+            None,
+        ));
         save_chain(&path, &[entry]).unwrap();
         assert!(load_chain(&path).is_ok());
         let mut raw = fs::read_to_string(&path).unwrap();
