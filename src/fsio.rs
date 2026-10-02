@@ -56,6 +56,15 @@ pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
 /// # Errors
 /// `Error::Store` on a symlink, a body over `max` bytes, or IO failure.
 pub fn write_atomic(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
+    write_atomic_mode(path, body, max, false)
+}
+
+/// Atomically write a secret file, creating it mode 600 on Unix before any bytes land.
+pub fn write_atomic_private(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
+    write_atomic_mode(path, body, max, true)
+}
+
+fn write_atomic_mode(path: &Path, body: &[u8], max: u64, private: bool) -> Result<(), Error> {
     if body.len() as u64 > max {
         return Err(Error::Store(format!(
             "{}: exceeds {max} bytes",
@@ -76,11 +85,16 @@ pub fn write_atomic(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
     tmp_name.push(format!(".{}.tmp", std::process::id()));
     let tmp = parent.join(tmp_name);
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|e| store_err(&tmp, &e))?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        #[cfg(not(unix))]
+        let _ = private;
+        let mut file = options.open(&tmp).map_err(|e| store_err(&tmp, &e))?;
         file.write_all(body).map_err(|e| store_err(&tmp, &e))?;
         file.sync_all().map_err(|e| store_err(&tmp, &e))?;
         fs::rename(&tmp, path).map_err(|e| store_err(path, &e))

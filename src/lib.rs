@@ -49,6 +49,7 @@ pub mod geoint;
 pub mod geometry;
 pub mod gexf;
 pub mod graph;
+pub mod hibp;
 pub mod http;
 pub mod identity;
 pub mod identity_resolution;

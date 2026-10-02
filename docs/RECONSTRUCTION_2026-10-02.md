@@ -128,7 +128,7 @@ Verification: 103 unit, 3 accept, 5 CLI tests pass on stable and on MSRV 1.87. `
 - `main` CI failed on `test (stable)`: Rust 1.99 clippy added `assert_is_empty`, which rejects 39 bare `assert!(x.is_empty())` / `assert!(!x.is_empty())` test assertions under `-D warnings`. Each now prints the offending value (or context) on failure. Clean on Rust 1.99, 1.98 and MSRV 1.87.
 - `README.md` said the archives lived only in git history; it now matches the seventh pass and maps the tree.
 - `docs/DISPOSITIONS.md` is one document with one section per area. The entity section was a work log; it is replaced by the per-file table formerly in `docs/dispositions/entity.md` (now removed), with the missing `core/correlator/rules/location/mod.rs` row added. The intro claimed every legacy file was accounted for; 895 of 1146 monolith `src/` files are not, and a new section counts them by area (first published as 894; see the ninth pass).
-- Open pull requests were judged against the reconstructed `main`. None applies: #663 (bench-smoke on main only) has an empty diff because `main` deleted `bench-smoke.yml`; #665 (release pre-release policy, `scripts/scan-for-keys.sh`) edits `release.yml`, which no longer exists, for the monolith's `hse-aarch64-linux-android` binary; #662 (HIBP v3) adds `src/modules/hibp/` to the monolith layout and uses a paid key, against "No paid source". Decision: close all three. Rebuild HIBP, if wanted, as a new module on `fetch`/`keys`.
+- Initial PR review found #663 empty and #665 targeting the retired release workflow. The owner subsequently continued #662 with REFACTOR: its HIBP library is now ported to `src/hibp` on the blocking `http`/`fetch`/`keys` boundary, explicitly opt-in, without restoring the monolith. The old decision to close #662 is superseded. Legacy snapshots and root archives remain unchanged.
 
 ## Ninth pass: proof paths for documentation claims
 
@@ -154,5 +154,5 @@ Evidence state of the claims touched in passes eight and nine:
 | Documented exit codes are produced | TESTED, CI-enforced | One offline scenario per code. |
 | `check` gate failure codes 2–11 | IMPLEMENTED, range TESTED | The range matches the source. No test injects a fault to observe each gate's failure exit. |
 | Disposition counts | TESTED, CI-enforced | Recomputed from `legacy/` on every test run. |
-| Open PRs #662, #663, #665 do not apply | VERIFIED by observation at 2026-10-02 | Empty diff on #663; `release.yml` and `src/modules/` are absent on `main`. Goes stale if those branches are pushed again. |
+| HIBP #662 reconstructed-layout port | OFFLINE-VERIFIED | `src/hibp` exports blocking REST v3, free password ranges and OAuth PKCE; fake-transport tests cover endpoints, plan gating, retry, secret redaction and private persistence. No live API or handset acceptance is claimed. Earlier close-#662 judgement is superseded by the owner's REFACTOR continuation. |
 | No Termux/aarch64 handset run | Unchanged: not CLAIMED | — |
