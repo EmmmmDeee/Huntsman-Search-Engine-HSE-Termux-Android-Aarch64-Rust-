@@ -71,12 +71,7 @@ fn adversarial_benchmark_has_zero_false_merges_and_preserves_strong_matches() {
         ),
         BenchmarkCase::new(
             "missing-probability-must-not-bypass-threshold",
-            decision(
-                ResolutionState::Match,
-                None,
-                &["registry", "profile"],
-                &[],
-            ),
+            decision(ResolutionState::Match, None, &["registry", "profile"], &[]),
             false,
         ),
         BenchmarkCase::new(
