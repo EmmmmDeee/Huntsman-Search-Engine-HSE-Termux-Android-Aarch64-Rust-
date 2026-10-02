@@ -75,7 +75,7 @@ impl IdentityResolutionDecision {
 
     /// Automatic merge is stricter than "probable". A probable link stays a hypothesis
     /// unless an operator promotes it. Non-compensatory: one contradiction, one conflict,
-    /// or unknown ancestry blocks regardless of probability or support count.
+    /// missing calibrated probability, or unknown ancestry blocks regardless of support count.
     #[must_use]
     pub fn allows_automatic_merge(
         &self,
@@ -89,7 +89,7 @@ impl IdentityResolutionDecision {
             && !self.geographic_conflict
             && self
                 .probability
-                .is_none_or(|p| p >= policy.min_match_probability)
+                .is_some_and(|p| p >= policy.min_match_probability)
             && self
                 .independent_support_families(graph)
                 .is_some_and(|n| n >= policy.min_independent_support_families.max(1))
@@ -159,6 +159,13 @@ mod tests {
             decision(ResolutionState::Match, &["registry", "first-party"], &[])
                 .allows_automatic_merge(&graph(), AutoMergePolicy::default())
         );
+    }
+
+    #[test]
+    fn missing_probability_never_auto_merges() {
+        let mut d = decision(ResolutionState::Match, &["registry", "first-party"], &[]);
+        d.probability = None;
+        assert!(!d.allows_automatic_merge(&graph(), AutoMergePolicy::default()));
     }
 
     #[test]
