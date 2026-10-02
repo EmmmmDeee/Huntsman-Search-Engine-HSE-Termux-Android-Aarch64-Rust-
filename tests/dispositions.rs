@@ -2,7 +2,8 @@
 //! that accounting from `legacy/`, so a row for a file that does not exist, or a stale
 //! "Not yet dispositioned" count, fails the build. It also recomputes the crate's module
 //! tree from `src/lib.rs` and `src/main.rs`, so a row that says code was rebuilt into a
-//! `src/` file the compiler never reads, or a `src/` file with no `mod` line, fails too.
+//! `src/` file outside that tree, or any `src/` file outside it, fails too. A `mod` gated
+//! by a `cfg` other than `cfg(test)`, or moved with `path`, fails rather than counting.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -148,9 +149,10 @@ fn strip_non_code(text: &str) -> String {
     while i < src.len() {
         let rest = &src[i..];
         let is_ident = |at: usize| src[at].is_alphanumeric() || src[at] == '_';
-        // `r` starts a raw string unless it ends an identifier; `br` (byte raw) counts too.
-        let ident_before =
-            i > 0 && is_ident(i - 1) && !(src[i - 1] == 'b' && (i < 2 || !is_ident(i - 2)));
+        // `r` starts a raw string unless it ends an identifier; `br`/`cr` prefixes count too.
+        let ident_before = i > 0
+            && is_ident(i - 1)
+            && !(matches!(src[i - 1], 'b' | 'c') && (i < 2 || !is_ident(i - 2)));
         let end = if rest.starts_with(&['/', '/']) {
             rest.iter().position(|&c| c == '\n').unwrap_or(rest.len())
         } else if rest.starts_with(&['/', '*']) {
@@ -210,27 +212,153 @@ fn raw_string_len(rest: &[char]) -> Option<usize> {
     Some(found.map_or(rest.len(), |j| j + close.len()))
 }
 
-/// Out-of-line `mod name;` declarations (any visibility) in one source file.
-fn declared_mods(text: &str) -> Vec<String> {
-    strip_non_code(text)
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            assert!(
-                !line.starts_with("#[path"),
-                "#[path] is not supported by this check: {line}"
-            );
-            let rest = match line.strip_prefix("pub") {
-                Some(rest) if rest.starts_with('(') => rest.split_once(") ")?.1,
-                Some(rest) => rest.strip_prefix(' ')?,
-                None => line,
-            };
-            let name = rest.strip_prefix("mod ")?.strip_suffix(';')?;
-            name.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_')
-                .then(|| name.to_owned())
-        })
-        .collect()
+/// Non-test `cfg` attributes allowed on a `mod` item, as (file, attribute text).
+/// Empty: nothing in the tree is conditionally compiled except under `cfg(test)`.
+const CFG_ALLOWLIST: &[(&str, &str)] = &[];
+
+/// What one source file declares.
+#[derive(Debug)]
+struct Scan {
+    /// Out-of-line children as crate-relative stems: `src/a` is `src/a.rs` or `src/a/mod.rs`.
+    children: Vec<String>,
+    /// Declarations this check cannot prove are compiled. Each one fails the guards.
+    problems: Vec<String>,
+}
+
+/// Identifiers and single punctuation characters of already-stripped code.
+fn tokens(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    for c in code.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+            continue;
+        }
+        if !word.is_empty() {
+            out.push(std::mem::take(&mut word));
+        }
+        if !c.is_whitespace() {
+            out.push(c.to_string());
+        }
+    }
+    if !word.is_empty() {
+        out.push(word);
+    }
+    out
+}
+
+/// Index just past the bracket group that opens at `toks[open]`.
+fn group_end(toks: &[String], open: usize) -> usize {
+    let mut depth = 0_usize;
+    for (at, tok) in toks.iter().enumerate().skip(open) {
+        match tok.as_str() {
+            "[" | "(" | "{" => depth += 1,
+            "]" | ")" | "}" => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return at + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    toks.len()
+}
+
+/// Why an attribute stops this check proving a module is compiled, if it does.
+/// `cfg(test)` is fine because `cargo test` compiles it; everything else that can
+/// compile a module out (`cfg`, `cfg_attr(…, cfg(…))`) or move it (`path`,
+/// `cfg_attr(…, path = …)`) fails closed unless it is in `CFG_ALLOWLIST`.
+fn attribute_problem(file: &str, attr: &[String]) -> Option<String> {
+    let text = attr.concat();
+    let name = attr.first().map_or("", String::as_str);
+    let mentions = |ident: &str| attr.iter().any(|tok| tok == ident);
+    if name == "path" || (name == "cfg_attr" && mentions("path")) {
+        return Some(format!(
+            "{file}: `#[{text}]` relocates a module; this check does not resolve `path`"
+        ));
+    }
+    let gates = (name == "cfg" && text != "cfg(test)") || (name == "cfg_attr" && mentions("cfg"));
+    if gates && !CFG_ALLOWLIST.contains(&(file, text.as_str())) {
+        return Some(format!(
+            "{file}: `#[{text}]` can compile a module out; add it to CFG_ALLOWLIST or drop it"
+        ));
+    }
+    None
+}
+
+/// Module declarations in one file (`file` is crate-relative). Handles any visibility
+/// (`pub`, `pub(crate)`, `pub(super)`, `pub(in …)`, any spacing), several items per line,
+/// attributes on the same or earlier lines, and out-of-line children of inline modules.
+/// Comments and literals are blanked first. Inner `#![…]` attributes are checked for the
+/// enclosing module.
+fn scan(file: &str, text: &str) -> Scan {
+    let toks = tokens(&strip_non_code(text));
+    let base = child_dir(file);
+    let mut scan = Scan {
+        children: Vec::new(),
+        problems: Vec::new(),
+    };
+    // One entry per open `{`: the inline module's name, or `None` for any other block.
+    let mut scopes: Vec<Option<String>> = Vec::new();
+    let mut attrs: Vec<Vec<String>> = Vec::new();
+    let tok_at = |at: usize| toks.get(at).map_or("", String::as_str);
+    let mut i = 0;
+    while i < toks.len() {
+        let inner = tok_at(i + 1) == "!" && tok_at(i + 2) == "[";
+        if tok_at(i) == "#" && (tok_at(i + 1) == "[" || inner) {
+            let open = if inner { i + 2 } else { i + 1 };
+            let end = group_end(&toks, open);
+            let body = toks[open + 1..end.saturating_sub(1).max(open + 1)].to_vec();
+            if inner {
+                scan.problems.extend(attribute_problem(file, &body));
+            } else {
+                attrs.push(body);
+            }
+            i = end;
+            continue;
+        }
+        match tok_at(i) {
+            "pub" => {
+                i += 1;
+                if tok_at(i) == "(" {
+                    i = group_end(&toks, i);
+                }
+                continue;
+            }
+            "mod" => {
+                let name = tok_at(i + 1).to_owned();
+                for attr in attrs.drain(..) {
+                    if let Some(problem) = attribute_problem(file, &attr) {
+                        scan.problems.push(format!("{problem} (on `mod {name}`)"));
+                    }
+                }
+                match tok_at(i + 2) {
+                    ";" => {
+                        let mut stem = base.clone();
+                        for inline in scopes.iter().flatten() {
+                            stem = format!("{stem}/{inline}");
+                        }
+                        scan.children.push(format!("{stem}/{name}"));
+                    }
+                    "{" => scopes.push(Some(name)),
+                    _ => scan
+                        .problems
+                        .push(format!("{file}: unrecognised declaration `mod {name}`")),
+                }
+                i += 3;
+                continue;
+            }
+            "{" => scopes.push(None),
+            "}" => {
+                scopes.pop();
+            }
+            _ => {}
+        }
+        attrs.clear();
+        i += 1;
+    }
+    scan
 }
 
 /// Directory that holds the children of `file` (a path relative to the crate root).
@@ -242,28 +370,42 @@ fn child_dir(file: &str) -> String {
     }
 }
 
-/// Every `src/` file the compiler reads: the module tree reached from both crate roots.
-fn compiled_sources() -> BTreeSet<String> {
+/// The module tree reached from both crate roots (every `src/` file `cargo test`
+/// compiles), plus every declaration the scan could not prove compiled.
+fn module_tree() -> (BTreeSet<String>, Vec<String>) {
     let root = crate_root();
     let mut seen = BTreeSet::new();
+    let mut problems = Vec::new();
     let mut queue = vec!["src/lib.rs".to_owned(), "src/main.rs".to_owned()];
     while let Some(file) = queue.pop() {
         if !seen.insert(file.clone()) {
             continue;
         }
         let text = fs::read_to_string(root.join(&file)).unwrap();
-        let dir = child_dir(&file);
-        for name in declared_mods(&text) {
-            let found = [format!("{dir}/{name}.rs"), format!("{dir}/{name}/mod.rs")]
+        let mut scan = scan(&file, &text);
+        problems.append(&mut scan.problems);
+        for stem in scan.children {
+            let found = [format!("{stem}.rs"), format!("{stem}/mod.rs")]
                 .into_iter()
                 .find(|path| root.join(path).is_file());
             match found {
                 Some(path) => queue.push(path),
-                None => panic!("{file} declares `mod {name};` but no file backs it"),
+                None => problems.push(format!("{file}: no file backs module `{stem}`")),
             }
         }
     }
-    seen
+    (seen, problems)
+}
+
+/// Every `src/` file `cargo test` compiles. Fails, naming them, on declarations the
+/// scan cannot prove compiled.
+fn compiled_sources() -> BTreeSet<String> {
+    let (compiled, problems) = module_tree();
+    assert!(
+        problems.is_empty(),
+        "module declarations this check cannot prove are compiled: {problems:?}"
+    );
+    compiled
 }
 
 fn is_rust(path: &str) -> bool {
@@ -324,7 +466,7 @@ fn every_rebuilt_target_is_compiled() {
     let missing = uncompiled(&claimed, &compiled_sources());
     assert!(
         missing.is_empty(),
-        "DISPOSITIONS claims code lives in files the crate never compiles (no `mod` line): {missing:?}"
+        "DISPOSITIONS claims code lives in files outside the compiled module tree: {missing:?}"
     );
 }
 
@@ -337,7 +479,7 @@ fn every_src_file_is_compiled() {
     let missing = uncompiled(&files, &compiled_sources());
     assert!(
         missing.is_empty(),
-        "src files with no `mod` line are never compiled or tested: {missing:?}"
+        "src files outside the compiled module tree are never built or tested: {missing:?}"
     );
 }
 
@@ -375,17 +517,126 @@ fn module_tree_follows_mod_rs_and_nested_files() {
     assert_eq!(child_dir("src/lib.rs"), "src");
     assert_eq!(child_dir("src/hibp/mod.rs"), "src/hibp");
     assert_eq!(child_dir("src/geo.rs"), "src/geo");
-    assert_eq!(
-        declared_mods("pub mod a;\npub(crate) mod b;\n    mod c;\nmod d {\n// mod e;\n"),
-        ["a", "b", "c"]
-    );
+}
+
+/// Children of `text` as if it were `file`, asserting the scan raised no problem.
+fn children(file: &str, text: &str) -> Vec<String> {
+    let scan = scan(file, text);
+    assert!(scan.problems.is_empty(), "{text:?}: {:?}", scan.problems);
+    scan.children
+}
+
+#[test]
+fn scan_ignores_comments_and_literals() {
     let hidden = concat!(
         "/* outer /* nested */\npub mod gone;\n*/\n",
+        "// mod line_comment;\n",
         "const S: &str = \"\nmod in_string;\n\";\n",
         "const R: &str = r#\"\nmod in_raw;\n\"#;\n",
         "const B: &[u8] = br\"\\\";\npub mod after_byte_raw;\nconst T: &str = \"x\";\n",
+        "const C: &core::ffi::CStr = cr\"\\\";\npub mod after_c_raw;\nconst U: &str = \"x\";\n",
         "const Q: char = '\"';\nfn f<'a>(_: &'a str) {}\n",
-        "pub mod kept;\n",
+        "#[doc = \"mod in_doc;\"]\npub mod kept;\n",
     );
-    assert_eq!(declared_mods(hidden), ["after_byte_raw", "kept"]);
+    assert_eq!(
+        children("src/lib.rs", hidden),
+        ["src/after_byte_raw", "src/after_c_raw", "src/kept"]
+    );
+}
+
+/// Forms from review 5395609494 that used to be misread as uncompiled, or panicked.
+#[test]
+fn scan_reads_every_valid_declaration_form() {
+    let cases: [(&str, &str, &[&str]); 9] = [
+        (
+            "src/lib.rs",
+            "pub mod a;\npub(crate) mod b;\n    mod c;\n",
+            &["src/a", "src/b", "src/c"],
+        ),
+        ("src/lib.rs", "#[cfg(test)] mod hidden;\n", &["src/hidden"]),
+        (
+            "src/lib.rs",
+            "#[cfg(test)]\n#[allow(dead_code)]\nmod tests;\n",
+            &["src/tests"],
+        ),
+        ("src/lib.rs", "mod a; mod b;\n", &["src/a", "src/b"]),
+        (
+            "src/lib.rs",
+            "pub  mod x;\npub(crate)  mod y;\npub( super )  mod z;\npub(in crate::q) mod w;\n",
+            &["src/x", "src/y", "src/z", "src/w"],
+        ),
+        (
+            "src/lib.rs",
+            "pub mod zzinline {\n    pub mod deep;\n    fn f() { let _ = 1; }\n}\nmod after;\n",
+            &["src/zzinline/deep", "src/after"],
+        ),
+        (
+            "src/geo.rs",
+            "mod inner { mod deeper { mod leaf; } }\n",
+            &["src/geo/inner/deeper/leaf"],
+        ),
+        (
+            "src/lib.rs",
+            "#[cfg(unix)]\nfn f() {}\nmod plain;\n",
+            &["src/plain"],
+        ),
+        (
+            "src/lib.rs",
+            "#![deny(unsafe_code)]\n#![allow(clippy::all)]\npub mod top;\n",
+            &["src/top"],
+        ),
+    ];
+    for (file, text, want) in cases {
+        assert_eq!(children(file, text), want, "{text:?}");
+    }
+}
+
+/// Forms from review 5395609494 that used to pass although rustc may never compile
+/// the module, or compiles a different file. Each must fail and name the declaration.
+#[test]
+fn scan_fails_closed_on_cfg_and_path() {
+    let cases = [
+        (
+            "#[cfg(any())]\npub mod zzdead;\n",
+            "`#[cfg(any())]`",
+            "mod zzdead",
+        ),
+        ("#[cfg(not(test))] mod n;\n", "`#[cfg(not(test))]`", "mod n"),
+        (
+            "#[cfg(unix)]\n#[doc = \"d\"]\nmod u;\n",
+            "`#[cfg(unix)]`",
+            "mod u",
+        ),
+        (
+            "#[cfg_attr(all(), cfg(any()))]\nmod g;\n",
+            "cfg_attr",
+            "mod g",
+        ),
+        (
+            "#[cfg_attr(all(), path = \"elsewhere.rs\")]\nmod p;\n",
+            "cfg_attr",
+            "mod p",
+        ),
+        ("#[path = \"x.rs\"]\nmod p;\n", "`#[path=]`", "mod p"),
+        (
+            "#[doc = \"d\"] #[path = \"x.rs\"] pub mod p;\n",
+            "`#[path=]`",
+            "mod p",
+        ),
+        (
+            "mod outer {\n    #[path = \"x.rs\"]\n    mod p;\n}\n",
+            "`#[path=]`",
+            "mod p",
+        ),
+        ("#![cfg(any())]\nmod m;\n", "`#[cfg(any())]`", "src/lib.rs"),
+    ];
+    for (text, attr, decl) in cases {
+        let scan = scan("src/lib.rs", text);
+        assert!(
+            scan.problems
+                .iter()
+                .any(|p| p.starts_with("src/lib.rs:") && p.contains(attr) && p.contains(decl)),
+            "{text:?} was not reported: {scan:?}"
+        );
+    }
 }
