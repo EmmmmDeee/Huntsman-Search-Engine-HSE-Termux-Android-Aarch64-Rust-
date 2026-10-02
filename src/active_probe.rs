@@ -78,7 +78,9 @@ pub fn probe<T: Transport + ?Sized>(
 ) -> Result<ProbeReport, Error> {
     let base_url = base_url(seed_url)?;
     if options.max_requests == 0 {
-        return Err(Error::Invalid("active probe max_requests must be positive".into()));
+        return Err(Error::Invalid(
+            "active probe max_requests must be positive".into(),
+        ));
     }
     let budget = options.max_requests.min(PROBE_PATHS.len());
     let base_origin = origin_of(&base_url);
@@ -110,12 +112,7 @@ pub fn probe<T: Transport + ?Sized>(
 
         let (bytes, truncated) = if let Some(response) = fetched.response.as_ref() {
             fingerprint_response(&mut fingerprint, response);
-            extract_response_pivots(
-                &mut pivots,
-                &fetched.final_url,
-                path,
-                response,
-            );
+            extract_response_pivots(&mut pivots, &fetched.final_url, path, response);
             (response.body.len(), response.truncated)
         } else {
             (0, false)
@@ -189,7 +186,10 @@ fn extract_response_pivots(
         insert_pivot(pivots, final_url, "html_src", &raw);
     }
     if let Some(csp) = response.header_value("content-security-policy") {
-        for raw in csp.split_ascii_whitespace().filter(|v| v.starts_with("http://") || v.starts_with("https://")) {
+        for raw in csp
+            .split_ascii_whitespace()
+            .filter(|v| v.starts_with("http://") || v.starts_with("https://"))
+        {
             insert_pivot(pivots, final_url, "csp", raw.trim_end_matches(';'));
         }
     }
@@ -222,12 +222,7 @@ fn extract_response_pivots(
     }
 }
 
-fn insert_pivot(
-    pivots: &mut BTreeMap<String, String>,
-    base: &str,
-    source: &str,
-    raw: &str,
-) {
+fn insert_pivot(pivots: &mut BTreeMap<String, String>, base: &str, source: &str, raw: &str) {
     let raw = raw.trim().trim_matches(['\'', '"', '<', '>', '(', ')']);
     if raw.is_empty()
         || raw.starts_with('#')
