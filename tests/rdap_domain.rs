@@ -97,7 +97,7 @@ fn lookup_uses_one_keyless_rdap_request_and_parses_200() {
     assert_eq!(fake.seen.borrow().len(), 1);
     let request = &fake.seen.borrow()[0];
     assert_eq!(request.url, "https://rdap.org/domain/example.com");
-    assert!(request.headers.is_empty());
+    assert_eq!(request.headers, Vec::<(String, String)>::new());
     assert_eq!(lookup.outcome.kind, SourceOutcomeKind::Inconclusive);
     assert_eq!(
         lookup.record.as_ref().map(|r| r.domain.as_str()),
