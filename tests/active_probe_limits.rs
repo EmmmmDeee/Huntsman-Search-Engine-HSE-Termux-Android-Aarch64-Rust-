@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 
 use huntsman_recon::active_probe::{ProbeOptions, probe};
 use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
@@ -26,9 +27,9 @@ impl Transport for Fake {
 fn hostile_page_cannot_amplify_pivots_without_bound() {
     let mut body = String::from("<html><body>");
     for index in 0..300 {
-        body.push_str(&format!(r#"<a href="/pivot-{index}">x</a>"#));
+        let _ = write!(body, r#"<a href="/pivot-{index}">x</a>"#);
     }
-    body.push_str(&format!(r#"<a href="/{}">long</a>"#, "x".repeat(3_000)));
+    let _ = write!(body, r#"<a href="/{}">long</a>"#, "x".repeat(3_000));
     body.push_str("</body></html>");
 
     let f = Fake::new(Response {
