@@ -19,7 +19,7 @@ fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("geo") => geo(args.next(), args.next()),
-        Some("search") => search_cmd(args.next()),
+        Some("search") => search_cmd(args.next(), args.next()),
         Some("classify") => classify(args.next(), args.next()),
         Some("check") | None => check(),
         Some(other) => {
@@ -46,15 +46,19 @@ fn geo(a: Option<String>, b: Option<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn search_cmd(query: Option<String>) -> ExitCode {
+fn search_cmd(query: Option<String>, dir: Option<String>) -> ExitCode {
     let Some(query) = query else {
-        eprintln!("usage: huntsman-recon search QUERY");
+        eprintln!("usage: huntsman-recon search QUERY [DIR]");
         return ExitCode::from(64);
     };
-    let docs = vec![
-        Document { id: "brisbane".into(), body: "Brisbane port radar sighting".into(), source: "fixture".into() },
-        Document { id: "sydney".into(), body: "Sydney harbour note".into(), source: "fixture".into() },
-    ];
+    let docs = if let Some(dir) = dir {
+        huntsman_recon::search::load_dir(std::path::Path::new(&dir))
+    } else {
+        vec![
+            Document { id: "brisbane".into(), body: "Brisbane port radar sighting".into(), source: "fixture".into() },
+            Document { id: "sydney".into(), body: "Sydney harbour note".into(), source: "fixture".into() },
+        ]
+    };
     let hits = search(&docs, &query);
     if hits.is_empty() {
         println!("hits=0");
