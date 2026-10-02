@@ -163,13 +163,13 @@ static SOURCES: &[SourceDescriptor] = &[
     },
     SourceDescriptor {
         id: "urlscan",
-        name: "urlscan.io domain view",
+        name: "urlscan.io domain search",
         category: SourceCategory::DomainIntel,
         accepted_kinds: DOMAIN_ONLY,
         execution: ExecutionMode::SearchUrl,
-        access: SourceAccess::Public,
-        url_template: "https://urlscan.io/domain/{value}",
-        reference_url: "https://urlscan.io/",
+        access: SourceAccess::Account,
+        url_template: "https://urlscan.io/search/#domain:{value}",
+        reference_url: "https://urlscan.io/search/",
         evidence_role: EvidenceRole::LeadOnly,
     },
     SourceDescriptor {
