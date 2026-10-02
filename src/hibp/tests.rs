@@ -337,6 +337,18 @@ fn account_hash_lookup_discards_other_accounts_locally() {
 }
 
 #[test]
+fn malformed_matching_account_range_does_not_report_no_breaches() {
+    let (client, fake) = keyed();
+    status(&fake, false, true);
+    let hash = account_sha1_hex("a@example.com");
+    fake.push(200, &format!(r#"[{{"hashSuffix":"{}"}}]"#, &hash[6..]));
+    assert!(matches!(
+        client.breached_account_by_hash("a@example.com"),
+        Err(HibpError::Decode(_))
+    ));
+}
+
+#[test]
 fn passwords_are_local_prefix_only_padding_and_ntlm_are_supported() {
     let (client, fake) = keyed();
     for mode in [PasswordHashMode::Sha1, PasswordHashMode::Ntlm] {

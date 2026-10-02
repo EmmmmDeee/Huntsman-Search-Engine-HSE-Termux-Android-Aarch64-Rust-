@@ -101,7 +101,6 @@ pub struct AccountRangeEntry {
     /// Remaining SHA-1 hex after the 6-char prefix.
     pub hash_suffix: String,
     /// Breach names for that hashed account.
-    #[serde(default)]
     pub websites: Vec<String>,
 }
 
