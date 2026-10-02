@@ -54,7 +54,7 @@ fn sources_percent_encodes_human_queries() {
 fn sources_refuses_unactionable_residual_text() {
     let out = bin().args(["sources", "x"]).output().unwrap();
     assert_eq!(out.status.code(), Some(65));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, [] as [u8; 0]);
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("no actionable source routes"),
         "{}",
