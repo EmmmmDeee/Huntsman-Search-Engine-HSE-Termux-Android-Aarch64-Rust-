@@ -524,7 +524,9 @@ pub fn rule_au_002_identity_cluster(
         "AU-002",
         "identity_cluster",
         Severity::Critical,
-        format!("{emails} email(s), {usernames} username(s), {phones} phone(s), {people} person(s)"),
+        format!(
+            "{emails} email(s), {usernames} username(s), {phones} phone(s), {people} person(s)"
+        ),
         identities
             .into_iter()
             .map(|entity| entity.uid.clone())

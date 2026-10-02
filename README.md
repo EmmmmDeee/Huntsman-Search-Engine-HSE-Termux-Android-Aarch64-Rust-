@@ -2,7 +2,7 @@
 
 Only the current version of the project lives here. Earlier trees, the HSE monolith, and the uploaded legacy zip archives stay in git history (commit `91f2533`).
 
-Local search over operator-supplied documents. A challenge page is not a hit. No paid source. No network client. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
+Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands). A challenge page is not a hit. No paid source. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
 
 ```
 cargo test

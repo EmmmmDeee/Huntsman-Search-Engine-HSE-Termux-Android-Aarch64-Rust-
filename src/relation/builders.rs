@@ -885,9 +885,7 @@ pub fn derive_coreferences(
             for right in left + 1..group.len() {
                 let kind = match (&group[left].kind, &group[right].kind) {
                     (EntityKind::Person, EntityKind::Person) => continue,
-                    (EntityKind::Person, _) | (_, EntityKind::Person) => {
-                        RelationKind::IdentifiedBy
-                    }
+                    (EntityKind::Person, _) | (_, EntityKind::Person) => RelationKind::IdentifiedBy,
                     _ => RelationKind::AliasOf,
                 };
                 let (from_uid, to_uid) = if kind == RelationKind::IdentifiedBy {

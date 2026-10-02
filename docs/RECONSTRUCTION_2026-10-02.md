@@ -1,6 +1,6 @@
 # Reconstruction decision — 2026-10-02
 
-Target: an unprivileged offline Rust core that records an RCVF session, refuses an unsupported claim, resolves identity only on a shared email or handle, computes geodesic distance and co-location, seals claims in a hashed ledger, and emits STIX or an ATT&CK Navigator layer only when this crate implements that technique.
+Target: an unprivileged Rust core that records an RCVF session, refuses an unsupported claim, resolves identity only on a shared email or handle, computes geodesic distance and co-location, seals claims in a hashed ledger, and emits STIX or an ATT&CK Navigator layer only when this crate implements that technique.
 
 Search is local retrieval over operator-supplied documents. Every query term must match. A challenge page or a 429 is not a hit. Paid SeekNow and public SearXNG JSON are not sources.
 
@@ -47,7 +47,7 @@ Still unresolved: no Termux handset run. The ATT&CK binding table is still empty
 
 Both archives were extracted from `91f2533` and judged item by item.
 
-**`Huntsman-Search-Engine-HSE-…-main.zip`** is the HSE v1.41.0 monolith (1727 files, network providers, credential handling, Rust 1.98). It is not restored. It conflicts with this crate's contract of no network client and no paid source, and the overlay's own `VERIFICATION.json` says it was never compiled against it.
+**`Huntsman-Search-Engine-HSE-…-main.zip`** is the HSE v1.41.0 monolith (1727 files, network providers, credential handling, Rust 1.98). It is not restored. It conflicts with this crate's contract of no paid source, and the overlay's own `VERIFICATION.json` says it was never compiled against it.
 
 **`Huntsman-HSE-EndToEnd-Refactor-feef60a.zip`** is the refactor overlay. Its `VERIFICATION.json` reported cargo, fmt, clippy, and tests as BLOCKED, so none of it had been compiled before this pass. It was imported verbatim first (21 tests passed), then attacked.
 
@@ -113,3 +113,10 @@ New CLI: `id TOKEN`, `geohash LAT,LON [PRECISION]`, `coarsen LAT,LON`. `check` g
 Not rebuilt, with reason: `util/http`, `util/curl*`, `util/preflight`, `core/engine`, and all of `src/modules` need a network client or credentials. `util/domains` (registrable domain) and `core/validation` are the next pure candidates; `domains` needs a public-suffix decision that has not been made. `postcode_au` centroid tables are bulk data with no provenance in the zip.
 
 Verification: 103 unit, 3 accept, 5 CLI tests pass on stable and on MSRV 1.87. `clippy --all-targets -D warnings` and `cargo fmt --check` are clean. `check` leaves `var/` unchanged.
+
+## Seventh pass: contract change and consolidation
+
+- The offline, no-credentials restriction is lifted. Network access is allowed through one guarded layer: `egress` (public addresses only unless the operator opts out), `http` (bounded, rustls, `Transport` trait), `fetch` (manual redirects; credentials never leave the origin they were approved for), `keys` (placeholders are not keys; values never printed). `check` gate 11 decides these rules without a socket.
+- Both legacy archives are permanent reference: kept in the repository root and extracted byte-identically into `legacy/`; `tests/legacy_reference.rs` pins their hashes and file counts.
+- Parallel rebuilds merged duplicated helpers into single owners (canonical forms, domains, dates, coordinates, module metadata). Per-file accounting: `docs/DISPOSITIONS.md`.
+- Not finished: remaining legacy `core/correlator` and `core/relation` files (see dispositions), and `modules/*` network providers.
