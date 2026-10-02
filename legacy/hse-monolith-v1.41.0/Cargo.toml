@@ -1,0 +1,302 @@
+[package]
+name        = "huntsman-search-engine"
+version     = "1.41.0"
+edition     = "2024"
+rust-version = "1.98"
+description = "Huntsman Search Engine — comprehensive on-device OSINT/GEOINT & breach-intelligence platform for Termux aarch64 (no root)"
+authors     = ["Huntsman OSINT"]
+license-file = "LICENSE"        # proprietary — all rights reserved
+publish      = false            # never publish to crates.io (would redistribute)
+default-run = "hse"
+
+[[bin]]
+name = "hse"
+path = "src/main.rs"
+
+# Dev/build tooling: regenerates `src/util/oui/ieee.bin` (the packed IEEE
+# MA-L vendor registry `src/util/oui/ieee.rs` binary-searches at runtime)
+# from the live registry. A one-off, occasionally-run offline tool, not scan
+# engine code — a separate binary, not an `hse` subcommand. Replaces the former `scripts/gen_oui.py`, closing
+# that accepted non-Rust exception in `docs/RUST_MIGRATION_AUDIT_2026-08-27.md`.
+#
+# Deliberately UNGATED: every
+# dependency it needs (csv/reqwest/sha2/clap/tokio) is already unconditional
+# for the `hse` binary itself, so a `required-features` gate would add
+# `--features` friction for zero dependency-weight benefit.
+[[bin]]
+name = "gen-oui"
+path = "src/bin/gen_oui/main.rs"
+
+# Dev-time architecture inventory: audits the module dependency graph from a
+# running `hse serve` (or a captured `modules.json`/`graph.json` pair) for
+# consolidation and correctness risks — orphan/ungrounded kinds, sole
+# producers, duplicate capability signatures, fan-out blast radius. Not scan
+# engine code; same "separate binary, not an `hse` subcommand" reasoning as
+# `gen-oui` above. Replaces the former
+# `scripts/architecture_audit.py`, closing that accepted non-Rust exception in
+# `docs/RUST_MIGRATION_AUDIT_2026-08-27.md`.
+#
+# Deliberately UNGATED, for the identical reason `gen-oui` is: every
+# dependency it needs (reqwest/serde_json/clap/tokio) is already unconditional
+# for the `hse` binary itself.
+[[bin]]
+name = "architecture-audit"
+path = "src/bin/architecture_audit/main.rs"
+
+# Supply-chain gate: fails when a crates.io dependency in Cargo.lock was
+# published more recently than a configured cooldown window (a compromised
+# publish is most likely to slip through unnoticed in its first few days).
+# Deliberately a separate binary rather than an `hse` subcommand — this is
+# dev/CI tooling over Cargo.lock, unrelated to the OSINT scan engine's
+# runtime surface. See scripts/gate.sh and .github/workflows/audit.yml for
+# how it's wired in, and src/bin/dep_cooldown/main.rs for the rationale.
+#
+# `required-features` gates this out of a plain `cargo build`/`check` with no
+# `--features dep-cooldown`: without it, this binary's `toml`/`time`
+# dependencies (below, both `optional = true`) get compiled by EVERY build of
+# this package regardless of which `[[bin]]` is selected — verified directly
+# (`cargo clean -p toml -p time -p ...transitives... && cargo build --locked
+# --lib --bin hse`, then `nm -D`/`strings` confirmed no symbols are linked
+# into the `hse` binary, but the crates were compiled) — because Cargo
+# resolves one package's full `[dependencies]` graph regardless of which
+# `[[bin]]` target you name, it does not prune per-binary within a single
+# package. That cost lands squarely on the Termux/aarch64 cross-build
+# (`ci.yml`'s `aarch64-android` job builds `--lib --bins`, `scripts/gate.sh`'s
+# cross-build step `--lib --bin hse` — both without `--features`), which this project is
+# otherwise deliberately careful to keep lean. `check`/`clippy`/`test`/`docs`/
+# MSRV still verify this binary's code — they pass `--features dep-cooldown`
+# explicitly (see ci.yml, scripts/gate.sh) — only the cross-build omits it.
+[[bin]]
+name = "dep-cooldown"
+path = "src/bin/dep_cooldown/main.rs"
+required-features = ["dep-cooldown"]
+
+[features]
+dep-cooldown = ["dep:toml", "dep:time"]
+
+[lib]
+name = "huntsman_search_engine"
+path = "src/lib.rs"
+
+# Criterion micro-benchmarks (dev-only). `harness = false` hands main() to
+# criterion. CI compiles them (`cargo bench --no-run` / clippy `--all-targets`)
+# so a perf-path API change can't rot the benches unnoticed; run locally with
+# `cargo bench`. Scope: the hottest pure scanners on the parse path.
+[[bench]]
+name = "scan_throughput"
+harness = false
+
+# Scope: the correlation pass ([`core::correlator::correlate_entities`]) across
+# entity-count scale, via the `#[doc(hidden)]` bench-visible entry points F.3 /
+# SOL-F3 named as the last item blocking this (2026-07-14).
+[[bench]]
+name = "correlation_pass"
+harness = false
+
+# Lint policy, codified in the manifest (Cargo `[lints]`, stable since 1.74) so
+# the standard travels with the crate and is enforced uniformly — local builds,
+# rust-analyzer, and CI alike — instead of living only in the CI `clippy
+# -D warnings` argv. CI still passes `-D warnings` as a belt-and-braces backstop.
+[lints.rust]
+# Architecture invariant (also asserted in src/lib.rs and tests/architecture.rs).
+unsafe_code = "forbid"
+
+[lints.clippy]
+# Deny the default clippy groups; `priority = -1` lets the specific lints below
+# (and any in-source `#[allow(...)]`) override the blanket level.
+all = { level = "deny", priority = -1 }
+# Curated high-signal modernizations the tree already satisfies — promoted to
+# deny so they can't regress. (Stylistic/high-churn lints such as
+# `manual_let_else` are deliberately NOT enforced.)
+uninlined_format_args = "deny"
+semicolon_if_nothing_returned = "deny"
+explicit_iter_loop = "deny"
+redundant_closure_for_method_calls = "deny"
+cloned_instead_of_copied = "deny"
+implicit_clone = "deny"
+inefficient_to_string = "deny"
+map_unwrap_or = "deny"
+unnested_or_patterns = "deny"
+# `result_large_err` (new in the 1.98 clippy this crate now pins) fires on the
+# api layer's deliberate `Result<T, axum::response::Response>` helpers, where the
+# Err IS the ready-to-return HTTP error response — a legitimately large type that
+# is the value returned on the error path, not an error to shrink. Boxing it
+# would ripple through every `?` caller and the handlers' `IntoResponse` return
+# types for no runtime benefit (these are per-request handlers, not a hot Result
+# returned by value in a tight loop), making the code less idiomatic. Allowed as
+# a policy decision rather than worked around per call site.
+result_large_err = "allow"
+
+[dependencies]
+tokio              = { version = "1",    features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util", "net", "fs", "signal"] }
+serde              = { version = "1",    features = ["derive"] }
+serde_json         = "1"
+sha1               = "0.11"
+sha2               = "0.11"
+md-5               = "0.11"
+hex                = "0.4"
+# Pinned to 0.12 (current & supported) ON PURPOSE — do not bump to 0.13 without a
+# TLS-stack migration. 0.13's `rustls` feature switches trust to
+# rustls-platform-verifier, which on Android reads the OS cert store over JNI via
+# an app Context a Termux CLI process does NOT have → it breaks TLS on the primary
+# target. The self-contained ring + webpki-roots stack here works identically on
+# Termux/Linux/CI. A 0.13 move must re-create that with `rustls-no-provider` + a
+# hand-built ClientConfig, and be validated on-device first.
+# `gzip`: request + transparently decompress gzip responses on every reqwest
+# fetch (the free + intel-API cluster). curl's paid-API transport gets the same
+# via `--compressed`. Safe against decompression bombs because the fetch layer
+# streams the DECOMPRESSED body and errors past `JSON_BODY_CAP` (32 MiB) — unlike
+# curl's `--max-filesize`, which bounds the compressed transfer — so the reqwest
+# cap already caps the expanded size. Pulls `async-compression`/`flate2`
+# (flate2 already in-tree via tower-http's `compression-gzip` + `cli::cells`).
+reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "gzip"] }
+# Pinned to 0.39 ON PURPOSE — do NOT bump to 0.40 without a toolchain audit.
+# 0.40 pulls `libsqlite3-sys` 0.38, whose build script uses the unstable
+# `cfg_select!` macro (rust-lang/rust#115585). That fails to compile on the
+# project's MSRV (1.98) and on any stable toolchain that has not yet stabilised
+# the feature — a hard build break on the primary target. 0.39 keeps
+# `libsqlite3-sys` 0.37, which builds on 1.88+. A 0.40 move must wait until
+# `cfg_select!` is stable on/below our MSRV — re-audit that now that the floor is
+# 1.98 (raised for the BLE Radar dependency) rather than the former 1.88.
+rusqlite           = { version = "0.39", features = ["bundled"] }
+clap               = { version = "4",    features = ["derive", "env"] }
+regex              = "1"
+# Multi-pattern literal scanning (Teddy/SIMD). Already in the tree transitively
+# via `regex`; promoted to a direct dep so `util::scan` can own the cached
+# automata for untrusted-text "contains any" / leftmost-find matching (F.1).
+aho-corasick       = "1"
+# Single-byte SIMD search. Already in the tree transitively via `aho-corasick`
+# and `regex`; promoted here so `util::html::decode_entities` can use
+# `memchr` directly on the hot entity-decode path (runs on every scraped body).
+memchr             = "2"
+thiserror          = "2"
+async-trait        = "0.1"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+parking_lot        = "0.12"
+url                = "2"
+# `default-features = false` deliberately excludes `system-config` — hickory's
+# own Android JNI/ConnectivityManager probe (src crate: system_conf::android,
+# cfg-gated on that feature) is correctly compiled OUT of this build. Known,
+# accepted upstream bloat: hickory-proto/hickory-net still declare `jni` (+ its
+# jni-sys/jni-macros/jni-sys-macros transitives) as a MANDATORY, non-optional,
+# non-feature-gated `[target.'cfg(target_os = "android")'.dependencies]` entry
+# in their own manifests — independent of any feature flag HSE sets — purely
+# for one unused ProtoError::Jni(..) error-enum variant nothing here ever
+# constructs. Verified via Cargo.lock (jni v0.22.4 resolved) on this crate's
+# actual Termux/Android target; no HSE-side feature flag or code change can
+# avoid it short of patching/forking hickory's manifest.
+hickory-resolver   = { version = "0.26", default-features = false, features = ["tokio"] }
+dotenvy            = "0.15"
+# v0.3 — HTTP server, SPA, SSE
+axum               = { version = "0.8",  default-features = false, features = ["http1", "json", "query", "tokio", "original-uri"] }
+# `compression-gzip` keeps the web UI cheap on a phone's mobile link: the
+# embedded SPA (~118 KB) and vendor bundle (~528 KB) are served gzip-compressed
+# (~4x smaller) on every fresh load. The gzip backend is `flate2`/`miniz_oxide`
+# — pure Rust, no C/zlib dependency, so it preserves the no-native-libs Termux
+# build. `CompressionLayer`'s default predicate excludes `text/event-stream`,
+# so the SSE live-scan stream is never buffered/compressed.
+tower-http         = { version = "0.7",  features = ["cors", "compression-gzip"] }
+tokio-stream       = { version = "0.1",  features = ["sync"] }
+futures            = "0.3"
+# v1.2 — EXIF metadata parsing for the `exif_geo` module. Pure-Rust,
+# zero transitive deps, no native libs — fits the project's
+# rustls-only / no-C-deps architecture invariant.
+kamadak-exif       = "0.6"
+# v1.3 — base64 decode-through scanning (keyhog port). Already in
+# the tree transitively via reqwest; declared directly so the
+# decode-through path doesn't break if reqwest drops it.
+base64             = "0.22"
+# Already in the lock file transitively via tower-http compression-gzip;
+# promoted here so `hse cells import` can stream-decompress CSV.GZ files.
+flate2             = "1"
+# Document ingestion: CSV, PDF, image parsing (Phase 1.x)
+csv                = "1"
+# Pure-Rust image processing for OCR preprocessing (resize, denoise).
+# Image decode/analysis (document_parse). Default features are narrowed to drop
+# the AVIF encoder (`ravif` → `rav1e`, hand-written asm) and OpenEXR (`exr`) from
+# the DEFAULT build — i.e. the on-device build install.sh runs and the CI Release
+# binary. Neither is used: AVIF *decode* is not enabled (no `dav1d` in the
+# graph), the code never *encodes* AVIF, and EXR is never read, yet `rav1e`'s asm
+# is one of the heaviest things the aarch64 build compiles and contradicts the
+# pure-Rust goal. Every real decode/encode format an operator might ingest is
+# kept explicitly, so no capability is lost. (These crates remain in Cargo.lock
+# as `image`'s optional deps and are still reachable under `--all-features`, so
+# the cargo-deny exceptions that mention them stay as-is; this change lightens
+# the built artifact, not the lock's audit surface.)
+image              = { version = "0.25", default-features = false, features = [
+    "rayon", "bmp", "dds", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm",
+    "qoi", "tga", "tiff", "webp",
+] }
+# `dep-cooldown` (src/bin/dep_cooldown/) parses Cargo.lock and dep-cooldown.toml.
+# `parse` + `serde`: Deserialize straight into typed structs rather than
+# hand-walking a generic `toml::Value`. `display` (needed to round-trip a
+# `toml::de::Error` span through `Display`) ships in `parse`'s own dependency
+# chain regardless, so nothing is saved by disabling it — declared anyway so
+# the enabled-feature set here states exactly what this crate uses, not what
+# happened to come along for free. `optional = true` + the `dep-cooldown`
+# feature (see `[[bin]]` above) so this and `time` are NOT compiled into the
+# Termux/aarch64 cross-build, which never enables that feature.
+toml = { version = "1.1.4", default-features = false, features = ["parse", "serde", "display"], optional = true }
+# `dep-cooldown` only needs to parse crates.io's RFC 3339 `created_at` and
+# compare it to `OffsetDateTime::now_utc()` — no formatting/macros/local-offset
+# needed, so those stay off. `optional = true` — see `toml`'s comment above.
+time = { version = "0.3.55", default-features = false, features = ["parsing", "std"], optional = true }
+# `core::entity`'s implementation, extracted to its own path-dependency crate
+# (not a `[workspace]` member — see hse-core/Cargo.toml's own comment) so it
+# can be shared, unmodified, with a wasm32-unknown-unknown browser build of
+# the web UI with no dependency on tokio/rusqlite/reqwest/etc.
+hse-core = { path = "hse-core" }
+# HSE BLE Radar — the authoritative device-tracking/RSSI/proximity/geometry
+# domain, reconstructed and verified against the BLE Radar v0.3.0 APK oracle.
+# Pinned to an exact commit for reproducibility (the crate is `publish = false`,
+# so a git dependency is the only way to consume it). It is dependency-free and
+# `#![forbid(unsafe_code)]`, and cross-compiles cleanly to aarch64. HSE consumes
+# only its radar-domain surface (`signal`/`identity`/`geo`/wifi helpers); the
+# broader engines it also exports (osint/infrastructure/website/evidence/…) are
+# left unused and stripped from the shipped binary by the release-profile LTO
+# (`release_profile_stays_size_optimized`), so this does not duplicate HSE's own
+# correlator/evidence authority. Its Rust 1.98 floor is why HSE's MSRV is 1.98.
+bleradar-core = { git = "https://github.com/EmmmmDeee/HSE-BLE-API-", rev = "1e47bca0e8fa1e098ff9b022143108e055b4c960" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
+tower  = { version = "0.5", features = ["util"] }
+http   = "1"
+proptest = "1.11.0"
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
+[profile.release]
+opt-level     = "s"
+lto           = true
+codegen-units = 1
+strip         = true
+# `unwind` (not `abort`) so a panicking module is caught at the dispatch boundary
+# (engine::run_module_guarded) and contained as a normal module error instead of
+# aborting the whole process. On a long-lived `hse serve`, a hostile or drifted
+# upstream that trips a module `unwrap`/slice panic would otherwise be a remote
+# DoS. Costs a little binary size (unwind tables); every other size win
+# (opt-level=s, LTO, codegen-units=1, strip) is retained.
+panic         = "unwind"
+
+# Fast on-device build profile — the installer's default on Termux. Drops the
+# single-threaded LTO link (codegen-units=1, lto=true) that makes the `release`
+# build take ~15-20 min on aarch64, cutting it to ~4-6 min, at the cost of a
+# ~35% larger binary and a marginally slower hot path. HSE is network/IO-bound
+# (it spends its time awaiting HTTP, not in CPU), so that runtime cost is
+# negligible in practice — the right trade for an on-phone build. Use
+# `HSE_FULL_BUILD=1 ./install.sh` (or `cargo build --release`) for the smallest,
+# fastest artifact (e.g. the published prebuilt binary).
+[profile.fast]
+inherits      = "release"
+opt-level     = 2
+lto           = false
+codegen-units = 16
+
+[profile.dev]
+opt-level = 0
+debug     = 1
+
+[profile.dev.package."*"]
+opt-level = 2

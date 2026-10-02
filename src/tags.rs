@@ -1,0 +1,29 @@
+//! Canonical entity tag constants.
+
+pub const BREACH: &str = "breach";
+pub const STEALER_LOG: &str = "stealer-log";
+pub const WEB: &str = "web";
+pub const CRAWLED: &str = "crawled";
+pub const SUBDOMAIN: &str = "subdomain";
+pub const EXTERNAL: &str = "external";
+pub const WEB_SCRAPED: &str = "web-scraped";
+pub const CT_LOG: &str = "ct-log";
+pub const PTR: &str = "ptr";
+pub const HIGH_EXPOSURE: &str = "high-exposure";
+pub const PASTE_EXPOSED: &str = "paste-exposed";
+pub const PASSWORD_AT_RISK: &str = "password-at-risk";
+pub const MULTI_DEVICE: &str = "multi-device";
+pub const MALICIOUS: &str = "malicious";
+pub const VULNERABLE: &str = "vulnerable";
+pub const SOCIAL_PROFILE: &str = "social-profile";
+pub const CANDIDATE: &str = "candidate";
+pub const SEARCH_DISCOVERED: &str = "search-discovered";
+pub const BREACH_DERIVED: &str = "breach-derived";
+pub const RECALLED: &str = "recalled";
+pub const DERIVED: &str = "derived";
+pub const RECYCLED: &str = "recycled";
+pub const NAME_DERIVED: &str = "name-derived";
+pub const SOURCE_DOCUMENT: &str = "source-document";
+pub const GEOINT: &str = "geoint";
+pub const COARSE: &str = "coarse";
+pub const HOSTING: &str = "hosting";

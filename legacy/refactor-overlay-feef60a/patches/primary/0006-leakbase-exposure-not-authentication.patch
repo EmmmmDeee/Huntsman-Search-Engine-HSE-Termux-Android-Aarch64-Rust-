@@ -1,0 +1,110 @@
+diff --git a/src/app/import/html.rs b/src/app/import/html.rs
+--- a/src/app/import/html.rs
++++ b/src/app/import/html.rs
+@@ -2,6 +2,12 @@
+     let mut seen: HashSet<String> = HashSet::new();
+ 
+     let lower = body.to_lowercase();
++    // LeakBase result/export pages are exposure-evidence documents, not an
++    // authentication-material ingress path. Multiple structural markers avoid
++    // changing semantics for an arbitrary page that merely mentions LeakBase.
++    let is_leakbase = lower.contains("<title>leakbase</title>")
++        && lower.contains("table of contents")
++        && lower.contains("block-title");
+ 
+     for cap in domain_re.captures_iter(&lower) {
+         let dom = &cap[1];
+@@ -10,6 +16,10 @@
+             let conf = if is_sub { 0.45 } else { 0.50 };
+             let mut e = Entity::new(EntityKind::Domain, dom, conf, sid);
+             e.tag("import");
++            if is_leakbase {
++                e.tag("source:leakbase");
++                e.tag("exposure-evidence");
++            }
+             if is_sub {
+                 e.tag("subdomain");
+             }
+@@ -32,6 +42,10 @@
+         {
+             let mut e = Entity::new(EntityKind::IpAddress, &ip, confidence::MEDIUM_HIGH, sid);
+             e.tag("import");
++            if is_leakbase {
++                e.tag("source:leakbase");
++                e.tag("exposure-evidence");
++            }
+             entities.push(e);
+         }
+     }
+@@ -41,8 +55,19 @@
+         if em.len() >= 5 && seen.insert(format!("em:{em}")) {
+             let mut e = Entity::new(EntityKind::Email, &em, confidence::MEDIUM, sid);
+             e.tag("import");
++            if is_leakbase {
++                e.tag("source:leakbase");
++                e.tag("exposure-evidence");
++            }
+             entities.push(e);
+         }
++    }
++
++    // LeakBase pages may contain exposed passwords and credential-shaped
++    // strings. Preserve non-secret pivots above but never turn this import
++    // format into reusable authentication material.
++    if is_leakbase {
++        return entities;
+     }
+ 
+     // Any BSSID / wallet / API key embedded in the export's text.
+diff --git a/src/app/import/tests.rs b/src/app/import/tests.rs
+--- a/src/app/import/tests.rs
++++ b/src/app/import/tests.rs
+@@ -2,4 +2,48 @@
+ }
+ 
+ #[test]
++fn leakbase_html_preserves_exposure_pivots_but_never_secret_entities() {
++    use crate::core::entity::EntityKind;
++
++    let body = r#"<!DOCTYPE html>
++<html>
++<head><title>LeakBase</title></head>
++<body>
++<div class="nav-title">Table of Contents</div>
++<div class="block-title">Example breach</div>
++contact: analyst@example.com
++site: example.com
++host: 203.0.113.77
++Password: CorrectHorseBatteryStaple!
++api_key: sk-test-abcdefghijklmnopqrstuvwxyz012345
++</body>
++</html>"#;
++
++    let entities = parse_oathnet_html(body, "leakbase-test");
++
++    assert!(
++        entities
++            .iter()
++            .any(|entity| entity.kind == EntityKind::Email && entity.value == "analyst@example.com"),
++        "LeakBase import must preserve non-secret exposure pivots"
++    );
++    assert!(
++        !entities.iter().any(|entity| {
++            matches!(
++                entity.kind,
++                EntityKind::Password | EntityKind::Credential | EntityKind::ApiKey
++            )
++        }),
++        "LeakBase HTML must never become a secret/authentication-material ingress path"
++    );
++    for entity in &entities {
++        assert!(
++            entity.tags.iter().any(|tag| tag == "source:leakbase")
++                && entity.tags.iter().any(|tag| tag == "exposure-evidence"),
++            "LeakBase-derived entities must retain explicit provenance"
++        );
++    }
++}
++
++#[test]
+ fn detect_import_format_is_content_based_not_extension_gated() {

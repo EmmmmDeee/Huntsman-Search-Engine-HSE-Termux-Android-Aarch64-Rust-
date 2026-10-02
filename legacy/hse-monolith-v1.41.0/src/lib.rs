@@ -1,0 +1,159 @@
+//! Huntsman Search Engine (HSE) — an all-source OSINT / GEOINT / NETINT
+//! reconnaissance engine in the GhostSec tradition: SpiderFoot-inspired breadth
+//! without the daemon or the footprint.
+//!
+//! Pure-Rust and keyless-first, forged to run entirely inside Termux on aarch64
+//! Android with no root. Boots either as a CLI (`hse scan|live|modules|doctor`)
+//! or as `hse serve` — an axum HTTP server with a minimal hand-rolled SPA bound
+//! to `127.0.0.1` for use from Chrome / Firefox on the device.
+//!
+//! Architecture invariants (do not change):
+//!   - `#![forbid(unsafe_code)]`
+//!   - No native-TLS or C-linked deps (rustls + bundled-sqlite only)
+//!   - GREATEST-semantics entity merge
+//!   - SHA-256 deterministic entity UIDs
+//!   - Runtime AI-independence: the BFS scan engine, module dispatch,
+//!     correlator, and exporters — everything that determines what a scan finds
+//!     and how it is scored — carry NO AI / ML / LLM / cloud-inference / agent /
+//!     vector-DB / embedding dependency and never call one. A scan's findings
+//!     reproduce identically on Termux aarch64 (no root), Linux, and CI with no
+//!     AI or network-inference available, and no ML/LLM SDK crate ever enters
+//!     the dependency graph — enforced by
+//!     `runtime_carries_no_ai_ml_inference_dependency` in `tests/architecture.rs`.
+//!
+//!     This invariant is now UNCONDITIONAL. It previously carried a narrow,
+//!     opt-in exception: an `ai` module, an `analyze` subcommand and a separate
+//!     daemon binary, which called an operator-run local inference server over
+//!     HTTP to add downstream natural-language commentary to an already-finished
+//!     scan. That exception is gone: the module, the binary, the subcommand, its
+//!     feature toggle, its analysis table and the installer's model bootstrap
+//!     were all removed. Nothing in the tree reaches an inference engine, so
+//!     there is no longer a carve-out to police — only the rule.
+//!     `no_llm_inference_integration_exists` (`tests/architecture.rs`) scans the
+//!     live tree so the removal cannot quietly regress.
+
+#![forbid(unsafe_code)]
+// HSE is an *application* crate: its library is read by the maintainer with
+// `cargo doc --document-private-items`, not consumed as a published API. Doc
+// comments on public items therefore link to private helpers (`build_entities`,
+// per-module mappers, …) deliberately, because those links resolve and are
+// useful when browsing the whole tree. We keep the high-value
+// `broken_intra_doc_links` lint denied in CI (it catches typo'd/renamed
+// references — real rot) and relax only this stylistic, library-oriented one.
+#![allow(rustdoc::private_intra_doc_links)]
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The exact git commit this binary was built from, or `"unknown"` when the
+/// build had no `.git` and no `HSE_BUILD_SHA` override (see `build.rs`).
+///
+/// [`VERSION`] cannot identify a build: `Cargo.toml`'s version changes only on a
+/// deliberate bump, so every commit merged between two bumps reports the same
+/// version as the release. `install.sh` and `hse update` compare THIS against the
+/// revision they were asked to install, which is what makes "install the latest
+/// main" mean the latest main commit rather than the latest release tag.
+pub const BUILD_SHA: &str = env!("HSE_GIT_SHA");
+
+/// Whether the working tree carried uncommitted tracked changes at build time:
+/// `"0"` clean, `"1"` dirty, `"unknown"` when it could not be determined.
+///
+/// A dirty build is NOT the revision [`BUILD_SHA`] names, so the updater treats
+/// it as unverifiable rather than as a match.
+pub const BUILD_DIRTY: &str = env!("HSE_GIT_DIRTY");
+
+/// Whether [`BUILD_SHA`] is a usable commit identifier — i.e. resolved, and from
+/// a clean tree. A dirty or unknown build cannot be matched against a requested
+/// revision, so callers must fall back to building from source.
+#[must_use]
+pub fn build_sha_is_verifiable() -> bool {
+    BUILD_SHA.len() == 40 && BUILD_SHA.chars().all(|c| c.is_ascii_hexdigit()) && BUILD_DIRTY == "0"
+}
+
+/// Human-readable build identity: `"1.40.0 (b6389ba)"`, with `-dirty` appended
+/// for a modified tree and the SHA omitted entirely when unknown.
+///
+/// Single-sourced so `hse --version`, `/api/v1/version`, the diagnostics bundle
+/// and the installer's verification step all describe a build the same way.
+/// Returns `&'static str` (computed once) because clap's `version =` needs a
+/// borrow that outlives the parser.
+#[must_use]
+pub fn build_id() -> &'static str {
+    static BUILD_ID: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let short = &BUILD_SHA[..7.min(BUILD_SHA.len())];
+        match (BUILD_SHA, BUILD_DIRTY) {
+            ("unknown", _) => VERSION.to_string(),
+            (_, "1") => format!("{VERSION} ({short}-dirty)"),
+            (_, "0") => format!("{VERSION} ({short})"),
+            _ => format!("{VERSION} ({short}-unverified)"),
+        }
+    });
+    &BUILD_ID
+}
+
+/// Compile-time inventory of every Rust source file in `src/` — generated by
+/// `build.rs` (sorted, deterministic). Lets the debug bundle report the complete
+/// file manifest the binary was built from (`SOURCE_FILES`, `SOURCE_TOTAL_LINES`)
+/// — a build fingerprint that accounts for every file, not just runtime modules.
+pub mod source_manifest {
+    include!(concat!(env!("OUT_DIR"), "/source_manifest.rs"));
+}
+
+/// Default bind address for the HTTP server. Localhost only — no LAN exposure.
+pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
+
+/// Per-module timeout in milliseconds (architecture invariant).
+pub const MODULE_TIMEOUT_MS: u64 = 3000;
+
+/// Tokio worker thread count (architecture invariant — tuned for Termux).
+pub const WORKER_THREADS: usize = 2;
+
+/// Upper bound on tokio's blocking-thread pool (`spawn_blocking` + `tokio::fs`).
+/// Tokio defaults to **512**, which on a low-RAM Termux/aarch64 phone lets a
+/// burst of synchronous sqlite / filesystem work spawn hundreds of OS threads —
+/// each with its own stack. HSE is network/IO-bound on a 2-worker runtime, so a
+/// small pool is ample; this bounds peak memory without serialising any
+/// realistic workload. Applied in `main` via a hand-built runtime.
+pub const MAX_BLOCKING_THREADS: usize = 16;
+
+/// Default seconds between `hse live` iterations (the `--interval` default and
+/// the API's live-request fallback). The only live-mode tuning constant that is
+/// actually wired: `--depth`/`--throttle` default to 0 (seed-only, un-throttled)
+/// per iteration by design, and there is no concurrency knob — the former
+/// `LIVE_MAX_DEPTH`/`LIVE_DEFAULT_THROTTLE_MS`/`LIVE_DEFAULT_CONCURRENT` were
+/// aspirational values that never matched a real default and never had a reader.
+pub const LIVE_DEFAULT_INTERVAL_SECS: u64 = 30;
+
+pub mod api;
+pub mod app;
+pub mod audit;
+pub mod cli;
+pub mod core;
+pub mod modules;
+pub mod selftest;
+pub mod storage;
+pub mod util;
+
+/// True if we appear to be running inside Termux on Android.
+pub fn is_termux() -> bool {
+    std::env::var_os("TERMUX_VERSION").is_some()
+        || std::path::Path::new("/data/data/com.termux").exists()
+}
+
+/// Resolve the default database path, creating the parent directory if needed.
+///
+/// Termux: `$HOME/.huntsman/huntsman.db` (typically under `/data/data/com.termux/files/home`).
+/// Falls back to `./.huntsman/huntsman.db` if `$HOME` is unset (see
+/// [`crate::util::paths::huntsman_dir`] — the layout stays together under
+/// `.huntsman` rather than scattering a bare file into the CWD).
+pub fn default_db_path() -> String {
+    // `~/.huntsman` created 0700 (owner-only) by `paths::data_file` so the store +
+    // dossiers + key pool under it aren't world-listable (PROBLEM_TREE §7 S3).
+    crate::util::paths::data_file("huntsman.db")
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    include!("lib_tests.rs");
+}

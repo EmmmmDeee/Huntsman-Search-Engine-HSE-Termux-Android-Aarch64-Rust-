@@ -1,0 +1,63 @@
+diff --git a/src/cli/update.rs b/src/cli/update.rs
+--- a/src/cli/update.rs
++++ b/src/cli/update.rs
+@@ -6,6 +6,22 @@
+ };
+ 
+ use super::Command;
++
++/// Commands that own installation state or only observe the current install.
++///
++/// This is the single executable authority used by runtime dispatch and tests;
++/// there is deliberately no mirrored test predicate to keep in sync.
++fn skips_auto_update(command: &Command) -> bool {
++    matches!(
++        command,
++        Command::Serve { .. }
++            | Command::Update { .. }
++            | Command::BuildSha { .. }
++            | Command::Doctor { .. }
++            | Command::Selftest { .. }
++            | Command::Provision { .. }
++    )
++}
+ 
+ pub(super) async fn cmd_update(check: bool, ref_: Option<String>) -> Result<()> {
+     println!("hse {} — update", crate::VERSION);
+@@ -53,15 +69,7 @@
+     // racing the foreground installer's git checkout, cargo build, binary swap,
+     // and rollback copy. Doctor / selftest are diagnostics: they must observe
+     // the current install, never mutate it.
+-    if matches!(
+-        command,
+-        Command::Serve { .. }
+-            | Command::Update { .. }
+-            | Command::BuildSha { .. }
+-            | Command::Doctor { .. }
+-            | Command::Selftest { .. }
+-            | Command::Provision { .. }
+-    ) {
++    if skips_auto_update(command) {
+         return;
+     }
+ 
+@@ -83,19 +91,6 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-
+-    /// Mirrors the skip predicate in `maybe_auto_update` — keep in sync.
+-    fn skips_auto_update(command: &Command) -> bool {
+-        matches!(
+-            command,
+-            Command::Serve { .. }
+-                | Command::Update { .. }
+-                | Command::BuildSha { .. }
+-                | Command::Doctor { .. }
+-                | Command::Selftest { .. }
+-                | Command::Provision { .. }
+-        )
+-    }
+ 
+     #[test]
+     fn update_owners_skip_opportunistic_check() {

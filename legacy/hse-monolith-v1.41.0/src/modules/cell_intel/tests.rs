@@ -1,0 +1,463 @@
+use super::CellIntel;
+use super::helpers::{
+    accuracy_to_confidence, build_tower_device, json_to_str, mcc_to_centroid, parse_cells_survey,
+};
+use crate::core::module::Module;
+use crate::core::scan::{Target, TargetKind};
+use crate::core::{confidence, entity::EntityKind};
+
+// ---- Module trait tests ----
+
+#[test]
+fn is_passive() {
+    assert!(CellIntel.is_passive());
+}
+
+#[test]
+fn accepts_only_local_physical_seeds() {
+    assert!(CellIntel.accepts(&Target::new(TargetKind::Coordinates, "-27.47,153.02")));
+    assert!(CellIntel.accepts(&Target::new(TargetKind::MacAddress, "aa:bb:cc:dd:ee:ff")));
+    assert!(!CellIntel.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+    assert!(!CellIntel.accepts(&Target::new(TargetKind::FullName, "Jane Doe")));
+    assert!(!CellIntel.accepts(&Target::new(TargetKind::Domain, "x.com")));
+}
+
+#[test]
+fn module_name_and_priority() {
+    assert_eq!(CellIntel.name(), "cell_intel");
+    assert_eq!(CellIntel.priority(), 64);
+}
+
+#[test]
+fn module_description() {
+    assert_eq!(
+        CellIntel.description(),
+        "Cell-tower survey & geolocation — sweeps nearby towers via Termux and geolocates them against OpenCelliD"
+    );
+}
+
+#[test]
+fn module_max_timeout() {
+    assert_eq!(CellIntel.max_timeout_ms(), 15_000);
+}
+
+// ---- Survey (DeviceId) tests (from cell_survey) ----
+
+#[test]
+fn parses_mcc_as_string_or_number() {
+    let json = br#"[
+        {"type":"lte","registered":true,"cid":12345,"tac":54321,
+         "mcc":"505","mnc":"01","dbm":-75,"asu":30,"level":4,"pci":100},
+        {"type":"gsm","registered":true,"cid":99,"lac":42,
+         "mcc":505,"mnc":1,"dbm":-90,"asu":10,"level":2}
+    ]"#;
+    let r = parse_cells_survey(json, "test");
+    assert_eq!(r.entities.len(), 2);
+    assert_eq!(r.entities[0].value, "505-01-54321-12345");
+    assert_eq!(r.entities[1].value, "505-1-42-99");
+}
+
+#[test]
+fn skips_cells_without_mcc_or_cid() {
+    let json = br#"[{"type":"lte","registered":true}]"#;
+    let r = parse_cells_survey(json, "test");
+    assert_eq!(r.entities.len(), 0);
+}
+
+#[test]
+fn malformed_json_no_ops() {
+    let r = parse_cells_survey(b"{", "test");
+    assert_eq!(r.entities.len(), 0);
+}
+
+#[test]
+fn entity_tags_include_cell_tower_and_radio_type() {
+    let json = br#"[
+        {"type":"lte","registered":true,"cid":5678,"tac":1234,
+         "mcc":"310","mnc":"260","dbm":-85,"asu":25,"level":3,"pci":42}
+    ]"#;
+    let r = parse_cells_survey(json, "scan-x");
+    assert_eq!(r.entities.len(), 1);
+    let e = &r.entities[0];
+    assert_eq!(e.kind, EntityKind::DeviceId);
+    assert_eq!(e.value, "310-260-1234-5678");
+    assert!((e.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-6);
+    assert!(e.has_tag(crate::core::tags::CELL_TOWER));
+    assert!(e.has_tag("radio:lte"));
+    assert_eq!(e.scan_id, "scan-x");
+}
+
+#[test]
+fn evidence_attributes_populated() {
+    let json = br#"[
+        {"type":"gsm","registered":false,"cid":100,"lac":200,
+         "mcc":"505","mnc":"01","dbm":-95,"asu":8,"level":1,"pci":0}
+    ]"#;
+    let r = parse_cells_survey(json, "test");
+    let ev = &r.entities[0].evidence[0];
+    assert_eq!(ev.source, "cell_intel");
+    assert_eq!(ev.attributes.get("type").expect("should succeed"), "gsm");
+    assert_eq!(ev.attributes.get("mcc").expect("should succeed"), "505");
+    assert_eq!(ev.attributes.get("mnc").expect("should succeed"), "01");
+    assert_eq!(ev.attributes.get("lac_tac").expect("should succeed"), "200");
+    assert_eq!(ev.attributes.get("cid").expect("should succeed"), "100");
+    assert_eq!(ev.attributes.get("dbm").expect("should succeed"), "-95");
+    assert_eq!(ev.attributes.get("asu").expect("should succeed"), "8");
+    assert_eq!(ev.attributes.get("level").expect("should succeed"), "1");
+    assert_eq!(
+        ev.attributes.get("registered").expect("should succeed"),
+        "false"
+    );
+}
+
+#[test]
+fn lac_falls_back_to_tac_for_lte() {
+    let json = br#"[{"type":"lte","cid":999,"tac":555,"mcc":"310","mnc":"410"}]"#;
+    let r = parse_cells_survey(json, "test");
+    assert_eq!(r.entities[0].value, "310-410-555-999");
+}
+
+#[test]
+fn lac_preferred_over_tac_when_both_present() {
+    let json = br#"[{"type":"gsm","cid":1,"lac":10,"tac":20,"mcc":"505","mnc":"01"}]"#;
+    let r = parse_cells_survey(json, "test");
+    assert_eq!(r.entities[0].value, "505-01-10-1");
+}
+
+#[test]
+fn skips_cell_with_zero_cid() {
+    let json = br#"[{"type":"lte","cid":0,"tac":123,"mcc":"310","mnc":"260"}]"#;
+    let r = parse_cells_survey(json, "test");
+    assert_eq!(r.entities.len(), 0);
+}
+
+#[test]
+fn empty_json_array() {
+    let r = parse_cells_survey(b"[]", "test");
+    assert_eq!(r.entities.len(), 0);
+}
+
+#[test]
+fn missing_type_defaults_to_unknown() {
+    let json = br#"[{"cid":42,"lac":7,"mcc":"001","mnc":"01"}]"#;
+    let r = parse_cells_survey(json, "test");
+    assert_eq!(r.entities.len(), 1);
+    assert!(r.entities[0].has_tag("radio:unknown"));
+    assert!(r.entities[0].evidence[0].summary.contains("unknown"));
+}
+
+// ---- json_to_str tests (from both modules) ----
+
+#[test]
+fn json_to_str_handles_all_variants() {
+    use std::borrow::Cow;
+
+    // String value
+    let s = Some(serde_json::Value::String("505".into()));
+    assert_eq!(json_to_str(&s), Cow::Borrowed("505"));
+
+    // Number value
+    let n = Some(serde_json::json!(310));
+    assert_eq!(json_to_str(&n).as_ref(), "310");
+
+    // Null value
+    let null = Some(serde_json::Value::Null);
+    assert_eq!(json_to_str(&null), Cow::Borrowed(""));
+
+    // None
+    assert_eq!(json_to_str(&None), Cow::Borrowed(""));
+}
+
+// ---- Geolocation helper tests (from cell_locate) ----
+
+#[test]
+fn accuracy_to_confidence_tiers() {
+    // accuracy_to_confidence delegates to the canonical util::geo ladder (see
+    // its doc comment) — pin the delegation itself, at every tier boundary,
+    // rather than a second hardcoded copy of the thresholds, so this test
+    // can't silently drift from the one canonical scale.
+    for m in [0, 50, 200, 201, 1000, 1001, 5000, 5001, 50_000] {
+        assert_eq!(
+            accuracy_to_confidence(m),
+            crate::util::geo::confidence_for_accuracy_m(Some(m as f64)),
+            "accuracy_to_confidence({m}) must match the canonical geo ladder"
+        );
+    }
+}
+
+#[test]
+fn mcc_us_maps_to_us_centroid() {
+    let (lat, lon, cc) = mcc_to_centroid("310").expect("should succeed");
+    assert!((lat - 39.8283).abs() < 0.01);
+    assert!((lon - (-98.5795)).abs() < 0.01);
+    assert_eq!(cc, "US");
+}
+
+#[test]
+fn mcc_au_maps_to_au_centroid() {
+    let (lat, lon, cc) = mcc_to_centroid("505").expect("should succeed");
+    assert!((lat - (-25.2744)).abs() < 0.01);
+    assert_eq!(cc, "AU");
+    assert!(lon > 100.0);
+}
+
+#[test]
+fn unknown_mcc_returns_none() {
+    assert!(mcc_to_centroid("999").is_none());
+}
+
+// ---- TowerKey / build_tower_device tests ----
+
+use super::types::{Cell, TowerKey};
+
+fn cell_from_json(json: &str) -> Cell {
+    serde_json::from_str(json).expect("should succeed")
+}
+
+#[test]
+fn from_cell_returns_none_without_mcc() {
+    let cell = cell_from_json(r#"{"type":"lte","cid":12345,"mnc":"01","lac":42}"#);
+    assert!(TowerKey::from_cell(&cell).is_none(), "no MCC -> skip");
+}
+
+#[test]
+fn from_cell_returns_none_for_zero_or_missing_cid() {
+    let zero = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":0,"lac":42}"#);
+    assert!(TowerKey::from_cell(&zero).is_none(), "cid==0 -> skip");
+    let missing = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","lac":42}"#);
+    assert!(TowerKey::from_cell(&missing).is_none(), "no cid -> skip");
+}
+
+#[test]
+fn from_cell_lac_falls_back_to_tac() {
+    let cell = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":12345,"tac":54321}"#);
+    let key = TowerKey::from_cell(&cell).expect("should succeed");
+    assert_eq!(key.lac, 54321);
+    assert_eq!(key.tower_id, "505-01-54321-12345");
+}
+
+#[test]
+fn from_cell_prefers_lac_over_tac_and_defaults_missing_type() {
+    let cell = cell_from_json(r#"{"mcc":"505","mnc":"01","cid":99,"lac":42,"tac":54321}"#);
+    let key = TowerKey::from_cell(&cell).expect("should succeed");
+    assert_eq!(key.lac, 42, "lac wins over tac");
+    assert_eq!(key.ctype, "unknown", "missing type defaults to unknown");
+}
+
+#[test]
+fn is_geolocatable_requires_mnc_and_nonzero_lac() {
+    let ok = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":1,"lac":42}"#);
+    assert!(
+        TowerKey::from_cell(&ok)
+            .expect("should succeed")
+            .is_geolocatable()
+    );
+    let no_mnc = cell_from_json(r#"{"type":"lte","mcc":"505","cid":1,"lac":42}"#);
+    assert!(
+        !TowerKey::from_cell(&no_mnc)
+            .expect("should succeed")
+            .is_geolocatable()
+    );
+    let no_lac = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":1}"#);
+    assert!(
+        !TowerKey::from_cell(&no_lac)
+            .expect("should succeed")
+            .is_geolocatable()
+    );
+}
+
+#[test]
+fn radio_code_maps_air_interfaces_with_gsm_default() {
+    let cases = [
+        ("lte", "LTE"),
+        ("gsm", "GSM"),
+        ("umts", "UMTS"),
+        ("wcdma", "UMTS"),
+        ("nr", "NR"),
+        ("5g", "NR"),
+        ("cdma", "CDMA"),
+        ("LTE", "LTE"),
+        ("wifi", "GSM"),
+    ];
+    for (ctype, expected) in cases {
+        let json = format!(r#"{{"type":"{ctype}","mcc":"505","mnc":"01","cid":1,"lac":42}}"#);
+        let cell = cell_from_json(&json);
+        let key = TowerKey::from_cell(&cell).expect("should succeed");
+        assert_eq!(key.radio_code(), expected, "radio_code for {ctype}");
+    }
+}
+
+#[test]
+fn build_tower_device_carries_radio_tags_and_evidence_attrs() {
+    let cell = cell_from_json(
+        r#"{"type":"lte","registered":true,"cid":12345,"tac":54321,
+            "mcc":"505","mnc":"01","dbm":-75,"asu":30,"level":4,"pci":100}"#,
+    );
+    let key = TowerKey::from_cell(&cell).expect("should succeed");
+    let e = build_tower_device(&cell, &key, "scan-1");
+    assert_eq!(e.kind, EntityKind::DeviceId);
+    assert_eq!(e.value, "505-01-54321-12345");
+    assert!(e.has_tag(crate::core::tags::CELL_TOWER));
+    assert!(e.has_tag("radio:lte"));
+    let attrs = &e.evidence[0].attributes;
+    assert_eq!(attrs.get("type").map(String::as_str), Some("lte"));
+    assert_eq!(attrs.get("mcc").map(String::as_str), Some("505"));
+    assert_eq!(attrs.get("mnc").map(String::as_str), Some("01"));
+    assert_eq!(attrs.get("lac_tac").map(String::as_str), Some("54321"));
+    assert_eq!(attrs.get("cid").map(String::as_str), Some("12345"));
+    assert_eq!(attrs.get("pci").map(String::as_str), Some("100"));
+    assert_eq!(attrs.get("dbm").map(String::as_str), Some("-75"));
+    assert_eq!(attrs.get("registered").map(String::as_str), Some("true"));
+}
+
+#[test]
+fn build_tower_device_defaults_absent_signal_fields_to_zero() {
+    let cell = cell_from_json(r#"{"type":"gsm","mcc":"505","mnc":"1","cid":99,"lac":42}"#);
+    let key = TowerKey::from_cell(&cell).expect("should succeed");
+    let e = build_tower_device(&cell, &key, "s");
+    let attrs = &e.evidence[0].attributes;
+    assert_eq!(attrs.get("pci").map(String::as_str), Some("0"));
+    assert_eq!(attrs.get("dbm").map(String::as_str), Some("0"));
+    assert_eq!(attrs.get("asu").map(String::as_str), Some("0"));
+    assert_eq!(attrs.get("level").map(String::as_str), Some("0"));
+    assert_eq!(attrs.get("registered").map(String::as_str), Some("false"));
+}
+
+// ---- OpenCellidResp bad-key error shape ----
+
+use super::types::OpenCellidResp;
+
+#[test]
+fn opencellid_resp_captures_the_real_live_confirmed_bad_key_error_shape() {
+    // Live-confirmed 2026-07-15: a garbage key against the real
+    // `cell/get` endpoint (the same one `query_opencellid` calls) returns
+    // HTTP 200 with exactly this body — no HTTP-level 401/403/429 at all.
+    // `query_opencellid`'s `data.error.is_some()` check is what tells this
+    // apart from a genuine "couldn't geolocate this tower" negative.
+    let raw = r#"{"error":"API Key not known: garbage00000invalid","code":2}"#;
+    let resp: OpenCellidResp = serde_json::from_str(raw).expect("should succeed");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("API Key not known: garbage00000invalid")
+    );
+    assert_eq!(resp.lat, None, "the error shape carries no geo fields");
+    assert_eq!(
+        resp.status, None,
+        "distinct from the status:\"error\" shape"
+    );
+}
+
+#[test]
+fn opencellid_resp_status_error_is_distinct_from_the_body_error_field() {
+    // The pre-existing "no fix available" negative (a real key, genuinely no
+    // data) uses `status`, never `error` — the two fields must not be
+    // conflated, or a real key would wrongly report itself exhausted on
+    // every ordinary miss.
+    let raw = r#"{"status":"error"}"#;
+    let resp: OpenCellidResp = serde_json::from_str(raw).expect("should succeed");
+    assert_eq!(resp.status.as_deref(), Some("error"));
+    assert_eq!(resp.error, None);
+}
+
+// ---- source attribution: one corpus retrieved twice is one source ----
+
+#[test]
+fn an_opencellid_position_is_attributed_to_opencellid_not_to_this_module() {
+    use super::helpers::{build_opencellid_coordinate, build_tower_device};
+    use crate::core::entity::Entity;
+
+    let cell = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":12345,"lac":42}"#);
+    let key = TowerKey::from_cell(&cell).expect("a well-formed tower");
+
+    // What THIS module mints from an OpenCelliD `cell/get` response...
+    let ours = build_opencellid_coordinate(&cell, &key, "lte", -33.865143, 151.209900, 1500, "s1");
+    // ...and what the standalone `opencellid` module mints from the SAME
+    // response for the same tower: identical kind, identical `{lat:.6},{lon:.6}`
+    // value, so identical UID.
+    let mut theirs = Entity::new(
+        crate::core::entity::EntityKind::Coordinates,
+        "-33.865143,151.209900",
+        0.5,
+        "s1",
+    );
+    theirs.add_evidence(crate::core::entity::Evidence::new(
+        crate::modules::opencellid::SRC,
+        "OpenCelliD tower 505-1-42-12345",
+    ));
+    assert_eq!(
+        ours.uid, theirs.uid,
+        "both paths mint the same coordinate, so the entities merge"
+    );
+
+    // The merge must leave ONE corroborating source. Attributed to this module
+    // instead, it left two — and `source_count` feeds `c_effective` directly,
+    // so the same OpenCelliD row retrieved twice bought a confidence boost it
+    // never earned. Repeated retrieval of one corpus is not corroboration.
+    let mut merged = ours.clone();
+    merged.merge(theirs);
+    assert_eq!(
+        merged.source_count(),
+        1,
+        "one corpus retrieved by two paths is one source, not two: {:?}",
+        merged.corroborating_sources()
+    );
+    assert!(
+        merged
+            .corroborating_sources()
+            .contains(crate::modules::opencellid::SRC)
+    );
+    assert!(
+        !merged.corroborating_sources().contains(super::SRC),
+        "this module did not independently observe the position; OpenCelliD did"
+    );
+
+    // The MCC-centroid fallback and the radio observation are this module's
+    // own, and keep its name: the tower really was detected on the air, which
+    // is what AU-084 treats as independent of the database.
+    let device = build_tower_device(&cell, &key, "s1");
+    assert!(device.corroborating_sources().contains(super::SRC));
+    assert!(
+        !device
+            .corroborating_sources()
+            .contains(crate::modules::opencellid::SRC),
+        "a hardware radio sighting is not an OpenCelliD record"
+    );
+}
+
+// ---- confidence scoring: must match the one canonical accuracy ladder ----
+
+/// `build_opencellid_coordinate` — the actual production entity-building
+/// path, not a bare utility function — must score confidence on exactly the
+/// same ladder `cell_local` and `opencellid` use for an identically-precise
+/// fix (`util::geo::confidence_for_accuracy_m`, reached via
+/// `cell_db::accuracy_to_confidence`).
+///
+/// Until Pass 22 this module carried its own copy
+/// (`util::geo::cell_range_to_confidence`) that silently diverged from the
+/// canonical ladder at every tier: a 50 m fix scored 0.85 here vs 0.75 on the
+/// canonical scale, 300 m scored 0.75 vs 0.65, 1500 m scored 0.65 vs 0.50, and
+/// 7000 m scored 0.50 vs 0.35 — the last crossing the correlator's
+/// `>= 0.50` AU-052/AU-053 admissibility floor, so the *same* OpenCelliD row
+/// could clear or miss that floor purely by which module reported it. The
+/// existing `accuracy_to_confidence_tiers` test could not catch this: it
+/// compared `cell_db::accuracy_to_confidence` against its own delegation
+/// target, never the production call site this test drives.
+#[test]
+fn opencellid_coordinate_confidence_matches_the_canonical_ladder() {
+    use super::helpers::build_opencellid_coordinate;
+    use crate::util::geo::confidence_for_accuracy_m;
+
+    let cell = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":1,"lac":1}"#);
+    let key = TowerKey::from_cell(&cell).expect("a well-formed tower");
+
+    for range in [
+        0, 50, 200, 201, 300, 1000, 1001, 1500, 5000, 5001, 7000, 50_000,
+    ] {
+        let e = build_opencellid_coordinate(&cell, &key, "lte", -33.8, 151.2, range, "s1");
+        assert_eq!(
+            e.confidence,
+            confidence_for_accuracy_m(Some(range as f64)),
+            "range {range} m: production entity confidence must match the canonical ladder"
+        );
+    }
+}

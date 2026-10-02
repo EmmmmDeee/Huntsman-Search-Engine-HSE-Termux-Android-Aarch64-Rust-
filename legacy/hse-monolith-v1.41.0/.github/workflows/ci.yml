@@ -1,0 +1,268 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check & test (Linux x86_64, stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Pinned to the SAME literal version as rust-toolchain.toml (not
+      # `@stable`) so this job's clippy/rustfmt can never drift from a
+      # contributor's local pinned toolchain — the exact class of surprise
+      # that twice broke this branch's CI in one session before this pin
+      # existed. Keep both in lockstep when bumping.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      # `--features dep-cooldown`: the `dep-cooldown` binary's `toml`/`time`
+      # deps are `optional = true` + `required-features` (Cargo.toml) so the
+      # Termux cross-build below (--lib --bin hse only) doesn't compile them.
+      # Without this flag here, `--all-targets` would silently SKIP that
+      # binary rather than error, dropping it out of check/clippy/test/docs
+      # coverage on every ordinary PR.
+      - name: Check
+        run: cargo check --all-targets --locked --features dep-cooldown
+
+      - name: Clippy (warnings = errors)
+        run: cargo clippy --all-targets --locked --features dep-cooldown -- -D warnings
+
+      - name: Docs (no broken intra-doc links, bare URLs, or stray HTML tags)
+        # Guards the maintainer's primary reference against silent rot. Denies the
+        # three stable, high-value rustdoc lints specifically rather than blanket
+        # `-D warnings` — so a future toolchain adding a new rustdoc lint can't
+        # break CI on unchanged code. `--document-private-items` because HSE's lib
+        # is read internally, not as a published API (see the crate-root allow of
+        # `private_intra_doc_links`).
+        run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" cargo doc --no-deps --document-private-items --locked --features dep-cooldown
+
+      - name: Doc coverage (ratchet, may fall but not rise)
+        # `missing_docs` cannot just be switched on — 1095 externally-public items
+        # were undocumented when this landed, and the clippy step above runs with
+        # `-D warnings`, so a crate-level `#![warn(missing_docs)]` would turn all
+        # of them into build errors at once. This holds the ceiling instead and
+        # lets it be lowered as items get documented.
+        run: scripts/doc_coverage.sh
+
+      - name: Test
+        run: cargo test --all --locked --features dep-cooldown
+
+  sibling-crates:
+    # hse-core and wasm-ui are path dependencies of the root crate but
+    # deliberately NOT `[workspace]` members (see each crate's own Cargo.toml
+    # comment) — which means the `check` job above never runs their OWN
+    # `#[cfg(test)]` suites or lints them directly: it only compiles hse-core
+    # as an ordinary dependency of the root crate (test cfg stripped) and
+    # never touches wasm-ui at all. Before this job existed, hse-core's 144
+    # unit tests + 6 doctests and both crates' deny-level clippy lints ran
+    # nowhere — not here, not locally via scripts/gate.sh. This job closes
+    # that gap directly rather than folding these crates into the root
+    # workspace (which would pull wasm32-oriented deps into every native
+    # build for no benefit — the reason they were split out in the first
+    # place).
+    name: hse-core + wasm-ui (native; not in the root workspace)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
+        with:
+          workspaces: |
+            hse-core
+            wasm-ui
+
+      - name: Format (hse-core)
+        run: cargo fmt --manifest-path hse-core/Cargo.toml --check
+
+      - name: Clippy (hse-core, warnings = errors)
+        run: cargo clippy --manifest-path hse-core/Cargo.toml --all-targets --locked -- -D warnings
+
+      - name: Docs (hse-core; no broken intra-doc links, bare URLs, or stray HTML tags)
+        run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" cargo doc --manifest-path hse-core/Cargo.toml --no-deps --document-private-items --locked
+
+      - name: Test (hse-core)
+        run: cargo test --manifest-path hse-core/Cargo.toml --locked
+
+      - name: Format (wasm-ui)
+        run: cargo fmt --manifest-path wasm-ui/Cargo.toml --check
+
+      - name: Clippy (wasm-ui, warnings = errors)
+        run: cargo clippy --manifest-path wasm-ui/Cargo.toml --all-targets --locked -- -D warnings
+
+      # Native build/test only (crate-type includes `rlib` alongside `cdylib`
+      # specifically so this works — see wasm-ui/Cargo.toml). Proves the
+      # source compiles cleanly and runs any unit tests added going forward.
+      # It does NOT produce or verify the real wasm32-unknown-unknown browser
+      # artifact — the steps below do that.
+      - name: Test (wasm-ui, native — not the wasm32 browser build)
+        run: cargo test --manifest-path wasm-ui/Cargo.toml --locked
+
+      # wasm-ui/pkg round-trip drift check: regenerates the real
+      # wasm32-unknown-unknown browser artifact from source and diffs it
+      # against the committed wasm-ui/pkg/, catching the class of drift PR
+      # #547 found by hand (a source change landed without anyone
+      # regenerating the checked-in compiled output). See
+      # scripts/wasm_ui_drift_check.sh for the actual pipeline, and
+      # scripts/gate.sh's own copy of this job for why the two must never
+      # diverge.
+      #
+      # wasm-bindgen-cli's version is derived from wasm-ui/Cargo.toml's own
+      # `wasm-bindgen` dependency rather than hardcoded here, so a future
+      # version bump there can't silently drift this install out of sync.
+      # --force: a plain `cargo install` errors out if a DIFFERENT version is
+      # already present (e.g. a future runner image that preinstalls one) —
+      # harmless here since a fresh runner has nothing to overwrite.
+      - name: Install wasm-bindgen-cli (pinned to wasm-ui's wasm-bindgen dependency)
+        run: |
+          set -euo pipefail
+          pin="$(grep -m1 '^wasm-bindgen ' wasm-ui/Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')"
+          cargo install wasm-bindgen-cli --version "$pin" --locked --force
+
+      # binaryen (wasm-opt) has no `cargo install`-able CLI, so it's fetched
+      # directly from its own GitHub releases — pinned to an exact version
+      # (not e.g. `apt-get install binaryen`, whose version drifts with the
+      # runner image) because this check's pass/fail is a byte-exact diff:
+      # a different wasm-opt BUILD can legitimately re-optimize identical
+      # input to different output bytes, which would make this check cry
+      # wolf on every run. version_108 is pinned here because it is what
+      # produced the wasm-ui/pkg/ committed in this repo.
+      - name: Install wasm-opt (binaryen, pinned)
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/binaryen.tar.gz \
+            https://github.com/WebAssembly/binaryen/releases/download/version_108/binaryen-version_108-x86_64-linux.tar.gz
+          echo "7bb8a2d97214f40bf34abc31d49b34aa5deab10b25d6d13c5f72cb395cf142fb  /tmp/binaryen.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/binaryen.tar.gz -C /tmp
+          echo "/tmp/binaryen-version_108/bin" >> "$GITHUB_PATH"
+
+      - name: wasm-ui/pkg drift check
+        run: scripts/wasm_ui_drift_check.sh
+
+  msrv:
+    name: MSRV (1.98)
+    runs-on: ubuntu-latest
+    # CRITICAL: rustup resolves an ambient rust-toolchain.toml (repo root)
+    # ABOVE a plain `rustup default` — which is all `dtolnay/rust-toolchain`
+    # sets — so without this override the repo's rust-toolchain.toml pin would
+    # silently hijack every `cargo` invocation below onto the pinned channel,
+    # defeating the MSRV gate while staying green. RUSTUP_TOOLCHAIN is rustup's
+    # highest-precedence resolution source (above rust-toolchain.toml AND
+    # `rustup default`), so this keeps the declared MSRV floor authoritative here
+    # regardless of the pin. Today the floor (1.98) equals the pin (1.98.0)
+    # because the `bleradar-core` dependency requires 1.98; the override still
+    # matters, so a *future* channel bump above 1.98 can never silently widen the
+    # crate's real MSRV floor without this job going red.
+    env:
+      RUSTUP_TOOLCHAIN: "1.98"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install pinned MSRV toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.98
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
+
+      - name: Check (MSRV)
+        run: cargo check --all-targets --locked --features dep-cooldown
+
+  aarch64-android:
+    name: Build (aarch64-linux-android, Termux target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Pinned to the same literal version as rust-toolchain.toml — see the
+      # `check` job's comment above for why `@stable` alone isn't used here.
+      - name: Install Rust toolchain + aarch64 Android target
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.98.0
+          targets: aarch64-linux-android
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
+
+      # A dependency in the TLS stack (ring) compiles C in its build script,
+      # so even `cargo check` for this target needs the Android NDK's
+      # aarch64 clang — a bare check job is impossible here. The NDK ships
+      # preinstalled on ubuntu-latest at $ANDROID_NDK_LATEST_HOME; point
+      # cc-rs and cargo's linker at its aarch64 wrappers (API 24 = Termux's
+      # minimum) and build the lib for real. This verifies the project's
+      # actual deployment target (Termux on Android aarch64) end to end,
+      # including the native crates the x86_64 jobs never cross-compile.
+      - name: Setup Android NDK aarch64 cross-compile env
+        uses: ./.github/actions/setup-ndk-aarch64
+
+      # `--bins` builds every `[[bin]]` target EXCEPT one gated by
+      # `required-features` for a feature not enabled here (only
+      # `dep-cooldown`, which install.sh never builds on-device either) —
+      # matching install.sh's on-device `cargo build` exactly (no `--bin`
+      # filter there, so Cargo builds every default-run binary) and staying
+      # correct automatically if a new ungated bin is added later, unlike
+      # naming each one explicitly. Building only `hse` here previously left
+      # `gen-oui`/`architecture-audit` cross-compile-unverified for the one
+      # target a real install actually builds them on.
+      - name: Build (aarch64-linux-android)
+        run: cargo build --locked --lib --bins --target aarch64-linux-android
+
+      # Compile-only (never executed — ubuntu-latest is x86_64, so an
+      # aarch64-linux-android test binary can't run here without real device
+      # emulation, which the `hse` binary + Termux itself already stand in
+      # for). This still catches real regressions the x86_64 `check` job
+      # can't: test code gated on `#[cfg(target_arch = "aarch64")]`, or a
+      # dependency whose TEST harness (as opposed to its library code) fails
+      # to cross-compile for this target. Scoped to match the build step
+      # above (every default bin) plus the tests/ integration suite —
+      # deliberately excludes --benches/--doc, which add cross-compile cost
+      # for artifacts this job has no way to execute anyway.
+      - name: Compile tests (aarch64-linux-android, not executed)
+        run: cargo test --locked --no-run --lib --bins --tests --target aarch64-linux-android
+
+  install-script:
+    name: install.sh syntax (bash + shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: bash -n install.sh
+      # shellcheck ships preinstalled on ubuntu-latest — call it directly
+      # rather than via a third-party action so a master-pinned drift
+      # can't break this job for reasons unrelated to install.sh
+      # (saw `git exit 128 / terminal prompts disabled` after a
+      # ludeeus/action-shellcheck@master revision in 2026-05).
+      - name: ShellCheck
+        run: shellcheck --severity=warning install.sh
