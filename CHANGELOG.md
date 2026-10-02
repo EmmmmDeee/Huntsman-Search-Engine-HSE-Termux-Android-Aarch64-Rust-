@@ -51,6 +51,9 @@ release yet. Release policy: only pre-releases (`main-<sha7>` plus a rolling
   page or a 429 is not a hit (c03e78a2 to dcc60bcb).
 - CI test matrix is Rust 1.87 (MSRV) and stable; tests fixed for Rust 1.99
   clippy (`assert_is_empty`) (#669).
+- README has a "Which binary to use" section. The legacy `hse` (pre-release
+  `main-7dca720`) has the person-lookup providers. `huntsman-recon` has no
+  person lookups yet and is not in any GitHub release yet.
 - README documents build and install steps, the `fetch` options, how keys are
   supplied, the CI artifact download, and the release state.
 
