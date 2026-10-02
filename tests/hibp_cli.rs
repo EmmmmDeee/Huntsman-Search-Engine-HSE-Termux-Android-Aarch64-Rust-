@@ -380,8 +380,23 @@ fn t1589_001_password_is_never_echoed_on_error_paths() {
         assert_never_shown(&out, PASSWORD);
         assert_never_shown(&out, &hash[5..]);
     }
+    for (stdin, accepted) in [
+        (format!("{}\r\n", "a".repeat(4096)), true),
+        (format!("{}\n", "a".repeat(4096)), true),
+        ("a".repeat(4096), true),
+        (format!("{}\r\n", "a".repeat(4097)), false),
+        ("a".repeat(4097), false),
+    ] {
+        if accepted {
+            fake.push(200, "0018A45C4D1DEF81644B54AB7F969B88D65:1\r\n", &[]);
+        }
+        let out = run(&cmd, &["password"], &stdin);
+        let want = if accepted { 0 } else { 65 };
+        assert_eq!(out.code, want, "{} bytes: {}", stdin.len(), out.stderr);
+        assert_never_shown(&out, &"a".repeat(64));
+    }
     let before = fake.requests().len();
-    for stdin in ["", "\n"] {
+    for stdin in ["", "\n", "\r\n"] {
         let out = run(&cmd, &["password"], stdin);
         assert_eq!(out.code, 65, "{}", out.stderr);
         assert!(out.stderr.contains("no password on stdin"));
@@ -524,7 +539,8 @@ fn usage_help_and_invalid_input_make_no_requests() {
         );
     }
     for args in [
-        &["password-range", "21BD"][..],
+        &["breaches", "--domain", " "][..],
+        &["password-range", "21BD"],
         &["password-range", "21BDZ"],
         &["breach", " "],
         &["account", " "],

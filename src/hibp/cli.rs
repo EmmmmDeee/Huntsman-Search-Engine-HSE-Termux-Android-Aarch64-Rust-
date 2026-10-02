@@ -21,8 +21,9 @@
 //!
 //! Output is `key=value` lines: a `source=HIBP` header with the attribution
 //! HIBP's licence requires, `results=N`, then one block per record with every
-//! model field (`none` when HIBP sent no value). A 404 is `results=0`, not an
-//! error. Values are escaped (`\\`, `\n`, `\r`, `\t`) so each field stays on
+//! model field (`none` when HIBP sent no value). For `breach`, `breaches`,
+//! `account` and `pastes` a 404 is `results=0`, not an error; `subscription`
+//! and `password-range` treat a 404 as an error (exit 69). Values are escaped (`\\`, `\n`, `\r`, `\t`) so each field stays on
 //! one line.
 
 use std::fmt::{self, Display, Write as _};
@@ -206,6 +207,10 @@ impl HibpCommand {
     }
 
     fn breaches(&self, domain: Option<&str>) -> Outcome {
+        let domain = match domain.map(str::trim) {
+            Some("") => return Err(HibpError::InvalidInput("domain is empty".into()).into()),
+            other => other,
+        };
         let filter = BreachesFilter {
             domain: domain.map(str::to_owned),
             is_spam_list: None,
@@ -272,8 +277,10 @@ impl HibpCommand {
 /// what was read.
 fn read_password(stdin: &mut dyn BufRead) -> Result<String, Failure> {
     let mut bytes = Vec::new();
+    // Room for the limit plus a two-byte `\r\n` terminator; the limit applies
+    // to the content after the terminator is stripped.
     stdin
-        .take(MAX_PASSWORD_BYTES + 1)
+        .take(MAX_PASSWORD_BYTES + 2)
         .read_until(b'\n', &mut bytes)
         .map_err(|_| HibpError::InvalidInput("could not read the password from stdin".into()))?;
     if bytes.last() == Some(&b'\n') {
@@ -281,7 +288,8 @@ fn read_password(stdin: &mut dyn BufRead) -> Result<String, Failure> {
         if bytes.last() == Some(&b'\r') {
             bytes.pop();
         }
-    } else if bytes.len() as u64 > MAX_PASSWORD_BYTES {
+    }
+    if bytes.len() as u64 > MAX_PASSWORD_BYTES {
         return Err(HibpError::InvalidInput(format!(
             "password on stdin is longer than {MAX_PASSWORD_BYTES} bytes"
         ))

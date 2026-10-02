@@ -85,7 +85,8 @@ with zero-count padding entries dropped. `subscription` prints every status fiel
 values print as `none`. Backslash, newline, carriage return and tab are escaped. Results
 are never truncated.
 
-A 404 is `results=0` with exit 0. `hibp` exits 64 usage, 65 invalid input or HTTP 400,
+For `breach`, `breaches`, `account` and `pastes` a 404 is `results=0` with exit 0; for
+`subscription` and `password-range` it is an error (exit 69). `hibp` exits 64 usage, 65 invalid input or HTTP 400,
 66 no API key for `account`, `pastes` or `subscription`, 69 HIBP unavailable, malformed
 response or HTTP 429 (stderr carries `retry_after=Ns` or `retry_after=unknown`),
 77 HTTP 401/403 or plan not entitled. `tests/readme.rs` runs only `hibp help` from the
