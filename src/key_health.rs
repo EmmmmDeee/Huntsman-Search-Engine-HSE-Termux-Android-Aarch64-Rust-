@@ -2,8 +2,9 @@
 
 use std::fmt::Write as _;
 
+use crate::keys::Secret;
 use crate::scraper_health::SourceHealth;
-use crate::service_defs::{looks_like_auth_failure_text, service_defs};
+use crate::service_defs::{find_service, looks_like_auth_failure_text, service_defs};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyAuthIssue {
@@ -60,13 +61,18 @@ pub fn auth_failing_sources(health: &[SourceHealth]) -> Vec<KeyAuthIssue> {
 
 #[must_use]
 fn likely_env_var(module: &str) -> Option<&'static str> {
-    let defs = service_defs();
-    if let Some(service) = defs.iter().find(|service| service.name == module) {
+    if let Some(service) = find_service(module) {
         return Some(service.env_var);
     }
-    defs.iter()
+    service_defs()
+        .iter()
         .find(|service| module.starts_with(service.name) || service.name.starts_with(module))
         .map(|service| service.env_var)
+}
+
+#[must_use]
+pub fn key_fingerprint(key: &str) -> Option<crate::credential_origin::CredentialFingerprint> {
+    Secret::new(key).ok().map(|secret| secret.fingerprint())
 }
 
 #[cfg(test)]
@@ -137,5 +143,13 @@ mod tests {
         let capped = issue.detail_capped(200);
         assert!(capped.starts_with(&"é".repeat(200)));
         assert!(capped.contains("…(+50 more chars)"));
+    }
+
+    #[test]
+    fn fingerprints_flow_through_keys_hygiene() {
+        let a = key_fingerprint("test-key-123").expect("fingerprint");
+        let b = key_fingerprint("test-key-123").expect("fingerprint");
+        assert_eq!(a, b);
+        assert!(key_fingerprint("   ").is_none());
     }
 }

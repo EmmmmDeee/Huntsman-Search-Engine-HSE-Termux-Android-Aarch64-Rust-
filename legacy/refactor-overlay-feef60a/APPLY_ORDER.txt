@@ -1,0 +1,8 @@
+0001-auto-update-single-authority.patch
+0002-rust-evidence-health-eval-foundations.patch
+0003-register-refactor-core-modules.patch
+0004-architecture-audit-repository-invariants.patch
+0005-refactor-program-specs-and-plan.patch
+0006-leakbase-exposure-not-authentication.patch
+0007-canonical-breach-corpus-independence.patch
+0008-termux-artifact-provenance.patch

@@ -1,0 +1,441 @@
+//! Employer / business address pivot.
+//!
+//! Given an Email target with a non-freemail domain, OR a Domain target,
+//! this module fetches the public homepage and the canonical contact
+//! pages (`/contact`, `/contact-us`, `/about`, `/about-us`, `/team`,
+//! `/our-team`), strips HTML, and extracts:
+//!
+//!  - Australian-format business addresses (Level/Suite/Unit + Street +
+//!    Suburb + State + Postcode) → Address entities
+//!  - AU phone numbers (E.164 normalised) → Phone entities
+//!  - Email addresses on the same domain → Email entities
+//!  - Linked external profile URLs (LinkedIn, Facebook, Instagram,
+//!    LinkedIn pages) → Url entities
+//!
+//! This is the OSINT→Geolocation bridge for professional subjects:
+//! once a subject's employer-domain email surfaces, the employer's
+//! commercial address is one round-trip away.
+//!
+//! Free, no API key required. Uses curl for resilience against
+//! aggressive TLS fingerprinting.
+
+use async_trait::async_trait;
+use std::collections::HashSet;
+use std::sync::OnceLock;
+
+use regex::Regex;
+
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    error::{Error, Result},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::address_au;
+use crate::util::curl;
+use crate::util::domains::{is_freemail, is_social_platform};
+use crate::util::html::strip_html;
+
+const SRC: &str = "employer_pivot";
+
+pub struct EmployerPivot;
+
+#[async_trait]
+impl Module for EmployerPivot {
+    fn name(&self) -> &'static str {
+        SRC
+    }
+
+    fn description(&self) -> &'static str {
+        "Employer pivot — resolves an employer-domain email or domain to a business address via contact-page harvesting"
+    }
+
+    fn priority(&self) -> u8 {
+        92
+    }
+
+    fn is_passive(&self) -> bool {
+        false
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email | TargetKind::Domain)
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        12_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::People
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Mining an employer site yields the org's physical address, phone and
+        // linked corporate profiles — ATT&CK Gather Victim Org Information:
+        // Determine Physical Locations (T1591.001) + Business Relationships
+        // (T1591.002), more precise than the People-category default.
+        &["T1591.001", "T1591.002"]
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Address,
+            EntityKind::Coordinates,
+            EntityKind::Phone,
+            EntityKind::Email,
+            EntityKind::Url,
+        ];
+        KINDS
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut result = ModuleResult::new();
+        let Some(domain) = domain_for_target(target) else {
+            return Ok(result);
+        };
+        if is_freemail(&domain) || is_social_platform(&domain) {
+            return Ok(result);
+        }
+        // RFC 2142 / conventional role/system email local-parts must not
+        // trigger an employer pivot: dns@cloudflare.com, hostmaster@, noc@,
+        // etc. are zone/abuse contacts, not real employees. Without this guard,
+        // SOA RNAME addresses (emitted by dns_intel) scrape the registrar's
+        // corporate contact pages and attribute infra-provider addresses to the
+        // scan subject (observed: dns@cloudflare.com → Cloudflare Sydney HQ).
+        if target.kind == TargetKind::Email
+            && let Some((local, _)) = target.value.rsplit_once('@')
+            && is_role_email_local(local)
+        {
+            return Ok(result);
+        }
+
+        let paths = [
+            "/",
+            "/contact",
+            "/contact-us",
+            "/contact_us",
+            "/about",
+            "/about-us",
+            "/our-team",
+            "/team",
+        ];
+
+        let mut all_text = String::new();
+        let mut visited: Vec<String> = Vec::new();
+        // Track whether the base homepage is reachable — if the root path fails
+        // (DC IP blocked, domain dead, etc.) no sub-path will succeed either.
+        // Live scan: 136 employer_pivot dispatches at 12 s each = 27 min wasted
+        // on unreachable domains; bail after the first failure.
+        let mut homepage_ok = false;
+        for path in paths {
+            // Sub-paths are only useful when the homepage was reachable.
+            if path != "/" && !homepage_ok {
+                break;
+            }
+            let url = format!("https://{domain}{path}");
+            // The host is an attacker-influenceable discovered domain, so fetch
+            // through the SSRF-guarded reqwest client (private-IP-filtering DNS
+            // resolver + redirect policy cover the initial request AND every
+            // redirect hop) rather than the curl fallback. Keep the desktop UA.
+            let fetched = match ctx
+                .http
+                .get(&url)
+                .header(reqwest::header::USER_AGENT, curl::UA_DESKTOP)
+                .timeout(std::time::Duration::from_millis(6_000))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    if path == "/" {
+                        homepage_ok = true;
+                    }
+                    crate::util::http::read_body_capped(resp, 512 * 1024).await
+                }
+                _ => None,
+            };
+            if let Some(html) = fetched {
+                if html.len() < 200 {
+                    continue;
+                }
+                visited.push(url.clone());
+                all_text.push_str(&strip_html(&html));
+                all_text.push('\n');
+                if visited.len() >= 4 {
+                    break;
+                }
+            }
+        }
+        if fetch_failed(homepage_ok, !all_text.is_empty()) {
+            return Err(Error::module(
+                SRC,
+                format!(
+                    "employer site {domain} never answered — the homepage request failed \
+                     at the transport level, returned a non-success HTTP status, or its body \
+                     was unreadable; not \"no business info found\""
+                ),
+            ));
+        }
+        if all_text.is_empty() {
+            return Ok(result);
+        }
+
+        // ── Addresses ────────────────────────────────────────────────
+        let mut seen_addr: HashSet<String> = HashSet::new();
+        // `seen_addr` above dedups by the full street-level canonical address,
+        // which does nothing to stop two DIFFERENT street addresses in the
+        // same city from each independently resolving to the same city
+        // centroid below — `city_coords` is a many-to-one phrase lookup, not
+        // a precise geocoder. Gate the resolved coordinate on its own set.
+        let mut seen_coord: HashSet<String> = HashSet::new();
+        result.extend(
+            address_au::extract_all(&all_text)
+                .into_iter()
+                .filter_map(|addr| {
+                    let canon = canonical_address(&addr);
+                    if !seen_addr.insert(canon.clone()) {
+                        return None;
+                    }
+                    let mut e =
+                        Entity::new(EntityKind::Address, &canon, addr.confidence(), &ctx.scan_id);
+                    e.tag("business");
+                    e.tag("employer-pivot");
+                    e.tag("country:AU");
+                    e.tag(format!("state:{}", addr.state));
+                    e.tag(format!("postcode:{}", addr.postcode));
+                    let mut ev = Evidence::new(
+                        SRC,
+                        format!("Business address extracted from {domain} contact pages"),
+                    )
+                    .with_attr("addr_country", "Australia")
+                    .with_attr("addr_iso", "AU")
+                    .with_attr("addr_state", &addr.state)
+                    .with_attr("addr_city", &addr.suburb)
+                    .with_attr("addr_postal", &addr.postcode)
+                    .with_attr("street_number", &addr.street_number)
+                    .with_attr("street", &addr.street);
+                    if let Some(lvl) = addr.level.as_deref() {
+                        ev = ev.with_attr("level", lvl);
+                    }
+                    if let Some(unit) = addr.unit.as_deref() {
+                        ev = ev.with_attr("unit", unit);
+                    }
+                    ev = ev.with_attr("employer_domain", &domain);
+                    ev = ev.with_attr("source_urls", visited.join(" | "));
+                    e.add_evidence(ev);
+                    let coord =
+                        crate::util::city_coords::city_coords(&canon).and_then(|(lat, lon)| {
+                            coord_entity_if_new(
+                                lat,
+                                lon,
+                                &mut seen_coord,
+                                confidence::derived_from(addr.confidence()),
+                                &ctx.scan_id,
+                                &domain,
+                            )
+                        });
+                    Some((e, coord))
+                })
+                .flat_map(|(e, coord)| {
+                    let mut v = vec![e];
+                    v.extend(coord);
+                    v
+                }),
+        );
+
+        // ── Phones ──────────────────────────────────────────────────
+        let mut seen_phone: HashSet<String> = HashSet::new();
+        result.extend(
+            address_au::extract_phones(&all_text)
+                .into_iter()
+                .filter_map(|ph| {
+                    if !seen_phone.insert(ph.clone()) {
+                        return None;
+                    }
+                    let mut e = Entity::new(EntityKind::Phone, &ph, confidence::HIGH, &ctx.scan_id);
+                    e.tag("business");
+                    e.tag("employer-pivot");
+                    e.tag("country:AU");
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("Business phone from {domain}"))
+                            .with_attr("employer_domain", &domain)
+                            .with_attr("e164", &ph),
+                    );
+                    Some(e)
+                }),
+        );
+
+        // ── Same-domain emails ──────────────────────────────────────
+        let mut seen_email: HashSet<String> = HashSet::new();
+        result.extend(
+            extract_emails(&all_text, &domain)
+                .into_iter()
+                .filter_map(|em| {
+                    if !seen_email.insert(em.clone()) {
+                        return None;
+                    }
+                    let mut e =
+                        Entity::new(EntityKind::Email, &em, confidence::HIGH_PLUS, &ctx.scan_id);
+                    e.tag("business");
+                    e.tag("employer-pivot");
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("Employer email from {domain} site"))
+                            .with_attr("employer_domain", &domain),
+                    );
+                    Some(e)
+                }),
+        );
+
+        // ── Linked profile URLs ─────────────────────────────────────
+        let mut seen_url: HashSet<String> = HashSet::new();
+        result.extend(
+            extract_profile_urls(&all_text)
+                .into_iter()
+                .filter_map(|url| {
+                    if !seen_url.insert(url.clone()) {
+                        return None;
+                    }
+                    let mut e =
+                        Entity::new(EntityKind::Url, &url, confidence::MEDIUM_HIGH, &ctx.scan_id);
+                    e.tag("employer-pivot");
+                    e.tag("social-profile");
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("Linked profile from {domain} site"))
+                            .with_attr("employer_domain", &domain)
+                            .with_attr("profile_url", &url),
+                    );
+                    Some(e)
+                }),
+        );
+
+        Ok(result)
+    }
+}
+
+/// Whether `process()`'s page-fetch loop should be surfaced as a real
+/// `Error::module` failure rather than its ordinary empty success. True
+/// precisely when the homepage was never successfully fetched
+/// (`homepage_ok` false — a transport error, non-success HTTP status, or an
+/// unreadable body on the very first request) AND no page's content was
+/// collected at all (`collected_any_content` false). Under the loop's own
+/// break-on-homepage-failure guard the two conditions always agree (a failed
+/// homepage means no other path is even attempted), but both are checked
+/// explicitly — mirroring `asic_director`'s `request_failed` two-bool
+/// decision table (T2.120) — so this stays correct even if the loop's
+/// early-break logic changes later. A homepage that answered fine but simply
+/// carried no business info (or whose later contact/about sub-pages 404) is
+/// not a failure — only "this domain never actually answered" is. Pure and
+/// free of `ModuleContext`/network, so it is unit-testable without a live
+/// server — see `tests::fetch_failed_*`.
+#[must_use]
+fn fetch_failed(homepage_ok: bool, collected_any_content: bool) -> bool {
+    !homepage_ok && !collected_any_content
+}
+
+fn domain_for_target(t: &Target) -> Option<String> {
+    match t.kind {
+        TargetKind::Email => t.value.rsplit_once('@').map(|(_, d)| d.to_lowercase()),
+        TargetKind::Domain => Some(t.value.trim().to_lowercase()),
+        _ => None,
+    }
+}
+
+fn extract_emails(text: &str, employer_domain: &str) -> Vec<String> {
+    // Canonical email matcher (util::extract::EMAIL_RE) — same pattern this
+    // module open-coded; keep the per-call domain filter (no dedup here).
+    crate::util::extract::EMAIL_RE
+        .find_iter(text)
+        .map(|m| m.as_str().to_lowercase())
+        .filter(|s| {
+            s.rsplit_once('@')
+                .is_some_and(|(_, d)| d == employer_domain)
+        })
+        .collect()
+}
+
+fn extract_profile_urls(text: &str) -> Vec<String> {
+    static R: OnceLock<Regex> = OnceLock::new();
+    let re = R.get_or_init(|| {
+        Regex::new(
+            r"https?://(?:www\.)?(?:linkedin\.com|facebook\.com|instagram\.com|twitter\.com|x\.com|youtube\.com)/[A-Za-z0-9_./@\-]+"
+        ).expect("constant social profile-url regex")
+    });
+    re.find_iter(text)
+        .map(|m| m.as_str().trim_end_matches(['/', '.', ',']).to_string())
+        .collect()
+}
+
+/// Delegates to the shared role-localpart authority (Pass 29) instead of an
+/// independent, hand-rolled 19-token list — that list was missing ~40 tokens
+/// `util::domains::ROLE` already carried, notably the DNS/registrar-infra
+/// class this guard's own motivating comment cites (`soa@`, `registrar@`,
+/// `whois@`, `nic@`, …): a real SOA-RNAME-derived address in that gap slipped
+/// past this guard the same way `dns@cloudflare.com` did before it was added.
+/// `util::domains::is_role_localpart` case-folds internally, which is a pure
+/// strengthening here, not a behaviour change on the real call path: the
+/// sole caller (`process`, above) only ever passes the local-part of an
+/// `Email`-kind `Target`, and `Target::new` always fully lowercases those
+/// (`hse_core::normalise`'s `EntityKind::Email` arm calls `.to_lowercase()`
+/// unconditionally), so this never actually receives mixed-case input.
+fn is_role_email_local(local: &str) -> bool {
+    crate::util::domains::is_role_localpart(local)
+}
+
+fn canonical_address(a: &address_au::AuAddress) -> String {
+    let mut s = String::new();
+    if let Some(lvl) = a.level.as_deref() {
+        s.push_str(lvl);
+        s.push_str(", ");
+    }
+    if let Some(u) = a.unit.as_deref() {
+        s.push_str(u);
+        s.push('/');
+    }
+    s.push_str(&a.street_number);
+    s.push(' ');
+    s.push_str(&a.street);
+    s.push_str(", ");
+    s.push_str(&a.suburb);
+    s.push(' ');
+    s.push_str(&a.state);
+    s.push(' ');
+    s.push_str(&a.postcode);
+    s
+}
+
+/// Builds a Coordinates entity for a geocoded `(lat, lon)`, gated on
+/// `seen_coord` so two different street addresses that both geocode to the
+/// same city (`city_coords` is a many-to-one phrase lookup, not a precise
+/// geocoder) don't each mint their own entity for the same point. Extracted
+/// as a pure function — its call site sits inside `process`'s async
+/// network-fetching loop, not practical to unit-test directly — so this
+/// piece of the logic is.
+fn coord_entity_if_new(
+    lat: f64,
+    lon: f64,
+    seen_coord: &mut HashSet<String>,
+    confidence: f64,
+    scan_id: &str,
+    domain: &str,
+) -> Option<Entity> {
+    let coord_val = format!("{lat:.4},{lon:.4}");
+    if !seen_coord.insert(coord_val.clone()) {
+        return None;
+    }
+    let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence, scan_id);
+    c.tag("addr-derived");
+    c.tag("geoint");
+    c.tag("country:AU");
+    c.tag("employer-pivot");
+    c.add_evidence(Evidence::new(
+        SRC,
+        format!("Geocode of business address from {domain}"),
+    ));
+    Some(c)
+}
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
+}

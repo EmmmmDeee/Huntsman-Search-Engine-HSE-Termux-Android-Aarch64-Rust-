@@ -2,6 +2,8 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use crate::signals::record_tag;
+
 #[must_use]
 pub fn is_spf(txt: &str) -> bool {
     let bytes = txt.as_bytes();
@@ -135,7 +137,7 @@ pub fn parse(txt: &str) -> Option<SpfRecord> {
     }
     let mut record = SpfRecord::default();
     for term in txt.split_whitespace().skip(1) {
-        if let Some((name, value)) = term.split_once('=') {
+        if let Some((name, value)) = record_tag(term) {
             let is_modifier_name = !name.is_empty()
                 && name
                     .bytes()

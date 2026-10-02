@@ -1,0 +1,40 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -337,8 +337,36 @@ jobs:
+       # deliberately excludes --benches/--doc, which add cross-compile cost
+       # for artifacts this job has no way to execute anyway.
+       - name: Compile tests (aarch64-linux-android, not executed)
+         run: cargo test --locked --no-run --lib --bins --tests --target aarch64-linux-android
+ 
++      # Preserve the exact runtime built by this job so device verification can
++      # consume the same commit that CI proved cross-compiles. The tarball keeps
++      # the executable bit intact; SOURCE_COMMIT and both SHA-256 manifests make
++      # the CI -> artifact -> Termux provenance chain independently checkable.
++      - name: Package Termux runtime artifact
++        run: |
++          set -euo pipefail
++          source_sha="${{ github.event.pull_request.head.sha || github.sha }}"
++          payload="dist/hse-aarch64-linux-android"
++          archive="dist/hse-aarch64-linux-android-${source_sha}.tar.gz"
++          mkdir -p "$payload"
++          install -m 0755 target/aarch64-linux-android/debug/hse "$payload/hse"
++          printf '%s\n' "$source_sha" > "$payload/SOURCE_COMMIT"
++          (cd "$payload" && sha256sum hse > hse.sha256)
++          tar -C dist -czf "$archive" hse-aarch64-linux-android
++          sha256sum "$archive" > "${archive}.sha256"
++
++      - name: Upload Termux runtime artifact
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: hse-aarch64-linux-android-${{ github.event.pull_request.head.sha || github.sha }}
++          path: |
++            dist/hse-aarch64-linux-android-*.tar.gz
++            dist/hse-aarch64-linux-android-*.tar.gz.sha256
++          if-no-files-found: error
++          compression-level: 0
++          retention-days: 14
++
+   install-script:
+     name: install.sh syntax (bash + shellcheck)
+     runs-on: ubuntu-latest

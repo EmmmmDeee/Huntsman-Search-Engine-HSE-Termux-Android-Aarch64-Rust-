@@ -158,28 +158,6 @@ pub trait ModuleSpec {
             provider: self.provider_descriptor(),
         }
     }
-
-    impl<T: ModuleSpec + ?Sized> ModuleMeta for T {
-        fn name(&self) -> &'static str {
-            ModuleSpec::name(self)
-        }
-
-        fn priority(&self) -> u8 {
-            ModuleSpec::priority(self)
-        }
-
-        fn category(&self) -> ModuleCategory {
-            ModuleSpec::category(self)
-        }
-
-        fn cost(&self) -> ModuleCost {
-            ModuleSpec::cost(self)
-        }
-
-        fn is_passive(&self) -> bool {
-            ModuleSpec::passive(self)
-        }
-    }
 }
 
 #[must_use]

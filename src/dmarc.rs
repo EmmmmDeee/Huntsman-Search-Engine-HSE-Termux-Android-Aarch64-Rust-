@@ -1,5 +1,7 @@
 //! DMARC (RFC 7489) parsing and analysis.
 
+use crate::signals::record_tag;
+
 /// True if `txt` starts with `v=DMARC1` (ASCII-case-insensitive).
 #[must_use]
 pub fn is_dmarc(txt: &str) -> bool {
@@ -113,14 +115,9 @@ pub fn parse(txt: &str) -> Option<DmarcRecord> {
     let mut seen = std::collections::BTreeSet::new();
 
     for raw_tag in txt.split(';') {
-        let tag = raw_tag.trim();
-        if tag.is_empty() {
-            continue;
-        }
-        let Some((name_raw, value)) = tag.split_once('=') else {
+        let Some((name, value)) = record_tag(raw_tag) else {
             continue;
         };
-        let name = name_raw.trim().to_ascii_lowercase();
         match name.as_str() {
             "v" => {
                 seen.insert(name);

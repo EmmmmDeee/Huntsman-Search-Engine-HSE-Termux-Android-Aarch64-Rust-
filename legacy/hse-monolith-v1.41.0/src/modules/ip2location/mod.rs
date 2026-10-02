@@ -1,0 +1,281 @@
+//! ip2location.io — free IP geolocation with postcode precision (no key, 1K/day).
+//!
+//! Endpoint: `GET https://api.ip2location.io/?ip={ip}`
+//! Auth: None for basic tier (1,000/day free, 50K/month with free signup).
+//!
+//! Returns country, region, city, postcode, lat/lon, timezone, ASN, ISP,
+//! and proxy detection. Often more precise than ip-api.com (returns suburb-
+//! level city names like "Gatton" instead of "Sydney").
+//!
+//! No hosting/datacenter signal (unlike [`crate::modules::criminal_ip`]'s
+//! `is_hosting`) — deliberately not a gap to fix. Confirmed by a live call to
+//! this exact endpoint (`curl https://api.ip2location.io/?ip=8.8.8.8`): the
+//! free-tier response includes an echoed `ip` and a rate-limit `message`
+//! alongside every field [`Resp`] models (both silently ignored by its
+//! `#[serde(default)]` fields, not absent from the payload) — but no
+//! hosting/usage-type field at all. The provider's own docs (ip2location.io's
+//! API reference) name a `usage_type` field with a `DCH` (datacenter/hosting)
+//! value that would give exactly this signal, but gate it behind a paid
+//! "Starter Plan" — this module intentionally stays
+//! [`crate::core::module::ModuleCost::Free`] (no `cost()` override), so that
+//! field is out of reach by design, not by oversight. See
+//! `.agent/state.json`'s OD-20 for the full investigation (including why a
+//! heuristic AS-name substitute wasn't pursued).
+
+use async_trait::async_trait;
+use serde::Deserialize;
+
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    error::Result,
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+    tags,
+};
+
+const SRC: &str = "ip2location";
+
+#[derive(Deserialize)]
+struct Resp {
+    #[serde(default)]
+    country_code: Option<String>,
+    #[serde(default)]
+    country_name: Option<String>,
+    #[serde(default)]
+    region_name: Option<String>,
+    #[serde(default)]
+    city_name: Option<String>,
+    #[serde(default)]
+    zip_code: Option<String>,
+    #[serde(default)]
+    latitude: Option<f64>,
+    #[serde(default)]
+    longitude: Option<f64>,
+    #[serde(default)]
+    time_zone: Option<String>,
+    #[serde(default)]
+    asn: Option<String>,
+    #[serde(default, rename = "as")]
+    as_name: Option<String>,
+    #[serde(default)]
+    is_proxy: Option<bool>,
+}
+
+pub struct Ip2Location;
+
+#[async_trait]
+impl Module for Ip2Location {
+    fn name(&self) -> &'static str {
+        "ip2location"
+    }
+    fn description(&self) -> &'static str {
+        "ip2location.io geolocation recon (free, 1K/day) — geolocates an IP to suburb precision"
+    }
+    fn priority(&self) -> u8 {
+        26
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::IpAddress)
+    }
+    fn max_timeout_ms(&self) -> u64 {
+        8_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Infrastructure default (T1590.005 + T1596.005) covers IP address info
+        // but misses the physical location (T1591.001) and ISP/AS organisation
+        // (T1591.002) this module emits; T1596.005 (Scan Databases) is for
+        // Shodan-style scan engines, not a geolocation lookup service. Override
+        // with the precise surface.
+        &["T1590.005", "T1591.001", "T1591.002"]
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Asn,
+            EntityKind::Organisation,
+        ];
+        KINDS
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // ip2location.io free tier is IPv4-only — universal dispatcher
+        // gate lets public IPv6 through, so reject it here.
+        if crate::util::preflight::should_skip_external_ipv4(&target.value) {
+            return Ok(ModuleResult::new());
+        }
+        let ip = target.value.trim();
+
+        let url = format!("https://api.ip2location.io/?ip={ip}");
+        let Some(data): Option<Resp> = crate::util::http::fetch_json_or_404_with_timeout(
+            &ctx.http,
+            SRC,
+            &url,
+            std::time::Duration::from_secs(6),
+        )
+        .await?
+        else {
+            return Ok(ModuleResult::new());
+        };
+
+        // The shared trust gate: an IP whose geolocation is infrastructure (a
+        // CDN/anycast edge) is not the subject's location, so its
+        // Coordinates/Address are suppressed; the ASN/network entities still
+        // describe the infrastructure itself.
+        let skip_geo = if let Some(reason) = crate::core::validation::untrusted_ip_geo_reason(ip) {
+            tracing::debug!(
+                module = SRC,
+                %ip,
+                reason,
+                "skipping IP-geo Coordinates/Address — location is the infrastructure, not the subject"
+            );
+            true
+        } else {
+            false
+        };
+
+        let mut result = ModuleResult::new();
+        for e in build_entities(&data, ip, skip_geo, &ctx.scan_id) {
+            result.push(e);
+        }
+        Ok(result)
+    }
+}
+
+/// Map an ip2location.io response to graph entities. **Pure** (no IO) so the
+/// geo/ASN/ISP assembly, CDN-edge suppression, proxy/AU tagging and the
+/// timezone + ISO-country surfacing are unit-tested directly.
+///
+/// `skip_geo` (a CDN/anycast edge IP, decided by the caller) drops the
+/// Coordinates/Address — their location is the datacenter, not the subject —
+/// while the ASN/ISP infrastructure entities are still emitted. Beyond the
+/// prior surface this also stamps the API's own `timezone` (a chronolocation
+/// lead) and ISO `country_code` onto the geo evidence, and tags an AU address
+/// `country:AU` directly from the country code.
+fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<Entity> {
+    let mut out: Vec<Entity> = Vec::new();
+
+    let city = data.city_name.as_deref().unwrap_or("");
+    let region = data.region_name.as_deref().unwrap_or("");
+    let country = data.country_name.as_deref().unwrap_or("");
+    let zip = data.zip_code.as_deref().unwrap_or("");
+    let tz = data.time_zone.as_deref().unwrap_or("");
+    let cc = data.country_code.as_deref().unwrap_or("");
+    let is_au = cc.eq_ignore_ascii_case("AU");
+
+    // Confidence recalibrated 0.72 → 0.62 — see ip_geo.rs. The ip2location
+    // commercial DB is marginally better than the freemium competitors so it
+    // stays slightly above ipinfo.
+    if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
+        && !skip_geo
+        && let Some(mut ce) =
+            crate::util::geo::coarse_provider_coords(lat, lon, confidence::NOTABLE, scan_id)
+    {
+        ce.tag("ip2location");
+        if data.is_proxy == Some(true) {
+            ce.tag(tags::PROXY);
+        }
+        crate::util::geo::tag_au_state(&mut ce, lat, lon);
+        let ev = [
+            ("city", (!city.is_empty()).then_some(city)),
+            ("region", (!region.is_empty()).then_some(region)),
+            ("country", (!country.is_empty()).then_some(country)),
+            // An IP-geolocation postcode locates the IP's network, NOT the
+            // subject's residence, so it is stamped under the network-derived
+            // `postal` key — excluded from the residential POSTCODE_KEYS the
+            // AU-091/AU-093 residential-locality rules read — rather than the
+            // canonical `postcode` key that would let it masquerade as the
+            // subject's home postcode (item 24). The coarse IP location still
+            // flows through this Coordinates entity's confidence-capped fix.
+            ("postal", (!zip.is_empty()).then_some(zip)),
+            ("country_iso", (!cc.is_empty()).then_some(cc)),
+            ("timezone", (!tz.is_empty()).then_some(tz)),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(
+                SRC,
+                format!("IP geolocation for {ip}: {city}, {region}, {country}"),
+            )
+            .with_attr("ip", ip),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
+        ce.add_evidence(ev);
+        out.push(ce);
+    }
+
+    if !skip_geo && !city.is_empty() && !country.is_empty() {
+        // An IP-geolocation address is a COARSE network locator, not the subject's
+        // residence, so its postcode must NOT be embedded in the Address value:
+        // `au_postcode` reads an Address value's trailing 4-digit run, which would
+        // let the IP's postcode occupy the residential "breach/register postcode"
+        // location rung (item 24). The postcode is retained as the network-derived
+        // `postal` attribute on the Coordinates above; the Address keeps
+        // suburb/state grain. (ipquery already composes its address this way.)
+        let addr = if !region.is_empty() {
+            format!("{city}, {region}, {country}")
+        } else {
+            format!("{city}, {country}")
+        };
+        // Matches ipquery's Address confidence for the identical
+        // city/region/country composition (see that module's `compose_address`
+        // call site) — was a stale bare `0.68` left un-recalibrated when the
+        // sibling Coordinates entity above was recalibrated 0.72 → 0.62,
+        // leaving Address confidence HIGHER than the Coordinates it derives
+        // from.
+        let mut ae = Entity::new(EntityKind::Address, &addr, confidence::NOTABLE, scan_id);
+        ae.tag("ip2location");
+        ae.tag(tags::GEOINT);
+        // An anonymiser/VPN exit's city is not the subject's location — tag it so
+        // it is filterable, exactly as the Coordinates above already are (the
+        // Address previously emitted the proxy-exit address untagged).
+        if data.is_proxy == Some(true) {
+            ae.tag(tags::PROXY);
+        }
+        if is_au {
+            ae.tag("country:AU");
+        }
+        let mut ev = Evidence::new(SRC, format!("Address for {ip}"));
+        if !cc.is_empty() {
+            ev = ev.with_attr("country_iso", cc);
+        }
+        if !tz.is_empty() {
+            ev = ev.with_attr("timezone", tz);
+        }
+        ae.add_evidence(ev);
+        out.push(ae);
+    }
+
+    if let Some(asn) = &data.asn
+        && !asn.is_empty()
+    {
+        let asn_str = format!("AS{asn}");
+        let mut ae = crate::util::geo::ip_asn_entity(&asn_str, SRC, ip, scan_id);
+        ae.tag("ip2location");
+        out.push(ae);
+    }
+
+    if let Some(as_name) = &data.as_name
+        && !as_name.is_empty()
+    {
+        let mut oe = Entity::new(EntityKind::Organisation, as_name, confidence::HIGH, scan_id);
+        oe.tag("ip2location");
+        oe.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
+        out.push(oe);
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
+}

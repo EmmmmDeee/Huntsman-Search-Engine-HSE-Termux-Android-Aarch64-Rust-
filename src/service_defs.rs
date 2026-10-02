@@ -367,7 +367,7 @@ pub fn build_probe_request(service: &ServiceDef, key: &str) -> Request {
         KeyPlacement::Header(name) => {
             request = request.header(*name, key);
         }
-            request = request.header("Authorization", format!("Bearer {key}"));
+        KeyPlacement::BearerAuth => {
             request = request.header("Authorization", format!("Bearer {key}"));
         }
         KeyPlacement::HeaderPrefixed(name, prefix) => {
@@ -500,6 +500,7 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+    use crate::http::TransportFailure;
 
     struct FakeTransport {
         response: Response,
@@ -528,7 +529,7 @@ mod tests {
         let github = find_service("github").expect("github");
         let github_request = build_probe_request(github, "test-key");
         assert_eq!(
-        assert_eq!(github_request.header_value("authorization"), Some("Bearer test-key"));
+            github_request.header_value("authorization"),
             Some("Bearer test-key")
         );
 

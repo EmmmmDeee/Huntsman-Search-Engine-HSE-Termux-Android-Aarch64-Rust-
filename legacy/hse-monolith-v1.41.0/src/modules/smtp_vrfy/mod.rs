@@ -1,0 +1,471 @@
+//! SMTP email verification — check deliverability via MX lookup + SMTP
+//! RCPT TO handshake. No email is sent; only the envelope is tested.
+//!
+//! Flow: target email → extract domain → resolve MX → connect to MX
+//! on port 25 → EHLO → MAIL FROM → RCPT TO → check 250 vs 550.
+//!
+//! Many servers reject VRFY but accept RCPT TO probing. Some servers
+//! accept all recipients (catch-all). The module tags entities
+//! accordingly: `smtp-valid`, `smtp-invalid`, `smtp-catchall`,
+//! `smtp-unreachable`.
+//!
+//! Uses raw TCP via tokio — no SMTP library dependency.
+
+#[cfg(test)]
+mod tests;
+
+use async_trait::async_trait;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
+
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    error::Result,
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+};
+
+const SRC: &str = "smtp_vrfy";
+
+pub struct SmtpVrfy;
+
+#[async_trait]
+impl Module for SmtpVrfy {
+    fn name(&self) -> &'static str {
+        SRC
+    }
+
+    fn description(&self) -> &'static str {
+        "Email deliverability probe — verifies via SMTP RCPT TO handshake (no email sent)"
+    }
+
+    fn priority(&self) -> u8 {
+        85
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        15_000
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Email
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Beyond the RCPT TO probe that verifies the address itself
+        // (T1589.002), the module resolves and records MX, SPF, and DMARC
+        // records as standalone evidence — domain DNS recon (T1590.002).
+        &["T1589.002", "T1590.002"]
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Email];
+        KINDS
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut result = ModuleResult::new();
+
+        let email = target.value.clone();
+        let Some((_, domain)) = email.split_once('@') else {
+            return Ok(result);
+        };
+
+        // The whole outcome space — no-MX, the four SMTP verdicts — flows
+        // through `verdict` so the entity mapping is a single pure step.
+        let (mx_result, spf_result, dmarc_result) = tokio::join!(
+            resolve_mx(domain),
+            resolve_spf(domain),
+            resolve_dmarc(domain),
+        );
+
+        let (mx_host, verdict) = match mx_result {
+            Ok(None) => (None, SmtpVerdict::NoMx),
+            Ok(Some(host)) => {
+                let v = smtp_rcpt_check(&host, &email).await;
+                (Some(host), v)
+            }
+            Err(reason) => (
+                None,
+                SmtpVerdict::Unreachable(format!("MX lookup failed: {reason}")),
+            ),
+        };
+
+        let mut entity = build_entity(&email, domain, mx_host.as_deref(), &verdict, &ctx.scan_id);
+
+        if mx_host.is_some() {
+            entity.add_evidence(
+                Evidence::new(SRC, format!("MX record present for {domain}"))
+                    .with_attr("mx_present", domain),
+            );
+        }
+        if let Some(spf) = spf_result {
+            entity.add_evidence(
+                Evidence::new(SRC, format!("SPF policy for {domain}"))
+                    .with_attr("spf_policy", &spf),
+            );
+        }
+        if let Some(dmarc) = dmarc_result {
+            entity.add_evidence(
+                Evidence::new(SRC, format!("DMARC policy for {domain}")).with_attr("dmarc", &dmarc),
+            );
+        }
+
+        result.push(entity);
+        Ok(result)
+    }
+}
+
+/// The full outcome of a verification attempt: either no MX exists, or the SMTP
+/// RCPT TO probe reached one of four verdicts.
+pub(super) enum SmtpVerdict {
+    /// The domain publishes no MX record — nothing to probe.
+    NoMx,
+    /// RCPT TO accepted (250) and a random-address probe was *not* accepted.
+    Valid,
+    /// RCPT TO rejected; carries the 3-digit SMTP reply code.
+    Invalid(String),
+    /// The server accepts every recipient (a random probe also got 250).
+    CatchAll,
+    /// Could not complete the handshake; carries a human reason.
+    Unreachable(String),
+}
+
+/// Map a verification outcome onto the email entity. **Pure** (no network/IO):
+/// each verdict fixes the confidence and `smtp-*` tag, and attaches a `mx_host`
+/// evidence attribute whenever an MX was found (every case except `NoMx`).
+/// `domain` is used only for the no-MX message. Mirrors the deliverability
+/// ladder, from most to least conclusive: valid is [`confidence::AUTHORITATIVE`];
+/// invalid is [`confidence::TENTATIVE`]; catch-all, unreachable, and no-MX all
+/// share [`confidence::SPECULATIVE`] — an inconclusive probe outcome carries no
+/// more weight than a guess.
+pub(super) fn build_entity(
+    email: &str,
+    domain: &str,
+    mx_host: Option<&str>,
+    verdict: &SmtpVerdict,
+    scan_id: &str,
+) -> Entity {
+    let (conf, tag, summary, code) = match verdict {
+        SmtpVerdict::NoMx => (
+            confidence::SPECULATIVE,
+            "smtp-unreachable",
+            format!("No MX record for {domain}"),
+            None,
+        ),
+        SmtpVerdict::Valid => (
+            confidence::AUTHORITATIVE,
+            "smtp-valid",
+            format!("SMTP RCPT TO accepted by {}", mx_host.unwrap_or("?")),
+            None,
+        ),
+        SmtpVerdict::Invalid(c) => (
+            confidence::TENTATIVE,
+            "smtp-invalid",
+            format!("SMTP RCPT TO rejected ({c}) by {}", mx_host.unwrap_or("?")),
+            Some(c.as_str()),
+        ),
+        SmtpVerdict::CatchAll => (
+            confidence::SPECULATIVE,
+            "smtp-catchall",
+            format!(
+                "{} appears to accept all recipients",
+                mx_host.unwrap_or("?")
+            ),
+            None,
+        ),
+        SmtpVerdict::Unreachable(reason) => (
+            confidence::SPECULATIVE,
+            "smtp-unreachable",
+            format!("SMTP connection failed: {reason}"),
+            None,
+        ),
+    };
+
+    let mut ev = Evidence::new(SRC, summary);
+    if let Some(host) = mx_host {
+        ev = ev.with_attr("mx_host", host);
+    }
+    if let Some(c) = code {
+        ev = ev.with_attr("smtp_code", c);
+    }
+    Entity::builder(EntityKind::Email, email, conf, scan_id)
+        .tag(tag)
+        .evidence(ev)
+        .build()
+}
+
+async fn resolve_spf(domain: &str) -> Option<String> {
+    use hickory_resolver::proto::rr::RData;
+    let resolver = crate::util::dns::shared_resolver();
+    let lookup = resolver.txt_lookup(domain).await.ok()?;
+    lookup
+        .answers()
+        .iter()
+        .filter_map(|r| match &r.data {
+            RData::TXT(txt) => {
+                let s = txt.to_string();
+                let s = s.trim_matches('"');
+                if s.starts_with("v=spf1") {
+                    Some(s.to_string())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .next()
+}
+
+async fn resolve_dmarc(domain: &str) -> Option<String> {
+    use hickory_resolver::proto::rr::RData;
+    let dmarc_domain = format!("_dmarc.{domain}");
+    let resolver = crate::util::dns::shared_resolver();
+    let lookup = resolver.txt_lookup(dmarc_domain.as_str()).await.ok()?;
+    lookup
+        .answers()
+        .iter()
+        .filter_map(|r| match &r.data {
+            RData::TXT(txt) => {
+                let s = txt.to_string();
+                let s = s.trim_matches('"');
+                if s.starts_with("v=DMARC1") {
+                    Some(s.to_string())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .next()
+}
+
+/// True only for a genuine "no MX records" answer (NXDOMAIN / no-answer) —
+/// distinct from a transport/protocol-level DNS failure (busy, timeout, I/O,
+/// no connections, a server error response code).
+fn is_genuine_no_mx(e: &hickory_resolver::net::NetError) -> bool {
+    e.is_nx_domain() || e.is_no_records_found()
+}
+
+/// Resolve the lowest-preference MX host for `domain`. `Ok(None)` is the
+/// genuine "this domain publishes no MX record" negative; `Err` propagates a
+/// real transport/DNS-protocol failure so the caller can route it into the
+/// module's `Unreachable` verdict instead of the false "No MX record" claim.
+async fn resolve_mx(domain: &str) -> std::result::Result<Option<String>, String> {
+    use hickory_resolver::proto::rr::RData;
+    let resolver = crate::util::dns::shared_resolver();
+    let response = match resolver.mx_lookup(domain).await {
+        Ok(r) => r,
+        Err(e) if is_genuine_no_mx(&e) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    // Lowest-preference MX wins; min_by_key returns the first among equal
+    // minima, matching the original strict-`<` update.
+    Ok(response
+        .answers()
+        .iter()
+        .filter_map(|record| {
+            if let RData::MX(mx) = &record.data {
+                let host = mx.exchange.to_ascii().trim_end_matches('.').to_string();
+                Some((mx.preference, host))
+            } else {
+                None
+            }
+        })
+        .min_by_key(|(pref, _)| *pref)
+        .map(|(_, h)| h))
+}
+
+async fn smtp_rcpt_check(mx_host: &str, email: &str) -> SmtpVerdict {
+    // SSRF guard: the MX host comes from an attacker-influenceable DNS record, so
+    // resolve it ourselves and dial only a PUBLIC address — pinning the target so
+    // there is no resolve-then-connect rebind window. Connecting by hostname
+    // string (the OS resolver, unfiltered) would let a crafted MX → localhost /
+    // RFC1918 / link-local turn the tool into a port-25 reachability oracle or
+    // internal open-relay prober. Mirrors `whois::resolve_public_whois`.
+    if crate::util::preflight::is_local_domain(mx_host) {
+        return SmtpVerdict::Unreachable(format!("{mx_host} is not a public host"));
+    }
+    let pinned = match tokio::net::lookup_host((mx_host, 25u16)).await {
+        Ok(mut addrs) => addrs.find(|a| !crate::util::preflight::is_private_addr(a.ip())),
+        Err(_) => None,
+    };
+    let Some(addr) = pinned else {
+        return SmtpVerdict::Unreachable(format!("{mx_host} has no public address"));
+    };
+    let stream =
+        match tokio::time::timeout(std::time::Duration::from_secs(5), TcpStream::connect(addr))
+            .await
+        {
+            Ok(Ok(s)) => s,
+            _ => return SmtpVerdict::Unreachable(format!("connect to {mx_host}:25 failed")),
+        };
+
+    run_probe(stream, email).await
+}
+
+/// The SMTP conversation itself (banner → EHLO → MAIL FROM → RCPT TO →
+/// catch-all probe → QUIT), generic over any `AsyncRead + AsyncWrite` stream
+/// rather than hardcoded to `TcpStream`. Splitting this out of
+/// `smtp_rcpt_check` (which keeps only the DNS/SSRF/connect logic) makes the
+/// protocol logic itself exercisable in tests via `tokio::io::duplex()` — a
+/// real TCP listener can't be used here since it would have to bind
+/// localhost, which the SSRF guard in `smtp_rcpt_check` correctly refuses to
+/// dial (and must not be weakened just for testability).
+async fn run_probe<S>(stream: S, email: &str) -> SmtpVerdict
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
+
+    // Read banner
+    if read_line_timeout(&mut reader, &mut line).await.is_err() {
+        return SmtpVerdict::Unreachable("no banner".into());
+    }
+    if !line.starts_with("220") {
+        return SmtpVerdict::Unreachable(format!("bad banner: {}", line.trim()));
+    }
+
+    // EHLO
+    if send_cmd(&mut writer, "EHLO huntsman.local\r\n")
+        .await
+        .is_err()
+    {
+        return SmtpVerdict::Unreachable("EHLO send failed".into());
+    }
+    if read_multiline(&mut reader, &mut line).await.is_err() {
+        return SmtpVerdict::Unreachable("EHLO response failed".into());
+    }
+
+    // MAIL FROM — the RFC 5321 §4.1.1.2 null reverse-path (`<>`), the
+    // standard bounce-message envelope sender. A made-up sender domain
+    // (the previous `probe@huntsman.local` used `.local`, an RFC
+    // 6762-reserved TLD that never resolves in public DNS) can trigger a
+    // real MTA's "reject unknown sender domain" anti-spam policy — and this
+    // code never inspected the MAIL FROM response, so a rejection there
+    // fell through to RCPT TO anyway, which then typically gets `503 Bad
+    // sequence of commands` (no valid MAIL transaction open) and was
+    // reported as `Invalid("503")` — a false "invalid mailbox" verdict for
+    // the TARGET caused entirely by OUR OWN sender being rejected. The null
+    // sender has no domain to verify and is universally accepted.
+    if send_cmd(&mut writer, "MAIL FROM:<>\r\n").await.is_err() {
+        return SmtpVerdict::Unreachable("MAIL FROM send failed".into());
+    }
+    line.clear();
+    if read_line_timeout(&mut reader, &mut line).await.is_err() {
+        return SmtpVerdict::Unreachable("MAIL FROM response failed".into());
+    }
+    if !line.starts_with("250") {
+        // Even the null sender was refused — an unusually strict server
+        // policy. Reporting `Unreachable`, not `Invalid`, keeps this
+        // honestly distinct from an actual per-mailbox rejection: nothing
+        // about the TARGET address was ever tested.
+        let _ = send_cmd(&mut writer, "QUIT\r\n").await;
+        return SmtpVerdict::Unreachable(format!("MAIL FROM rejected: {}", line.trim()));
+    }
+
+    // RCPT TO — the actual target
+    let rcpt = format!("RCPT TO:<{email}>\r\n");
+    if send_cmd(&mut writer, &rcpt).await.is_err() {
+        return SmtpVerdict::Unreachable("RCPT TO send failed".into());
+    }
+    line.clear();
+    if read_line_timeout(&mut reader, &mut line).await.is_err() {
+        return SmtpVerdict::Unreachable("RCPT TO response failed".into());
+    }
+
+    let code = line.chars().take(3).collect::<String>();
+    let target_accepted = code == "250";
+
+    if !target_accepted {
+        let _ = send_cmd(&mut writer, "QUIT\r\n").await;
+        return SmtpVerdict::Invalid(code);
+    }
+
+    // Catch-all detection: probe a random address
+    let random_addr = format!(
+        "RCPT TO:<hseprobex{}@{}>\r\n",
+        crate::core::entity::unix_now() % 99999,
+        email.split_once('@').map_or("", |(_, d)| d)
+    );
+    if send_cmd(&mut writer, &random_addr).await.is_ok() {
+        line.clear();
+        if read_line_timeout(&mut reader, &mut line).await.is_ok() && line.starts_with("250") {
+            let _ = send_cmd(&mut writer, "QUIT\r\n").await;
+            return SmtpVerdict::CatchAll;
+        }
+    }
+
+    let _ = send_cmd(&mut writer, "QUIT\r\n").await;
+    SmtpVerdict::Valid
+}
+
+async fn send_cmd<W: AsyncWrite + Unpin>(writer: &mut W, cmd: &str) -> std::io::Result<()> {
+    writer.write_all(cmd.as_bytes()).await?;
+    writer.flush().await
+}
+
+async fn read_line_timeout<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut String,
+) -> std::io::Result<()> {
+    buf.clear();
+    // Cap a single line so a hostile MX can't stream an unbounded newline-less
+    // line into `buf` and OOM the device (the 5 s timeout alone bounds *time*,
+    // not bytes — T2.8). Real SMTP reply lines are < 1 KiB; 8 KiB is generous.
+    // We read via `fill_buf`/`consume` on the original `BufReader` (not a wrapping
+    // `Take`, which would discard its read-ahead and corrupt the next line) and
+    // stop at the newline or the cap — a misbehaving server then degrades to an
+    // inconclusive verdict, never an OOM. Legitimate responses are unchanged.
+    const MAX_LINE_BYTES: usize = 8 * 1024;
+    let read = async {
+        loop {
+            let chunk = reader.fill_buf().await?;
+            if chunk.is_empty() {
+                break; // EOF
+            }
+            let newline = chunk.iter().position(|&b| b == b'\n');
+            let want = newline.map_or(chunk.len(), |p| p + 1);
+            let take = want.min(MAX_LINE_BYTES.saturating_sub(buf.len()));
+            buf.push_str(&String::from_utf8_lossy(&chunk[..take]));
+            std::pin::Pin::new(&mut *reader).consume(take);
+            if newline.is_some() || buf.len() >= MAX_LINE_BYTES {
+                break;
+            }
+        }
+        Ok::<(), std::io::Error>(())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), read)
+        .await
+        .map_err(|_| std::io::Error::other("timeout"))?
+}
+
+async fn read_multiline<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut String,
+) -> std::io::Result<()> {
+    loop {
+        buf.clear();
+        read_line_timeout(reader, buf).await?;
+        // read_line_timeout returns Ok(()) with an EMPTY buffer on EOF (the peer
+        // closed the connection). Without treating that as terminal, this loop spins
+        // at 100% CPU forever when the server drops the link at/after the EHLO reply
+        // — the only other exit needs a 4+ char line whose 4th byte is a space. Turn
+        // an empty read into a hard error so the caller fails cleanly instead.
+        if buf.is_empty() {
+            return Err(std::io::Error::other(
+                "connection closed during multiline reply",
+            ));
+        }
+        if buf.len() >= 4 && buf.as_bytes()[3] == b' ' {
+            return Ok(());
+        }
+    }
+}

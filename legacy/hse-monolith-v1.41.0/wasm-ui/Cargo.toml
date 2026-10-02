@@ -1,0 +1,93 @@
+[package]
+name         = "hse-wasm-ui"
+version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.88"
+description  = "Browser web-UI build target: Rust compiled to wasm32-unknown-unknown, replacing src/web/js/* incrementally. Depends only on hse-core (no tokio/rusqlite/reqwest/axum)."
+license-file = "../LICENSE"
+publish      = false
+
+# Deliberately NOT a `[workspace]` member — same reasoning as `../fuzz/
+# Cargo.toml` and `../hse-core/Cargo.toml`: this crate targets
+# wasm32-unknown-unknown specifically, which the native-toolchain gate
+# (scripts/gate.sh's fmt/clippy/test/cross-build steps) never needs to build
+# or even know about. It is built only by its own explicit command (see
+# README section this PR adds), the same way `cargo fuzz` is the only thing
+# that ever builds `fuzz/`.
+
+[lib]
+name = "hse_wasm_ui"
+# cdylib: wasm-bindgen requires a C-compatible dynamic library crate type to
+# produce a loadable .wasm module; rlib (Cargo's default) cannot be loaded by
+# a browser at all. Kept alongside rlib so `cargo test` (native target, no
+# wasm-bindgen involved) can still run this crate's unit tests normally.
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+uninlined_format_args = "deny"
+semicolon_if_nothing_returned = "deny"
+explicit_iter_loop = "deny"
+redundant_closure_for_method_calls = "deny"
+cloned_instead_of_copied = "deny"
+implicit_clone = "deny"
+inefficient_to_string = "deny"
+map_unwrap_or = "deny"
+unnested_or_patterns = "deny"
+
+[dependencies]
+hse-core            = { path = "../hse-core" }
+wasm-bindgen        = "0.2.127"
+# Only for js_sys::Date in html::fmt_date (shared by every view that formats
+# a Unix timestamp for display — scan_info::info, scan_info::browse, …):
+# helpers.js's fmtDate() formats via the JS Date object's LOCAL-timezone
+# getters (getFullYear/getHours/...), which Rust's own std::time has no
+# equivalent for — js_sys::Date calls the browser's real Date object through
+# the same FFI wasm-bindgen itself is built on, so the formatted string is
+# byte-identical to the JS original's (same timezone, same everything)
+# without reimplementing timezone logic in Rust at all.
+js-sys              = "0.3"
+# Deserializes a JS entity object (the browser's own JSON from the API — the
+# same wire format hse_core::Entity serializes to server-side) straight into
+# a real hse_core::Entity, so the confidence-tier math calls the authoritative
+# Entity::source_count()/c_effective() rather than a hand-mirrored
+# reimplementation — the whole point of this crate's existence (see lib.rs).
+serde-wasm-bindgen  = "0.6.5"
+# For view-local response structs (e.g. scan_info::identities) that mirror an
+# API handler's JSON envelope but aren't part of hse-core's domain model.
+serde               = { version = "1", features = ["derive"] }
+
+[dependencies.web-sys]
+version  = "0.3"
+features = [
+    "Document", "DomTokenList", "Element", "Event", "EventTarget",
+    "HtmlElement", "MouseEvent", "Storage", "Window",
+]
+
+# This crate's own release profile — NOT inherited from the root Cargo.toml's
+# `[profile.release]` (this is a separate, non-workspace-member manifest; see
+# the note above). The size-driven settings mirror the root profile's own
+# rationale exactly: the compiled .wasm is checked into `pkg/` and embedded
+# byte-for-byte into the main crate's binary via `include_bytes!`
+# (src/api/routes/mod.rs's APP_FILES), so every KB shaved here shrinks the
+# final `hse` binary a Termux-on-Android-aarch64 (no root, often
+# storage/RAM-constrained) user downloads or builds on-device, and every
+# instantiation cycle shaved speeds up loading the web UI in their phone's
+# browser. `panic = "abort"` diverges from the root profile's documented
+# `"unwind"` choice deliberately: that choice is justified there by a
+# long-lived server process wanting to contain a panicking module at a
+# dispatch boundary instead of aborting the whole process — an architecture
+# this browser-side crate does not have (no unsafe_code, no module dispatch).
+# `"abort"` is the standard choice for wasm32-unknown-unknown: it avoids
+# generating unwind-table code the wasm runtime spends nothing on unwinding
+# through anyway, for a real, free size win.
+[profile.release]
+opt-level     = "s"
+lto           = true
+codegen-units = 1
+strip         = true
+panic         = "abort"

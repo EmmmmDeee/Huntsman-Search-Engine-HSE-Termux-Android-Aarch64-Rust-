@@ -4,6 +4,14 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::LazyLock;
 
 #[must_use]
+pub(crate) fn record_tag(raw: &str) -> Option<(String, &str)> {
+    let tag = raw.trim();
+    let (name, value) = tag.split_once('=')?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| (name.to_ascii_lowercase(), value.trim()))
+}
+
+#[must_use]
 pub fn fingerprint(prefix: &str, key: &str, short_max: usize, head: usize, tail: usize) -> String {
     let trimmed = key.trim();
     if trimmed.is_empty() {
@@ -261,5 +269,11 @@ mod tests {
         assert_eq!(top_n(values.iter().copied(), 3), "a×3, b×2, c×1");
         assert_eq!(detection_strength(true), (0.92, true));
         assert_eq!(detection_strength(false), (0.74, false));
+    }
+
+    #[test]
+    fn record_tag_parser_normalises_name_and_trims_value() {
+        assert_eq!(record_tag(" Pct = 75 "), Some(("pct".to_string(), "75")));
+        assert_eq!(record_tag("missing"), None);
     }
 }

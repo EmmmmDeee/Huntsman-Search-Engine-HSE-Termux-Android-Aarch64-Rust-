@@ -1,0 +1,398 @@
+//! OsintCat — email footprint, breach lookup, and deep email-osint.
+//!
+//! Endpoints (GET, auth via `x-api-key` header):
+//!   `/api/user`             credit preflight — free, checked before paid call
+//!   `/api/email-footprint`  100+ platform registration check — free
+//!   `/api/breach`           multi-source breach search — free
+//!   `/api/email-osint`      paid deep search — skipped when credits insufficient
+//!
+//! Accepts: Email. Requires `HUNTSMAN_OSINTCAT_KEY`.
+
+use async_trait::async_trait;
+use serde::Deserialize;
+use serde_json::{Map, Value};
+use tracing::{debug, info, warn};
+
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    error::{Error, Result},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::extract::is_placeholder_secret;
+use crate::util::http::{
+    RequestBuilderExt, fetch_keyed_json, json_scanned, keyed_ok_or_404, urlencode,
+};
+use crate::util::json::is_null_sentinel;
+use crate::util::str_util::slugify;
+
+const SRC: &str = "osintcat";
+const KEY_ENV: &str = "HUNTSMAN_OSINTCAT_KEY";
+const BASE: &str = "https://www.osintcat.net/api";
+const PURPOSE: &str = "Law Enforcement Intelligence";
+
+/// Cap on a raw `ExtraData` value surfaced as [`Evidence`] text, matching the
+/// convention `breach_rich.rs`'s own raw-field catch-all uses: long enough for
+/// any genuine platform attribute, short enough that a stray blob (base64,
+/// nested-JSON-as-string) cannot make one footprint hit dominate an entity's
+/// evidence list.
+const MAX_EXTRA_VALUE_LEN: usize = 2000;
+
+/// A value that is an absence/redaction marker, not real platform data — a SQL
+/// NULL sentinel or a provider redaction placeholder. Mirrors
+/// `breach_rich.rs`'s `is_absent_marker`, composed from the same two shared
+/// primitives, so a provider that reports e.g. `"REDACTED"` for a field cannot
+/// mint misleading [`Evidence`] text.
+fn is_absent_marker(s: &str) -> bool {
+    is_null_sentinel(s) || is_placeholder_secret(s)
+}
+
+pub struct OsintCat;
+
+// ── Response types ─────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct OcUserResponse {
+    email_osint_credits: OcCredits,
+}
+
+#[derive(Deserialize)]
+struct OcCredits {
+    has_sufficient_credits: bool,
+    current_balance: f64,
+    price_per_search: f64,
+}
+
+#[derive(Deserialize)]
+struct OcFootprintResponse {
+    stats: OcFootprintStats,
+    results: Vec<OcFootprintResult>,
+}
+
+#[derive(Deserialize)]
+struct OcFootprintStats {
+    total_checked: u32,
+    registered_count: u32,
+}
+
+#[derive(Deserialize)]
+struct OcFootprintResult {
+    domain: String,
+    taken: bool,
+    #[serde(rename = "ExtraData")]
+    extra_data: Option<Map<String, Value>>,
+}
+
+#[derive(Deserialize)]
+struct OcBreachResponse {
+    results_count: u32,
+    breach_data: Vec<Value>,
+}
+
+// ── Module trait ───────────────────────────────────────────────────────────────
+
+#[async_trait]
+impl Module for OsintCat {
+    fn name(&self) -> &'static str {
+        SRC
+    }
+
+    fn description(&self) -> &'static str {
+        "OsintCat enrichment — sweeps an email footprint for breach and deep-osint intelligence"
+    }
+
+    fn priority(&self) -> u8 {
+        128
+    }
+
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::KeyGated
+    }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        // Breach records are immutable once indexed and platform-footprint
+        // registration is stable within a day (same "IP intel: 24h" bracket
+        // censys/builtwith apply to slower-moving paid data) — together
+        // worth caching to avoid re-spending the paid email-osint credit on
+        // a repeat scan of an already-queried address.
+        86_400
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        20_000
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        // The module's three endpoints map cleanly onto the two defaults:
+        // /api/breach returns breach_data records (credential-adjacent)
+        // tagged "breach" → T1589.001, while /api/email-footprint and
+        // /api/email-osint both query and enrich by the email address
+        // itself (platform-registration checks, username pivots keyed off
+        // email) → T1589.002. Nothing in the parsing logic touches DNS,
+        // WHOIS, domain/network properties, physical location, or named
+        // social-media/code-repo searches, so no broader or different
+        // technique is evidenced; the category default is already tight
+        // for this module.
+        ModuleCategory::Breach
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Email, EntityKind::Username];
+        KINDS
+    }
+
+    fn provider_descriptor(&self) -> crate::core::module::ProviderDescriptor {
+        crate::core::module::ProviderDescriptor {
+            // `cost()` reports `KeyGated` (the key itself is free to register),
+            // but the paid `/api/email-osint` call is genuinely pay-per-use —
+            // `OcCredits::price_per_search`, read live from the provider's own
+            // `/api/user` preflight response and checked against
+            // `has_sufficient_credits` before every paid call (see `process`
+            // below). No other module in the registry has this shape.
+            access_class: crate::core::module::AccessClass::Paid,
+            escalation_band: crate::core::module::EscalationBand::L3Microcost,
+            // A precise price IS known — just live/dynamic (the provider's own
+            // response field), not a static figure this descriptor can carry.
+            cost_model: crate::core::module::CostModel::Exact,
+            quota_unit: Some("search"),
+            ..crate::core::module::derive_default_provider_descriptor(self)
+        }
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut result = ModuleResult::new();
+        let email = &target.value;
+
+        // Credits preflight — no query param needed.
+        let user: OcUserResponse =
+            fetch_keyed_json(ctx, SRC, &format!("{BASE}/user"), KEY_ENV, "x-api-key")
+                .await?
+                .ok_or_else(|| Error::module(SRC, "credits endpoint returned 404"))?;
+        let credits = user.email_osint_credits;
+        debug!(balance = credits.current_balance, "osintcat credit check");
+
+        let mut entity = target.to_entity(confidence::VERY_HIGH, &ctx.scan_id);
+        entity.tag(SRC);
+
+        // A hard failure (5xx / 429 / transport / breaker) on the data endpoints
+        // is NOT the same as their clean 404 "no data" miss: if every data
+        // endpoint fails and nothing is collected, this must surface an error via
+        // `or_hard_failure` rather than return the empty result that reads as a
+        // clean "no footprint, no breach" negative. The credits preflight already
+        // fails closed above; the endpoints that actually decide the finding must
+        // too. A partial outage (one endpoint yields evidence, another fails)
+        // still keeps the genuine finding — that is exactly what `or_hard_failure`
+        // guarantees.
+        let mut hard_failure: Option<Error> = None;
+
+        // Footprint — free endpoint.
+        let fp_url = format!("{BASE}/email-footprint?query={}", urlencode(email));
+        match fetch_keyed_json::<OcFootprintResponse>(ctx, SRC, &fp_url, KEY_ENV, "x-api-key").await
+        {
+            Ok(Some(fp)) => emit_footprint(&fp, &mut entity, &mut result),
+            Ok(None) => {} // 404 — no footprint data
+            Err(e) => {
+                warn!(error = %e, "osintcat footprint failed");
+                hard_failure = Some(e);
+            }
+        }
+
+        // Breach — free endpoint.
+        let br_url = format!("{BASE}/breach?query={}", urlencode(email));
+        match fetch_keyed_json::<OcBreachResponse>(ctx, SRC, &br_url, KEY_ENV, "x-api-key").await {
+            Ok(Some(br)) => emit_breach(&br, &mut entity),
+            Ok(None) => {} // 404 — no breach data
+            Err(e) => {
+                warn!(error = %e, "osintcat breach failed");
+                hard_failure = Some(e);
+            }
+        }
+
+        // Deep email-osint — paid; needs an extra `x-purpose` header so we
+        // can't use `fetch_keyed_json` directly.
+        if credits.has_sufficient_credits {
+            match fetch_email_osint(email, ctx).await {
+                Ok(raw) => emit_email_osint(&raw, &mut entity),
+                Err(e) => {
+                    warn!(error = %e, "osintcat email-osint failed");
+                    hard_failure = Some(e);
+                }
+            }
+        } else {
+            // `info!`, not `warn!`: skipping a paid lookup for insufficient
+            // budget is a routine, expected clean-skip (the platform's "no
+            // key / no budget → skip cleanly, never an error" contract), not a
+            // failure. The genuine failure path above (line ~149) stays `warn!`.
+            info!(
+                balance = credits.current_balance,
+                price = credits.price_per_search,
+                "osintcat skipping email-osint: insufficient credits"
+            );
+        }
+
+        // Only emit the entity when at least one endpoint contributed evidence.
+        // A bare entity with only the SRC tag and no evidence adds no value.
+        if !entity.evidence.is_empty() {
+            result.push(entity);
+        }
+        // Empty result + a data-endpoint hard failure -> surface the error, so a
+        // total outage is never reported as a clean negative. Any collected
+        // evidence is kept regardless.
+        result.or_hard_failure(hard_failure)
+    }
+}
+
+// ── HTTP helpers ───────────────────────────────────────────────────────────────
+
+/// Fetch the paid email-osint endpoint. Needs an extra `x-purpose` header that
+/// [`fetch_keyed_json`] does not support, so we build the request manually and
+/// delegate status classification to [`keyed_ok_or_404`].
+async fn fetch_email_osint(email: &str, ctx: &ModuleContext) -> Result<Value> {
+    let key = ctx.key(KEY_ENV)?;
+    let resp = ctx
+        .http
+        .get(format!("{BASE}/email-osint?query={}", urlencode(email)))
+        .header("x-api-key", key)
+        .header("x-purpose", PURPOSE)
+        .send_tagged(SRC)
+        .await?;
+
+    let Some(resp) = keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+        return Ok(Value::Null);
+    };
+    json_scanned(resp, SRC)
+        .await
+        .map_err(|e| Error::module(SRC, e))
+}
+
+// ── Emitters ───────────────────────────────────────────────────────────────────
+
+fn emit_footprint(fp: &OcFootprintResponse, entity: &mut Entity, result: &mut ModuleResult) {
+    if fp.stats.registered_count == 0 {
+        return;
+    }
+    entity.add_evidence(
+        Evidence::new(
+            SRC,
+            format!(
+                "Found on {}/{} platforms checked",
+                fp.stats.registered_count, fp.stats.total_checked
+            ),
+        )
+        .with_attr("registered_count", fp.stats.registered_count.to_string())
+        .with_attr("total_checked", fp.stats.total_checked.to_string()),
+    );
+
+    for r in fp.results.iter().filter(|r| r.taken) {
+        entity.tag(format!("osintcat:registered:{}", slugify(&r.domain)));
+
+        if let Some(extra) = &r.extra_data {
+            for (k, v) in extra {
+                // `ExtraData` is an arbitrary, provider-controlled JSON map —
+                // only a scalar is a genuine attribute value. An `Object`/
+                // `Array` here is a nested structure, not a fact, and its
+                // `Display` would dump raw JSON straight into `Evidence.summary`
+                // (documented as "not the raw data itself"); skip it rather
+                // than stringify it. A `Value::String` is also filtered for the
+                // absence/redaction markers providers use in place of a real
+                // value, same as `breach_rich.rs`'s own raw-field catch-all.
+                let val = match v {
+                    Value::Null | Value::Array(_) | Value::Object(_) => continue,
+                    Value::String(s) => s.clone(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Number(n) => n.to_string(),
+                };
+                if val.is_empty() || val.len() > MAX_EXTRA_VALUE_LEN || is_absent_marker(&val) {
+                    continue;
+                }
+                entity.add_evidence(
+                    Evidence::new(SRC, format!("[{}] {k}: {val}", r.domain))
+                        .with_attr("platform", &r.domain)
+                        .with_attr("key", k)
+                        .with_attr("value", &val),
+                );
+                // Username ExtraData keys become pivot entities.
+                if k.eq_ignore_ascii_case("username")
+                    && let Some(uname) = v.as_str()
+                {
+                    let mut pivot = Entity::new(
+                        EntityKind::Username,
+                        uname,
+                        confidence::HIGH_PLUS,
+                        &entity.scan_id,
+                    );
+                    pivot.tag("osintcat");
+                    pivot.tag("footprint-pivot");
+                    result.push(pivot);
+                }
+            }
+        }
+    }
+}
+
+fn emit_breach(br: &OcBreachResponse, entity: &mut Entity) {
+    // `breach_data` (not the self-reported `results_count`) is the sole
+    // source of truth throughout this function, so the guard must match: a
+    // `results_count > 0` with an empty `breach_data` would otherwise fall
+    // through and tag the entity `breach` with evidence claiming "0 breach
+    // record(s)" — a result that contradicts its own tag.
+    if br.breach_data.is_empty() {
+        return;
+    }
+    entity.tag("breach");
+    // `breach_data.len()` — not the API's self-reported `results_count` — is
+    // the ground truth: it's what the per-source tags/evidence below are
+    // actually built from, so the summary can never overstate how many
+    // records are backing them (the same convention `breachdirectory`'s
+    // module doc adopts for its own self-reported `found` count).
+    let record_count = br.breach_data.len();
+    let mut ev = Evidence::new(SRC, format!("{record_count} breach record(s) via OsintCat"))
+        .with_attr("breach_count", record_count.to_string());
+    // Surfaced as supplementary evidence, not trusted for logic — the same
+    // pattern `breachdirectory` uses for its own self-reported `found`
+    // count. Keeping both visible lets an operator notice a divergence
+    // (a provider under/over-reporting relative to what it actually
+    // returned) instead of it being silently discarded.
+    if br.results_count as usize != record_count {
+        ev = ev.with_attr("reported_results_count", br.results_count.to_string());
+    }
+
+    for record in &br.breach_data {
+        let source = record
+            .get("source")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let date = record
+            .get("breach_date")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown date");
+        ev = ev.with_attr(
+            format!("breach_{source}"),
+            format!("Breach: {source} ({date})"),
+        );
+        entity.tag(format!("osintcat:breach:{}", slugify(source)));
+    }
+    entity.add_evidence(ev);
+}
+
+fn emit_email_osint(raw: &Value, entity: &mut Entity) {
+    let Some(obj) = raw.as_object() else { return };
+    let mut ev = Evidence::new(SRC, "OsintCat email-osint deep findings".to_string());
+    for (k, v) in obj {
+        if v.is_null() {
+            continue;
+        }
+        ev = ev.with_attr(k, v.to_string());
+    }
+    entity.add_evidence(ev);
+}
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
+}

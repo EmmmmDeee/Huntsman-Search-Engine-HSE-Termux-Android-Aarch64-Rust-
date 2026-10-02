@@ -182,10 +182,11 @@ fn parse_response(response: &Response) -> Result<Vec<String>, ResolveError> {
             detail: "truncated DNS response".into(),
         });
     }
-    let parsed: DnsJsonResponse = crate::http::parse_json_body(response).map_err(|_| ResolveError {
-        kind: ResolveErrorKind::Upstream,
-        detail: "invalid DNS JSON".into(),
-    })?;
+    let parsed: DnsJsonResponse =
+        crate::http::parse_json_body(response).map_err(|_| ResolveError {
+            kind: ResolveErrorKind::Upstream,
+            detail: "invalid DNS JSON".into(),
+        })?;
     if parsed.status != 0 {
         return Err(ResolveError {
             kind: ResolveErrorKind::Empty,

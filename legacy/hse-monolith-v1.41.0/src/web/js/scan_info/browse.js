@@ -1,0 +1,141 @@
+import { API } from '/static/js/api.js';
+import { $, attr, esc, kindPill, kindToStr } from '/static/js/helpers.js';
+import { classify, effC, renderBrowseTableHtml } from '/static/hse_wasm_ui.js';
+import { S } from '/static/js/state.js';
+
+// A large scan can produce thousands of entities; rendering each as two <tr>s
+// with its full (hidden) evidence detail, and re-running that + re-initialising
+// tablesorter on every filter keystroke, is heavy on a Termux phone. Cap what
+// is rendered (the count label still reports the full match total) and debounce
+// the filter. Entities arrive confidence-ranked, so the top slice is shown.
+const BROWSE_ROW_CAP = 500;
+function debounce(fn, ms) {
+  let t;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+/* ── Browse tab ── */
+export function renderBrowse(host){
+  const qKind = S.route.query.k || '';
+  // SpiderFoot 4.0-style data-element rollup: per-kind Unique + Total (sum of
+  // corroboration). Keyed on kindToStr(e.kind), not the raw e.kind: an
+  // EntityKind::Other entity's raw wire shape is an object ({"other":"…"}),
+  // which coerces to the literal string "[object Object]" as a plain-object
+  // key — collapsing every Other-kind entity into one bogus rollup row.
+  const roll = {};
+  S.entities.forEach(e=>{ const k = kindToStr(e.kind); const r = roll[k] || (roll[k] = {u:0, t:0}); r.u++; r.t += (e.corroboration||1); });
+  const rollRows = Object.keys(roll).sort((a,b)=>roll[b].u-roll[a].u);
+  // SpiderFoot-identical two-column Browse layout:
+  // left = sticky "Data Element" sidebar with per-kind counts (click to filter);
+  // right = search/tier controls + paginated results table.
+  const sidebarRows = rollRows.map(k=>`
+    <tr class="rollup-row${k===qKind?' active-kind':''}" data-kind="${attr(k)}" style="cursor:pointer">
+      <td>${kindPill(k)}</td>
+      <td class="text-right"><b>${roll[k].u}</b></td>
+      <td class="text-right text-muted">${roll[k].t}</td>
+    </tr>`).join('');
+  const sidebarHtml = rollRows.length ? `
+    <div class="panel panel-default" style="margin-bottom:0">
+      <div class="panel-heading" style="padding:8px 12px;font-size:12px;font-weight:600">
+        Data Elements &nbsp;<span class="badge">${S.entities.length}</span>
+        <a href="#" id="b-all-types" class="pull-right" style="font-size:11px;font-weight:400">All</a>
+      </div>
+      <div style="max-height:calc(100vh - 180px);overflow-y:auto">
+        <table class="table table-condensed table-hover" id="browse-rollup" style="margin:0;font-size:12px">
+          <thead><tr><th>Type</th><th class="text-right" title="Unique values">Uniq</th><th class="text-right" title="Total corroboration">Tot</th></tr></thead>
+          <tbody>${sidebarRows}</tbody>
+        </table>
+      </div>
+    </div>` : '';
+
+  host.innerHTML = `
+    <div class="row">
+      ${sidebarHtml ? `<div class="col-sm-3 col-md-2" id="b-sidebar">${sidebarHtml}</div>` : ''}
+      <div class="${sidebarHtml ? 'col-sm-9 col-md-10' : 'col-sm-12'}" id="b-main">
+        <div class="row" style="margin-bottom:10px">
+          <div class="col-sm-5">
+            <input type="search" id="b-q" class="form-control input-sm" placeholder="Filter value, evidence, tags…" autocomplete="off">
+          </div>
+          <div class="col-sm-3">
+            <select id="b-cls" class="form-control input-sm">
+              <option value="">All tiers</option>
+              <option value="VERIFIED">✓ Verified</option>
+              <option value="PROBABLE">~ Probable+</option>
+              <option value="CANDIDATE">? Candidate only</option>
+            </select>
+          </div>
+          <div class="col-sm-4 text-right" style="padding-top:6px">
+            <span class="text-muted" style="font-size:11px" id="b-ct"></span>
+          </div>
+        </div>
+        <input type="hidden" id="b-kind" value="${attr(qKind)}">
+        <div id="b-table-host"></div>
+      </div>
+    </div>
+  `;
+  function refresh(){
+    const q = $('#b-q').value.trim().toLowerCase();
+    const ks = $('#b-kind').value, cs = $('#b-cls').value;
+    let rows = S.entities.slice();
+    if (ks) rows = rows.filter(e=>kindToStr(e.kind)===ks);
+    if (cs) rows = rows.filter(e=>{const t=classify(effC(e)); return t===cs || (cs==='PROBABLE' && effC(e)>=0.40);});
+    if (q)  rows = rows.filter(e =>
+      (e.value||'').toLowerCase().includes(q)
+      || (e.tags||[]).some(t=>t.toLowerCase().includes(q))
+      || (e.evidence||[]).some(ev=>(ev.summary||'').toLowerCase().includes(q) || (ev.source||'').toLowerCase().includes(q)));
+    const loaded = S.entities.length;
+    const scanTotal = S.entitiesTotal ?? loaded;
+    // When the server truncated the fetch (scan has more entities than the
+    // page limit), say so — otherwise "N of loaded" reads as "N of all".
+    $('#b-ct').textContent = scanTotal > loaded
+      ? `${rows.length} of ${loaded} loaded · ${scanTotal} in scan`
+      : `${rows.length} of ${loaded}`;
+    const shown = rows.length > BROWSE_ROW_CAP ? rows.slice(0, BROWSE_ROW_CAP) : rows;
+    $('#b-table-host').innerHTML = renderBrowseTableHtml(shown,
+      { total: rows.length, entities_total: S.entitiesTotal ?? null, loaded_count: loaded });
+    if (window.jQuery && jQuery.fn.tablesorter && shown.length){
+      try { jQuery('#browse-table').tablesorter({sortList:[[2,1]]}); } catch {}
+    }
+  }
+  $('#b-q').addEventListener('input', debounce(refresh, 180));
+  $('#b-cls').addEventListener('change', refresh);
+  // Sidebar: click a row to filter by kind (toggle off if already active)
+  host.querySelectorAll('.rollup-row').forEach(tr=>tr.addEventListener('click', ()=>{
+    const k = tr.getAttribute('data-kind');
+    const inp = $('#b-kind');
+    inp.value = (inp.value === k) ? '' : k;
+    host.querySelectorAll('.rollup-row').forEach(r=>r.classList.toggle('active-kind', r.getAttribute('data-kind')===inp.value && inp.value!==''));
+    refresh();
+  }));
+  const allLink = $('#b-all-types');
+  if (allLink) allLink.addEventListener('click', e=>{ e.preventDefault(); $('#b-kind').value=''; host.querySelectorAll('.rollup-row').forEach(r=>r.classList.remove('active-kind')); refresh(); });
+  // Deep-link: a `q` query param pre-fills the value filter
+  if (S.route.query.q){ $('#b-q').value = S.route.query.q; }
+  refresh();
+}
+
+/* Cross-scan entity pivot: resolve an entity's UID to every scan it appears in
+   (GET /entities/{uid}). Turns a single finding into "everywhere this identifier
+   was ever seen" — the correlation the operator actually wants. */
+export async function entityPivot(uid, btn){
+  const out = btn.parentElement.querySelector('.pivot-out');
+  if (!uid){ out.innerHTML = '<span class="text-danger">no uid</span>'; return; }
+  out.innerHTML = '<span class="text-muted">resolving…</span>';
+  try {
+    const r = await API.entityGet(uid);
+    const ids = r.scan_ids||[];
+    const here = S.scan ? S.scan.id : null;
+    const links = ids.map(sid=>{
+      const cur = sid===here ? ' (this scan)' : '';
+      return `<a href="#/scaninfo?id=${encodeURIComponent(sid)}&tab=browse" class="tag" style="text-decoration:none">${esc(String(sid).slice(0,18))}${esc(cur)}</a>`;
+    }).join(' ');
+    out.innerHTML = `<b>${r.observation_count||0}</b> observation${(r.observation_count===1)?'':'s'} across <b>${ids.length}</b> scan${ids.length===1?'':'s'}: ${links||'<span class="text-muted">none</span>'}`;
+  } catch(e){ out.innerHTML = `<span class="text-danger">${esc(e.message)}</span>`; }
+}
+
+export function toggleDetail(tr){
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains('entity-detail-row')){
+    next.style.display = next.style.display === 'none' ? '' : 'none';
+  }
+}
