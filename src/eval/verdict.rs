@@ -58,7 +58,11 @@ pub fn decide(evidence: ComparisonEvidence, policy: EvalPolicy) -> Decision {
         evidence.worst_decile_delta,
         evidence.cost_ratio,
     ];
-    if !evidence.complete || !evidence.comparable || !measured.iter().all(|m| m.is_finite()) {
+    if !evidence.complete
+        || !evidence.comparable
+        || !measured.iter().all(|m| m.is_finite())
+        || evidence.cost_ratio < 0.0
+    {
         return Decision::Hold;
     }
     if evidence.severe_regression {
@@ -142,5 +146,14 @@ mod tests {
         let mut evidence = robust_gain();
         evidence.cost_ratio = f64::NEG_INFINITY;
         assert_eq!(decide(evidence, EvalPolicy::default()), Decision::Hold);
+    }
+
+    #[test]
+    fn falsify_negative_cost_ratio_cannot_promote() {
+        let mut evidence = robust_gain();
+        evidence.cost_ratio = -5.0;
+        assert_eq!(decide(evidence, EvalPolicy::default()), Decision::Hold);
+        evidence.cost_ratio = 0.0;
+        assert_eq!(decide(evidence, EvalPolicy::default()), Decision::Promote);
     }
 }

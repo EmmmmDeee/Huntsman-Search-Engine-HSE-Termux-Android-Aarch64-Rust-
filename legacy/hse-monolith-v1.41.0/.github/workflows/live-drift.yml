@@ -1,0 +1,48 @@
+name: Live API drift
+
+# Opt-in, NON-BLOCKING wire-format drift detection for free/keyless modules.
+# Runs the `#[ignore]`d tests in tests/live_drift.rs, which hit real
+# third-party endpoints. Decoupled from the main CI workflow (ci.yml) and from
+# pull requests: it triggers ONLY on a weekly schedule and manual dispatch, so
+# it can never block a PR. The job is deliberately allowed to go RED on
+# failure (no continue-on-error) — a failed run is the whole point, since that
+# is what fires the scheduled-workflow failure notification surfacing a drift
+# or upstream outage. Swallowing the failure into a green run would hide
+# exactly the signal this workflow exists to raise.
+on:
+  schedule:
+    # Mondays 08:00 UTC — once a week is enough to catch upstream shape
+    # changes. Staggered after audit.yml (06:00) and fuzz.yml (07:00) so the
+    # three scheduled workflows don't all land in the same slot.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+# Least privilege: the job only reads the checked-out tree and hits public
+# third-party endpoints. No write scopes.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    name: Live drift (free modules)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.98.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
+
+      # Only the ignored live-drift tests; `--ignored` runs exactly those.
+      # A failure here means an upstream provider changed its wire shape (or is
+      # down) — investigate tests/live_drift.rs, don't ignore it.
+      - name: Run live-drift tests
+        run: cargo test --test live_drift --locked -- --ignored --nocapture

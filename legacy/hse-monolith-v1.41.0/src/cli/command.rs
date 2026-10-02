@@ -1,0 +1,1468 @@
+//! `hse` command-line surface: the clap `Parser`/`Subcommand` definitions.
+//!
+//! Split out of `cli/mod.rs` so the argument grammar (one large
+//! `#[derive(Subcommand)]` enum mirroring the full `ScanOptions` flag surface)
+//! lives apart from `run()`'s dispatch and the shared helpers. Reaches the
+//! sibling `keys_cmd::KeysAction` sub-grammar through `super`.
+
+use clap::{Parser, Subcommand};
+
+use super::attack::AttackAction;
+use super::bsi::BsiAction;
+use super::keys_cmd::KeysAction;
+
+/// Parse a `--min-confidence` argument, rejecting anything that is not a usable
+/// threshold.
+///
+/// `f64::from_str` accepts `nan` and `inf`, and clap's default `f64` parser
+/// takes them verbatim. A NaN floor makes the extractor's
+/// `confidence >= min_confidence` filter false for every entity, so the command
+/// used to exit 0 having silently discarded its entire result set — the failure
+/// mode this crate treats as its cardinal sin. Rejecting at the argument
+/// boundary turns that into a clap usage error, before any work is done, and
+/// finally enforces the `(0.0-1.0)` range the flag's own help text has always
+/// advertised.
+pub(crate) fn confidence_floor(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a number (expected 0.0-1.0)"))?;
+    if !v.is_finite() {
+        return Err(format!("`{s}` is not a finite number (expected 0.0-1.0)"));
+    }
+    if !(0.0..=1.0).contains(&v) {
+        return Err(format!("`{s}` is outside the range 0.0-1.0"));
+    }
+    Ok(v)
+}
+
+/// Parser for a floor that is a **rate**, not a probability: finite and
+/// non-negative, with no upper bound.
+///
+/// `--min-marginal-yield` is "entities discovered per dispatched target"
+/// (default 0.75), so a value above 1.0 is meaningful — a demanding operator can
+/// legitimately require 2 entities per target before continuing to recurse.
+/// Clamping it to `0.0..=1.0` like a confidence would reject valid input, which
+/// is why this is a separate parser rather than a reuse of
+/// [`confidence_floor`]. Non-finite and negative are still rejected: a negative
+/// yield floor is unsatisfiable in the wrong direction (every round "passes"),
+/// and NaN inverts the comparison exactly as it does for a confidence.
+pub(crate) fn non_negative_rate(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a number (expected 0.0 or greater)"))?;
+    if !v.is_finite() {
+        return Err(format!(
+            "`{s}` is not a finite number (expected 0.0 or greater)"
+        ));
+    }
+    if v < 0.0 {
+        return Err(format!("`{s}` is negative (expected 0.0 or greater)"));
+    }
+    Ok(v)
+}
+
+#[derive(Parser)]
+#[command(
+    name = "hse",
+    // Version AND commit: two binaries built from different `main` commits
+    // between version bumps otherwise report an identical `--version`, which is
+    // exactly how a stale install passed for an up-to-date one. `hse build-sha`
+    // is the machine-readable form the installer compares against.
+    version = crate::build_id(),
+    about = "Huntsman Search Engine (HSE) — GhostSec-tradition all-source OSINT / GEOINT recon for Termux aarch64",
+    long_about = "Huntsman Search Engine (HSE) — an all-source OSINT / GEOINT / NETINT reconnaissance\n\
+                  engine in the GhostSec tradition: SpiderFoot-inspired breadth without the daemon or the\n\
+                  footprint. Pure-Rust, keyless-first, autonomous depth-bounded expansion, forged to run\n\
+                  entirely inside Termux on Android aarch64 — single binary, zero native dependencies.\n\
+                  Docs: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-"
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Subcommand)]
+// Scan has many fields (intentional — full ScanOptions surface as CLI flags).
+// Boxing every field is uglier than the size disparity warrants.
+#[allow(clippy::large_enum_variant)]
+pub enum Command {
+    /// Run a single scan and print the entities found.
+    Scan {
+        /// Target kind: email, username, phone, name, ip, domain, url, asn, coords,
+        /// address, org, abn, mac, apikey. Omit (or pass `auto`) to auto-detect the
+        /// kind from the value — the unified scan, e.g. `hse scan -v alice@example.com`.
+        #[arg(short, long)]
+        kind: Option<String>,
+        /// Target value (e.g. example.com, foo@bar.com). Optional — omit to use
+        /// the operator-local default seed (`HUNTSMAN_DEFAULT_SEED` in
+        /// ~/.huntsman.env), so you can run a bare `hse scan` without retyping it.
+        // allow_hyphen_values so a value that legitimately begins with `-`
+        // (e.g. a southern-hemisphere coordinate `-33.86,151.20`) is taken as
+        // the value, not parsed by clap as an unknown short flag.
+        #[arg(short, long, allow_hyphen_values = true)]
+        value: Option<String>,
+        /// Batch mode: path to a file of seeds, one target per line (blank lines
+        /// and `#` comments ignored). Runs the SAME scan for every listed seed —
+        /// bulk-scan an IP / domain / email / username list. When set, `--value`
+        /// is ignored; each seed's findings are stored and exportable per scan ID.
+        #[arg(long, value_name = "PATH")]
+        input_file: Option<String>,
+        /// Comma-separated allowlist of module names.
+        #[arg(short, long)]
+        modules: Option<String>,
+        /// Comma-separated exclude list.
+        #[arg(long)]
+        exclude: Option<String>,
+        /// Delay between module dispatches, in milliseconds. Default 250 paces
+        /// dispatch so a deep/everything scan doesn't flood the link or trip
+        /// provider rate limits; set 0 for the fastest (burstier) behaviour.
+        #[arg(short, long, default_value_t = 250)]
+        throttle: u64,
+        /// Drop entities whose base confidence is below this.
+        #[arg(long, value_parser = confidence_floor)]
+        min_confidence: Option<f64>,
+        /// Skip key-gated and paid modules.
+        #[arg(long)]
+        free_only: bool,
+        /// Skip non-passive modules (network-reaching).
+        #[arg(long)]
+        passive_only: bool,
+        /// Per-module timeout override, in milliseconds.
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Recursive expansion depth. 0 = single round; 1+ auto-feeds discovered
+        /// entities back as new scan targets, up to N rounds deep. Omit to use
+        /// the comprehensive product default (`DEFAULT_SCAN_DEPTH`, the full
+        /// `MAX_DEPTH`); `--auto` overrides an
+        /// omitted value.
+        #[arg(short, long)]
+        depth: Option<u32>,
+        /// Shorthand for deep recursive expansion: pins depth to `MAX_DEPTH` and
+        /// clamps the expansion floor to ≤0.40. With the comprehensive default
+        /// (full depth, floor 0.20) this now matches the default; kept for explicitness
+        /// and for use alongside a raised `--min-expand-confidence`. Overridden by
+        /// an explicit --depth.
+        #[arg(short = 'R', long)]
+        recursive: bool,
+        /// COMPLETE scan — the no-compromise preset. Auto-detects the seed kind,
+        /// runs EVERY module (overrides --free-only/--passive-only/--modules),
+        /// expands to `MAX_DEPTH` at the Probable floor, and disables ROI
+        /// pruning so nothing is skipped. The single "get everything" option.
+        #[arg(
+            short = 'F',
+            long,
+            visible_alias = "complete",
+            visible_alias = "everything"
+        )]
+        full: bool,
+        /// Automatically select optimal expansion depth based on seed type
+        /// and available API keys. Uses expected-value analysis to determine
+        /// the depth where marginal yield justifies the cost.
+        #[arg(short = 'A', long)]
+        auto: bool,
+        /// Only expand entities whose C_eff is at least this. Default 0.20 so the
+        /// scan is comprehensive — the seed's own derived identifiers (name → email
+        /// / username / handle permutations, emitted at 0.20–0.30) expand and feed
+        /// every downstream module, instead of starving the pipeline after the seed
+        /// round (those permutations are frequently the subject's real accounts, so
+        /// pivoting on them is what confirms which are real). Correlation still
+        /// applies its own strict floors, so recall is wide while the resolved
+        /// findings stay precise. Raise it (e.g. 0.50 Probable, 0.75 Verified-only),
+        /// or pass `--gate-speculative`, for a tighter, faster sweep.
+        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE, value_parser = confidence_floor)]
+        min_expand_confidence: f64,
+        /// Hard cap on total entities; stops expansion when reached. Omitted ⇒ the
+        /// product default (2500) — a generous Termux on-device safety bound for the
+        /// comprehensive full-depth default sweep. Pass a larger value (or use a
+        /// profile) to go further.
+        #[arg(long)]
+        max_entities: Option<usize>,
+        /// Hard cap on total wall-time in seconds. Stops expansion when exceeded.
+        #[arg(long)]
+        max_wall_time: Option<u64>,
+        /// Modules to run in parallel per round. Default 2 (gentle — avoids
+        /// flooding the link / tripping rate limits). Raise it when the network
+        /// can take it; set 0 for fully sequential dispatch (low-power devices).
+        #[arg(long, default_value_t = 2)]
+        max_concurrent: usize,
+        /// Read ~/.huntsman/module_stats.json and skip modules with
+        /// historical zero-yield rate ≥80% over ≥5 scans. Closes the
+        /// self-optimization feedback loop — every scan informs the next.
+        #[arg(long)]
+        adaptive: bool,
+        /// Maximise ROI per dispatch: skip already-saturated entities
+        /// (≥2 corroborating sources, c_eff ≥ 0.85), keep only top-K
+        /// candidates per round (K = 2×max_concurrent + 8), and
+        /// terminate recursion when marginal yield falls below floor
+        /// (default 0.75 new entities per dispatched target).
+        #[arg(long)]
+        max_roi: bool,
+        /// Convex (optionality / barbell) budget allocation is ON by default:
+        /// expansion candidates are re-weighted by a convexity premium for
+        /// heavy-tailed upside over per-kind dispatch cost, so the bounded budget
+        /// favours cheap, high-optionality identity leads over saturated
+        /// infrastructure — maximising the value of each scan. Pass
+        /// `--no-convex-budget` for the plain expected-value ranking.
+        #[arg(long = "no-convex-budget", action = clap::ArgAction::SetTrue)]
+        no_convex_budget: bool,
+        /// Capability-aware dispatch is ON by default: modules whose parser has
+        /// provably gone dead across recent scans (persistent failures or silent
+        /// zero-yield drift) are skipped so their dispatch slot goes to a source
+        /// that still works — maximising each scan's useful return. Only culls
+        /// the automatic comprehensive fan-out; an explicit `--modules` set or
+        /// `--full` always runs everything. Pass `--no-skip-dead-modules` to run
+        /// every module regardless of health.
+        #[arg(long = "no-skip-dead-modules", action = clap::ArgAction::SetTrue)]
+        no_skip_dead_modules: bool,
+        /// Australian-focused regional searching is ON by default: the search
+        /// module adds minimal `.au` / AU-directory dorks on top of the
+        /// geolocation-neutral base (a seed with no region signal defaults to
+        /// AU). Pass `--no-regional` for a purely global scan.
+        #[arg(long = "no-regional", action = clap::ArgAction::SetTrue)]
+        no_regional: bool,
+        /// When `--max-roi` is set, override the default marginal-yield
+        /// floor (0.75). Lower = recurse further before giving up.
+        #[arg(long, value_parser = non_negative_rate)]
+        min_marginal_yield: Option<f64>,
+        /// Expansion ordering strategy: `geo_converge` (default; legacy),
+        /// `breadth_first`, `depth_first`, `richest_first`. Changes how
+        /// the engine prioritises expansion candidates each round.
+        #[arg(long, default_value = "geo_converge")]
+        expansion_strategy: String,
+        /// Per-scan SeekNow (see-know.ru) budget override. Caps the
+        /// number of SeekNow API queries this scan may dispatch.
+        /// Default (None) falls back to HUNTSMAN_SEEKNOW_SCAN_CAP env
+        /// (160). Hard-clamped at 200 to preserve the daily session
+        /// ceiling. Raise for investigative scans on high-value
+        /// targets; lower for passive recces that shouldn't burn
+        /// quota.
+        #[arg(long)]
+        seeknow_scan_cap: Option<u32>,
+        /// Expand EVERY discovered username/person, including uncorroborated,
+        /// single-source aliases that share no handle/name overlap with the
+        /// subject. Disables the wrong-identity gate for maximum recall at the
+        /// cost of pulling in unrelated footprints (prune by hand). Implied by
+        /// `--full`. Default keeps the gate on; excluded aliases are logged.
+        #[arg(long)]
+        expand_all_identities: bool,
+        /// Tighter, faster sweep: gate uncorroborated name-permutation guesses
+        /// (`firstname.lastname@provider` / handle candidates) out of expansion
+        /// until a reliable source confirms them. OFF by default — those
+        /// permutations are often the subject's REAL accounts, so the default
+        /// expands and validates them (the point of a name scan); enable this only
+        /// when a name collides with many namesakes and you want to suppress the
+        /// speculative fan-out. Overridden by `--expand-all-identities` / `--full`.
+        #[arg(long)]
+        gate_speculative: bool,
+        /// Preset bundle (recommended | passive | footprint | investigate | fast).
+        /// `recommended` is the zero-setup out-of-box default: free/keyless sources,
+        /// one expansion round for cross-service correlation, phone-safe budgets.
+        /// Sets depth/free-only/budgets; `--modules`/`--exclude`/`--format` still apply.
+        #[arg(long)]
+        profile: Option<String>,
+        /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
+        #[arg(
+            short = 'f',
+            long = "format",
+            alias = "output",
+            short_alias = 'o',
+            default_value = "table"
+        )]
+        output: String,
+        /// Include platform-infrastructure entities (cloud buckets, CDN IPs,
+        /// analytics tracking IDs from platforms) in scan output. Excluded by
+        /// default; implied by `--full`.
+        #[arg(long)]
+        include_infra: bool,
+    },
+    /// List registered modules with their cost tier and accepted target kinds.
+    ///
+    /// Filter with `--category <cat>` (dns_recon / breach / infrastructure /
+    /// search / geo / social / email / phone / corporate / threat / sensor
+    /// / people / web / other) or `--json` to get the machine-readable
+    /// shape that `/api/v1/modules` returns.
+    Modules {
+        /// Restrict listing to one module category.
+        #[arg(short, long)]
+        category: Option<String>,
+        /// Output as JSON (same shape as `/api/v1/modules`).
+        #[arg(long)]
+        json: bool,
+    },
+    /// BSI / IT-Grundschutz assurance status: every catalogued control with its
+    /// EVIDENCE-DERIVED state (NOT_APPLICABLE / GAP / DEFINED / … / ASSURED /
+    /// REGRESSED) and maturity level (A0–A6). Nothing is a claim — a control is
+    /// green only where recorded evidence earns it. `--profile` filters to one
+    /// `HSE-BSI-*` profile; `--json` emits the machine-readable shape.
+    Assurance {
+        /// Restrict to one profile (`core`, `android`, `termux`, `web`,
+        /// `storage`, `cloud`, `development`, `ble`, `intelligence`).
+        #[arg(short, long)]
+        profile: Option<String>,
+        /// Output as JSON (the resolved controls + raw summary counts).
+        #[arg(long)]
+        json: bool,
+    },
+    /// BSI / IT-Grundschutz assurance command family: focused drill-downs over
+    /// the same evidence-derived model as `hse assurance`. Sub-verbs: `status`,
+    /// `controls`, `scope`, `protection`, `gaps`, `regressions`,
+    /// `profile <name>`, and `verify` (a real gate that exits non-zero on a
+    /// regression or a High/Critical gap).
+    Bsi {
+        /// The assurance sub-command to run (`status`, `scope`, `protection`,
+        /// `gaps`, `regressions`, `controls`, `profile`, `verify`).
+        #[command(subcommand)]
+        action: BsiAction,
+    },
+    /// MITRE ATT&CK views over HSE's versioned `core::attack` layer (Enterprise
+    /// v17.1). HSE honestly claims coverage of one tactic — Reconnaissance
+    /// (TA0043) — and every covered technique resolves to the modules that are
+    /// its evidence. Sub-verbs: `status`, `coverage`, `gaps`, `navigator`.
+    Attack {
+        /// The ATT&CK sub-command to run (`status`, `coverage`, `gaps`,
+        /// `navigator`).
+        #[command(subcommand)]
+        action: AttackAction,
+    },
+    /// Print the git commit this binary was built from (40-char hex), for
+    /// scripting. Exits non-zero when the build carries no verifiable revision —
+    /// a dirty tree, or a build with no `.git` and no `HSE_BUILD_SHA`.
+    ///
+    /// `install.sh` and `hse update` use this to decide whether a candidate
+    /// binary IS the revision they were asked to install. A non-zero exit means
+    /// "cannot prove it", which callers must treat as a mismatch and build from
+    /// source rather than trust.
+    #[command(hide = true, name = "build-sha")]
+    BuildSha {
+        /// Emit `sha`, `dirty` and `version` as JSON instead of the bare SHA.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Liveness panel: probe every free search engine and report up/blocked/down
+    /// + latency. Subsumed by `hse diagnostics`; kept for scripting.
+    #[command(hide = true)]
+    Engines {
+        /// Output as JSON instead of the status table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// General web search: run an everyday free-text query across every free
+    /// search engine and print ranked results.
+    ///
+    /// Unlike `hse search`, which treats its input as an OSINT target
+    /// (email / username / domain / …) and wraps it in `site:`/`intext:` dorks,
+    /// `query` searches the text verbatim — e.g.
+    /// `hse query "buy panadeine forte online"` — and returns the raw web
+    /// results, deduplicated across engines and ranked by how many independent
+    /// engines surfaced each URL.
+    Query {
+        /// The free-text search query. Quote multi-word queries.
+        #[arg(allow_hyphen_values = true)]
+        query: String,
+        /// Maximum results to print (0 = no limit).
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+        /// Dark-web EXPOSURE search: query Ahmia's onion index over clearnet
+        /// (no Tor required) to find hidden-service pages that mention the
+        /// search term — e.g. your own domain or brand appearing in a leak
+        /// listing. Reports where a mention exists; HSE never fetches the
+        /// onion addresses it reports.
+        #[arg(long)]
+        dark: bool,
+        /// Overall time budget in seconds (clamped to 3–60). Bounds the whole
+        /// command: every engine request self-clamps to it on the default path,
+        /// and it caps the single Ahmia request under `--dark`.
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Output format: `table` (default) or `json`.
+        #[arg(
+            short = 'f',
+            long = "format",
+            alias = "output",
+            short_alias = 'o',
+            default_value = "table"
+        )]
+        output: String,
+    },
+    /// DoRkUS — the meta search engine. Runs the clearnet multi-engine search
+    /// AND the dark-web (Ahmia) exposure index at once, in one time budget, and
+    /// prints one aggregated, source-attributed report. The query is passed
+    /// through verbatim, so search-operator dorks (`site:`, `intitle:`,
+    /// quoted phrases) work as the underlying engines support them. HSE never
+    /// fetches the onion addresses it reports.
+    Dorkus {
+        /// The free-text search query (or a dork). Quote multi-word queries.
+        #[arg(allow_hyphen_values = true)]
+        query: String,
+        /// Maximum results to print per surface (0 = no limit).
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+        /// Overall time budget in seconds (clamped to 3–60). Bounds the whole
+        /// command; the two back-ends run concurrently within it.
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Output format: `table` (default) or `json`.
+        #[arg(
+            short = 'f',
+            long = "format",
+            alias = "output",
+            short_alias = 'o',
+            default_value = "table"
+        )]
+        output: String,
+        /// Query only the clearnet multi-engine search (skip the dark web).
+        #[arg(long, conflicts_with = "dark_only")]
+        clearnet_only: bool,
+        /// Query only the dark-web (Ahmia) exposure index (skip clearnet).
+        #[arg(long)]
+        dark_only: bool,
+    },
+    /// Generate the manual operator query pack for a target: the ranked queries
+    /// to run BY HAND against manual/paid exposure providers (IntelX, OathNet,
+    /// Stolen.tax, DeHashed, XposedOrNot, HIBP). Offline and deterministic —
+    /// nothing is fetched; it hands you the queries and where to run them. For
+    /// DISCOVERY / EXPOSURE VERIFICATION only.
+    QueryPack {
+        /// The target value (e.g. an email, username, domain, phone, or name).
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+        /// Target kind: `auto` (default, inferred from the value) or an explicit
+        /// kind like `email` / `username` / `domain`.
+        #[arg(long, default_value = "auto")]
+        kind: String,
+        /// Output format: `table` (default) or `json`.
+        #[arg(
+            short = 'f',
+            long = "format",
+            alias = "output",
+            short_alias = 'o',
+            default_value = "table"
+        )]
+        output: String,
+    },
+    /// View or set persistent capability toggles (universal toggleability,
+    /// SpiderFoot-style). No args lists all toggles; `hse config <key> <on|off>`
+    /// sets one — e.g. `hse config engine.google off`.
+    Config {
+        /// Toggle key (e.g. `engine.google`). Omit to list all toggles.
+        key: Option<String>,
+        /// `on` / `off` to set the toggle; omit to just show its value.
+        value: Option<String>,
+    },
+    /// Run ALL diagnostics in one pass: environment (doctor) + module/core
+    /// self-test (selftest) + search-engine liveness (engines). Exits non-zero
+    /// if any section fails. The one command to verify a fresh install.
+    #[command(visible_alias = "diag", visible_alias = "check")]
+    Diagnostics {
+        /// Emit machine-readable JSON for the sections that support it
+        /// (selftest, engines); doctor remains human-readable.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Score and explain a scan's output quality: noise, infrastructure
+    /// pollution, fragment values, missed PII, and source health, with
+    /// actionable recommendations. Ingests a CSV export (`--csv`), a stored scan
+    /// (`--scan-id`, `latest` allowed), and/or a debug log (`--log`, JSONL or
+    /// tracing text). A self-audit of every scan: it surfaces weaknesses so they
+    /// can be addressed.
+    /// One scan's full quality picture: audit + benchmark + discovery gaps in a
+    /// single pass. Runs ALL THREE by default — the comprehensive answer to "how
+    /// good was this scan, and what is it missing?" without three invocations.
+    /// Narrow with --audit / --benchmark / --gaps.
+    Report {
+        /// Stored scan ID (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// CSV export to audit instead of a stored scan (audit lens only).
+        #[arg(long)]
+        csv: Option<String>,
+        /// Debug log / event stream to mine for source-health signals (audit lens only).
+        #[arg(long)]
+        log: Option<String>,
+        /// Machine-readable JSON. Needs exactly one lens — three JSON documents
+        /// concatenated would not be valid JSON.
+        #[arg(long)]
+        json: bool,
+        /// Only the audit lens: noise, infrastructure pollution, missed PII, source health.
+        #[arg(long)]
+        audit: bool,
+        /// Only the benchmark scorecard.
+        #[arg(long)]
+        benchmark: bool,
+        /// Only the discovery-gap analysis.
+        #[arg(long)]
+        gaps: bool,
+    },
+
+    /// (Subsumed by `hse report`; kept for scripting and the Web UI.)
+    #[command(hide = true, visible_alias = "score")]
+    Audit {
+        /// CSV export to audit (`hse export --format csv`).
+        #[arg(long)]
+        csv: Option<String>,
+        /// Stored scan ID to audit (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// Debug log / event stream to mine for source-health signals.
+        #[arg(long)]
+        log: Option<String>,
+        /// Emit the machine-readable JSON report instead of the text scorecard.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Benchmark a scan: a consolidated scorecard of the measurable OSINT dimensions.
+    /// (Subsumed by `hse report`; kept for scripting and the Web UI.)
+    #[command(hide = true)]
+    Benchmark {
+        /// Stored scan ID to benchmark (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// Emit the machine-readable JSON report instead of the text scorecard.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Discovery gaps: validated seeds with no evidence-backed link.
+    /// (Subsumed by `hse report`; kept for scripting and the Web UI.)
+    #[command(hide = true)]
+    Gaps {
+        /// Stored scan ID to analyse (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// Emit the machine-readable JSON report instead of the text summary.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify environment: DB path, key file, Termux detection, module counts.
+    /// (Subsumed by `hse diagnostics`; kept for scripting and the API/UI.)
+    #[command(hide = true)]
+    Doctor {
+        /// Also run a live capability preflight: probe every keyless module
+        /// against its real provider and report alive/empty/unreachable per
+        /// module. Opt-in and network-bound — the default run stays offline.
+        #[arg(long)]
+        live: bool,
+    },
+    /// Validate every module and core feature, then exit (non-zero on any
+    /// failure). (Subsumed by `hse diagnostics`; kept for scripting and the Web UI.)
+    #[command(hide = true)]
+    Selftest {
+        /// Emit the machine-readable JSON report instead of the text table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Provision the local environment: write/merge `$HOME/.huntsman.env`
+    /// from the canonical template and run a diagnostic smoke test.
+    ///
+    /// Replaces the post-install phases of the Termux bootstrap script:
+    /// pre-build phases (toolchain / git clone / `cargo build`) still
+    /// live in `install.sh` because they must run before this binary
+    /// exists. After install, prefer `hse provision`.
+    ///
+    /// Idempotent: existing real key values are preserved across runs;
+    /// the file is backed up to `<path>.env.bak.<epoch>` before any
+    /// change.
+    #[command(hide = true, visible_alias = "setup")]
+    Provision {
+        /// Merge the env file but skip the diagnostic smoke test.
+        #[arg(long, conflicts_with = "verify_only")]
+        env_only: bool,
+        /// Run the diagnostic smoke test but don't touch the env file.
+        #[arg(long, conflicts_with = "env_only")]
+        verify_only: bool,
+        /// Show the merged env content without writing to disk.
+        #[arg(long)]
+        dry_run: bool,
+        /// Autonomously discover HUNTSMAN_* API keys already present in the
+        /// process environment (exported in a shell rc, CI, or passed inline)
+        /// that the env file doesn't yet carry, and pre-configure them into
+        /// `~/.huntsman.env`. Turns any key the operator already has into a
+        /// persisted, active one with zero manual `keys set`. No-op under
+        /// `--verify-only` (which never touches the env file).
+        #[arg(long)]
+        discover: bool,
+    },
+
+    /// Write a single `HUNTSMAN_*` key to `$HOME/.huntsman.env`.
+    /// Prefer `hse keys set NAME VALUE` — this shorthand is kept for scripts.
+    #[command(hide = true)]
+    SetKey {
+        /// Variable name, e.g. `HUNTSMAN_SHODAN_KEY`. Must start with `HUNTSMAN_`.
+        name: String,
+        /// Raw value to store. Quote in the shell to avoid mis-parsing.
+        value: String,
+    },
+    /// Import a breach / OSINT export file (or scrape a directory of them) into a
+    /// new scan record with full entity extraction: OathNet JSON / HTML / TXT,
+    /// breach and dossier compilations, Combined Search and Stealerlogs exports,
+    /// DeHashed and HSE CSVs, WiGLE KML, raw combolists and SQL dumps. The format
+    /// is detected from the content; `--input-format` forces it.
+    Import {
+        /// Path to the file to import — an OathNet export (JSON / HTML / TXT), a
+        /// breach or dossier compilation, a Combined Search or Stealerlogs export,
+        /// a DeHashed or HSE CSV, a WiGLE KML, a raw combolist or a SQL dump — or a
+        /// directory to scrape for all of those. The format is detected from the
+        /// content, never the extension.
+        file: String,
+        /// Output format: json, table, dossier.
+        #[arg(
+            short = 'f',
+            long = "format",
+            alias = "output",
+            short_alias = 'o',
+            default_value = "table"
+        )]
+        output: String,
+        /// Force the input format instead of detecting it from the content — for a
+        /// file the detector cannot classify (a combolist of bare usernames with no
+        /// email-shaped line) or classifies wrongly. Single files only. The names
+        /// are the labels the web upload reports; its `?format=` query parameter
+        /// takes the same names.
+        #[arg(
+            long = "input-format",
+            value_name = "FORMAT",
+            value_enum,
+            ignore_case = true
+        )]
+        input_format: Option<crate::app::import::ImportFormat>,
+    },
+    /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, IPv4, IPv6, domain, URL, social handle, MD5/SHA hashes),
+    /// classify by kind, assign confidence scores, and output as HSE-ready batch queries (JSONL/JSON/CSV/table).
+    Ingest {
+        /// Input file path (image, PDF, CSV, JSON, JSONL, text).
+        #[arg(short, long, value_name = "PATH")]
+        file: String,
+        /// Output format: jsonl (default), json, csv, table, or hse
+        /// (full core::entity::Entity records ready for the scan pipeline).
+        /// No short form: `-f` is the input file. The former long spelling and
+        /// its `-F` short form are kept as hidden aliases.
+        #[arg(
+            long = "format",
+            alias = "output-format",
+            short_alias = 'F',
+            default_value = "jsonl"
+        )]
+        output_format: String,
+        /// Minimum confidence threshold (0.0-1.0, default 0.30).
+        #[arg(long, default_value = "0.30", value_parser = confidence_floor)]
+        min_confidence: f64,
+        /// Also persist the extracted entities as a completed, correlated scan
+        /// (offline — no module dispatch, no network), so they show in `hse
+        /// list` and every view/export. The output is still written as usual.
+        #[arg(long)]
+        auto_scan: bool,
+        /// Output file (default: stdout).
+        #[arg(short = 'o', long = "out", alias = "output")]
+        output: Option<String>,
+        /// Extract EXIF geolocation from images.
+        #[arg(long)]
+        extract_geolocation: bool,
+        /// Generate reverse image search variants for detected images.
+        #[arg(long)]
+        generate_reverse_search_variants: bool,
+        /// Output directory for reverse image search variants.
+        #[arg(long, value_name = "DIR")]
+        image_variant_output_dir: Option<String>,
+    },
+    /// Extract OSINT entities (email, phone, IP, domain, username, name, ...)
+    /// mentioned in a free-text investigative prompt — the kind of question
+    /// you'd type to an AI research assistant, e.g. "find what's linked to
+    /// alice@example.com". Uses HSE's own deterministic, offline pattern
+    /// extractor (the same one `hse ingest` runs on document text); no text is
+    /// ever sent to an external LLM.
+    Investigate {
+        /// The investigative prompt. Omit to read from stdin, so a long prompt
+        /// doesn't need shell quoting.
+        #[arg(allow_hyphen_values = true)]
+        text: Option<String>,
+        /// Also persist the extracted entities as a completed, correlated scan
+        /// (offline — no module dispatch, no network), so they show in `hse
+        /// list` and every view/export.
+        #[arg(long)]
+        auto_scan: bool,
+        /// Minimum confidence threshold (0.0-1.0, default 0.30).
+        #[arg(long, default_value = "0.30", value_parser = confidence_floor)]
+        min_confidence: f64,
+        /// Emit machine-readable JSON instead of a human-readable table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start the HTTP server + SPA (browse to http://127.0.0.1:8080 from Chrome).
+    Serve {
+        /// Bind address. Localhost-only by default — change at your own risk.
+        #[arg(short, long, default_value = crate::DEFAULT_BIND, env = "HSE_BIND")]
+        bind: String,
+        /// Disable the Settings page's key-write endpoint
+        /// (`PUT /api/v1/settings/keys`). Key writes are ENABLED BY DEFAULT so
+        /// the Settings page works out of the box on a personal device — and
+        /// the endpoint *always* additionally requires the request to originate
+        /// from a loopback peer, so a network-exposed bind still can't write
+        /// keys. Pass this to lock writes down entirely for shared/hardened
+        /// deployments.
+        #[arg(long)]
+        no_key_write: bool,
+        /// Bearer token required on every request when the bind is NOT
+        /// loopback. Omit and HSE mints a 256-bit one and prints it (with a
+        /// ready-to-open URL) at startup. Ignored for the loopback default
+        /// unless you pass one deliberately.
+        #[arg(long, env = "HSE_AUTH_TOKEN")]
+        auth_token: Option<String>,
+        /// Expose a non-loopback bind with NO authentication — the pre-1.41
+        /// behaviour. Anyone who can reach the address can read every scan
+        /// result, dispatch quota-burning scans, and trigger the device's own
+        /// WiFi/Bluetooth/cell/GPS radar sweep. Only for a deliberately public
+        /// deployment on a network you control.
+        #[arg(long)]
+        allow_unauthenticated: bool,
+    },
+    /// Manage the multi-key pool (add, list, validate, remove, status).
+    Keys {
+        #[command(subcommand)]
+        action: KeysAction,
+    },
+    /// Run a target continuously, re-scanning on an interval. Streams events
+    /// to stdout as compact JSON until Ctrl-C or `--iterations` is exhausted.
+    Live {
+        /// Target kind (same vocabulary as `scan --kind`). Omit (or pass `auto`)
+        /// to auto-detect the kind from the value — the unified live scan.
+        #[arg(short, long)]
+        kind: Option<String>,
+        /// Target value. Optional — omit to use the operator-local default seed
+        /// (`HUNTSMAN_DEFAULT_SEED` in ~/.huntsman.env).
+        // allow_hyphen_values so a value that legitimately begins with `-`
+        // (e.g. a southern-hemisphere coordinate `-33.86,151.20`) is taken as
+        // the value, not parsed by clap as an unknown short flag.
+        #[arg(short, long, allow_hyphen_values = true)]
+        value: Option<String>,
+        /// Seconds between iterations.
+        #[arg(short, long, default_value_t = crate::LIVE_DEFAULT_INTERVAL_SECS)]
+        interval: u64,
+        /// Stop after this many iterations. Omit for infinite.
+        #[arg(long)]
+        iterations: Option<u32>,
+        /// Same as `scan --depth` — applies to each iteration.
+        #[arg(short, long, default_value_t = 0)]
+        depth: u32,
+        /// Same as `scan --free-only`.
+        #[arg(long)]
+        free_only: bool,
+        /// Same as `scan --passive-only`.
+        #[arg(long)]
+        passive_only: bool,
+        /// Comma-separated module allowlist.
+        #[arg(short, long)]
+        modules: Option<String>,
+        /// Same as `scan --exclude`.
+        #[arg(long)]
+        exclude: Option<String>,
+        /// Same as `scan --throttle` — applies to each iteration's module dispatch.
+        #[arg(long, default_value_t = 0)]
+        throttle: u64,
+        /// Same as `scan --min-confidence`.
+        #[arg(long, value_parser = confidence_floor)]
+        min_confidence: Option<f64>,
+        /// Same as `scan --min-expand-confidence`.
+        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE, value_parser = confidence_floor)]
+        min_expand_confidence: f64,
+        /// Same as `scan --max-entities` — applies per iteration. Omitted ⇒ the
+        /// product default (2500), matching `hse scan` and the API's live/scan
+        /// defaults.
+        #[arg(long)]
+        max_entities: Option<usize>,
+        /// Same as `scan --max-wall-time` — applies per iteration.
+        #[arg(long)]
+        max_wall_time: Option<u64>,
+        /// Same as `scan --max-concurrent`.
+        #[arg(long, default_value_t = 2)]
+        max_concurrent: usize,
+        /// Same as `scan --max-roi`.
+        #[arg(long)]
+        max_roi: bool,
+        /// Same as `scan --no-convex-budget` (convex allocation is on by default).
+        #[arg(long = "no-convex-budget", action = clap::ArgAction::SetTrue)]
+        no_convex_budget: bool,
+        /// Same as `scan --no-skip-dead-modules` (capability-aware dispatch is on
+        /// by default).
+        #[arg(long = "no-skip-dead-modules", action = clap::ArgAction::SetTrue)]
+        no_skip_dead_modules: bool,
+        /// Same as `scan --no-regional`.
+        #[arg(long = "no-regional", action = clap::ArgAction::SetTrue)]
+        no_regional: bool,
+        /// Same as `scan --min-marginal-yield`.
+        #[arg(long, value_parser = non_negative_rate)]
+        min_marginal_yield: Option<f64>,
+        /// Same as `scan --expansion-strategy`.
+        #[arg(long, default_value = "geo_converge")]
+        expansion_strategy: String,
+        /// Same as `scan --seeknow-scan-cap`.
+        #[arg(long)]
+        seeknow_scan_cap: Option<u32>,
+        /// Same as `scan --expand-all-identities`.
+        #[arg(long)]
+        expand_all_identities: bool,
+        /// Same as `scan --gate-speculative`.
+        #[arg(long)]
+        gate_speculative: bool,
+        /// Radar mode: persist the keyed-module dispatch ledger across
+        /// iterations so paid APIs are never re-queried on a seed an earlier
+        /// sweep already covered — each sweep spends quota only on NEW seeds.
+        #[arg(long)]
+        radar: bool,
+        /// Emit the raw newline-delimited JSON event stream (machine-readable)
+        /// instead of the default human-readable, fully-unredacted structured
+        /// view. Both carry identical data — the default just renders it for a
+        /// human interpreter; `--json` is for piping into another tool.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Radar mode: continuous Termux signal sweep → automatic pivoting.
+    ///
+    /// Sweeps device sensors (GPS, WiFi, cell towers, ARP, network interfaces)
+    /// on a fast interval. Each newly discovered entity (coordinates, BSSIDs,
+    /// IPs, cell tower IDs) is automatically fed into the full OSINT pivot
+    /// pipeline at the configured depth. Only NEW discoveries trigger pivots —
+    /// previously seen entities are skipped.
+    ///
+    /// Think of it as an intermittent radar that detects signals and
+    /// automatically enriches them through all available modules.
+    ///
+    /// Takes no options: it is either running or stopped. Start it with
+    /// `hse radar`, stop it with Ctrl-C. Everything it needs it reads from this
+    /// device's own radios.
+    Radar {},
+    /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report / full.
+    ///
+    /// JSON           — `[{ kind, value, ... }, ...]` flat entity list
+    /// CSV            — operator-friendly tabular form (same shape as
+    ///                  the `/api/v1/scans/{id}/entities.csv` endpoint)
+    /// GEXF           — Gephi/Cytoscape-importable graph with
+    ///                  scan-id + observed_at on every node
+    /// Report         — pretty-printed JSON dossier (scan + entities +
+    ///                  correlations + counts; same shape as
+    ///                  `/api/v1/scans/{id}/report.json`)
+    /// Full           — Huntsman's STANDARD maximum-detail dossier: every
+    ///                  entity (incl. candidates) with its full evidence
+    ///                  chain — every raw field, the provenance
+    ///                  (provider / api_key_origin / endpoint) and source
+    ///                  website — nothing hashed, masked, or omitted
+    ///
+    /// Output goes to stdout by default; pass `--out <path>` to write
+    /// to a file.
+    Export {
+        /// Scan ID (or `latest` for the most-recent completed scan).
+        #[arg(short, long)]
+        scan_id: String,
+        /// Output format: json | csv | gexf | report | full | debug. Default `json`.
+        #[arg(short, long, default_value = "json")]
+        format: String,
+        /// File path to write to. Omit for stdout.
+        #[arg(short, long)]
+        out: Option<String>,
+        /// Include platform/shared-infrastructure entities (cloud buckets, CDN
+        /// IPs, analytics IDs sourced from third-party platform pages) that are
+        /// hidden by default. Equivalent to `--format full` for the report
+        /// format but scoped only to the infra filter.
+        #[arg(long, default_value_t = false)]
+        include_infra: bool,
+        /// Redact subject PII for a shareable export: mask credential-class
+        /// values (passwords, credentials, harvested API keys) and coarsen
+        /// precise coordinates to ~11 km. Applies to json / csv / gexf only —
+        /// the full/debug dossiers are unredacted by contract.
+        #[arg(long, default_value_t = false)]
+        redact: bool,
+    },
+
+    /// Compare two completed scans: entities added / removed / re-scored.
+    Diff {
+        /// Baseline scan ID (or `latest` for the most-recent completed scan).
+        from: String,
+        /// Later scan ID to compare against the baseline (or `latest`).
+        to: String,
+        /// Output format: text | json. Default `text`.
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
+    /// Bulk queries for breach and stealer-log sites, as plaintext to paste by hand.
+    ///
+    /// Derives every email, username, phone, domain, IP and name worth asking a
+    /// breach site about — from one seed (`--value`, fanned out into derived
+    /// fields and handle permutations) or from everything a stored scan found
+    /// (`--scan-id`, `latest` allowed) — and prints one section per provider in
+    /// the syntax that provider's search or bulk page accepts, one query per
+    /// line. No API key is needed: this is the list you paste. `--site` narrows
+    /// to one or more providers (`hse batch --site help` lists them), `--bare`
+    /// drops the `#` headers, `--out` writes a file, `--format json` is for
+    /// tooling. The same list is downloadable from the web console and at
+    /// `GET /api/v1/scans/{id}/batch.txt`.
+    #[command(visible_alias = "bulk")]
+    Batch {
+        /// Stored scan whose findings become the queries (`latest` allowed).
+        #[arg(short, long, conflicts_with = "value")]
+        scan_id: Option<String>,
+        /// One seed to fan out (e.g. `jane.doe@example.com`, `"Jane Doe"`, `+61412345678`).
+        #[arg(short, long, allow_hyphen_values = true)]
+        value: Option<String>,
+        /// Seed kind (same vocabulary as `scan --kind`); omit to auto-detect.
+        #[arg(short, long)]
+        kind: Option<String>,
+        /// Provider(s) to render, comma-separated; a named provider is always
+        /// included whatever its class. Omit to render the `--class` selection.
+        #[arg(long, value_delimiter = ',')]
+        site: Vec<String>,
+        /// Provider class rendered when no `--site` is given: `breach` (the
+        /// default), `genealogy`, or `all`.
+        #[arg(long, default_value = "breach")]
+        class: String,
+        /// Only the query lines — no `#` header comments.
+        #[arg(long)]
+        bare: bool,
+        /// Write to this file instead of stdout.
+        #[arg(short, long)]
+        out: Option<String>,
+        /// Output format: `text` (default) or `json`.
+        #[arg(short, long, default_value = "text")]
+        format: String,
+        /// Don't fan names / email local parts out into handle permutations.
+        #[arg(long)]
+        no_permute: bool,
+        /// Also synthesise candidate emails (handle crossed with common providers).
+        #[arg(long)]
+        synthesize_emails: bool,
+        /// Cap the number of selectors per seed after de-duplication (0 = no cap).
+        #[arg(long, default_value_t = 0)]
+        max: usize,
+    },
+
+    /// SpiderFoot-compatible front end: `sf.py`'s command line on HSE's engine.
+    ///
+    /// The flags are SpiderFoot 4.0's, so an operator's habits and scripts carry
+    /// over: `hse sf -s <target> -u passive -o csv`. The target kind is
+    /// auto-detected as SpiderFoot does; a use case maps onto HSE's scan
+    /// options (`passive` → passive-only modules, `footprint` → every module
+    /// except threat-intel, `investigate` and `all` → every module); `-m`
+    /// selects HSE modules by name; `-t` / `-F` filter the printed rows by
+    /// SpiderFoot type name (`-T` lists them with HSE's kinds); `-x` runs the
+    /// seed only, with no expansion. Rows print as SpiderFoot does: Source,
+    /// Type, Data (plus Source Data with `-r`), as tab, csv or json.
+    Sf {
+        /// Target (seed) — kind auto-detected, as SpiderFoot's `-s`.
+        #[arg(short = 's', long = "target", allow_hyphen_values = true)]
+        target: Option<String>,
+        /// Use case: all | footprint | investigate | passive.
+        #[arg(short = 'u', long = "use-case", default_value = "all")]
+        use_case: String,
+        /// Modules to enable, comma-separated (HSE module names; see `-M`).
+        #[arg(short = 'm', long = "modules", value_delimiter = ',')]
+        modules: Vec<String>,
+        /// Types to collect, comma-separated (SpiderFoot type names; see `-T`).
+        #[arg(short = 't', long = "types", value_delimiter = ',')]
+        types: Vec<String>,
+        /// Output format: tab | csv | json.
+        #[arg(short = 'o', long = "format", alias = "output", default_value = "tab")]
+        format: String,
+        /// Don't print field headers.
+        #[arg(short = 'H')]
+        no_header: bool,
+        /// Strip newlines from data.
+        #[arg(short = 'n')]
+        strip_newlines: bool,
+        /// Include the source data field in the output.
+        #[arg(short = 'r')]
+        include_source: bool,
+        /// Maximum data length to display (longer values are truncated).
+        #[arg(short = 'S')]
+        max_len: Option<usize>,
+        /// Delimiter for csv output (default `,`).
+        #[arg(short = 'D')]
+        delimiter: Option<String>,
+        /// Filter out other types not specified with `-t`.
+        #[arg(short = 'f')]
+        filter_types: bool,
+        /// Show only these types in the output, comma-separated.
+        #[arg(short = 'F', value_delimiter = ',')]
+        show_types: Vec<String>,
+        /// Strict: run only against the target itself, with no expansion.
+        #[arg(short = 'x')]
+        strict: bool,
+        /// Quiet: no progress notices on stderr.
+        #[arg(short = 'q')]
+        quiet: bool,
+        /// List the modules available.
+        #[arg(short = 'M', long = "list-modules")]
+        list_modules: bool,
+        /// List the types available.
+        #[arg(short = 'T', long = "list-types")]
+        list_types: bool,
+        /// Run correlation (HSE: the quality report) on a stored scan ID.
+        #[arg(short = 'C', long = "correlate")]
+        correlate: Option<String>,
+        /// Start the web console on IP:port.
+        #[arg(short = 'l', long = "listen")]
+        listen: Option<String>,
+        /// Print the version.
+        #[arg(short = 'V', long = "sf-version")]
+        version: bool,
+    },
+
+    /// Generate (and optionally run) a large batch of OathNet queries from one seed.
+    ///
+    /// Fans a single seed out across breach/stealer surfaces, derived selector
+    /// fields (an email's local part → username, its domain → domain), and value
+    /// permutations (names/handles → the handle shapes real accounts use; phone
+    /// numbers → their digit/E.164 formats). Prints the plan by default (free);
+    /// `--execute` dispatches it, bounded by the per-session OathNet budget.
+    #[command(
+        hide = true,
+        visible_alias = "oathnet-queries",
+        visible_alias = "obatch"
+    )]
+    OathnetBatch {
+        /// Seed value (e.g. `john.doe@example.com`, `"John Doe"`, `+61412345678`).
+        #[arg(short, long, allow_hyphen_values = true)]
+        value: String,
+        /// Seed kind (same vocabulary as `scan --kind`). Omit (or `auto`) to
+        /// auto-detect from the value.
+        #[arg(short, long)]
+        kind: Option<String>,
+        /// Don't emit stealer-surface queries (breach only).
+        #[arg(long)]
+        no_stealer: bool,
+        /// Don't fan names / email local parts out into handle permutations.
+        #[arg(long)]
+        no_permute: bool,
+        /// Also synthesise candidate emails (handle/role crossed with common
+        /// providers). Explosive — off by default.
+        #[arg(long)]
+        synthesize_emails: bool,
+        /// Recursively re-expand derived query values this many extra levels: a
+        /// derived username re-derives its own handles / candidate emails, a
+        /// derived domain its role emails, a synthesised email its own local-part
+        /// username + domain, and so on. Bounded and cycle-safe (a value is never
+        /// expanded twice), so it always terminates; `0` (default) keeps the
+        /// precise single-level plan. Compounds with `--synthesize-emails`, so use
+        /// `--max` to cap the result.
+        #[arg(long, default_value_t = 0)]
+        recurse_depth: u32,
+        /// Cap the number of queries (after de-duplication). 0 = no cap.
+        #[arg(long, default_value_t = 0)]
+        max: usize,
+        /// Per-query record page size when executing. Default 1000 — the
+        /// documented ceiling for Breach Search, clamped down automatically
+        /// per query to Stealer's own lower 100 maximum.
+        #[arg(long, default_value_t = 1000)]
+        page_size: u32,
+        /// Actually dispatch the plan against OathNet (spends credits). Without
+        /// this the command only prints the plan.
+        #[arg(long)]
+        execute: bool,
+        /// Emit JSON instead of the human-readable table.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Manage the local OpenCelliD cell-tower database.
+    ///
+    /// `hse cells status` — show tower count, MCC breakdown, last import time.
+    /// `hse cells import --file PATH` — import a local CSV or CSV.GZ file.
+    /// `hse cells import --country AU` — download from OpenCelliD and import.
+    /// `hse cells clear [--yes]` — truncate the cells table.
+    Cells {
+        #[command(subcommand)]
+        action: crate::app::cells::CellsAction,
+    },
+
+    /// Query the RF sighting database — every Wi-Fi, Bluetooth/BLE and cellular
+    /// observation a wardriving import or radar sweep recorded.
+    ///
+    /// This reads `rf_sightings`, which is kept alongside the entity graph
+    /// rather than instead of it. The graph records which devices exist; this
+    /// records every time each was heard, from where and how loudly — the
+    /// per-sighting detail the graph's flattening dissolves.
+    ///
+    /// With no flags, prints the scan's summary. `--devices` lists one row per
+    /// device, strongest first. `--track <ID>` prints one device's full sighting
+    /// history, which is the movement record.
+    Signal {
+        /// Scan to read. Defaults to the most recent import/sweep that produced
+        /// sightings, so the common case needs no id.
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// One row per device, strongest signal first.
+        #[arg(long)]
+        devices: bool,
+        /// Only devices with a fixed hardware address — the ones whose
+        /// recurrence across sightings actually means something. A randomised
+        /// address rotates, so seeing it twice is not seeing one device twice.
+        #[arg(long)]
+        trackable: bool,
+        /// Network names carried by more than one radio (mesh deployments and
+        /// 2.4/5 GHz pairs), largest installation first.
+        #[arg(long)]
+        names: bool,
+        /// Every sighting of one device, oldest first.
+        #[arg(long, value_name = "NETWORK_ID")]
+        track: Option<String>,
+        /// Cap on rows printed by the list views.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Emit JSON instead of the text table.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Housekeeping: keep the on-device `~/.huntsman` footprint bounded and
+    /// arranged.
+    ///
+    /// Trims the rendered-dossier cache to its newest 500 files (each is a
+    /// regenerable render of a stored scan — `hse export --format full`
+    /// recreates any of them, so nothing unrecoverable is removed), applies the
+    /// canonical event-log / raw-archive retention bounds as a safety net for an
+    /// install that runs `serve` for weeks without completing a scan, truncates
+    /// the SQLite WAL, and re-asserts the data directory's `0700` layout.
+    ///
+    /// The scan database, key pool, key vault and harvested credentials are
+    /// never touched. Runs automatically on the `serve` maintenance tick; this
+    /// command is the on-demand form.
+    #[command(visible_alias = "clean")]
+    Tidy {
+        /// Report what would be reclaimed without changing anything on disk.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the machine-readable JSON report instead of the text summary.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Upgrade hse in place: `git pull` + rebuild + atomic binary swap.
+    ///
+    /// Finds the source directory (from `HUNTSMAN_INSTALL_DIR` written by
+    /// `install.sh`, then `~/hse`, `~/.local/share/hse`, or the binary's
+    /// parent tree) and re-runs `install.sh`. The running process is not
+    /// affected — Unix keeps the old inode in memory; new invocations pick
+    /// up the replacement binary immediately.
+    #[command(visible_alias = "upgrade")]
+    Update {
+        /// Check for available updates without installing.
+        #[arg(long, conflicts_with = "ref")]
+        check: bool,
+        /// Install a specific branch/tag/SHA instead of the current ref.
+        #[arg(long, value_name = "REF")]
+        r#ref: Option<String>,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Validate the whole command tree at test time.
+    ///
+    /// clap's consistency checks (duplicate short flags, conflicting IDs,
+    /// malformed defaults) run inside a `debug_assert` on first parse — so a
+    /// broken definition does not fail the build, it panics at startup on
+    /// every invocation of the affected subcommand. `hse ingest` shipped that
+    /// way: `-o` was claimed by both `--output-format` and `--output`, and the
+    /// command aborted before doing any work. Asserting here turns that class
+    /// of defect into a failing test instead of a runtime crash.
+    #[test]
+    fn cli_definition_is_internally_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    /// `hse tidy`'s help text quotes the dossier-cache cap as a literal, because
+    /// clap renders doc comments verbatim to the operator and a rustdoc
+    /// intra-doc link would leak as raw `[`crate::…`]` markup in `--help`. A
+    /// literal can drift from the constant it describes, so assert the two
+    /// agree: change `DOSSIER_MAX_FILES` and this fails until the help text is
+    /// updated with it.
+    #[test]
+    fn tidy_help_quotes_the_real_dossier_cap() {
+        let cap = crate::app::tidy::DOSSIER_MAX_FILES;
+        let tidy = Cli::command()
+            .get_subcommands()
+            .find(|c| c.get_name() == "tidy")
+            .expect("tidy subcommand is registered")
+            .clone();
+        let help = tidy
+            .get_long_about()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            help.contains(&format!("newest {cap} files")),
+            "tidy --help must quote DOSSIER_MAX_FILES ({cap}); help was: {help}"
+        );
+    }
+
+    #[test]
+    fn confidence_floor_accepts_the_documented_range_inclusive() {
+        for s in ["0.0", "0.30", "0.5", "1.0"] {
+            assert!(
+                confidence_floor(s).is_ok(),
+                "{s} is inside the advertised 0.0-1.0 range"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_floor_rejects_non_finite_values() {
+        // Regression: `f64::from_str` accepts these, and clap's stock f64
+        // parser passed them straight through. A NaN floor made the extractor's
+        // `confidence >= floor` filter false for EVERY entity, so
+        // `hse ingest --min-confidence nan` exited 0 having emitted nothing at
+        // all — silent total data loss, no error, no warning.
+        for s in ["nan", "NaN", "inf", "-inf", "infinity"] {
+            let err = confidence_floor(s).expect_err("{s} must be rejected");
+            assert!(
+                err.contains("finite"),
+                "the message must name the reason, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_floor_rejects_values_outside_zero_to_one() {
+        for s in ["1.0001", "5.0", "-0.5", "1e9"] {
+            let err = confidence_floor(s).expect_err("{s} must be rejected");
+            assert!(
+                err.contains("0.0-1.0"),
+                "the message must name the range, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_negative_rate_accepts_values_above_one() {
+        // The distinguishing property vs `confidence_floor`: `--min-marginal-yield`
+        // is entities-per-target, so "require 2 entities per dispatched target"
+        // is a legitimate demand, not out-of-range input.
+        for s in ["0.0", "0.75", "1.0", "2.0", "1000.0"] {
+            assert!(
+                non_negative_rate(s).is_ok(),
+                "{s} is a valid marginal-yield floor"
+            );
+        }
+    }
+
+    #[test]
+    fn non_negative_rate_rejects_non_finite_and_negative() {
+        for s in ["nan", "NaN", "inf", "-inf"] {
+            assert!(
+                non_negative_rate(s).is_err(),
+                "{s} must be rejected: NaN inverts the comparison and inf is unsatisfiable"
+            );
+        }
+        for s in ["-0.1", "-1.0", "-1000.0"] {
+            assert!(
+                non_negative_rate(s).is_err(),
+                "{s} must be rejected: a negative yield floor passes every round"
+            );
+        }
+        assert!(non_negative_rate("banana").is_err());
+    }
+
+    #[test]
+    fn confidence_floor_rejects_non_numeric_input() {
+        let err = confidence_floor("high").expect_err("non-numeric must be rejected");
+        assert!(err.contains("not a number"), "got: {err}");
+    }
+
+    /// Minimal POSIX-ish tokeniser: split on unquoted whitespace, honouring
+    /// single and double quotes so a quoted phrase/dork stays one token (its
+    /// inner spaces and dashes must not be read as flags).
+    fn shell_tokens(s: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut quote: Option<char> = None;
+        let mut started = false;
+        for c in s.chars() {
+            if let Some(q) = quote {
+                if c == q {
+                    quote = None;
+                } else {
+                    cur.push(c);
+                }
+            } else if c == '\'' || c == '"' {
+                quote = Some(c);
+                started = true;
+            } else if c.is_whitespace() {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            } else {
+                cur.push(c);
+                started = true;
+            }
+        }
+        if started {
+            out.push(cur);
+        }
+        out
+    }
+
+    /// Every `hse …` example in the README's fenced shell blocks must name a
+    /// real subcommand and only real flags for it.
+    ///
+    /// The README is the first thing a new operator copy-pastes; a renamed or
+    /// removed subcommand/flag turns an example into a silent lie (clap exits 2,
+    /// but only once the user has already run it). Nothing tied these examples
+    /// to the live command tree, so they could rot independently
+    /// (REQ-README-006). This walks the real `Cli::command()` — names, hidden
+    /// aliases, and each subcommand's long/short flags and their aliases — so
+    /// the examples stay honest by construction: the CLI-doc twin of the
+    /// `api::routes` `endpoint_surface_doc_table` guard on the HTTP side. Reads
+    /// the on-disk README at test time so it tracks edits, not a snapshot.
+    #[test]
+    fn readme_shell_examples_name_real_subcommands_and_flags() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let cmd = Cli::command();
+        // token -> the subcommand it resolves to, for every registered name AND
+        // alias (hidden ones included, so `hse doctor` resolves like the CLI).
+        let mut subs: BTreeMap<String, &clap::Command> = BTreeMap::new();
+        for sc in cmd.get_subcommands() {
+            subs.insert(sc.get_name().to_owned(), sc);
+            for a in sc.get_all_aliases() {
+                subs.insert(a.to_owned(), sc);
+            }
+        }
+
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+            .expect("README readable");
+
+        let mut problems: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+        let mut in_fence = false;
+        for line in readme.lines() {
+            let s = line.trim();
+            if s.starts_with("```") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if !in_fence || !s.starts_with("hse ") {
+                continue;
+            }
+            // Tokenise, then drop an aligned `# comment` (the first token that
+            // opens with `#`, and everything after it).
+            let toks: Vec<String> = shell_tokens(s)
+                .into_iter()
+                .take_while(|t| !t.starts_with('#'))
+                .collect();
+            let Some(first) = toks.get(1) else { continue };
+            if first.starts_with('-') {
+                continue; // e.g. `hse --help`; no subcommand to resolve
+            }
+            checked += 1;
+            let Some(&top) = subs.get(first) else {
+                problems.push(format!("`{s}` names unknown subcommand `{first}`"));
+                continue;
+            };
+
+            // Descend through nested subcommands (e.g. `hse keys status`): while
+            // the resolved command still has subcommands and the next token is a
+            // non-flag, that token MUST name one of them — clap requires a
+            // subcommand there — so a renamed/removed nested verb is caught too,
+            // not silently skipped as an unchecked positional. Flags are then
+            // validated against the LEAF command reached here.
+            let mut sc: &clap::Command = top;
+            let mut idx = 2usize;
+            let mut drifted = false;
+            loop {
+                let mut children: BTreeMap<String, &clap::Command> = BTreeMap::new();
+                for child in sc.get_subcommands() {
+                    children.insert(child.get_name().to_owned(), child);
+                    for a in child.get_all_aliases() {
+                        children.insert(a.to_owned(), child);
+                    }
+                }
+                if children.is_empty() {
+                    break; // leaf reached — no nested verb to validate
+                }
+                let Some(tok) = toks.get(idx) else { break };
+                if tok.starts_with('-') {
+                    break; // a flag against this (sub)command, not a nested verb
+                }
+                let Some(&child) = children.get(tok) else {
+                    problems.push(format!(
+                        "`{s}` names unknown nested subcommand `{tok}` under `{}`",
+                        sc.get_name()
+                    ));
+                    drifted = true;
+                    break;
+                };
+                sc = child;
+                idx += 1;
+            }
+            if drifted {
+                continue;
+            }
+
+            // Valid flags for the leaf subcommand: its own args (+ aliases), plus
+            // clap's always-present `--help`/`-h`.
+            let mut longs: BTreeSet<String> = BTreeSet::new();
+            let mut shorts: BTreeSet<char> = BTreeSet::new();
+            longs.insert("help".to_owned());
+            shorts.insert('h');
+            for arg in sc.get_arguments() {
+                if let Some(l) = arg.get_long() {
+                    longs.insert(l.to_owned());
+                }
+                if let Some(aliases) = arg.get_all_aliases() {
+                    for a in aliases {
+                        longs.insert(a.to_owned());
+                    }
+                }
+                if let Some(c) = arg.get_short() {
+                    shorts.insert(c);
+                }
+                if let Some(cs) = arg.get_all_short_aliases() {
+                    for c in cs {
+                        shorts.insert(c);
+                    }
+                }
+            }
+
+            for t in toks.iter().skip(idx) {
+                if let Some(rest) = t.strip_prefix("--") {
+                    let name = rest.split_once('=').map_or(rest, |(a, _)| a);
+                    if !name.is_empty() && !longs.contains(name) {
+                        problems.push(format!(
+                            "`{s}` uses unknown flag `--{name}` for `{}`",
+                            sc.get_name()
+                        ));
+                    }
+                } else if let Some(rest) = t.strip_prefix('-') {
+                    // Skip negative-number values (a coordinate seed like
+                    // `-33.86`): a real short flag opens with a letter.
+                    if !rest.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                        continue;
+                    }
+                    for ch in rest.chars() {
+                        if ch == '=' {
+                            break;
+                        }
+                        if !shorts.contains(&ch) {
+                            problems.push(format!(
+                                "`{s}` uses unknown short flag `-{ch}` for `{}`",
+                                sc.get_name()
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            checked >= 20,
+            "expected many README `hse` examples, found {checked} — the \
+             fenced-block extractor likely broke"
+        );
+        assert!(
+            problems.is_empty(),
+            "README shell examples drifted from the live CLI:\n{}",
+            problems.join("\n")
+        );
+    }
+}

@@ -90,7 +90,7 @@ pub fn load_dir(dir: &Path) -> Result<Loaded, Error> {
         let entry = entry.map_err(|e| Error::Store(format!("{}: {e}", dir.display())))?;
         let path = entry.path();
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !matches!(ext, "txt" | "md") {
+        if !["txt", "md"].iter().any(|e| ext.eq_ignore_ascii_case(e)) {
             continue;
         }
         let shown = path.display().to_string();
@@ -218,6 +218,7 @@ mod tests {
         std::fs::write(root.join("port.txt"), "Brisbane port schedule").unwrap();
         std::fs::write(root.join("other.md"), "Sydney harbour note").unwrap();
         std::fs::write(root.join("skip.bin"), "Brisbane port").unwrap();
+        std::fs::write(root.join("UPPER.TXT"), "Brisbane port upper").unwrap();
         std::fs::write(
             root.join("wall.txt"),
             "<html>just a moment cloudflare brisbane port</html>",
@@ -226,13 +227,15 @@ mod tests {
         std::fs::write(root.join("latin1.txt"), b"Brisbane port \xff").unwrap();
         let loaded = load_dir(&root).unwrap();
         let docs = loaded.docs;
-        assert_eq!(docs.len(), 2);
+        assert_eq!(docs.len(), 3);
+        assert!(docs.iter().any(|d| d.id == "UPPER.TXT"));
         assert!(!docs.iter().any(|d| d.id == "wall.txt"));
         let reasons: Vec<&str> = loaded.skipped.iter().map(|s| s.reason.as_str()).collect();
         assert_eq!(reasons, ["not utf-8", "challenge page"]);
         let hits = search(&docs, "brisbane port");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, "port.txt");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, "UPPER.TXT");
+        assert_eq!(hits[1].id, "port.txt");
         let _ = std::fs::remove_dir_all(&root);
         assert!(
             load_dir(&root).is_err(),

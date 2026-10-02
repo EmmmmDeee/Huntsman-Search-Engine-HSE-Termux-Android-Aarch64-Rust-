@@ -5,6 +5,10 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::canonical;
+
+pub use crate::{domains, textnorm, uid, validation, xml};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonRecord {
     pub id: String,
@@ -28,58 +32,27 @@ pub struct Cluster {
 
 #[must_use]
 pub fn canonical_name(raw: &str) -> String {
-    raw.split_whitespace()
-        .map(str::to_ascii_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ")
+    canonical::canonical_name(raw)
 }
 
 #[must_use]
 pub fn canonical_email(raw: &str) -> Option<String> {
-    let trimmed = raw.trim().to_ascii_lowercase();
-    let (local, domain) = trimmed.split_once('@')?;
-    if local.is_empty() || !valid_domain(domain) {
-        return None;
-    }
-    if !local
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
-    {
-        return None;
-    }
-    Some(format!("{local}@{domain}"))
+    canonical::canonical_email(raw)
 }
 
-/// At least two dot-separated labels; each 1..=63 of ASCII alphanumerics or inner hyphens.
-fn valid_domain(domain: &str) -> bool {
-    let mut labels = 0usize;
-    for label in domain.split('.') {
-        labels += 1;
-        if label.is_empty()
-            || label.len() > 63
-            || label.starts_with('-')
-            || label.ends_with('-')
-            || !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        {
-            return false;
-        }
-    }
-    labels >= 2 && domain.len() <= 253
+#[must_use]
+pub fn canonical_domain(raw: &str) -> Option<String> {
+    canonical::canonical_domain_host(raw)
 }
 
 #[must_use]
 pub fn canonical_handle(raw: &str) -> Option<String> {
-    let trimmed = raw.trim().trim_start_matches('@').to_ascii_lowercase();
-    if trimmed.is_empty() || trimmed.len() > 40 {
-        return None;
-    }
-    if !trimmed
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
-        return None;
-    }
-    Some(trimmed)
+    canonical::canonical_handle(raw)
+}
+
+#[must_use]
+pub fn canonical_phone(raw: &str) -> Option<String> {
+    canonical::canonical_phone(raw)
 }
 
 /// Union by shared canonical email or handle. Names never merge records.
@@ -297,5 +270,21 @@ mod tests {
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].links[0].reason, "shared_email");
         assert_eq!(canonical_handle("@Ada"), Some("ada".into()));
+    }
+
+    #[test]
+    fn canonical_domain_and_phone_merge_here() {
+        assert_eq!(
+            canonical_domain(" WWW.Example.COM. ").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            canonical_phone("0412 345 678").as_deref(),
+            Some("+61412345678")
+        );
+        assert_eq!(
+            canonical_phone("+1 555 123 4567").as_deref(),
+            Some("+15551234567")
+        );
     }
 }

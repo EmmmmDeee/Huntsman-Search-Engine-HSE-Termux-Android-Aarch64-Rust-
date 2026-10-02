@@ -1,23 +1,37 @@
-//! Operable offline binary. No hardcoded workspace path.
+//! Operable binary. No hardcoded workspace path.
 //! `check` fails if a self-labeled technique enters Navigator or STIX.
 
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
 use huntsman_recon::classify::classify_response;
+use huntsman_recon::confidence::{Classification, effective};
+use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use huntsman_recon::egress::EgressPolicy;
+use huntsman_recon::error::Error;
 use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
 };
+use huntsman_recon::fetch::{Credential, FetchOptions, fetch};
+use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
 use huntsman_recon::fsio::write_atomic;
+use huntsman_recon::geohash;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
+use huntsman_recon::http::{
+    Request, TransportConfig, UreqTransport, origin_of, parse_http_uri, redact_url,
+};
 use huntsman_recon::identity::{PersonRecord, resolve};
 use huntsman_recon::identity_resolution::{
     AutoMergePolicy, IdentityResolutionDecision, ResolutionState,
 };
+use huntsman_recon::keys::{Keys, is_configured_value};
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::navigator::layer;
-use huntsman_recon::search::{Document, load_dir, search, search_response};
+use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
+use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
 use huntsman_recon::source_outcome::{
     SourceHealthAction, SourceOutcomeKind, classify_fetch, recommended_action,
@@ -26,10 +40,12 @@ use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | search QUERY [DIR] | classify STATUS BODY | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
+const EX_UNAVAILABLE: u8 = 69;
+const EX_NOPERM: u8 = 77;
 const EX_IOERR: u8 = 74;
 const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
 
@@ -37,8 +53,13 @@ fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("geo") => geo(args.next(), args.next()),
+        Some("geohash") => geohash_cmd(args.next(), args.next().as_deref()),
+        Some("coarsen") => coarsen_cmd(args.next()),
+        Some("id") => id_cmd(args.next()),
         Some("search") => search_cmd(args.next(), args.next()),
         Some("classify") => classify(args.next(), args.next()),
+        Some("fetch") => fetch_cmd(&args.collect::<Vec<_>>()),
+        Some("keys") => keys_cmd(args.next()),
         Some("verify") => verify(args.next()),
         Some("check") | None => check(),
         Some("help" | "-h" | "--help") => {
@@ -68,10 +89,187 @@ fn geo(a: Option<String>, b: Option<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn geohash_cmd(pair: Option<String>, precision: Option<&str>) -> ExitCode {
+    let Some(pair) = pair else {
+        return fail(
+            EX_USAGE,
+            "usage: huntsman-recon geohash LAT,LON [PRECISION]",
+        );
+    };
+    let Ok((lat, lon)) = parse_latlon(&pair) else {
+        return fail(EX_DATAERR, &format!("bad coordinate: {pair}"));
+    };
+    let precision = match precision.map(str::parse::<usize>) {
+        None => 7,
+        Some(Ok(p)) => p,
+        Some(Err(_)) => return fail(EX_DATAERR, "bad precision"),
+    };
+    match geohash::encode(lat, lon, precision) {
+        Ok(hash) => {
+            println!("{hash}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(EX_DATAERR, &e.to_string()),
+    }
+}
+
+fn coarsen_cmd(pair: Option<String>) -> ExitCode {
+    let Some(pair) = pair else {
+        return fail(EX_USAGE, "usage: huntsman-recon coarsen LAT,LON");
+    };
+    match coarsen_latlon(&pair) {
+        Some(coarse) => {
+            println!("{coarse}");
+            ExitCode::SUCCESS
+        }
+        None => fail(EX_DATAERR, &format!("bad coordinate: {pair}")),
+    }
+}
+
+fn id_cmd(token: Option<String>) -> ExitCode {
+    let Some(token) = token else {
+        return fail(EX_USAGE, "usage: huntsman-recon id TOKEN");
+    };
+    match classify_id(&token) {
+        Ok(Identifier::Abn { bare, acn }) => {
+            println!("abn={bare}");
+            println!("acn={}", acn.as_deref().unwrap_or("none"));
+        }
+        Ok(Identifier::Acn { bare }) => println!("acn={bare}"),
+        Ok(Identifier::Bsb { bare, institution }) => {
+            println!("bsb={bare}");
+            println!("institution={}", institution.unwrap_or("unknown"));
+        }
+        Err(e) => return fail(EX_DATAERR, &e.to_string()),
+    }
+    ExitCode::SUCCESS
+}
+
+fn fetch_cmd(args: &[String]) -> ExitCode {
+    let parsed = match FetchArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return fail(EX_USAGE, &format!("{e}\n{FETCH_USAGE}")),
+    };
+    let credential = match build_credential(&parsed) {
+        Ok(c) => c,
+        Err(e) => return fail(EX_NOINPUT, &e.to_string()),
+    };
+    let transport = UreqTransport::new(&TransportConfig {
+        timeout: parsed.timeout,
+        egress: if parsed.allow_private {
+            EgressPolicy::Unrestricted
+        } else {
+            EgressPolicy::PublicOnly
+        },
+        ..TransportConfig::default()
+    });
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let fetched = match fetch(
+        &transport,
+        Request::get(parsed.url.clone()),
+        credential.as_ref(),
+        &FetchOptions {
+            max_redirects: parsed.max_redirects,
+        },
+        "cli",
+        now,
+    ) {
+        Ok(f) => f,
+        Err(e) => return fail(EX_NOPERM, &e.to_string()),
+    };
+    let kind = fetched.outcome.kind;
+    println!(
+        "status={} outcome={} action={} redirects={} url={}",
+        fetched
+            .outcome
+            .http_status
+            .map_or_else(|| "none".into(), |s| s.to_string()),
+        serde_json::to_value(kind)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default(),
+        serde_json::to_value(recommended_action(kind))
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default(),
+        fetched.redirects,
+        fetched.final_url,
+    );
+    if let Some(detail) = &fetched.outcome.detail {
+        println!("detail={detail}");
+    }
+    if let Some(fp) = &fetched.credential_sent {
+        println!("credential={}", &fp.as_str()[..12]);
+    }
+    match fetched.response {
+        Some(response) => {
+            if parsed.print_body {
+                println!("{}", response.text());
+            }
+            ExitCode::SUCCESS
+        }
+        None => ExitCode::from(EX_UNAVAILABLE),
+    }
+}
+
+fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
+    let Some((slot, style)) = &args.auth else {
+        return Ok(None);
+    };
+    let keys = match &args.keys_file {
+        Some(path) => Keys::load(path)?,
+        None => Keys::from_env(),
+    };
+    let secret = keys
+        .get(slot)
+        .ok_or_else(|| Error::Invalid(format!("credential {slot} is not configured")))?;
+    let host = parse_http_uri(&args.url)?
+        .host()
+        .unwrap_or_default()
+        .to_owned();
+    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
+        provider_id: host,
+        credential_slot: slot.clone(),
+        approved_at_unix: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+        approval_provenance: "operator supplied --bearer/--header on the command line".into(),
+    })?;
+    Ok(Some(Credential::new(authority, secret, style.clone())?))
+}
+
+fn keys_cmd(path: Option<String>) -> ExitCode {
+    let Some(path) = path else {
+        return fail(EX_USAGE, "usage: huntsman-recon keys FILE");
+    };
+    match Keys::load(Path::new(&path)) {
+        Ok(keys) => {
+            for slot in keys.slots() {
+                if let Some(secret) = keys.get(slot) {
+                    println!(
+                        "{slot} fingerprint={}",
+                        &secret.fingerprint().as_str()[..12]
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(EX_NOINPUT, &e.to_string()),
+    }
+}
+
 fn search_cmd(query: Option<String>, dir: Option<String>) -> ExitCode {
     let Some(query) = query else {
         return fail(EX_USAGE, "usage: huntsman-recon search QUERY [DIR]");
     };
+    if tokenize(&query).is_empty() {
+        return fail(
+            EX_USAGE,
+            "query has no searchable term (words need two or more letters or digits)",
+        );
+    }
     let docs = if let Some(dir) = dir {
         match load_dir(Path::new(&dir)) {
             Ok(loaded) => {
@@ -237,7 +435,7 @@ fn run_check() -> Result<f64, (u8, String)> {
     Ok(meters)
 }
 
-/// Classifier, search, and identity gates. No network.
+/// Classifier, search, and identity gates. Decided without a network.
 fn check_offline_gates() -> Gate {
     gate(
         3,
@@ -276,7 +474,75 @@ fn check_offline_gates() -> Gate {
         },
     ]);
     gate(4, people.len() == 2, "shared name merged identities")?;
-    check_overlay_gates()
+    check_overlay_gates()?;
+    check_rebuilt_gates()?;
+    check_network_gates()
+}
+
+/// Rebuilt monolith utilities: strict identifiers, geohash round-trip, weak sources
+/// do not reach Verified, overlapping secrets leave no fragment.
+fn check_rebuilt_gates() -> Gate {
+    gate(
+        10,
+        is_valid_abn("51 824 753 556") && !is_valid_abn("5182 hello 4753556"),
+        "ABN grouping not strict",
+    )?;
+    let hash = geohash::encode(-27.4698, 153.0251, 9).map_err(|e| (10, e.to_string()))?;
+    let cell = geohash::decode(&hash).map_err(|e| (10, e.to_string()))?;
+    gate(
+        10,
+        cell.contains(-27.4698, 153.0251),
+        "geohash cell misses its point",
+    )?;
+    gate(
+        10,
+        Classification::from_effective(effective(0.05, 5)) == Classification::Candidate,
+        "weak sources reached a tier",
+    )?;
+    let scrubbed = scrub_secrets("xxabcdefyy", &["abcd", "cdef"]);
+    gate(
+        10,
+        scrubbed == "xx[redacted]yy",
+        "secret fragment survived scrubbing",
+    )
+}
+
+/// Network layer, decided without a socket: egress refuses the operator's own
+/// network, credentials never reach a foreign origin, placeholders are not keys.
+fn check_network_gates() -> Gate {
+    let refused = [
+        "127.0.0.1",
+        "10.1.2.3",
+        "169.254.169.254",
+        "::1",
+        "fd00::1",
+        "::ffff:192.168.0.1",
+    ];
+    gate(
+        11,
+        refused.iter().all(|s| {
+            s.parse()
+                .is_ok_and(|ip| !EgressPolicy::PublicOnly.permits(ip))
+        }) && EgressPolicy::PublicOnly.permits(std::net::IpAddr::from([1, 1, 1, 1])),
+        "egress policy admits a private address or refuses a public one",
+    )?;
+    gate(
+        11,
+        origin_of("https://a.example/x") != origin_of("https://a.example.evil.test/x")
+            && origin_of("https://a.example/x") != origin_of("http://a.example/x"),
+        "origins not distinguished",
+    )?;
+    gate(
+        11,
+        !is_configured_value("insert_key_here") && is_configured_value("k3y-8f2a91"),
+        "credential placeholder accepted as configured",
+    )?;
+    let with_userinfo = format!("https://{}@a.example/x?{}=v", "user:pw", "api_key");
+    gate(
+        11,
+        redact_url(&with_userinfo) == "https://a.example/x?[redacted]",
+        "url redaction leaks userinfo or query",
+    )
 }
 
 /// Refactor-overlay foundations: a WAF is not an auth failure, mirrors count once,
@@ -353,9 +619,9 @@ fn check_overlay_gates() -> Gate {
 fn check_session(meters: f64, tip: &str) -> Gate {
     let mut session = Session::new("check");
     session.apply_recover(
-        "offline core",
+        "local-first core",
         "chain bound to session",
-        "no network",
+        "network only through the guarded fetch layer",
         "terminate only with tip",
     );
     let recorded = session

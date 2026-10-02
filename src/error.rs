@@ -12,4 +12,9 @@ pub enum Error {
     Invalid(String),
     #[error("store: {0}")]
     Store(String),
+    /// A request was refused before or during transport (bad URL, egress policy,
+    /// redirect loop). Transport *outcomes* such as a timeout are not errors: they
+    /// are `SourceOutcomeKind` values on a fetch result.
+    #[error("network: {0}")]
+    Network(String),
 }

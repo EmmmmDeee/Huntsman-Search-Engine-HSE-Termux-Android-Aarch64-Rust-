@@ -1,0 +1,436 @@
+//! ONYPHE — cyber-defence search engine. Key-gated; requires
+//! `HUNTSMAN_ONYPHE_KEY`.
+//!
+//! Endpoints (API v2 `summary`, which aggregates every category ONYPHE holds
+//! for a selector into one call):
+//!   * `GET https://www.onyphe.io/api/v2/summary/ip/{ip}`
+//!   * `GET https://www.onyphe.io/api/v2/summary/domain/{domain}`
+//!
+//! Auth: `Authorization: bearer {APIKEY}` (lowercase `bearer`, per ONYPHE docs).
+//!
+//! The response is `{ error, status, results: [ … ] }` where each result is a
+//! heterogeneous document keyed by `@category` (geoloc, resolver, threatlist,
+//! datascan, …). Rather than model every category, the parser walks the
+//! `results` array as raw JSON and pulls whatever identifying fields are present
+//! — `location`/`latitude`/`longitude`, `asn`, `organization`, `country`/`city`,
+//! `domain`/`hostname`/`subdomains`, resolved `ip`, and `threatlist`/`tag`. This
+//! is deliberately schema-tolerant: ONYPHE varies field shapes (string vs array)
+//! across categories and plans, and a passive enrichment must degrade to "fewer
+//! entities" rather than fail on an unexpected shape.
+//!
+//! NOTE: the exact field set returned depends on the account's ONYPHE plan;
+//! validated against ONYPHE's documented v2 `summary` schema. Emitted domains
+//! are gated through `is_noncentral_domain` so a resolver's CDN/mega host does
+//! not pollute the graph (the lesson from the social_probe/email_parse fix).
+
+#[cfg(test)]
+mod tests;
+
+use std::collections::HashSet;
+
+use async_trait::async_trait;
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    error::{Error, Result},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::http::urlencode;
+
+const KEY_ENV: &str = "HUNTSMAN_ONYPHE_KEY";
+const SRC: &str = "onyphe";
+
+#[derive(Deserialize, Default)]
+struct OnypheResp {
+    /// ONYPHE signals success with `error: 0`. Per ONYPHE's documented
+    /// error-code table (0=Success, 1=Unknown error, 2=Invalid API key
+    /// format, 3/19=No API key given, 4=Rate limit reached, 5=Client not
+    /// allowed, 17=Target not allowed, 18=License/plan not allowed), a
+    /// genuine "no data for this selector" answer is ALWAYS `error:0,
+    /// results:[]` — any nonzero value is a real API-level failure (bad/
+    /// missing key, throttling, plan restriction, or an unclassified
+    /// anomaly), never a legitimate absence signal.
+    #[serde(default)]
+    error: i64,
+    /// ONYPHE's human-readable status/error message, when present — carried
+    /// into the error message on a nonzero `error` for operator diagnosability.
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    results: Vec<Value>,
+}
+
+pub struct Onyphe;
+
+#[async_trait]
+impl Module for Onyphe {
+    fn name(&self) -> &'static str {
+        "onyphe"
+    }
+
+    fn description(&self) -> &'static str {
+        "ONYPHE cyber-defence sweep — surfaces IP/domain geoloc, ASN, resolutions, and threat tags (key-gated)"
+    }
+
+    fn priority(&self) -> u8 {
+        34
+    }
+
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::KeyGated
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Open scan/technical database (T1596.005) over IP addresses (T1590.005)
+        // that also yields passive-DNS resolutions (T1596.001), the host's
+        // physical location (T1591.001), and the AS operator org (T1591.002).
+        &[
+            "T1590.005",
+            "T1596.001",
+            "T1596.005",
+            "T1591.001",
+            "T1591.002",
+        ]
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::IpAddress,
+            EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Asn,
+            EntityKind::Organisation,
+            EntityKind::Domain,
+            EntityKind::Cidr,
+        ];
+        KINDS
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::IpAddress | TargetKind::Domain)
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        12_000
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let initial_key = match ctx.key_opt(KEY_ENV) {
+            Some(v) => v,
+            None => return Ok(ModuleResult::new()),
+        };
+
+        let value = target.value.trim();
+        if value.is_empty() {
+            return Ok(ModuleResult::new());
+        }
+        let selector = match target.kind {
+            TargetKind::IpAddress => "ip",
+            TargetKind::Domain => "domain",
+            _ => return Ok(ModuleResult::new()),
+        };
+
+        let url = format!(
+            "https://www.onyphe.io/api/v2/summary/{selector}/{}",
+            urlencode(value)
+        );
+
+        // Key cascade: begin on the hot-injected key and, on a terminal
+        // 401/403/429 (or an auth-shaped 400 — ONYPHE answers a missing/
+        // malformed key with `400 Bad Request` + "Invalid API key format", not
+        // 401), rotate to the next usable pooled ONYPHE key and retry, so one
+        // process() call spends every credential the pool holds before it
+        // fails. Delegates to the shared cascade primitive (T2: keyed-API
+        // consolidation) — the retry/rotate/cancel loop is identical to what
+        // `threatfox` and 9 other keyed modules hand-rolled; only the request
+        // shape (bearer auth, GET) and the decode (scan for leaked keys) stay
+        // module-specific.
+        let Some(resp) = crate::util::http::keyed_cascade(
+            ctx,
+            SRC,
+            initial_key,
+            // Unknown selector returns 404 — not an error, just no data.
+            &[404],
+            |key| {
+                ctx.http
+                    .get(&url)
+                    // ONYPHE documents a lowercase `bearer` scheme.
+                    .header("Authorization", format!("bearer {key}"))
+                    .header("Accept", "application/json")
+            },
+        )
+        .await?
+        else {
+            return Ok(ModuleResult::new());
+        };
+        // json_scanned: onyphe search results may contain leaked credentials —
+        // scan the raw body for embedded API keys.
+        let body: OnypheResp = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+
+        check_onyphe_error(&body)?;
+        if body.results.is_empty() {
+            return Ok(ModuleResult::new());
+        }
+
+        Ok(extract_entities(
+            &body.results,
+            target,
+            value,
+            selector,
+            &ctx.scan_id,
+        ))
+    }
+}
+
+/// Check an ONYPHE summary response for a real API-level failure. Per
+/// ONYPHE's documented error-code table (0=Success, 1=Unknown error,
+/// 2=Invalid API key format, 3/19=No API key given, 4=Rate limit reached,
+/// 5=Client not allowed, 17=Target not allowed, 18=License/plan not
+/// allowed), a genuine "no data for this selector" answer is ALWAYS
+/// `error:0, results:[]` — any nonzero value is a real failure and must
+/// propagate as `Err` instead of being read as a clean miss. Pure —
+/// unit-tested directly without live network.
+fn check_onyphe_error(body: &OnypheResp) -> Result<()> {
+    if body.error == 0 {
+        return Ok(());
+    }
+    let msg = if body.text.is_empty() {
+        format!("onyphe api error code {}", body.error)
+    } else {
+        format!("onyphe api error code {}: {}", body.error, body.text)
+    };
+    Err(Error::module(SRC, msg))
+}
+
+/// Pure entity extraction over the ONYPHE summary `results` documents — unit-
+/// tested against fixtures so the network shell in `process` stays a thin
+/// adapter. CDN/anycast-edge geo suppression (parity with `ip_geo`/the sibling
+/// IP-geo modules) is computed PER RECORD, not once for the whole query: a
+/// Domain-target query's `results` can each carry a DIFFERENT resolved `ip`
+/// (a Cloudflare-fronted domain shows different edge IPs across documents),
+/// so a single target-kind-gated flag would leave every Domain-query result
+/// unprotected regardless of its own `ip` field. No per-module output cap:
+/// every distinct in-scope resolution is emitted (see the resolutions block).
+fn extract_entities(
+    results: &[Value],
+    target: &Target,
+    value: &str,
+    selector: &str,
+    scan_id: &str,
+) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for r in results {
+        let category = vstr(r, "@category").unwrap_or_default();
+        let ev = || {
+            let mut e = Evidence::new(SRC, format!("ONYPHE {selector} summary: {value}"));
+            if !category.is_empty() {
+                e = e.with_attr("category", &category);
+            }
+            e
+        };
+
+        // This record's own resolved IP when it carries one (the common case
+        // for a Domain-target query, one document per resolution); otherwise
+        // the queried value itself (correct as-is for an IpAddress-target
+        // query, where every record already describes that one IP).
+        let record_ip = vstr(r, "ip");
+        let geo_trusted =
+            crate::core::validation::untrusted_ip_geo_reason(record_ip.as_deref().unwrap_or(value))
+                .is_none();
+
+        // ── Geolocation ──────────────────────────────────────────────────
+        if geo_trusted
+            && let Some((lat, lon)) = coords(r)
+            && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+            && let Some(mut ce) =
+                crate::util::geo::coarse_provider_coords(lat, lon, confidence::MEDIUM_HIGH, scan_id)
+        {
+            if let Some(cc) = vstr(r, "country") {
+                ce.tag(format!("country:{}", cc.to_uppercase()));
+            }
+            ce.add_evidence(ev().with_attr("ip", record_ip.as_deref().unwrap_or(value)));
+            result.push(ce);
+        }
+
+        // ── City / country as an Address ────────────────────────────────
+        if geo_trusted && let Some(city) = vstr(r, "city") {
+            let country = vstr(r, "countryname").or_else(|| vstr(r, "country"));
+            let addr = match country {
+                Some(c) => format!("{city}, {c}"),
+                None => city,
+            };
+            if seen.insert(format!("@addr:{}", addr.to_lowercase())) {
+                let mut ae =
+                    Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_HIGH, scan_id);
+                ae.tag(crate::core::tags::GEOINT);
+                ae.add_evidence(ev());
+                result.push(ae);
+            }
+        }
+
+        // ── ASN + operator org ──────────────────────────────────────────
+        if let Some(asn) = vstr(r, "asn").map(|a| {
+            if a.starts_with("AS") {
+                a
+            } else {
+                format!("AS{a}")
+            }
+        }) && asn.len() > 2
+            && seen.insert(asn.to_lowercase())
+        {
+            let mut ae = Entity::new(EntityKind::Asn, &asn, confidence::VERY_HIGH, scan_id);
+            ae.add_evidence(ev());
+            result.push(ae);
+        }
+        if let Some(org) = vstr(r, "organization").filter(|o| o.len() >= 3)
+            && seen.insert(format!("@org:{}", org.to_lowercase()))
+        {
+            let mut oe = Entity::new(
+                EntityKind::Organisation,
+                &org,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            );
+            oe.add_evidence(ev());
+            result.push(oe);
+        }
+
+        // ── Subnet (geoloc CIDR) ─────────────────────────────────────────
+        // ONYPHE's `geoloc` category also carries the covering `subnet` for
+        // the resolved IP. It's a secondary field on a geoloc document, not
+        // an authoritative BGP-sourced prefix (cf. bgpview/ripestat's confidence::HIGH_PLUS-
+        // confidence::HIGH_PLUSPLUS), so confidence is pinned lower in the unverified range.
+        if let Some(subnet) = vstr(r, "subnet").filter(|s| s.contains('/'))
+            && seen.insert(format!("@cidr:{subnet}"))
+        {
+            let mut ne = Entity::new(EntityKind::Cidr, &subnet, confidence::HIGH, scan_id);
+            ne.add_evidence(ev());
+            result.push(ne);
+        }
+
+        // ── Resolved IPs (domain target) ────────────────────────────────
+        if matches!(target.kind, TargetKind::Domain)
+            && let Some(ip) = vstr(r, "ip")
+            && ip != value
+            // A bare clone doesn't canonicalise the way `core::entity::
+            // normalise` does — see ip_reputation's identical fix.
+            && seen.insert(crate::core::entity::normalise(&EntityKind::IpAddress, &ip))
+        {
+            let mut ie = Entity::new(EntityKind::IpAddress, &ip, confidence::HIGH_PLUS, scan_id);
+            ie.add_evidence(ev());
+            result.push(ie);
+        }
+
+        // ── Threat-list hits ─────────────────────────────────────────────
+        // ONYPHE's `threatlist` category records that `value` appears on a
+        // named third-party block/threat list, with optional descriptive
+        // `tag`s (e.g. "Scanner", "SSH"). Both fields were already parsed
+        // into the raw `Value` for every other category above but never read
+        // back out for `threatlist` specifically — this module's own
+        // top-of-file doc comment claims "threatlist classification is
+        // surfaced", but until this fix no code path read either field, so
+        // every threat-list hit ONYPHE returned was silently dropped.
+        if category == "threatlist" {
+            let list_name = vstr(r, "threatlist");
+            let list_tags = vstrs(r, "tag");
+            if (list_name.is_some() || !list_tags.is_empty())
+                && seen.insert(format!(
+                    "@threat:{}:{}",
+                    list_name.as_deref().unwrap_or(""),
+                    list_tags.join(",").to_lowercase()
+                ))
+            {
+                let mut te = target.to_entity(confidence::MEDIUM_PLUS, scan_id);
+                te.tag(crate::core::tags::THREAT_INTEL);
+                te.tag(crate::core::tags::MALICIOUS);
+                let mut tev = Evidence::new(SRC, format!("ONYPHE threatlist hit: {value}"));
+                if let Some(name) = &list_name {
+                    tev = tev.with_attr("threatlist", name);
+                }
+                if !list_tags.is_empty() {
+                    tev = tev.with_attr("tags", list_tags.join(", "));
+                }
+                te.add_evidence(tev);
+                result.push(te);
+            }
+        }
+
+        // ── Resolutions: hostnames / subdomains / domains ───────────────
+        // Every DISTINCT in-scope resolution is emitted — no per-module cap.
+        // Each host is a real BFS expansion pivot AND a record in the output;
+        // the expansion frontier is owned by the engine's ROI Top-K gate
+        // (`core::roi::top_k_for_round`), which ranks candidates BY WEIGHT per
+        // round. A leaf `MAX_DOMAINS` cap here would instead drop by ONYPHE's
+        // arbitrary return order — silently hiding subdomains from the output
+        // and pre-empting the engine's ranked selection with a worse one. The
+        // `is_noncentral_domain` / dedup / malformed guards below already strip
+        // shared-infra and platform noise, mirroring the crtsh + netlas cert
+        // paths (which dropped the same class of leaf cap for this reason).
+        for field in ["hostname", "subdomains", "domain"] {
+            for host in vstrs(r, field) {
+                let h = host.trim().trim_end_matches('.').to_lowercase();
+                // Skip the seed itself, malformed hosts, and shared
+                // infrastructure / mega platforms (graph-pollution guard).
+                if h.len() < 4
+                    || !h.contains('.')
+                    || h == value.to_lowercase()
+                    || crate::core::scan::is_noncentral_domain(&h)
+                    || !seen.insert(h.clone())
+                {
+                    continue;
+                }
+                let mut de = Entity::new(EntityKind::Domain, &h, confidence::HIGH, scan_id);
+                de.tag("onyphe");
+                de.add_evidence(ev());
+                result.push(de);
+            }
+        }
+    }
+
+    result
+}
+
+/// Extract a trimmed, non-empty string field from a result document.
+fn vstr(v: &Value, key: &str) -> Option<String> {
+    let s = v.get(key)?.as_str()?.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// Extract a field that ONYPHE may return as a single string or an array of
+/// strings (e.g. `hostname`, `domain`, `subdomains`) into a flat `Vec<String>`.
+fn vstrs(v: &Value, key: &str) -> Vec<String> {
+    match v.get(key) {
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| x.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Resolve a result's coordinates from separate `latitude`/`longitude` numbers,
+/// or ONYPHE's `location` `"lat,lon"` string, whichever is present.
+fn coords(v: &Value) -> Option<(f64, f64)> {
+    let num = |k: &str| {
+        v.get(k)
+            .and_then(|x| x.as_f64().or_else(|| x.as_str()?.parse().ok()))
+    };
+    if let (Some(lat), Some(lon)) = (num("latitude"), num("longitude")) {
+        return Some((lat, lon));
+    }
+    let loc = v.get("location")?.as_str()?;
+    let (lat, lon) = loc.split_once(',')?;
+    Some((lat.trim().parse().ok()?, lon.trim().parse().ok()?))
+}

@@ -1,0 +1,197 @@
+//! Email domain geolocation — infer geography from email domain
+//! infrastructure patterns.
+//!
+//! Classifies email domains by ccTLD (alice@company.com.au → Australia)
+//! and by regional ISP provider (bigpond.com → Telstra, Australia).
+//! Skips consumer email providers (Gmail, Outlook, etc.) since they
+//! reveal no geographic signal. No network calls.
+
+use async_trait::async_trait;
+
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    error::Result,
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+};
+
+mod tables;
+use tables::CONSUMER_PROVIDERS;
+
+mod infer;
+use infer::{detect_corporate_provider, infer_geo_from_email_domain};
+
+#[cfg(test)]
+mod tests;
+
+const SRC: &str = "email_header_geo";
+
+pub struct EmailHeaderGeo;
+
+#[async_trait]
+impl Module for EmailHeaderGeo {
+    fn name(&self) -> &'static str {
+        SRC
+    }
+
+    fn description(&self) -> &'static str {
+        "Email infrastructure geolocation — surfaces geographic signals from email domain infrastructure patterns"
+    }
+
+    fn priority(&self) -> u8 {
+        92
+    }
+
+    fn is_passive(&self) -> bool {
+        true
+    }
+
+    /// Pure transform of data already in the graph — no observation of its
+    /// own, so its evidence never counts as a corroborating source (see
+    /// `Module::is_derivation` / `ENRICHMENT_ONLY_SOURCES`).
+    fn is_derivation(&self) -> bool {
+        true
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        // No attack_techniques() override is needed — the category default's MITRE ATT&CK
+        // Reconnaissance mapping already covers this: the module does purely offline inference,
+        // matching the email domain against static ccTLD and regional-ISP-brand tables (no DNS,
+        // WHOIS, or network calls per the doc comment and is_passive()=true) to emit a coarse
+        // Address/Coordinates entity — exactly "Determine Physical Locations" (T1591.001) and
+        // nothing broader (no DNS/WHOIS/technical-database technique is implicated).
+        ModuleCategory::Geo
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Coordinates];
+        KINDS
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut result = ModuleResult::new();
+
+        let email = target.value.clone();
+        let Some((_, domain)) = email.split_once('@') else {
+            return Ok(result);
+        };
+        // DNS labels are case-insensitive (RFC 4343); fold the domain so the
+        // lowercase ccTLD / regional-provider tables still match a mixed-case
+        // address such as `User@Bigpond.COM.AU` instead of missing entirely.
+        let domain = domain.to_ascii_lowercase();
+        let domain = domain.as_str();
+
+        if CONSUMER_PROVIDERS
+            .iter()
+            .any(|p| crate::util::domains::is_or_subdomain_of(domain, p))
+        {
+            return Ok(result);
+        }
+
+        if let Some(geo) = infer_geo_from_email_domain(domain) {
+            let mut e = Entity::new(
+                EntityKind::Address,
+                geo.region,
+                geo.confidence,
+                &ctx.scan_id,
+            );
+            e.tag("geoint");
+            e.tag(crate::core::tags::COARSE);
+            e.tag("email-infra-inferred");
+            // Attach au-state when region resolves to Australia so AU-056
+            // jurisdiction cross-check and the address→coords enrichment pass
+            // can use it without re-parsing the string.
+            if geo.region.eq_ignore_ascii_case("australia") {
+                e.tag("country:AU");
+                e.tag("au-state:AU"); // coarse — state unknown from ccTLD alone
+            } else if let Some(state) = crate::util::address_au::state_code(geo.region) {
+                e.tag(format!("au-state:{state}"));
+            }
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "Email domain '{}' suggests {} ({})",
+                        domain, geo.region, geo.reason
+                    ),
+                )
+                .with_attr("domain", domain)
+                .with_attr("method", geo.reason),
+            );
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(geo.region) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::derived_from(geo.confidence),
+                    &ctx.scan_id,
+                );
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("email-infra-inferred");
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Geocode of email-domain region '{}'", geo.region),
+                ));
+                result.push(c);
+            }
+            result.push(e);
+        }
+
+        // A real Australian regional-ISP brand (bigpond, optusnet, tpg, …) is
+        // routinely ALSO on a matching .com.au/.net.au domain, so the ccTLD
+        // block above and this one can independently resolve to the identical
+        // region from the same domain (e.g. "bigpond.com.au") — without this
+        // guard, one process() call pushed two Address + two Coordinates
+        // entities for what is really one signal restated twice, inflating
+        // Entity::absorb's corroboration counter for a non-corroborating dupe.
+        let already_named_this_region = |region: &str| {
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Address && e.value.eq_ignore_ascii_case(region))
+        };
+
+        if let Some((provider, region)) = detect_corporate_provider(domain)
+            && !already_named_this_region(region)
+        {
+            let mut e = Entity::new(EntityKind::Address, region, confidence::LOW, &ctx.scan_id);
+            e.tag("geoint");
+            e.tag(crate::core::tags::COARSE);
+            e.tag("email-provider-inferred");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Email domain '{domain}' uses {provider} (regional provider)"),
+                )
+                .with_attr("domain", domain)
+                .with_attr("provider", provider),
+            );
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(region) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::SPECULATIVE,
+                    &ctx.scan_id,
+                );
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("email-provider-inferred");
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Geocode of provider region '{region}'"),
+                ));
+                result.push(c);
+            }
+            result.push(e);
+        }
+
+        Ok(result)
+    }
+}

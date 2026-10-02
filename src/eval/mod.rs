@@ -8,7 +8,7 @@
 mod integrity;
 mod model;
 mod score;
-mod stats;
+pub(crate) mod stats;
 mod verdict;
 
 pub use integrity::{ArtifactDigest, digest_json};

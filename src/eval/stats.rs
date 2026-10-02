@@ -27,8 +27,12 @@ impl XorShift64 {
     }
 }
 
-fn mean(values: &[f64]) -> f64 {
-    values.iter().copied().sum::<f64>() / super::count_f64(values.len())
+pub(crate) fn mean(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        0.0
+    } else {
+        values.iter().copied().sum::<f64>() / super::count_f64(values.len())
+    }
 }
 
 /// Deterministic seeded non-parametric bootstrap of the mean.

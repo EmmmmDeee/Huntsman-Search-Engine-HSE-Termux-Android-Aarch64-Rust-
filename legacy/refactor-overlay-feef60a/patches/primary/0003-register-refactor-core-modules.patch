@@ -1,0 +1,51 @@
+diff --git a/src/core/mod.rs b/src/core/mod.rs
+--- a/src/core/mod.rs
++++ b/src/core/mod.rs
+@@ -3,6 +3,7 @@
+ //! Nothing in `core` imports from `modules/` — modules depend on core, never
+ //! the other way around. This keeps the engine module-agnostic.
+ 
++pub mod architectural_invariants;
+ pub mod assurance;
+ pub mod attack;
+ pub mod benchmark;
+@@ -20,6 +21,7 @@
+ /// entities it has already collected, rather than from any single source.
+ pub mod correlator;
+ pub mod cross_scan;
++pub mod credential_origin;
+ pub mod crypto;
+ pub mod data_broker;
+ pub mod dependency;
+@@ -41,12 +43,15 @@
+ pub mod coverage;
+ pub mod error;
+ pub mod event;
++pub mod eval;
++pub mod evidence_ancestry;
+ pub mod exposure;
+ pub mod gap;
+ pub mod geo_family;
+ pub mod gexf;
+ pub mod graph;
+ pub mod intelligence;
++pub mod identity_resolution;
+ pub mod leads;
+ pub mod link;
+ pub mod live;
+@@ -70,6 +75,7 @@
+ pub mod roi;
+ pub mod scan;
+ pub mod snake_graph;
++pub mod source_outcome;
+ pub mod stealer_row;
+ pub mod wire_keys;
+ /// Re-export of `hse-core`'s `tags` module (moved alongside `core::entity` —
+@@ -78,6 +84,7 @@
+ pub use hse_core::tags;
+ #[cfg(test)]
+ pub mod test_support;
++pub mod termination;
+ pub mod timeline;
+ pub mod trust;
+ pub mod validation;

@@ -1,0 +1,254 @@
+diff --git a/src/core/scan/options.rs b/src/core/scan/options.rs
+--- a/src/core/scan/options.rs
++++ b/src/core/scan/options.rs
+@@
+-    /// How the engine orders expansion candidates within each round.
+-    /// Defaults to [`ExpansionStrategy::GeoConverge`] — the current
+-    /// production behaviour. Selecting a different strategy changes
+-    /// what's prioritised when many entities exceed the confidence
+-    /// floor.
++    /// How the engine orders expansion candidates within each round.
++    /// Defaults to [`ExpansionStrategy::EvidenceFirstGeo`]: evidence strength
++    /// and expected downstream yield dominate, while GEOINT receives only a
++    /// bounded preference. [`ExpansionStrategy::GeoConverge`] remains available
++    /// explicitly when geographic convergence should dominate the frontier.
+@@
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+ #[serde(rename_all = "snake_case")]
+ pub enum ExpansionStrategy {
++    /// Evidence-first universal ranking with a deliberately small GEOINT
++    /// preference. Stronger evidence/corroboration may outrank a weaker
++    /// geo-adjacent pivot; geography is an enrichment priority, not an
++    /// evidentiary override.
++    #[default]
++    EvidenceFirstGeo,
+     /// Geographic-convergence weighting: `geo_npv × c_eff × domain_factor
+-    /// × geo_proximity × richness`. Existing production default.
++    /// × geo_proximity × richness`. Explicit geo-dominant mode.
+     /// Prioritises entities one hop from Coordinates/Address.
+-    #[default]
+     GeoConverge,
+@@
+     pub fn as_str(self) -> &'static str {
+         match self {
++            Self::EvidenceFirstGeo => "evidence_first_geo",
+             Self::GeoConverge => "geo_converge",
+             Self::BreadthFirst => "breadth_first",
+             Self::DepthFirst => "depth_first",
+@@
+-    /// Parse the same snake_case identifiers that `as_str()` emits
+-    /// (and serde uses). Empty string is treated as the default
+-    /// (`GeoConverge`) so callers don't need a separate guard for the
++    /// Parse the same snake_case identifiers that `as_str()` emits
++    /// (and serde uses). Empty string is treated as the default
++    /// (`EvidenceFirstGeo`) so callers don't need a separate guard for the
+     /// "unset" case. Any other input returns a human-readable error
+@@
+     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+         match s {
+-            "geo_converge" | "" => Ok(Self::GeoConverge),
++            "evidence_first_geo" | "" => Ok(Self::EvidenceFirstGeo),
++            "geo_converge" => Ok(Self::GeoConverge),
+             "breadth_first" => Ok(Self::BreadthFirst),
+             "depth_first" => Ok(Self::DepthFirst),
+             "richest_first" => Ok(Self::RichestFirst),
+             other => Err(format!(
+                 "unknown expansion strategy '{other}'; expected one of: \
+-                 geo_converge, breadth_first, depth_first, richest_first"
++                 evidence_first_geo, geo_converge, breadth_first, depth_first, richest_first"
+             )),
+         }
+     }
+@@
+-/// Pinned to the full [`MAX_DEPTH`] so **every seed gets the whole recursion
+-/// budget to converge on geolocation**. That is the product decision this
+-/// constant encodes, and it is deliberately permanent rather than opt-in: the
+-/// default [`ExpansionStrategy::GeoConverge`] weights each round toward the
+-/// candidates one hop from an Address/Coordinates, and truncating the recursion
+-/// at 3 cut that convergence off before the longest geo chains could close.
++/// Pinned to the full [`MAX_DEPTH`] so **every seed gets the whole recursion
++/// budget needed to keep high-value geolocation paths reachable**. The default
++/// [`ExpansionStrategy::EvidenceFirstGeo`] no longer lets geography override
++/// stronger evidence, but maximum geolocation coverage still requires enough
++/// depth for long cross-domain chains to close. Truncating recursion at 3 cut
++/// those chains off before they could resolve.
+@@
+-// Compile-time guard on the product promise above: a seed must have the FULL
+-// recursion budget available to reach geolocation. If someone lowers the default
+-// below the ceiling again, the longest geo chains silently stop closing and no
+-// test would necessarily catch it — so pin it here, at the definition.
++// Compile-time guard on the product promise above: a seed must have the FULL
++// recursion budget available to keep long geolocation chains reachable. If
++// someone lowers the default below the ceiling again, those paths silently stop
++// closing and no test would necessarily catch it — so pin it here.
+diff --git a/src/core/scan/scoring.rs b/src/core/scan/scoring.rs
+--- a/src/core/scan/scoring.rs
++++ b/src/core/scan/scoring.rs
+@@
+ pub fn expansion_weight(kind: TargetKind, c_eff: f64, value: &str, has_paid_keys: bool) -> f64 {
+     let base = geo_npv(kind, has_paid_keys);
+@@
+     base * c_eff * dampener * geo_boost
+ }
+
++/// Maximum GEOINT preference in the universal evidence-first strategy.
++///
++/// Location is a first-class enrichment dimension, but it must not outrank
++/// materially stronger evidence merely because a candidate is geographically
++/// proximate. Five percent is enough to break close decisions toward GEOINT
++/// without recreating the old geo-dominant ordering.
++const EVIDENCE_FIRST_GEO_BONUS_MAX: f64 = 0.05;
++
++/// Normalised geographic proximity in `[0, 1]`, derived from the established
++/// `geo_proximity_boost` ladder. `Coordinates` is the 1.0 ceiling; a kind with
++/// no special geo path is 0.0.
++fn geo_preference_signal(kind: TargetKind) -> f64 {
++    const MIN: f64 = 1.0;
++    const MAX: f64 = 2.5;
++    ((geo_proximity_boost(kind) - MIN) / (MAX - MIN)).clamp(0.0, 1.0)
++}
++
+ /// Strategy-aware expansion weight.
+@@
+     let r = richness.clamp(0.0, 1.0);
+     match strategy {
++        ExpansionStrategy::EvidenceFirstGeo => {
++            // Universal evidence-first default: confidence and downstream
++            // richness determine the base utility; generic mega-domains remain
++            // dampened; GEOINT contributes at most +5%. The engine's existing
++            // corroboration_prior(source_count) is applied after this score, so
++            // independent evidence can correctly override a weaker geo-adjacent
++            // candidate.
++            let dampener = if kind == TargetKind::Domain {
++                domain_expansion_factor(value)
++            } else {
++                1.0
++            };
++            let evidence_utility = c_eff * (0.25 + 0.75 * r) * dampener;
++            let geo_bonus =
++                1.0 + EVIDENCE_FIRST_GEO_BONUS_MAX * geo_preference_signal(kind);
++            evidence_utility * geo_bonus
++        }
+         ExpansionStrategy::GeoConverge => {
+             // Established weight, plus a gentle (0.5–1.0) richness lift
+@@
+-/// Coefficient on the corroboration prior. Larger than `c_eff`'s 0.15 because
+-/// ranking can be more assertive than a calibrated confidence — but small
+-/// enough that corroboration only *refines order within* a geo-proximity tier,
+-/// never overrides geo-convergence (an 8-source far entity scores ×1.52, still
+-/// under a 1-source IP's ×1.8 geo boost).
++/// Coefficient on the corroboration prior. In the evidence-first default,
++/// independent corroboration is allowed to override a weaker geo-adjacent
++/// candidate. Explicit `GeoConverge` mode intentionally retains the stronger
++/// geographic ordering for operators who request it.
+ const CORROBORATION_PRIOR_COEFF: f64 = 0.25;
+diff --git a/src/core/scan/tests.rs b/src/core/scan/tests.rs
+--- a/src/core/scan/tests.rs
++++ b/src/core/scan/tests.rs
+@@
+ #[test]
+-fn expansion_strategy_default_is_geo_converge() {
+-    assert_eq!(ExpansionStrategy::default(), ExpansionStrategy::GeoConverge);
+-    assert_eq!(ExpansionStrategy::default().as_str(), "geo_converge");
++fn expansion_strategy_default_is_evidence_first_geo() {
++    assert_eq!(
++        ExpansionStrategy::default(),
++        ExpansionStrategy::EvidenceFirstGeo
++    );
++    assert_eq!(
++        ExpansionStrategy::default().as_str(),
++        "evidence_first_geo"
++    );
+ }
++
++#[test]
++fn evidence_first_geo_bonus_is_bounded_to_five_percent() {
++    let non_geo = expansion_weight_for_strategy(
++        ExpansionStrategy::EvidenceFirstGeo,
++        TargetKind::CryptoAddress,
++        0.80,
++        "bc1qxyz",
++        false,
++        0.70,
++    );
++    let max_geo = expansion_weight_for_strategy(
++        ExpansionStrategy::EvidenceFirstGeo,
++        TargetKind::Coordinates,
++        0.80,
++        "-27.47,153.03",
++        false,
++        0.70,
++    );
++    assert!(max_geo > non_geo, "GEOINT must receive a positive preference");
++    assert!(
++        max_geo <= non_geo * 1.050_000_1,
++        "GEOINT preference must not exceed 5% ({max_geo:.6} vs {non_geo:.6})"
++    );
++}
++
++#[test]
++fn evidence_first_allows_strong_corroboration_to_override_weak_geo() {
++    let strong = expansion_weight_for_strategy(
++        ExpansionStrategy::EvidenceFirstGeo,
++        TargetKind::Email,
++        0.90,
++        "subject@example.com",
++        false,
++        0.90,
++    ) * corroboration_prior(6);
++    let weak_geo = expansion_weight_for_strategy(
++        ExpansionStrategy::EvidenceFirstGeo,
++        TargetKind::IpAddress,
++        0.45,
++        "8.8.8.8",
++        false,
++        0.50,
++    ) * corroboration_prior(1);
++    assert!(
++        strong > weak_geo,
++        "strong independently-corroborated evidence ({strong:.3}) must outrank weak geo proximity ({weak_geo:.3})"
++    );
++}
+@@
+-#[test]
+-fn corroboration_prior_refines_within_tier_never_overrides_geo() {
+-    // A heavily-corroborated FAR entity must still rank below a
+-    // single-source geo-proximate IP — corroboration refines order within
+-    // a geo tier, it does not invert the geo-convergence priority.
++#[test]
++fn explicit_geo_converge_still_allows_geo_to_dominate() {
++    // Explicit GeoConverge preserves the previous operator-requested behaviour:
++    // a heavily-corroborated far entity may still rank below a geo-proximate IP.
+     let far_8src =
+         expansion_weight(TargetKind::Organisation, 0.80, "x", false) * corroboration_prior(8);
+     let ip_1src =
+@@
+-        "geo-proximate IP ({ip_1src:.1}) must outrank corroborated org ({far_8src:.1})"
++        "explicit GeoConverge must keep the geo-proximate IP ({ip_1src:.1}) above the corroborated org ({far_8src:.1})"
+     );
+diff --git a/src/cli/command.rs b/src/cli/command.rs
+--- a/src/cli/command.rs
++++ b/src/cli/command.rs
+@@
+-        /// Expansion ordering strategy: `geo_converge` (default; legacy),
+-        /// `breadth_first`, `depth_first`, `richest_first`. Changes how
+-        /// the engine prioritises expansion candidates each round.
+-        #[arg(long, default_value = "geo_converge")]
++        /// Expansion ordering strategy: `evidence_first_geo` (default),
++        /// `geo_converge`, `breadth_first`, `depth_first`, `richest_first`.
++        /// The default lets evidence dominate while giving GEOINT a bounded
++        /// preference; use `geo_converge` for explicitly geo-dominant ranking.
++        #[arg(long, default_value = "evidence_first_geo")]
+         expansion_strategy: String,
+diff --git a/src/cli/live/tests.rs b/src/cli/live/tests.rs
+--- a/src/cli/live/tests.rs
++++ b/src/cli/live/tests.rs
+@@
+-            expansion_strategy: "geo_converge".to_string(),
++            expansion_strategy: "evidence_first_geo".to_string(),
+@@
+         assert_eq!(
+             opts.expansion_strategy,
+-            crate::core::scan::ExpansionStrategy::GeoConverge
++            crate::core::scan::ExpansionStrategy::EvidenceFirstGeo
+         );

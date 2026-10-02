@@ -61,6 +61,11 @@ fn failures_exit_nonzero() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(65));
+    for query in ["", "a", "- !"] {
+        let out = bin().args(["search", query]).output().unwrap();
+        assert_eq!(out.status.code(), Some(64), "{query:?} is not hits=0");
+        assert!(out.stdout.is_empty());
+    }
     assert_eq!(bin().arg("nope").output().unwrap().status.code(), Some(64));
     assert_eq!(
         bin()
@@ -90,4 +95,58 @@ fn classify_reports_causal_outcome_and_action() {
     );
     let ok = run("200", "{}");
     assert!(ok.ends_with("outcome=inconclusive\naction=retry\n"), "{ok}");
+}
+
+#[test]
+fn multibyte_documents_do_not_crash_search() {
+    let dir = scratch("utf8");
+    fs::write(dir.join("a.txt"), "[éééééé datadome zürich").unwrap();
+    let out = bin().args(["search", "zürich"]).arg(&dir).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn identifier_geohash_and_coarsen_commands() {
+    let run = |args: &[&str]| {
+        let out = bin().args(args).output().unwrap();
+        (out.status.code(), String::from_utf8(out.stdout).unwrap())
+    };
+    assert_eq!(
+        run(&["id", "53 004 085 616"]),
+        (Some(0), "abn=53004085616\nacn=004085616\n".into())
+    );
+    assert_eq!(
+        run(&["id", "062-000"]),
+        (
+            Some(0),
+            "bsb=062000\ninstitution=Commonwealth Bank\n".into()
+        )
+    );
+    assert_eq!(run(&["id", "51824753557"]).0, Some(65));
+    assert_eq!(run(&["id"]).0, Some(64));
+    assert_eq!(
+        run(&["geohash", "57.64911,10.40744", "11"]),
+        (Some(0), "u4pruydqqvj\n".into())
+    );
+    assert_eq!(
+        run(&["geohash", "57.64911,10.40744"]),
+        (Some(0), "u4pruyd\n".into())
+    );
+    assert_eq!(
+        run(&["geohash", "0,0", "0"]).0,
+        Some(65),
+        "precision 0 is not clamped"
+    );
+    assert_eq!(run(&["geohash", "0,0", "99"]).0, Some(65));
+    assert_eq!(run(&["geohash", "0,0", "x"]).0, Some(65));
+    assert_eq!(
+        run(&["coarsen", "-27.4698,153.0251"]),
+        (Some(0), "-27.5,153.0\n".into())
+    );
+    assert_eq!(run(&["coarsen", "999,999"]).0, Some(65));
 }
