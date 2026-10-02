@@ -136,9 +136,84 @@ fn crate_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// `text` with comments and string/char literals blanked to spaces (newlines kept), so a
+/// `mod` line inside `/* … */`, `//` or a (raw) string literal is not taken as code.
+fn strip_non_code(text: &str) -> String {
+    let src: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let blank = |out: &mut String, chunk: &[char]| {
+        out.extend(chunk.iter().map(|&c| if c == '\n' { '\n' } else { ' ' }));
+    };
+    let mut i = 0;
+    while i < src.len() {
+        let rest = &src[i..];
+        let is_ident = |at: usize| src[at].is_alphanumeric() || src[at] == '_';
+        // `r` starts a raw string unless it ends an identifier; `br` (byte raw) counts too.
+        let ident_before =
+            i > 0 && is_ident(i - 1) && !(src[i - 1] == 'b' && (i < 2 || !is_ident(i - 2)));
+        let end = if rest.starts_with(&['/', '/']) {
+            rest.iter().position(|&c| c == '\n').unwrap_or(rest.len())
+        } else if rest.starts_with(&['/', '*']) {
+            let (mut depth, mut j) = (0_usize, 0);
+            while j < rest.len() {
+                if rest[j..].starts_with(&['/', '*']) {
+                    depth += 1;
+                    j += 2;
+                } else if rest[j..].starts_with(&['*', '/']) {
+                    depth -= 1;
+                    j += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            j
+        } else if rest[0] == 'r' && !ident_before && raw_string_len(rest).is_some() {
+            raw_string_len(rest).unwrap()
+        } else if rest[0] == '"' {
+            let mut j = 1;
+            while j < rest.len() && rest[j] != '"' {
+                j += if rest[j] == '\\' { 2 } else { 1 };
+            }
+            (j + 1).min(rest.len())
+        } else if rest[0] == '\'' && rest.get(1) == Some(&'\\') {
+            rest.iter()
+                .skip(2)
+                .position(|&c| c == '\'')
+                .map_or(rest.len(), |p| p + 3)
+        } else if rest[0] == '\'' && rest.get(2) == Some(&'\'') {
+            3
+        } else {
+            out.push(rest[0]);
+            i += 1;
+            continue;
+        };
+        blank(&mut out, &rest[..end]);
+        i += end;
+    }
+    out
+}
+
+/// Length of the raw string literal (`r"…"`, `r#"…"#`, …) at the start of `rest`, if any.
+fn raw_string_len(rest: &[char]) -> Option<usize> {
+    let hashes = rest[1..].iter().take_while(|&&c| c == '#').count();
+    if rest.get(1 + hashes) != Some(&'"') {
+        return None;
+    }
+    let body = 2 + hashes;
+    let close: Vec<char> = std::iter::once('"')
+        .chain(std::iter::repeat_n('#', hashes))
+        .collect();
+    let found = (body..rest.len()).find(|&j| rest[j..].starts_with(&close));
+    Some(found.map_or(rest.len(), |j| j + close.len()))
+}
+
 /// Out-of-line `mod name;` declarations (any visibility) in one source file.
-fn declared_mods(text: &str) -> Vec<&str> {
-    text.lines()
+fn declared_mods(text: &str) -> Vec<String> {
+    strip_non_code(text)
+        .lines()
         .filter_map(|line| {
             let line = line.trim();
             assert!(
@@ -153,7 +228,7 @@ fn declared_mods(text: &str) -> Vec<&str> {
             let name = rest.strip_prefix("mod ")?.strip_suffix(';')?;
             name.chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_')
-                .then_some(name)
+                .then(|| name.to_owned())
         })
         .collect()
 }
@@ -304,4 +379,13 @@ fn module_tree_follows_mod_rs_and_nested_files() {
         declared_mods("pub mod a;\npub(crate) mod b;\n    mod c;\nmod d {\n// mod e;\n"),
         ["a", "b", "c"]
     );
+    let hidden = concat!(
+        "/* outer /* nested */\npub mod gone;\n*/\n",
+        "const S: &str = \"\nmod in_string;\n\";\n",
+        "const R: &str = r#\"\nmod in_raw;\n\"#;\n",
+        "const B: &[u8] = br\"\\\";\npub mod after_byte_raw;\nconst T: &str = \"x\";\n",
+        "const Q: char = '\"';\nfn f<'a>(_: &'a str) {}\n",
+        "pub mod kept;\n",
+    );
+    assert_eq!(declared_mods(hidden), ["after_byte_raw", "kept"]);
 }
