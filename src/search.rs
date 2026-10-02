@@ -55,7 +55,33 @@ pub fn search(docs: &[Document], query: &str) -> Vec<Hit> {
     hits
 }
 
-/// A fetch becomes hits only when the classifier says the body is the payload.
+/// Load operator text files. Non-text and unreadable entries are skipped, not hits.
+pub fn load_dir(dir: &std::path::Path) -> Vec<Document> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut docs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "txt" && ext != "md" {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !classify_response(200, &body).is_result() {
+            continue;
+        }
+        let id = path.file_name().and_then(|n| n.to_str()).unwrap_or("doc").to_owned();
+        docs.push(Document { id, body, source: path.display().to_string() });
+    }
+    docs.sort_by(|a, b| a.id.cmp(&b.id));
+    docs
+}
 #[must_use]
 pub fn search_response(status: u16, body: &str, query: &str, source: &str) -> Vec<Hit> {
     if !matches!(classify_response(status, body), FetchOutcome::Parsed) {
@@ -89,5 +115,23 @@ mod tests {
         assert!(search_response(429, "brisbane port", "brisbane", "remote").is_empty());
         let parsed = search_response(200, "brisbane port open", "brisbane port", "remote");
         assert_eq!(parsed.len(), 1);
+    }
+
+    #[test]
+    fn operator_dir_requires_every_term() {
+        let root = std::env::temp_dir().join(format!("huntsman-docs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("port.txt"), "Brisbane port schedule").unwrap();
+        std::fs::write(root.join("other.md"), "Sydney harbour note").unwrap();
+        std::fs::write(root.join("skip.bin"), "Brisbane port").unwrap();
+        std::fs::write(root.join("wall.txt"), "<html>just a moment cloudflare brisbane port</html>").unwrap();
+        let docs = load_dir(&root);
+        assert_eq!(docs.len(), 2);
+        assert!(!docs.iter().any(|d| d.id == "wall.txt"));
+        let hits = search(&docs, "brisbane port");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "port.txt");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
