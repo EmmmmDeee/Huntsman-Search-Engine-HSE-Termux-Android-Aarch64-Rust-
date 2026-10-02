@@ -225,7 +225,14 @@ pub const fn registry() -> &'static [SourceDescriptor] {
 
 #[must_use]
 pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
-    let value = value.trim();
+    let mut value = value.trim();
+    if *kind == EntityKind::Username {
+        // `@handle` is notation, not part of the account name the sources index.
+        value = value.strip_prefix('@').unwrap_or(value);
+        if value.chars().any(char::is_whitespace) {
+            return Vec::new();
+        }
+    }
     if value.is_empty() {
         return Vec::new();
     }
@@ -295,6 +302,23 @@ mod tests {
         );
         assert!(routes.iter().any(|route| route.source_id == "wayback"));
         assert!(routes.iter().any(|route| route.source_id == "crtsh"));
+    }
+
+    #[test]
+    fn username_routes_use_the_bare_handle() {
+        let routes = routes_for(&EntityKind::Username, "@octocat");
+        let github = routes
+            .iter()
+            .find(|route| route.source_id == "github_users")
+            .expect("github_users route");
+        assert_eq!(github.url, "https://github.com/search?q=octocat&type=users");
+        assert!(routes.iter().all(|route| !route.url.contains("%40")));
+    }
+
+    #[test]
+    fn malformed_handles_yield_no_routes() {
+        assert_eq!(routes_for(&EntityKind::Username, "@"), []);
+        assert_eq!(routes_for(&EntityKind::Username, "@ada lovelace"), []);
     }
 
     #[test]

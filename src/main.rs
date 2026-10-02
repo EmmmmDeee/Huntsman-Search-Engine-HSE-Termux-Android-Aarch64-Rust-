@@ -312,9 +312,9 @@ fn sources_cmd(query: Option<String>) -> ExitCode {
         return fail(EX_USAGE, "usage: huntsman-recon sources QUERY");
     };
     let classified = classify_indicator(&query);
-    if !classified.is_actionable() {
-        return fail(EX_DATAERR, "no actionable source routes");
-    }
+    // Residual and unsupported kinds have no descriptors, so the empty-route check
+    // is the gate. A confidence floor here would drop low-confidence but routable
+    // kinds such as `@handle` usernames.
     let routes = routes_for(&classified.kind, &classified.value);
     if routes.is_empty() {
         return fail(EX_DATAERR, "no actionable source routes");

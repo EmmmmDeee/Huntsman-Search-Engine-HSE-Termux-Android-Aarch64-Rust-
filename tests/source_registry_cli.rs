@@ -61,3 +61,32 @@ fn sources_refuses_unactionable_residual_text() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn sources_routes_a_handle_to_github_users() {
+    let out = bin().args(["sources", "@octocat"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with("kind=username confidence=0.400 routes="),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "source=github_users execution=search_url access=public \
+             url=https://github.com/search?q=octocat&type=users"
+        ),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn sources_refuses_a_bare_at_sign() {
+    let out = bin().args(["sources", "@"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    assert_eq!(out.stdout, [] as [u8; 0]);
+}
