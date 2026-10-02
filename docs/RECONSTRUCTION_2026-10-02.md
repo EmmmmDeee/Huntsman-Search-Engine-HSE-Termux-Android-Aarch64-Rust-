@@ -127,5 +127,32 @@ Verification: 103 unit, 3 accept, 5 CLI tests pass on stable and on MSRV 1.87. `
 
 - `main` CI failed on `test (stable)`: Rust 1.99 clippy added `assert_is_empty`, which rejects 39 bare `assert!(x.is_empty())` / `assert!(!x.is_empty())` test assertions under `-D warnings`. Each now prints the offending value (or context) on failure. Clean on Rust 1.99, 1.98 and MSRV 1.87.
 - `README.md` said the archives lived only in git history; it now matches the seventh pass and maps the tree.
-- `docs/DISPOSITIONS.md` is one document with one section per area. The entity section was a work log; it is replaced by the per-file table formerly in `docs/dispositions/entity.md` (now removed), with the missing `core/correlator/rules/location/mod.rs` row added. The intro claimed every legacy file was accounted for; 894 of 1146 monolith `src/` files are not, and a new section counts them by area.
+- `docs/DISPOSITIONS.md` is one document with one section per area. The entity section was a work log; it is replaced by the per-file table formerly in `docs/dispositions/entity.md` (now removed), with the missing `core/correlator/rules/location/mod.rs` row added. The intro claimed every legacy file was accounted for; 895 of 1146 monolith `src/` files are not, and a new section counts them by area (first published as 894; see the ninth pass).
 - Open pull requests were judged against the reconstructed `main`. None applies: #663 (bench-smoke on main only) has an empty diff because `main` deleted `bench-smoke.yml`; #665 (release pre-release policy, `scripts/scan-for-keys.sh`) edits `release.yml`, which no longer exists, for the monolith's `hse-aarch64-linux-android` binary; #662 (HIBP v3) adds `src/modules/hibp/` to the monolith layout and uses a paid key, against "No paid source". Decision: close all three. Rebuild HIBP, if wanted, as a new module on `fetch`/`keys`.
+
+## Ninth pass: proof paths for documentation claims
+
+Documentation is a set of claims. Until this pass, nothing tied the README or the disposition counts to an observation. Falsifying them found three that were wrong:
+
+| Claim | Defeating observation | Decision |
+| --- | --- | --- |
+| README: "`check` uses 2–10 for its individual gates" | `src/main.rs` also has gate 11 (egress, origin, placeholder, URL redaction) | Now 2–11. Gate 11 is described next to the fetch layer. |
+| README exit codes: 64, 65, 66, 74 | `fetch` exits 69 with no response (closed local port) and 77 when the egress policy refuses (`127.0.0.1`) | Now documented. |
+| DISPOSITIONS: 894 unlisted, `util` 115 | The eighth-pass count used substring matching, so `util/mod.rs` matched other paths. Matching on the first table cell gives 895 and 116. | Now 895 and 116. |
+
+New proof paths. Each test was run against the documents before the fix and failed on exactly the claims above. Each was then mutation-checked: 8 of 8 document mutations fail the build (dropped or broken example, invented or dropped exit code, wrong gate range, absent or dropped legacy row, wrong total).
+
+- `tests/readme.rs`: runs every README example in a scratch directory (all except the internet `fetch`) and requires exit 0 with output. README examples and CLI usage must name the same commands, in both directions. Each documented exit code has an offline scenario that produces it, and the documented codes must equal the `EX_*` constants. The gate range must equal the `gate(N, …)` codes in `src/main.rs`.
+- `tests/dispositions.rs`: every legacy row names a file that exists in `legacy/`. The "Not yet dispositioned" table and total are recomputed from `legacy/`.
+
+Evidence state of the claims touched in passes eight and nine:
+
+| Claim | State | Evidence and its limit |
+| --- | --- | --- |
+| Rust 1.99 clippy lints fixed | LIVE-OBSERVED on the branch | CI runs 36992324680 and 36992599045 green (1.87 + stable). Not yet observed on `main`: that needs a merge. Valid until the next stable clippy adds a lint. |
+| README examples run | TESTED, CI-enforced | `tests/readme.rs`. The internet `fetch` example is not run; the fetch layer is proven against a local server in `tests/http_local.rs`. |
+| Documented exit codes are produced | TESTED, CI-enforced | One offline scenario per code. |
+| `check` gate failure codes 2–11 | IMPLEMENTED, range TESTED | The range matches the source. No test injects a fault to observe each gate's failure exit. |
+| Disposition counts | TESTED, CI-enforced | Recomputed from `legacy/` on every test run. |
+| Open PRs #662, #663, #665 do not apply | VERIFIED by observation at 2026-10-02 | Empty diff on #663; `release.yml` and `src/modules/` are absent on `main`. Goes stale if those branches are pushed again. |
+| No Termux/aarch64 handset run | Unchanged: not CLAIMED | — |

@@ -380,12 +380,12 @@ Policy change (network and credentials now allowed):
 
 ## Not yet dispositioned
 
-Legacy `src/` files of the monolith that no section above lists yet (894 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
+Legacy `src/` files of the monolith that no section above lists yet (895 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
 
 | Legacy area | Files not listed | Of |
 | --- | ---: | ---: |
 | `src/modules/` (providers) | 542 | 542 |
-| `src/util/` | 115 | 213 |
+| `src/util/` | 116 | 213 |
 | `src/core/` | 49 | 203 |
 | `src/app/` | 45 | 45 |
 | `src/web/` | 44 | 44 |
