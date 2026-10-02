@@ -31,10 +31,10 @@ impl BenchmarkCase {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityBenchmarkSummary {
     pub cases: usize,
-    pub true_positive: usize,
-    pub true_negative: usize,
-    pub false_positive: usize,
-    pub false_negative: usize,
+    pub true_positive: u32,
+    pub true_negative: u32,
+    pub false_positive: u32,
+    pub false_negative: u32,
     pub precision: f64,
     pub recall: f64,
 }
@@ -46,10 +46,10 @@ pub fn evaluate(
     graph: &EvidenceAncestryGraph,
     policy: AutoMergePolicy,
 ) -> IdentityBenchmarkSummary {
-    let mut true_positive = 0usize;
-    let mut true_negative = 0usize;
-    let mut false_positive = 0usize;
-    let mut false_negative = 0usize;
+    let mut true_positive = 0u32;
+    let mut true_negative = 0u32;
+    let mut false_positive = 0u32;
+    let mut false_negative = 0u32;
 
     for case in cases {
         let actual = case.decision.allows_automatic_merge(graph, policy);
@@ -75,10 +75,10 @@ pub fn evaluate(
     }
 }
 
-fn ratio(numerator: usize, denominator: usize) -> f64 {
+fn ratio(numerator: u32, denominator: u32) -> f64 {
     if denominator == 0 {
         1.0
     } else {
-        numerator as f64 / denominator as f64
+        f64::from(numerator) / f64::from(denominator)
     }
 }
