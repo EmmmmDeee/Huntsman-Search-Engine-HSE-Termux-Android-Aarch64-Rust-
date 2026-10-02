@@ -1,9 +1,9 @@
-//! Bounded JSON session store. No symlinks. Id must be a safe stem.
+//! Bounded JSON session store. No symlinks. Id must be a safe stem. Writes are atomic.
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::error::Error;
+use crate::fsio::{read_bounded, write_atomic};
 use crate::session::{valid_session_id, Session};
 
 const MAX_BYTES: u64 = 1_048_576;
@@ -18,37 +18,31 @@ impl Store {
         Self { root: root.into() }
     }
 
+    /// Save a session and mark it current.
+    ///
+    /// # Errors
+    /// `Error::Invalid` for an unsafe id; `Error::Store` for IO, size, or symlink refusal.
     pub fn save(&self, session: &Session) -> Result<PathBuf, Error> {
         if !valid_session_id(&session.id) {
             return Err(Error::Invalid(format!("unsafe session id: {}", session.id)));
         }
-        let dir = self.root.join("sessions");
-        fs::create_dir_all(&dir).map_err(|e| Error::Store(e.to_string()))?;
-        let path = dir.join(format!("{}.json", session.id));
+        let path = self.root.join("sessions").join(format!("{}.json", session.id));
         let body = serde_json::to_vec_pretty(session).map_err(|e| Error::Store(e.to_string()))?;
-        if body.len() as u64 > MAX_BYTES {
-            return Err(Error::Store("session exceeds 1 MiB".into()));
-        }
-        fs::write(&path, &body).map_err(|e| Error::Store(e.to_string()))?;
-        fs::write(self.root.join("current.txt"), session.id.as_bytes())
-            .map_err(|e| Error::Store(e.to_string()))?;
+        write_atomic(&path, &body, MAX_BYTES)?;
+        write_atomic(&self.root.join("current.txt"), session.id.as_bytes(), MAX_BYTES)?;
         Ok(path)
     }
 
+    /// Load a session by id.
+    ///
+    /// # Errors
+    /// `Error::Invalid` for an unsafe id; `Error::Store` for IO, size, symlink, or JSON failure.
     pub fn load(&self, id: &str) -> Result<Session, Error> {
         if !valid_session_id(id) {
             return Err(Error::Invalid(format!("unsafe session id: {id}")));
         }
         let path = self.root.join("sessions").join(format!("{id}.json"));
-        read_bounded(&path)
+        let body = read_bounded(&path, MAX_BYTES)?;
+        serde_json::from_slice(&body).map_err(|e| Error::Store(e.to_string()))
     }
-}
-
-fn read_bounded(path: &Path) -> Result<Session, Error> {
-    let meta = fs::metadata(path).map_err(|e| Error::Store(e.to_string()))?;
-    if meta.len() > MAX_BYTES {
-        return Err(Error::Store("session exceeds 1 MiB".into()));
-    }
-    let body = fs::read(path).map_err(|e| Error::Store(e.to_string()))?;
-    serde_json::from_slice(&body).map_err(|e| Error::Store(e.to_string()))
 }

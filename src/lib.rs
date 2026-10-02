@@ -6,6 +6,7 @@
 
 pub mod classify;
 pub mod error;
+pub mod fsio;
 pub mod geoint;
 pub mod identity;
 pub mod ledger;
