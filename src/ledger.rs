@@ -35,13 +35,20 @@ impl Claim {
     /// Interop requires a binding this crate implements, not a caller-supplied id.
     #[must_use]
     pub fn admits_interop(&self) -> bool {
+        self.admits_interop_with(BINDINGS)
+    }
+
+    /// The gate against an explicit binding table, so exporters can be exercised
+    /// before this crate implements any technique.
+    #[must_use]
+    pub fn admits_interop_with(&self, bindings: &[(&str, &str)]) -> bool {
         self.status == Status::Verified
             && self.evidence_level.admits_interop()
             && !self.component.trim().is_empty()
             && self
                 .technique_id
                 .as_deref()
-                .is_some_and(|id| valid_technique(id) && method_implements(&self.component, id))
+                .is_some_and(|id| valid_technique(id) && binds(bindings, &self.component, id))
             && !self.does_not_show.trim().is_empty()
     }
 }
@@ -50,20 +57,34 @@ impl Claim {
 /// Haversine is not T1591. Challenge classification is not T1592.
 const BINDINGS: &[(&str, &str)] = &[];
 
+/// The binding table this crate actually implements.
 #[must_use]
-pub fn method_implements(component: &str, technique: &str) -> bool {
+pub const fn bindings() -> &'static [(&'static str, &'static str)] {
     BINDINGS
+}
+
+fn binds(bindings: &[(&str, &str)], component: &str, technique: &str) -> bool {
+    bindings
         .iter()
         .any(|(path, id)| *path == component && *id == technique)
 }
 
 #[must_use]
+pub fn method_implements(component: &str, technique: &str) -> bool {
+    binds(BINDINGS, component, technique)
+}
+
+/// ATT&CK enterprise ids: `T` and exactly four digits, optionally `.` and three digits.
+#[must_use]
 pub fn valid_technique(id: &str) -> bool {
     let rest = id.strip_prefix('T').unwrap_or("");
-    let (base, sub) = rest.split_once('.').unwrap_or((rest, ""));
-    (4..=5).contains(&base.len())
-        && base.chars().all(|c| c.is_ascii_digit())
-        && (sub.is_empty() || (sub.len() == 3 && sub.chars().all(|c| c.is_ascii_digit())))
+    let (base, sub) = match rest.split_once('.') {
+        Some((base, sub)) => (base, Some(sub)),
+        None => (rest, None),
+    };
+    base.len() == 4
+        && base.bytes().all(|c| c.is_ascii_digit())
+        && sub.is_none_or(|s| s.len() == 3 && s.bytes().all(|c| c.is_ascii_digit()))
 }
 
 #[must_use]
@@ -205,6 +226,41 @@ mod tests {
         assert!(!weak.claim.admits_interop());
         let no_tech = seal(&sample(Status::Verified, EvidenceLevel::Reproduction, None));
         assert!(!no_tech.claim.admits_interop());
+    }
+
+    #[test]
+    fn technique_ids_are_attack_shaped() {
+        for ok in ["T1595", "T1595.001"] {
+            assert!(valid_technique(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "T",
+            "T159",
+            "T15955",
+            "t1595",
+            "T1595.",
+            "T1595.01",
+            "T1595.0011",
+            "T١٢٣٤",
+            "T1595 ",
+        ] {
+            assert!(!valid_technique(bad), "{bad:?}");
+        }
+        assert!(!valid_technique("T1595.001.002"));
+    }
+
+    #[test]
+    fn explicit_binding_table_controls_admission() {
+        let claim = sample(
+            Status::Verified,
+            EvidenceLevel::DirectObservation,
+            Some("T1595"),
+        );
+        assert!(!claim.admits_interop());
+        assert!(claim.admits_interop_with(&[("src/geoint.rs", "T1595")]));
+        assert!(!claim.admits_interop_with(&[("src/geoint.rs", "T1592")]));
+        assert!(!claim.admits_interop_with(&[("src/other.rs", "T1595")]));
     }
 
     #[test]

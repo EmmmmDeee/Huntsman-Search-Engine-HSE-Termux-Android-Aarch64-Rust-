@@ -66,3 +66,20 @@ Both archives were extracted from `91f2533` and judged item by item.
 | `revalidation-required/` 0100, 0110, 0140, `superseded-reference` | NOT ADOPTED | The overlay itself marks them do-not-batch-promote. The 5 % geo cap is unvalidated. Superseded by definition. |
 
 `check` gate 5 holds the integrated contract: a 403 challenge is `BotWaf` and never demands credentials; two mirrors of one dump cannot auto-merge, while two independent roots can; delayed retry work is not a fixed point.
+
+## Fourth pass — falsification results
+
+Each fix started with a test that failed on the previous code (or a CLI reproduction, for the first row).
+
+| Capability | Defect found | Decision |
+| --- | --- | --- |
+| Classifier | `looks_like_document` sliced the body at a byte offset. A body that starts with `{` or `[`, carries a vendor string, and has a multibyte character spanning byte 5, 6 or 14 panicked. `search DIR` crashed on such an operator file (`{"éé":"datadome"}`). | REIMPLEMENT: compare bytes through `get(..n)`. |
+| Search CLI | A query with no searchable term (`""`, `a`, `- !`) printed `hits=0`, the same class of lie as the unreadable directory. | Exit 64 with a message. |
+| Search loader | `NOTES.TXT` and `NOTES.MD` were skipped without a word. | Extension match is case-insensitive. |
+| Technique id | `T1595.` (trailing dot) and five-digit ids passed `valid_technique`. ATT&CK enterprise ids are `T` plus exactly four digits. | REIMPLEMENT: strict shape. |
+| Session | A partial terminate stored any string as the ledger tip, and `bound_to` then accepted it. | A partial tip is empty or a lowercase 64-hex hash. |
+| STIX / Navigator | The exporters had never run, because the binding table is empty. The STIX pattern dropped single quotes and left backslashes raw, so a trailing backslash broke the pattern. | `bundle_with` / `layer_with` / `admits_interop_with` take an explicit table. Tests exercise a bound entry: UUID shape, version and variant nibbles, escaping. Production still uses the empty table. |
+
+Verification: `cargo test` gives 71 unit, 3 accept, 4 CLI, all passing. `clippy --all-targets -D warnings` and `cargo fmt --check` are clean. `check` leaves `var/` unchanged.
+
+Still unresolved: no Termux handset run. The binding table is still empty, so no technique is claimed. Handle-only identity merging in `identity::resolve` ignores platform scope: the same handle on two platforms merges. That is the documented contract, and the ancestry-aware gate in `identity_resolution` is the stricter path. It was not changed here.

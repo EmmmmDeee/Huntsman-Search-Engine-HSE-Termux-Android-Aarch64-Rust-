@@ -61,6 +61,11 @@ fn failures_exit_nonzero() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(65));
+    for query in ["", "a", "- !"] {
+        let out = bin().args(["search", query]).output().unwrap();
+        assert_eq!(out.status.code(), Some(64), "{query:?} is not hits=0");
+        assert!(out.stdout.is_empty());
+    }
     assert_eq!(bin().arg("nope").output().unwrap().status.code(), Some(64));
     assert_eq!(
         bin()
@@ -90,4 +95,17 @@ fn classify_reports_causal_outcome_and_action() {
     );
     let ok = run("200", "{}");
     assert!(ok.ends_with("outcome=inconclusive\naction=retry\n"), "{ok}");
+}
+
+#[test]
+fn multibyte_documents_do_not_crash_search() {
+    let dir = scratch("utf8");
+    fs::write(dir.join("a.txt"), "[éééééé datadome zürich").unwrap();
+    let out = bin().args(["search", "zürich"]).arg(&dir).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = fs::remove_dir_all(&dir);
 }

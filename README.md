@@ -14,7 +14,7 @@ cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
 cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 ```
 
-`search DIR` loads `.txt` and `.md` from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
+`search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
 
 Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input, 74 artifact write failure. `check` uses 2–9 for its individual gates.
 

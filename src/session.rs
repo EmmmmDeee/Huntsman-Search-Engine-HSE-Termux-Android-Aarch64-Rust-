@@ -168,7 +168,7 @@ impl Session {
     /// Close the session. Full terminate needs every RCVF section and a ledger tip.
     ///
     /// # Errors
-    /// `Error::MissingField` for blank residual; `Error::TerminateRefused` for gaps or a non-hash tip.
+    /// `Error::MissingField` for blank residual; `Error::TerminateRefused` for gaps or a non-hash tip. A partial close may leave the tip empty.
     pub fn terminate(
         &mut self,
         residual: String,
@@ -189,6 +189,10 @@ impl Session {
                     "ledger tip is not a chain hash".into(),
                 ));
             }
+        } else if !ledger_tip.is_empty() && !tip_is_hash(ledger_tip) {
+            return Err(Error::TerminateRefused(
+                "ledger tip is neither empty nor a chain hash".into(),
+            ));
         }
         self.termination = Some(Termination {
             partial,
@@ -311,6 +315,17 @@ mod tests {
         assert!(s.terminate("r".into(), false, &"ab".repeat(31)).is_err());
         assert!(s.termination.is_none());
         s.terminate("r".into(), false, &"ab".repeat(32)).unwrap();
+        assert!(s.bound_to(&"ab".repeat(32)));
+    }
+
+    #[test]
+    fn partial_terminate_never_binds_a_non_hash_tip() {
+        let mut s = Session::new("p");
+        assert!(s.terminate("r".into(), true, "not-a-hash").is_err());
+        assert!(s.termination.is_none());
+        s.terminate("r".into(), true, "").unwrap();
+        assert!(!s.bound_to("not-a-hash"));
+        s.terminate("r".into(), true, &"ab".repeat(32)).unwrap();
         assert!(s.bound_to(&"ab".repeat(32)));
     }
 

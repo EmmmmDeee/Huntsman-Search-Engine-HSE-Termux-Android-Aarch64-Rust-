@@ -77,9 +77,10 @@ const PHRASES: &[&[&str]] = &[
 
 #[must_use]
 pub fn looks_like_document(body: &str) -> bool {
-    let head = body.trim_start();
+    let head = body.trim_start().as_bytes();
     OPENERS.iter().any(|opener| {
-        head.len() >= opener.len() && head[..opener.len()].eq_ignore_ascii_case(opener)
+        head.get(..opener.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(opener.as_bytes()))
     })
 }
 
@@ -152,6 +153,21 @@ mod tests {
         assert!(!wall.is_result());
         let down = classify_response(503, "origin unavailable");
         assert!(matches!(down, FetchOutcome::Failed { .. }));
+    }
+
+    #[test]
+    fn multibyte_body_never_panics_the_opener_check() {
+        for body in [
+            r#"{"éé":"datadome"}"#,
+            "[ééééééé datadome",
+            "ééééééé datadome",
+            r#"{"名前名前":"datadome"}"#,
+        ] {
+            let _ = classify_response(200, body);
+            let _ = is_challenge(body);
+        }
+        assert!(!looks_like_document("é<html>"));
+        assert!(looks_like_document("  <!DOCTYPE HTML><p>"));
     }
 
     #[test]

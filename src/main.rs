@@ -17,7 +17,7 @@ use huntsman_recon::identity_resolution::{
 };
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::navigator::layer;
-use huntsman_recon::search::{Document, load_dir, search, search_response};
+use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
 use huntsman_recon::source_outcome::{
     SourceHealthAction, SourceOutcomeKind, classify_fetch, recommended_action,
@@ -72,6 +72,12 @@ fn search_cmd(query: Option<String>, dir: Option<String>) -> ExitCode {
     let Some(query) = query else {
         return fail(EX_USAGE, "usage: huntsman-recon search QUERY [DIR]");
     };
+    if tokenize(&query).is_empty() {
+        return fail(
+            EX_USAGE,
+            "query has no searchable term (words need two or more letters or digits)",
+        );
+    }
     let docs = if let Some(dir) = dir {
         match load_dir(Path::new(&dir)) {
             Ok(loaded) => {

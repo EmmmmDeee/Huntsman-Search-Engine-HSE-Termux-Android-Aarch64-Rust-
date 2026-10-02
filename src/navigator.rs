@@ -3,12 +3,21 @@
 
 use serde_json::{Value, json};
 
-use crate::ledger::LedgerEntry;
+use crate::ledger::{LedgerEntry, bindings};
 
 #[must_use]
 pub fn layer(entries: &[LedgerEntry]) -> Value {
+    layer_with(entries, bindings())
+}
+
+/// Layer against an explicit binding table, so the exporter shape is testable.
+#[must_use]
+pub fn layer_with(entries: &[LedgerEntry], bindings: &[(&str, &str)]) -> Value {
     let mut techniques = Vec::new();
-    for entry in entries.iter().filter(|e| e.claim.admits_interop()) {
+    for entry in entries
+        .iter()
+        .filter(|e| e.claim.admits_interop_with(bindings))
+    {
         let Some(id) = entry.claim.technique_id.clone() else {
             continue;
         };
@@ -33,6 +42,29 @@ mod tests {
     use super::*;
     use crate::ledger::{Claim, seal};
     use crate::stage::{EvidenceLevel, Status};
+
+    #[test]
+    fn bound_entry_scores_only_its_technique() {
+        let entry = seal(&Claim {
+            claim: "bound".into(),
+            source: "test".into(),
+            component: "src/x.rs".into(),
+            technique_id: Some("T1595.001".into()),
+            status: Status::Verified,
+            evidence_level: EvidenceLevel::DirectObservation,
+            does_not_show: "not a live scan".into(),
+        });
+        let value = layer_with(std::slice::from_ref(&entry), &[("src/x.rs", "T1595.001")]);
+        let techniques = value["techniques"].as_array().unwrap();
+        assert_eq!(techniques.len(), 1);
+        assert_eq!(techniques[0]["techniqueID"], "T1595.001");
+        assert!(
+            layer_with(&[entry], &[("src/x.rs", "T1595")])["techniques"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn catalog_only_claim_is_absent() {
