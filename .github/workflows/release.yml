@@ -81,23 +81,24 @@ concurrency:
 
 jobs:
   resolve:
+    # No token needed: an existing main-<sha7> is not a reason to skip the
+    # run. `publish` decides: it verifies an existing complete pre-release at
+    # this commit, or refuses a partial one, a non-prerelease or a tag at
+    # another commit.
     name: Resolve main-channel tag
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.t.outputs.tag }}
-      build: ${{ steps.t.outputs.build }}
       publish: ${{ steps.t.outputs.publish }}
     steps:
       - id: t
         env:
-          GH_TOKEN: ${{ github.token }}
           GH_REF: ${{ github.ref }}
           GH_EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           tag="main-${GITHUB_SHA:0:7}"
           [[ "$tag" =~ ^main-[0-9a-f]{7}$ ]] || { echo "::error::bad tag ${tag}"; exit 1; }
-          build=true
           publish=true
           if [ "$GH_EVENT_NAME" = "pull_request" ]; then
             publish=false
@@ -105,24 +106,18 @@ jobs:
           elif [ "$GH_REF" != "refs/heads/main" ]; then
             echo "::error::main-channel releases are built from refs/heads/main only (got ${GH_REF})"
             exit 1
-          elif gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" >/dev/null 2>&1; then
-            build=false
-            publish=false
-            echo "Release ${tag} already exists; nothing to publish." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
           {
             echo "tag=${tag}"
-            echo "build=${build}"
             echo "publish=${publish}"
           } >> "$GITHUB_OUTPUT"
-          echo "Resolved tag=${tag} build=${build} publish=${publish}"
+          echo "Resolved tag=${tag} publish=${publish}"
 
   build:
     # Runs cargo and every dependency build script: read-only token, no
     # GH_TOKEN, no persisted git credentials, no OIDC.
     name: Build and key-scan aarch64 Termux binary
     needs: resolve
-    if: needs.resolve.outputs.build == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -474,7 +469,7 @@ jobs:
 
       - name: Warn when attestation failed
         if: steps.existing.outputs.exists == 'false' && steps.attest.outcome != 'success'
-        run: echo "::warning::attestation upload failed; the release is published without it. Re-run to retry."
+        run: echo "::warning::attestation upload failed; ${TAG} will be published without one. A re-run will not add it, because the release will then exist; to get an attested build, delete the pre-release and re-run."
 
       - name: Publish pre-release ${{ needs.resolve.outputs.tag }}
         if: steps.existing.outputs.exists == 'false'

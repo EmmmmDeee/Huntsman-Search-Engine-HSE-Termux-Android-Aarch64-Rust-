@@ -599,3 +599,46 @@ fn scanner_fails_closed_on_a_missing_or_empty_path() {
     assert!(text.contains("scan path does not exist"), "{text}");
     let _ = fs::remove_dir_all(&empty);
 }
+
+#[test]
+fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
+    let wf = release();
+    let resolve = job(&wf, "resolve");
+    let build = job(&wf, "build");
+    for forbidden in [
+        "gh api",
+        "GH_TOKEN",
+        "build=false",
+        "publish=false\n            echo \"Release",
+    ] {
+        assert!(
+            !resolve.contains(forbidden),
+            "resolve must not skip an existing release: found {forbidden:?}"
+        );
+    }
+    assert!(
+        !build.contains("    if:"),
+        "build must run on every main push so publish can verify or refuse an existing release"
+    );
+    assert!(!wf.contains("needs.resolve.outputs.build"));
+    let publish = job(&wf, "publish");
+    assert!(publish.contains("    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.resolve.outputs.publish == 'true'\n"));
+    for required in [
+        "not ${GITHUB_SHA}; refusing",
+        "exists and is NOT a pre-release; refusing",
+        "is missing or has no digest",
+        "verifying it, not replacing it",
+    ] {
+        assert!(
+            publish.contains(required),
+            "publish must contain {required:?}"
+        );
+    }
+}
+
+#[test]
+fn attestation_warning_does_not_promise_a_retry() {
+    let wf = release();
+    assert!(!wf.contains("Re-run to retry"));
+    assert!(wf.contains("A re-run will not add it"));
+}
