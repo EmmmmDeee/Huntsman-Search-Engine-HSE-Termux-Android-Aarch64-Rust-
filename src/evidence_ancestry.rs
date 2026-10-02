@@ -32,9 +32,33 @@ pub struct EvidenceAncestryNode {
     pub derived: bool,
 }
 
+/// Deserialisation re-runs `insert` on every node, so a stored graph cannot carry
+/// what `insert` refuses: an empty family, a parentless derivation, or a key that
+/// is not the node's id.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawGraph")]
 pub struct EvidenceAncestryGraph {
     nodes: BTreeMap<EvidenceNodeId, EvidenceAncestryNode>,
+}
+
+#[derive(Deserialize)]
+struct RawGraph {
+    nodes: BTreeMap<EvidenceNodeId, EvidenceAncestryNode>,
+}
+
+impl TryFrom<RawGraph> for EvidenceAncestryGraph {
+    type Error = String;
+
+    fn try_from(raw: RawGraph) -> Result<Self, String> {
+        let mut graph = Self::default();
+        for (key, node) in raw.nodes {
+            if key != node.id {
+                return Err(format!("graph key {} holds node {}", key.0, node.id.0));
+            }
+            graph.insert(node).map_err(|e| e.to_string())?;
+        }
+        Ok(graph)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -183,6 +207,29 @@ mod tests {
             parents: parents.iter().copied().map(EvidenceNodeId::from).collect(),
             derived,
         }
+    }
+
+    #[test]
+    fn deserialised_graph_cannot_bypass_insert_invariants() {
+        let bad = [
+            r#"{"nodes":{"x":{"id":"x","source_family":"","parents":[],"derived":false}}}"#,
+            r#"{"nodes":{"x":{"id":"x","source_family":"f","parents":[],"derived":true}}}"#,
+            r#"{"nodes":{"x":{"id":"y","source_family":"f","parents":[],"derived":false}}}"#,
+        ];
+        for json in bad {
+            assert!(
+                serde_json::from_str::<EvidenceAncestryGraph>(json).is_err(),
+                "{json}"
+            );
+        }
+        let mut graph = EvidenceAncestryGraph::default();
+        graph
+            .insert(node("raw", "  Adobe  2013", &[], false))
+            .unwrap();
+        graph.insert(node("m", "p", &["raw"], true)).unwrap();
+        let back: EvidenceAncestryGraph =
+            serde_json::from_str(&serde_json::to_string(&graph).unwrap()).unwrap();
+        assert_eq!(back, graph);
     }
 
     #[test]

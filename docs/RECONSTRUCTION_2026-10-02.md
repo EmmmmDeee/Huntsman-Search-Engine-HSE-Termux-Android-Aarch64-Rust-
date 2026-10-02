@@ -83,3 +83,16 @@ Each fix started with a test that failed on the previous code (or a CLI reproduc
 Verification: `cargo test` gives 71 unit, 3 accept, 4 CLI, all passing. `clippy --all-targets -D warnings` and `cargo fmt --check` are clean. `check` leaves `var/` unchanged.
 
 Still unresolved: no Termux handset run. The binding table is still empty, so no technique is claimed. Handle-only identity merging in `identity::resolve` ignores platform scope: the same handle on two platforms merges. That is the documented contract, and the ancestry-aware gate in `identity_resolution` is the stricter path. It was not changed here.
+
+## Fifth pass — overlay modules
+
+Each fix started with a test that failed on the previous code.
+
+| Capability | Defect found | Decision |
+| --- | --- | --- |
+| `evidence_ancestry` | The graph derived `Deserialize`, so a stored graph skipped `insert`. A parentless derivation, an empty family, or a map key that differs from the node id loaded, and the parentless derivation counted as a root family (`""`). | REIMPLEMENT: deserialisation goes through `insert` and checks key against id. Serialised shape is unchanged. |
+| `eval::decide` | A negative `cost_ratio` passed the `<= max_cost_ratio` gate, so a nonsense measurement could promote. | Negative cost ratio is `Hold`. |
+
+Falsified, no change: `sha256` matches Python `hashlib` for every length 0..300. Cluster pair scoring is order-independent because members are a sorted set. Non-finite policy thresholds fail safe (`Repair` or `Hold`, never `Promote`).
+
+Verification: 73 unit, 3 accept, 4 CLI tests pass; clippy `-D warnings` and `cargo fmt --check` are clean; `check` leaves `var/` unchanged.
