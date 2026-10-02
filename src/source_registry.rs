@@ -280,7 +280,7 @@ mod tests {
             assert!(source.url_template.starts_with("https://"));
             assert!(source.reference_url.starts_with("https://"));
             assert_eq!(source.url_template.matches("{value}").count(), 1);
-            assert!(!source.accepted_kinds.is_empty());
+            assert_ne!(source.accepted_kinds, []);
         }
     }
 
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn human_query_is_rfc3986_encoded() {
         let routes = routes_for(&EntityKind::Person, "Ada Lovelace");
-        assert!(!routes.is_empty());
+        assert_ne!(routes, [] as [SourceRoute; 0]);
         assert!(
             routes
                 .iter()
