@@ -240,8 +240,11 @@ fn insert_pivot(pivots: &mut BTreeMap<String, String>, base: &str, source: &str,
 
 fn prefixed_value<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
     let trimmed = line.trim();
-    (trimmed.len() >= prefix.len() && trimmed[..prefix.len()].eq_ignore_ascii_case(prefix))
-        .then(|| trimmed[prefix.len()..].trim())
+    let head = trimmed.get(..prefix.len())?;
+    if !head.eq_ignore_ascii_case(prefix) {
+        return None;
+    }
+    Some(trimmed.get(prefix.len()..)?.trim())
 }
 
 fn extract_title(text: &str) -> Option<String> {
