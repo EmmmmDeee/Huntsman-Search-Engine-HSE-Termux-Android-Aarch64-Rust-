@@ -35,7 +35,7 @@
 //! [`HibpError::PlanNotEntitled`] without calling the gated endpoint when the
 //! plan lacks `IncludesStealerLogs` / `IncludesKAnon`.
 
-use crate::http::{Request, Transport, TransportConfig, UreqTransport};
+use crate::http::{Request, Response, Transport, TransportConfig, UreqTransport};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -339,7 +339,9 @@ impl HibpClient {
 
     /// `GET {passwords_base}/range/{prefix}` (5 hex chars), SHA-1 or NTLM
     /// (`?mode=ntlm`). With `add_padding` the `Add-Padding: true` header is
-    /// sent and the zero-count padding entries are dropped.
+    /// sent and the zero-count padding entries are dropped. The API has no
+    /// rate limit, so a 429 (from the CDN) is not retried: it returns
+    /// [`HibpError::RateLimited`] with the server's `retry-after`.
     pub fn pwned_passwords_range(
         &self,
         prefix: &str,
@@ -357,11 +359,13 @@ impl HibpClient {
             req = req.header("Add-Padding", "true");
         }
         let resp = super::send(self.http.as_ref(), req)?;
-        let status = resp.status;
-        if status != 200 {
-            return Err(Self::classify(status));
+        match resp.status {
+            200 => passwords::parse_range(&resp.body, mode, add_padding),
+            429 => Err(HibpError::RateLimited {
+                retry_after: retry_after(&resp),
+            }),
+            status => Err(Self::classify(status)),
         }
-        passwords::parse_range(&resp.body, mode, add_padding)
     }
 
     /// Hash `password` locally and look it up in its range. Returns how many
@@ -438,10 +442,7 @@ impl HibpClient {
             let resp = super::send(self.http.as_ref(), req)?;
             let status = resp.status;
             if status == 429 {
-                let retry_after = resp
-                    .header_value("retry-after")
-                    .and_then(|s| s.trim().parse::<u64>().ok())
-                    .map(Duration::from_secs);
+                let retry_after = retry_after(&resp);
                 let wait = retry_after.unwrap_or(Duration::from_secs(2));
                 self.limiter.block_for(wait)?;
                 if wait <= self.config.max_retry_after && retries < self.config.max_429_retries {
@@ -487,6 +488,13 @@ enum Entitlement {
 pub fn account_sha1_hex(email: &str) -> String {
     let norm = email.trim().to_lowercase();
     passwords::sha1_hex(norm.as_bytes())
+}
+
+/// A 429's `retry-after` in whole seconds, when the server sent one.
+fn retry_after(resp: &Response) -> Option<Duration> {
+    resp.header_value("retry-after")
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
 }
 
 fn seg(s: &str) -> String {

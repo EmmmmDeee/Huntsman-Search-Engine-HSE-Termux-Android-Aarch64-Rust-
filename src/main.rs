@@ -20,6 +20,7 @@ use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
 use huntsman_recon::fsio::write_atomic;
 use huntsman_recon::geohash;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
+use huntsman_recon::hibp::cli::HibpCommand;
 use huntsman_recon::http::{
     Request, TransportConfig, UreqTransport, origin_of, parse_http_uri, redact_url,
 };
@@ -40,7 +41,7 @@ use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER | hibp SUBCOMMAND]";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -61,6 +62,7 @@ fn main() -> ExitCode {
         Some("fetch") => fetch_cmd(&args.collect::<Vec<_>>()),
         Some("keys") => keys_cmd(args.next()),
         Some("verify") => verify(args.next()),
+        Some("hibp") => hibp_cmd(&args.collect::<Vec<_>>()),
         Some("check") | None => check(),
         Some("help" | "-h" | "--help") => {
             println!("{USAGE}");
@@ -258,6 +260,16 @@ fn keys_cmd(path: Option<String>) -> ExitCode {
         }
         Err(e) => fail(EX_NOINPUT, &e.to_string()),
     }
+}
+
+/// `hibp …`: HIBP v3 and Pwned Passwords lookups (see `hibp::cli`).
+fn hibp_cmd(args: &[String]) -> ExitCode {
+    ExitCode::from(HibpCommand::production().run(
+        args,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    ))
 }
 
 fn search_cmd(query: Option<String>, dir: Option<String>) -> ExitCode {
