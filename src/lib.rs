@@ -4,17 +4,21 @@
 
 #![deny(unsafe_code)]
 
+pub mod au_id;
 pub mod classify;
+pub mod confidence;
 pub mod credential_origin;
 pub mod error;
 pub mod eval;
 pub mod evidence_ancestry;
 pub mod fsio;
+pub mod geohash;
 pub mod geoint;
 pub mod identity;
 pub mod identity_resolution;
 pub mod ledger;
 pub mod navigator;
+pub mod redact;
 pub mod search;
 pub mod session;
 pub mod sha256;

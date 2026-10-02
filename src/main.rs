@@ -5,11 +5,14 @@ use std::env;
 use std::path::Path;
 use std::process::ExitCode;
 
+use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
 use huntsman_recon::classify::classify_response;
+use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
 };
 use huntsman_recon::fsio::write_atomic;
+use huntsman_recon::geohash;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
 use huntsman_recon::identity::{PersonRecord, resolve};
 use huntsman_recon::identity_resolution::{
@@ -17,6 +20,7 @@ use huntsman_recon::identity_resolution::{
 };
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::navigator::layer;
+use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
 use huntsman_recon::source_outcome::{
@@ -26,7 +30,7 @@ use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | search QUERY [DIR] | classify STATUS BODY | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | verify LEDGER]";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -37,6 +41,9 @@ fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("geo") => geo(args.next(), args.next()),
+        Some("geohash") => geohash_cmd(args.next(), args.next().as_deref()),
+        Some("coarsen") => coarsen_cmd(args.next()),
+        Some("id") => id_cmd(args.next()),
         Some("search") => search_cmd(args.next(), args.next()),
         Some("classify") => classify(args.next(), args.next()),
         Some("verify") => verify(args.next()),
@@ -65,6 +72,62 @@ fn geo(a: Option<String>, b: Option<String>) -> ExitCode {
         return fail(EX_DATAERR, &format!("bad coordinate: {b}"));
     };
     println!("{:.0}", haversine_m(lat1, lon1, lat2, lon2));
+    ExitCode::SUCCESS
+}
+
+fn geohash_cmd(pair: Option<String>, precision: Option<&str>) -> ExitCode {
+    let Some(pair) = pair else {
+        return fail(
+            EX_USAGE,
+            "usage: huntsman-recon geohash LAT,LON [PRECISION]",
+        );
+    };
+    let Ok((lat, lon)) = parse_latlon(&pair) else {
+        return fail(EX_DATAERR, &format!("bad coordinate: {pair}"));
+    };
+    let precision = match precision.map(str::parse::<usize>) {
+        None => 7,
+        Some(Ok(p)) => p,
+        Some(Err(_)) => return fail(EX_DATAERR, "bad precision"),
+    };
+    match geohash::encode(lat, lon, precision) {
+        Ok(hash) => {
+            println!("{hash}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(EX_DATAERR, &e.to_string()),
+    }
+}
+
+fn coarsen_cmd(pair: Option<String>) -> ExitCode {
+    let Some(pair) = pair else {
+        return fail(EX_USAGE, "usage: huntsman-recon coarsen LAT,LON");
+    };
+    match coarsen_latlon(&pair) {
+        Some(coarse) => {
+            println!("{coarse}");
+            ExitCode::SUCCESS
+        }
+        None => fail(EX_DATAERR, &format!("bad coordinate: {pair}")),
+    }
+}
+
+fn id_cmd(token: Option<String>) -> ExitCode {
+    let Some(token) = token else {
+        return fail(EX_USAGE, "usage: huntsman-recon id TOKEN");
+    };
+    match classify_id(&token) {
+        Ok(Identifier::Abn { bare, acn }) => {
+            println!("abn={bare}");
+            println!("acn={}", acn.as_deref().unwrap_or("none"));
+        }
+        Ok(Identifier::Acn { bare }) => println!("acn={bare}"),
+        Ok(Identifier::Bsb { bare, institution }) => {
+            println!("bsb={bare}");
+            println!("institution={}", institution.unwrap_or("unknown"));
+        }
+        Err(e) => return fail(EX_DATAERR, &e.to_string()),
+    }
     ExitCode::SUCCESS
 }
 
@@ -282,7 +345,36 @@ fn check_offline_gates() -> Gate {
         },
     ]);
     gate(4, people.len() == 2, "shared name merged identities")?;
-    check_overlay_gates()
+    check_overlay_gates()?;
+    check_rebuilt_gates()
+}
+
+/// Rebuilt monolith utilities: strict identifiers, geohash round-trip, weak sources
+/// do not reach Verified, overlapping secrets leave no fragment.
+fn check_rebuilt_gates() -> Gate {
+    gate(
+        10,
+        is_valid_abn("51 824 753 556") && !is_valid_abn("5182 hello 4753556"),
+        "ABN grouping not strict",
+    )?;
+    let hash = geohash::encode(-27.4698, 153.0251, 9).map_err(|e| (10, e.to_string()))?;
+    let cell = geohash::decode(&hash).map_err(|e| (10, e.to_string()))?;
+    gate(
+        10,
+        cell.contains(-27.4698, 153.0251),
+        "geohash cell misses its point",
+    )?;
+    gate(
+        10,
+        Classification::from_effective(effective(0.05, 5)) == Classification::Candidate,
+        "weak sources reached a tier",
+    )?;
+    let scrubbed = scrub_secrets("xxabcdefyy", &["abcd", "cdef"]);
+    gate(
+        10,
+        scrubbed == "xx[redacted]yy",
+        "secret fragment survived scrubbing",
+    )
 }
 
 /// Refactor-overlay foundations: a WAF is not an auth failure, mirrors count once,

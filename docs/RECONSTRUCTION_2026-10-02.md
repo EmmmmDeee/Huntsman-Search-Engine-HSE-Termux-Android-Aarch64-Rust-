@@ -96,3 +96,20 @@ Each fix started with a test that failed on the previous code.
 Falsified, no change: `sha256` matches Python `hashlib` for every length 0..300. Cluster pair scoring is order-independent because members are a sorted set. Non-finite policy thresholds fail safe (`Repair` or `Hold`, never `Promote`).
 
 Verification: 73 unit, 3 accept, 4 CLI tests pass; clippy `-D warnings` and `cargo fmt --check` are clean; `check` leaves `var/` unchanged.
+
+## Sixth pass — monolith utilities rebuilt
+
+The third pass judged the monolith zip as a whole and did not restore it. This pass goes file by file for the pure, offline parts that fit the contract (no network, no credentials, no I/O). Each was read from `91f2533`, then rebuilt rather than copied. Legacy tests and doc examples are kept as a differential oracle; where the legacy behaviour was wrong, the test says so.
+
+| Legacy file | New module | Decision | Defect found in legacy, and evidence |
+| --- | --- | --- | --- |
+| `util/abn`, `util/bsb` | `au_id` | REIMPLEMENT | Every non-digit byte was ignored, so `5182 hello 4753556` validated as an ABN and `0 6 2 hello 000` as a BSB. Now only single spaces or hyphens between digits. Property test: every single-digit error in 400 generated valid ABNs is caught (mod-89 weights are coprime to 89). The ACN check digit is shown to have a blind spot (weight 5, change of 2), so a valid ACN is weaker evidence. |
+| `util/geohash/encode` | `geohash` | REIMPLEMENT | Precision was clamped silently (0 became 1, 99 became 12) and there was no decoder. Now an error, plus `decode`. Properties: every hash round-trips through its cell centre, cells nest by prefix, corners stay inside their cell. Reference vectors were cross-checked against an independent Python encoder; my first hand-written vector was wrong and the cross-check caught it. |
+| `hse-core` `c_effective`, `Classification` | `confidence` | REIMPLEMENT | The doubt kept per extra source was a fixed 0.65, so five independent sources of confidence 0.05 reached 0.83 (Verified), and a zero-confidence claim also reached it. Doubt now shrinks no faster than the source's own doubt (`max(0.65, 1 - C)`). Differential test over a 1000 x 40 grid: identical to legacy for `C >= 0.35`, never more generous below. Also `n` can come from `evidence_ancestry` root families, so mirrors count once. NaN is 0. Depth decay refuses a base above 1. |
+| `util/redact` | `redact` | REIMPLEMENT | Secrets were replaced one at a time, so a secret inside a longer one left the longer half exposed, partly overlapping secrets left tails, and a secret equal to part of the mask re-matched. Now one pass over the original text, overlapping and touching spans merged. Coordinates are range-checked (legacy accepted `999,999`). |
+
+New CLI: `id TOKEN`, `geohash LAT,LON [PRECISION]`, `coarsen LAT,LON`. `check` gate 10 exercises all four modules.
+
+Not rebuilt, with reason: `util/http`, `util/curl*`, `util/preflight`, `core/engine`, and all of `src/modules` need a network client or credentials. `util/domains` (registrable domain) and `core/validation` are the next pure candidates; `domains` needs a public-suffix decision that has not been made. `postcode_au` centroid tables are bulk data with no provenance in the zip.
+
+Verification: 103 unit, 3 accept, 5 CLI tests pass on stable and on MSRV 1.87. `clippy --all-targets -D warnings` and `cargo fmt --check` are clean. `check` leaves `var/` unchanged.
