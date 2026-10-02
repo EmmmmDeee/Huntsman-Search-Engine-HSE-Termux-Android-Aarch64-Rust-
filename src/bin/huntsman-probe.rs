@@ -13,7 +13,10 @@ const USAGE: &str = "usage: huntsman-probe --authorized [--max-requests 1..4] UR
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.iter().any(|arg| matches!(arg.as_str(), "-h" | "--help")) {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
@@ -45,7 +48,11 @@ fn main() -> ExitCode {
         Err(error) => return fail(EX_UNAVAILABLE, &safe(&error.to_string())),
     };
 
-    println!("base={} requests={}", safe(&report.base_url), report.requests_made);
+    println!(
+        "base={} requests={}",
+        safe(&report.base_url),
+        report.requests_made
+    );
     println!(
         "fingerprint title={} server={} powered_by={} hsts={} csp={}",
         opt_safe(report.fingerprint.title.as_deref()),
