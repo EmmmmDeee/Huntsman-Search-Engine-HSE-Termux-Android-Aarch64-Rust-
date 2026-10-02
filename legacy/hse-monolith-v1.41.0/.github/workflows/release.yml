@@ -53,11 +53,6 @@ on:
 permissions:
   contents: read
 
-# Release-build marker: only artifacts built on GitHub Actions with HSE_RELEASE=1
-# may be published (enforced in the key-check step below).
-env:
-  HSE_RELEASE: "1"
-
 # Serialise ALL release runs (one group for the whole workflow, NOT per-ref) so
 # they can't race to build + create + upload the same release. A version-bump
 # push fires two runs with DIFFERENT refs for the SAME version — the branch push
@@ -113,12 +108,7 @@ jobs:
                 # if that tag doesn't already exist (idempotent per version).
                 ver="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)"
                 tag="v${ver}"
-                # POLICY: a main push NEVER publishes a stable release. A version
-                # bump that has no tag yet used to cut the stable v<ver> here;
-                # now the stable release is only ever cut by a deliberate tag
-                # push or workflow_dispatch. Every green main commit ships as
-                # pre-release main-<sha7>, plus the rolling `latest` pre-release.
-                if true; then
+                if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
                   # "Already released" is NOT "nothing to ship". install.sh and
                   # the in-app updater are the only delivery channel, so every
                   # commit merged past the current version tag used to reach no
@@ -140,7 +130,7 @@ jobs:
                   # stable one.
                   ahead="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${tag}...${GITHUB_SHA}" \
                             --jq '.ahead_by' 2>/dev/null || echo unknown)"
-                  if [[ "$ahead" == "0" ]] && git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+                  if [[ "$ahead" == "0" ]]; then
                     publish=false
                     echo "Tag ${tag} already exists and main is level with it — nothing to publish."
                   else
@@ -207,7 +197,7 @@ jobs:
       - name: Install Rust + aarch64 Android target
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
-          toolchain: 1.98.0
+          toolchain: 1.97.1
           targets: aarch64-linux-android
 
       - name: Cache cargo
@@ -285,28 +275,6 @@ jobs:
           }
           EOF
           cat dist/hse-aarch64-linux-android.provenance.json
-
-      # ── Key check on the exact artifact ────────────────────────────────────
-      # Publishing requires an Actions build with HSE_RELEASE=1 and a ZERO-finding
-      # key scan of the final binary + its sidecars. The report is published with
-      # the release (and is covered by the attestation subject list below).
-      - name: Key check on the final artifact (must be zero)
-        env:
-          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
-        run: |
-          set -euo pipefail
-          [ "${HSE_RELEASE:-}" = "1" ] && [ "${GITHUB_ACTIONS:-}" = "true" ] \
-            || { echo "::error::publishing requires a GitHub Actions build with HSE_RELEASE=1"; exit 1; }
-          {
-            echo "key-scan report"
-            echo "artifact: hse-aarch64-linux-android"
-            echo "artifact_sha256: $(sha256sum dist/hse-aarch64-linux-android | cut -d' ' -f1)"
-            echo "commit: ${GITHUB_SHA}"
-            echo "release_tag: ${RELEASE_TAG}"
-            echo "run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            bash scripts/scan-for-keys.sh dist 2>&1 && echo "result: PASS (0 findings)"
-          } | tee dist/key-scan-report.txt
-          grep -qx "result: PASS (0 findings)" dist/key-scan-report.txt
 
       # ── Authenticity ───────────────────────────────────────────────────────
       # The `.sha256` sidecar is an INTEGRITY control, not an authenticity one:
@@ -405,9 +373,6 @@ jobs:
             dist/hse-aarch64-linux-android.sha256
             dist/hse-aarch64-linux-android.cdx.json
             dist/hse-aarch64-linux-android.provenance.json
-            dist/key-scan-report.txt
-          # Never let a main-channel pre-release become GitHub's "Latest".
-          make_latest: ${{ needs.resolve.outputs.prerelease == 'true' && 'false' || 'true' }}
           body: |
             Prebuilt **aarch64 Termux** binary (no Rust toolchain needed).
 
@@ -438,25 +403,3 @@ jobs:
             `*.cdx.json` is the CycloneDX SBOM; `*.provenance.json` records the
             source commit, `Cargo.lock` hash, toolchain, target and NDK.
           fail_on_unmatched_files: true
-
-      # Rolling `latest` PRE-RELEASE: deleted (with its tag) and re-created on
-      # each main-channel build, so a stable URL always serves the newest green
-      # main build. Only ever touches a release that is already a pre-release.
-      - name: Move the rolling `latest` pre-release to this build
-        if: needs.resolve.outputs.prerelease == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          MAIN_TAG: ${{ needs.resolve.outputs.tag }}
-        run: |
-          set -euo pipefail
-          if pre="$(gh release view latest --json isPrerelease --jq .isPrerelease 2>/dev/null)"; then
-            [ "$pre" = "true" ] || { echo "::error::release 'latest' exists and is NOT a pre-release; refusing"; exit 1; }
-            gh release delete latest --yes --cleanup-tag
-          fi
-          gh release create latest \
-            dist/hse-aarch64-linux-android dist/hse-aarch64-linux-android.sha256 \
-            dist/hse-aarch64-linux-android.cdx.json dist/hse-aarch64-linux-android.provenance.json \
-            dist/key-scan-report.txt \
-            --target "$GITHUB_SHA" --prerelease --latest=false \
-            --title "latest main build (${MAIN_TAG})" \
-            --notes "Rolling pre-release: the newest green main build, currently \`${GITHUB_SHA}\` (also \`${MAIN_TAG}\`). Not a stable release. Verify with \`sha256sum -c hse-aarch64-linux-android.sha256\` and \`gh attestation verify hse-aarch64-linux-android --repo ${GITHUB_REPOSITORY}\`."
