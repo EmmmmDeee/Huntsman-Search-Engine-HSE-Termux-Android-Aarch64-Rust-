@@ -66,10 +66,16 @@ fn parser_extracts_public_structured_fields_without_contact_pii() {
     assert_eq!(record.domain, "example.com");
     assert_eq!(record.handle.as_deref(), Some("2336799_DOMAIN_COM-VRSN"));
     assert_eq!(record.statuses, vec!["client transfer prohibited"]);
-    assert_eq!(record.nameservers, vec!["a.iana-servers.net", "b.iana-servers.net"]);
+    assert_eq!(
+        record.nameservers,
+        vec!["a.iana-servers.net", "b.iana-servers.net"]
+    );
     assert_eq!(record.dnssec_signed, Some(true));
     assert_eq!(record.registrar_iana_id.as_deref(), Some("376"));
-    assert_eq!(record.events.get("registration").map(String::as_str), Some("1995-08-14T04:00:00Z"));
+    assert_eq!(
+        record.events.get("registration").map(String::as_str),
+        Some("1995-08-14T04:00:00Z")
+    );
 
     let json = serde_json::to_string(&record).expect("serialize");
     assert!(!json.contains("Sensitive Contact Name"));
@@ -93,7 +99,10 @@ fn lookup_uses_one_keyless_rdap_request_and_parses_200() {
     assert_eq!(request.url, "https://rdap.org/domain/example.com");
     assert!(request.headers.is_empty());
     assert_eq!(lookup.outcome.kind, SourceOutcomeKind::Inconclusive);
-    assert_eq!(lookup.record.as_ref().map(|r| r.domain.as_str()), Some("example.com"));
+    assert_eq!(
+        lookup.record.as_ref().map(|r| r.domain.as_str()),
+        Some("example.com")
+    );
 }
 
 #[test]
@@ -110,7 +119,12 @@ fn challenge_page_is_not_parsed_as_registration_data() {
 #[test]
 fn invalid_domain_never_reaches_transport() {
     let fake = Fake::new(vec![]);
-    for domain in ["https://example.com", "example.com/path", "-bad.example", "bad..example"] {
+    for domain in [
+        "https://example.com",
+        "example.com/path",
+        "-bad.example",
+        "bad..example",
+    ] {
         assert!(lookup_domain(&fake, domain, 1).is_err(), "{domain}");
     }
     assert_eq!(fake.seen.borrow().len(), 0);
