@@ -13,7 +13,8 @@ use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsStr;
 use std::fmt;
-use std::io::ErrorKind;
+use std::fs::{File, Metadata};
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use crate::credential_origin::CredentialFingerprint;
@@ -204,7 +205,12 @@ impl Keys {
                 path.display()
             )));
         }
-        let bytes = read_bounded(path, MAX_KEYS_FILE_BYTES)?;
+        Self::from_file_bytes(read_bounded(path, MAX_KEYS_FILE_BYTES)?)
+    }
+
+    /// The file half of [`Keys::load`]: UTF-8 check, [`Keys::parse`], environment
+    /// fallback on. Shared by `--keys` and the default file.
+    fn from_file_bytes(bytes: Vec<u8>) -> Result<Self, Error> {
         let text = String::from_utf8(bytes)
             .map_err(|_| Error::Invalid("keys file is not utf-8".into()))?;
         let mut keys = Self::parse(&text)?;
@@ -215,50 +221,51 @@ impl Keys {
     /// Keys for a command run.
     ///
     /// With `explicit` (`--keys FILE`) this is exactly [`Keys::load`] on that path
-    /// and the default file is not read. Otherwise `$HOME/.huntsman.env` is loaded
-    /// with [`Keys::load`] when it exists. If it does not exist, or `home` is unset,
-    /// the result is [`Keys::from_env`], as before the default file existed. On
-    /// Unix a default file readable by group or others is not read: the result is
-    /// [`Keys::from_env`] plus a warning naming the path and `chmod 600`.
+    /// and the default file is not read. Otherwise `$HOME/.huntsman.env` is parsed
+    /// with the same parser when it exists and passes the default-file gate. If it
+    /// does not exist, or `home` is unset, the result is [`Keys::from_env`], as
+    /// before the default file existed.
+    ///
+    /// The gate decides on `lstat` (the path is never followed): a symlink, a
+    /// non-regular file, a file owned by another uid, a file accessible by group
+    /// or others (`mode & 0o077 != 0`), or an undeterminable current uid is not
+    /// read. The result is then [`Keys::from_env`] plus one warning naming the path
+    /// and the reason. The file is read through the descriptor that was opened,
+    /// after checking it is the same inode `lstat` saw and re-checking the gate on
+    /// it, so a swap between check and read is refused rather than followed.
     ///
     /// Precedence is that of [`Keys::load`]: a slot in the file wins over the same
     /// variable in the process environment; slots the file lacks fall back to it.
     ///
     /// # Errors
-    /// As [`Keys::load`] for the file that is read, and `Error::Store` when the
-    /// default path cannot be inspected for a reason other than not existing.
+    /// As [`Keys::load`] for the `--keys` file; for the default file, I/O errors
+    /// other than "not found" and malformed content.
     pub fn resolve(explicit: Option<&Path>, home: Option<&OsStr>) -> Result<ResolvedKeys, Error> {
-        let env_only = |warning| ResolvedKeys {
-            keys: Self::from_env(),
-            warning,
-        };
         if let Some(path) = explicit {
             return Ok(ResolvedKeys {
                 keys: Self::load(path)?,
                 warning: None,
             });
         }
+        let env_only = |warning| ResolvedKeys {
+            keys: Self::from_env(),
+            warning,
+        };
         let Some(path) = default_keys_path(home) else {
             return Ok(env_only(None));
         };
-        match std::fs::symlink_metadata(&path) {
-            Ok(_) => {}
-            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
-                return Ok(env_only(None));
-            }
-            Err(e) => return Err(Error::Store(format!("{}: {e}", path.display()))),
+        match load_default_file(&path)? {
+            None => Ok(env_only(None)),
+            Some(Err(refusal)) => Ok(env_only(Some(format!(
+                "warning: not loading {}: {}",
+                path.display(),
+                refusal.reason()
+            )))),
+            Some(Ok(keys)) => Ok(ResolvedKeys {
+                keys,
+                warning: None,
+            }),
         }
-        if let Some(mode) = loose_mode(&path)? {
-            return Ok(env_only(Some(format!(
-                "warning: not loading {} (mode {mode:o}): accessible by group/others; \
-                 fix with `chmod 600 ~/{DEFAULT_KEYS_FILE}`",
-                path.display()
-            ))));
-        }
-        Ok(ResolvedKeys {
-            keys: Self::load(&path)?,
-            warning: None,
-        })
     }
 
     /// File entry first, then the environment. Blank or placeholder values read as
@@ -290,6 +297,165 @@ impl fmt::Debug for Keys {
             .field("slots", &self.slots())
             .finish_non_exhaustive()
     }
+}
+
+/// Why `$HOME/.huntsman.env` was not read. Carries metadata only, never content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefaultFileRefusal {
+    Symlink,
+    NotRegularFile,
+    ForeignOwner { file_uid: u32, current_uid: u32 },
+    UnknownCurrentUser,
+    LoosePermissions { mode: u32 },
+    ChangedWhileOpening,
+}
+
+impl DefaultFileRefusal {
+    fn reason(self) -> String {
+        match self {
+            Self::Symlink => format!(
+                "it is a symlink; replace it with a regular file (`chmod 600 ~/{DEFAULT_KEYS_FILE}`) or pass --keys"
+            ),
+            Self::NotRegularFile => "it is not a regular file".to_owned(),
+            Self::ForeignOwner {
+                file_uid,
+                current_uid,
+            } => format!(
+                "it is owned by uid {file_uid}, not the current uid {current_uid}; recreate it as the current user"
+            ),
+            Self::UnknownCurrentUser => {
+                "the current uid cannot be determined, so ownership cannot be checked; pass --keys"
+                    .to_owned()
+            }
+            Self::LoosePermissions { mode } => format!(
+                "mode {mode:o} is accessible by group/others; fix with `chmod 600 ~/{DEFAULT_KEYS_FILE}`"
+            ),
+            Self::ChangedWhileOpening => "it changed between the check and the open".to_owned(),
+        }
+    }
+}
+
+/// The metadata the default-file gate decides on, taken from `lstat` or `fstat`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileFacts {
+    is_symlink: bool,
+    is_file: bool,
+    /// Permission bits (`mode & 0o777`); `0o600` off Unix.
+    mode: u32,
+    /// Owner uid; `None` off Unix, where there is no uid to compare.
+    uid: Option<u32>,
+}
+
+impl FileFacts {
+    fn of(meta: &Metadata) -> Self {
+        #[cfg(unix)]
+        let (mode, uid) = {
+            use std::os::unix::fs::MetadataExt;
+            (meta.mode() & 0o777, Some(meta.uid()))
+        };
+        #[cfg(not(unix))]
+        let (mode, uid) = (0o600, None);
+        Self {
+            is_symlink: meta.file_type().is_symlink(),
+            is_file: meta.is_file(),
+            mode,
+            uid,
+        }
+    }
+}
+
+/// The default-file gate. `current_uid` is the effective uid of this process
+/// (`None` when it cannot be determined); it is only consulted on Unix.
+fn default_file_refusal(facts: &FileFacts, current_uid: Option<u32>) -> Option<DefaultFileRefusal> {
+    if facts.is_symlink {
+        return Some(DefaultFileRefusal::Symlink);
+    }
+    if !facts.is_file {
+        return Some(DefaultFileRefusal::NotRegularFile);
+    }
+    if let Some(file_uid) = facts.uid {
+        match current_uid {
+            None => return Some(DefaultFileRefusal::UnknownCurrentUser),
+            Some(current_uid) if current_uid != file_uid => {
+                return Some(DefaultFileRefusal::ForeignOwner {
+                    file_uid,
+                    current_uid,
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    if facts.mode & 0o077 != 0 {
+        return Some(DefaultFileRefusal::LoosePermissions { mode: facts.mode });
+    }
+    None
+}
+
+/// Effective uid from `/proc/self/status` (Linux, Android/Termux). `None` where
+/// procfs is unavailable, which makes the default-file gate refuse.
+#[cfg(unix)]
+fn current_uid() -> Option<u32> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let uids = status.lines().find_map(|line| line.strip_prefix("Uid:"))?;
+    uids.split_whitespace().nth(1)?.parse().ok()
+}
+
+#[cfg(not(unix))]
+fn current_uid() -> Option<u32> {
+    None
+}
+
+/// `None` when `path` does not exist; otherwise the parsed file or the refusal.
+fn load_default_file(path: &Path) -> Result<Option<Result<Keys, DefaultFileRefusal>>, Error> {
+    let store = |e: std::io::Error| Error::Store(format!("{}: {e}", path.display()));
+    let linked = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            return Ok(None);
+        }
+        Err(e) => return Err(store(e)),
+    };
+    let uid = current_uid();
+    if let Some(refusal) = default_file_refusal(&FileFacts::of(&linked), uid) {
+        return Ok(Some(Err(refusal)));
+    }
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Ok(Some(Err(DefaultFileRefusal::ChangedWhileOpening)));
+        }
+        Err(e) => return Err(store(e)),
+    };
+    let opened = file.metadata().map_err(store)?;
+    if !same_inode(&linked, &opened) {
+        return Ok(Some(Err(DefaultFileRefusal::ChangedWhileOpening)));
+    }
+    if let Some(refusal) = default_file_refusal(&FileFacts::of(&opened), uid) {
+        return Ok(Some(Err(refusal)));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_KEYS_FILE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(store)?;
+    if bytes.len() as u64 > MAX_KEYS_FILE_BYTES {
+        return Err(Error::Store(format!(
+            "{}: exceeds {MAX_KEYS_FILE_BYTES} bytes",
+            path.display()
+        )));
+    }
+    Keys::from_file_bytes(bytes).map(|keys| Some(Ok(keys)))
+}
+
+/// Did `open` reach the inode `lstat` described (not a replacement or a link)?
+#[cfg(unix)]
+fn same_inode(linked: &Metadata, opened: &Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (linked.dev(), linked.ino()) == (opened.dev(), opened.ino())
+}
+
+#[cfg(not(unix))]
+fn same_inode(_linked: &Metadata, _opened: &Metadata) -> bool {
+    true
 }
 
 /// The permission bits (`mode & 0o777`) when group or others have any access to
@@ -494,9 +660,142 @@ mod tests {
             let warning = resolved.warning.expect("warning");
             assert!(warning.contains(&path.display().to_string()), "{warning}");
             assert!(warning.contains("chmod 600 ~/.huntsman.env"), "{warning}");
+            assert!(warning.contains("accessible by group/others"), "{warning}");
             assert!(!warning.contains("TEST_ONLY_VALUE"), "{warning}");
             assert!(!warning.contains("HSE_TEST_LOOSE_KEY"), "{warning}");
         }
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    const PRIVATE_FILE: FileFacts = FileFacts {
+        is_symlink: false,
+        is_file: true,
+        mode: 0o600,
+        uid: Some(1000),
+    };
+
+    #[test]
+    fn gate_accepts_a_private_regular_file_owned_by_the_current_uid() {
+        assert_eq!(default_file_refusal(&PRIVATE_FILE, Some(1000)), None);
+    }
+
+    #[test]
+    fn gate_refuses_a_file_owned_by_another_uid() {
+        assert_eq!(
+            default_file_refusal(&PRIVATE_FILE, Some(1001)),
+            Some(DefaultFileRefusal::ForeignOwner {
+                file_uid: 1000,
+                current_uid: 1001
+            })
+        );
+        let root_owned = FileFacts {
+            uid: Some(0),
+            ..PRIVATE_FILE
+        };
+        assert!(matches!(
+            default_file_refusal(&root_owned, Some(1000)),
+            Some(DefaultFileRefusal::ForeignOwner { file_uid: 0, .. })
+        ));
+        let reason = DefaultFileRefusal::ForeignOwner {
+            file_uid: 0,
+            current_uid: 1000,
+        }
+        .reason();
+        assert!(
+            reason.contains("uid 0") && reason.contains("uid 1000"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn gate_refuses_symlinks_non_files_unknown_users_and_loose_modes() {
+        let link = FileFacts {
+            is_symlink: true,
+            is_file: false,
+            ..PRIVATE_FILE
+        };
+        assert_eq!(
+            default_file_refusal(&link, Some(1000)),
+            Some(DefaultFileRefusal::Symlink)
+        );
+        let dir = FileFacts {
+            is_file: false,
+            ..PRIVATE_FILE
+        };
+        assert_eq!(
+            default_file_refusal(&dir, Some(1000)),
+            Some(DefaultFileRefusal::NotRegularFile)
+        );
+        assert_eq!(
+            default_file_refusal(&PRIVATE_FILE, None),
+            Some(DefaultFileRefusal::UnknownCurrentUser)
+        );
+        for mode in [0o644, 0o640, 0o604, 0o620, 0o610, 0o601, 0o700 | 0o070] {
+            let loose = FileFacts {
+                mode,
+                ..PRIVATE_FILE
+            };
+            assert_eq!(
+                default_file_refusal(&loose, Some(1000)),
+                Some(DefaultFileRefusal::LoosePermissions { mode }),
+                "{mode:o}"
+            );
+        }
+        for mode in [0o600, 0o400, 0o700] {
+            let tight = FileFacts {
+                mode,
+                ..PRIVATE_FILE
+            };
+            assert_eq!(default_file_refusal(&tight, Some(1000)), None, "{mode:o}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn current_uid_matches_the_owner_of_a_new_file() {
+        use std::os::unix::fs::MetadataExt;
+        let home = fake_home("uid");
+        let path = home.join("probe");
+        std::fs::write(&path, "x").expect("write");
+        let owner = std::fs::metadata(&path).expect("meta").uid();
+        assert_eq!(current_uid(), Some(owner));
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_default_file_is_refused_even_to_a_private_file() {
+        let home = fake_home("symlink");
+        let target = home.join("real.env");
+        write_mode(&target, "HSE_TEST_LINK_KEY=TEST_ONLY_VALUE_LINK\n", 0o600);
+        let path = home.join(DEFAULT_KEYS_FILE);
+        std::os::unix::fs::symlink(&target, &path).expect("symlink");
+        let resolved = Keys::resolve(None, Some(home.as_os_str())).expect("resolve");
+        assert_eq!(resolved.keys.slots(), [] as [&str; 0]);
+        assert!(resolved.keys.get("HSE_TEST_LINK_KEY").is_none());
+        let warning = resolved.warning.expect("warning");
+        assert!(warning.contains(&path.display().to_string()), "{warning}");
+        assert!(warning.contains("symlink"), "{warning}");
+        assert!(!warning.contains("TEST_ONLY_VALUE"), "{warning}");
+        assert!(
+            !warning.contains(&target.display().to_string()),
+            "{warning}"
+        );
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_at_default_path_is_refused_with_a_warning() {
+        let home = fake_home("dir");
+        std::fs::create_dir(home.join(DEFAULT_KEYS_FILE)).expect("dir");
+        let resolved = Keys::resolve(None, Some(home.as_os_str())).expect("resolve");
+        assert!(
+            resolved
+                .warning
+                .expect("warning")
+                .contains("not a regular file")
+        );
         std::fs::remove_dir_all(&home).expect("cleanup");
     }
 

@@ -301,3 +301,30 @@ fn anonymous_fetch_does_not_read_the_default_file() {
     );
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn symlinked_default_file_is_refused_even_when_the_target_is_private() {
+    let home = fake_home("symlink");
+    let target = home.join("real.env");
+    write_mode(&target, &format!("{SLOT}=TEST_ONLY_VALUE_LINKED\n"), 0o600);
+    let path = home.join(".huntsman.env");
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    let out = fetch(&home, closed_port(), &[], None);
+    assert_eq!(out.status.code(), Some(66), "{}", stderr(&out));
+    let err = stderr(&out);
+    let mut lines = err.lines();
+    let warning = lines.next().unwrap();
+    assert!(warning.starts_with("warning: "), "{err}");
+    assert!(warning.contains(&path.display().to_string()), "{err}");
+    assert!(warning.contains("symlink"), "{err}");
+    assert!(!err.contains("TEST_ONLY_VALUE"), "a file value was printed");
+    assert_eq!(
+        lines.collect::<Vec<_>>(),
+        [format!(
+            "invalid input: credential {SLOT} is not configured"
+        )],
+        "nothing was loaded through the symlink"
+    );
+    std::fs::remove_dir_all(&home).unwrap();
+}
