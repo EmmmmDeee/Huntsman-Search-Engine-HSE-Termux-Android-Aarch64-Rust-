@@ -80,7 +80,8 @@ pub fn rank_entity_frontier(entities: &[Entity]) -> Vec<FrontierCandidate> {
                 Some(existing) => {
                     existing.basis_uids.insert(entity.uid.clone());
                     existing.derived &= seed.derived;
-                    existing.information_gain = existing.information_gain.max(seed.information_gain);
+                    existing.information_gain =
+                        existing.information_gain.max(seed.information_gain);
                     existing.discriminative_power =
                         existing.discriminative_power.max(seed.discriminative_power);
                     existing.reliability = existing.reliability.max(reliability);
@@ -112,9 +113,10 @@ pub fn rank_entity_frontier(entities: &[Entity]) -> Vec<FrontierCandidate> {
         .into_values()
         .map(|draft| {
             let distinct_bases = draft.basis_uids.len();
-            let redundancy_penalty = u8::try_from(distinct_bases.saturating_sub(1).saturating_mul(10))
-                .unwrap_or(u8::MAX)
-                .min(80);
+            let redundancy_penalty =
+                u8::try_from(distinct_bases.saturating_sub(1).saturating_mul(10))
+                    .unwrap_or(u8::MAX)
+                    .min(80);
             let score = score(
                 draft.information_gain,
                 draft.discriminative_power,
@@ -251,7 +253,7 @@ fn score(
         * u64::from(discriminative_power)
         * u64::from(reliability)
         * u64::from(resolve_probability);
-    let denominator = u64::from(cost).saturating_add(10)
-        * u64::from(redundancy_penalty).saturating_add(100);
+    let denominator =
+        u64::from(cost).saturating_add(10) * u64::from(redundancy_penalty).saturating_add(100);
     numerator / denominator.max(1)
 }
