@@ -66,6 +66,11 @@ impl Default for AutoMergePolicy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum HoldReason {
+    /// The policy floor is NaN, infinite, or outside `[0, 1]`. Kept as text so it
+    /// survives JSON. An invalid policy admits nothing.
+    InvalidPolicy {
+        min_match_probability: String,
+    },
     /// Empty or identical entity uids, or an empty evidence node id.
     InvalidCandidate,
     /// No match probability was supplied. Absence is not consent.
@@ -140,7 +145,29 @@ impl IdentityResolutionDecision {
         graph: &EvidenceAncestryGraph,
         policy: AutoMergePolicy,
     ) -> Vec<HoldReason> {
+        let families = graph
+            .independent_support_count(&self.supporting)
+            .map_err(|e| e.to_string());
+        self.hold_reasons_given(families, policy)
+    }
+
+    /// The rule itself, with the independent-family count already worked out
+    /// (`Err` is unknown ancestry). Every other condition is checked on `self` as
+    /// given, so a caller that counts families its own way (`crate::lineage`)
+    /// still gets the same validation and the same reason order.
+    pub(crate) fn hold_reasons_given(
+        &self,
+        families: Result<usize, String>,
+        policy: AutoMergePolicy,
+    ) -> Vec<HoldReason> {
         let mut reasons = Vec::new();
+        let floor = policy.min_match_probability;
+        let floor_ok = floor.is_finite() && (0.0..=1.0).contains(&floor);
+        if !floor_ok {
+            reasons.push(HoldReason::InvalidPolicy {
+                min_match_probability: floor.to_string(),
+            });
+        }
         let ids_ok = !self.left_entity_uid.trim().is_empty()
             && !self.right_entity_uid.trim().is_empty()
             && self.left_entity_uid != self.right_entity_uid
@@ -159,13 +186,10 @@ impl IdentityResolutionDecision {
                     value: p.to_string(),
                 });
             }
-            // A NaN policy floor admits nothing.
-            Some(p)
-                if p < policy.min_match_probability || policy.min_match_probability.is_nan() =>
-            {
+            Some(p) if floor_ok && p < floor => {
                 reasons.push(HoldReason::ProbabilityBelowThreshold {
                     value: p,
-                    min: policy.min_match_probability,
+                    min: floor,
                 });
             }
             Some(_) => {}
@@ -185,10 +209,8 @@ impl IdentityResolutionDecision {
             reasons.push(HoldReason::GeographicConflict);
         }
         let required = policy.min_independent_support_families.max(1);
-        match graph.independent_support_count(&self.supporting) {
-            Err(e) => reasons.push(HoldReason::UnknownAncestry {
-                detail: e.to_string(),
-            }),
+        match families {
+            Err(detail) => reasons.push(HoldReason::UnknownAncestry { detail }),
             Ok(found) if found < required => {
                 reasons.push(HoldReason::InsufficientIndependentFamilies { found, required });
             }
@@ -364,16 +386,31 @@ mod tests {
     }
 
     #[test]
-    fn nan_policy_floor_admits_nothing() {
+    fn invalid_policy_floor_admits_nothing_and_round_trips() {
         let d = decision(ResolutionState::Match, &["registry", "first-party"], &[]);
-        let policy = AutoMergePolicy {
-            min_match_probability: f64::NAN,
-            ..AutoMergePolicy::default()
-        };
-        assert!(matches!(
-            d.hold_reasons(&graph(), policy).as_slice(),
-            [HoldReason::ProbabilityBelowThreshold { .. }]
-        ));
+        for (floor, text) in [
+            (f64::NAN, "NaN"),
+            (f64::INFINITY, "inf"),
+            (1.5, "1.5"),
+            (-0.1, "-0.1"),
+        ] {
+            let policy = AutoMergePolicy {
+                min_match_probability: floor,
+                ..AutoMergePolicy::default()
+            };
+            let reasons = d.hold_reasons(&graph(), policy);
+            assert_eq!(
+                reasons,
+                [HoldReason::InvalidPolicy {
+                    min_match_probability: text.into()
+                }]
+            );
+            let json = serde_json::to_string(&reasons).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Vec<HoldReason>>(&json).unwrap(),
+                reasons
+            );
+        }
     }
 
     /// Case table ported from `feat/authorized-active-probe` (9f1cef87, d22cefa2:

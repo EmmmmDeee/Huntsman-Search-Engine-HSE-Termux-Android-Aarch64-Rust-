@@ -7,7 +7,8 @@ use huntsman_recon::identity_resolution::{
     AutoMergePolicy, HoldReason, IdentityResolutionDecision, ResolutionState,
 };
 use huntsman_recon::lineage::{
-    CandidateOutcome, Lineage, MergeOutcome, Observation, Resolution, resolve_with_lineage,
+    CandidateOutcome, Lineage, LineageError, MergeOutcome, Observation, Resolution,
+    resolve_with_lineage,
 };
 
 fn observation(id: &str, collector: &str, attrs: &[(&str, &str)]) -> Observation {
@@ -224,5 +225,52 @@ fn nothing_is_dropped_truncated_or_misattributed() {
     assert_eq!(
         back.candidates[2].decision.probability, None,
         "JSON has no NaN"
+    );
+}
+
+/// Review fix: a non-finite or out-of-range policy floor cannot produce a stored
+/// `Resolution` that fails to reload.
+#[test]
+fn invalid_policy_is_rejected_before_resolving() {
+    for floor in [f64::NAN, f64::INFINITY, 1.5, -0.1] {
+        let policy = AutoMergePolicy {
+            min_match_probability: floor,
+            ..AutoMergePolicy::default()
+        };
+        let got = resolve_with_lineage(corpus(), vec![candidate(&["hibp-1"], Some(0.99))], policy);
+        assert!(
+            matches!(got, Err(LineageError::InvalidPolicy(_))),
+            "{floor}: {got:?}"
+        );
+    }
+}
+
+/// Review fix: unknown support is reported in the rule's fixed order, and the
+/// original decision is still validated (an empty support id is `InvalidCandidate`).
+#[test]
+fn unknown_support_keeps_validation_and_reason_order() {
+    let empty = one(corpus(), candidate(&["hibp-1", ""], Some(0.99)));
+    assert!(
+        matches!(
+            reasons(&empty),
+            [
+                HoldReason::InvalidCandidate,
+                HoldReason::UnknownAncestry { .. }
+            ]
+        ),
+        "{:?}",
+        empty.outcome
+    );
+    let ghost = one(corpus(), candidate(&["hibp-1", "ghost"], None));
+    assert!(
+        matches!(
+            reasons(&ghost),
+            [
+                HoldReason::ProbabilityMissing,
+                HoldReason::UnknownAncestry { .. }
+            ]
+        ),
+        "{:?}",
+        ghost.outcome
     );
 }

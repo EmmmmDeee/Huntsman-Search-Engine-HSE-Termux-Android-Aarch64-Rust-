@@ -30,12 +30,13 @@ The family key is the canonical value: whitespace collapsed, lowercased (`eviden
 `IdentityResolutionDecision::hold_reasons(graph, policy)` is the single authority. `allows_automatic_merge` is defined as `hold_reasons(..).is_empty()`. An automatic merge needs all of these:
 
 - the uids are non-empty and distinct, and the node ids are non-empty;
+- the policy floor `min_match_probability` is itself finite and in `[0, 1]`;
 - a match probability is **present**, finite, in `[0, 1]`, and at least `min_match_probability`;
 - the state is `Match`;
 - there are no contradicting nodes and no temporal or geographic conflict;
 - at least `min_independent_support_families` (minimum 1) independent root families are found, with every supporting node known and acyclic.
 
-Every failed condition is reported as a `HoldReason` (`ProbabilityMissing`, `ProbabilityInvalid { value }`, `ProbabilityBelowThreshold`, `NotAMatch`, `Contradicted`, `TemporalConflict`, `GeographicConflict`, `UnknownAncestry`, `InsufficientIndependentFamilies { found, required }`, `InvalidCandidate`). A held candidate is returned with its reasons. It is never dropped.
+Every failed condition is reported as a `HoldReason`, in a fixed order (`InvalidPolicy` for a floor that is NaN, infinite or outside `[0, 1]`, `ProbabilityMissing`, `ProbabilityInvalid { value }`, `ProbabilityBelowThreshold`, `NotAMatch`, `Contradicted`, `TemporalConflict`, `GeographicConflict`, `UnknownAncestry`, `InsufficientIndependentFamilies { found, required }`, `InvalidCandidate`). A held candidate is returned with its reasons. It is never dropped.
 
 ### Threshold and legacy parity
 
@@ -56,10 +57,10 @@ let resolution: Resolution = resolve_with_lineage(
     observations,             // Vec<Observation { id, evidence }>, one per parsed record
     candidates,               // Vec<IdentityResolutionDecision>; supporting = observation ids
     AutoMergePolicy::default(),
-)?;                           // Err(LineageError) only for empty, reserved or duplicate ids
+)?;                           // Err(LineageError): invalid policy floor, or empty, reserved or duplicate ids
 ```
 
-`Resolution` contains `policy`, `observations` (every input, unchanged, with its `Lineage`, in input order) and `candidates` (every input decision, unchanged, in input order, each with `independent_families`, `unattributed_support` and `outcome: AutoMerge | Held { reasons }`). It round-trips through serde JSON. JSON has no NaN, so a NaN probability reloads as `null`, but the saved reason keeps `"NaN"`. A support id that is not an observation, including a root id, holds the candidate as `UnknownAncestry`.
+`Resolution` contains `policy`, `observations` (every input, unchanged, with its `Lineage`, in input order) and `candidates` (every input decision, unchanged, in input order, each with `independent_families`, `unattributed_support` and `outcome: AutoMerge | Held { reasons }`). It round-trips through serde JSON. JSON has no NaN, so a NaN probability reloads as `null`, but the saved reason keeps `"NaN"`. A support id that is not an observation, including a root id, holds the candidate as `UnknownAncestry`. The original decision is still validated, and reasons come in the same order as `hold_reasons`, because both use one rule core (`hold_reasons_given`).
 
 This layer supplies no probability. A caller with no calibrated match probability passes `None` and gets a held candidate.
 

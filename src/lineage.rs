@@ -159,6 +159,10 @@ pub struct Resolution {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum LineageError {
+    /// The policy floor is NaN, infinite, or outside `[0, 1]`. Rejected so a stored
+    /// `Resolution` always reloads (JSON has no NaN or infinity).
+    #[error("policy min_match_probability {0} is not a probability")]
+    InvalidPolicy(String),
     #[error("observation {index} has an empty id")]
     EmptyObservationId { index: usize },
     #[error("observation id {} uses the reserved `lineage:` prefix", .0.0)]
@@ -174,13 +178,17 @@ pub enum LineageError {
 /// that is not an observation is unknown ancestry and holds the candidate.
 ///
 /// # Errors
-/// An empty, reserved or duplicate observation id. The input is rejected whole rather
-/// than partly dropped.
+/// An invalid policy floor, or an empty, reserved or duplicate observation id. The
+/// input is rejected whole rather than partly dropped.
 pub fn resolve_with_lineage(
     observations: Vec<Observation>,
     candidates: Vec<IdentityResolutionDecision>,
     policy: AutoMergePolicy,
 ) -> Result<Resolution, LineageError> {
+    let floor = policy.min_match_probability;
+    if !(floor.is_finite() && (0.0..=1.0).contains(&floor)) {
+        return Err(LineageError::InvalidPolicy(floor.to_string()));
+    }
     let mut seen = BTreeSet::new();
     for (index, observation) in observations.iter().enumerate() {
         let id = &observation.id;
@@ -249,30 +257,33 @@ fn assess(
 ) -> CandidateOutcome {
     let mut unknown = Vec::new();
     let mut unattributed_support = Vec::new();
-    let mut attributed = Vec::new();
+    let mut families = BTreeSet::new();
+    let mut ancestry_error = None;
     for id in &decision.supporting {
         if !observation_ids.contains(id) {
-            unknown.push(id);
+            unknown.push(format!("{:?}", id.0));
         } else if unattributed.contains(id) {
             unattributed_support.push(id.clone());
         } else {
-            attributed.push(id.clone());
+            match graph.root_families(id) {
+                Ok(roots) => families.extend(roots),
+                Err(e) => ancestry_error = ancestry_error.or(Some(e.to_string())),
+            }
         }
     }
-    let counted = IdentityResolutionDecision {
-        supporting: attributed,
-        ..decision.clone()
+    // Unattributed support is kept but not counted; unknown support is unknown
+    // ancestry, exactly as a missing node is for `hold_reasons`.
+    let count = if !unknown.is_empty() {
+        Err(format!(
+            "support {} is not an observation",
+            unknown.join(", ")
+        ))
+    } else if let Some(e) = ancestry_error {
+        Err(e)
+    } else {
+        Ok(families.len())
     };
-    let mut reasons = counted.hold_reasons(graph, policy);
-    reasons.extend(unknown.into_iter().map(|id| HoldReason::UnknownAncestry {
-        detail: format!("support {} is not an observation", id.0),
-    }));
-    let mut families = BTreeSet::new();
-    for id in &counted.supporting {
-        if let Ok(roots) = graph.root_families(id) {
-            families.extend(roots);
-        }
-    }
+    let reasons = decision.hold_reasons_given(count, policy);
     CandidateOutcome {
         decision,
         independent_families: families.into_iter().collect(),
