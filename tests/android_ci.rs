@@ -42,14 +42,18 @@ fn ci_cross_builds_the_actual_termux_target() {
 }
 
 #[test]
-fn main_push_exposes_the_cross_built_binary_for_handset_testing() {
+fn main_push_exposes_both_cross_built_binaries_for_handset_testing() {
     let ci = fs::read_to_string(CI).expect("active CI workflow must be readable");
 
     for required in [
         "actions/upload-artifact@v4",
         "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
-        "huntsman-recon-aarch64-linux-android",
+        "target/aarch64-linux-android/release/huntsman-recon",
+        "target/aarch64-linux-android/release/huntsman-probe",
+        "dist/huntsman-recon-aarch64-linux-android",
+        "dist/huntsman-probe-aarch64-linux-android",
         "huntsman-recon-aarch64-linux-android.sha256",
+        "huntsman-probe-aarch64-linux-android.sha256",
     ] {
         assert!(ci.contains(required), "{CI} must contain {required:?}");
     }
