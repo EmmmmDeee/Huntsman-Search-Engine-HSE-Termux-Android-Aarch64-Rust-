@@ -335,9 +335,7 @@ fn finish_termination(
     record.explanation.push(explanation.into());
 }
 
-fn precheck_termination(
-    state: &DecisionState,
-) -> Option<(PolicyTerminationReason, String)> {
+fn precheck_termination(state: &DecisionState) -> Option<(PolicyTerminationReason, String)> {
     if state.unresolved_proof_obligations.is_empty() {
         return Some((
             PolicyTerminationReason::ProofObligationsResolved,
