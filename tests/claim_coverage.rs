@@ -52,7 +52,11 @@ fn failed_collection_is_not_negative_evidence() {
 
     assert!(!assessment.negative_admissible);
     assert!(assessment.qualifying_providers.is_empty());
-    assert!(assessment.blockers.contains(&CoverageBlocker::CollectionFailure));
+    assert!(
+        assessment
+            .blockers
+            .contains(&CoverageBlocker::CollectionFailure)
+    );
 }
 
 #[test]
@@ -67,7 +71,11 @@ fn partial_coverage_cannot_close_required_negative_obligation() {
 
     assert!(!assessment.negative_admissible);
     assert!(assessment.qualifying_providers.is_empty());
-    assert!(assessment.blockers.contains(&CoverageBlocker::IncompleteCoverage));
+    assert!(
+        assessment
+            .blockers
+            .contains(&CoverageBlocker::IncompleteCoverage)
+    );
 }
 
 #[test]
@@ -115,5 +123,9 @@ fn applicable_positive_observation_defeats_an_absence_conclusion() {
     let assessment = requirement().evaluate(&ClaimId::from("claim-1"), &[negative, positive]);
 
     assert!(!assessment.negative_admissible);
-    assert!(assessment.blockers.contains(&CoverageBlocker::PositiveObservation));
+    assert!(
+        assessment
+            .blockers
+            .contains(&CoverageBlocker::PositiveObservation)
+    );
 }
