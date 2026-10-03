@@ -40,8 +40,9 @@ impl IntelligenceLedger {
     /// obligations. Confidence dimensions and provider count are intentionally
     /// excluded from this decision.
     ///
-    /// The current generic contradiction list is treated conservatively as an
-    /// undefeated blocker until structured defeat semantics replace it.
+    /// Legacy generic contradictions remain conservative blockers during
+    /// migration. Structured defeats block only when their kind actually
+    /// attacks the proposition, a premise, or its derivation.
     ///
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
@@ -89,7 +90,12 @@ impl IntelligenceLedger {
         {
             blockers.insert(VerificationBlocker::MissingRequiredEvidenceNature);
         }
-        if !claim.contradictions.is_empty() {
+        if !claim.contradictions.is_empty()
+            || claim
+                .defeats
+                .iter()
+                .any(|defeat| defeat.kind.blocks_verification())
+        {
             blockers.insert(VerificationBlocker::UndefeatedDefeater);
         }
 
