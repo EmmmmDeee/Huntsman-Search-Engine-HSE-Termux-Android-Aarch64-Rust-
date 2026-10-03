@@ -25,7 +25,11 @@ fn username_transform_is_owned_by_each_capability_not_the_entity_kind() {
         .expect("github username route");
 
     assert!(google.url.contains("%40octocat"), "{}", google.url);
-    assert!(github.url.contains("q=octocat&type=users"), "{}", github.url);
+    assert!(
+        github.url.contains("q=octocat&type=users"),
+        "{}",
+        github.url
+    );
 
     let descriptors = registry.capabilities();
     assert_eq!(
