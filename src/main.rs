@@ -59,7 +59,7 @@ fn main() -> ExitCode {
         Some("coarsen") => coarsen_cmd(args.next()),
         Some("id") => id_cmd(args.next()),
         Some("search") => search_cmd(args.next(), args.next()),
-        Some("sources") => sources_cmd(args.next(), args.next()),
+        Some("sources") => sources_cmd(args.next(), args.next().as_deref()),
         Some("classify") => classify(args.next(), args.next()),
         Some("fetch") => fetch_cmd(&args.collect::<Vec<_>>()),
         Some("keys") => keys_cmd(args.next()),
@@ -307,7 +307,7 @@ fn search_cmd(query: Option<String>, dir: Option<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn sources_cmd(query: Option<String>, extra: Option<String>) -> ExitCode {
+fn sources_cmd(query: Option<String>, extra: Option<&str>) -> ExitCode {
     if extra.is_some() {
         return fail(EX_USAGE, "usage: huntsman-recon sources QUERY");
     }
