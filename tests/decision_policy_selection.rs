@@ -63,8 +63,12 @@ fn state() -> DecisionState {
 }
 
 #[test]
-fn higher_edv_candidate_is_selected() {
-    let record = select_action(&state(), &[candidate("a", 0.4), candidate("b", 0.9)]);
+fn higher_edv_candidate_is_selected_across_a_real_tradeoff() {
+    let low_cost = candidate("a", 0.4);
+    let mut high_value = candidate("b", 0.9);
+    high_value.resource_cost = 0.2;
+
+    let record = select_action(&state(), &[low_cost, high_value]);
     assert_eq!(record.decision, Decision::Select("b".to_owned()));
     assert_eq!(record.ranking[0].action_id, "b");
     assert!(record.ranking[0].edv > record.ranking[1].edv);
