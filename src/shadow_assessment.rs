@@ -81,6 +81,7 @@ const fn state_code(state: ClaimState) -> &'static str {
 const fn blocker_code(blocker: VerificationBlocker) -> &'static str {
     match blocker {
         VerificationBlocker::UnknownAncestry => "unknown_ancestry",
+        VerificationBlocker::CanonicalAncestryRequired => "canonical_ancestry_required",
         VerificationBlocker::MissingRequiredEvidenceNature => "missing_required_evidence_nature",
         VerificationBlocker::InsufficientIndependentSupport => "insufficient_independent_support",
         VerificationBlocker::UndefeatedDefeater => "undefeated_defeater",
