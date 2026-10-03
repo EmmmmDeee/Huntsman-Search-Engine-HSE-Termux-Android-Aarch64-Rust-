@@ -59,9 +59,16 @@ fn derived_environment_inherits_roots_and_cannot_manufacture_new_witnesses() {
 
     let derived = derive_environment(&[left, right], DerivationId::from("join-v1"));
 
-    assert_eq!(derived.roots, set(["root-a".to_owned(), "root-b".to_owned()]));
+    assert_eq!(
+        derived.roots,
+        set(["root-a".to_owned(), "root-b".to_owned()])
+    );
     assert_eq!(derived.assertions.len(), 2);
-    assert!(derived.assumptions.contains(&AssumptionId::from("same-subject")));
+    assert!(
+        derived
+            .assumptions
+            .contains(&AssumptionId::from("same-subject"))
+    );
     assert!(
         derived
             .dependencies
