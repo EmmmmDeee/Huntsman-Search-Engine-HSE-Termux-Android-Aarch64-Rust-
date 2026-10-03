@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceNodeId};
 use crate::intelligence::{
-    ClaimId, ClaimState, EvidenceId, EvidenceNature, IntelligenceLedger, LedgerError,
+    ClaimId, ClaimState, Defeat, DefeatKind, EvidenceId, EvidenceNature, IntelligenceLedger,
+    LedgerError,
 };
 use crate::proof::ProofEnvironmentSet;
 
@@ -72,6 +73,14 @@ impl ClaimAssessment {
             self.epistemic = ClaimState::Supported;
         }
         self
+    }
+}
+
+fn defeat_blocks_verification(defeat: &Defeat) -> bool {
+    match defeat.kind {
+        DefeatKind::Rebut => defeat.temporal_overlap != Some(false),
+        DefeatKind::Undermine | DefeatKind::Undercut | DefeatKind::UnknownRelation => true,
+        DefeatKind::Supersede | DefeatKind::Compatible => false,
     }
 }
 
@@ -174,10 +183,7 @@ impl IntelligenceLedger {
             unresolved_support,
             &present_natures,
             !claim.contradictions.is_empty()
-                || claim
-                    .defeats
-                    .iter()
-                    .any(|defeat| defeat.kind.blocks_verification()),
+                || claim.defeats.iter().any(defeat_blocks_verification),
             false,
         ))
     }
@@ -235,10 +241,7 @@ impl IntelligenceLedger {
             unresolved_support,
             &present_natures,
             !claim.contradictions.is_empty()
-                || claim
-                    .defeats
-                    .iter()
-                    .any(|defeat| defeat.kind.blocks_verification()),
+                || claim.defeats.iter().any(defeat_blocks_verification),
             true,
         ))
     }
