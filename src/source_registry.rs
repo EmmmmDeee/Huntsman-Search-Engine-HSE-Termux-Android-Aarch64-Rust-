@@ -1,85 +1,15 @@
-//! Native declarative source routing for lightweight OSINT pivots.
+//! Curated pivot capabilities.
 //!
-//! This registry is intentionally Huntsman-authored. It does not embed or copy an
-//! external catalogue. A route is a lead-generation action, not evidence; fetched
-//! material must still pass Huntsman's normal provenance and source-outcome gates.
+//! This module owns only the bootstrap catalogue. Runtime semantics, validation,
+//! transformations and route rendering are owned by `crate::capability` so adding a
+//! source cannot create a second execution/evidence contract.
 
+use crate::capability::{
+    AccessClass, CapabilityDescriptor, CapabilityRegistry, CapabilityRoute, EvidenceRole,
+    RetrievalMode, ValueTransform, VerificationLevel,
+};
+use crate::dependency::ModuleCategory;
 use crate::entity::EntityKind;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceCategory {
-    WebSearch,
-    Archive,
-    DomainIntel,
-    Infrastructure,
-    Identity,
-    Geo,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionMode {
-    SearchUrl,
-    BrowserRequired,
-}
-
-impl ExecutionMode {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SearchUrl => "search_url",
-            Self::BrowserRequired => "browser_required",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceAccess {
-    Public,
-    Account,
-}
-
-impl SourceAccess {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Public => "public",
-            Self::Account => "account",
-        }
-    }
-}
-
-/// How a route may be used in the evidence system.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EvidenceRole {
-    /// The generated URL is discovery only. It never corroborates a claim itself.
-    LeadOnly,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SourceDescriptor {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub category: SourceCategory,
-    pub accepted_kinds: &'static [EntityKind],
-    pub execution: ExecutionMode,
-    pub access: SourceAccess,
-    pub url_template: &'static str,
-    /// Provider-owned or otherwise first-party landing page used to identify the source.
-    pub reference_url: &'static str,
-    pub evidence_role: EvidenceRole,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceRoute {
-    pub source_id: &'static str,
-    pub source_name: &'static str,
-    pub category: SourceCategory,
-    pub execution: ExecutionMode,
-    pub access: SourceAccess,
-    pub url: String,
-    pub reference_url: &'static str,
-    pub evidence_role: EvidenceRole,
-}
 
 const IDENTITY_SEARCH: &[EntityKind] = &[
     EntityKind::Person,
@@ -92,235 +22,243 @@ const IP_ONLY: &[EntityKind] = &[EntityKind::IpAddress];
 const USERNAME_ONLY: &[EntityKind] = &[EntityKind::Username];
 const COORDINATES_ONLY: &[EntityKind] = &[EntityKind::Coordinates];
 
-/// Small, independently curated bootstrap set. The architecture is designed to grow
-/// by adding descriptors rather than one Rust module per external search surface.
-static SOURCES: &[SourceDescriptor] = &[
-    SourceDescriptor {
+/// Independently curated bootstrap pivots. `ReferenceOnly` is deliberate: a prior
+/// browser/curl observation does not establish current production-path execution.
+static CAPABILITIES: &[CapabilityDescriptor] = &[
+    CapabilityDescriptor {
         id: "google_exact",
         name: "Google exact search",
-        category: SourceCategory::WebSearch,
+        category: ModuleCategory::Search,
         accepted_kinds: IDENTITY_SEARCH,
-        execution: ExecutionMode::SearchUrl,
-        access: SourceAccess::Public,
-        url_template: "https://www.google.com/search?q=%22{value}%22",
-        reference_url: "https://www.google.com/",
+        emitted_kinds: &[],
+        mode: RetrievalMode::PivotOnly,
+        access: AccessClass::Public,
+        transform: ValueTransform::Preserve,
         evidence_role: EvidenceRole::LeadOnly,
+        route_template: Some("https://www.google.com/search?q=%22{value}%22"),
+        reference_url: "https://www.google.com/",
+        verification: VerificationLevel::ReferenceOnly,
+        verified_at_unix: None,
     },
-    SourceDescriptor {
+    CapabilityDescriptor {
         id: "bing_exact",
         name: "Bing exact search",
-        category: SourceCategory::WebSearch,
+        category: ModuleCategory::Search,
         accepted_kinds: IDENTITY_SEARCH,
-        execution: ExecutionMode::SearchUrl,
-        access: SourceAccess::Public,
-        url_template: "https://www.bing.com/search?q=%22{value}%22",
-        reference_url: "https://www.bing.com/",
+        emitted_kinds: &[],
+        mode: RetrievalMode::PivotOnly,
+        access: AccessClass::Public,
+        transform: ValueTransform::Preserve,
         evidence_role: EvidenceRole::LeadOnly,
+        route_template: Some("https://www.bing.com/search?q=%22{value}%22"),
+        reference_url: "https://www.bing.com/",
+        verification: VerificationLevel::ReferenceOnly,
+        verified_at_unix: None,
     },
-    SourceDescriptor {
+    CapabilityDescriptor {
         id: "google_site",
         name: "Google site search",
-        category: SourceCategory::WebSearch,
+        category: ModuleCategory::Search,
         accepted_kinds: DOMAIN_ONLY,
-        execution: ExecutionMode::SearchUrl,
-        access: SourceAccess::Public,
-        url_template: "https://www.google.com/search?q=site%3A{value}",
-        reference_url: "https://www.google.com/",
+        emitted_kinds: &[],
+        mode: RetrievalMode::PivotOnly,
+        access: AccessClass::Public,
+        transform: ValueTransform::CanonicalDomain,
         evidence_role: EvidenceRole::LeadOnly,
+        route_template: Some("https://www.google.com/search?q=site%3A{value}"),
+        reference_url: "https://www.google.com/",
+        verification: VerificationLevel::ReferenceOnly,
+        verified_at_unix: None,
     },
-    SourceDescriptor {
+    CapabilityDescriptor {
         id: "wayback",
         name: "Internet Archive Wayback Machine",
-        category: SourceCategory::Archive,
+        category: ModuleCategory::Web,
         accepted_kinds: DOMAIN_ONLY,
-        execution: ExecutionMode::SearchUrl,
-        access: SourceAccess::Public,
-        url_template: "https://web.archive.org/web/*/{value}/*",
-        reference_url: "https://web.archive.org/",
+        emitted_kinds: &[],
+        mode: RetrievalMode::PivotOnly,
+        access: AccessClass::Public,
+        transform: ValueTransform::CanonicalDomain,
         evidence_role: EvidenceRole::LeadOnly,
+        route_template: Some("https://web.archive.org/web/*/{value}/*"),
+        reference_url: "https://web.archive.org/",
+        verification: VerificationLevel::ReferenceOnly,
+        verified_at_unix: None,
     },
-    SourceDescriptor {
+    CapabilityDescriptor {
         id: "whois",
         name: "Whois.com",
-        category: SourceCategory::DomainIntel,
+        category: ModuleCategory::Infrastructure,
         accepted_kinds: DOMAIN_ONLY,
-        execution: ExecutionMode::SearchUrl,
-        access: SourceAccess::Public,
-        url_template: "https://www.whois.com/whois/{value}",
-        reference_url: "https://www.whois.com/",
+        emitted_kinds: &[],
+        mode: RetrievalMode::PivotOnly,
+        access: AccessClass::Public,
+        transform: ValueTransform::CanonicalDomain,
         evidence_role: EvidenceRole::LeadOnly,
+        route_template: Some("https://www.whois.com/whois/{value}"),
+        reference_url: "https://www.whois.com/",
+        verification: VerificationLevel::ReferenceOnly,
+        verified_at_unix: None,
     },
-    SourceDescriptor {
+    CapabilityDescriptor {
         id: "crtsh",
         name: "crt.sh certificate search",
-        category: SourceCategory::DomainIntel,
+        category: ModuleCategory::Infrastructure,
         accepted_kinds: DOMAIN_ONLY,
-        execution: ExecutionMode::SearchUrl,
-        access: SourceAccess::Public,
-        url_template: "https://crt.sh/?q=%25.{value}",
-        reference_url: "https://crt.sh/",
+        emitted_kinds: &[],
+        mode: RetrievalMode::PivotOnly,
+        access: AccessClass::Public,
+        transform: ValueTransform::CanonicalDomain,
         evidence_role: EvidenceRole::LeadOnly,
+        route_template: Some("https://crt.sh/?q=%25.{value}"),
+        reference_url: "https://crt.sh/",
+        verification: VerificationLevel::ReferenceOnly,
+        verified_at_unix: None,
     },
-    SourceDescriptor {
+    CapabilityDescriptor {
         id: "urlscan",
         name: "urlscan.io domain search",
-        category: SourceCategory::DomainIntel,
+        category: ModuleCategory::Web,
         accepted_kinds: DOMAIN_ONLY,
-        execution: ExecutionMode::SearchUrl,
-        // Plain field queries such as `domain:` work without sign-in under
-        // per-IP unauthenticated search quotas (https://urlscan.io/docs/api/);
-        // only leading-wildcard and regex queries require a signed-in user.
-        access: SourceAccess::Public,
-        url_template: "https://urlscan.io/search/#domain:{value}",
-        reference_url: "https://urlscan.io/search/",
+        emitted_kinds: &[],
+        mode: RetrievalMode::PivotOnly,
+        access: AccessClass::Public,
+        transform: ValueTransform::CanonicalDomain,
         evidence_role: EvidenceRole::LeadOnly,
+        route_template: Some("https://urlscan.io/search/#domain:{value}"),
+        reference_url: "https://urlscan.io/search/",
+        verification: VerificationLevel::ReferenceOnly,
+        verified_at_unix: None,
     },
-    SourceDescriptor {
+    CapabilityDescriptor {
         id: "shodan_host",
         name: "Shodan host view",
-        category: SourceCategory::Infrastructure,
+        category: ModuleCategory::Infrastructure,
         accepted_kinds: IP_ONLY,
-        execution: ExecutionMode::BrowserRequired,
-        access: SourceAccess::Public,
-        url_template: "https://www.shodan.io/host/{value}",
-        reference_url: "https://www.shodan.io/",
+        emitted_kinds: &[],
+        mode: RetrievalMode::PivotOnly,
+        access: AccessClass::Public,
+        transform: ValueTransform::Preserve,
         evidence_role: EvidenceRole::LeadOnly,
+        route_template: Some("https://www.shodan.io/host/{value}"),
+        reference_url: "https://www.shodan.io/",
+        verification: VerificationLevel::ReferenceOnly,
+        verified_at_unix: None,
     },
-    SourceDescriptor {
+    CapabilityDescriptor {
         id: "bgp_he",
         name: "Hurricane Electric BGP Toolkit",
-        category: SourceCategory::Infrastructure,
+        category: ModuleCategory::Infrastructure,
         accepted_kinds: IP_ONLY,
-        execution: ExecutionMode::SearchUrl,
-        access: SourceAccess::Public,
-        url_template: "https://bgp.he.net/ip/{value}",
-        reference_url: "https://bgp.he.net/",
+        emitted_kinds: &[],
+        mode: RetrievalMode::PivotOnly,
+        access: AccessClass::Public,
+        transform: ValueTransform::Preserve,
         evidence_role: EvidenceRole::LeadOnly,
+        route_template: Some("https://bgp.he.net/ip/{value}"),
+        reference_url: "https://bgp.he.net/",
+        verification: VerificationLevel::ReferenceOnly,
+        verified_at_unix: None,
     },
-    SourceDescriptor {
+    CapabilityDescriptor {
         id: "github_users",
         name: "GitHub user search",
-        category: SourceCategory::Identity,
+        category: ModuleCategory::Social,
         accepted_kinds: USERNAME_ONLY,
-        execution: ExecutionMode::SearchUrl,
-        access: SourceAccess::Public,
-        url_template: "https://github.com/search?q={value}&type=users",
-        reference_url: "https://github.com/",
+        emitted_kinds: &[],
+        mode: RetrievalMode::PivotOnly,
+        access: AccessClass::Public,
+        transform: ValueTransform::BareUsername,
         evidence_role: EvidenceRole::LeadOnly,
+        route_template: Some("https://github.com/search?q={value}&type=users"),
+        reference_url: "https://github.com/",
+        verification: VerificationLevel::ReferenceOnly,
+        verified_at_unix: None,
     },
-    SourceDescriptor {
+    CapabilityDescriptor {
         id: "google_maps",
         name: "Google Maps coordinates",
-        category: SourceCategory::Geo,
+        category: ModuleCategory::Geo,
         accepted_kinds: COORDINATES_ONLY,
-        execution: ExecutionMode::SearchUrl,
-        access: SourceAccess::Public,
-        url_template: "https://www.google.com/maps?q={value}",
-        reference_url: "https://www.google.com/maps",
+        emitted_kinds: &[],
+        mode: RetrievalMode::PivotOnly,
+        access: AccessClass::Public,
+        transform: ValueTransform::Preserve,
         evidence_role: EvidenceRole::LeadOnly,
+        route_template: Some("https://www.google.com/maps?q={value}"),
+        reference_url: "https://www.google.com/maps",
+        verification: VerificationLevel::ReferenceOnly,
+        verified_at_unix: None,
     },
 ];
 
 #[must_use]
-pub const fn registry() -> &'static [SourceDescriptor] {
-    SOURCES
+pub fn registry() -> CapabilityRegistry {
+    CapabilityRegistry::new(CAPABILITIES).expect("static source capability registry is valid")
 }
 
 #[must_use]
-pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
-    let mut value = value.trim();
-    if *kind == EntityKind::Username {
-        // `@handle` is notation, not part of the account name the sources index.
-        value = value.strip_prefix('@').unwrap_or(value);
-        if value.chars().any(char::is_whitespace) {
-            return Vec::new();
-        }
-    }
-    if value.is_empty() {
-        return Vec::new();
-    }
-    let encoded = percent_encode_component(value);
-    SOURCES
-        .iter()
-        .filter(|source| {
-            source
-                .accepted_kinds
-                .iter()
-                .any(|candidate| candidate == kind)
-        })
-        .map(|source| SourceRoute {
-            source_id: source.id,
-            source_name: source.name,
-            category: source.category,
-            execution: source.execution,
-            access: source.access,
-            url: source.url_template.replace("{value}", &encoded),
-            reference_url: source.reference_url,
-            evidence_role: source.evidence_role,
-        })
-        .collect()
-}
-
-fn percent_encode_component(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    for byte in raw.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            out.push(char::from(byte));
-        } else {
-            out.push('%');
-            out.push(char::from(HEX[usize::from(byte >> 4)]));
-            out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-        }
-    }
-    out
+pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<CapabilityRoute> {
+    registry().routes_for(kind, value)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use super::*;
 
     #[test]
-    fn registry_is_unique_https_and_renderable() {
-        let mut ids = BTreeSet::new();
-        for source in registry() {
-            assert!(ids.insert(source.id), "duplicate source id {}", source.id);
-            assert!(source.url_template.starts_with("https://"));
-            assert!(source.reference_url.starts_with("https://"));
-            assert_eq!(source.url_template.matches("{value}").count(), 1);
-            assert_ne!(source.accepted_kinds, []);
+    fn catalogue_is_valid_https_and_pivot_only() {
+        let registry = registry();
+        assert_eq!(registry.capabilities().len(), CAPABILITIES.len());
+        for capability in registry.capabilities() {
+            assert!(capability.reference_url.starts_with("https://"));
+            assert!(
+                capability
+                    .route_template
+                    .expect("pivot template")
+                    .starts_with("https://")
+            );
+            assert_eq!(capability.mode, RetrievalMode::PivotOnly);
+            assert_eq!(capability.evidence_role, EvidenceRole::LeadOnly);
+            assert_eq!(capability.verification, VerificationLevel::ReferenceOnly);
         }
     }
 
     #[test]
     fn domain_fans_out_without_turning_routes_into_evidence() {
         let routes = routes_for(&EntityKind::Domain, "example.com");
-        assert!(routes.len() >= 5);
+        assert_eq!(routes.len(), 5);
         assert!(
             routes
                 .iter()
                 .all(|route| route.evidence_role == EvidenceRole::LeadOnly)
         );
-        assert!(routes.iter().any(|route| route.source_id == "wayback"));
-        assert!(routes.iter().any(|route| route.source_id == "crtsh"));
+        assert!(routes.iter().any(|route| route.capability_id == "wayback"));
+        assert!(routes.iter().any(|route| route.capability_id == "crtsh"));
     }
 
     #[test]
-    fn username_routes_use_the_bare_handle() {
+    fn username_transforms_are_source_specific() {
         let routes = routes_for(&EntityKind::Username, "@octocat");
         let github = routes
             .iter()
-            .find(|route| route.source_id == "github_users")
+            .find(|route| route.capability_id == "github_users")
             .expect("github_users route");
+        let google = routes
+            .iter()
+            .find(|route| route.capability_id == "google_exact")
+            .expect("google_exact route");
         assert_eq!(github.url, "https://github.com/search?q=octocat&type=users");
-        assert!(routes.iter().all(|route| !route.url.contains("%40")));
+        assert_eq!(
+            google.url,
+            "https://www.google.com/search?q=%22%40octocat%22"
+        );
     }
 
     #[test]
     fn malformed_handles_yield_no_routes() {
         assert_eq!(routes_for(&EntityKind::Username, "@"), []);
+        assert_eq!(routes_for(&EntityKind::Username, "@@octocat"), []);
         assert_eq!(routes_for(&EntityKind::Username, "@ada lovelace"), []);
     }
 
@@ -328,7 +266,7 @@ mod tests {
     fn coordinates_route_to_maps() {
         let routes = routes_for(&EntityKind::Coordinates, "-27.4698,153.0251");
         assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].source_id, "google_maps");
+        assert_eq!(routes[0].capability_id, "google_maps");
         assert_eq!(
             routes[0].url,
             "https://www.google.com/maps?q=-27.4698%2C153.0251"
@@ -338,7 +276,7 @@ mod tests {
     #[test]
     fn human_query_is_rfc3986_encoded() {
         let routes = routes_for(&EntityKind::Person, "Ada Lovelace");
-        assert_ne!(routes, [] as [SourceRoute; 0]);
+        assert_eq!(routes.len(), 2);
         assert!(
             routes
                 .iter()
