@@ -73,7 +73,7 @@ fn confidence_and_provider_volume_cannot_replace_required_observation() {
 }
 
 #[test]
-fn one_direct_observation_can_verify_when_policy_says_it_is_sufficient() {
+fn flat_lineage_compatibility_path_cannot_verify_without_canonical_ancestry() {
     let (mut ledger, claim_id) = ledger_with_claim("claim-direct");
     let evidence_id = ledger
         .insert_evidence(evidence(
@@ -88,8 +88,12 @@ fn one_direct_observation_can_verify_when_policy_says_it_is_sufficient() {
         .assess_claim(&claim_id, &observed_policy(1, true))
         .unwrap();
 
-    assert_eq!(assessment.epistemic, ClaimState::Verified);
-    assert!(assessment.blockers.is_empty());
+    assert_eq!(assessment.epistemic, ClaimState::Supported);
+    assert!(
+        assessment
+            .blockers
+            .contains(&VerificationBlocker::CanonicalAncestryRequired)
+    );
     assert_eq!(assessment.proven_roots, 1);
     assert_eq!(assessment.unresolved_support, 0);
 }
@@ -116,6 +120,11 @@ fn unresolved_ancestry_blocks_a_policy_that_requires_resolution() {
         assessment
             .blockers
             .contains(&VerificationBlocker::InsufficientIndependentSupport)
+    );
+    assert!(
+        assessment
+            .blockers
+            .contains(&VerificationBlocker::CanonicalAncestryRequired)
     );
     assert_eq!(assessment.proven_roots, 0);
     assert_eq!(assessment.unresolved_support, 1);
