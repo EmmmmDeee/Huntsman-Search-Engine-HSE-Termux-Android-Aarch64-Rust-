@@ -12,7 +12,6 @@ use crate::graph::{EntityRelation, Graph};
 use crate::leads::{Lead, rank_leads};
 use crate::profiles::{EntityProfile, build_profiles};
 use crate::timeline::{TimelineEvent, reconstruct};
-use crate::union_find::UnionFind;
 
 macro_rules! string_id {
     ($name:ident) => {
@@ -138,9 +137,23 @@ impl SourceLineage {
             .unwrap_or_else(|| self.source_id.clone())
     }
 
+    /// Returns a provenance root only when ancestry is actually known.
+    /// Unknown ancestry must never be promoted into independence by falling
+    /// back to a provider or retrieval label.
+    #[must_use]
+    pub fn known_origin_key(&self) -> Option<&str> {
+        self.origin_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+    }
+
     #[must_use]
     pub fn is_independent_of(&self, other: &Self) -> bool {
-        self.independence_key() != other.independence_key()
+        matches!(
+            (self.known_origin_key(), other.known_origin_key()),
+            (Some(left), Some(right)) if left != right
+        )
     }
 }
 
@@ -600,7 +613,9 @@ impl IntelligenceLedger {
         }
     }
 
-    /// Counts distinct independent supporting lineages for a claim.
+    /// Counts proven independent supporting origins for a claim.
+    /// Unknown ancestry contributes zero proven roots; different provider/source
+    /// labels are not evidence of independent origin.
     ///
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
@@ -610,65 +625,17 @@ impl IntelligenceLedger {
             .claims
             .get(claim_id)
             .ok_or_else(|| LedgerError::MissingClaim(claim_id.clone()))?;
-        if claim.support.is_empty() {
-            return Ok(0);
-        }
-
-        let mut lineage_ids = Vec::new();
-        let mut by_evidence = BTreeMap::new();
+        let mut proven_roots = BTreeSet::new();
         for evidence_id in &claim.support {
             let evidence = self
                 .evidence
                 .get(evidence_id)
                 .ok_or_else(|| LedgerError::MissingEvidence(evidence_id.clone()))?;
-            let key = evidence.lineage.independence_key();
-            by_evidence.insert(evidence_id.clone(), key.clone());
-            lineage_ids.push(key);
-        }
-        lineage_ids.sort();
-        lineage_ids.dedup();
-        let mut union_find = UnionFind::new(lineage_ids.len());
-        let index_by_key = lineage_ids
-            .iter()
-            .enumerate()
-            .map(|(index, key)| (key.clone(), index))
-            .collect::<BTreeMap<_, _>>();
-
-        let support = claim.support.iter().collect::<Vec<_>>();
-        for left in 0..support.len() {
-            for right in (left + 1)..support.len() {
-                let lhs = self
-                    .evidence
-                    .get(support[left])
-                    .ok_or_else(|| LedgerError::MissingEvidence((*support[left]).clone()))?;
-                let rhs = self
-                    .evidence
-                    .get(support[right])
-                    .ok_or_else(|| LedgerError::MissingEvidence((*support[right]).clone()))?;
-                if !lhs.lineage.is_independent_of(&rhs.lineage) {
-                    let lhs_key = by_evidence
-                        .get(support[left])
-                        .ok_or_else(|| LedgerError::MissingEvidence((*support[left]).clone()))?;
-                    let rhs_key = by_evidence
-                        .get(support[right])
-                        .ok_or_else(|| LedgerError::MissingEvidence((*support[right]).clone()))?;
-                    let lhs_index = *index_by_key
-                        .get(lhs_key)
-                        .ok_or_else(|| LedgerError::MissingEvidence((*support[left]).clone()))?;
-                    let rhs_index = *index_by_key
-                        .get(rhs_key)
-                        .ok_or_else(|| LedgerError::MissingEvidence((*support[right]).clone()))?;
-                    union_find.union(lhs_index, rhs_index);
-                }
+            if let Some(origin) = evidence.lineage.known_origin_key() {
+                proven_roots.insert(origin.to_string());
             }
         }
-
-        let clusters = lineage_ids
-            .iter()
-            .enumerate()
-            .map(|(index, _)| union_find.find(index))
-            .collect::<BTreeSet<_>>();
-        Ok(clusters.len())
+        Ok(proven_roots.len())
     }
 
     fn ensure_evidence(&self, evidence_id: &EvidenceId) -> Result<(), LedgerError> {
