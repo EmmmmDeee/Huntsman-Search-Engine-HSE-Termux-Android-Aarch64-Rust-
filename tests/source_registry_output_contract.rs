@@ -30,7 +30,9 @@ fn every_route_keeps_user_controlled_url_last() {
         assert!(line.contains(" evidence=lead_only "), "{line}");
         assert!(line.contains(" verification=reference_only "), "{line}");
         assert!(line.contains(" ref=https://"), "{line}");
-        let url = line.find(" url=https://").expect("URL is explicit and last");
+        let url = line
+            .find(" url=https://")
+            .expect("URL is explicit and last");
         assert_eq!(line[url..].matches(" url=").count(), 1, "{line}");
         assert!(!line[url + 1..].contains(" ref="), "{line}");
         assert!(!line[url + 1..].contains(" evidence="), "{line}");
