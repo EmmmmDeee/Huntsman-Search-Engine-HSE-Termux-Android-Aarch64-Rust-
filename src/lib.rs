@@ -17,6 +17,7 @@ pub mod attack_catalog;
 pub mod au_id;
 pub mod breach;
 pub mod canonical;
+pub mod capability;
 pub mod circuit;
 pub mod ckan;
 pub mod classifier;
