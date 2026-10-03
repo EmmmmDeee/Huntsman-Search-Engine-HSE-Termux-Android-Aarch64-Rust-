@@ -130,6 +130,12 @@ pub struct CapabilityRoute {
     pub verified_at_unix: Option<u64>,
     pub reference_url: &'static str,
     pub url: String,
+    /// Transitional alias for the pre-capability `sources` CLI. It is always identical
+    /// to `capability_id` and owns no separate semantics.
+    pub source_id: &'static str,
+    /// Transitional alias for the pre-capability `sources` CLI. It is always identical
+    /// to `mode` and will disappear when the CLI emits capability-native fields.
+    pub execution: RetrievalMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -237,6 +243,8 @@ fn render_route(descriptor: &CapabilityDescriptor, raw: &str) -> Option<Capabili
         verified_at_unix: descriptor.verified_at_unix,
         reference_url: descriptor.reference_url,
         url: template.replace("{value}", &encoded),
+        source_id: descriptor.id,
+        execution: descriptor.mode,
     })
 }
 
