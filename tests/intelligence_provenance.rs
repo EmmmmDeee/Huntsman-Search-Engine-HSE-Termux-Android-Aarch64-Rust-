@@ -110,3 +110,26 @@ fn shared_known_origin_counts_once() {
     assert_eq!(ledger.independent_source_count(&claim_id).unwrap(), 1);
     assert_eq!(ledger.claims[&claim_id].state, ClaimState::Candidate);
 }
+
+#[test]
+fn caller_confidence_cannot_verify_a_claim() {
+    let mut ledger = IntelligenceLedger::default();
+    let claim_id = ClaimId::from("claim-confidence");
+    let mut target = claim("claim-confidence");
+    target.confidence.conclusion = 1.0;
+    ledger.insert_claim(target).unwrap();
+
+    for (id, root) in [
+        ("ev-a", "root-a"),
+        ("ev-b", "root-b"),
+        ("ev-c", "root-c"),
+    ] {
+        let evidence_id = ledger
+            .insert_evidence(evidence(id, id, Some(root), id))
+            .unwrap();
+        ledger.attach_support(&claim_id, &evidence_id).unwrap();
+    }
+
+    assert_eq!(ledger.independent_source_count(&claim_id).unwrap(), 3);
+    assert_eq!(ledger.claims[&claim_id].state, ClaimState::Supported);
+}
