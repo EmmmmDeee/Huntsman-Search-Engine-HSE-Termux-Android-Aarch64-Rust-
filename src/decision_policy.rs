@@ -335,35 +335,33 @@ fn finish_termination(
     record.explanation.push(explanation.into());
 }
 
-#[must_use]
-pub fn select_action(state: &DecisionState, candidates: &[ActionCandidate]) -> DecisionRecord {
-    let mut record = base_record(state, candidates);
-
+fn precheck_termination(
+    state: &DecisionState,
+) -> Option<(PolicyTerminationReason, String)> {
     if state.unresolved_proof_obligations.is_empty() {
-        finish_termination(
-            &mut record,
+        return Some((
             PolicyTerminationReason::ProofObligationsResolved,
-            "terminated: all consequential proof obligations resolved",
-        );
-        return record;
+            "terminated: all consequential proof obligations resolved".to_owned(),
+        ));
     }
     if state.all_relevant_claims_defeated {
-        finish_termination(
-            &mut record,
+        return Some((
             PolicyTerminationReason::AllRelevantClaimsDefeated,
-            "terminated: all relevant claims defeated",
-        );
-        return record;
+            "terminated: all relevant claims defeated".to_owned(),
+        ));
     }
-    if let Some(reason) = decide_termination(state.frontier, state.termination_signals) {
-        finish_termination(
-            &mut record,
+    decide_termination(state.frontier, state.termination_signals).map(|reason| {
+        (
             PolicyTerminationReason::Existing(reason),
             format!("terminated by existing termination signal: {reason:?}"),
-        );
-        return record;
-    }
+        )
+    })
+}
 
+fn collect_eligible<'a>(
+    record: &mut DecisionRecord,
+    candidates: &'a [ActionCandidate],
+) -> Vec<&'a ActionCandidate> {
     let mut sorted_candidates: Vec<&ActionCandidate> = candidates.iter().collect();
     sorted_candidates.sort_by(|a, b| a.id.cmp(&b.id));
 
@@ -385,16 +383,13 @@ pub fn select_action(state: &DecisionState, candidates: &[ActionCandidate]) -> D
             }
         }
     }
+    eligible
+}
 
-    if eligible.is_empty() {
-        finish_termination(
-            &mut record,
-            PolicyTerminationReason::NoEligibleEvidencePath,
-            "terminated: no eligible evidence path remains",
-        );
-        return record;
-    }
-
+fn evaluate_candidates(
+    record: &mut DecisionRecord,
+    eligible: &[&ActionCandidate],
+) -> Vec<EdvComponents> {
     let evaluations: Vec<EdvComponents> = eligible
         .iter()
         .map(|candidate| evaluate_edv(candidate))
@@ -407,7 +402,14 @@ pub fn select_action(state: &DecisionState, candidates: &[ActionCandidate]) -> D
             components: components.clone(),
         })
         .collect();
+    evaluations
+}
 
+fn eliminate_dominated(
+    record: &mut DecisionRecord,
+    eligible: &[&ActionCandidate],
+    evaluations: &[EdvComponents],
+) -> BTreeSet<usize> {
     let mut dominated = BTreeSet::new();
     for (b_index, b) in eligible.iter().enumerate() {
         for (a_index, a) in eligible.iter().enumerate() {
@@ -427,24 +429,43 @@ pub fn select_action(state: &DecisionState, candidates: &[ActionCandidate]) -> D
             }
         }
     }
+    dominated
+}
 
-    let mut ranked: Vec<(&ActionCandidate, &EdvComponents)> = eligible
-        .iter()
-        .zip(&evaluations)
-        .enumerate()
-        .filter(|(index, _)| !dominated.contains(index))
-        .map(|(_, pair)| (*pair.0, pair.1))
+fn rank_candidates(
+    eligible: &[&ActionCandidate],
+    evaluations: &[EdvComponents],
+    dominated: &BTreeSet<usize>,
+) -> Vec<usize> {
+    let mut ranking: Vec<usize> = (0..eligible.len())
+        .filter(|index| !dominated.contains(index))
         .collect();
-    ranked.sort_by(|a, b| rank_cmp(*a, *b));
-    record.ranking = ranked
+    ranking.sort_by(|a, b| {
+        rank_cmp(
+            (eligible[*a], &evaluations[*a]),
+            (eligible[*b], &evaluations[*b]),
+        )
+    });
+    ranking
+}
+
+fn record_ranking(
+    record: &mut DecisionRecord,
+    eligible: &[&ActionCandidate],
+    evaluations: &[EdvComponents],
+    ranking: &[usize],
+) {
+    record.ranking = ranking
         .iter()
-        .map(|(candidate, components)| RankedAction {
-            action_id: candidate.id.clone(),
-            edv: components.final_edv,
+        .map(|index| RankedAction {
+            action_id: eligible[*index].id.clone(),
+            edv: evaluations[*index].final_edv,
         })
         .collect();
 
-    for (position, (candidate, components)) in ranked.iter().enumerate() {
+    for (position, index) in ranking.iter().enumerate() {
+        let candidate = eligible[*index];
+        let components = &evaluations[*index];
         record.explanation.push(format!(
             "rank {} {}: edv={:.6} = impact {:.3} * roi {:.6} - resource {:.3} - irreversible_risk {:.3} - blast_radius {:.3}",
             position + 1,
@@ -457,25 +478,35 @@ pub fn select_action(state: &DecisionState, candidates: &[ActionCandidate]) -> D
             components.blast_radius
         ));
     }
+}
 
-    let Some((selected, selected_components)) = ranked.first().copied() else {
+fn finalize_decision(
+    record: &mut DecisionRecord,
+    eligible: &[&ActionCandidate],
+    evaluations: &[EdvComponents],
+    ranking: &[usize],
+) {
+    let Some(selected_index) = ranking.first().copied() else {
         finish_termination(
-            &mut record,
+            record,
             PolicyTerminationReason::NoEligibleEvidencePath,
             "terminated: dominance elimination left no admissible action",
         );
-        return record;
+        return;
     };
+
+    let selected = eligible[selected_index];
+    let selected_components = &evaluations[selected_index];
     if selected_components.final_edv <= 0.0 {
         finish_termination(
-            &mut record,
+            record,
             PolicyTerminationReason::NonPositiveDecisionValue,
             format!(
                 "terminated: best eligible edv {:.6} <= 0",
                 selected_components.final_edv
             ),
         );
-        return record;
+        return;
     }
 
     record.decision = Decision::Select(selected.id.clone());
@@ -483,5 +514,31 @@ pub fn select_action(state: &DecisionState, candidates: &[ActionCandidate]) -> D
         "selected {} with edv {:.6}",
         selected.id, selected_components.final_edv
     ));
+}
+
+#[must_use]
+pub fn select_action(state: &DecisionState, candidates: &[ActionCandidate]) -> DecisionRecord {
+    let mut record = base_record(state, candidates);
+
+    if let Some((reason, explanation)) = precheck_termination(state) {
+        finish_termination(&mut record, reason, explanation);
+        return record;
+    }
+
+    let eligible = collect_eligible(&mut record, candidates);
+    if eligible.is_empty() {
+        finish_termination(
+            &mut record,
+            PolicyTerminationReason::NoEligibleEvidencePath,
+            "terminated: no eligible evidence path remains",
+        );
+        return record;
+    }
+
+    let evaluations = evaluate_candidates(&mut record, &eligible);
+    let dominated = eliminate_dominated(&mut record, &eligible, &evaluations);
+    let ranking = rank_candidates(&eligible, &evaluations, &dominated);
+    record_ranking(&mut record, &eligible, &evaluations, &ranking);
+    finalize_decision(&mut record, &eligible, &evaluations, &ranking);
     record
 }
