@@ -18,27 +18,12 @@
     {
       "name": "same_dump_two_collectors",
       "observations": [
-        {
-          "collector": "hibp",
-          "attributes": {
-            "breach": "Adobe"
-          }
-        },
-        {
-          "collector": "dehashed",
-          "attributes": {
-            "dbname": "Adobe"
-          }
-        }
+        {"collector": "hibp", "attributes": {"breach": "Adobe"}},
+        {"collector": "dehashed", "attributes": {"dbname": "Adobe"}}
       ],
       "legacy": {
-        "breach_corpus_key": [
-          "Adobe",
-          "Adobe"
-        ],
-        "confirming_sources": [
-          "Adobe"
-        ],
+        "breach_corpus_key": ["Adobe", "Adobe"],
+        "confirming_sources": ["Adobe"],
         "source_count": 1,
         "is_corroborated": false,
         "supported_ceiling": 0.7
@@ -47,28 +32,12 @@
     {
       "name": "two_independent_dumps",
       "observations": [
-        {
-          "collector": "hibp",
-          "attributes": {
-            "breach": "Adobe"
-          }
-        },
-        {
-          "collector": "dehashed",
-          "attributes": {
-            "dbname": "LinkedIn"
-          }
-        }
+        {"collector": "hibp", "attributes": {"breach": "Adobe"}},
+        {"collector": "dehashed", "attributes": {"dbname": "LinkedIn"}}
       ],
       "legacy": {
-        "breach_corpus_key": [
-          "Adobe",
-          "LinkedIn"
-        ],
-        "confirming_sources": [
-          "Adobe",
-          "LinkedIn"
-        ],
+        "breach_corpus_key": ["Adobe", "LinkedIn"],
+        "confirming_sources": ["Adobe", "LinkedIn"],
         "source_count": 2,
         "is_corroborated": true,
         "supported_ceiling": 0.9
@@ -77,28 +46,12 @@
     {
       "name": "one_collector_two_dumps",
       "observations": [
-        {
-          "collector": "dehashed",
-          "attributes": {
-            "dbname": "Adobe"
-          }
-        },
-        {
-          "collector": "dehashed",
-          "attributes": {
-            "dbname": "LinkedIn"
-          }
-        }
+        {"collector": "dehashed", "attributes": {"dbname": "Adobe"}},
+        {"collector": "dehashed", "attributes": {"dbname": "LinkedIn"}}
       ],
       "legacy": {
-        "breach_corpus_key": [
-          "Adobe",
-          "LinkedIn"
-        ],
-        "confirming_sources": [
-          "Adobe",
-          "LinkedIn"
-        ],
+        "breach_corpus_key": ["Adobe", "LinkedIn"],
+        "confirming_sources": ["Adobe", "LinkedIn"],
         "source_count": 2,
         "is_corroborated": true,
         "supported_ceiling": 0.9
@@ -107,28 +60,12 @@
     {
       "name": "aggregator_source_db",
       "observations": [
-        {
-          "collector": "see_know",
-          "attributes": {
-            "source_db": "Canva"
-          }
-        },
-        {
-          "collector": "see_know",
-          "attributes": {
-            "source_db": "MyFitnessPal"
-          }
-        }
+        {"collector": "see_know", "attributes": {"source_db": "Canva"}},
+        {"collector": "see_know", "attributes": {"source_db": "MyFitnessPal"}}
       ],
       "legacy": {
-        "breach_corpus_key": [
-          "Canva",
-          "MyFitnessPal"
-        ],
-        "confirming_sources": [
-          "Canva",
-          "MyFitnessPal"
-        ],
+        "breach_corpus_key": ["Canva", "MyFitnessPal"],
+        "confirming_sources": ["Canva", "MyFitnessPal"],
         "source_count": 2,
         "is_corroborated": true,
         "supported_ceiling": 0.9
@@ -137,43 +74,14 @@
     {
       "name": "three_dumps_four_collectors",
       "observations": [
-        {
-          "collector": "hibp",
-          "attributes": {
-            "breach": "Adobe"
-          }
-        },
-        {
-          "collector": "leakcheck",
-          "attributes": {
-            "breach": "Adobe"
-          }
-        },
-        {
-          "collector": "snusbase",
-          "attributes": {
-            "dbname": "LinkedIn"
-          }
-        },
-        {
-          "collector": "oathnet",
-          "attributes": {
-            "dbname": "Canva"
-          }
-        }
+        {"collector": "hibp", "attributes": {"breach": "Adobe"}},
+        {"collector": "leakcheck", "attributes": {"breach": "Adobe"}},
+        {"collector": "snusbase", "attributes": {"dbname": "LinkedIn"}},
+        {"collector": "oathnet", "attributes": {"dbname": "Canva"}}
       ],
       "legacy": {
-        "breach_corpus_key": [
-          "Adobe",
-          "Adobe",
-          "LinkedIn",
-          "Canva"
-        ],
-        "confirming_sources": [
-          "Adobe",
-          "Canva",
-          "LinkedIn"
-        ],
+        "breach_corpus_key": ["Adobe", "Adobe", "LinkedIn", "Canva"],
+        "confirming_sources": ["Adobe", "Canva", "LinkedIn"],
         "source_count": 3,
         "is_corroborated": true,
         "supported_ceiling": 1.0
@@ -182,28 +90,12 @@
     {
       "name": "dbname_takes_precedence",
       "observations": [
-        {
-          "collector": "oathnet",
-          "attributes": {
-            "dbname": "Adobe",
-            "breach": "LinkedIn"
-          }
-        },
-        {
-          "collector": "hibp",
-          "attributes": {
-            "breach": "Adobe"
-          }
-        }
+        {"collector": "oathnet", "attributes": {"dbname": "Adobe", "breach": "LinkedIn"}},
+        {"collector": "hibp", "attributes": {"breach": "Adobe"}}
       ],
       "legacy": {
-        "breach_corpus_key": [
-          "Adobe",
-          "Adobe"
-        ],
-        "confirming_sources": [
-          "Adobe"
-        ],
+        "breach_corpus_key": ["Adobe", "Adobe"],
+        "confirming_sources": ["Adobe"],
         "source_count": 1,
         "is_corroborated": false,
         "supported_ceiling": 0.7
@@ -212,24 +104,12 @@
     {
       "name": "unattributed_collectors",
       "observations": [
-        {
-          "collector": "hibp",
-          "attributes": {}
-        },
-        {
-          "collector": "dehashed",
-          "attributes": {}
-        }
+        {"collector": "hibp", "attributes": {}},
+        {"collector": "dehashed", "attributes": {}}
       ],
       "legacy": {
-        "breach_corpus_key": [
-          "hibp",
-          "dehashed"
-        ],
-        "confirming_sources": [
-          "dehashed",
-          "hibp"
-        ],
+        "breach_corpus_key": ["hibp", "dehashed"],
+        "confirming_sources": ["dehashed", "hibp"],
         "source_count": 2,
         "is_corroborated": true,
         "supported_ceiling": 0.9
@@ -242,28 +122,12 @@
     {
       "name": "case_and_whitespace_variant",
       "observations": [
-        {
-          "collector": "hibp",
-          "attributes": {
-            "breach": "Adobe"
-          }
-        },
-        {
-          "collector": "dehashed",
-          "attributes": {
-            "dbname": "ADOBE "
-          }
-        }
+        {"collector": "hibp", "attributes": {"breach": "Adobe"}},
+        {"collector": "dehashed", "attributes": {"dbname": "ADOBE "}}
       ],
       "legacy": {
-        "breach_corpus_key": [
-          "Adobe",
-          "ADOBE "
-        ],
-        "confirming_sources": [
-          "ADOBE ",
-          "Adobe"
-        ],
+        "breach_corpus_key": ["Adobe", "ADOBE "],
+        "confirming_sources": ["ADOBE ", "Adobe"],
         "source_count": 2,
         "is_corroborated": true,
         "supported_ceiling": 0.9
@@ -276,34 +140,19 @@
     {
       "name": "dump_plus_registry",
       "observations": [
-        {
-          "collector": "hibp",
-          "attributes": {
-            "breach": "Adobe"
-          }
-        },
-        {
-          "collector": "abn_lookup",
-          "attributes": {
-            "registry": "ABR"
-          }
-        }
+        {"collector": "hibp", "attributes": {"breach": "Adobe"}},
+        {"collector": "abn_lookup", "attributes": {"registry": "ABR"}}
       ],
       "legacy": {
-        "breach_corpus_key": [
-          "Adobe",
-          "abn_lookup"
-        ],
-        "confirming_sources": [
-          "Adobe"
-        ],
+        "breach_corpus_key": ["Adobe", "abn_lookup"],
+        "confirming_sources": ["Adobe"],
         "source_count": 1,
         "is_corroborated": false,
         "supported_ceiling": 0.7
       },
       "intentional_difference": {
-        "recon_families": 1,
-        "reason": "Recon preserves registry evidence but does not count an unbound registry label as an independent family. Registry-class capability binding is not yet represented in this layer, so fail closed rather than infer independence from a field name."
+        "recon_families": 2,
+        "reason": "Legacy breach consensus only counts breach corpora. Recon admits registry lineage only when the collector is explicitly bound to a verified registry source; abn_lookup is bound to ABR, so Adobe plus ABR are two independent roots."
       }
     }
   ]
