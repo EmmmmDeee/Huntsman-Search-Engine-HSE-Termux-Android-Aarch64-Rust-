@@ -154,17 +154,15 @@ impl CoverageRequirement {
 }
 
 fn temporal_covers(observed: &TemporalValidity, required: &TemporalValidity) -> bool {
-    let covers_start = match required.not_before_unix {
-        Some(required_start) => observed
-            .not_before_unix
-            .is_some_and(|observed_start| observed_start <= required_start),
-        None => true,
+    let covers_start = match (observed.not_before_unix, required.not_before_unix) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(observed_start), Some(required_start)) => observed_start <= required_start,
     };
-    let covers_end = match required.not_after_unix {
-        Some(required_end) => observed
-            .not_after_unix
-            .is_some_and(|observed_end| observed_end >= required_end),
-        None => true,
+    let covers_end = match (observed.not_after_unix, required.not_after_unix) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(observed_end), Some(required_end)) => observed_end >= required_end,
     };
     covers_start && covers_end
 }
