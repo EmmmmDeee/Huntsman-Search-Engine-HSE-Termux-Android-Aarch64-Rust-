@@ -4,11 +4,14 @@
 //! A claim reaches `Verified` here only when every mandatory policy obligation
 //! is satisfied by the evidence currently attached to that claim.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::intelligence::{ClaimId, ClaimState, EvidenceNature, IntelligenceLedger, LedgerError};
+use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceNodeId};
+use crate::intelligence::{
+    ClaimId, ClaimState, EvidenceId, EvidenceNature, IntelligenceLedger, LedgerError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationPolicy {
@@ -35,14 +38,55 @@ pub struct ClaimAssessment {
     pub unresolved_support: usize,
 }
 
+fn finish_assessment(
+    policy: &VerificationPolicy,
+    support_empty: bool,
+    proven_roots: usize,
+    unresolved_support: usize,
+    present_natures: &[EvidenceNature],
+    has_blocking_defeat: bool,
+) -> ClaimAssessment {
+    let mut blockers = BTreeSet::new();
+    if policy.require_resolved_ancestry && unresolved_support > 0 {
+        blockers.insert(VerificationBlocker::UnknownAncestry);
+    }
+    if proven_roots < policy.min_proven_roots {
+        blockers.insert(VerificationBlocker::InsufficientIndependentSupport);
+    }
+    if policy
+        .required_natures
+        .iter()
+        .any(|required| !present_natures.contains(required))
+    {
+        blockers.insert(VerificationBlocker::MissingRequiredEvidenceNature);
+    }
+    if has_blocking_defeat {
+        blockers.insert(VerificationBlocker::UndefeatedDefeater);
+    }
+
+    let epistemic = if support_empty {
+        ClaimState::Candidate
+    } else if blockers.is_empty() {
+        ClaimState::Verified
+    } else {
+        ClaimState::Supported
+    };
+
+    ClaimAssessment {
+        epistemic,
+        blockers,
+        proven_roots,
+        unresolved_support,
+    }
+}
+
 impl IntelligenceLedger {
     /// Evaluates one claim against explicit, non-compensatory verification
-    /// obligations. Confidence dimensions and provider count are intentionally
-    /// excluded from this decision.
+    /// obligations using the compatibility lineage fields.
     ///
-    /// Legacy generic contradictions remain conservative blockers during
-    /// migration. Structured defeats block only when their kind actually
-    /// attacks the proposition, a premise, or its derivation.
+    /// Confidence dimensions and provider count are intentionally excluded from
+    /// this decision. Prefer [`Self::assess_claim_with_ancestry`] when canonical
+    /// ancestry bindings are available.
     ///
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
@@ -76,42 +120,77 @@ impl IntelligenceLedger {
             }
         }
 
-        let mut blockers = BTreeSet::new();
-        if policy.require_resolved_ancestry && unresolved_support > 0 {
-            blockers.insert(VerificationBlocker::UnknownAncestry);
-        }
-        if proven_roots.len() < policy.min_proven_roots {
-            blockers.insert(VerificationBlocker::InsufficientIndependentSupport);
-        }
-        if policy
-            .required_natures
-            .iter()
-            .any(|required| !present_natures.contains(required))
-        {
-            blockers.insert(VerificationBlocker::MissingRequiredEvidenceNature);
-        }
-        if !claim.contradictions.is_empty()
-            || claim
-                .defeats
-                .iter()
-                .any(|defeat| defeat.kind.blocks_verification())
-        {
-            blockers.insert(VerificationBlocker::UndefeatedDefeater);
-        }
-
-        let epistemic = if claim.support.is_empty() {
-            ClaimState::Candidate
-        } else if blockers.is_empty() {
-            ClaimState::Verified
-        } else {
-            ClaimState::Supported
-        };
-
-        Ok(ClaimAssessment {
-            epistemic,
-            blockers,
-            proven_roots: proven_roots.len(),
+        Ok(finish_assessment(
+            policy,
+            claim.support.is_empty(),
+            proven_roots.len(),
             unresolved_support,
-        })
+            &present_natures,
+            !claim.contradictions.is_empty()
+                || claim
+                    .defeats
+                    .iter()
+                    .any(|defeat| defeat.kind.blocks_verification()),
+        ))
+    }
+
+    /// Evaluates one claim using [`EvidenceAncestryGraph`] as the sole ancestry
+    /// authority. The binding map is a projection from ledger evidence ids to
+    /// graph nodes; legacy `source_id`, `origin_id`, and cached family labels do
+    /// not contribute proof in this path.
+    ///
+    /// A missing binding, missing graph node, missing parent, cycle, or empty
+    /// root result is unresolved ancestry and therefore fails closed whenever
+    /// the policy requires resolved ancestry.
+    ///
+    /// # Errors
+    /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
+    /// when the ledger itself references absent records.
+    pub fn assess_claim_with_ancestry(
+        &self,
+        claim_id: &ClaimId,
+        policy: &VerificationPolicy,
+        graph: &EvidenceAncestryGraph,
+        bindings: &BTreeMap<EvidenceId, EvidenceNodeId>,
+    ) -> Result<ClaimAssessment, LedgerError> {
+        let claim = self
+            .claims
+            .get(claim_id)
+            .ok_or_else(|| LedgerError::MissingClaim(claim_id.clone()))?;
+
+        let mut proven_roots = BTreeSet::new();
+        let mut unresolved_support = 0usize;
+        let mut present_natures = Vec::new();
+
+        for evidence_id in &claim.support {
+            let evidence = self
+                .evidence
+                .get(evidence_id)
+                .ok_or_else(|| LedgerError::MissingEvidence(evidence_id.clone()))?;
+            if !present_natures.contains(&evidence.nature) {
+                present_natures.push(evidence.nature.clone());
+            }
+
+            let roots = bindings
+                .get(evidence_id)
+                .and_then(|node_id| graph.root_families(node_id).ok());
+            match roots {
+                Some(roots) if !roots.is_empty() => proven_roots.extend(roots),
+                _ => unresolved_support += 1,
+            }
+        }
+
+        Ok(finish_assessment(
+            policy,
+            claim.support.is_empty(),
+            proven_roots.len(),
+            unresolved_support,
+            &present_natures,
+            !claim.contradictions.is_empty()
+                || claim
+                    .defeats
+                    .iter()
+                    .any(|defeat| defeat.kind.blocks_verification()),
+        ))
     }
 }
