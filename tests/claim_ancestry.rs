@@ -115,7 +115,11 @@ fn missing_ancestry_binding_fails_closed() {
     assert_eq!(assessment.proven_roots, 0);
     assert_eq!(assessment.unresolved_support, 1);
     assert_ne!(assessment.epistemic, ClaimState::Verified);
-    assert!(assessment.blockers.contains(&VerificationBlocker::UnknownAncestry));
+    assert!(
+        assessment
+            .blockers
+            .contains(&VerificationBlocker::UnknownAncestry)
+    );
 }
 
 #[test]
@@ -152,5 +156,9 @@ fn ancestry_cycle_fails_closed_instead_of_creating_roots() {
     assert_eq!(assessment.proven_roots, 0);
     assert_eq!(assessment.unresolved_support, 1);
     assert_ne!(assessment.epistemic, ClaimState::Verified);
-    assert!(assessment.blockers.contains(&VerificationBlocker::UnknownAncestry));
+    assert!(
+        assessment
+            .blockers
+            .contains(&VerificationBlocker::UnknownAncestry)
+    );
 }
