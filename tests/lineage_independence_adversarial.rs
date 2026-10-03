@@ -97,13 +97,13 @@ fn registry_field_without_verified_source_class_does_not_create_corroboration() 
 }
 
 #[test]
-fn registry_plus_dataset_is_held_until_registry_origin_is_verified() {
+fn verified_registry_origin_can_corroborate_a_dataset() {
     let out = resolve(vec![
         observation("dump-1", "hibp", &[("breach", "Adobe")]),
         observation("registry-1", "abn_lookup", &[("registry", "ABR")]),
     ]);
-    assert_held_for_family_count(&out, 1);
-    assert_eq!(out.independent_families, ["adobe"]);
+    assert_eq!(out.independent_families, ["abr", "adobe"]);
+    assert_eq!(out.outcome, MergeOutcome::AutoMerge);
 }
 
 #[test]
