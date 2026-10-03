@@ -129,3 +129,24 @@ fn applicable_positive_observation_defeats_an_absence_conclusion() {
             .contains(&CoverageBlocker::PositiveObservation)
     );
 }
+
+#[test]
+fn bounded_observation_cannot_cover_unbounded_requirement() {
+    let mut unbounded = requirement();
+    unbounded.temporal = TemporalValidity::default();
+    let bounded = observation(
+        "provider-bounded",
+        CoverageOutcome::CleanNegative,
+        CoverageCompleteness::Complete,
+    );
+
+    let assessment = unbounded.evaluate(&ClaimId::from("claim-1"), &[bounded]);
+
+    assert!(!assessment.negative_admissible);
+    assert!(assessment.qualifying_providers.is_empty());
+    assert!(
+        assessment
+            .blockers
+            .contains(&CoverageBlocker::NoApplicableObservation)
+    );
+}
