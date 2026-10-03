@@ -64,6 +64,7 @@ pub mod key_health;
 pub mod keys;
 pub mod leads;
 pub mod ledger;
+pub mod lineage;
 pub mod mediawiki;
 pub mod metrics;
 pub mod module;

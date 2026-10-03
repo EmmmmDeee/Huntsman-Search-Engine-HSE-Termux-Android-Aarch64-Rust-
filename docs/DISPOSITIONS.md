@@ -94,7 +94,8 @@ Evidence source: `legacy/` and the two root zip archives. Never delete, edit or 
 | `core/classify_module.rs` | REBUILT | `src/classify_module.rs` | Module-level classification/actionability rebuilt. |
 | `src/confidence.rs` (current owner) | MERGED OWNER | `src/confidence.rs` | Extended with legacy confidence/verification vocabulary and kept as the single owner. |
 | `src/evidence_ancestry.rs` (current owner) | MERGED OWNER | `src/evidence_ancestry.rs` | Kept as the single owner for independent-root support counting. |
-| `src/identity_resolution.rs` (current owner) | MERGED OWNER | `src/identity_resolution.rs` | Kept as the single owner for reversible, ancestry-aware merge decisions. |
+| `src/identity_resolution.rs` (current owner) | MERGED OWNER | `src/identity_resolution.rs` | Kept as the single owner for reversible, ancestry-aware merge decisions. `hold_reasons` is the one merge rule: it requires a present, in-range probability (a036d76e) and states every reason a candidate is held. |
+| `src/lineage.rs` (current owner) | MERGED OWNER | `src/lineage.rs` | Single owner for lineage read from response data (never the collector name) and for `resolve_with_lineage`, the observation → merge-outcome contract that `check` gate 5 runs. |
 
 ### Relation rebuild accounting
 
@@ -123,7 +124,7 @@ These legacy files are now represented primarily by `src/correlator.rs`, but man
 | `core/correlator/rules/tests.rs` | 502 | PARTIAL ORACLE | Representative helper/rule oracles were ported into `src/correlator.rs` tests; the full legacy oracle set is not yet ported. |
 | `core/correlator/rules/assoc.rs` | 608 | NOT YET REBUILT | Accounted for; full association rule family still outstanding. |
 | `core/correlator/rules/breach.rs` | 1385 | PARTIAL | `AU-001`, `AU-019`, and `AU-021` style breach/exposure subsets are rebuilt; the rest of the family remains outstanding. |
-| `core/correlator/rules/breach_pii.rs` | 1744 | NOT YET REBUILT | Accounted for; full breach-PII rule family still outstanding. |
+| `core/correlator/rules/breach_pii.rs` | 1744 | PARTIAL | `breach_corpus_key` field precedence (`dbname`, `breach`, `source_db`) is rebuilt as `src/lineage.rs` `LINEAGE_FIELDS`, without the fallback to the collector name; checked against the 7dca720 oracle by `tests/lineage_legacy.rs`. The rest of the breach-PII rule family is still outstanding. |
 | `core/correlator/rules/broker.rs` | 204 | PARTIAL | Connection-broker logic subset rebuilt as `AU-070`; full parity still outstanding. |
 | `core/correlator/rules/creator_exposure.rs` | 204 | NOT YET REBUILT | Accounted for; rule family still outstanding. |
 | `core/correlator/rules/crypto.rs` | 175 | NOT YET REBUILT | Accounted for; rule family still outstanding. |
@@ -289,7 +290,7 @@ Credentials are allowed, but artifacts/logs still keep fingerprint-only hygiene.
 | `util/response_cache/tests.rs` | `src/circuit.rs` tests | MERGED | Cache behaviour folded into grouped tests. |
 | `util/breach_sector/mod.rs` | `src/breach.rs` | REIMPLEMENT | Rebuilt pure sector classifier and token parsing. |
 | `util/breach_sector/tests.rs` | `src/breach.rs` tests | MERGED | Legacy examples preserved as tests. |
-| `core/breach_consensus.rs` | — | NOT APPLICABLE | Still depends on monolith-only graph/entity orchestration. |
+| `core/breach_consensus.rs` | `src/lineage.rs`, `src/identity_resolution.rs` | PARTIAL | Distinct-corpus counting (`breach_sources_of`, `is_corroborated`) is rebuilt as lineage families from response fields; the two-corpus threshold and the 0.90 two-corpus `supported_ceiling` are the `AutoMergePolicy` default. Legacy outcomes on 9 fixtures are recorded in `tests/fixtures/legacy_7dca720_breach_consensus.json`, and intentional differences are listed in `docs/LINEAGE.md`. Audit flags, the consensus evidence record and the sweep tag are not rebuilt. |
 | `core/breach_platforms.rs` | `src/breach.rs` | REIMPLEMENT | Rebuilt shared breach platform helpers/constants. |
 | `core/breach_sweep.rs` | — | NOT APPLICABLE | Still depends on monolith planner/runtime graph. |
 | `core/stealer_row/mod.rs` | `src/breach.rs` | REIMPLEMENT | Rebuilt row shape and password/combo classification. |
