@@ -111,7 +111,7 @@ fn all_ineligible_actions_terminate_without_ranking() {
         record.decision,
         Decision::Terminate(PolicyTerminationReason::NoEligibleEvidencePath)
     );
-    assert!(record.ranking.is_empty());
+    assert_eq!(record.ranking, Vec::new());
     assert_eq!(record.rejected_actions.len(), 2);
 }
 
