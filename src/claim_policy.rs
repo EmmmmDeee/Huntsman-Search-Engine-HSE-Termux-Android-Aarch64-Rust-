@@ -8,9 +8,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::intelligence::{
-    ClaimId, ClaimState, EvidenceNature, IntelligenceLedger, LedgerError,
-};
+use crate::intelligence::{ClaimId, ClaimState, EvidenceNature, IntelligenceLedger, LedgerError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationPolicy {
