@@ -10,6 +10,7 @@ use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use huntsman_recon::decision_wire::decide_json;
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::entity::{Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
@@ -39,7 +40,7 @@ use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER | decide REQUEST.json]";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -60,6 +61,7 @@ fn main() -> ExitCode {
         Some("fetch") => fetch_cmd(&args.collect::<Vec<_>>()),
         Some("keys") => keys_cmd(args.next()),
         Some("verify") => verify(args.next()),
+        Some("decide") => decide_cmd(args.next()),
         Some("check") | None => check(),
         Some("help" | "-h" | "--help") => {
             println!("{USAGE}");
@@ -341,6 +343,27 @@ fn verify(path: Option<String>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => fail(EX_DATAERR, &e.to_string()),
+    }
+}
+
+fn decide_cmd(path: Option<String>) -> ExitCode {
+    let Some(path) = path else {
+        return fail(EX_USAGE, "usage: huntsman-recon decide REQUEST.json");
+    };
+    let body = match std::fs::read(Path::new(&path)) {
+        Ok(body) => body,
+        Err(e) => return fail(EX_NOINPUT, &format!("cannot read decision request: {e}")),
+    };
+    let record = match decide_json(&body) {
+        Ok(record) => record,
+        Err(e) => return fail(EX_DATAERR, &format!("invalid decision request: {e}")),
+    };
+    match serde_json::to_string_pretty(&record) {
+        Ok(encoded) => {
+            println!("{encoded}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(EX_IOERR, &format!("cannot encode decision record: {e}")),
     }
 }
 

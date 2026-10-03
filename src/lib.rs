@@ -32,6 +32,7 @@ pub mod coverage;
 pub mod credential_origin;
 pub mod cross_scan;
 pub mod decision_policy;
+pub mod decision_wire;
 pub mod dependency;
 pub mod diamond;
 pub mod diff;
