@@ -58,7 +58,7 @@ impl IntelligenceLedger {
 
         let mut proven_roots = BTreeSet::new();
         let mut unresolved_support = 0usize;
-        let mut present_natures = BTreeSet::new();
+        let mut present_natures = Vec::new();
 
         for evidence_id in &claim.support {
             let evidence = self
@@ -70,7 +70,9 @@ impl IntelligenceLedger {
             } else {
                 unresolved_support += 1;
             }
-            present_natures.insert(evidence.nature.clone());
+            if !present_natures.contains(&evidence.nature) {
+                present_natures.push(evidence.nature.clone());
+            }
         }
 
         let mut blockers = BTreeSet::new();
