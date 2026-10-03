@@ -1,11 +1,10 @@
 //! Lineage from response data, and the identity-resolution path that consumes it.
 //!
-//! A collector is a relay, never an origin. Each observation's upstream identity (the
-//! breach or dataset name, the upstream registry, or the record's canonical source URL
-//! or id) is read from the parsed response fields carried on its [`Evidence`]. The
-//! collector name in `Evidence::provenance.source` is kept for attribution only and
-//! never becomes a lineage family, so two collectors relaying one dataset share one
-//! root and count as one independent family.
+//! A collector is a relay, never an origin. Each observation's upstream dataset identity
+//! is read from parsed response fields carried on its [`Evidence`]. Collector names,
+//! record URLs, record ids and unverified registry labels remain provenance only: they
+//! cannot manufacture an independent evidence family. Two collectors relaying one
+//! dataset therefore share one root and count as one independent family.
 //!
 //! [`resolve_with_lineage`] is the library contract for collection front-ends:
 //! observations and candidate decisions go in; every observation and every candidate
@@ -25,19 +24,19 @@ use crate::evidence_ancestry::{
 };
 use crate::identity_resolution::{AutoMergePolicy, HoldReason, IdentityResolutionDecision};
 
-/// Response fields that name where a record came from, in precedence order. The first
-/// field with a non-blank value decides and later fields are not read. The first three
-/// are the legacy `breach_corpus_key` spellings in its order. A collector copies these
-/// from the parsed response verbatim (for an HIBP breach model, `Name` goes to `breach`).
+/// Response fields that are strong enough to identify an upstream dataset family, in
+/// precedence order. The first non-blank field decides and later fields are not read.
+/// The first three are the legacy `breach_corpus_key` spellings in its order.
+///
+/// `registry`, `source_url` and `source_id` are deliberately excluded. A registry label
+/// is not independent evidence until the collector/capability is bound to a verified
+/// registry origin, while a URL or source id is a record locator rather than an origin.
 pub const LINEAGE_FIELDS: &[(&str, UpstreamKind)] = &[
     ("dbname", UpstreamKind::Dataset),
     ("breach", UpstreamKind::Dataset),
     ("source_db", UpstreamKind::Dataset),
     ("database_name", UpstreamKind::Dataset),
     ("dataset", UpstreamKind::Dataset),
-    ("registry", UpstreamKind::Registry),
-    ("source_url", UpstreamKind::Source),
-    ("source_id", UpstreamKind::Source),
 ];
 
 /// Ancestry ids of upstream roots. Observation ids may not use it.
@@ -47,7 +46,11 @@ const ROOT_PREFIX: &str = "lineage:";
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamKind {
     Dataset,
+    /// Reserved for a future verified registry-origin binding. It is not currently
+    /// emitted by [`Lineage::of`].
     Registry,
+    /// Reserved for a future trusted source-origin binding. Record locators are not
+    /// independent families and this is not currently emitted by [`Lineage::of`].
     Source,
 }
 
@@ -55,16 +58,16 @@ pub enum UpstreamKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "lineage", rename_all = "snake_case")]
 pub enum Lineage {
-    /// One upstream. `family` is the canonical key (whitespace collapsed, lowercase;
-    /// URLs via `canonical_url`). The family has no kind prefix, so a dataset and a
-    /// registry with the same name count once.
+    /// One upstream dataset. `family` is the canonical key (whitespace collapsed,
+    /// lowercase). Kind prefixes are intentionally absent so aliases of the same
+    /// dataset collapse onto one root.
     Upstream {
         kind: UpstreamKind,
         field: String,
         value: String,
         family: String,
     },
-    /// The response names no upstream. Counts as zero families.
+    /// The response names no independently countable upstream. Counts as zero families.
     Unattributed,
     /// The deciding field names several distinct upstreams (a combo list). Counts as zero
     /// families: one record cannot independently attest two origins.
@@ -72,7 +75,8 @@ pub enum Lineage {
 }
 
 impl Lineage {
-    /// Read lineage from the response fields on `evidence`. Never reads the collector name.
+    /// Read independently countable lineage from response fields on `evidence`. Never
+    /// reads the collector name or treats per-record locators as evidence families.
     #[must_use]
     pub fn of(evidence: &Evidence) -> Self {
         for (field, kind) in LINEAGE_FIELDS {
@@ -144,7 +148,8 @@ pub struct CandidateOutcome {
     pub decision: IdentityResolutionDecision,
     /// Independent root families behind the attributed support, sorted.
     pub independent_families: Vec<String>,
-    /// Supporting observations whose response named no single upstream. Kept, not counted.
+    /// Supporting observations whose response named no single independently countable
+    /// upstream. Kept, not counted.
     pub unattributed_support: Vec<EvidenceNodeId>,
     pub outcome: MergeOutcome,
 }
@@ -318,15 +323,15 @@ mod tests {
     }
 
     #[test]
-    fn first_present_field_decides_in_legacy_order() {
+    fn first_present_dataset_field_decides_in_legacy_order() {
         let e = evidence("oathnet", &[("breach", "LinkedIn"), ("dbname", "Adobe")]);
         assert!(matches!(
             Lineage::of(&e),
             Lineage::Upstream { ref field, ref family, kind: UpstreamKind::Dataset, .. }
                 if field == "dbname" && family == "adobe"
         ));
-        let blank = evidence("x", &[("dbname", "  "), ("registry", "ABR")]);
-        assert_eq!(Lineage::of(&blank).family(), Some("abr"));
+        let unverified = evidence("x", &[("dbname", "  "), ("registry", "ABR")]);
+        assert_eq!(Lineage::of(&unverified), Lineage::Unattributed);
     }
 
     #[test]
@@ -344,11 +349,18 @@ mod tests {
     }
 
     #[test]
-    fn source_urls_are_canonicalised() {
-        let a = Lineage::of(&evidence("a", &[("source_url", "https://Example.com/p/1")]));
-        let b = Lineage::of(&evidence("b", &[("source_url", "https://example.com/p/1")]));
-        assert_eq!(a.family(), b.family());
-        assert!(a.family().is_some());
+    fn record_locators_are_not_independent_lineage() {
+        assert_eq!(
+            Lineage::of(&evidence(
+                "a",
+                &[("source_url", "https://Example.com/p/1")]
+            )),
+            Lineage::Unattributed
+        );
+        assert_eq!(
+            Lineage::of(&evidence("a", &[("source_id", "row-1")])),
+            Lineage::Unattributed
+        );
     }
 
     #[test]
