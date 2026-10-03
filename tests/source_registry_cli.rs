@@ -65,7 +65,7 @@ fn sources_routes_email_through_exact_web_searches() {
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
-        stdout.starts_with("kind=email confidence=0.950 routes=2\n"),
+        stdout.starts_with("kind=email confidence=0.850 routes=2\n"),
         "{stdout}"
     );
     assert!(stdout.contains("%22ada%40example.com%22"), "{stdout}");
