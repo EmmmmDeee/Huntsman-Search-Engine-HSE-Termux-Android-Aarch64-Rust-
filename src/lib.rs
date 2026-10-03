@@ -91,6 +91,7 @@ pub mod search;
 pub mod service_defs;
 pub mod session;
 pub mod sha256;
+pub mod shadow_assessment;
 pub mod signals;
 pub mod snake_graph;
 pub mod source_outcome;
