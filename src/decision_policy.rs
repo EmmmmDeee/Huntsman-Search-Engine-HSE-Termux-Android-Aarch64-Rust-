@@ -227,9 +227,10 @@ fn dominates(
     b: &ActionCandidate,
     b_eval: &EdvComponents,
 ) -> bool {
-    let at_least_same_obligations = a.satisfied_obligations.is_superset(&b.satisfied_obligations);
-    let at_least_as_beneficial =
-        a_eval.expected_decision_impact >= b_eval.expected_decision_impact;
+    let at_least_same_obligations = a
+        .satisfied_obligations
+        .is_superset(&b.satisfied_obligations);
+    let at_least_as_beneficial = a_eval.expected_decision_impact >= b_eval.expected_decision_impact;
     let no_more_monetary_cost = known_cost_leq(
         a.roi_inputs.cost_per_request_usd,
         b.roi_inputs.cost_per_request_usd,
@@ -237,8 +238,7 @@ fn dominates(
     let no_more_resource_cost = a_eval.resource_cost <= b_eval.resource_cost;
     let no_more_irreversible_risk = a_eval.irreversible_risk <= b_eval.irreversible_risk;
     let no_more_blast_radius = a_eval.blast_radius <= b_eval.blast_radius;
-    let no_more_latency =
-        a.roi_inputs.configured_timeout_ms <= b.roi_inputs.configured_timeout_ms;
+    let no_more_latency = a.roi_inputs.configured_timeout_ms <= b.roi_inputs.configured_timeout_ms;
 
     let strictly_better = a_eval.expected_decision_impact > b_eval.expected_decision_impact
         || known_cost_lt(
@@ -303,7 +303,12 @@ fn base_record(state: &DecisionState, candidates: &[ActionCandidate]) -> Decisio
         .collect();
     let evidence_lineage_inputs = candidates
         .iter()
-        .map(|candidate| (candidate.id.clone(), candidate.roi_inputs.independent_root_count))
+        .map(|candidate| {
+            (
+                candidate.id.clone(),
+                candidate.roi_inputs.independent_root_count,
+            )
+        })
         .collect();
 
     DecisionRecord {
@@ -370,10 +375,9 @@ pub fn select_action(state: &DecisionState, candidates: &[ActionCandidate]) -> D
                 eligible.push(candidate);
             }
             Eligibility::Ineligible(reasons) => {
-                record.explanation.push(format!(
-                    "rejected {}: {reasons:?}",
-                    candidate.id
-                ));
+                record
+                    .explanation
+                    .push(format!("rejected {}: {reasons:?}", candidate.id));
                 record.rejected_actions.push(RejectedAction {
                     action_id: candidate.id.clone(),
                     reasons,
@@ -416,10 +420,9 @@ pub fn select_action(state: &DecisionState, candidates: &[ActionCandidate]) -> D
                     dominated_action: b.id.clone(),
                     dominating_action: a.id.clone(),
                 });
-                record.explanation.push(format!(
-                    "eliminated {}: dominated by {}",
-                    b.id, a.id
-                ));
+                record
+                    .explanation
+                    .push(format!("eliminated {}: dominated by {}", b.id, a.id));
                 break;
             }
         }
