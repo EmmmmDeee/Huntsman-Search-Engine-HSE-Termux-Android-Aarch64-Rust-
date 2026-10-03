@@ -137,6 +137,9 @@ fn unknown_lineage_gets_no_independence_reward_in_policy_evaluation() {
         .find(|entry| entry.action_id == "unknown-lineage")
         .expect("candidate must be evaluated");
 
-    assert_eq!(evaluation.components.dispatch_utility.expected_independence, 0.0);
+    assert_eq!(
+        evaluation.components.dispatch_utility.expected_independence,
+        0.0
+    );
     assert_eq!(record.evidence_lineage_inputs["unknown-lineage"], None);
 }
