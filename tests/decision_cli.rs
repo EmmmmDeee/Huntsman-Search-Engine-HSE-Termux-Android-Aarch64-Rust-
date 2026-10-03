@@ -77,7 +77,11 @@ fn request_json() -> Value {
 fn decide_command_emits_reconstructable_decision_record() {
     let dir = scratch("valid");
     let request = dir.join("request.json");
-    fs::write(&request, serde_json::to_vec_pretty(&request_json()).unwrap()).unwrap();
+    fs::write(
+        &request,
+        serde_json::to_vec_pretty(&request_json()).unwrap(),
+    )
+    .unwrap();
 
     let out = bin().arg("decide").arg(&request).output().unwrap();
     assert!(
