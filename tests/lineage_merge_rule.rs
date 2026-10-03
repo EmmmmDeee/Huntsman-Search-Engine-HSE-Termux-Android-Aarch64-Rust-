@@ -74,8 +74,8 @@ fn same_dataset_through_two_collectors_is_one_family_and_no_auto_merge() {
 
 #[test]
 fn missing_probability_is_held_with_a_reason() {
-    let out = one(corpus(), candidate(&["hibp-1", "abr-1"], None));
-    assert_eq!(out.independent_families, ["abr", "adobe"]);
+    let out = one(corpus(), candidate(&["hibp-1", "dehashed-2"], None));
+    assert_eq!(out.independent_families, ["adobe", "linkedin"]);
     assert_eq!(reasons(&out), [HoldReason::ProbabilityMissing]);
     assert_eq!(out.decision.probability, None);
 }
@@ -83,14 +83,20 @@ fn missing_probability_is_held_with_a_reason() {
 #[test]
 fn nan_or_out_of_range_probability_is_held_with_a_reason() {
     for p in [f64::NAN, f64::NEG_INFINITY, 1.000_001, -0.5] {
-        let out = one(corpus(), candidate(&["hibp-1", "abr-1"], Some(p)));
+        let out = one(
+            corpus(),
+            candidate(&["hibp-1", "dehashed-2"], Some(p)),
+        );
         assert!(
             matches!(reasons(&out), [HoldReason::ProbabilityInvalid { .. }]),
             "{p}: {:?}",
             out.outcome
         );
     }
-    let low = one(corpus(), candidate(&["hibp-1", "abr-1"], Some(0.89)));
+    let low = one(
+        corpus(),
+        candidate(&["hibp-1", "dehashed-2"], Some(0.89)),
+    );
     assert!(matches!(
         reasons(&low),
         [HoldReason::ProbabilityBelowThreshold { .. }]
@@ -99,13 +105,19 @@ fn nan_or_out_of_range_probability_is_held_with_a_reason() {
 
 #[test]
 fn two_independent_families_and_a_valid_probability_auto_merge() {
-    for support in [["hibp-1", "abr-1"], ["dehashed-1", "dehashed-2"]] {
+    for support in [
+        ["hibp-1", "dehashed-2"],
+        ["dehashed-1", "dehashed-2"],
+    ] {
         let out = one(corpus(), candidate(&support, Some(0.95)));
         assert_eq!(out.outcome, MergeOutcome::AutoMerge, "{support:?}");
         assert_eq!(out.independent_families.len(), 2);
     }
     // The floor is inclusive.
-    let edge = one(corpus(), candidate(&["hibp-1", "abr-1"], Some(0.90)));
+    let edge = one(
+        corpus(),
+        candidate(&["hibp-1", "dehashed-2"], Some(0.90)),
+    );
     assert_eq!(edge.outcome, MergeOutcome::AutoMerge);
 }
 
@@ -128,10 +140,37 @@ fn collector_name_never_becomes_lineage() {
 }
 
 #[test]
+fn registry_and_record_locators_are_preserved_but_not_counted_as_independent() {
+    let obs = vec![
+        observation("registry", "abn_lookup", &[("registry", "ABR")]),
+        observation(
+            "url",
+            "paste_collector",
+            &[("source_url", "https://paste.example/a")],
+        ),
+        observation("id", "dump_collector", &[("source_id", "row-1")]),
+    ];
+    let out = one(obs, candidate(&["registry", "url", "id"], Some(0.99)));
+    assert!(out.independent_families.is_empty());
+    assert_eq!(
+        out.unattributed_support,
+        [
+            EvidenceNodeId::from("registry"),
+            EvidenceNodeId::from("url"),
+            EvidenceNodeId::from("id")
+        ]
+    );
+    assert!(matches!(
+        reasons(&out),
+        [HoldReason::InsufficientIndependentFamilies { found: 0, .. }]
+    ));
+}
+
+#[test]
 fn unknown_support_holds_instead_of_counting() {
     let out = one(
         corpus(),
-        candidate(&["hibp-1", "abr-1", "ghost"], Some(0.99)),
+        candidate(&["hibp-1", "dehashed-2", "ghost"], Some(0.99)),
     );
     assert!(matches!(
         reasons(&out),
@@ -162,9 +201,9 @@ fn nothing_is_dropped_truncated_or_misattributed() {
     input.push(observation("long-1", "pastes", &[("dataset", &long)]));
     let candidates = vec![
         candidate(&["hibp-1", "dehashed-1"], Some(0.99)),
-        candidate(&["hibp-1", "abr-1"], None),
-        candidate(&["hibp-1", "abr-1"], Some(f64::NAN)),
-        candidate(&["hibp-1", "abr-1"], Some(0.99)),
+        candidate(&["hibp-1", "dehashed-2"], None),
+        candidate(&["hibp-1", "dehashed-2"], Some(f64::NAN)),
+        candidate(&["hibp-1", "dehashed-2"], Some(0.99)),
         candidate(&["none-1", "combo-1", "long-1"], Some(0.99)),
     ];
     let r: Resolution = resolve_with_lineage(
@@ -182,6 +221,7 @@ fn nothing_is_dropped_truncated_or_misattributed() {
             original.evidence.provenance.source
         );
     }
+    assert_eq!(r.observations[3].lineage, Lineage::Unattributed);
     assert_eq!(r.observations[4].lineage, Lineage::Unattributed);
     assert!(matches!(
         r.observations[5].lineage,
