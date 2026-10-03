@@ -12,6 +12,7 @@ use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceNodeId};
 use crate::intelligence::{
     ClaimId, ClaimState, EvidenceId, EvidenceNature, IntelligenceLedger, LedgerError,
 };
+use crate::proof::ProofEnvironmentSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationPolicy {
@@ -28,6 +29,8 @@ pub enum VerificationBlocker {
     MissingRequiredEvidenceNature,
     InsufficientIndependentSupport,
     UndefeatedDefeater,
+    MissingProofEnvironment,
+    IncompleteProof,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +39,39 @@ pub struct ClaimAssessment {
     pub blockers: BTreeSet<VerificationBlocker>,
     pub proven_roots: usize,
     pub unresolved_support: usize,
+    #[serde(default)]
+    pub proof_environment_count: usize,
+    #[serde(default)]
+    pub proof_incomplete: bool,
+}
+
+impl ClaimAssessment {
+    /// Adds bounded proof-environment status without allowing proof bookkeeping
+    /// to strengthen the evidence-derived assessment.
+    ///
+    /// An empty or truncated proof set blocks `Verified`. A complete, non-empty
+    /// proof set can preserve an already-verified assessment but cannot promote
+    /// a weaker one. This keeps resource limits epistemically conservative.
+    #[must_use]
+    pub fn with_proof_environments(mut self, proof: &ProofEnvironmentSet) -> Self {
+        self.proof_environment_count = proof.environments.len();
+        self.proof_incomplete = proof.incomplete;
+
+        if proof.environments.is_empty() {
+            self.blockers
+                .insert(VerificationBlocker::MissingProofEnvironment);
+        }
+        if proof.incomplete {
+            self.blockers.insert(VerificationBlocker::IncompleteProof);
+        }
+
+        if self.epistemic == ClaimState::Verified
+            && (proof.environments.is_empty() || proof.incomplete)
+        {
+            self.epistemic = ClaimState::Supported;
+        }
+        self
+    }
 }
 
 fn finish_assessment(
@@ -77,6 +113,8 @@ fn finish_assessment(
         blockers,
         proven_roots,
         unresolved_support,
+        proof_environment_count: 0,
+        proof_incomplete: false,
     }
 }
 
