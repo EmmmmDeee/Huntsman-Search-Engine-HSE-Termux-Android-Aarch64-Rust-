@@ -26,6 +26,7 @@ pub struct VerificationPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum VerificationBlocker {
     UnknownAncestry,
+    CanonicalAncestryRequired,
     MissingRequiredEvidenceNature,
     InsufficientIndependentSupport,
     UndefeatedDefeater,
@@ -81,10 +82,14 @@ fn finish_assessment(
     unresolved_support: usize,
     present_natures: &[EvidenceNature],
     has_blocking_defeat: bool,
+    canonical_ancestry: bool,
 ) -> ClaimAssessment {
     let mut blockers = BTreeSet::new();
     if policy.require_resolved_ancestry && unresolved_support > 0 {
         blockers.insert(VerificationBlocker::UnknownAncestry);
+    }
+    if !canonical_ancestry {
+        blockers.insert(VerificationBlocker::CanonicalAncestryRequired);
     }
     if proven_roots < policy.min_proven_roots {
         blockers.insert(VerificationBlocker::InsufficientIndependentSupport);
@@ -119,12 +124,16 @@ fn finish_assessment(
 }
 
 impl IntelligenceLedger {
-    /// Evaluates one claim against explicit, non-compensatory verification
-    /// obligations using the compatibility lineage fields.
+    /// Evaluates one claim against explicit, non-compensatory obligations using
+    /// compatibility lineage fields.
+    ///
+    /// This path is diagnostic only: it can report support and blockers but can
+    /// never produce `Verified`, because flat lineage metadata is not the
+    /// canonical ancestry authority. Use [`Self::assess_claim_with_ancestry`]
+    /// for verification-capable assessment.
     ///
     /// Confidence dimensions and provider count are intentionally excluded from
-    /// this decision. Prefer [`Self::assess_claim_with_ancestry`] when canonical
-    /// ancestry bindings are available.
+    /// this decision.
     ///
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
@@ -169,6 +178,7 @@ impl IntelligenceLedger {
                     .defeats
                     .iter()
                     .any(|defeat| defeat.kind.blocks_verification()),
+            false,
         ))
     }
 
@@ -229,6 +239,7 @@ impl IntelligenceLedger {
                     .defeats
                     .iter()
                     .any(|defeat| defeat.kind.blocks_verification()),
+            true,
         ))
     }
 }
