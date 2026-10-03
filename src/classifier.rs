@@ -48,7 +48,7 @@ pub fn classify(raw: &str) -> Classified {
     if let Some(coordinates) = parse_decimal_coordinates(value) {
         return classified(EntityKind::Coordinates, &coordinates, 0.85, "lat-lon");
     }
-    if canonical_domain(value).is_some() {
+    if routable_domain_shape(value) {
         return classified(EntityKind::Domain, value, 0.75, "domain-shape");
     }
     if canonical_phone(value).is_some() {
@@ -58,6 +58,10 @@ pub fn classify(raw: &str) -> Classified {
         return classified(EntityKind::AbnAcn, value, 0.95, "checksum");
     }
     if value.starts_with('@') {
+        let bare = value.strip_prefix('@').unwrap_or(value);
+        if bare.is_empty() || bare.starts_with('@') || bare.chars().any(char::is_whitespace) {
+            return classified(EntityKind::Other, value, 0.0, "invalid-handle");
+        }
         return classified(EntityKind::Username, value, 0.40, "handle");
     }
     let lowered = value.to_ascii_lowercase();
@@ -115,11 +119,17 @@ fn classified(kind: EntityKind, value: &str, confidence: f64, signal: &'static s
 }
 
 fn parse_ipv4(raw: &str) -> bool {
-    let parts = raw.split('.').collect::<Vec<_>>();
-    parts.len() == 4
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.parse::<u8>().is_ok())
+    raw.parse::<std::net::Ipv4Addr>().is_ok()
+}
+
+fn routable_domain_shape(raw: &str) -> bool {
+    let Some(domain) = canonical_domain(raw) else {
+        return false;
+    };
+    domain
+        .rsplit('.')
+        .next()
+        .is_some_and(|label| label.bytes().any(|byte| byte.is_ascii_alphabetic()))
 }
 
 /// Recognises a `LAT,LON` pair in decimal degrees and returns it as `lat,lon`.
@@ -127,15 +137,16 @@ fn parse_ipv4(raw: &str) -> bool {
 /// Both components must be plain signed decimals with a fractional part, so
 /// thousands-separated numbers (`1,000`) and decimal-comma values (`12,5`) are not
 /// mistaken for coordinates. Latitude must lie in `-90..=90` and longitude in
-/// `-180..=180`.
+/// `-180..=180`. Bounds are checked textually so binary-float rounding cannot admit
+/// a value just beyond 90 or 180 degrees.
 fn parse_decimal_coordinates(raw: &str) -> Option<String> {
     let (lat, lon) = raw.split_once(',')?;
-    let lat = decimal_degree(lat, 2, 90.0)?;
-    let lon = decimal_degree(lon, 3, 180.0)?;
+    let lat = decimal_degree(lat, 2, 90)?;
+    let lon = decimal_degree(lon, 3, 180)?;
     Some(format!("{lat},{lon}"))
 }
 
-fn decimal_degree(raw: &str, max_int_digits: usize, limit: f64) -> Option<&str> {
+fn decimal_degree(raw: &str, max_int_digits: usize, limit: u16) -> Option<&str> {
     let trimmed = raw.trim();
     let unsigned = trimmed
         .strip_prefix('-')
@@ -150,8 +161,8 @@ fn decimal_degree(raw: &str, max_int_digits: usize, limit: f64) -> Option<&str> 
     {
         return None;
     }
-    let degrees: f64 = unsigned.parse().ok()?;
-    if degrees > limit {
+    let whole: u16 = int.parse().ok()?;
+    if whole > limit || (whole == limit && frac.bytes().any(|byte| byte != b'0')) {
         return None;
     }
     Some(trimmed.strip_prefix('+').unwrap_or(trimmed))
@@ -219,6 +230,19 @@ mod tests {
             "1.5 Example Road, 2.5 km north",
         ] {
             assert_eq!(classify(raw).kind, EntityKind::Address, "{raw}");
+        }
+    }
+
+    #[test]
+    fn rejects_ambiguous_infrastructure_and_handle_shapes() {
+        for raw in ["+1.+2.+3.+4", "01.02.03.04"] {
+            assert_ne!(classify(raw).kind, EntityKind::IpAddress, "{raw}");
+        }
+        for raw in ["999.1.1.1", "1.2.3", "01.02.03.04"] {
+            assert_ne!(classify(raw).kind, EntityKind::Domain, "{raw}");
+        }
+        for raw in ["@", "@@octocat", "@ada lovelace"] {
+            assert_eq!(classify(raw).kind, EntityKind::Other, "{raw}");
         }
     }
 
