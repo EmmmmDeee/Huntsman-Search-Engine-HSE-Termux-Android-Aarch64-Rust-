@@ -31,6 +31,7 @@ fn username_transform_is_owned_by_each_capability_not_the_entity_kind() {
         github.url
     );
 
+    let registry = registry();
     let descriptors = registry.capabilities();
     assert_eq!(
         descriptors
