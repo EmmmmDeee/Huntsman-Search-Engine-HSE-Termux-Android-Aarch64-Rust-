@@ -64,9 +64,7 @@ pub fn evaluate_eligibility(candidate: &ActionCandidate) -> Eligibility {
             .hard_constraints
             .iter()
             .filter(|requirement| !requirement.satisfied)
-            .map(|requirement| {
-                IneligibilityReason::HardConstraintFailed(requirement.id.clone())
-            }),
+            .map(|requirement| IneligibilityReason::HardConstraintFailed(requirement.id.clone())),
     );
     reasons.extend(
         candidate
