@@ -19,6 +19,7 @@ pub mod breach;
 pub mod canonical;
 pub mod circuit;
 pub mod ckan;
+pub mod claim_policy;
 pub mod classifier;
 pub mod classify;
 pub mod classify_module;
