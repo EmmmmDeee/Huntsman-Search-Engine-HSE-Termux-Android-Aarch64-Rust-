@@ -1,0 +1,57 @@
+{
+  "state": {
+    "state_version": "readme-example-1",
+    "unresolved_proof_obligations": ["claim:identity"],
+    "all_relevant_claims_defeated": false,
+    "frontier": {
+      "admissible_work": 1,
+      "delayed_retry_work": 0,
+      "in_flight_work": 0,
+      "derivable_novel_work": 0
+    },
+    "termination_signals": {
+      "cancelled": false,
+      "fatal_error": false,
+      "max_depth_reached": false,
+      "time_limit_reached": false,
+      "request_budget_exhausted": false,
+      "provider_budget_exhausted": false,
+      "resource_limit_reached": false,
+      "marginal_gain_below_floor": false
+    }
+  },
+  "candidates": [
+    {
+      "id": "example-lookup",
+      "capability": "lookup",
+      "provider": "example-provider",
+      "target": "subject@example.com",
+      "eligibility": {
+        "hard_constraints": [{"id": "scope:public", "satisfied": true}],
+        "dependencies": [{"id": "dependency:ready", "satisfied": true}],
+        "permissions": [{"id": "permission:network", "satisfied": true}],
+        "provider_executable": true,
+        "preconditions": [{"id": "target:valid", "satisfied": true}],
+        "blocked_reasons": []
+      },
+      "satisfied_obligations": ["claim:identity"],
+      "expected_decision_impact": 0.7,
+      "roi_inputs": {
+        "source_count": 1,
+        "independent_root_count": 1,
+        "entity_confidence": 0.4,
+        "optionality_prior": 0.6,
+        "novelty_prior": 0.8,
+        "reliability_prior": 0.9,
+        "cost_per_request_usd": 0.0,
+        "quota_remaining": true,
+        "configured_timeout_ms": 1000,
+        "already_dispatched_this_module_target": false,
+        "geoint_bearing": false
+      },
+      "resource_cost": 0.05,
+      "irreversible_risk": 0.0,
+      "blast_radius": 0.0
+    }
+  ]
+}
