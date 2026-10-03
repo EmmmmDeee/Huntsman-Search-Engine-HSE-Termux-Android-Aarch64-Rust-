@@ -54,19 +54,23 @@ impl From<DecisionStateInput> for DecisionState {
 
 #[derive(Debug, Deserialize)]
 struct FrontierStateInput {
-    admissible_work: usize,
-    delayed_retry_work: usize,
-    in_flight_work: usize,
-    derivable_novel_work: usize,
+    #[serde(rename = "admissible_work")]
+    admissible: usize,
+    #[serde(rename = "delayed_retry_work")]
+    delayed_retry: usize,
+    #[serde(rename = "in_flight_work")]
+    in_flight: usize,
+    #[serde(rename = "derivable_novel_work")]
+    derivable_novel: usize,
 }
 
 impl From<FrontierStateInput> for FrontierState {
     fn from(value: FrontierStateInput) -> Self {
         Self {
-            admissible_work: value.admissible_work,
-            delayed_retry_work: value.delayed_retry_work,
-            in_flight_work: value.in_flight_work,
-            derivable_novel_work: value.derivable_novel_work,
+            admissible_work: value.admissible,
+            delayed_retry_work: value.delayed_retry,
+            in_flight_work: value.in_flight,
+            derivable_novel_work: value.derivable_novel,
         }
     }
 }
@@ -253,7 +257,7 @@ const fn termination_reason_name(reason: TerminationReason) -> &'static str {
     }
 }
 
-fn policy_termination_value(reason: &PolicyTerminationReason) -> Value {
+fn policy_termination_value(reason: PolicyTerminationReason) -> Value {
     match reason {
         PolicyTerminationReason::ProofObligationsResolved => {
             json!({"kind": "proof_obligations_resolved"})
@@ -268,7 +272,7 @@ fn policy_termination_value(reason: &PolicyTerminationReason) -> Value {
             json!({"kind": "non_positive_decision_value"})
         }
         PolicyTerminationReason::Existing(existing) => {
-            json!({"kind": "existing", "detail": termination_reason_name(*existing)})
+            json!({"kind": "existing", "detail": termination_reason_name(existing)})
         }
     }
 }
@@ -277,7 +281,7 @@ fn decision_value(decision: &Decision) -> Value {
     match decision {
         Decision::Select(action_id) => json!({"kind": "select", "detail": action_id}),
         Decision::Terminate(reason) => {
-            json!({"kind": "terminate", "detail": policy_termination_value(reason)})
+            json!({"kind": "terminate", "detail": policy_termination_value(*reason)})
         }
     }
 }
