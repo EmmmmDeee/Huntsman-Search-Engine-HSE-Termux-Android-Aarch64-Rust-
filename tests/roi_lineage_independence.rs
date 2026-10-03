@@ -1,8 +1,9 @@
 use huntsman_recon::roi::{DispatchUtilityInputs, compute_dispatch_utility};
 
-fn inputs(source_count: u32) -> DispatchUtilityInputs {
+fn inputs(source_count: u32, independent_root_count: Option<u32>) -> DispatchUtilityInputs {
     DispatchUtilityInputs {
         source_count,
+        independent_root_count,
         entity_confidence: Some(0.5),
         optionality_prior: 0.5,
         novelty_prior: 0.5,
@@ -17,11 +18,19 @@ fn inputs(source_count: u32) -> DispatchUtilityInputs {
 
 #[test]
 fn raw_source_count_does_not_create_evidentiary_independence() {
-    let one_source = compute_dispatch_utility(&inputs(1));
-    let many_sources = compute_dispatch_utility(&inputs(20));
+    let one_source = compute_dispatch_utility(&inputs(1, None));
+    let many_sources = compute_dispatch_utility(&inputs(20, None));
 
     assert_eq!(
         one_source.expected_independence, many_sources.expected_independence,
         "provider/source volume must not manufacture independent evidentiary roots"
     );
+}
+
+#[test]
+fn independent_lineage_roots_drive_independence() {
+    let one_root = compute_dispatch_utility(&inputs(20, Some(1)));
+    let two_roots = compute_dispatch_utility(&inputs(1, Some(2)));
+
+    assert!(two_roots.expected_independence > one_root.expected_independence);
 }
