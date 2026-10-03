@@ -103,7 +103,9 @@ fn failed_precondition_is_machine_readable() {
 fn hard_constraint_and_explicit_block_cannot_be_outscored() {
     let mut c = candidate();
     c.eligibility.hard_constraints[0].satisfied = false;
-    c.eligibility.blocked_reasons.push("operator:block".to_owned());
+    c.eligibility
+        .blocked_reasons
+        .push("operator:block".to_owned());
     c.expected_decision_impact = 1.0;
     c.roi_inputs.novelty_prior = 1.0;
     c.roi_inputs.reliability_prior = 1.0;
