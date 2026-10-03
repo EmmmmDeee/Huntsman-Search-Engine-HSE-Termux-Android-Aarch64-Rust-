@@ -264,6 +264,31 @@ pub enum ClaimState {
     Rejected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DefeatKind {
+    Rebut,
+    Undermine,
+    Undercut,
+    Supersede,
+    Compatible,
+    UnknownRelation,
+}
+
+impl DefeatKind {
+    #[must_use]
+    pub fn blocks_verification(self) -> bool {
+        matches!(self, Self::Rebut | Self::Undermine | Self::Undercut)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Defeat {
+    pub evidence_id: EvidenceId,
+    pub kind: DefeatKind,
+    pub temporal_overlap: Option<bool>,
+    pub rationale: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Claim {
     pub id: ClaimId,
@@ -275,6 +300,8 @@ pub struct Claim {
     pub support: BTreeSet<EvidenceId>,
     #[serde(default)]
     pub contradictions: BTreeSet<EvidenceId>,
+    #[serde(default)]
+    pub defeats: Vec<Defeat>,
     #[serde(default)]
     pub provider_ids: BTreeSet<String>,
     #[serde(default)]
@@ -292,6 +319,7 @@ impl Claim {
             confidence: ConfidenceDimensions::default(),
             support: BTreeSet::new(),
             contradictions: BTreeSet::new(),
+            defeats: Vec::new(),
             provider_ids: BTreeSet::new(),
             notes: Vec::new(),
         }
@@ -455,6 +483,26 @@ impl IntelligenceLedger {
             .ok_or_else(|| LedgerError::MissingClaim(claim_id.clone()))?;
         claim.contradictions.insert(evidence_id.clone());
         self.recompute_claim_state(claim_id)
+    }
+
+    /// Attaches a structured defeater without mutating the legacy claim state.
+    ///
+    /// # Errors
+    /// Returns [`LedgerError::MissingClaim`], [`LedgerError::MissingEvidence`],
+    /// or [`LedgerError::InvalidClaim`] for an empty rationale.
+    pub fn attach_defeat(&mut self, claim_id: &ClaimId, defeat: Defeat) -> Result<(), LedgerError> {
+        self.ensure_evidence(&defeat.evidence_id)?;
+        if defeat.rationale.trim().is_empty() {
+            return Err(LedgerError::InvalidClaim);
+        }
+        let claim = self
+            .claims
+            .get_mut(claim_id)
+            .ok_or_else(|| LedgerError::MissingClaim(claim_id.clone()))?;
+        if !claim.defeats.contains(&defeat) {
+            claim.defeats.push(defeat);
+        }
+        Ok(())
     }
 
     /// Records an inference trail for an existing claim.
