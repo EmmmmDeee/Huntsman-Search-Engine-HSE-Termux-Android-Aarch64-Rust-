@@ -78,6 +78,7 @@ pub struct DispatchUtility {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DispatchUtilityInputs {
     pub source_count: u32,
+    pub independent_root_count: Option<u32>,
     pub entity_confidence: Option<f64>,
     pub optionality_prior: f64,
     pub novelty_prior: f64,
@@ -133,12 +134,29 @@ fn quota_penalty(remaining: Option<bool>) -> (f64, String) {
     }
 }
 
+fn lineage_independence(independent_root_count: Option<u32>) -> (f64, String) {
+    match independent_root_count {
+        Some(count) => {
+            let expected = 1.0 - 1.0 / (1.0 + f64::from(count));
+            (
+                expected,
+                format!("independent_root_count={count} -> {expected:.3}"),
+            )
+        }
+        None => (
+            0.0,
+            "independent_root_count unknown -> conservative 0.000".to_string(),
+        ),
+    }
+}
+
 #[must_use]
 #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtility {
     let expected_information_value = 1.0 - inputs.entity_confidence.unwrap_or(0.0);
     let expected_novelty = inputs.novelty_prior.clamp(0.0, 1.0);
-    let expected_independence = 1.0 - 1.0 / (1.0 + f64::from(inputs.source_count));
+    let (expected_independence, independence_note) =
+        lineage_independence(inputs.independent_root_count);
     let expected_optionality = inputs.optionality_prior.clamp(0.0, 1.0);
     let reliability = inputs.reliability_prior.clamp(0.0, 1.0);
     let failure_penalty = 1.0 - reliability;
@@ -184,7 +202,7 @@ pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtili
             W_NOV * expected_novelty
         ),
         format!(
-            "expected_independence: +{:.3} (source_count={} -> {expected_independence:.3}, x W_INDEP={W_INDEP})",
+            "expected_independence: +{:.3} ({independence_note}; raw source_count={} ignored for independence, x W_INDEP={W_INDEP})",
             W_INDEP * expected_independence,
             inputs.source_count
         ),
@@ -277,6 +295,7 @@ mod tests {
     fn baseline_inputs() -> DispatchUtilityInputs {
         DispatchUtilityInputs {
             source_count: 2,
+            independent_root_count: Some(2),
             entity_confidence: Some(0.5),
             optionality_prior: 0.7,
             novelty_prior: 0.7,
@@ -341,6 +360,31 @@ mod tests {
                 .quota_cost
                 .is_some_and(|value| value.abs() < f64::EPSILON)
         );
+    }
+
+    #[test]
+    fn unknown_independence_fails_closed() {
+        let unknown = compute_dispatch_utility(&DispatchUtilityInputs {
+            independent_root_count: None,
+            ..baseline_inputs()
+        });
+        assert_eq!(unknown.expected_independence, 0.0);
+        assert!(unknown.explanation.iter().any(|line| line.contains("unknown")));
+    }
+
+    #[test]
+    fn lineage_roots_not_source_volume_control_independence() {
+        let one_root = compute_dispatch_utility(&DispatchUtilityInputs {
+            source_count: 100,
+            independent_root_count: Some(1),
+            ..baseline_inputs()
+        });
+        let two_roots = compute_dispatch_utility(&DispatchUtilityInputs {
+            source_count: 1,
+            independent_root_count: Some(2),
+            ..baseline_inputs()
+        });
+        assert!(two_roots.expected_independence > one_root.expected_independence);
     }
 
     #[test]
