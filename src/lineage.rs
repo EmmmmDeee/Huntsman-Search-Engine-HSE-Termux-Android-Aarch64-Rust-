@@ -1,10 +1,10 @@
 //! Lineage from response data, and the identity-resolution path that consumes it.
 //!
 //! A collector is a relay, never an origin. Each observation's upstream dataset identity
-//! is read from parsed response fields carried on its [`Evidence`]. Collector names,
-//! record URLs, record ids and unverified registry labels remain provenance only: they
-//! cannot manufacture an independent evidence family. Two collectors relaying one
-//! dataset therefore share one root and count as one independent family.
+//! is read from parsed response fields carried on its [`Evidence`]. Collector names and
+//! record locators cannot manufacture independent evidence families. Registry lineage is
+//! admitted only when the collector is explicitly bound to a verified registry source;
+//! the collector identity gates admissibility but never becomes the family itself.
 //!
 //! [`resolve_with_lineage`] is the library contract for collection front-ends:
 //! observations and candidate decisions go in; every observation and every candidate
@@ -24,20 +24,26 @@ use crate::evidence_ancestry::{
 };
 use crate::identity_resolution::{AutoMergePolicy, HoldReason, IdentityResolutionDecision};
 
-/// Response fields that are strong enough to identify an upstream dataset family, in
-/// precedence order. The first non-blank field decides and later fields are not read.
-/// The first three are the legacy `breach_corpus_key` spellings in its order.
+/// Response fields that can identify an upstream family, in precedence order. The first
+/// admissible non-blank field decides and later fields are not read. The first three are
+/// the legacy `breach_corpus_key` spellings in its order.
 ///
-/// `registry`, `source_url` and `source_id` are deliberately excluded. A registry label
-/// is not independent evidence until the collector/capability is bound to a verified
-/// registry origin, while a URL or source id is a record locator rather than an origin.
+/// `source_url` and `source_id` are deliberately excluded: they are record locators,
+/// not evidence origins. `registry` is accepted only from a collector listed in
+/// [`VERIFIED_REGISTRY_SOURCES`].
 pub const LINEAGE_FIELDS: &[(&str, UpstreamKind)] = &[
     ("dbname", UpstreamKind::Dataset),
     ("breach", UpstreamKind::Dataset),
     ("source_db", UpstreamKind::Dataset),
     ("database_name", UpstreamKind::Dataset),
     ("dataset", UpstreamKind::Dataset),
+    ("registry", UpstreamKind::Registry),
 ];
+
+/// Collectors whose current adapter contract is verified to represent an authoritative
+/// registry acquisition path. Keep this set narrow; an unlisted collector's `registry`
+/// attribute remains evidence but contributes no independent family.
+pub const VERIFIED_REGISTRY_SOURCES: &[&str] = &["abn_lookup"];
 
 /// Ancestry ids of upstream roots. Observation ids may not use it.
 const ROOT_PREFIX: &str = "lineage:";
@@ -46,8 +52,6 @@ const ROOT_PREFIX: &str = "lineage:";
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamKind {
     Dataset,
-    /// Reserved for a future verified registry-origin binding. It is not currently
-    /// emitted by [`Lineage::of`].
     Registry,
     /// Reserved for a future trusted source-origin binding. Record locators are not
     /// independent families and this is not currently emitted by [`Lineage::of`].
@@ -58,9 +62,9 @@ pub enum UpstreamKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "lineage", rename_all = "snake_case")]
 pub enum Lineage {
-    /// One upstream dataset. `family` is the canonical key (whitespace collapsed,
-    /// lowercase). Kind prefixes are intentionally absent so aliases of the same
-    /// dataset collapse onto one root.
+    /// One upstream. `family` is the canonical key (whitespace collapsed, lowercase).
+    /// Kind prefixes are intentionally absent so aliases of the same origin collapse
+    /// onto one root.
     Upstream {
         kind: UpstreamKind,
         field: String,
@@ -75,11 +79,14 @@ pub enum Lineage {
 }
 
 impl Lineage {
-    /// Read independently countable lineage from response fields on `evidence`. Never
-    /// reads the collector name or treats per-record locators as evidence families.
+    /// Read independently countable lineage from response fields on `evidence`.
+    /// Collector identity may gate a field's admissibility but never becomes a family.
     #[must_use]
     pub fn of(evidence: &Evidence) -> Self {
         for (field, kind) in LINEAGE_FIELDS {
+            if !kind_is_admissible(*kind, evidence) {
+                continue;
+            }
             let values: Vec<&str> = evidence.attr_values(field).collect();
             if values.is_empty() {
                 continue;
@@ -110,6 +117,15 @@ impl Lineage {
             Self::Upstream { family, .. } => Some(family),
             Self::Unattributed | Self::Ambiguous { .. } => None,
         }
+    }
+}
+
+fn kind_is_admissible(kind: UpstreamKind, evidence: &Evidence) -> bool {
+    match kind {
+        UpstreamKind::Dataset => true,
+        UpstreamKind::Registry => VERIFIED_REGISTRY_SOURCES
+            .contains(&evidence.provenance.source_family.as_str()),
+        UpstreamKind::Source => false,
     }
 }
 
@@ -276,8 +292,12 @@ fn assess(
             }
         }
     }
-    // Unattributed support is kept but not counted; unknown support is unknown
-    // ancestry, exactly as a missing node is for `hold_reasons`.
+    // Fully attributed candidates go through the exact graph path used by production
+    // identity resolution. Partial/unattributed candidates use the same ordered rule
+    // core with an explicit family count or ancestry error.
+    let fully_attributed = unknown.is_empty()
+        && ancestry_error.is_none()
+        && unattributed_support.is_empty();
     let count = if !unknown.is_empty() {
         Err(format!(
             "support {} is not an observation",
@@ -288,7 +308,11 @@ fn assess(
     } else {
         Ok(families.len())
     };
-    let reasons = decision.hold_reasons_given(count, policy);
+    let reasons = if fully_attributed {
+        decision.hold_reasons(graph, policy)
+    } else {
+        decision.hold_reasons_given(count, policy)
+    };
     CandidateOutcome {
         decision,
         independent_families: families.into_iter().collect(),
@@ -314,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn lineage_ignores_the_collector_name() {
+    fn lineage_ignores_the_collector_name_as_a_family() {
         let a = Lineage::of(&evidence("hibp", &[("breach", "Adobe")]));
         let b = Lineage::of(&evidence("dehashed", &[("dbname", " ADOBE ")]));
         assert_eq!(a.family(), Some("adobe"));
@@ -330,8 +354,20 @@ mod tests {
             Lineage::Upstream { ref field, ref family, kind: UpstreamKind::Dataset, .. }
                 if field == "dbname" && family == "adobe"
         ));
-        let unverified = evidence("x", &[("dbname", "  "), ("registry", "ABR")]);
-        assert_eq!(Lineage::of(&unverified), Lineage::Unattributed);
+    }
+
+    #[test]
+    fn registry_lineage_requires_a_verified_registry_source() {
+        let trusted = Lineage::of(&evidence("abn_lookup", &[("registry", "ABR")]));
+        assert!(matches!(
+            trusted,
+            Lineage::Upstream { kind: UpstreamKind::Registry, ref family, .. }
+                if family == "abr"
+        ));
+        assert_eq!(
+            Lineage::of(&evidence("hibp", &[("registry", "ABR")])),
+            Lineage::Unattributed
+        );
     }
 
     #[test]
