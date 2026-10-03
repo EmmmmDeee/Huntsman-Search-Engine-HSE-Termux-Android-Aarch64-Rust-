@@ -182,6 +182,9 @@ impl CapabilityRegistry {
 
     #[must_use]
     pub fn routes_for(&self, kind: &EntityKind, value: &str) -> Vec<CapabilityRoute> {
+        if !seed_value_is_routable(kind, value) {
+            return Vec::new();
+        }
         self.capabilities
             .iter()
             .filter(|descriptor| {
@@ -223,6 +226,20 @@ fn validate_descriptor(descriptor: &CapabilityDescriptor) -> Result<(), Registry
         }
     }
     Ok(())
+}
+
+fn seed_value_is_routable(kind: &EntityKind, raw: &str) -> bool {
+    let value = raw.trim();
+    if value.is_empty() {
+        return false;
+    }
+    if *kind == EntityKind::Username {
+        let bare = value.strip_prefix('@').unwrap_or(value);
+        return !bare.is_empty()
+            && !bare.starts_with('@')
+            && !bare.chars().any(char::is_whitespace);
+    }
+    true
 }
 
 fn render_route(descriptor: &CapabilityDescriptor, raw: &str) -> Option<CapabilityRoute> {
@@ -329,5 +346,16 @@ mod tests {
             transform_value(ValueTransform::BareUsername, "@octocat"),
             Some("octocat".to_string())
         );
+    }
+
+    #[test]
+    fn username_seed_validation_is_independent_of_transform() {
+        assert!(seed_value_is_routable(&EntityKind::Username, "@octocat"));
+        assert!(!seed_value_is_routable(&EntityKind::Username, "@"));
+        assert!(!seed_value_is_routable(&EntityKind::Username, "@@octocat"));
+        assert!(!seed_value_is_routable(
+            &EntityKind::Username,
+            "ada lovelace"
+        ));
     }
 }
