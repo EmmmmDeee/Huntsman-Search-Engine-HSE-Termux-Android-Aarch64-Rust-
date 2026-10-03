@@ -31,7 +31,10 @@ fn sources_routes_a_domain_through_exactly_five_pivot_capabilities() {
         stdout.contains("https://web.archive.org/web/*/example.com/*"),
         "{stdout}"
     );
-    assert!(stdout.contains("https://crt.sh/?q=%25.example.com"), "{stdout}");
+    assert!(
+        stdout.contains("https://crt.sh/?q=%25.example.com"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -58,10 +61,7 @@ fn sources_percent_encodes_human_queries() {
 
 #[test]
 fn sources_routes_email_through_exact_web_searches() {
-    let out = bin()
-        .args(["sources", "ada@example.com"])
-        .output()
-        .unwrap();
+    let out = bin().args(["sources", "ada@example.com"]).output().unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
