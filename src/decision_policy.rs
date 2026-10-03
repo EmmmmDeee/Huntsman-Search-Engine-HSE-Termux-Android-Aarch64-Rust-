@@ -3,9 +3,13 @@
 //! This module consumes normalized facts resolved elsewhere. It performs no I/O and
 //! does not own provider, dependency, credential, or evidence registries.
 
-use std::collections::BTreeSet;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::roi::DispatchUtilityInputs;
+use crate::roi::{DispatchUtility, DispatchUtilityInputs, compute_dispatch_utility};
+use crate::termination::{
+    FrontierState, TerminationReason, TerminationSignals, decide_termination,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RequirementState {
@@ -52,6 +56,79 @@ pub enum IneligibilityReason {
 pub enum Eligibility {
     Eligible,
     Ineligible(Vec<IneligibilityReason>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecisionState {
+    pub state_version: String,
+    pub unresolved_proof_obligations: BTreeSet<String>,
+    pub all_relevant_claims_defeated: bool,
+    pub frontier: FrontierState,
+    pub termination_signals: TerminationSignals,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyTerminationReason {
+    ProofObligationsResolved,
+    AllRelevantClaimsDefeated,
+    NoEligibleEvidencePath,
+    NonPositiveDecisionValue,
+    Existing(TerminationReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    Select(String),
+    Terminate(PolicyTerminationReason),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EdvComponents {
+    pub expected_decision_impact: f64,
+    pub dispatch_utility: DispatchUtility,
+    pub resource_cost: f64,
+    pub irreversible_risk: f64,
+    pub blast_radius: f64,
+    pub final_edv: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionEvaluation {
+    pub action_id: String,
+    pub components: EdvComponents,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedAction {
+    pub action_id: String,
+    pub reasons: Vec<IneligibilityReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DominanceElimination {
+    pub dominated_action: String,
+    pub dominating_action: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RankedAction {
+    pub action_id: String,
+    pub edv: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecisionRecord {
+    pub state_version: String,
+    pub decision: Decision,
+    pub eligible_actions: Vec<String>,
+    pub rejected_actions: Vec<RejectedAction>,
+    pub dominance_eliminations: Vec<DominanceElimination>,
+    pub evaluations: Vec<ActionEvaluation>,
+    pub ranking: Vec<RankedAction>,
+    pub dependencies: BTreeMap<String, Vec<RequirementState>>,
+    pub evidence_lineage_inputs: BTreeMap<String, Option<u32>>,
+    pub termination_signals: TerminationSignals,
+    pub explanation: Vec<String>,
 }
 
 #[must_use]
@@ -109,4 +186,299 @@ pub fn evaluate_eligibility(candidate: &ActionCandidate) -> Eligibility {
     } else {
         Eligibility::Ineligible(reasons)
     }
+}
+
+fn evaluate_edv(candidate: &ActionCandidate) -> EdvComponents {
+    let expected_decision_impact = candidate.expected_decision_impact.clamp(0.0, 1.0);
+    let dispatch_utility = compute_dispatch_utility(&candidate.roi_inputs);
+    let resource_cost = candidate.resource_cost.max(0.0);
+    let irreversible_risk = candidate.irreversible_risk.max(0.0);
+    let blast_radius = candidate.blast_radius.max(0.0);
+    let final_edv = expected_decision_impact * dispatch_utility.final_utility
+        - resource_cost
+        - irreversible_risk
+        - blast_radius;
+
+    EdvComponents {
+        expected_decision_impact,
+        dispatch_utility,
+        resource_cost,
+        irreversible_risk,
+        blast_radius,
+        final_edv,
+    }
+}
+
+fn known_cost_leq(a: Option<f64>, b: Option<f64>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a <= b,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn known_cost_lt(a: Option<f64>, b: Option<f64>) -> bool {
+    matches!((a, b), (Some(a), Some(b)) if a < b)
+}
+
+fn dominates(
+    a: &ActionCandidate,
+    a_eval: &EdvComponents,
+    b: &ActionCandidate,
+    b_eval: &EdvComponents,
+) -> bool {
+    let at_least_same_obligations = a.satisfied_obligations.is_superset(&b.satisfied_obligations);
+    let at_least_as_beneficial =
+        a_eval.expected_decision_impact >= b_eval.expected_decision_impact;
+    let no_more_monetary_cost = known_cost_leq(
+        a.roi_inputs.cost_per_request_usd,
+        b.roi_inputs.cost_per_request_usd,
+    );
+    let no_more_resource_cost = a_eval.resource_cost <= b_eval.resource_cost;
+    let no_more_irreversible_risk = a_eval.irreversible_risk <= b_eval.irreversible_risk;
+    let no_more_blast_radius = a_eval.blast_radius <= b_eval.blast_radius;
+    let no_more_latency =
+        a.roi_inputs.configured_timeout_ms <= b.roi_inputs.configured_timeout_ms;
+
+    let strictly_better = a_eval.expected_decision_impact > b_eval.expected_decision_impact
+        || known_cost_lt(
+            a.roi_inputs.cost_per_request_usd,
+            b.roi_inputs.cost_per_request_usd,
+        )
+        || a_eval.resource_cost < b_eval.resource_cost
+        || a_eval.irreversible_risk < b_eval.irreversible_risk
+        || a_eval.blast_radius < b_eval.blast_radius
+        || a.roi_inputs.configured_timeout_ms < b.roi_inputs.configured_timeout_ms
+        || a.satisfied_obligations != b.satisfied_obligations;
+
+    at_least_same_obligations
+        && at_least_as_beneficial
+        && no_more_monetary_cost
+        && no_more_resource_cost
+        && no_more_irreversible_risk
+        && no_more_blast_radius
+        && no_more_latency
+        && strictly_better
+}
+
+fn optional_cost_cmp(a: Option<f64>, b: Option<f64>) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => a.total_cmp(&b),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn rank_cmp(
+    a: (&ActionCandidate, &EdvComponents),
+    b: (&ActionCandidate, &EdvComponents),
+) -> Ordering {
+    b.1.final_edv
+        .total_cmp(&a.1.final_edv)
+        .then_with(|| a.1.irreversible_risk.total_cmp(&b.1.irreversible_risk))
+        .then_with(|| {
+            optional_cost_cmp(
+                a.0.roi_inputs.cost_per_request_usd,
+                b.0.roi_inputs.cost_per_request_usd,
+            )
+        })
+        .then_with(|| {
+            a.0.roi_inputs
+                .configured_timeout_ms
+                .cmp(&b.0.roi_inputs.configured_timeout_ms)
+        })
+        .then_with(|| a.0.id.cmp(&b.0.id))
+}
+
+fn base_record(state: &DecisionState, candidates: &[ActionCandidate]) -> DecisionRecord {
+    let dependencies = candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.id.clone(),
+                candidate.eligibility.dependencies.clone(),
+            )
+        })
+        .collect();
+    let evidence_lineage_inputs = candidates
+        .iter()
+        .map(|candidate| (candidate.id.clone(), candidate.roi_inputs.independent_root_count))
+        .collect();
+
+    DecisionRecord {
+        state_version: state.state_version.clone(),
+        decision: Decision::Terminate(PolicyTerminationReason::NoEligibleEvidencePath),
+        eligible_actions: Vec::new(),
+        rejected_actions: Vec::new(),
+        dominance_eliminations: Vec::new(),
+        evaluations: Vec::new(),
+        ranking: Vec::new(),
+        dependencies,
+        evidence_lineage_inputs,
+        termination_signals: state.termination_signals,
+        explanation: Vec::new(),
+    }
+}
+
+fn finish_termination(
+    record: &mut DecisionRecord,
+    reason: PolicyTerminationReason,
+    explanation: impl Into<String>,
+) {
+    record.decision = Decision::Terminate(reason);
+    record.explanation.push(explanation.into());
+}
+
+#[must_use]
+pub fn select_action(state: &DecisionState, candidates: &[ActionCandidate]) -> DecisionRecord {
+    let mut record = base_record(state, candidates);
+
+    if state.unresolved_proof_obligations.is_empty() {
+        finish_termination(
+            &mut record,
+            PolicyTerminationReason::ProofObligationsResolved,
+            "terminated: all consequential proof obligations resolved",
+        );
+        return record;
+    }
+    if state.all_relevant_claims_defeated {
+        finish_termination(
+            &mut record,
+            PolicyTerminationReason::AllRelevantClaimsDefeated,
+            "terminated: all relevant claims defeated",
+        );
+        return record;
+    }
+    if let Some(reason) = decide_termination(state.frontier, state.termination_signals) {
+        finish_termination(
+            &mut record,
+            PolicyTerminationReason::Existing(reason),
+            format!("terminated by existing termination signal: {reason:?}"),
+        );
+        return record;
+    }
+
+    let mut sorted_candidates: Vec<&ActionCandidate> = candidates.iter().collect();
+    sorted_candidates.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let mut eligible = Vec::new();
+    for candidate in sorted_candidates {
+        match evaluate_eligibility(candidate) {
+            Eligibility::Eligible => {
+                record.eligible_actions.push(candidate.id.clone());
+                eligible.push(candidate);
+            }
+            Eligibility::Ineligible(reasons) => {
+                record.explanation.push(format!(
+                    "rejected {}: {reasons:?}",
+                    candidate.id
+                ));
+                record.rejected_actions.push(RejectedAction {
+                    action_id: candidate.id.clone(),
+                    reasons,
+                });
+            }
+        }
+    }
+
+    if eligible.is_empty() {
+        finish_termination(
+            &mut record,
+            PolicyTerminationReason::NoEligibleEvidencePath,
+            "terminated: no eligible evidence path remains",
+        );
+        return record;
+    }
+
+    let evaluations: Vec<EdvComponents> = eligible
+        .iter()
+        .map(|candidate| evaluate_edv(candidate))
+        .collect();
+    record.evaluations = eligible
+        .iter()
+        .zip(&evaluations)
+        .map(|(candidate, components)| ActionEvaluation {
+            action_id: candidate.id.clone(),
+            components: components.clone(),
+        })
+        .collect();
+
+    let mut dominated = BTreeSet::new();
+    for (b_index, b) in eligible.iter().enumerate() {
+        for (a_index, a) in eligible.iter().enumerate() {
+            if a_index == b_index {
+                continue;
+            }
+            if dominates(a, &evaluations[a_index], b, &evaluations[b_index]) {
+                dominated.insert(b_index);
+                record.dominance_eliminations.push(DominanceElimination {
+                    dominated_action: b.id.clone(),
+                    dominating_action: a.id.clone(),
+                });
+                record.explanation.push(format!(
+                    "eliminated {}: dominated by {}",
+                    b.id, a.id
+                ));
+                break;
+            }
+        }
+    }
+
+    let mut ranked: Vec<(&ActionCandidate, &EdvComponents)> = eligible
+        .iter()
+        .zip(&evaluations)
+        .enumerate()
+        .filter(|(index, _)| !dominated.contains(index))
+        .map(|(_, pair)| (*pair.0, pair.1))
+        .collect();
+    ranked.sort_by(|a, b| rank_cmp(*a, *b));
+    record.ranking = ranked
+        .iter()
+        .map(|(candidate, components)| RankedAction {
+            action_id: candidate.id.clone(),
+            edv: components.final_edv,
+        })
+        .collect();
+
+    for (position, (candidate, components)) in ranked.iter().enumerate() {
+        record.explanation.push(format!(
+            "rank {} {}: edv={:.6} = impact {:.3} * roi {:.6} - resource {:.3} - irreversible_risk {:.3} - blast_radius {:.3}",
+            position + 1,
+            candidate.id,
+            components.final_edv,
+            components.expected_decision_impact,
+            components.dispatch_utility.final_utility,
+            components.resource_cost,
+            components.irreversible_risk,
+            components.blast_radius
+        ));
+    }
+
+    let Some((selected, selected_components)) = ranked.first().copied() else {
+        finish_termination(
+            &mut record,
+            PolicyTerminationReason::NoEligibleEvidencePath,
+            "terminated: dominance elimination left no admissible action",
+        );
+        return record;
+    };
+    if selected_components.final_edv <= 0.0 {
+        finish_termination(
+            &mut record,
+            PolicyTerminationReason::NonPositiveDecisionValue,
+            format!(
+                "terminated: best eligible edv {:.6} <= 0",
+                selected_components.final_edv
+            ),
+        );
+        return record;
+    }
+
+    record.decision = Decision::Select(selected.id.clone());
+    record.explanation.push(format!(
+        "selected {} with edv {:.6}",
+        selected.id, selected_components.final_edv
+    ));
+    record
 }
