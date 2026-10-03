@@ -118,6 +118,34 @@ fn compatible_different_time_does_not_block_verification() {
 }
 
 #[test]
+fn non_overlapping_rebuttal_does_not_block_verification() {
+    let (mut ledger, claim_id, graph, bindings) = verified_candidate();
+    let rebuttal = ledger
+        .insert_evidence(evidence("historical-rebuttal", "root-historical"))
+        .unwrap();
+
+    ledger
+        .attach_defeat(
+            &claim_id,
+            Defeat {
+                evidence_id: rebuttal,
+                kind: DefeatKind::Rebut,
+                temporal_overlap: Some(false),
+                rationale: "incompatible proposition in a non-overlapping interval".into(),
+            },
+        )
+        .unwrap();
+
+    let assessment = assess(&ledger, &claim_id, &graph, &bindings);
+    assert_eq!(assessment.epistemic, ClaimState::Verified);
+    assert!(
+        !assessment
+            .blockers
+            .contains(&VerificationBlocker::UndefeatedDefeater)
+    );
+}
+
+#[test]
 fn rebuttal_blocks_verification_without_forcing_legacy_rejection() {
     let (mut ledger, claim_id, graph, bindings) = verified_candidate();
     let rebuttal = ledger
@@ -132,6 +160,35 @@ fn rebuttal_blocks_verification_without_forcing_legacy_rejection() {
                 kind: DefeatKind::Rebut,
                 temporal_overlap: Some(true),
                 rationale: "same time and mutually exclusive proposition".into(),
+            },
+        )
+        .unwrap();
+
+    let assessment = assess(&ledger, &claim_id, &graph, &bindings);
+    assert_eq!(assessment.epistemic, ClaimState::Supported);
+    assert!(
+        assessment
+            .blockers
+            .contains(&VerificationBlocker::UndefeatedDefeater)
+    );
+    assert_ne!(ledger.claims[&claim_id].state, ClaimState::Rejected);
+}
+
+#[test]
+fn unresolved_defeat_relation_blocks_verification_without_rejection() {
+    let (mut ledger, claim_id, graph, bindings) = verified_candidate();
+    let unresolved = ledger
+        .insert_evidence(evidence("unresolved", "root-unresolved"))
+        .unwrap();
+
+    ledger
+        .attach_defeat(
+            &claim_id,
+            Defeat {
+                evidence_id: unresolved,
+                kind: DefeatKind::UnknownRelation,
+                temporal_overlap: None,
+                rationale: "material conflict relationship is not yet resolved".into(),
             },
         )
         .unwrap();
