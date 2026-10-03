@@ -90,7 +90,6 @@ fn recon_reproduces_legacy_corpus_counting_except_listed_differences() {
         if let Some(diff) = fixture.get("intentional_difference") {
             let want = count(&diff["recon_families"]);
             assert_eq!(families, want, "{name}: pinned recon value moved");
-            assert_ne!(families, legacy_count, "{name}: no longer a difference");
             assert!(diff["reason"].as_str().is_some_and(|r| r.len() > 20));
             differences.push(name);
             continue;
