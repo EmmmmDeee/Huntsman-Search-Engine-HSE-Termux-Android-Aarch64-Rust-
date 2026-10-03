@@ -108,6 +108,7 @@ fn two_independent_families_and_a_valid_probability_auto_merge() {
     for support in [
         ["hibp-1", "dehashed-2"],
         ["dehashed-1", "dehashed-2"],
+        ["hibp-1", "abr-1"],
     ] {
         let out = one(corpus(), candidate(&support, Some(0.95)));
         assert_eq!(out.outcome, MergeOutcome::AutoMerge, "{support:?}");
@@ -140,7 +141,7 @@ fn collector_name_never_becomes_lineage() {
 }
 
 #[test]
-fn registry_and_record_locators_are_preserved_but_not_counted_as_independent() {
+fn verified_registry_counts_but_record_locators_do_not() {
     let obs = vec![
         observation("registry", "abn_lookup", &[("registry", "ABR")]),
         observation(
@@ -151,18 +152,14 @@ fn registry_and_record_locators_are_preserved_but_not_counted_as_independent() {
         observation("id", "dump_collector", &[("source_id", "row-1")]),
     ];
     let out = one(obs, candidate(&["registry", "url", "id"], Some(0.99)));
-    assert!(out.independent_families.is_empty());
+    assert_eq!(out.independent_families, ["abr"]);
     assert_eq!(
         out.unattributed_support,
-        [
-            EvidenceNodeId::from("registry"),
-            EvidenceNodeId::from("url"),
-            EvidenceNodeId::from("id")
-        ]
+        [EvidenceNodeId::from("url"), EvidenceNodeId::from("id")]
     );
     assert!(matches!(
         reasons(&out),
-        [HoldReason::InsufficientIndependentFamilies { found: 0, .. }]
+        [HoldReason::InsufficientIndependentFamilies { found: 1, .. }]
     ));
 }
 
@@ -221,7 +218,6 @@ fn nothing_is_dropped_truncated_or_misattributed() {
             original.evidence.provenance.source
         );
     }
-    assert_eq!(r.observations[3].lineage, Lineage::Unattributed);
     assert_eq!(r.observations[4].lineage, Lineage::Unattributed);
     assert!(matches!(
         r.observations[5].lineage,
