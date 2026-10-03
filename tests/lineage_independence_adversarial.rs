@@ -86,11 +86,7 @@ fn record_ids_cannot_mint_independent_families() {
 fn registry_field_without_verified_source_class_does_not_create_corroboration() {
     let out = resolve(vec![
         observation("hibp-1", "hibp", &[("breach", "Adobe")]),
-        observation(
-            "hibp-2",
-            "hibp",
-            &[("registry", "company registry")],
-        ),
+        observation("hibp-2", "hibp", &[("registry", "company registry")]),
     ]);
     assert_held_for_family_count(&out, 1);
     assert_eq!(out.independent_families, ["adobe"]);
