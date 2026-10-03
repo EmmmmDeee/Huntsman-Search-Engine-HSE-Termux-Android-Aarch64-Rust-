@@ -545,7 +545,11 @@ impl IntelligenceLedger {
         Ok(())
     }
 
-    /// Recomputes the conservative claim state from support and contradictions.
+    /// Recomputes the legacy support state from proven independent roots.
+    ///
+    /// This compatibility path deliberately cannot produce `Verified`:
+    /// verification requires an explicit claim-specific policy rather than a
+    /// caller-supplied confidence threshold.
     ///
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
@@ -562,8 +566,6 @@ impl IntelligenceLedger {
         }
         claim.state = match independent_sources {
             0 | 1 => ClaimState::Candidate,
-            2 => ClaimState::Supported,
-            _ if claim.confidence.conclusion >= 0.8 => ClaimState::Verified,
             _ => ClaimState::Supported,
         };
         Ok(())
@@ -743,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_promotes_only_on_independent_support() {
+    fn claim_support_never_auto_verifies() {
         let mut ledger = IntelligenceLedger::default();
         let claim_id = ClaimId::from("claim-1");
         let mut claim = Claim::new(
@@ -778,7 +780,7 @@ mod tests {
         assert_eq!(ledger.claims[&claim_id].state, ClaimState::Supported);
 
         ledger.attach_support(&claim_id, &ev4).unwrap();
-        assert_eq!(ledger.claims[&claim_id].state, ClaimState::Verified);
+        assert_eq!(ledger.claims[&claim_id].state, ClaimState::Supported);
     }
 
     #[test]
