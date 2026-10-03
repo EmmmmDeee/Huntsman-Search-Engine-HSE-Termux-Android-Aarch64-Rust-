@@ -119,11 +119,7 @@ fn caller_confidence_cannot_verify_a_claim() {
     target.confidence.conclusion = 1.0;
     ledger.insert_claim(target).unwrap();
 
-    for (id, root) in [
-        ("ev-a", "root-a"),
-        ("ev-b", "root-b"),
-        ("ev-c", "root-c"),
-    ] {
+    for (id, root) in [("ev-a", "root-a"), ("ev-b", "root-b"), ("ev-c", "root-c")] {
         let evidence_id = ledger
             .insert_evidence(evidence(id, id, Some(root), id))
             .unwrap();
