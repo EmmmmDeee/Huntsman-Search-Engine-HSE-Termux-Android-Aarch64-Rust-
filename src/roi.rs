@@ -369,7 +369,12 @@ mod tests {
             ..baseline_inputs()
         });
         assert_eq!(unknown.expected_independence, 0.0);
-        assert!(unknown.explanation.iter().any(|line| line.contains("unknown")));
+        assert!(
+            unknown
+                .explanation
+                .iter()
+                .any(|line| line.contains("unknown"))
+        );
     }
 
     #[test]
