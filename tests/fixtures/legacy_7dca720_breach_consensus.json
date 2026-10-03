@@ -302,8 +302,8 @@
         "supported_ceiling": 0.7
       },
       "intentional_difference": {
-        "recon_families": 2,
-        "reason": "legacy breach consensus only counts breach corpora (is_breach_source), so a registry attestation is outside its count. Recon lineage counts any upstream named in the response (dataset, registry, canonical source), so a dump plus an independent registry is two families."
+        "recon_families": 1,
+        "reason": "Recon preserves registry evidence but does not count an unbound registry label as an independent family. Registry-class capability binding is not yet represented in this layer, so fail closed rather than infer independence from a field name."
       }
     }
   ]
