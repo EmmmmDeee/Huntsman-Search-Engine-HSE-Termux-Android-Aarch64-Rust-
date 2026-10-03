@@ -143,3 +143,22 @@ fn unknown_lineage_gets_no_independence_reward_in_policy_evaluation() {
     );
     assert_eq!(record.evidence_lineage_inputs["unknown-lineage"], None);
 }
+
+#[test]
+fn raw_impact_cannot_dominate_higher_expected_value() {
+    let mut raw_impact = candidate("raw-impact", 0.9);
+    raw_impact.roi_inputs.reliability_prior = 0.1;
+
+    let expected_value = candidate("expected-value", 0.8);
+
+    let record = select_action(&state(), &[raw_impact, expected_value]);
+
+    assert_eq!(
+        record.decision,
+        Decision::Select("expected-value".to_owned())
+    );
+    assert_eq!(record.ranking[0].action_id, "expected-value");
+    assert!(!record.dominance_eliminations.iter().any(|entry| {
+        entry.dominating_action == "raw-impact" && entry.dominated_action == "expected-value"
+    }));
+}
