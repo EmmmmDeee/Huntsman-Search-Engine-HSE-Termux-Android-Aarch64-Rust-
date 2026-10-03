@@ -83,20 +83,14 @@ fn missing_probability_is_held_with_a_reason() {
 #[test]
 fn nan_or_out_of_range_probability_is_held_with_a_reason() {
     for p in [f64::NAN, f64::NEG_INFINITY, 1.000_001, -0.5] {
-        let out = one(
-            corpus(),
-            candidate(&["hibp-1", "dehashed-2"], Some(p)),
-        );
+        let out = one(corpus(), candidate(&["hibp-1", "dehashed-2"], Some(p)));
         assert!(
             matches!(reasons(&out), [HoldReason::ProbabilityInvalid { .. }]),
             "{p}: {:?}",
             out.outcome
         );
     }
-    let low = one(
-        corpus(),
-        candidate(&["hibp-1", "dehashed-2"], Some(0.89)),
-    );
+    let low = one(corpus(), candidate(&["hibp-1", "dehashed-2"], Some(0.89)));
     assert!(matches!(
         reasons(&low),
         [HoldReason::ProbabilityBelowThreshold { .. }]
@@ -115,10 +109,7 @@ fn two_independent_families_and_a_valid_probability_auto_merge() {
         assert_eq!(out.independent_families.len(), 2);
     }
     // The floor is inclusive.
-    let edge = one(
-        corpus(),
-        candidate(&["hibp-1", "dehashed-2"], Some(0.90)),
-    );
+    let edge = one(corpus(), candidate(&["hibp-1", "dehashed-2"], Some(0.90)));
     assert_eq!(edge.outcome, MergeOutcome::AutoMerge);
 }
 
