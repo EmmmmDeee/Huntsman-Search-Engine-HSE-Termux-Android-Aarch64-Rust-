@@ -31,9 +31,10 @@ fn candidate(support: &[&str]) -> IdentityResolutionDecision {
 
 fn resolve(observations: Vec<Observation>) -> huntsman_recon::lineage::CandidateOutcome {
     let ids: Vec<&str> = observations.iter().map(|o| o.id.0.as_str()).collect();
+    let decision = candidate(&ids);
     let mut result = resolve_with_lineage(
         observations,
-        vec![candidate(&ids)],
+        vec![decision],
         AutoMergePolicy::default(),
     )
     .unwrap();
