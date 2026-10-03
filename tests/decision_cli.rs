@@ -108,7 +108,7 @@ fn decide_command_rejects_invalid_json_without_emitting_a_decision() {
 
     let out = bin().arg("decide").arg(&request).output().unwrap();
     assert_eq!(out.status.code(), Some(65));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, Vec::<u8>::new());
 
     let _ = fs::remove_dir_all(&dir);
 }
