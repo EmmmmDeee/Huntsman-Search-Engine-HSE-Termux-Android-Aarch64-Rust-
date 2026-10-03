@@ -52,7 +52,12 @@ fn proof(ids: &[EvidenceId], roots: &[&str], incomplete: bool) -> ProofEnvironme
     }
 }
 
-fn root_graph(bindings: &[(&EvidenceId, &str)]) -> (EvidenceAncestryGraph, BTreeMap<EvidenceId, EvidenceNodeId>) {
+fn root_graph(
+    bindings: &[(&EvidenceId, &str)],
+) -> (
+    EvidenceAncestryGraph,
+    BTreeMap<EvidenceId, EvidenceNodeId>,
+) {
     let mut graph = EvidenceAncestryGraph::default();
     let mut map = BTreeMap::new();
     let mut inserted = BTreeSet::new();
@@ -157,6 +162,10 @@ fn incomplete_proof_is_visible_and_prevents_shadow_verification() {
     .unwrap();
 
     assert_eq!(shadow.policy_state, ClaimState::Supported);
-    assert!(shadow.blockers.contains(&VerificationBlocker::IncompleteProof));
+    assert!(
+        shadow
+            .blockers
+            .contains(&VerificationBlocker::IncompleteProof)
+    );
     assert!(shadow.reason_codes.contains("blocker:incomplete_proof"));
 }
