@@ -43,6 +43,8 @@ pub struct ComparisonEvidence {
     pub false_merge_delta: isize,
     pub evidence_completeness_delta: f64,
     pub adversarial_pass: bool,
+    pub holdout_pass: bool,
+    pub critical_guardrails_pass: bool,
     pub worst_decile_delta: f64,
     pub cost_ratio: f64,
     pub dominated_by_alternative: bool,
@@ -77,6 +79,8 @@ pub fn decide(evidence: ComparisonEvidence, policy: EvalPolicy) -> Decision {
         && evidence.false_merge_delta <= policy.max_false_merge_delta
         && evidence.evidence_completeness_delta >= policy.min_evidence_completeness_delta
         && evidence.adversarial_pass
+        && evidence.holdout_pass
+        && evidence.critical_guardrails_pass
         && evidence.worst_decile_delta >= policy.min_worst_decile_delta
         && evidence.cost_ratio <= policy.max_cost_ratio;
 
