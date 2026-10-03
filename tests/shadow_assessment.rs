@@ -54,10 +54,7 @@ fn proof(ids: &[EvidenceId], roots: &[&str], incomplete: bool) -> ProofEnvironme
 
 fn root_graph(
     bindings: &[(&EvidenceId, &str)],
-) -> (
-    EvidenceAncestryGraph,
-    BTreeMap<EvidenceId, EvidenceNodeId>,
-) {
+) -> (EvidenceAncestryGraph, BTreeMap<EvidenceId, EvidenceNodeId>) {
     let mut graph = EvidenceAncestryGraph::default();
     let mut map = BTreeMap::new();
     let mut inserted = BTreeSet::new();
