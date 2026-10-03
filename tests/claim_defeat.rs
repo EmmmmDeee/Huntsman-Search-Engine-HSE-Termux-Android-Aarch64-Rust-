@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use huntsman_recon::claim_policy::{VerificationBlocker, VerificationPolicy};
+use huntsman_recon::claim_policy::{ClaimAssessment, VerificationBlocker, VerificationPolicy};
+use huntsman_recon::evidence_ancestry::{
+    EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
+};
 use huntsman_recon::intelligence::{
     Claim, ClaimId, ClaimObject, ClaimState, Defeat, DefeatKind, EvidenceId, EvidenceNature,
     EvidenceRecord, IntelligenceLedger, SourceAuthority, SourceLineage,
@@ -36,7 +39,12 @@ fn policy() -> VerificationPolicy {
     }
 }
 
-fn verified_candidate() -> (IntelligenceLedger, ClaimId) {
+fn verified_candidate() -> (
+    IntelligenceLedger,
+    ClaimId,
+    EvidenceAncestryGraph,
+    BTreeMap<EvidenceId, EvidenceNodeId>,
+) {
     let mut ledger = IntelligenceLedger::default();
     let claim_id = ClaimId::from("claim-1");
     ledger
@@ -50,16 +58,40 @@ fn verified_candidate() -> (IntelligenceLedger, ClaimId) {
         .insert_evidence(evidence("support", "root-support"))
         .unwrap();
     ledger.attach_support(&claim_id, &support).unwrap();
+
+    let root_id = EvidenceNodeId::from("root-support-node");
+    let mut graph = EvidenceAncestryGraph::default();
+    graph
+        .insert(EvidenceAncestryNode {
+            id: root_id.clone(),
+            source_family: "root-support".into(),
+            parents: BTreeSet::new(),
+            derived: false,
+        })
+        .unwrap();
+    let bindings = BTreeMap::from([(support, root_id)]);
+
     assert_eq!(
-        ledger.assess_claim(&claim_id, &policy()).unwrap().epistemic,
+        assess(&ledger, &claim_id, &graph, &bindings).epistemic,
         ClaimState::Verified
     );
-    (ledger, claim_id)
+    (ledger, claim_id, graph, bindings)
+}
+
+fn assess(
+    ledger: &IntelligenceLedger,
+    claim_id: &ClaimId,
+    graph: &EvidenceAncestryGraph,
+    bindings: &BTreeMap<EvidenceId, EvidenceNodeId>,
+) -> ClaimAssessment {
+    ledger
+        .assess_claim_with_ancestry(claim_id, &policy(), graph, bindings)
+        .unwrap()
 }
 
 #[test]
 fn compatible_different_time_does_not_block_verification() {
-    let (mut ledger, claim_id) = verified_candidate();
+    let (mut ledger, claim_id, graph, bindings) = verified_candidate();
     let other = ledger
         .insert_evidence(evidence("historical", "root-historical"))
         .unwrap();
@@ -76,7 +108,7 @@ fn compatible_different_time_does_not_block_verification() {
         )
         .unwrap();
 
-    let assessment = ledger.assess_claim(&claim_id, &policy()).unwrap();
+    let assessment = assess(&ledger, &claim_id, &graph, &bindings);
     assert_eq!(assessment.epistemic, ClaimState::Verified);
     assert!(
         !assessment
@@ -87,7 +119,7 @@ fn compatible_different_time_does_not_block_verification() {
 
 #[test]
 fn rebuttal_blocks_verification_without_forcing_legacy_rejection() {
-    let (mut ledger, claim_id) = verified_candidate();
+    let (mut ledger, claim_id, graph, bindings) = verified_candidate();
     let rebuttal = ledger
         .insert_evidence(evidence("rebuttal", "root-rebuttal"))
         .unwrap();
@@ -104,7 +136,7 @@ fn rebuttal_blocks_verification_without_forcing_legacy_rejection() {
         )
         .unwrap();
 
-    let assessment = ledger.assess_claim(&claim_id, &policy()).unwrap();
+    let assessment = assess(&ledger, &claim_id, &graph, &bindings);
     assert_eq!(assessment.epistemic, ClaimState::Supported);
     assert!(
         assessment
@@ -116,7 +148,7 @@ fn rebuttal_blocks_verification_without_forcing_legacy_rejection() {
 
 #[test]
 fn undercutter_blocks_reasoning_but_does_not_create_support_root() {
-    let (mut ledger, claim_id) = verified_candidate();
+    let (mut ledger, claim_id, graph, bindings) = verified_candidate();
     let undercutter = ledger
         .insert_evidence(evidence("undercutter", "root-undercutter"))
         .unwrap();
@@ -133,7 +165,7 @@ fn undercutter_blocks_reasoning_but_does_not_create_support_root() {
         )
         .unwrap();
 
-    let assessment = ledger.assess_claim(&claim_id, &policy()).unwrap();
+    let assessment = assess(&ledger, &claim_id, &graph, &bindings);
     assert_eq!(assessment.epistemic, ClaimState::Supported);
     assert_eq!(assessment.proven_roots, 1);
     assert!(
