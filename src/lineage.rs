@@ -123,8 +123,9 @@ impl Lineage {
 fn kind_is_admissible(kind: UpstreamKind, evidence: &Evidence) -> bool {
     match kind {
         UpstreamKind::Dataset => true,
-        UpstreamKind::Registry => VERIFIED_REGISTRY_SOURCES
-            .contains(&evidence.provenance.source_family.as_str()),
+        UpstreamKind::Registry => {
+            VERIFIED_REGISTRY_SOURCES.contains(&evidence.provenance.source_family.as_str())
+        }
         UpstreamKind::Source => false,
     }
 }
@@ -295,9 +296,8 @@ fn assess(
     // Fully attributed candidates go through the exact graph path used by production
     // identity resolution. Partial/unattributed candidates use the same ordered rule
     // core with an explicit family count or ancestry error.
-    let fully_attributed = unknown.is_empty()
-        && ancestry_error.is_none()
-        && unattributed_support.is_empty();
+    let fully_attributed =
+        unknown.is_empty() && ancestry_error.is_none() && unattributed_support.is_empty();
     let count = if !unknown.is_empty() {
         Err(format!(
             "support {} is not an observation",
@@ -387,10 +387,7 @@ mod tests {
     #[test]
     fn record_locators_are_not_independent_lineage() {
         assert_eq!(
-            Lineage::of(&evidence(
-                "a",
-                &[("source_url", "https://Example.com/p/1")]
-            )),
+            Lineage::of(&evidence("a", &[("source_url", "https://Example.com/p/1")])),
             Lineage::Unattributed
         );
         assert_eq!(
