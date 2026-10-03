@@ -21,8 +21,7 @@ fn raw_source_count_does_not_create_evidentiary_independence() {
     let many_sources = compute_dispatch_utility(&inputs(20));
 
     assert_eq!(
-        one_source.expected_independence,
-        many_sources.expected_independence,
+        one_source.expected_independence, many_sources.expected_independence,
         "provider/source volume must not manufacture independent evidentiary roots"
     );
 }
