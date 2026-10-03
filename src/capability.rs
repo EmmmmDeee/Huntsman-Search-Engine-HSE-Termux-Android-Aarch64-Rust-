@@ -180,7 +180,10 @@ impl CapabilityRegistry {
             .iter()
             .filter(|descriptor| {
                 descriptor.mode == RetrievalMode::PivotOnly
-                    && descriptor.accepted_kinds.iter().any(|candidate| candidate == kind)
+                    && descriptor
+                        .accepted_kinds
+                        .iter()
+                        .any(|candidate| candidate == kind)
             })
             .filter_map(|descriptor| render_route(descriptor, value))
             .collect()
@@ -247,10 +250,7 @@ fn transform_value(transform: ValueTransform, raw: &str) -> Option<String> {
         ValueTransform::BareUsername => {
             let value = raw.trim();
             let bare = value.strip_prefix('@').unwrap_or(value);
-            if bare.is_empty()
-                || bare.starts_with('@')
-                || bare.chars().any(char::is_whitespace)
-            {
+            if bare.is_empty() || bare.starts_with('@') || bare.chars().any(char::is_whitespace) {
                 None
             } else {
                 Some(bare.to_string())
@@ -312,7 +312,10 @@ mod tests {
 
     #[test]
     fn malformed_bare_username_is_not_guessed() {
-        assert_eq!(transform_value(ValueTransform::BareUsername, "@@octocat"), None);
+        assert_eq!(
+            transform_value(ValueTransform::BareUsername, "@@octocat"),
+            None
+        );
         assert_eq!(transform_value(ValueTransform::BareUsername, "@"), None);
         assert_eq!(
             transform_value(ValueTransform::BareUsername, "@octocat"),
