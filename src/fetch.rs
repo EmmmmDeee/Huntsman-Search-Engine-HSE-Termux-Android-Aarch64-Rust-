@@ -15,6 +15,7 @@
 use std::fmt::Write as _;
 
 use crate::credential_origin::{AuthenticationAuthority, CredentialFingerprint};
+use crate::deadline::{Deadline, SystemClock};
 use crate::error::Error;
 use crate::http::{
     Method, Request, Response, Transport, origin_of, parse_http_uri, redact_url, resolve_location,
@@ -115,6 +116,9 @@ pub struct Fetched {
 
 /// Fetch `request` through `transport`.
 ///
+/// A request cap ([`Request::with_timeout`]) bounds the whole fetch, every redirect
+/// hop included: each hop is sent with what is left of the cap, not the cap again.
+///
 /// # Errors
 /// `Error::Network` when the URL is not http(s), the egress policy refused the
 /// destination, or a redirect target is malformed. Causal transport results
@@ -124,6 +128,56 @@ pub fn fetch<T: Transport + ?Sized>(
     request: Request,
     credential: Option<&Credential>,
     options: &FetchOptions,
+    module: &str,
+    now_unix: u64,
+) -> Result<Fetched, Error> {
+    match request.timeout {
+        Some(cap) => {
+            let deadline = Deadline::start(&SystemClock, cap);
+            fetch_within(
+                transport, request, credential, options, &deadline, module, now_unix,
+            )
+        }
+        None => fetch_hops(
+            transport, request, credential, options, None, module, now_unix,
+        ),
+    }
+}
+
+/// [`fetch`] inside a caller's [`Deadline`]. Before every hop (the first request and
+/// each redirect) the hop's cap is recomputed as the smaller of what is left of
+/// `deadline` and the request's own cap, so a timeout is only ever lowered and a
+/// redirect chain cannot outlive the deadline. A hop that would start with nothing
+/// left is not sent: the result is `TtfbTimeout` with no response.
+///
+/// # Errors
+/// As [`fetch`].
+pub fn fetch_within<T: Transport + ?Sized>(
+    transport: &T,
+    request: Request,
+    credential: Option<&Credential>,
+    options: &FetchOptions,
+    deadline: &Deadline<'_>,
+    module: &str,
+    now_unix: u64,
+) -> Result<Fetched, Error> {
+    fetch_hops(
+        transport,
+        request,
+        credential,
+        options,
+        Some(deadline),
+        module,
+        now_unix,
+    )
+}
+
+fn fetch_hops<T: Transport + ?Sized>(
+    transport: &T,
+    request: Request,
+    credential: Option<&Credential>,
+    options: &FetchOptions,
+    deadline: Option<&Deadline<'_>>,
     module: &str,
     now_unix: u64,
 ) -> Result<Fetched, Error> {
@@ -138,6 +192,31 @@ pub fn fetch<T: Transport + ?Sized>(
     let mut current = request;
     let mut redirects = 0u32;
     loop {
+        if let Some(deadline) = deadline {
+            let remaining = deadline.remaining();
+            if remaining.is_zero() {
+                let outcome = SourceExecutionOutcome::success(module, now_unix, 0);
+                let outcome = SourceExecutionOutcome {
+                    kind: SourceOutcomeKind::TtfbTimeout,
+                    found: None,
+                    detail: Some(format!(
+                        "{:.1}s budget spent before hop {}; not sent",
+                        deadline.budget().as_secs_f64(),
+                        redirects + 1
+                    )),
+                    ..outcome
+                };
+                return Ok(Fetched {
+                    outcome,
+                    response: None,
+                    final_url: redact_url(&current.url),
+                    redirects,
+                    credential_sent: None,
+                });
+            }
+            // Only ever lower: the request's own cap still applies when it is smaller.
+            current.timeout = Some(current.timeout.map_or(remaining, |cap| cap.min(remaining)));
+        }
         let on_origin = origin_of(&current.url).is_some() && origin_of(&current.url) == origin;
         let (to_send, sent) = match credential {
             Some(c) if on_origin => (c.apply(current.clone()), Some(c.fingerprint())),
@@ -637,5 +716,118 @@ mod tests {
         let f = Fake::new(vec![Ok(big)]);
         let r = run(&f, "https://a.example/", None, 0).expect("fetch");
         assert!(r.outcome.detail.expect("detail").contains("truncated"));
+    }
+
+    /// Every hop answers `302` to the next one after `delay` on a fake clock; a
+    /// delay longer than the hop's cap times out after the cap, like the transport.
+    struct SlowChain<'c> {
+        clock: &'c crate::deadline::FakeClock,
+        delay: std::time::Duration,
+        caps: RefCell<Vec<Option<std::time::Duration>>>,
+    }
+
+    impl Transport for SlowChain<'_> {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            let n = self.caps.borrow().len();
+            self.caps.borrow_mut().push(request.timeout);
+            if let Some(cap) = request.timeout.filter(|cap| self.delay > *cap) {
+                self.clock.advance(cap);
+                return Err(TransportFailure {
+                    kind: SourceOutcomeKind::TtfbTimeout,
+                    detail: "timed out".into(),
+                    blocked: false,
+                });
+            }
+            self.clock.advance(self.delay);
+            Ok(resp(302, &[("location", &format!("/hop{}", n + 1))], ""))
+        }
+    }
+
+    fn ms(n: u64) -> std::time::Duration {
+        std::time::Duration::from_millis(n)
+    }
+
+    fn chain_within(
+        delay: u64,
+        request: Request,
+    ) -> (
+        Fetched,
+        Vec<Option<std::time::Duration>>,
+        std::time::Duration,
+    ) {
+        let clock = crate::deadline::FakeClock::new();
+        let chain = SlowChain {
+            clock: &clock,
+            delay: ms(delay),
+            caps: RefCell::default(),
+        };
+        let deadline = Deadline::start(&clock, ms(1000));
+        let fetched = fetch_within(
+            &chain,
+            request,
+            None,
+            &FetchOptions::default(),
+            &deadline,
+            "t",
+            100,
+        )
+        .expect("fetch");
+        let caps = chain.caps.into_inner();
+        (fetched, caps, clock.elapsed())
+    }
+
+    #[test]
+    fn each_redirect_hop_gets_only_what_is_left_of_the_deadline() {
+        let (fetched, caps, elapsed) = chain_within(400, Request::get("https://a.example/"));
+        assert_eq!(caps, [Some(ms(1000)), Some(ms(600)), Some(ms(200))]);
+        assert_eq!(elapsed, ms(1000));
+        assert_eq!(fetched.outcome.kind, SourceOutcomeKind::TtfbTimeout);
+        assert!(fetched.response.is_none());
+        assert_eq!(fetched.redirects, 2);
+    }
+
+    #[test]
+    fn a_hop_with_nothing_left_is_not_sent() {
+        let (fetched, caps, elapsed) = chain_within(500, Request::get("https://a.example/"));
+        assert_eq!(caps, [Some(ms(1000)), Some(ms(500))]);
+        assert_eq!(elapsed, ms(1000));
+        assert_eq!(fetched.outcome.kind, SourceOutcomeKind::TtfbTimeout);
+        assert!(fetched.response.is_none());
+        assert_eq!(fetched.redirects, 2);
+        assert_eq!(
+            fetched.outcome.detail.as_deref(),
+            Some("1.0s budget spent before hop 3; not sent")
+        );
+        assert!(fetched.final_url.ends_with("/hop2"));
+        assert!(fetched.credential_sent.is_none());
+    }
+
+    #[test]
+    fn a_smaller_request_cap_is_kept_on_every_hop() {
+        let (fetched, caps, _) = chain_within(
+            100,
+            Request::get("https://a.example/").with_timeout(ms(300)),
+        );
+        // Six requests (the first plus five redirects), never raised above 300 ms.
+        assert_eq!(caps, vec![Some(ms(300)); 6]);
+        assert_eq!(fetched.redirects, 5);
+        assert!(
+            fetched
+                .outcome
+                .detail
+                .expect("detail")
+                .contains("redirect limit reached")
+        );
+    }
+
+    #[test]
+    fn an_uncapped_fetch_leaves_every_hop_to_the_transport_timeout() {
+        let f = Fake::new(vec![
+            Ok(resp(302, &[("location", "/b")], "")),
+            Ok(resp(200, &[], "ok")),
+        ]);
+        let r = run(&f, "https://a.example/", None, 5).expect("fetch");
+        assert_eq!(r.redirects, 1);
+        assert!(f.seen.borrow().iter().all(|req| req.timeout.is_none()));
     }
 }
