@@ -9,8 +9,8 @@ use huntsman_recon::ip::{
     IpProviderParseError, IpTarget,
 };
 use huntsman_recon::module::{
-    AccessClass, CachePolicy, CostModel, EscalationBand, HistoricalDepthClass,
-    ProviderDescriptor, RateLimitPolicy, RecursiveUsePolicy,
+    AccessClass, CachePolicy, CostModel, EscalationBand, HistoricalDepthClass, ProviderDescriptor,
+    RateLimitPolicy, RecursiveUsePolicy,
 };
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
