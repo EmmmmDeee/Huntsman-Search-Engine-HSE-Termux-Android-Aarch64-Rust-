@@ -80,6 +80,43 @@ fn failures_exit_nonzero() {
 }
 
 #[test]
+fn help_and_version_are_available() {
+    let help = bin().arg("--help").output().unwrap();
+    assert!(help.status.success());
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("Commands:"));
+    assert!(help.contains("fetch                 Make a guarded HTTP request"));
+    assert!(help.contains("public-only"));
+
+    for (command, usage) in [
+        ("geo", "geo LAT,LON LAT,LON"),
+        ("search", "search QUERY [DIR]"),
+        ("fetch", "fetch URL [--body]"),
+    ] {
+        let out = bin().args([command, "--help"]).output().unwrap();
+        assert!(out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains(usage),
+            "{command} help should include {usage:?}"
+        );
+    }
+
+    let positional_help = bin().args(["classify", "200", "--help"]).output().unwrap();
+    assert!(positional_help.status.success());
+    assert!(
+        String::from_utf8_lossy(&positional_help.stdout).contains("outcome=inconclusive"),
+        "a positional response body equal to --help must reach classify"
+    );
+
+    let version = bin().arg("--version").output().unwrap();
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8(version.stdout).unwrap(),
+        format!("huntsman-recon {}\n", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
 fn classify_reports_causal_outcome_and_action() {
     let run = |status: &str, body: &str| {
         let out = bin().args(["classify", status, body]).output().unwrap();

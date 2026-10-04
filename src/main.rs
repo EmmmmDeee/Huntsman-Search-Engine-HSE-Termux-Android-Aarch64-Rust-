@@ -45,6 +45,30 @@ use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
 const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
+const HELP: &str = "\
+Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
+
+Usage:
+  huntsman-recon <COMMAND> [ARGS]
+  huntsman-recon --help
+  huntsman-recon --version
+
+Commands:
+  check                 Run offline self-acceptance and regenerate var/*.json
+  geo                   Distance between two LAT,LON coordinates in metres
+  geohash               Encode LAT,LON (default precision: 7)
+  coarsen               Round LAT,LON to one decimal place
+  id                    Classify and validate an Australian ABN, ACN, or BSB
+  search                Search the built-in fixture or one local text directory
+  sources               Classify an indicator and print curated routes (offline)
+  classify              Classify an HTTP status and response body
+  fetch                 Make a guarded HTTP request (network access)
+  keys                  Validate a private keys file; print slots and fingerprints
+  verify                Verify a saved evidence ledger
+
+Run `huntsman-recon <COMMAND> --help` for command details.
+Search and sources do not collect remote results. `fetch` is the only command here
+that makes an HTTP request; its default egress policy is public-only.";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -54,25 +78,76 @@ const EX_IOERR: u8 = 74;
 const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
 
 fn main() -> ExitCode {
-    let mut args = env::args().skip(1);
-    match args.next().as_deref() {
-        Some("geo") => geo(args.next(), args.next()),
-        Some("geohash") => geohash_cmd(args.next(), args.next().as_deref()),
-        Some("coarsen") => coarsen_cmd(args.next()),
-        Some("id") => id_cmd(args.next()),
-        Some("search") => search_cmd(args.next(), args.next()),
-        Some("sources") => sources_cmd(args.next()),
-        Some("classify") => classify(args.next(), args.next()),
-        Some("fetch") => fetch_cmd(&args.collect::<Vec<_>>()),
-        Some("keys") => keys_cmd(args.next()),
-        Some("verify") => verify(args.next()),
+    let argv: Vec<String> = env::args().skip(1).collect();
+    if argv.is_empty() {
+        return check();
+    }
+    if matches!(argv[0].as_str(), "help" | "-h" | "--help") {
+        println!("{HELP}\n{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if matches!(argv[0].as_str(), "-V" | "--version") {
+        println!("huntsman-recon {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+    if argv.len() == 2 && matches!(argv[1].as_str(), "-h" | "--help") {
+        print_command_help(&argv[0]);
+        return ExitCode::SUCCESS;
+    }
+    let mut remaining = argv.into_iter();
+    match remaining.next().as_deref() {
+        Some("geo") => geo(remaining.next(), remaining.next()),
+        Some("geohash") => geohash_cmd(remaining.next(), remaining.next().as_deref()),
+        Some("coarsen") => coarsen_cmd(remaining.next()),
+        Some("id") => id_cmd(remaining.next()),
+        Some("search") => search_cmd(remaining.next(), remaining.next()),
+        Some("sources") => sources_cmd(remaining.next()),
+        Some("classify") => classify(remaining.next(), remaining.next()),
+        Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
+        Some("keys") => keys_cmd(remaining.next()),
+        Some("verify") => verify(remaining.next()),
         Some("check") | None => check(),
-        Some("help" | "-h" | "--help") => {
-            println!("{USAGE}");
-            ExitCode::SUCCESS
-        }
         Some(other) => fail(EX_USAGE, &format!("unknown command: {other}\n{USAGE}")),
     }
+}
+
+fn print_command_help(command: &str) {
+    let help = match command {
+        "check" => {
+            "check\nRun offline self-acceptance and regenerate var/ledger.json, var/navigator.json, and var/stix-bundle.json."
+        }
+        "geo" => {
+            "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres."
+        }
+        "geohash" => {
+            "geohash LAT,LON [PRECISION]\nEncode coordinates as a geohash. Precision defaults to 7."
+        }
+        "coarsen" => {
+            "coarsen LAT,LON\nRound coordinates to one decimal place for approximate location sharing."
+        }
+        "id" => "id TOKEN\nClassify and validate an Australian ABN, ACN, or BSB.",
+        "search" => {
+            "search QUERY [DIR]\nSearch built-in examples, or .txt/.md files in one directory. Challenge pages and unsafe/oversized inputs are skipped."
+        }
+        "sources" => {
+            "sources QUERY\nClassify an indicator and print curated public/browser search routes. Does not fetch those routes."
+        }
+        "classify" => {
+            "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
+        }
+        "fetch" => huntsman_recon::fetch_cli::FETCH_USAGE,
+        "keys" => {
+            "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values."
+        }
+        "verify" => {
+            "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
+        }
+        _ => {
+            println!("{HELP}\n{USAGE}");
+            return;
+        }
+    };
+    println!("{help}\n  -h, --help  Show this help");
 }
 
 fn fail(code: u8, msg: &str) -> ExitCode {
