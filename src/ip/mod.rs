@@ -2,6 +2,7 @@
 
 pub mod model;
 pub mod provider;
+pub mod providers;
 
 pub use model::{
     ALL_IP_CLAIM_KINDS, IpActionRecord, IpBudgetUsage, IpClaim, IpClaimKind, IpClaimState,
