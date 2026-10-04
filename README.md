@@ -7,7 +7,7 @@ One crate, `huntsman-recon`. The current version lives in `src/`; the two legacy
 | `src/` | The crate: library modules plus the `huntsman-recon` binary (`main.rs`). |
 | `tests/` | Acceptance, CLI, local-HTTP and legacy-reference integration tests, plus `readme.rs` and `dispositions.rs`, which check this README and `docs/DISPOSITIONS.md` against the binary and `legacy/`. |
 | `var/` | Artifacts written by `check` (`ledger.json`, `navigator.json`, `stix-bundle.json`). CI fails if `check` changes them. |
-| `docs/` | `RECONSTRUCTION_2026-10-02.md` (decisions and falsification passes) and `DISPOSITIONS.md` (per-file accounting of every legacy file). |
+| `docs/` | `RECONSTRUCTION_2026-10-02.md` (decisions and falsification passes), `DISPOSITIONS.md` (per-file accounting of every legacy file) and `RELEASING.md` (the main-channel release workflow, its key scanner, publish refusals and required attestation). |
 | `legacy/` | Byte-identical extraction of both archives. Not part of the build. |
 | `*.zip` (root) | The two legacy archives. Pinned by hash in `tests/legacy_reference.rs`; never delete, edit or move them. |
 

@@ -61,5 +61,5 @@ install -m 0755 "$tmp/$ASSET" "$stage" || die "could not stage $stage; $dest lef
 want="$(cut -d' ' -f1 "$tmp/$ASSET.sha256")"
 got="$(sha256sum "$stage" | cut -d' ' -f1)"
 [ -n "$want" ] && [ "$got" = "$want" ] || die "staged copy failed the sha256 check; $dest left unchanged"
-mv -f "$stage" "$dest" || die "could not move $stage into place; $dest left unchanged"
+mv -fT "$stage" "$dest" || die "could not move $stage into place; $dest left unchanged"
 echo "Installed $dest (${TAG})"

@@ -95,7 +95,9 @@ fn rolling_latest_moves_only_behind_an_explicit_opt_in() {
         );
     }
     assert_eq!(
-        wf.matches("gh release delete").count(),
+        wf.lines()
+            .filter(|l| l.trim_start().starts_with("gh release delete"))
+            .count(),
         1,
         "only the gated latest step may delete a release"
     );
@@ -407,11 +409,20 @@ fn run_script(
     dir: &Path,
     path_env: Option<&std::ffi::OsStr>,
 ) -> (Option<i32>, String) {
+    let envs: Vec<(&str, &std::ffi::OsStr)> = path_env.map(|p| ("PATH", p)).into_iter().collect();
+    run_script_with(script, dir, &envs)
+}
+
+fn run_script_with(
+    script: &Path,
+    dir: &Path,
+    envs: &[(&str, &std::ffi::OsStr)],
+) -> (Option<i32>, String) {
     let bash = tool("bash").expect("bash must be available");
     let mut cmd = Command::new(bash);
     cmd.arg(script).arg(dir);
-    if let Some(p) = path_env {
-        cmd.env("PATH", p);
+    for (k, v) in envs {
+        cmd.env(k, v);
     }
     let out = cmd.output().expect("bash must run");
     let text =
@@ -460,14 +471,25 @@ fn clean_fixture(dir: &Path) {
         ),
     )
     .unwrap();
+    // The 00..ff hex byte table and a decimal digit-pair table, as std links
+    // them into every Rust binary: long hex runs that are not keys.
+    let hex_table: String = (0..=255u8).map(|b| format!("{b:02x}")).collect();
+    let digit_table: String = (0..100).map(|n| format!("{n:02}")).collect();
     fs::write(
         dir.join("bin"),
         [
             b"\x00\x7fELF usage: huntsman-recon [check]\x00".as_slice(),
-            // 31 and 33 hex: one short and one long of the key shape.
+            // 31 hex is one short of the key shape; 40 (git SHA-1) and 64
+            // (sha256) are the two allowed hex-run lengths.
             fake("", "c", 31).as_bytes(),
             b"\x00\x01".as_slice(),
-            fake("", "d", 33).as_bytes(),
+            fake("", "d", 40).as_bytes(),
+            b"\x00\x01".as_slice(),
+            fake("", "e", 64).as_bytes(),
+            b"\x00".as_slice(),
+            hex_table.as_bytes(),
+            b"\x00".as_slice(),
+            digit_table.as_bytes(),
             b"\x00".as_slice(),
         ]
         .concat(),
@@ -645,10 +667,43 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
 }
 
 #[test]
-fn attestation_warning_does_not_promise_a_retry() {
+fn attestation_is_a_required_step_before_publishing() {
     let wf = release();
-    assert!(!wf.contains("Re-run to retry"));
-    assert!(wf.contains("A re-run will not add it"));
+    let publish = job(&wf, "publish");
+    assert!(
+        !wf.contains("continue-on-error"),
+        "no release step may be optional, the attestation least of all"
+    );
+    assert!(!wf.contains("Warn when attestation failed"));
+    let steps: Vec<&str> = publish.split("      - name: ").collect();
+    let pos = |prefix: &str| {
+        steps
+            .iter()
+            .position(|s| s.starts_with(prefix))
+            .unwrap_or_else(|| panic!("publish must have a step {prefix:?}"))
+    };
+    let (attest, require, create) = (
+        pos("Attest build provenance"),
+        pos("Require a build provenance attestation"),
+        pos("Publish pre-release"),
+    );
+    assert!(
+        attest < require && require < create,
+        "attest, then require, then publish"
+    );
+    assert!(steps[attest].contains("        if: steps.existing.outputs.exists == 'false'\n"));
+    assert!(
+        !steps[require].contains("        if:"),
+        "the attestation requirement must run for new and existing releases"
+    );
+    for required in [
+        "ATTESTATION_ID: ${{ steps.attest.outputs.attestation-id }}",
+        "attestations/${d}",
+    ] {
+        assert!(steps[require].contains(required), "missing {required:?}");
+    }
+    // The publish job's permissions already allow attesting; nothing new.
+    assert!(publish.contains("      attestations: write # record the attestation\n"));
 }
 
 /// One synthetic positive per pattern rule, assembled at runtime.
@@ -767,6 +822,16 @@ fn write_exec(path: &Path, body: &str) {
 /// Runs the installer for the recon channel with the given release assets.
 /// Returns (exit code, output, `$PREFIX/bin` entries).
 fn run_installer(name: &str, binary: &[u8], sha_line: &str) -> (Option<i32>, String, PathBuf) {
+    run_installer_with(name, binary, sha_line, false)
+}
+
+/// As `run_installer`; with `dest_is_dir` the destination path is a directory.
+fn run_installer_with(
+    name: &str,
+    binary: &[u8],
+    sha_line: &str,
+    dest_is_dir: bool,
+) -> (Option<i32>, String, PathBuf) {
     let root = scratch(&format!("install-{name}"));
     let assets = root.join("assets");
     let fakes = root.join("fakes");
@@ -777,7 +842,11 @@ fn run_installer(name: &str, binary: &[u8], sha_line: &str) -> (Option<i32>, Str
     let asset = "huntsman-recon-aarch64-linux-android";
     fs::write(assets.join(asset), binary).unwrap();
     fs::write(assets.join(format!("{asset}.sha256")), sha_line).unwrap();
-    fs::write(prefix.join("bin/huntsman-recon"), b"old build\n").unwrap();
+    if dest_is_dir {
+        fs::create_dir_all(prefix.join("bin/huntsman-recon")).unwrap();
+    } else {
+        fs::write(prefix.join("bin/huntsman-recon"), b"old build\n").unwrap();
+    }
     write_exec(
         &fakes.join("curl"),
         "#!/usr/bin/env bash\nout=\"\"; url=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -o) out=\"$2\"; shift 2 ;;\n    --proto) shift 2 ;;\n    -*) shift ;;\n    *) url=\"$1\"; shift ;;\n  esac\ndone\ncp \"$FAKE_ASSETS/${url##*/}\" \"$out\"\n",
@@ -870,7 +939,7 @@ fn installer_replaces_the_binary_atomically_and_only_after_verification() {
     for required in [
         "stage=\"$PREFIX/bin/.${DEST_NAME}.install.$$\"",
         "install -m 0755 \"$tmp/$ASSET\" \"$stage\"",
-        "mv -f \"$stage\" \"$dest\"",
+        "mv -fT \"$stage\" \"$dest\"",
     ] {
         assert!(
             src.contains(required),
@@ -986,4 +1055,759 @@ fn both_scanner_copies_fail_closed_when_find_or_sort_fails_or_truncates() {
         }
     }
     let _ = fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------------------
+// Scanner hardening, follow-up to #672 (Security S1 and hex-run rule, FTBB
+// N1-N7, REFACTOR R1). Every planted value is synthetic and built at runtime.
+
+/// A random 32-lowercase-hex value, fresh per run, never a real key. It always
+/// holds a letter, so it is never mistaken for a decimal lookup table.
+fn random_hex32() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    loop {
+        let words: Vec<u64> = (0..2)
+            .map(|i| {
+                let mut h = RandomState::new().build_hasher();
+                h.write_u64(i);
+                h.finish()
+            })
+            .collect();
+        let hex = format!("{:016x}{:016x}", words[0], words[1]);
+        if hex.bytes().any(|b| b.is_ascii_lowercase()) {
+            return hex;
+        }
+    }
+}
+
+/// Fixture for the file-list tests: `a-clean.json` sorts before the planted
+/// `z-secret.bin`. Returns (root, fixture dir, both scanner copies, token).
+fn list_fixture(name: &str) -> (PathBuf, PathBuf, [PathBuf; 2], String) {
+    let root = scratch(name);
+    let fixture = root.join("dist");
+    fs::create_dir_all(&fixture).unwrap();
+    fs::write(fixture.join("a-clean.json"), "{\"ok\":true}\n").unwrap();
+    let ghp = fake_ghp();
+    fs::write(
+        fixture.join("z-secret.bin"),
+        [b"\x00 t=".as_slice(), ghp.as_bytes(), b" \x00\xfe"].concat(),
+    )
+    .unwrap();
+    let inline = root.join("inlined-scan-for-keys.sh");
+    fs::write(&inline, inlined_scanner()).unwrap();
+    (root, fixture, [PathBuf::from(SCAN), inline], ghp)
+}
+
+fn path_with(fakes: &Path) -> std::ffi::OsString {
+    std::ffi::OsString::from(format!(
+        "{}:{}",
+        fakes.display(),
+        std::env::var("PATH").unwrap_or_default()
+    ))
+}
+
+/// Security S1: a `sort` that keeps the count but swaps one name for a
+/// duplicate of another must not shorten the scan.
+#[test]
+fn both_scanner_copies_refuse_a_sort_that_swaps_a_name_for_a_duplicate() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let real_sort = tool("sort").expect("sort must be installed");
+    let (root, fixture, scripts, ghp) = list_fixture("swap-sort");
+    let fakes = root.join("fakes");
+    fs::create_dir_all(&fakes).unwrap();
+    write_exec(
+        &fakes.join("sort"),
+        &format!(
+            "#!/usr/bin/env bash\nmapfile -d '' -t l < <(\"{}\" \"$@\")\nl[${{#l[@]}}-1]=${{l[0]}}\nprintf '%s\\0' \"${{l[@]}}\"\n",
+            real_sort.display()
+        ),
+    );
+    let path = path_with(&fakes);
+    for script in &scripts {
+        let ctx = format!("{} with a name-swapping sort", script.display());
+        let (code, text) = run_script(script, &fixture, Some(&path));
+        assert_eq!(code, Some(2), "{ctx} must fail closed with exit 2:\n{text}");
+        assert!(
+            text.contains(
+                "sort dropped or rewrote a listed file; refusing to scan a tampered file list"
+            ),
+            "{ctx}:\n{text}"
+        );
+        assert!(
+            !text.contains("files scanned:"),
+            "{ctx} must not scan:\n{text}"
+        );
+        assert_redacted(&text, &ghp, &ctx);
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// FTBB N5: the scan loop runs over the checked array. A loop that re-reads
+/// `sort` (process substitution or pipe) would scan a second, unchecked list;
+/// this sort is real on its first call and truncates on every later one.
+#[test]
+fn both_scanner_copies_scan_the_checked_list_not_a_second_sort() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let real_sort = tool("sort").expect("sort must be installed");
+    let (root, fixture, scripts, ghp) = list_fixture("stateful-sort");
+    let fakes = root.join("fakes");
+    fs::create_dir_all(&fakes).unwrap();
+    let count = root.join("sort-calls");
+    write_exec(
+        &fakes.join("sort"),
+        &format!(
+            "#!/usr/bin/env bash\nn=$(( $(cat \"{c}\" 2>/dev/null || echo 0) + 1 ))\necho \"$n\" > \"{c}\"\nif [ \"$n\" -eq 1 ]; then exec \"{s}\" \"$@\"; fi\n\"{s}\" \"$@\" | head -z -n 1\n",
+            c = count.display(),
+            s = real_sort.display()
+        ),
+    );
+    let path = path_with(&fakes);
+    for script in &scripts {
+        let _ = fs::remove_file(&count);
+        let ctx = format!("{} with a stateful sort", script.display());
+        let (code, text) = run_script(script, &fixture, Some(&path));
+        assert_eq!(code, Some(1), "{ctx} must find the token:\n{text}");
+        assert!(
+            text.contains("rule=github-token (value withheld)"),
+            "{ctx}:\n{text}"
+        );
+        assert!(text.contains("files scanned: 2"), "{ctx}:\n{text}");
+        assert_eq!(
+            fs::read_to_string(&count).unwrap().trim(),
+            "1",
+            "{ctx}: sort must run exactly once"
+        );
+        assert_redacted(&text, &ghp, &ctx);
+    }
+    let src = fs::read_to_string(SCAN).unwrap();
+    assert!(src.contains("for f in \"${files[@]}\"; do\n  scanned=$((scanned + 1))"));
+    for forbidden in ["< <(sort", "< <(find", "sort -z \"$list\" |", "| while"] {
+        assert!(
+            !src.contains(forbidden),
+            "{SCAN} must not contain {forbidden:?}"
+        );
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// Security's hex-run rule: any lowercase hex run of 32+ characters whose
+/// length is not exactly 40 or 64 is a finding, so a key packed right after
+/// "password" (which ends in the hex letter `d`) is caught.
+#[test]
+fn hex_run_rule_catches_a_key_packed_against_other_hex() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let hex = random_hex32();
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "password.bin",
+            [
+                b"\x00\x01password".as_slice(),
+                hex.as_bytes(),
+                b"ZZZ\x00\x02",
+            ]
+            .concat(),
+        ),
+        ("password.txt", format!("password{hex}\n").into_bytes()),
+        (
+            "hex-after.bin",
+            [b"\x00\x01".as_slice(), hex.as_bytes(), b"cafe\x00"].concat(),
+        ),
+        ("run48.txt", format!("v={hex}{}\n", &hex[..16]).into_bytes()),
+        ("run128.txt", format!("v={}\n", hex.repeat(4)).into_bytes()),
+    ];
+    for (file, bytes) in cases {
+        let dir = scratch(&format!("hexrun-{file}"));
+        clean_fixture(&dir);
+        fs::write(dir.join(file), &bytes).unwrap();
+        let (code, text) = scan(&dir);
+        assert_eq!(code, Some(1), "{file} must fail the scan:\n{text}");
+        assert!(
+            text.contains(&format!(
+                "FINDING file={}/{file} rule=hibp-key-hex (value withheld)",
+                dir.display()
+            )),
+            "{file}:\n{text}"
+        );
+        assert!(text.contains("key scan: 1 finding(s)"), "{file}:\n{text}");
+        assert_redacted(&text, &hex, file);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// FTBB N1: matching is byte-wise even when the caller runs a UTF-8 locale,
+/// where a bracket expression does not match an invalid byte such as \xff.
+#[test]
+fn scanner_matches_byte_wise_under_a_utf8_locale() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let hex = fake_hex32();
+    let sk = format!("sk-{}", "Ab1_".repeat(6));
+    let cases: Vec<(&str, Vec<u8>, &str, &str)> = vec![
+        (
+            "hex-ff.txt",
+            [b"k=".as_slice(), hex.as_bytes(), b"\xff\n"].concat(),
+            "hibp-key-hex",
+            &hex,
+        ),
+        (
+            "ff-sk.txt",
+            [b"x\xff".as_slice(), sk.as_bytes(), b"\n"].concat(),
+            "openai-style-sk",
+            &sk,
+        ),
+    ];
+    let utf8 = std::ffi::OsStr::new("C.UTF-8");
+    for (file, bytes, rule, value) in cases {
+        let dir = scratch(&format!("locale-{file}"));
+        clean_fixture(&dir);
+        fs::write(dir.join(file), &bytes).unwrap();
+        let (code, text) =
+            run_script_with(Path::new(SCAN), &dir, &[("LC_ALL", utf8), ("LANG", utf8)]);
+        assert_eq!(
+            code,
+            Some(1),
+            "{file} under C.UTF-8 must fail the scan:\n{text}"
+        );
+        assert!(
+            text.contains(&format!("rule={rule} (value withheld)")),
+            "{file}:\n{text}"
+        );
+        assert_redacted(&text, value, file);
+        let _ = fs::remove_dir_all(&dir);
+    }
+    assert!(
+        fs::read_to_string(SCAN)
+            .unwrap()
+            .contains("\nexport LC_ALL=C\n")
+    );
+}
+
+/// FTBB N7 / REFACTOR R2: `find -type f` does not list symlinks, so a
+/// symlink in the artifact would be skipped unscanned. It is refused.
+#[test]
+fn scanner_refuses_a_symlink_instead_of_skipping_it() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let root = scratch("symlink");
+    let dir = root.join("dist");
+    fs::create_dir_all(&dir).unwrap();
+    clean_fixture(&dir);
+    let ghp = fake_ghp();
+    let outside = root.join("outside.bin");
+    fs::write(
+        &outside,
+        [b"\x00 t=".as_slice(), ghp.as_bytes(), b" \x00"].concat(),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("link.bin")).unwrap();
+    let inline = root.join("inlined-scan-for-keys.sh");
+    fs::write(&inline, inlined_scanner()).unwrap();
+    for script in [PathBuf::from(SCAN), inline] {
+        let ctx = format!("{} with a symlink", script.display());
+        let (code, text) = run_script(&script, &dir, None);
+        assert_eq!(code, Some(2), "{ctx} must fail closed with exit 2:\n{text}");
+        assert!(
+            text.contains("1 non-regular entries under")
+                && text.contains("link.bin::not a regular file"),
+            "{ctx}:\n{text}"
+        );
+        assert!(
+            !text.contains("files scanned:"),
+            "{ctx} must not scan:\n{text}"
+        );
+        assert_redacted(&text, &ghp, &ctx);
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// UTF-16LE little-endian encoding of `s` (ASCII only).
+fn utf16le(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+/// REFACTOR R1 (BLE #55): binaries also get a UTF-16LE `strings` pass, so a
+/// wide-char literal holding a key is not invisible.
+#[test]
+fn scanner_reads_utf16le_strings_in_binaries() {
+    if !scanner_tools_present() {
+        return;
+    }
+    for (rule, value) in [
+        ("github-token", fake_ghp()),
+        ("hibp-key-hex", random_hex32()),
+    ] {
+        let dir = scratch(&format!("utf16-{rule}"));
+        clean_fixture(&dir);
+        let bytes = [
+            b"\x7fELF\x00\x01\x02".as_slice(),
+            &utf16le(&format!("key={value};")),
+            b"\x00\x00\x03",
+        ]
+        .concat();
+        fs::write(dir.join("wide.bin"), &bytes).unwrap();
+        let (code, text) = scan(&dir);
+        assert_eq!(code, Some(1), "UTF-16LE {rule} must fail the scan:\n{text}");
+        assert!(
+            text.contains(&format!("wide.bin rule={rule} (value withheld)")),
+            "UTF-16LE {rule}:\n{text}"
+        );
+        assert_redacted(&text, &value, rule);
+        let _ = fs::remove_dir_all(&dir);
+    }
+    assert!(fs::read_to_string(SCAN)
+        .unwrap()
+        .contains("wide=$(strings -a -e l -n 8 \"$f\") || { echo \"::error::strings -e l failed on $f\"; exit 1; }"));
+}
+
+/// FTBB N6: if the destination is a directory, `mv -f` would move the binary
+/// into it and report success. `mv -fT` refuses.
+#[test]
+fn installer_refuses_a_directory_at_the_destination() {
+    let tools = ["sha256sum", "install", "mktemp", "mv", "cut", "cp"];
+    if tools.iter().any(|t| tool(t).is_none()) {
+        assert!(std::env::var_os("CI").is_none(), "CI must have coreutils");
+        return;
+    }
+    let asset = "huntsman-recon-aarch64-linux-android";
+    let new_build = b"\x7fELF new recon build\n";
+    let probe = scratch("install-dir-probe");
+    fs::write(probe.join("b"), new_build).unwrap();
+    let good = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
+    let _ = fs::remove_dir_all(&probe);
+    let (code, text, root) = run_installer_with("dest-dir", new_build, &good, true);
+    assert_ne!(
+        code,
+        Some(0),
+        "a directory at the destination must fail:\n{text}"
+    );
+    assert!(!text.contains("Installed"), "{text}");
+    assert!(text.contains("could not move"), "{text}");
+    let dest = root.join("prefix/bin/huntsman-recon");
+    assert!(dest.is_dir());
+    assert_eq!(
+        fs::read_dir(&dest).unwrap().count(),
+        0,
+        "nothing moved into it"
+    );
+    assert_eq!(
+        bin_entries(&root),
+        ["huntsman-recon"],
+        "no staging leftovers"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------------------
+// Publish job: run the extracted steps against a fake `gh` (FTBB N2, N3, N4).
+
+/// The `run: |` script of the step whose name starts with `prefix`, de-indented.
+fn step_script(prefix: &str) -> String {
+    let wf = release();
+    let step = wf
+        .split("      - name: ")
+        .find(|s| s.starts_with(prefix))
+        .unwrap_or_else(|| panic!("{RELEASE} must have a step {prefix:?}"));
+    let marker = "        run: |\n";
+    let from = step.find(marker).expect("step must have a run script") + marker.len();
+    let script = step[from..]
+        .lines()
+        .take_while(|l| l.is_empty() || l.starts_with("          "))
+        .map(|l| l.get(10..).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert!(
+        !script.contains("${{"),
+        "{prefix}: script must take inputs from env"
+    );
+    script
+}
+
+const FAKE_GH: &str = r#"#!/usr/bin/env bash
+# Fake `gh api PATH [--jq EXPR]`: answers from $FAKE_GH/<key>.json, where key
+# is PATH without repos/<repo>/ and with / as _. <key>.status overrides the
+# HTTP status; a missing fixture is a 404.
+[ "${1:-}" = api ] || { echo "fake gh: unexpected: $*" >&2; exit 99; }
+shift
+path="" jq=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --jq) jq="$2"; shift 2 ;;
+    -*) echo "fake gh: unexpected flag $1" >&2; exit 99 ;;
+    *) path="$1"; shift ;;
+  esac
+done
+key="${path#repos/"$GITHUB_REPOSITORY"/}"
+key="${key//\//_}"
+echo "$path" >> "$FAKE_GH/calls"
+status=404
+body='{"message":"Not Found"}'
+if [ -f "$FAKE_GH/$key.json" ]; then status=200; body="$(cat "$FAKE_GH/$key.json")"; fi
+if [ -f "$FAKE_GH/$key.status" ]; then status="$(cat "$FAKE_GH/$key.status")"; fi
+if [ "$status" != 200 ]; then printf '%s' "$body"; echo "gh: Fake (HTTP $status)" >&2; exit 1; fi
+if [ -n "$jq" ]; then jq -r "$jq" <<<"$body"; else printf '%s\n' "$body"; fi
+"#;
+
+const STEP_TAG: &str = "main-0a1b2c3";
+const STEP_ASSET: &str = "huntsman-recon-aarch64-linux-android";
+
+fn step_sha() -> String {
+    format!("0a1b2c3{}", "d".repeat(33))
+}
+
+fn digest(c: &str) -> String {
+    format!("sha256:{}", c.repeat(64))
+}
+
+fn release_json(prerelease: bool, assets: &[(String, Option<String>)]) -> String {
+    let assets: Vec<String> = assets
+        .iter()
+        .map(|(n, d)| match d {
+            Some(d) => format!("{{\"name\":\"{n}\",\"digest\":\"{d}\"}}"),
+            None => format!("{{\"name\":\"{n}\",\"digest\":null}}"),
+        })
+        .collect();
+    format!(
+        "{{\"prerelease\":{prerelease},\"draft\":false,\"assets\":[{}]}}",
+        assets.join(",")
+    )
+}
+
+fn complete_assets() -> Vec<(String, Option<String>)> {
+    [
+        STEP_ASSET.to_owned(),
+        format!("{STEP_ASSET}.sha256"),
+        format!("{STEP_ASSET}.provenance.json"),
+        "key-scan-report.txt".to_owned(),
+        "install-termux.sh".to_owned(),
+    ]
+    .into_iter()
+    .zip(["a", "b", "c", "e", "f"])
+    .map(|(n, c)| (n, Some(digest(c))))
+    .collect()
+}
+
+struct StepRun {
+    code: Option<i32>,
+    text: String,
+    output: String,
+}
+
+/// Runs `script` with the fake `gh`; `fixtures` are (key, status, body).
+fn run_step(
+    name: &str,
+    script: &str,
+    fixtures: &[(&str, u16, String)],
+    envs: &[(&str, &str)],
+) -> StepRun {
+    let root = scratch(&format!("step-{name}"));
+    let (fakes, data, tmp) = (root.join("fakes"), root.join("gh"), root.join("tmp"));
+    for d in [&fakes, &data, &tmp] {
+        fs::create_dir_all(d).unwrap();
+    }
+    write_exec(&fakes.join("gh"), FAKE_GH);
+    for (key, status, body) in fixtures {
+        fs::write(data.join(format!("{key}.json")), body).unwrap();
+        if *status != 200 {
+            fs::write(data.join(format!("{key}.status")), status.to_string()).unwrap();
+        }
+    }
+    let file = root.join("step.sh");
+    fs::write(&file, script).unwrap();
+    let out_file = root.join("output");
+    fs::write(&out_file, "").unwrap();
+    let mut cmd = Command::new(tool("bash").expect("bash must be available"));
+    cmd.arg(&file)
+        .env("PATH", path_with(&fakes))
+        .env("FAKE_GH", &data)
+        .env("GITHUB_REPOSITORY", "owner/repo")
+        .env("GITHUB_SHA", step_sha())
+        .env("TAG", STEP_TAG)
+        .env("ASSET", STEP_ASSET)
+        .env("GITHUB_OUTPUT", &out_file)
+        .env("GITHUB_STEP_SUMMARY", root.join("summary"))
+        .env("RUNNER_TEMP", &tmp);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("bash must run");
+    let run = StepRun {
+        code: out.status.code(),
+        text: String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr),
+        output: fs::read_to_string(&out_file).unwrap(),
+    };
+    let _ = fs::remove_dir_all(&root);
+    run
+}
+
+fn jq_present() -> bool {
+    let present = tool("jq").is_some();
+    assert!(
+        present || std::env::var_os("CI").is_none(),
+        "CI must have jq"
+    );
+    present
+}
+
+#[test]
+fn existing_release_check_refuses_each_case_by_exit_code_and_marker() {
+    if !jq_present() {
+        return;
+    }
+    let script = step_script("Check for an existing");
+    let ref_key = format!("git_ref_tags_{STEP_TAG}");
+    let rel_key = format!("releases_tags_{STEP_TAG}");
+    let tag_at = |ty: &str, sha: &str| {
+        (
+            ref_key.as_str(),
+            200,
+            format!("{{\"object\":{{\"type\":\"{ty}\",\"sha\":\"{sha}\"}}}}"),
+        )
+    };
+    let here = tag_at("commit", &step_sha());
+    let rel = |pre: bool, assets: Vec<(String, Option<String>)>| {
+        (rel_key.as_str(), 200, release_json(pre, &assets))
+    };
+    let mut missing = complete_assets();
+    missing.pop();
+    let mut null_digest = complete_assets();
+    null_digest[1].1 = None;
+    let mut duplicate = complete_assets();
+    duplicate.push(duplicate[0].clone());
+    // (case, fixtures, exit code, marker or exists= line)
+    let cases: Vec<(&str, Vec<(&str, u16, String)>, i32, &str)> = vec![
+        ("absent", vec![], 0, "exists=false"),
+        (
+            "complete",
+            vec![here.clone(), rel(true, complete_assets())],
+            0,
+            "exists=true",
+        ),
+        (
+            "ref-502",
+            vec![(ref_key.as_str(), 502, "{}".to_owned())],
+            15,
+            "[refuse:ref-lookup-failed]",
+        ),
+        (
+            "other-commit",
+            vec![
+                tag_at("commit", &"9".repeat(40)),
+                rel(true, complete_assets()),
+            ],
+            11,
+            "[refuse:tag-elsewhere]",
+        ),
+        (
+            "annotated",
+            vec![tag_at("tag", &step_sha()), rel(true, complete_assets())],
+            11,
+            "[refuse:tag-elsewhere]",
+        ),
+        (
+            "no-release",
+            vec![here.clone()],
+            12,
+            "[refuse:tag-without-release]",
+        ),
+        (
+            "not-prerelease",
+            vec![here.clone(), rel(false, complete_assets())],
+            13,
+            "[refuse:not-prerelease]",
+        ),
+        (
+            "asset-missing",
+            vec![here.clone(), rel(true, missing)],
+            14,
+            "[refuse:asset-incomplete]",
+        ),
+        (
+            "null-digest",
+            vec![here.clone(), rel(true, null_digest)],
+            14,
+            "[refuse:asset-incomplete]",
+        ),
+        (
+            "duplicate",
+            vec![here.clone(), rel(true, duplicate)],
+            14,
+            "[refuse:asset-incomplete]",
+        ),
+    ];
+    for (case, fixtures, want, marker) in cases {
+        let run = run_step(&format!("existing-{case}"), &script, &fixtures, &[]);
+        assert_eq!(run.code, Some(want), "{case}:\n{}", run.text);
+        if want == 0 {
+            assert_eq!(run.output, format!("{marker}\n"), "{case}:\n{}", run.text);
+            assert!(!run.text.contains("[refuse:"), "{case}:\n{}", run.text);
+        } else {
+            assert!(
+                run.text.contains(&format!("::error::{marker} ")),
+                "{case}:\n{}",
+                run.text
+            );
+            assert_eq!(run.output, "", "{case}: a refusal must not set exists");
+        }
+        if case == "asset-missing" {
+            assert!(
+                run.text
+                    .contains(&format!("gh release delete {STEP_TAG} --cleanup-tag")),
+                "{case}: the remedy must delete the tag too:\n{}",
+                run.text
+            );
+        }
+    }
+}
+
+#[test]
+fn attestation_requirement_refuses_each_case_by_exit_code_and_marker() {
+    if !jq_present() {
+        return;
+    }
+    let script = step_script("Require a build provenance attestation");
+    let rel_key = format!("releases_tags_{STEP_TAG}");
+    let att_key = format!("attestations_{}", digest("a"));
+    let rel = (
+        rel_key.as_str(),
+        200,
+        release_json(true, &complete_assets()),
+    );
+    let mut no_digest = complete_assets();
+    no_digest[0].1 = None;
+    let att = |status: u16, body: &str| (att_key.as_str(), status, body.to_owned());
+    // (case, EXISTS, ATTESTATION_ID, fixtures, exit code, marker)
+    let cases: Vec<(&str, &str, &str, Vec<(&str, u16, String)>, i32, &str)> = vec![
+        (
+            "new-attested",
+            "false",
+            "52558529",
+            vec![],
+            0,
+            "attestation 52558529",
+        ),
+        (
+            "new-no-id",
+            "false",
+            "",
+            vec![],
+            21,
+            "[refuse:no-attestation-id]",
+        ),
+        (
+            "old-attested",
+            "true",
+            "",
+            vec![rel.clone(), att(200, "{\"attestations\":[{}]}")],
+            0,
+            "1 build provenance attestation(s)",
+        ),
+        (
+            "old-none-404",
+            "true",
+            "",
+            vec![rel.clone(), att(404, "{}")],
+            24,
+            "[refuse:unattested-release]",
+        ),
+        (
+            "old-none-empty",
+            "true",
+            "",
+            vec![rel.clone(), att(200, "{\"attestations\":[]}")],
+            24,
+            "[refuse:unattested-release]",
+        ),
+        (
+            "old-lookup-502",
+            "true",
+            "",
+            vec![rel.clone(), att(502, "{}")],
+            23,
+            "[refuse:attestation-lookup-failed]",
+        ),
+        (
+            "old-no-digest",
+            "true",
+            "",
+            vec![(rel_key.as_str(), 200, release_json(true, &no_digest))],
+            22,
+            "[refuse:no-asset-digest]",
+        ),
+        ("no-check", "", "", vec![], 25, "[refuse:no-existing-check]"),
+    ];
+    for (case, exists, id, fixtures, want, marker) in cases {
+        let envs = [
+            ("EXISTS", exists),
+            ("ATTESTATION_ID", id),
+            ("ATTESTATION_URL", "https://example.invalid/attestations/1"),
+        ];
+        let run = run_step(&format!("attest-{case}"), &script, &fixtures, &envs);
+        assert_eq!(run.code, Some(want), "{case}:\n{}", run.text);
+        assert!(
+            run.text.contains(marker),
+            "{case}: expected {marker:?}:\n{}",
+            run.text
+        );
+        if want != 0 {
+            assert!(
+                run.text.contains(&format!("::error::{marker} ")),
+                "{case}:\n{}",
+                run.text
+            );
+        }
+        if case.starts_with("old-none") {
+            assert!(
+                run.text
+                    .contains(&format!("gh release delete {STEP_TAG} --cleanup-tag")),
+                "{case}: the remedy must delete the tag too:\n{}",
+                run.text
+            );
+        }
+    }
+}
+
+/// FTBB N4: every step that writes a release, a tag or an attestation runs
+/// only when no complete release exists at this commit.
+#[test]
+fn every_publishing_write_is_gated_on_no_existing_release() {
+    let wf = release();
+    let publish = job(&wf, "publish");
+    let writes = [
+        "uses: actions/attest-build-provenance@",
+        "gh release create",
+        "gh release delete",
+        "gh api -X DELETE",
+        "gh release upload",
+        "gh release edit",
+    ];
+    let mut gated = 0;
+    for step in publish.split("      - name: ").skip(1) {
+        let writes_here = step
+            .lines()
+            .any(|l| writes.iter().any(|w| l.trim_start().starts_with(w)));
+        if !writes_here {
+            continue;
+        }
+        let cond = step
+            .lines()
+            .find(|l| l.starts_with("        if: "))
+            .unwrap_or_else(|| panic!("a writing step must have an if:\n{step}"));
+        assert!(
+            cond.contains("steps.existing.outputs.exists == 'false'"),
+            "a writing step must be gated on exists == 'false':\n{step}"
+        );
+        gated += 1;
+    }
+    assert_eq!(gated, 3, "attest, publish and the opt-in latest move");
 }
