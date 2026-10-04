@@ -5,6 +5,7 @@ pub mod model;
 pub mod orchestrator;
 pub mod provider;
 pub mod providers;
+pub mod render;
 
 pub use model::{
     ALL_IP_CLAIM_KINDS, IpActionRecord, IpBudgetUsage, IpClaim, IpClaimKind, IpClaimState,
