@@ -139,6 +139,42 @@ fn conflicting_routing_facts_remain_explicit_contradictions() {
 }
 
 #[test]
+fn conflicting_allocation_operator_facts_remain_explicit_contradictions() {
+    let mut investigation = investigation();
+    investigation.observations = vec![
+        observation(
+            "allocation-a",
+            "registry-a",
+            IpObservationKind::Allocation,
+            &[("handle", "NET-A"), ("name", "Example Operator A")],
+            Some(10_000),
+            10_100,
+        ),
+        observation(
+            "allocation-b",
+            "registry-b",
+            IpObservationKind::Allocation,
+            &[("handle", "NET-B"), ("name", "Example Operator B")],
+            Some(10_000),
+            10_100,
+        ),
+    ];
+
+    apply_observations(&mut investigation);
+
+    let claim = investigation
+        .claims
+        .iter()
+        .find(|claim| claim.kind == IpClaimKind::Allocation)
+        .expect("allocation claim");
+    assert_eq!(claim.state, IpClaimState::Contradicted);
+    assert_eq!(
+        claim.contradiction_ids,
+        vec!["allocation-a", "allocation-b"]
+    );
+}
+
+#[test]
 fn historical_observation_is_not_made_current_by_recent_retrieval() {
     let observation = observation(
         "old",
