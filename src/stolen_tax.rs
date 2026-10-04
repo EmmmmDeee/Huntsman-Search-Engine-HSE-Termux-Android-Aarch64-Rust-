@@ -15,10 +15,17 @@
 //! Never emitted: cleartext passwords, hashes, `top_passwords`. The wire types do not
 //! declare those fields, so they cannot become entity values.
 //!
-//! Honest failure: a path that fails while another produced evidence is reported in
-//! [`StolenTaxReport::failed_paths`] and [`StolenTaxReport::truncation`]; when nothing
-//! was collected and any path failed, the lookup is an error, never a clean
-//! negative. A paid source: nothing in this crate calls it automatically.
+//! Budget: the whole lookup (all three paths) shares one [`LOOKUP_BUDGET`] of 120 s,
+//! the monolith's `max_timeout_ms() = 120_000` for the cascade. Each request is sent
+//! with what is left of it (never more than [`TIMEOUT`]); a path that would start
+//! after the budget is spent is not sent and is listed in
+//! [`StolenTaxReport::skipped_paths`]. Worst case: 120 s, not 3 x 120 s.
+//!
+//! Honest failure: a path that fails or is skipped while another produced evidence
+//! is reported in [`StolenTaxReport::failed_paths`] / [`StolenTaxReport::skipped_paths`]
+//! and [`StolenTaxReport::truncation`]; when nothing was collected and any path
+//! failed or was skipped, the lookup is an error, never a clean negative. A paid
+//! source: nothing in this crate calls it automatically.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -27,6 +34,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use crate::deadline::{Clock, Deadline, SystemClock};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, normalise};
 use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
 use crate::http::{Request, Transport, TransportConfig};
@@ -41,9 +49,12 @@ pub const KEY_SLOT: &str = "HUNTSMAN_STOLEN_TAX_KEY";
 const API_BASE: &str = "https://stolen.tax/api/v2/index.php?path=";
 /// Cascade order: snusbase primary, then the secondary corpora, always all three.
 const PATHS: [&str; 3] = ["snusbase", "osintcat", "hudsonrock"];
-/// Per-request timeout. The monolith gave the whole three-path cascade 120 s
-/// (snusbase alone takes ~30–50 s); this crate has no module budget, so each request
-/// gets that same 120 s.
+/// Budget for the whole lookup, every path included. The monolith's engine stopped
+/// the three-path cascade at `max_timeout_ms() = 120_000` (snusbase alone takes
+/// ~30–50 s).
+pub const LOOKUP_BUDGET: Duration = Duration::from_secs(120);
+/// Per-request ceiling (the transport timeout). A request is sent with
+/// `min(TIMEOUT, what is left of LOOKUP_BUDGET)`.
 pub const TIMEOUT: Duration = Duration::from_secs(120);
 
 // Confidence tiers carried over from the monolith's `core::confidence`.
@@ -63,6 +74,20 @@ pub enum StolenTaxError {
     /// failure, in cascade order.
     #[error("stolen_tax: `{}` path failed: {}", .0.path, .0.reason)]
     Failed(PathFailure),
+    /// Nothing was collected and the lookup budget ran out before every path was
+    /// sent. Not a clean negative: `skipped` were never asked.
+    #[error(
+        "stolen_tax: {}s lookup budget exhausted; `{}` path(s) not sent{}",
+        LOOKUP_BUDGET.as_secs(),
+        .skipped.join("`, `"),
+        .failed.first().map_or_else(String::new, |f| format!("; `{}` path failed: {}", f.path, f.reason))
+    )]
+    BudgetExhausted {
+        /// Paths not sent, in cascade order.
+        skipped: Vec<&'static str>,
+        /// Paths that were sent and failed, in cascade order.
+        failed: Vec<PathFailure>,
+    },
 }
 
 /// One cascade path that gave no usable answer.
@@ -80,11 +105,15 @@ pub struct StolenTaxReport {
     pub entities: Vec<Entity>,
     /// Paths that failed while another still produced evidence.
     pub failed_paths: Vec<PathFailure>,
-    /// Set when `failed_paths` is non-empty: this answer is incomplete.
+    /// Paths never sent because [`LOOKUP_BUDGET`] was spent first, in cascade order.
+    pub skipped_paths: Vec<&'static str>,
+    /// Set when `failed_paths` or `skipped_paths` is non-empty: this answer is
+    /// incomplete.
     pub truncation: Option<String>,
 }
 
-/// Transport settings for stolen.tax: the 120 s per-request timeout.
+/// Transport settings for stolen.tax: the 120 s per-request ceiling. The lookup
+/// lowers it per request to what is left of [`LOOKUP_BUDGET`].
 #[must_use]
 pub fn transport_config() -> TransportConfig {
     TransportConfig {
@@ -93,14 +122,28 @@ pub fn transport_config() -> TransportConfig {
     }
 }
 
-/// Query every stolen.tax v2 path for `query` with the key in `keys`.
+/// Query every stolen.tax v2 path for `query` with the key in `keys`, all of it
+/// within [`LOOKUP_BUDGET`].
 ///
 /// # Errors
 /// [`StolenTaxError::MissingKey`] before any request when no key is configured;
 /// [`StolenTaxError::Refused`] when the egress policy refused the destination;
-/// [`StolenTaxError::Failed`] when no evidence was collected and a path failed.
+/// [`StolenTaxError::Failed`] when no evidence was collected and a path failed;
+/// [`StolenTaxError::BudgetExhausted`] when no evidence was collected and a path
+/// was not sent because the budget ran out.
 pub fn lookup<T: Transport + ?Sized>(
     transport: &T,
+    keys: &Keys,
+    query: &str,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<StolenTaxReport, StolenTaxError> {
+    lookup_with_clock(transport, &SystemClock, keys, query, scan_id, now_unix)
+}
+
+fn lookup_with_clock<T: Transport + ?Sized>(
+    transport: &T,
+    clock: &dyn Clock,
     keys: &Keys,
     query: &str,
     scan_id: &str,
@@ -111,15 +154,23 @@ pub fn lookup<T: Transport + ?Sized>(
     let body = serde_json::to_vec(&serde_json::json!({ "query": query }))
         .map_err(|e| StolenTaxError::Refused(e.to_string()))?;
 
+    let deadline = Deadline::start(clock, LOOKUP_BUDGET);
     let mut merged = StolenTaxData::default();
     let mut failures = Vec::new();
+    let mut skipped = Vec::new();
     for path in PATHS {
-        match query_path(transport, &credential, &secret, path, &body, now_unix)? {
+        let remaining = deadline.remaining();
+        if remaining.is_zero() {
+            skipped.push(path);
+            continue;
+        }
+        let cap = remaining.min(TIMEOUT);
+        match query_path(transport, &credential, &secret, path, &body, now_unix, cap)? {
             Ok(chunk) => merge_data(&mut merged, chunk),
             Err(reason) => failures.push(PathFailure { path, reason }),
         }
     }
-    assemble(&merged, failures, query, scan_id)
+    assemble(&merged, failures, skipped, query, scan_id)
 }
 
 fn credential(secret: Secret, now_unix: u64) -> Result<Credential, StolenTaxError> {
@@ -134,8 +185,8 @@ fn credential(secret: Secret, now_unix: u64) -> Result<Credential, StolenTaxErro
         .map_err(|e| StolenTaxError::Refused(e.to_string()))
 }
 
-/// One POST. Outer `Err` aborts the cascade (refused before sending); inner `Err`
-/// is this path's failure, and the cascade continues.
+/// One POST, capped at `cap`. Outer `Err` aborts the cascade (refused before
+/// sending); inner `Err` is this path's failure, and the cascade continues.
 fn query_path<T: Transport + ?Sized>(
     transport: &T,
     credential: &Credential,
@@ -143,10 +194,12 @@ fn query_path<T: Transport + ?Sized>(
     path: &'static str,
     body: &[u8],
     now_unix: u64,
+    cap: Duration,
 ) -> Result<Result<StolenTaxData, String>, StolenTaxError> {
     let request = Request::post(format!("{API_BASE}{path}"), body.to_vec())
         .header("Content-Type", "application/json")
-        .header("Accept", "application/json");
+        .header("Accept", "application/json")
+        .with_timeout(cap);
     let fetched = fetch(
         transport,
         request,
@@ -158,7 +211,16 @@ fn query_path<T: Transport + ?Sized>(
     .map_err(|e| StolenTaxError::Refused(e.to_string()))?;
     let scrub = |text: &str| scrub_secrets(text, &[secret.expose()]);
     let Some(response) = fetched.response else {
-        return Ok(Err(format!("no response ({:?})", fetched.outcome.kind)));
+        let kind = fetched.outcome.kind;
+        return Ok(Err(if cap < TIMEOUT {
+            format!(
+                "no response ({kind:?}); request capped at {:.1}s, the rest of the {}s lookup budget",
+                cap.as_secs_f64(),
+                LOOKUP_BUDGET.as_secs()
+            )
+        } else {
+            format!("no response ({kind:?})")
+        }));
     };
     if !(200..300).contains(&response.status) {
         return Ok(Err(format!(
@@ -200,36 +262,69 @@ fn decode_path(path: &str, body: &[u8]) -> Result<StolenTaxData, String> {
 }
 
 /// Merge the cascade into the report, or fail when there is nothing to report and a
-/// path failed. **Pure.**
+/// path failed or was skipped. **Pure.**
 fn assemble(
     merged: &StolenTaxData,
     failures: Vec<PathFailure>,
+    skipped: Vec<&'static str>,
     query: &str,
     scan_id: &str,
 ) -> Result<StolenTaxReport, StolenTaxError> {
     let entities = dedup(build_entities(merged, query, scan_id));
     if entities.is_empty() {
+        if !skipped.is_empty() {
+            return Err(StolenTaxError::BudgetExhausted {
+                skipped,
+                failed: failures,
+            });
+        }
         if let Some(first) = failures.into_iter().next() {
             return Err(StolenTaxError::Failed(first));
         }
         return Ok(StolenTaxReport {
             entities,
             failed_paths: Vec::new(),
+            skipped_paths: Vec::new(),
             truncation: None,
         });
     }
-    let truncation = (!failures.is_empty()).then(|| {
-        let names: Vec<&str> = failures.iter().map(|f| f.path).collect();
-        format!(
-            "{} retrieved — stopped by the stolen.tax `{}` path(s) failing, and the provider did not report how many exist. Absence of a finding here is not evidence of absence.",
-            entities.len(),
-            names.join("`, `")
-        )
-    });
+    let truncation = partial_note(entities.len(), &failures, &skipped);
     Ok(StolenTaxReport {
         entities,
         failed_paths: failures,
+        skipped_paths: skipped,
         truncation,
+    })
+}
+
+/// The partial-answer note, or `None` for a complete cascade. Failures alone keep
+/// the monolith's wording. **Pure.**
+fn partial_note(retrieved: usize, failures: &[PathFailure], skipped: &[&str]) -> Option<String> {
+    let mut causes = Vec::new();
+    if !failures.is_empty() {
+        let names: Vec<&str> = failures.iter().map(|f| f.path).collect();
+        causes.push(format!(
+            "the stolen.tax `{}` path(s) failing",
+            names.join("`, `")
+        ));
+    }
+    if !skipped.is_empty() {
+        causes.push(format!(
+            "{} `{}` path(s) not sent ({}s lookup budget exhausted)",
+            if failures.is_empty() {
+                "the stolen.tax"
+            } else {
+                "the"
+            },
+            skipped.join("`, `"),
+            LOOKUP_BUDGET.as_secs()
+        ));
+    }
+    (!causes.is_empty()).then(|| {
+        format!(
+            "{retrieved} retrieved — stopped by {}, and the provider did not report how many exist. Absence of a finding here is not evidence of absence.",
+            causes.join(" and ")
+        )
     })
 }
 

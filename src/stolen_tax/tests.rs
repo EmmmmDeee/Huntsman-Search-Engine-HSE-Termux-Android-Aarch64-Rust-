@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 
 use super::*;
+use crate::deadline::FakeClock;
 use crate::http::{Response, TransportFailure};
 
 const KEY: &str = "st-test-key-0123456789";
@@ -180,9 +181,261 @@ fn the_key_is_not_sent_to_another_origin_on_redirect() {
 }
 
 #[test]
-fn timeout_is_the_monolith_budget_per_request() {
-    assert_eq!(TIMEOUT, Duration::from_secs(120));
+fn the_monolith_budget_bounds_the_whole_lookup() {
+    assert_eq!(LOOKUP_BUDGET, Duration::from_secs(120));
+    assert!(TIMEOUT <= LOOKUP_BUDGET);
     assert_eq!(transport_config().timeout, TIMEOUT);
+}
+
+/// Each path answers after a simulated delay on a fake clock. A delay longer than
+/// the request's cap behaves like the real transport: the clock advances by the
+/// cap and the request times out.
+struct Timed<'c> {
+    clock: &'c FakeClock,
+    answers: Vec<(&'static str, Duration, &'static str)>,
+    caps: RefCell<Vec<(String, Duration)>>,
+}
+
+impl<'c> Timed<'c> {
+    fn new(clock: &'c FakeClock, answers: &[(&'static str, u64, &'static str)]) -> Self {
+        Self {
+            clock,
+            answers: answers
+                .iter()
+                .map(|(p, secs, body)| (*p, Duration::from_secs(*secs), *body))
+                .collect(),
+            caps: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn sent(&self) -> Vec<String> {
+        self.caps.borrow().iter().map(|(p, _)| p.clone()).collect()
+    }
+}
+
+impl Transport for Timed<'_> {
+    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        let path = request.url.rsplit_once("path=").map(|(_, p)| p).unwrap();
+        let cap = request
+            .timeout
+            .expect("every stolen.tax request carries a cap");
+        assert!(!cap.is_zero(), "{path}: sent with no budget left");
+        self.caps.borrow_mut().push((path.to_owned(), cap));
+        let (_, delay, body) = self
+            .answers
+            .iter()
+            .find(|(p, _, _)| *p == path)
+            .copied()
+            .unwrap_or((path_name(path), Duration::from_secs(1), EMPTY));
+        if delay > cap {
+            self.clock.advance(cap);
+            return Err(TransportFailure {
+                kind: SourceOutcomeKind::TtfbTimeout,
+                detail: "timed out".into(),
+                blocked: false,
+            });
+        }
+        self.clock.advance(delay);
+        Ok(Response {
+            status: 200,
+            headers: Vec::new(),
+            body: body.as_bytes().to_vec(),
+            truncated: false,
+        })
+    }
+}
+
+const EMPTY: &str = r#"{"success":true,"data":null}"#;
+const SNUS_HIT: &str =
+    r#"{"success":true,"data":{"results":{"DB_A":[{"email":"alt@example.com"}]}}}"#;
+const OSINT_HIT: &str =
+    r#"{"success":true,"data":{"breach_data":[{"username":"alt_user","source":"DB_B"}]}}"#;
+const HUDSON_HIT: &str =
+    r#"{"success":true,"data":{"stealers":[{"computer_name":"HOST-1","top_logins":[]}]}}"#;
+/// Longer than any budget: the request only ends when its cap does.
+const HANG: u64 = 10_000;
+
+fn path_name(path: &str) -> &'static str {
+    PATHS.iter().copied().find(|p| *p == path).unwrap()
+}
+
+fn timed(clock: &FakeClock, transport: &Timed<'_>) -> Result<StolenTaxReport, StolenTaxError> {
+    lookup_with_clock(transport, clock, &keys(), "user@example.com", "scan", 0)
+}
+
+#[test]
+fn worst_case_is_one_budget_not_three_request_timeouts() {
+    let clock = FakeClock::new();
+    let transport = Timed::new(
+        &clock,
+        &[
+            ("snusbase", HANG, EMPTY),
+            ("osintcat", HANG, EMPTY),
+            ("hudsonrock", HANG, EMPTY),
+        ],
+    );
+    let err = timed(&clock, &transport).unwrap_err();
+    assert!(clock.elapsed() <= LOOKUP_BUDGET, "{:?}", clock.elapsed());
+    assert_eq!(clock.elapsed(), LOOKUP_BUDGET);
+    let StolenTaxError::BudgetExhausted { skipped, failed } = &err else {
+        panic!("expected a budget error, got {err:?}");
+    };
+    assert_eq!(skipped, &["osintcat", "hudsonrock"]);
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].path, "snusbase");
+    assert!(
+        failed[0].reason.contains("TtfbTimeout"),
+        "{}",
+        failed[0].reason
+    );
+    assert_eq!(transport.sent(), ["snusbase"]);
+    let text = err.to_string();
+    assert!(
+        text.contains("120s lookup budget exhausted; `osintcat`, `hudsonrock` path(s) not sent"),
+        "{text}"
+    );
+    assert!(!text.contains(KEY));
+}
+
+#[test]
+fn every_request_gets_only_what_is_left_of_the_budget() {
+    let clock = FakeClock::new();
+    let transport = Timed::new(
+        &clock,
+        &[
+            ("snusbase", 50, SNUS_HIT),
+            ("osintcat", 50, OSINT_HIT),
+            ("hudsonrock", HANG, HUDSON_HIT),
+        ],
+    );
+    let report = timed(&clock, &transport).unwrap();
+    let caps: Vec<Duration> = transport.caps.borrow().iter().map(|(_, c)| *c).collect();
+    assert_eq!(
+        caps,
+        [
+            Duration::from_secs(120),
+            Duration::from_secs(70),
+            Duration::from_secs(20)
+        ]
+    );
+    assert!(caps.iter().sum::<Duration>() <= LOOKUP_BUDGET * 2);
+    assert_eq!(clock.elapsed(), LOOKUP_BUDGET);
+    assert_eq!(report.failed_paths.len(), 1);
+    assert_eq!(report.failed_paths[0].path, "hudsonrock");
+    assert!(
+        report.failed_paths[0]
+            .reason
+            .contains("request capped at 20.0s, the rest of the 120s lookup budget"),
+        "{}",
+        report.failed_paths[0].reason
+    );
+    assert_eq!(report.skipped_paths.len(), 0);
+    assert!(has(&report, &EntityKind::Email, "alt@example.com"));
+    // osintcat's row arrived inside the budget. `Entity::value` is the canonical
+    // handle (`canonical::canonical_handle` drops `_`); the spelling the provider
+    // sent is kept in `raw_value`.
+    let user = report
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("osintcat username kept");
+    assert_eq!(
+        (user.value.as_str(), user.raw_value.as_str()),
+        ("altuser", "alt_user")
+    );
+}
+
+#[test]
+fn paths_the_budget_did_not_reach_are_reported_not_dropped() {
+    let clock = FakeClock::new();
+    // snusbase answers exactly at the deadline: its evidence is kept, and nothing
+    // is left for the other two paths.
+    let transport = Timed::new(
+        &clock,
+        &[
+            ("snusbase", 120, SNUS_HIT),
+            ("osintcat", 1, OSINT_HIT),
+            ("hudsonrock", 1, HUDSON_HIT),
+        ],
+    );
+    let report = timed(&clock, &transport).unwrap();
+    assert_eq!(clock.elapsed(), LOOKUP_BUDGET);
+    assert_eq!(transport.sent(), ["snusbase"]);
+    assert!(has(&report, &EntityKind::Email, "alt@example.com"));
+    assert!(has(&report, &EntityKind::Credential, "breach:DB_A"));
+    assert_eq!(report.entities.len(), 2);
+    assert_eq!(report.failed_paths.len(), 0);
+    assert_eq!(report.skipped_paths, ["osintcat", "hudsonrock"]);
+    assert_eq!(
+        report.truncation.as_deref(),
+        Some(
+            "2 retrieved — stopped by the stolen.tax `osintcat`, `hudsonrock` path(s) not sent (120s lookup budget exhausted), and the provider did not report how many exist. Absence of a finding here is not evidence of absence."
+        )
+    );
+}
+
+#[test]
+fn a_failed_and_a_skipped_path_are_both_named() {
+    let clock = FakeClock::new();
+    let fail = r#"{"success":false,"error":"database temporarily unavailable"}"#;
+    let transport = Timed::new(
+        &clock,
+        &[
+            ("snusbase", 30, fail),
+            ("osintcat", 90, OSINT_HIT),
+            ("hudsonrock", 1, HUDSON_HIT),
+        ],
+    );
+    let report = timed(&clock, &transport).unwrap();
+    assert_eq!(transport.sent(), ["snusbase", "osintcat"]);
+    assert_eq!(report.failed_paths[0].path, "snusbase");
+    assert_eq!(report.skipped_paths, ["hudsonrock"]);
+    assert_eq!(
+        report.truncation.as_deref(),
+        Some(
+            "2 retrieved — stopped by the stolen.tax `snusbase` path(s) failing and the `hudsonrock` path(s) not sent (120s lookup budget exhausted), and the provider did not report how many exist. Absence of a finding here is not evidence of absence."
+        )
+    );
+}
+
+#[test]
+fn an_empty_answer_with_a_skipped_path_is_not_a_clean_negative() {
+    let clock = FakeClock::new();
+    let transport = Timed::new(&clock, &[("snusbase", 120, EMPTY)]);
+    let err = timed(&clock, &transport).unwrap_err();
+    assert_eq!(
+        err,
+        StolenTaxError::BudgetExhausted {
+            skipped: vec!["osintcat", "hudsonrock"],
+            failed: Vec::new(),
+        }
+    );
+}
+
+#[test]
+fn within_budget_the_cascade_is_unchanged() {
+    let answers = [
+        ("snusbase", SNUS_HIT),
+        ("osintcat", OSINT_HIT),
+        ("hudsonrock", HUDSON_HIT),
+    ];
+    let clock = FakeClock::new();
+    let transport = Timed::new(
+        &clock,
+        &[
+            ("snusbase", 40, SNUS_HIT),
+            ("osintcat", 30, OSINT_HIT),
+            ("hudsonrock", 20, HUDSON_HIT),
+        ],
+    );
+    let budgeted = timed(&clock, &transport).unwrap();
+    assert_eq!(transport.sent(), ["snusbase", "osintcat", "hudsonrock"]);
+    assert_eq!(clock.elapsed(), Duration::from_secs(90));
+    let plain = lookup(&Paths::ok(&answers), &keys(), "user@example.com", "scan", 0).unwrap();
+    assert_eq!(budgeted, plain);
+    assert!(budgeted.failed_paths.is_empty() && budgeted.skipped_paths.is_empty());
+    assert!(budgeted.truncation.is_none());
+    assert_eq!(budgeted.entities.len(), 5);
 }
 
 #[test]

@@ -189,3 +189,96 @@ fn a_silent_server_times_out() {
     assert_eq!(failure.kind, SourceOutcomeKind::TtfbTimeout, "{failure:?}");
     hold.join().expect("holder");
 }
+
+/// A server that accepts and then says nothing for `hold`.
+fn silent(hold: Duration) -> (u16, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let handle = thread::spawn(move || {
+        let (sock, _) = listener.accept().expect("accept");
+        thread::sleep(hold);
+        drop(sock);
+    });
+    (port, handle)
+}
+
+#[test]
+fn a_request_cap_cuts_the_transport_timeout_short() {
+    let (port, hold) = silent(Duration::from_millis(3000));
+    let t = UreqTransport::new(&TransportConfig {
+        timeout: Duration::from_secs(10),
+        egress: EgressPolicy::Unrestricted,
+        ..TransportConfig::default()
+    });
+    let started = std::time::Instant::now();
+    let failure = t
+        .send(
+            &Request::get(format!("http://127.0.0.1:{port}/"))
+                .with_timeout(Duration::from_millis(300)),
+        )
+        .expect_err("capped");
+    assert_eq!(failure.kind, SourceOutcomeKind::TtfbTimeout, "{failure:?}");
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "{:?}",
+        started.elapsed()
+    );
+    hold.join().expect("holder");
+}
+
+#[test]
+fn a_request_cap_never_raises_the_transport_timeout() {
+    let (port, hold) = silent(Duration::from_millis(3000));
+    let t = UreqTransport::new(&TransportConfig {
+        timeout: Duration::from_millis(300),
+        egress: EgressPolicy::Unrestricted,
+        ..TransportConfig::default()
+    });
+    let started = std::time::Instant::now();
+    let failure = t
+        .send(
+            &Request::get(format!("http://127.0.0.1:{port}/"))
+                .with_timeout(Duration::from_secs(60)),
+        )
+        .expect_err("transport timeout still applies");
+    assert_eq!(failure.kind, SourceOutcomeKind::TtfbTimeout, "{failure:?}");
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "{:?}",
+        started.elapsed()
+    );
+    hold.join().expect("holder");
+}
+
+#[test]
+fn a_request_cap_also_bounds_a_stalled_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let hold = thread::spawn(move || {
+        let (mut sock, _) = listener.accept().expect("accept");
+        read_request(&mut sock);
+        let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial");
+        let _ = sock.flush();
+        thread::sleep(Duration::from_millis(3000));
+    });
+    let t = UreqTransport::new(&TransportConfig {
+        timeout: Duration::from_secs(10),
+        egress: EgressPolicy::Unrestricted,
+        ..TransportConfig::default()
+    });
+    let started = std::time::Instant::now();
+    let failure = t
+        .send(
+            &Request::get(format!("http://127.0.0.1:{port}/"))
+                .with_timeout(Duration::from_millis(300)),
+        )
+        .expect_err("body read capped");
+    // The status line and headers arrived; the cap fired while reading the body.
+    assert_eq!(failure.kind, SourceOutcomeKind::BodyTimeout, "{failure:?}");
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "{:?}",
+        started.elapsed()
+    );
+    hold.join().expect("holder");
+}

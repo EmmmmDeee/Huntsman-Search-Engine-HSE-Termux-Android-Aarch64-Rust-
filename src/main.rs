@@ -330,6 +330,12 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
                     escape_controls(&failure.reason)
                 );
             }
+            for path in &report.skipped_paths {
+                println!(
+                    "skipped_path={path} reason=not sent, {}s lookup budget exhausted",
+                    stolen_tax::LOOKUP_BUDGET.as_secs()
+                );
+            }
             if let Some(secret) = keys.get(stolen_tax::KEY_SLOT) {
                 println!("credential={}", &secret.fingerprint().as_str()[..12]);
             }
@@ -345,7 +351,9 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
         }
         Err(e @ StolenTaxError::MissingKey) => fail(EX_NOINPUT, &e.to_string()),
         Err(e @ StolenTaxError::Refused(_)) => fail(EX_NOPERM, &e.to_string()),
-        Err(e @ StolenTaxError::Failed(_)) => fail(EX_UNAVAILABLE, &e.to_string()),
+        Err(e @ (StolenTaxError::Failed(_) | StolenTaxError::BudgetExhausted { .. })) => {
+            fail(EX_UNAVAILABLE, &e.to_string())
+        }
     }
 }
 

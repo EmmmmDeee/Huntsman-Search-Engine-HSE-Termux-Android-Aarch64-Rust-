@@ -233,9 +233,10 @@ fn port_keeps_the_legacy_endpoints_and_budget() {
         .map(|u| u.as_str().unwrap())
         .collect();
     assert_eq!(urls, legacy);
+    // The monolith's module budget bounded the whole cascade; so does LOOKUP_BUDGET.
     assert_eq!(
         u128::from(expected["max_timeout_ms"].as_u64().unwrap()),
-        TIMEOUT.as_millis()
+        LOOKUP_BUDGET.as_millis()
     );
 }
 

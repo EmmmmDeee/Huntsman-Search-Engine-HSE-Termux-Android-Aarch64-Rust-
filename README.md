@@ -62,10 +62,14 @@ DigiCert, …). Subdomains of the target's apex are tagged `subdomain`. Output i
 `recon stolen-tax QUERY [--keys FILE]` needs `HUNTSMAN_STOLEN_TAX_KEY` (keys file or
 environment; exit 66 without it, before any request). It POSTs the query to the v2
 snusbase, osintcat and hudsonrock paths with a Bearer key sent only to
-`https://stolen.tax`, 120 s per request. It prints emails, usernames and
+`https://stolen.tax`. The whole lookup (all three paths) has one 120 s budget, the
+monolith's module budget: each request gets only what is left of it, so the worst
+case is 120 s, not 3 x 120 s. A path the budget did not reach is not sent and is
+printed as `skipped_path=PATH`. (The monolith's engine instead dropped the whole result when the budget ran out, and cut it to 45 s on a resource-constrained device; see `docs/DISPOSITIONS.md`.) It prints emails, usernames and
 `breach:`/`stealer:` markers, and never passwords, hashes or `top_passwords`. A path
-failure alongside evidence prints `partial=true` and the failed path. Every path
-failing exits 69. Each run spends paid lookups, so it is not in the examples above.
+failure or skip alongside evidence prints `partial=true` and the path. Every path
+failing or skipped with nothing collected exits 69. Each run spends paid lookups, so
+it is not in the examples above.
 
 `tests/fixtures/legacy_764ce8e/` holds the old-tree output recorded on the committed
 inputs. The differential tests require the port to reproduce it. The one intended
