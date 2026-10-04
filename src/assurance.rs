@@ -1066,7 +1066,11 @@ mod tests {
             let resolved = control.resolve(None);
             assert!(resolved.level < AssuranceLevel::Observed || control.id == "HRECON-CLOUD");
             if control.applicability != Applicability::Applicable {
-                assert!(!control.applicability_reason.trim().is_empty());
+                assert!(
+                    !control.applicability_reason.trim().is_empty(),
+                    "{} has no applicability reason",
+                    control.id
+                );
             }
         }
         let resolved = resolve_catalog();
@@ -1207,6 +1211,7 @@ mod tests {
         let tree = FsSourceTree;
         let documents =
             collect_rust_sources(&tree, &[Path::new("src"), Path::new("tests")]).unwrap();
-        assert!(missing_recovery_tests(&objectives(), &documents).is_empty());
+        let missing = missing_recovery_tests(&objectives(), &documents);
+        assert!(missing.is_empty(), "{missing:?}");
     }
 }
