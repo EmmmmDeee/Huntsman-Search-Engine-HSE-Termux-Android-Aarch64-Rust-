@@ -31,7 +31,7 @@ const SECTIONS: [&str; 12] = [
 ];
 
 /// Module-map rows, in order. A module's layer is its index here.
-const LAYERS: [&str; 8] = [
+const LAYERS: [&str; 9] = [
     "L0 primitives",
     "L1 evidence core",
     "L2 network boundary",
@@ -40,13 +40,14 @@ const LAYERS: [&str; 8] = [
     "L5 entity model and analysis",
     "L6 GEOINT and RF",
     "L7 records and outputs",
+    "L8 local presentation",
 ];
 
 /// Layer of every module the map placed when this test was written, by [`LAYERS`] index.
 /// A module that is still compiled must stay in its pinned layer: moving one is a design
 /// change, made here and in the map together. A new module needs no pin; the dependency
 /// checks place it.
-const PINNED_LAYERS: [&str; 8] = [
+const PINNED_LAYERS: [&str; 9] = [
     "error sha256 json timefmt union_find tags xml uid stage event fsio signals place geohash redact termination circuit oui_ieee oui radar",
     "evidence_ancestry confidence identity_resolution resolve eval",
     "classify source_outcome egress credential_origin http keys fetch fetch_cli",
@@ -55,6 +56,7 @@ const PINNED_LAYERS: [&str; 8] = [
     "entity identity relation graph coref correlator cross_scan dependency module attack attack_catalog exposure profiles leads timeline community diff path pivot intelligence classifier classify_module lineage assurance benchmark coverage diamond gap metrics roi trust",
     "geo geometry rf geoint",
     "ledger session store stix navigator search gexf snake_graph",
+    "web",
 ];
 const BINARY_ROW: &str = "Binary";
 /// Optional last row: files in `src/` that `src/lib.rs` does not declare.

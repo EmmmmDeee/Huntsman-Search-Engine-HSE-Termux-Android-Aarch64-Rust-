@@ -25,7 +25,7 @@ Every row's acceptance criteria include **D** and **N**:
 
 CURRENT: no row meets **D** yet. The one differential test on `main`, `tests/lineage_legacy.rs` (#679), covers part of row 9: legacy `core::breach_consensus` grouping and thresholds on nine recorded fixtures. There is no general differential harness. "REGRESSION" marks a capability that `hse` at `7dca720` exposed and `main` does not.
 
-Status counts: REIMPLEMENTED 2, PARTIAL 11, NOT YET REBUILT 10 (21 of 23 rows are regressions).
+Status counts: REIMPLEMENTED 2, PARTIAL 12, NOT YET REBUILT 9 (21 of 23 rows are regressions).
 
 | # | Capability | Legacy source (`7dca720` unless noted) | Status on main | Owner | Acceptance criteria |
 | --- | --- | --- | --- | --- | --- |
@@ -45,7 +45,7 @@ Status counts: REIMPLEMENTED 2, PARTIAL 11, NOT YET REBUILT 10 (21 of 23 rows ar
 | 14 | Key management | `hse keys {set,add,list,export,import-json,revoke,rotate,validate,remove,status,bank,services,import-tsv,health,prune}` (`src/cli/keys_cmd/mod.rs`), `set-key`, `provision` | PARTIAL. REGRESSION: `keys FILE` lists slots and fingerprint prefixes only, with none of the legacy subcommands; `fetch` auto-loads `~/.huntsman.env` (`Keys::resolve`, #674) | Software Development Bot | D, N, S. No value ever printed |
 | 15 | Web meta-search | `hse query`, `dorkus`, `query-pack`, `engines` | NOT YET REBUILT. REGRESSION: `search` is local-only | Software Development Bot | D, N, L |
 | 16 | Entity extraction from text | `hse investigate`, `ingest`, `import` | PARTIAL. REGRESSION: the binary calls `classifier::classify` only from `sources`, on one selector (#671); `classifier::extract` and `classify_module` have no CLI | REFACTOR Bot | D, N. No text leaves the device |
-| 17 | Web UI and HTTP API | `hse serve`; `src/{web,api}/` | NOT YET REBUILT. REGRESSION | REFACTOR Bot | D, N, S. Loopback bind by default |
+| 17 | Web UI and HTTP API | `hse serve`; `src/{web,api}/` | PARTIAL. REGRESSION: `web` is a loopback-only read-only UI/API for status and bundled-record search; no scan lifecycle, persistence, or SpiderFoot adapter | REFACTOR Bot | D, N, S. Loopback bind by default; implement a differential scan workflow before parity claims |
 | 18 | Radio and device sensing | `hse radar`, `live`, `cells`, `signal`; `src/modules/{termux_sensor,device_cell}.rs` | PARTIAL. REGRESSION: `radar`, `rf`, `oui` have no CLI and no sensor input; the binary uses only `geoint::parse_latlon` (`geo`, `geohash`) and `geoint::haversine_m` (`geo`, `check` gate 2) (`src/main.rs:23`) | REFACTOR Bot | D, N |
 | 19 | ATT&CK and assurance reports | `hse attack`, `assurance`, `bsi`, `report`, `audit`, `benchmark`, `gaps` | PARTIAL. REGRESSION: Navigator/STIX only from `check`; `assurance`, `benchmark`, `gap` are compiled (#675) but have no CLI | REFACTOR Bot | D, N |
 | 20 | Diagnostics and self-test | `hse diagnostics`, `doctor`, `selftest`, `build-sha` | PARTIAL. REGRESSION: `check` runs gates 2–11 on fixtures; no install or provider diagnostics | Fix This Bullshit Bot | D, N |
@@ -69,14 +69,15 @@ CURRENT. One package, one library (`src/lib.rs`) and one binary (`src/main.rs`, 
 | L5 entity model and analysis | `entity`, `identity`, `relation`, `graph`, `coref`, `correlator`, `cross_scan`, `dependency`, `module`, `attack`, `attack_catalog`, `exposure`, `profiles`, `leads`, `timeline`, `community`, `diff`, `path`, `pivot`, `intelligence`, `classifier`, `classify_module`, `lineage`, `assurance`, `benchmark`, `coverage`, `diamond`, `gap`, `metrics`, `roi`, `trust`, `source_registry` | Entities, evidence, relations, correlation rules; lineage from response data and the merge-rule front-end (`lineage`); assurance, coverage and gap reports; offline `LeadOnly` search routes per entity kind (`source_registry`) |
 | L6 GEOINT and RF | `geo`, `geometry`, `rf`, `geoint` | Coordinates, places, RF sightings |
 | L7 records and outputs | `ledger`, `session`, `store`, `stix`, `navigator`, `search`, `gexf`, `snake_graph` | Hash-chained ledger, session store, exports, local search |
-| Binary | `main` | Dispatch for the 11 commands; calls L0, L1, L2, L3, L5, L6 and L7 directly, never L4 |
+| L8 local presentation | `web` | Standard-library HTTP server and browser UI; loopback-only, read-only status/configuration, bundled-sample search |
+| Binary | `main` | Dispatch for the 12 commands; calls L0, L1, L2, L3, L5, L6, L7 and L8 directly, never L4 |
 
 PLANNED: a collector layer between L4 and L5 that turns a selector into source requests and a source response into `entity::Evidence` plus an `evidence_ancestry` node. It is the missing causal boundary named in the audit. The binary reaches L4 only through it.
 
 ## BOUNDARIES
 
 CURRENT:
-- The only socket-opening code is `http::UreqTransport` (blocking `ureq` 3, rustls). No other module imports `ureq` or opens a `TcpStream`/`UdpSocket`; other uses of `std::net` are address types only.
+- Outbound HTTP is issued through `http::UreqTransport` (blocking `ureq` 3, rustls). `web::run` separately opens an IPv4 loopback listener for the local browser UI; it does not make outbound requests. No other module imports `ureq` or opens a `UdpSocket`.
 - `UreqTransport` resolves through `GuardedResolver`, which drops every address `egress::EgressPolicy` refuses. The default is `PublicOnly`, applied to the resolved addresses that are connected to, which defeats DNS rebinding. A refusal maps to exit 77.
 - The transport never follows redirects (`max_redirects(0)`). `fetch::fetch` follows them; it attaches its `credential` argument only on the origin of the first URL (`src/fetch.rs:141-145`), and on a cross-origin hop it drops every header that `http::is_sensitive_header` names (`src/fetch.rs:272-275`).
 - A `fetch::Credential` is built only from a `credential_origin::AuthenticationAuthority` (`src/fetch.rs:48`), and nothing converts a `DiscoveredCredential` into one, so a secret found in collected data cannot become a `fetch` credential. Two library paths put a secret into a request themselves and call `fetch` with `credential: None`; neither has a non-test caller:

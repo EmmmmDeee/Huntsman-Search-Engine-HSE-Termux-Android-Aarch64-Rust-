@@ -115,8 +115,24 @@ fn help_and_version_are_available() {
         String::from_utf8(version.stdout).unwrap(),
         format!("huntsman-recon {}\n", env!("CARGO_PKG_VERSION"))
     );
-    assert_eq!(bin().args(["web", "not-a-port"]).output().unwrap().status.code(), Some(64));
-    assert_eq!(bin().args(["web", "80", "extra"]).output().unwrap().status.code(), Some(64));
+    assert_eq!(
+        bin()
+            .args(["web", "not-a-port"])
+            .output()
+            .unwrap()
+            .status
+            .code(),
+        Some(64)
+    );
+    assert_eq!(
+        bin()
+            .args(["web", "80", "extra"])
+            .output()
+            .unwrap()
+            .status
+            .code(),
+        Some(64)
+    );
 }
 
 #[test]

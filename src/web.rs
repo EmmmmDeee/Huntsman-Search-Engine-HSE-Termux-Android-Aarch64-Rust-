@@ -74,11 +74,12 @@ impl HttpResponse {
         }
     }
 
-    fn json(status: u16, value: Value) -> Self {
+    fn json(status: u16, value: &Value) -> Self {
         Self::new(
             status,
             "application/json; charset=utf-8",
-            serde_json::to_vec(&value).unwrap_or_else(|_| b"{\"error\":\"serialization failed\"}".to_vec()),
+            serde_json::to_vec(value)
+                .unwrap_or_else(|_| b"{\"error\":\"serialization failed\"}".to_vec()),
         )
     }
 }
@@ -100,12 +101,8 @@ pub fn run(port: u16) -> io::Result<()> {
     let address = listener.local_addr()?;
     eprintln!("Huntsman Recon web UI: http://{address}/ (loopback only; Ctrl-C to stop)");
     for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let _ = serve_connection(stream);
-            }
-            Err(error) => return Err(error),
-        }
+        let stream = stream?;
+        let _ = serve_connection(stream);
     }
     Ok(())
 }
@@ -114,7 +111,7 @@ fn serve_connection(mut stream: TcpStream) -> io::Result<()> {
     stream.set_read_timeout(Some(READ_TIMEOUT))?;
     let request = read_request(&mut stream)?;
     let response = handle_request(&request);
-    write_response(&mut stream, response)
+    write_response(&mut stream, &response)
 }
 
 fn read_request(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
@@ -129,17 +126,18 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
                     return Ok(request);
                 }
             }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
         }
     }
     Ok(request)
 }
 
-fn write_response(stream: &mut TcpStream, response: HttpResponse) -> io::Result<()> {
+fn write_response(stream: &mut TcpStream, response: &HttpResponse) -> io::Result<()> {
     let reason = match response.status {
         200 => "OK",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         431 => "Request Header Fields Too Large",
@@ -203,7 +201,7 @@ pub fn handle_request(request: &[u8]) -> HttpResponse {
         "/" => HttpResponse::new(200, "text/html; charset=utf-8", UI),
         "/api/status" => HttpResponse::json(
             200,
-            json!({
+            &json!({
                 "product": "huntsman-recon",
                 "product_version": env!("CARGO_PKG_VERSION"),
                 "bind": "127.0.0.1",
@@ -214,7 +212,7 @@ pub fn handle_request(request: &[u8]) -> HttpResponse {
         ),
         "/api/config" => HttpResponse::json(
             200,
-            json!({
+            &json!({
                 "bind": "127.0.0.1",
                 "port": "configured at launch",
                 "data_mode": "bundled sample records",
@@ -251,7 +249,10 @@ fn search_response(query: &str) -> HttpResponse {
         return error(400, "query exceeds 512 bytes");
     }
     if tokenize(&query).is_empty() {
-        return error(400, "query needs a searchable term of at least two characters");
+        return error(
+            400,
+            "query needs a searchable term of at least two characters",
+        );
     }
     let docs = [
         Document {
@@ -275,7 +276,7 @@ fn search_response(query: &str) -> HttpResponse {
             })
         })
         .collect();
-    HttpResponse::json(200, json!({ "query": query, "results": results }))
+    HttpResponse::json(200, &json!({ "query": query, "results": results }))
 }
 
 fn decode_component(value: &str) -> Result<String, ()> {
@@ -323,7 +324,7 @@ fn is_loopback_host(host: &str) -> bool {
 }
 
 fn error(status: u16, message: &str) -> HttpResponse {
-    HttpResponse::json(status, json!({ "error": message }))
+    HttpResponse::json(status, &json!({ "error": message }))
 }
 
 #[cfg(test)]
@@ -374,7 +375,10 @@ mod tests {
         server.join().expect("server thread");
         let response = String::from_utf8(response).expect("HTTP response");
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
-        assert!(response.contains("X-Content-Type-Options: nosniff"), "{response}");
+        assert!(
+            response.contains("X-Content-Type-Options: nosniff"),
+            "{response}"
+        );
         assert!(response.contains("\"bind\":\"127.0.0.1\""), "{response}");
     }
 
@@ -430,7 +434,7 @@ mod tests {
         let large = format!("/api/search?q={}", "a".repeat(MAX_QUERY_BYTES + 1));
         assert_eq!(handle_request(&request(&large)).status, 400);
         assert_eq!(
-            handle_request(b"POST /api/search?q=port HTTP/1.1\r\n\r\n").status,
+            handle_request(b"POST /api/search?q=port HTTP/1.1\r\nHost: localhost\r\n\r\n").status,
             405
         );
         assert_eq!(handle_request(&request("/unknown")).status, 404);
@@ -439,7 +443,10 @@ mod tests {
 
     #[test]
     fn query_decoder_rejects_invalid_utf8_and_decodes_unicode() {
-        assert_eq!(decode_component("brisbane+port").as_deref(), Ok("brisbane port"));
+        assert_eq!(
+            decode_component("brisbane+port").as_deref(),
+            Ok("brisbane port")
+        );
         assert_eq!(decode_component("%C3%A9").as_deref(), Ok("é"));
         assert!(decode_component("%FF").is_err());
         assert!(decode_component("%1").is_err());

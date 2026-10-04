@@ -144,7 +144,9 @@ fn print_command_help(command: &str) {
         "verify" => {
             "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
         }
-        "web" => "web [PORT]\nStart the browser UI on 127.0.0.1. Defaults to port 8787; this UI searches bundled sample records only.",
+        "web" => {
+            "web [PORT]\nStart the browser UI on 127.0.0.1. Defaults to port 8787; this UI searches bundled sample records only."
+        }
         _ => {
             println!("{HELP}\n{USAGE}");
             return;
@@ -164,8 +166,10 @@ fn web_cmd(args: &[String]) -> ExitCode {
             Err(_) => return fail(EX_USAGE, "web PORT must be an integer in 0..=65535"),
         },
     };
-    huntsman_recon::web::run(port)
-        .map_or_else(|error| fail(EX_IOERR, &format!("web server: {error}")), |_| ExitCode::SUCCESS)
+    huntsman_recon::web::run(port).map_or_else(
+        |error| fail(EX_IOERR, &format!("web server: {error}")),
+        |_| ExitCode::SUCCESS,
+    )
 }
 
 fn fail(code: u8, msg: &str) -> ExitCode {
