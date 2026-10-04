@@ -53,7 +53,11 @@ The gate recomputes the collector's family from `provenance.source` on every cal
 never reads the stored `provenance.source_family`. That field is deserialized from saved
 data, so a tampered local record with `source: "hibp"` and `source_family: "abn_lookup"`
 is not registry-class: its `registry` field contributes zero families, and the record is
-still returned unchanged.
+still returned unchanged. The collector name must also be ASCII before it is compared:
+Unicode lowercasing folds some non-ASCII letters onto ASCII (KELVIN SIGN U+212A becomes
+`k`), so `abn_loo\u{212A}up` would otherwise match `abn_lookup`. Lookalike spellings
+such as CYRILLIC SMALL LETTER A U+0430 (`\u{0430}bn_lookup`) are different strings and do
+not match.
 
 Current canonicalisation collapses whitespace and case. Unicode confusables and zero-width
 characters are not yet normalized as equivalent dataset names. Treat adapter-origin
@@ -142,6 +146,7 @@ intentional and pinned:
 The adversarial lineage suite additionally pins the fail-closed cases that motivated the
 review repair: record URLs and row ids contribute zero families; an unverified provider's
 `registry` field contributes zero; a tampered record whose stored `source_family` claims
-`abn_lookup` contributes zero; verified `abn_lookup` + ABR can contribute a registry
-root; and two explicitly named upstream datasets may still be represented through one
-aggregating collector.
+`abn_lookup` contributes zero; a collector spelled with Cyrillic lookalikes or a
+case-folding sign (`\u{0430}bn_lookup`, `abn_loo\u{212A}up`) is not a verified registry
+source; verified `abn_lookup` + ABR can contribute a registry root; and two explicitly
+named upstream datasets may still be represented through one aggregating collector.

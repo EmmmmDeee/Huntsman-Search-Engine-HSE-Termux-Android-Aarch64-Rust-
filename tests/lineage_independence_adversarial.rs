@@ -160,3 +160,45 @@ fn tampered_stored_source_family_cannot_claim_registry_class() {
             .eq(&observations)
     );
 }
+
+fn assert_not_a_verified_registry_source(collector: &str) {
+    let out = resolve(vec![
+        observation("dump-1", "hibp", &[("breach", "Adobe")]),
+        observation("lookalike-1", collector, &[("registry", "ABR")]),
+    ]);
+    assert_eq!(
+        out.independent_families,
+        ["adobe"],
+        "collector {collector:?} was admitted as a verified registry source"
+    );
+    assert_held_for_family_count(&out, 1);
+}
+
+/// FTBB M1 test gap on #679: a collector name spelled with Cyrillic lookalike letters is
+/// a different string and must not match `VERIFIED_REGISTRY_SOURCES`.
+#[test]
+fn cyrillic_lookalike_collector_is_not_a_verified_registry_source() {
+    // Positive control: the exact allowlisted collector is admitted.
+    let genuine = resolve(vec![
+        observation("dump-1", "hibp", &[("breach", "Adobe")]),
+        observation("registry-1", "abn_lookup", &[("registry", "ABR")]),
+    ]);
+    assert_eq!(genuine.independent_families, ["abr", "adobe"]);
+
+    for collector in [
+        "\u{0430}bn_lookup",        // Cyrillic small a
+        "abn_l\u{043E}\u{043E}kup", // Cyrillic small o, twice
+        "\u{0410}BN_LOOKUP",        // Cyrillic capital A; lowercases to Cyrillic a
+    ] {
+        assert_not_a_verified_registry_source(collector);
+    }
+}
+
+/// Unicode lowercasing folds some non-ASCII letters onto ASCII: KELVIN SIGN (U+212A)
+/// lowercases to Latin `k`. The registry gate must not treat such a collector name
+/// as `abn_lookup`.
+#[test]
+fn case_folded_lookalike_collector_is_not_a_verified_registry_source() {
+    assert_eq!("\u{212A}".to_lowercase(), "k");
+    assert_not_a_verified_registry_source("abn_loo\u{212A}up");
+}

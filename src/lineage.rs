@@ -44,8 +44,8 @@ pub const LINEAGE_FIELDS: &[(&str, UpstreamKind)] = &[
 /// registry acquisition path. Keep this set narrow; an unlisted collector's `registry`
 /// attribute remains evidence but contributes no independent family.
 ///
-/// Matched against the canonical family of `provenance.source`, never against the
-/// stored `provenance.source_family`.
+/// Matched against the canonical family of `provenance.source` (ASCII only), never
+/// against the stored `provenance.source_family`.
 pub const VERIFIED_REGISTRY_SOURCES: &[&str] = &["abn_lookup"];
 
 /// Ancestry ids of upstream roots. Observation ids may not use it.
@@ -136,9 +136,12 @@ fn kind_is_admissible(kind: UpstreamKind, evidence: &Evidence) -> bool {
 ///
 /// The family is recomputed from the collector here. The stored
 /// `provenance.source_family` is never read: it is deserialized from saved data, so a
-/// tampered local record could otherwise claim registry class.
+/// tampered local record could otherwise claim registry class. The collector must be
+/// ASCII, because Unicode lowercasing folds some non-ASCII letters onto ASCII (KELVIN
+/// SIGN U+212A becomes `k`), which would let a lookalike name match the allowlist.
 fn is_verified_registry_source(collector: &str) -> bool {
-    VERIFIED_REGISTRY_SOURCES.contains(&canonical_provenance_family(collector).as_str())
+    collector.is_ascii()
+        && VERIFIED_REGISTRY_SOURCES.contains(&canonical_provenance_family(collector).as_str())
 }
 
 fn family_key(kind: UpstreamKind, value: &str) -> String {
