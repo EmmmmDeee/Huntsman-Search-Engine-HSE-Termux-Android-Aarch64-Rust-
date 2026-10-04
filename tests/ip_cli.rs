@@ -20,12 +20,12 @@ fn run(args: &[&str]) -> std::process::Output {
 fn missing_or_bad_ip_exits_before_any_investigation() {
     let missing = run(&["ip"]);
     assert_eq!(missing.status.code(), Some(64));
-    assert!(missing.stdout.is_empty());
+    assert_eq!(missing.stdout, Vec::<u8>::new());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("huntsman-recon ip"));
 
     let bad = run(&["ip", "not-an-ip"]);
     assert_eq!(bad.status.code(), Some(65));
-    assert!(bad.stdout.is_empty());
+    assert_eq!(bad.stdout, Vec::<u8>::new());
     assert!(String::from_utf8_lossy(&bad.stderr).contains("invalid IP address"));
 }
 
@@ -98,7 +98,7 @@ fn evidence_flag_adds_provenance_without_changing_claim_truth() {
 fn unknown_ip_flag_is_a_usage_error() {
     let output = run(&["ip", "192.0.2.10", "--wat"]);
     assert_eq!(output.status.code(), Some(64));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, Vec::<u8>::new());
 }
 
 #[test]
