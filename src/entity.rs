@@ -111,6 +111,9 @@ impl fmt::Display for EntityKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceProvenance {
     pub source: String,
+    /// Canonical family of `source`, as stored. Loaded from saved data, so its value is
+    /// not trusted for counting: [`Self::corroboration_key`] derives the key from
+    /// `source` and reads only whether this field is empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_family: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -137,12 +140,25 @@ impl EvidenceProvenance {
         provenance
     }
 
+    /// The family this record corroborates under, derived from `source`.
+    ///
+    /// The stored `source_family` value is never used as the key. It is deserialized
+    /// from saved data (`#[serde(default)]`) and `Entity::add_evidence` only fills it
+    /// when empty, so trusting it would let a tampered saved record give two rows from
+    /// one collector two families and inflate `Entity::source_count`. A record with a
+    /// stored family counts under `canonical_provenance_family(source)`, the same
+    /// derivation as the lineage registry gate, which is what an honest record stores.
+    ///
+    /// A record with no stored family keeps counting under its raw `source`, as on
+    /// main and in legacy 7dca720 (which counts raw sources). Canonicalising that case
+    /// too would make `HIBP` and `hibp` one source, a count change that legacy does
+    /// not make; it is not adopted here (see docs/LINEAGE.md).
     #[must_use]
-    pub fn corroboration_key(&self) -> &str {
+    pub fn corroboration_key(&self) -> String {
         if self.source_family.is_empty() {
-            &self.source
+            self.source.clone()
         } else {
-            &self.source_family
+            canonical_provenance_family(&self.source)
         }
     }
 }
@@ -293,7 +309,7 @@ impl Entity {
         let mut real = BTreeSet::new();
         let mut promo = BTreeSet::new();
         for evidence in &self.evidence {
-            let key = evidence.provenance.corroboration_key().to_owned();
+            let key = evidence.provenance.corroboration_key();
             if is_non_corroborating_source(&key) {
                 continue;
             }
@@ -385,7 +401,7 @@ impl Entity {
     pub fn corroborating_sources(&self) -> BTreeSet<String> {
         self.evidence
             .iter()
-            .map(|evidence| evidence.provenance.corroboration_key().to_owned())
+            .map(|evidence| evidence.provenance.corroboration_key())
             .filter(|source| !is_non_corroborating_source(source))
             .collect()
     }
