@@ -98,18 +98,18 @@ fn main() -> ExitCode {
         print_command_help(&argv[0]);
         return ExitCode::SUCCESS;
     }
-    let mut args = argv.into_iter();
-    match args.next().as_deref() {
-        Some("geo") => geo(args.next(), args.next()),
-        Some("geohash") => geohash_cmd(args.next(), args.next().as_deref()),
-        Some("coarsen") => coarsen_cmd(args.next()),
-        Some("id") => id_cmd(args.next()),
-        Some("search") => search_cmd(args.next(), args.next()),
-        Some("sources") => sources_cmd(args.next()),
-        Some("classify") => classify(args.next(), args.next()),
-        Some("fetch") => fetch_cmd(&args.collect::<Vec<_>>()),
-        Some("keys") => keys_cmd(args.next()),
-        Some("verify") => verify(args.next()),
+    let mut remaining = argv.into_iter();
+    match remaining.next().as_deref() {
+        Some("geo") => geo(remaining.next(), remaining.next()),
+        Some("geohash") => geohash_cmd(remaining.next(), remaining.next().as_deref()),
+        Some("coarsen") => coarsen_cmd(remaining.next()),
+        Some("id") => id_cmd(remaining.next()),
+        Some("search") => search_cmd(remaining.next(), remaining.next()),
+        Some("sources") => sources_cmd(remaining.next()),
+        Some("classify") => classify(remaining.next(), remaining.next()),
+        Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
+        Some("keys") => keys_cmd(remaining.next()),
+        Some("verify") => verify(remaining.next()),
         Some("check") | None => check(),
         Some(other) => fail(EX_USAGE, &format!("unknown command: {other}\n{USAGE}")),
     }
