@@ -6,7 +6,6 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use huntsman_recon::asic_persons;
 use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
 use huntsman_recon::classifier::classify as classify_indicator;
 use huntsman_recon::classify::classify_response;
@@ -43,8 +42,8 @@ use huntsman_recon::source_outcome::{
 use huntsman_recon::source_registry::routes_for;
 use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
+use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleRun};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
-use huntsman_recon::uid;
 
 const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
 const HELP: &str = "\
@@ -136,9 +135,7 @@ fn print_command_help(command: &str) {
         "sources" => {
             "sources QUERY\nClassify an indicator and print curated public/browser search routes. Does not fetch those routes."
         }
-        "people" => {
-            "people NAME\nLook up NAME on keyless ASIC people registers (data.gov.au CKAN). Fewer than two alphabetic tokens makes no request."
-        }
+        "people" => PEOPLE_HELP,
         "classify" => {
             "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
         }
@@ -163,47 +160,18 @@ fn fail(code: u8, msg: &str) -> ExitCode {
 }
 
 fn people_cmd(args: &[String]) -> ExitCode {
-    if args.is_empty() {
-        return fail(EX_USAGE, "usage: huntsman-recon people NAME");
-    }
-    let name = args.join(" ");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let scan_id = uid::scan_id("person", &name);
     let transport = UreqTransport::new(&TransportConfig::default());
-    match asic_persons::lookup(&transport, &name, &scan_id, now) {
-        Ok(report) => {
-            let no_entities = report.entities.is_empty();
-            let no_outcomes = report.outcomes.is_empty();
-            if no_entities && no_outcomes {
-                println!("asic_persons: skipped (need two alphabetic tokens)");
-                return ExitCode::SUCCESS;
-            }
-            println!("entities={}", report.entities.len());
-            for entity in &report.entities {
-                println!(
-                    "{}\t{}\t{:.2}\t{}",
-                    entity.kind,
-                    entity.raw_value,
-                    entity.confidence,
-                    entity.tags.join(",")
-                );
-            }
-            for outcome in &report.outcomes {
-                let found = outcome
-                    .found
-                    .map_or_else(|| "none".to_owned(), |n| n.to_string());
-                let kind = serde_json::to_value(outcome.kind)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_default();
-                println!("{}\t{kind}\tfound={found}", outcome.module);
-            }
+    match people_cli::run(&transport, args, now) {
+        PeopleRun::Usage => fail(EX_USAGE, PEOPLE_USAGE),
+        PeopleRun::Printed(text) => {
+            print!("{text}");
             ExitCode::SUCCESS
         }
-        Err(Error::Network(msg)) => fail(EX_NOPERM, &msg),
-        Err(e) => fail(EX_UNAVAILABLE, &e.to_string()),
+        PeopleRun::Network(msg) => fail(EX_NOPERM, &msg),
+        PeopleRun::Failed(msg) => fail(EX_UNAVAILABLE, &msg),
     }
 }
 

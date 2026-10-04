@@ -385,7 +385,7 @@ Policy change (network and credentials now allowed):
 
 | Legacy path | Lines | Decision | New module | Defect found / evidence or reason |
 | --- | ---: | --- | --- | --- |
-| `src/modules/asic_persons/mod.rs` | 629 | REBUILT | `src/asic_persons.rs` | Keyless data.gov.au CKAN collector for banned/disqualified persons, financial advisers and credit representatives. Blocking `fetch` over an injected transport; emit oracles ported from legacy fixtures. Coordinates use `postcode_au::offline_centroid` (L3), not `geo` (L6). No CLI; tests never hit the live portal. |
+| `src/modules/asic_persons/mod.rs` | 629 | REBUILT | `src/asic_persons.rs`, `src/people_cli.rs` | Keyless data.gov.au CKAN collector for banned/disqualified persons, financial advisers and credit representatives. Blocking `fetch` over an injected transport; emit oracles ported from legacy fixtures. Coordinates use `postcode_au::offline_centroid` (L3), not `geo` (L6). `people NAME` is the collection front-end (`people_cli`) and runs evidence through `lineage::resolve_with_lineage`. Tests never hit the live portal. |
 | `src/modules/asic_persons/tests.rs` | 424 | MERGED | `src/asic_persons.rs` tests | Legacy emit, name-match, controller and checksum fixtures plus scripted-transport lookup, envelope-failure and challenge-page cases. |
 
 ### Notes

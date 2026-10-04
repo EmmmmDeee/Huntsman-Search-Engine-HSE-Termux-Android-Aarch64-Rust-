@@ -150,8 +150,10 @@ representatives) through the shared `fetch` boundary and an injected
 `http::Transport`. A name with fewer than two alphabetic tokens makes no
 request. Challenge pages, truncated bodies, and CKAN `success: false` envelopes
 are not evidence of absence. The binary exposes `people NAME` (unquoted words
-are joined). Tests use a scripted transport; the README example is the skip
-path. Two-token names query CKAN and are not run in CI. There is no live receipt.
+are joined) through `people_cli`, which feeds emitted evidence through
+`lineage::resolve_with_lineage`. Tests use a scripted transport; the README
+example is the skip path. Two-token names query CKAN and are not run in CI.
+There is no live receipt.
 
 ## Lineage and the automatic-merge rule
 

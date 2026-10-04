@@ -4,8 +4,8 @@
 //! The three registers are queried sequentially through [`crate::fetch::fetch`]
 //! and an injected [`crate::http::Transport`]. Challenge pages, truncated bodies,
 //! and `success: false` CKAN envelopes are never turned into evidence. The binary
-//! exposes `people NAME` over `UreqTransport`. Tests use a fake transport; the
-//! live CKAN path is not run in CI.
+//! exposes `people NAME` through [`crate::people_cli`]. Tests use a fake
+//! transport; the live CKAN path is not run in CI.
 
 use serde_json::{Map, Value};
 
