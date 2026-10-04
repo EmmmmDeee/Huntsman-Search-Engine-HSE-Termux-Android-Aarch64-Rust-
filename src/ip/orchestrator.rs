@@ -41,7 +41,7 @@ impl Default for IpBudget {
 struct PendingAction<'a> {
     provider: &'a dyn IpProvider,
     action: IpProviderAction,
-    reliability_micros: u32,
+    reliability: f64,
 }
 
 /// Execute one bounded IP investigation over an injected transport and provider set.
@@ -60,7 +60,7 @@ pub fn run_investigation<T: Transport + ?Sized>(
 
     for provider in providers {
         let descriptor = provider.descriptor();
-        let reliability_micros = prior_to_micros(descriptor.reliability_prior);
+        let reliability = sanitized_prior(descriptor.reliability_prior);
         for action in provider.plan(&investigation.target) {
             if mode == IpMode::Base && !is_base_capability(action.capability) {
                 investigation.actions_considered.push(IpActionRecord {
@@ -86,7 +86,7 @@ pub fn run_investigation<T: Transport + ?Sized>(
             pending.push(PendingAction {
                 provider: *provider,
                 action,
-                reliability_micros,
+                reliability,
             });
         }
     }
@@ -141,22 +141,15 @@ fn select_next(pending: &[PendingAction<'_>], investigation: &IpInvestigation) -
         .iter()
         .enumerate()
         .max_by(|(_, left), (_, right)| {
-            action_rank(left, investigation)
-                .cmp(&action_rank(right, investigation))
+            let left_unresolved = !capability_resolved(left.action.capability, investigation);
+            let right_unresolved = !capability_resolved(right.action.capability, investigation);
+            left_unresolved
+                .cmp(&right_unresolved)
+                .then_with(|| left.reliability.total_cmp(&right.reliability))
                 .then_with(|| right.provider.id().cmp(left.provider.id()))
                 .then_with(|| right.action.action_id.cmp(&left.action.action_id))
         })
         .map_or(0, |(index, _)| index)
-}
-
-fn action_rank(action: &PendingAction<'_>, investigation: &IpInvestigation) -> (u8, u32) {
-    (
-        u8::from(!capability_resolved(
-            action.action.capability,
-            investigation,
-        )),
-        action.reliability_micros,
-    )
 }
 
 fn action_reason(capability: IpCapability, investigation: &IpInvestigation) -> String {
@@ -202,12 +195,10 @@ fn work_key(action: &IpProviderAction) -> String {
     format!("{lineage}|{:?}|{}", action.capability, action.request.url)
 }
 
-fn prior_to_micros(prior: f64) -> u32 {
-    if !prior.is_finite() || prior <= 0.0 {
-        0
-    } else if prior >= 1.0 {
-        1_000_000
+fn sanitized_prior(prior: f64) -> f64 {
+    if prior.is_finite() {
+        prior.clamp(0.0, 1.0)
     } else {
-        (prior * 1_000_000.0).round() as u32
+        0.0
     }
 }
