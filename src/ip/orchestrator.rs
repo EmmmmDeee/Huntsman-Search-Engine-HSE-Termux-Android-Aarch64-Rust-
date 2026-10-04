@@ -42,6 +42,7 @@ struct PendingAction<'a> {
     provider: &'a dyn IpProvider,
     action: IpProviderAction,
     reliability: f64,
+    depth: u32,
 }
 
 /// Execute one bounded IP investigation over an injected transport and provider set.
@@ -85,6 +86,7 @@ pub fn run_investigation<T: Transport + ?Sized>(
 
             pending.push(PendingAction {
                 provider: *provider,
+                depth: initial_depth(action.capability),
                 action,
                 reliability,
             });
@@ -102,6 +104,17 @@ pub fn run_investigation<T: Transport + ?Sized>(
         }
 
         let next = select_next(&pending, &investigation);
+        if pending[next].depth > budget.max_depth {
+            investigation.actions_considered.push(IpActionRecord {
+                provider_id: pending[next].provider.id().into(),
+                action_id: pending[next].action.action_id.clone(),
+                reason: "max_depth".into(),
+                executed: false,
+            });
+            investigation.termination_reason = Some("max_depth".into());
+            break;
+        }
+
         let work = pending.remove(next);
         investigation.actions_considered.push(IpActionRecord {
             provider_id: work.provider.id().into(),
@@ -111,6 +124,8 @@ pub fn run_investigation<T: Transport + ?Sized>(
         });
         investigation.budget_used.actions += 1;
         investigation.budget_used.calls += 1;
+        investigation.budget_used.max_depth_reached =
+            investigation.budget_used.max_depth_reached.max(work.depth);
 
         let result = execute_provider_action(
             transport,
@@ -143,8 +158,10 @@ fn select_next(pending: &[PendingAction<'_>], investigation: &IpInvestigation) -
         .max_by(|(_, left), (_, right)| {
             let left_unresolved = !capability_resolved(left.action.capability, investigation);
             let right_unresolved = !capability_resolved(right.action.capability, investigation);
-            left_unresolved
-                .cmp(&right_unresolved)
+            right
+                .depth
+                .cmp(&left.depth)
+                .then_with(|| left_unresolved.cmp(&right_unresolved))
                 .then_with(|| left.reliability.total_cmp(&right.reliability))
                 .then_with(|| right.provider.id().cmp(left.provider.id()))
                 .then_with(|| right.action.action_id.cmp(&left.action.action_id))
@@ -188,6 +205,10 @@ const fn is_base_capability(capability: IpCapability) -> bool {
         capability,
         IpCapability::Allocation | IpCapability::Routing | IpCapability::ReverseDns
     )
+}
+
+const fn initial_depth(capability: IpCapability) -> u32 {
+    if is_base_capability(capability) { 0 } else { 1 }
 }
 
 fn work_key(action: &IpProviderAction) -> String {
