@@ -90,7 +90,11 @@ fn main() -> ExitCode {
         println!("huntsman-recon {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    if argv.iter().skip(1).any(|arg| matches!(arg.as_str(), "-h" | "--help")) {
+    if argv
+        .iter()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
         print_command_help(&argv[0]);
         return ExitCode::SUCCESS;
     }
@@ -113,17 +117,35 @@ fn main() -> ExitCode {
 
 fn print_command_help(command: &str) {
     let help = match command {
-        "check" => "check\nRun offline self-acceptance and regenerate var/ledger.json, var/navigator.json, and var/stix-bundle.json.",
-        "geo" => "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres.",
-        "geohash" => "geohash LAT,LON [PRECISION]\nEncode coordinates as a geohash. Precision defaults to 7.",
-        "coarsen" => "coarsen LAT,LON\nRound coordinates to one decimal place for approximate location sharing.",
+        "check" => {
+            "check\nRun offline self-acceptance and regenerate var/ledger.json, var/navigator.json, and var/stix-bundle.json."
+        }
+        "geo" => {
+            "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres."
+        }
+        "geohash" => {
+            "geohash LAT,LON [PRECISION]\nEncode coordinates as a geohash. Precision defaults to 7."
+        }
+        "coarsen" => {
+            "coarsen LAT,LON\nRound coordinates to one decimal place for approximate location sharing."
+        }
         "id" => "id TOKEN\nClassify and validate an Australian ABN, ACN, or BSB.",
-        "search" => "search QUERY [DIR]\nSearch built-in examples, or .txt/.md files in one directory. Challenge pages and unsafe/oversized inputs are skipped.",
-        "sources" => "sources QUERY\nClassify an indicator and print curated public/browser search routes. Does not fetch those routes.",
-        "classify" => "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome.",
+        "search" => {
+            "search QUERY [DIR]\nSearch built-in examples, or .txt/.md files in one directory. Challenge pages and unsafe/oversized inputs are skipped."
+        }
+        "sources" => {
+            "sources QUERY\nClassify an indicator and print curated public/browser search routes. Does not fetch those routes."
+        }
+        "classify" => {
+            "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
+        }
         "fetch" => huntsman_recon::fetch_cli::FETCH_USAGE,
-        "keys" => "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values.",
-        "verify" => "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip.",
+        "keys" => {
+            "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values."
+        }
+        "verify" => {
+            "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
+        }
         _ => {
             println!("{HELP}\n{USAGE}");
             return;
