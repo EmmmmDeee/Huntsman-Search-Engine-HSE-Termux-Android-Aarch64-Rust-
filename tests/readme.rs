@@ -86,9 +86,12 @@ fn usage_subcommands() -> BTreeSet<String> {
         .collect()
 }
 
+/// Internet examples: a URL argument, or any `hibp` lookup (`hibp help` is offline).
+/// `tests/hibp_cli.rs` covers the lookups against a fake transport.
 fn is_network(args: &[String]) -> bool {
     args.iter()
         .any(|a| a.starts_with("https://") || a.starts_with("http://"))
+        || (args.first().is_some_and(|a| a == "hibp") && args.get(1).is_some_and(|a| a != "help"))
 }
 
 #[test]
