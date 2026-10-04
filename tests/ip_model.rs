@@ -54,7 +54,7 @@ fn invalid_input_is_rejected() {
 
 #[test]
 fn ip_claim_model_has_no_person_attribution_variant() {
-    assert!(!ALL_IP_CLAIM_KINDS.is_empty());
+    assert_ne!(ALL_IP_CLAIM_KINDS, []);
     assert!(ALL_IP_CLAIM_KINDS.contains(&IpClaimKind::Allocation));
     assert!(ALL_IP_CLAIM_KINDS.contains(&IpClaimKind::Routing));
     for kind in ALL_IP_CLAIM_KINDS {
