@@ -89,8 +89,14 @@ pub fn lookup<T: Transport + ?Sized>(
             emit: emit_credit_rep,
         },
     ] {
-        let (mut outcome, records) =
-            query_register(transport, &options, spec.module, spec.resource, name, now_unix)?;
+        let (mut outcome, records) = query_register(
+            transport,
+            &options,
+            spec.module,
+            spec.resource,
+            name,
+            now_unix,
+        )?;
         if !outcome.kind.is_accepted() {
             let detail = outcome
                 .detail
@@ -124,10 +130,7 @@ pub fn lookup<T: Transport + ?Sized>(
             return Err(err);
         }
     }
-    Ok(Report {
-        entities,
-        outcomes,
-    })
+    Ok(Report { entities, outcomes })
 }
 
 struct Register {
@@ -140,7 +143,7 @@ struct Register {
 fn query_register<T: Transport + ?Sized>(
     transport: &T,
     options: &FetchOptions,
-    module: &str,
+    module: &'static str,
     resource: &str,
     name: &str,
     now_unix: u64,
@@ -152,7 +155,7 @@ fn query_register<T: Transport + ?Sized>(
 }
 
 fn parse_register(
-    module: &str,
+    module: &'static str,
     now_unix: u64,
     fetched: Fetched,
 ) -> (SourceExecutionOutcome, Vec<Map<String, Value>>) {
@@ -200,13 +203,11 @@ fn parse_register(
             Some(err.to_string()),
         ),
         Ok(None) => (
-            SourceExecutionOutcome::valid_zero(module, now_unix)
-                .with_http_status(response.status),
+            SourceExecutionOutcome::valid_zero(module, now_unix).with_http_status(response.status),
             Vec::new(),
         ),
         Ok(Some(result)) if result.records.is_empty() => (
-            SourceExecutionOutcome::valid_zero(module, now_unix)
-                .with_http_status(response.status),
+            SourceExecutionOutcome::valid_zero(module, now_unix).with_http_status(response.status),
             Vec::new(),
         ),
         Ok(Some(result)) => {
@@ -374,12 +375,7 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, out: &mut Vec<Entity>) 
 
     let licensee = field(rec, "LICENCE_NAME");
     if let Some(licensee) = &licensee {
-        let mut org = Entity::new(
-            EntityKind::Organisation,
-            licensee,
-            CONF_LICENSEE,
-            scan_id,
-        );
+        let mut org = Entity::new(EntityKind::Organisation, licensee, CONF_LICENSEE, scan_id);
         org.tag("au");
         org.tag("asic");
         org.tag("afs-licensee");
@@ -671,10 +667,11 @@ mod tests {
             .expect("person");
         assert_eq!(person.raw_value, "Bill Abbott");
         assert!(person.has_tag("asic-banned") && person.has_tag("regulatory-action"));
-        assert!(person.evidence.iter().any(|ev| ev
-            .attributes
-            .get("ban_type")
-            .is_some_and(|v| v == "Banned Securities")));
+        assert!(person.evidence.iter().any(|ev| {
+            ev.attributes
+                .get("ban_type")
+                .is_some_and(|v| v == "Banned Securities")
+        }));
         assert!(entities.iter().any(|x| x.kind == EntityKind::Address
             && x.value.eq_ignore_ascii_case("TEMPLESTOWE LOWER VIC 3107")));
     }
@@ -704,7 +701,9 @@ mod tests {
         assert!(abns.contains(&"53004085616".to_string()));
         let addr = entities
             .iter()
-            .find(|x| x.kind == EntityKind::Address && x.value.eq_ignore_ascii_case("SYDNEY NSW 2000"))
+            .find(|x| {
+                x.kind == EntityKind::Address && x.value.eq_ignore_ascii_case("SYDNEY NSW 2000")
+            })
             .expect("registered address");
         assert!(
             addr.has_tag("au-state:NSW") && addr.has_tag("country:AU"),
@@ -781,27 +780,34 @@ mod tests {
         let nab = org_named(&entities, "NATIONAL AUSTRALIA BANK LIMITED")
             .expect("current-then-ceased controller");
         assert!(nab.has_tag("afs-licensee-controller") && nab.has_tag("ceased"));
-        assert!(nab.evidence[0]
-            .attributes
-            .get("date_ceased")
-            .is_some_and(|d| d == "21/08/2023"));
+        assert!(
+            nab.evidence[0]
+                .attributes
+                .get("date_ceased")
+                .is_some_and(|d| d == "21/08/2023")
+        );
         let mlc = org_named(&entities, "MLC WEALTH LIMITED").expect("second controller");
         assert!(mlc.has_tag("afs-licensee-controller") && !mlc.has_tag("ceased"));
 
         let appointer =
             org_named(&entities, "VIRIDIAN FINANCIAL GROUP LTD").expect("appointing firm");
         assert!(appointer.has_tag("authorised-rep-firm"));
-        assert!(appointer.evidence[0]
-            .attributes
-            .get("authorised_rep_no")
-            .is_some_and(|n| n == "000315094"));
+        assert!(
+            appointer.evidence[0]
+                .attributes
+                .get("authorised_rep_no")
+                .is_some_and(|n| n == "000315094")
+        );
 
         let abns: Vec<String> = entities
             .iter()
             .filter(|x| x.kind == EntityKind::AbnAcn)
             .map(|x| ascii_digits(&x.value))
             .collect();
-        assert!(abns.contains(&"67605994741".to_string()), "rep_appointer ABN");
+        assert!(
+            abns.contains(&"67605994741".to_string()),
+            "rep_appointer ABN"
+        );
     }
 
     #[test]
@@ -881,14 +887,20 @@ mod tests {
             .expect("person");
         assert_eq!(person.raw_value, "John Andrew Smith");
         assert!(person.has_tag("asic-credit-rep"));
-        assert!(person.evidence.iter().any(|ev| ev
-            .attributes
-            .get("credit_licence_no")
-            .is_some_and(|v| v == "385487")));
-        assert!(entities.iter().any(|x| x.kind == EntityKind::AbnAcn
-            && ascii_digits(&x.value) == "004085616"));
-        assert!(entities.iter().any(|x| x.kind == EntityKind::Address
-            && x.value.eq_ignore_ascii_case("BERWICK VIC 3806")));
+        assert!(person.evidence.iter().any(|ev| {
+            ev.attributes
+                .get("credit_licence_no")
+                .is_some_and(|v| v == "385487")
+        }));
+        assert!(
+            entities
+                .iter()
+                .any(|x| x.kind == EntityKind::AbnAcn && ascii_digits(&x.value) == "004085616")
+        );
+        assert!(
+            entities.iter().any(|x| x.kind == EntityKind::Address
+                && x.value.eq_ignore_ascii_case("BERWICK VIC 3806"))
+        );
     }
 
     #[test]
@@ -898,21 +910,23 @@ mod tests {
         let mut entities = Vec::new();
         emit_adviser(&adv, "scan", &mut entities);
         assert!(
-            !entities.iter().any(|x| x.kind == EntityKind::AbnAcn
-                && ascii_digits(&x.value) == "11111111111"),
+            !entities
+                .iter()
+                .any(|x| x.kind == EntityKind::AbnAcn && ascii_digits(&x.value) == "11111111111"),
             "a checksum-invalid ABN must not be emitted as a pivot"
         );
-        assert!(entities.iter().any(|x| x.kind == EntityKind::AbnAcn
-            && ascii_digits(&x.value) == "53004085616"));
+        assert!(
+            entities
+                .iter()
+                .any(|x| x.kind == EntityKind::AbnAcn && ascii_digits(&x.value) == "53004085616")
+        );
 
         let mut cred = rec(CREDIT);
         cred.insert("CRED_REP_ABN_ACN".into(), Value::String("111111111".into()));
         let mut entities2 = Vec::new();
         emit_credit_rep(&cred, "scan", &mut entities2);
         assert!(
-            !entities2
-                .iter()
-                .any(|x| x.kind == EntityKind::AbnAcn),
+            !entities2.iter().any(|x| x.kind == EntityKind::AbnAcn),
             "a checksum-invalid ACN must not be emitted as a pivot"
         );
     }
@@ -921,14 +935,22 @@ mod tests {
     fn name_matching_is_order_independent_and_token_complete() {
         let tokens = name_tokens("Bill Abbott");
         assert_eq!(tokens, vec!["bill".to_string(), "abbott".to_string()]);
-        assert!(record_name_matches(&rec(BANNED), "BD_PER_NAME", "Bill Abbott"));
-        assert!(!record_name_matches(&rec(BANNED), "BD_PER_NAME", "John Smith"));
+        assert!(record_name_matches(
+            &rec(BANNED),
+            "BD_PER_NAME",
+            "Bill Abbott"
+        ));
+        assert!(!record_name_matches(
+            &rec(BANNED),
+            "BD_PER_NAME",
+            "John Smith"
+        ));
         assert_eq!(name_tokens("Madonna").len(), 1);
     }
 
     #[test]
     fn name_matching_is_whole_word_not_substring() {
-        let greenwood = rec(r##"{"BD_PER_NAME":"GREENWOOD, ALEXANDRA"}"##);
+        let greenwood = rec(r#"{"BD_PER_NAME":"GREENWOOD, ALEXANDRA"}"#);
         assert!(
             !record_name_matches(&greenwood, "BD_PER_NAME", "Al Green"),
             "\"al\"/\"green\" must not match as substrings of \"Alexandra\"/\"Greenwood\""
@@ -1047,7 +1069,7 @@ mod tests {
         ]));
         let err = lookup(&fake, "Bill Abbott", "scan", 1).expect_err("outage");
         assert!(
-            matches!(err, Error::Invalid(msg) if msg.contains("success=false")),
+            matches!(err, Error::Invalid(ref msg) if msg.contains("success=false")),
             "{err}"
         );
     }
