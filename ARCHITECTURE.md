@@ -6,10 +6,10 @@ The capability oracle is git commit `7dca720` (root crate `huntsman-search-engin
 
 ## OBJECTIVE
 
-CURRENT: `huntsman-recon` is an offline-tested core with a guarded fetch layer. It is **not** a people-centric OSINT tool yet. No person lookup works:
+CURRENT: `huntsman-recon` is an offline-tested core with a guarded fetch layer and a skip-tested `people` CLI over keyless ASIC registers. It is **not** a people-centric OSINT tool yet. Email, username and phone lookups do not work:
 - `email`, `username`, `phone`, `resolve` and `scan` exit 64 (`unknown command`), as do `investigate` and `serve`.
 - `search` without `DIR` searches a built-in 2-document fixture.
-- The provider and parser clients (`hibp`, `atproto`, `mediawiki`, `dns`, `service_defs` and others) have no caller outside their own tests. `ckan` is called by `asic_persons` (library only, fake-transport tests; no CLI).
+- The provider and parser clients (`hibp`, `atproto`, `mediawiki`, `dns`, `service_defs` and others) have no caller outside their own tests. `ckan` is called by `asic_persons` (`people NAME` CLI; skip path tested; live CKAN not run in CI).
 - Identity resolution runs only on literal fixtures inside `check`.
 - Commit `f0a1c64c` removed all legacy providers (195 provider directories and 10 top-level files under `src/modules/` at `7dca720`) and the `scan`, `investigate` and `serve` commands.
 
@@ -32,7 +32,7 @@ Status counts: REIMPLEMENTED 2, PARTIAL 12, NOT YET REBUILT 9 (21 of 23 rows are
 | 1 | Person lookup by email | `hse scan -k email`; `src/cli/scan/`, `src/modules/{email_parse,email_canonical,emailrep,gravatar}` | NOT YET REBUILT. REGRESSION: `email` exits 64 | Software Development Bot | D, N, L. `email ADDR` runs the full pipeline (BACKLOG 1) |
 | 2 | Person lookup by username | `scan -k username`; `src/modules/{username_search,username_variants,github_user,bluesky_user}` | NOT YET REBUILT. REGRESSION: `username` exits 64; `atproto` helpers have no caller | Software Development Bot | D, N, L. Variant expansion matches legacy |
 | 3 | Person lookup by phone | `scan -k phone`; `src/modules/{phone_au,phone_intl,phone_geo}` | NOT YET REBUILT. REGRESSION: `phone` exits 64 | Software Development Bot | D, N, L. E.164 canonicalisation matches legacy |
-| 4 | AU people registers by name | `src/modules/{asic_persons,asic_director}`; `au_people`, `au_electoral` from `legacy/` | PARTIAL. REGRESSION: `src/asic_persons.rs` is a library tested only on a fake transport; no CLI arm; never run live; `asic_director`, `au_people` and `au_electoral` are not rebuilt | REFACTOR Bot (port), Software Development Bot (source) | D, N, L. `asic_persons` is keyless (data.gov.au CKAN) |
+| 4 | AU people registers by name | `src/modules/{asic_persons,asic_director}`; `au_people`, `au_electoral` from `legacy/` | PARTIAL. REGRESSION: `people NAME` exists and the skip path is tested; two-token names query CKAN but have no live receipt and are not run in CI; `asic_director`, `au_people` and `au_electoral` are not rebuilt | REFACTOR Bot (port), Software Development Bot (source) | D, N, L. `asic_persons` is keyless (data.gov.au CKAN) |
 | 5 | HIBP breach lookup | `src/modules/hibp/` | PARTIAL. REGRESSION: `src/hibp/` is a library tested only on a fake transport; no CLI arm; never run live | Software Development Bot | D, N, L (operator key), S. No key in output, logs or artifacts |
 | 6 | stolen.tax breach search | `src/modules/stolen_tax/` (keyed) | NOT YET REBUILT. REGRESSION | REFACTOR Bot | D, N, L (operator key), S |
 | 7 | Domain recon (crt.sh, DNS, SPF, DMARC) | `src/modules/crtsh/` and the DNS/mail modules | PARTIAL. REGRESSION: `dns`, `spf`, `dmarc`, `tlsrpt`, `recon` have no caller; crt.sh not rebuilt | REFACTOR Bot | D, N, L. crt.sh is keyless |
@@ -69,7 +69,7 @@ CURRENT. One package, one library (`src/lib.rs`) and one binary (`src/main.rs`, 
 | L5 entity model and analysis | `entity`, `identity`, `relation`, `graph`, `coref`, `correlator`, `cross_scan`, `dependency`, `module`, `attack`, `attack_catalog`, `exposure`, `profiles`, `leads`, `timeline`, `community`, `diff`, `path`, `pivot`, `intelligence`, `classifier`, `classify_module`, `lineage`, `assurance`, `benchmark`, `coverage`, `diamond`, `gap`, `metrics`, `roi`, `trust`, `source_registry`, `asic_persons` | Entities, evidence, relations, correlation rules; lineage from response data and the merge-rule front-end (`lineage`); assurance, coverage and gap reports; offline `LeadOnly` search routes per entity kind (`source_registry`); keyless ASIC people-register collector (`asic_persons`) |
 | L6 GEOINT and RF | `geo`, `geometry`, `rf`, `geoint` | Coordinates, places, RF sightings |
 | L7 records and outputs | `ledger`, `session`, `store`, `stix`, `navigator`, `search`, `gexf`, `snake_graph` | Hash-chained ledger, session store, exports, local search |
-| Binary | `main` | Dispatch for the 11 commands; calls L0, L1, L2, L3, L5, L6 and L7 directly, never L4 |
+| Binary | `main` | Dispatch for the 12 commands; calls L0, L1, L2, L3, L5, L6 and L7 directly, never L4 |
 
 PLANNED: a collector layer between L4 and L5 that turns a selector into source requests and a source response into `entity::Evidence` plus an `evidence_ancestry` node. It is the missing causal boundary named in the audit. The binary reaches L4 only through it.
 
@@ -181,7 +181,7 @@ Rules for every reconstruction PR from this one on:
 ## ORDERED BACKLOG
 
 PLANNED, in this order. "In flight" means work has started on that branch and is not on `main` yet; "Done" names the PR that put it on `main`.
-1. People-lookup pipeline, end to end: CLI command, fetch, provider, parse, evidence, merge decision, saved file, `verify`, output and exit codes. It needs at least one keyless public people source (candidate: `asic_persons` over data.gov.au CKAN) and one live keyless run with a receipt tied to the commit. Done: the lineage and merge rule, as a library (#679, REFACTOR Bot). In flight: the HIBP CLI PR (`feat/hibp-cli`, Software Development Bot); `asic_persons` library over data.gov.au CKAN (this branch, REFACTOR Bot) — no CLI and no live run yet.
+1. People-lookup pipeline, end to end: CLI command, fetch, provider, parse, evidence, merge decision, saved file, `verify`, output and exit codes. It needs at least one keyless public people source (candidate: `asic_persons` over data.gov.au CKAN) and one live keyless run with a receipt tied to the commit. Done: the lineage and merge rule, as a library (#679, REFACTOR Bot). In flight: the HIBP CLI PR (`feat/hibp-cli`, Software Development Bot); `asic_persons` library plus `people` CLI (this branch, REFACTOR Bot) — skip path tested; no live run yet.
 2. Port `au_people`, `asic_director` and HIBP first, each with a differential test against legacy output. `asic_persons` emit/name/controller behaviour is covered by fake-transport unit tests; D/L against live CKAN remain open.
 3. stolen.tax and crt.sh (`feat/recon-stolen-tax-v2-crtsh`, in flight).
 4. Compile the 8 orphan modules (G8). Done: #675.
