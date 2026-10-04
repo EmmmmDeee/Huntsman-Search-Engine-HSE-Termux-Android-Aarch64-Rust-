@@ -60,7 +60,10 @@ fn duplicate_lineage_counts_as_one_independent_support() {
 
     apply_observations(&mut investigation);
 
-    assert_eq!(independent_support_count(&investigation, IpClaimKind::Allocation), 1);
+    assert_eq!(
+        independent_support_count(&investigation, IpClaimKind::Allocation),
+        1
+    );
     let claim = investigation
         .claims
         .iter()
@@ -95,7 +98,10 @@ fn distinct_lineages_remain_independent_supports() {
 
     apply_observations(&mut investigation);
 
-    assert_eq!(independent_support_count(&investigation, IpClaimKind::Allocation), 2);
+    assert_eq!(
+        independent_support_count(&investigation, IpClaimKind::Allocation),
+        2
+    );
 }
 
 #[test]
@@ -145,7 +151,10 @@ fn historical_observation_is_not_made_current_by_recent_retrieval() {
 
     let temporal = temporal_state_for_observation(&observation);
 
-    assert!(matches!(temporal, TemporalState::Historical | TemporalState::Stale));
+    assert!(matches!(
+        temporal,
+        TemporalState::Historical | TemporalState::Stale
+    ));
     assert_ne!(temporal, TemporalState::Current);
 }
 
