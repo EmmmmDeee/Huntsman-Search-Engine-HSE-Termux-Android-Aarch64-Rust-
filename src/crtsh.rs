@@ -211,7 +211,7 @@ where
             transport,
             Request::get(url).header("Accept", "application/json"),
             None,
-            &FetchOptions { max_redirects: 0 },
+            &FetchOptions::no_redirects(),
             SRC,
             0,
         )

@@ -179,6 +179,7 @@ fn fetch_cmd(args: &[String]) -> ExitCode {
         credential.as_ref(),
         &FetchOptions {
             max_redirects: parsed.max_redirects,
+            ..FetchOptions::default()
         },
         "cli",
         now,

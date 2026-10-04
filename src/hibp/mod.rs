@@ -21,7 +21,7 @@ fn send(http: &dyn Transport, request: Request) -> Result<Response, HibpError> {
         http,
         request,
         None,
-        &crate::fetch::FetchOptions { max_redirects: 0 },
+        &crate::fetch::FetchOptions::no_redirects(),
         "hibp",
         0,
     )

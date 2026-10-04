@@ -41,6 +41,9 @@ pub struct Credential {
     authority: AuthenticationAuthority,
     secret: Secret,
     style: AuthStyle,
+    /// The one origin (`scheme://host:port`) the secret may go to. `None` binds it to
+    /// the origin of the fetch's first URL.
+    origin: Option<&'static str>,
 }
 
 impl Credential {
@@ -66,7 +69,18 @@ impl Credential {
             authority,
             secret,
             style,
+            origin: None,
         })
+    }
+
+    /// Pin the secret to exactly `origin`, written as [`crate::http::origin_of`]
+    /// writes it (`https://host:443`). A hop is sent with the secret only while every
+    /// hop so far, that one included, is exactly this origin; the pin is a
+    /// compile-time constant, so nothing at runtime can widen it.
+    #[must_use]
+    pub const fn only_for_origin(mut self, origin: &'static str) -> Self {
+        self.origin = Some(origin);
+        self
     }
 
     #[must_use]
@@ -77,6 +91,16 @@ impl Credential {
     #[must_use]
     pub fn provider_id(&self) -> &str {
         self.authority.provider_id()
+    }
+
+    /// `request` without this credential's header (and without any other header
+    /// marked sensitive): stripped, not merely not added.
+    fn strip(&self, request: &Request) -> Request {
+        let mut r = without_credentials(request);
+        if let AuthStyle::Header(name) = &self.style {
+            r.headers.retain(|(k, _)| !k.eq_ignore_ascii_case(name));
+        }
+        r
     }
 
     fn apply(&self, request: Request) -> Request {
@@ -92,14 +116,47 @@ impl Credential {
 #[derive(Debug, Clone)]
 pub struct FetchOptions {
     pub max_redirects: u32,
+    pub redirect_policy: RedirectPolicy,
 }
 
 impl Default for FetchOptions {
     fn default() -> Self {
         Self {
             max_redirects: DEFAULT_MAX_REDIRECTS,
+            redirect_policy: RedirectPolicy::Any,
         }
     }
+}
+
+impl FetchOptions {
+    /// Redirects not followed: a 3xx is the answer.
+    #[must_use]
+    pub const fn no_redirects() -> Self {
+        Self {
+            max_redirects: 0,
+            redirect_policy: RedirectPolicy::Any,
+        }
+    }
+}
+
+/// Which redirect hops [`fetch`] follows. Every followed hop is still sent through
+/// the caller's transport (egress-guarded resolver) and the caller's deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedirectPolicy {
+    /// Any http(s) hop, up to `max_redirects`.
+    Any,
+    /// The monolith's `redirect_verdict` (`src/util/http/ssrf.rs`) for a first URL
+    /// inside `site`: a hop is followed only when its host equals the first URL's
+    /// host (ASCII case-insensitive) or both lie in `site` (the registrable domain:
+    /// `site` itself or a subdomain of it, any port), and an `https` first URL is
+    /// never followed to a non-`https` hop. Anything else is refused before it is
+    /// requested; the 3xx is the answer.
+    ///
+    /// `site` must be a registrable domain with no Public Suffix List rule at or
+    /// below it, so "ends with `.site`" is exactly "same eTLD+1"; that is checked for
+    /// each constant passed here (`stolen.tax`: the list has `tax` and nothing under
+    /// it).
+    SameSite { site: &'static str },
 }
 
 #[derive(Debug)]
@@ -112,6 +169,12 @@ pub struct Fetched {
     pub redirects: u32,
     /// Fingerprint of the credential if one was sent on the last request.
     pub credential_sent: Option<CredentialFingerprint>,
+    /// Why a redirect was not followed under [`RedirectPolicy::SameSite`]; the 3xx
+    /// is then the response.
+    pub redirect_refused: Option<&'static str>,
+    /// Set when hop N (1-based: the first request is hop 1) was not sent because
+    /// the deadline was already spent. There is then no response.
+    pub not_sent_hop: Option<u32>,
 }
 
 /// Fetch `request` through `transport`.
@@ -182,7 +245,13 @@ fn fetch_hops<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<Fetched, Error> {
     parse_http_uri(&request.url)?;
-    let origin = origin_of(&request.url);
+    let first_url = request.url.clone();
+    let key_origin = credential
+        .and_then(|c| c.origin.map(str::to_owned))
+        .or_else(|| origin_of(&request.url));
+    // Once a hop leaves the credential's origin the credential is never re-attached,
+    // even if a later hop comes back.
+    let mut left_origin = false;
     let secret_text = credential.map(|c| c.secret.expose());
     let scrub = |text: &str| match secret_text {
         Some(s) => scrub_secrets(text, &[s]),
@@ -195,32 +264,18 @@ fn fetch_hops<T: Transport + ?Sized>(
         if let Some(deadline) = deadline {
             let remaining = deadline.remaining();
             if remaining.is_zero() {
-                let outcome = SourceExecutionOutcome::success(module, now_unix, 0);
-                let outcome = SourceExecutionOutcome {
-                    kind: SourceOutcomeKind::TtfbTimeout,
-                    found: None,
-                    detail: Some(format!(
-                        "{:.1}s budget spent before hop {}; not sent",
-                        deadline.budget().as_secs_f64(),
-                        redirects + 1
-                    )),
-                    ..outcome
-                };
-                return Ok(Fetched {
-                    outcome,
-                    response: None,
-                    final_url: redact_url(&current.url),
-                    redirects,
-                    credential_sent: None,
-                });
+                return Ok(not_sent(module, now_unix, deadline, &current, redirects));
             }
             // Only ever lower: the request's own cap still applies when it is smaller.
             current.timeout = Some(current.timeout.map_or(remaining, |cap| cap.min(remaining)));
         }
-        let on_origin = origin_of(&current.url).is_some() && origin_of(&current.url) == origin;
+        let hop_origin = origin_of(&current.url);
+        left_origin |= hop_origin.is_none() || hop_origin != key_origin;
         let (to_send, sent) = match credential {
-            Some(c) if on_origin => (c.apply(current.clone()), Some(c.fingerprint())),
-            _ => (current.clone(), None),
+            Some(c) if !left_origin => (c.apply(c.strip(&current)), Some(c.fingerprint())),
+            Some(c) => (c.strip(&current), None),
+            None if left_origin => (without_credentials(&current), None),
+            None => (current.clone(), None),
         };
 
         let response = match transport.send(&to_send) {
@@ -242,11 +297,27 @@ fn fetch_hops<T: Transport + ?Sized>(
                     final_url: redact_url(&current.url),
                     redirects,
                     credential_sent: sent,
+                    redirect_refused: None,
+                    not_sent_hop: None,
                 });
             }
         };
 
-        if let Some(next) = redirect_target(&current, &response)? {
+        let next = match redirect_target(&current, &response) {
+            Ok(next) => next,
+            // The monolith's client did not follow a Location it could not parse
+            // into an http(s) URL with a host; the 3xx was the answer.
+            Err(_) if matches!(options.redirect_policy, RedirectPolicy::SameSite { .. }) => {
+                let refusal = Refusal {
+                    why: "redirect refused: unusable Location",
+                    redirects,
+                    sent,
+                };
+                return Ok(refusal.finish(module, now_unix, &current, response, &scrub));
+            }
+            Err(e) => return Err(e),
+        };
+        if let Some(next) = next {
             if redirects >= options.max_redirects {
                 return Ok(finish(
                     module,
@@ -258,6 +329,14 @@ fn fetch_hops<T: Transport + ?Sized>(
                     Some("redirect limit reached"),
                     &scrub,
                 ));
+            }
+            if let Some(why) = refused_hop(options.redirect_policy, &first_url, &next.url) {
+                let refusal = Refusal {
+                    why,
+                    redirects,
+                    sent,
+                };
+                return Ok(refusal.finish(module, now_unix, &current, response, &scrub));
             }
             redirects += 1;
             current = next;
@@ -315,12 +394,125 @@ fn finish(
         response: Some(response),
         redirects,
         credential_sent: sent,
+        redirect_refused: None,
+        not_sent_hop: None,
     }
+}
+
+/// The result for hop `redirects + 1` when `deadline` was spent before it was sent.
+fn not_sent(
+    module: &str,
+    now_unix: u64,
+    deadline: &Deadline<'_>,
+    current: &Request,
+    redirects: u32,
+) -> Fetched {
+    let outcome = SourceExecutionOutcome::success(module, now_unix, 0);
+    let outcome = SourceExecutionOutcome {
+        kind: SourceOutcomeKind::TtfbTimeout,
+        found: None,
+        detail: Some(format!(
+            "{:.1}s budget spent before hop {}; not sent",
+            deadline.budget().as_secs_f64(),
+            redirects + 1
+        )),
+        ..outcome
+    };
+    Fetched {
+        outcome,
+        response: None,
+        final_url: redact_url(&current.url),
+        redirects,
+        credential_sent: None,
+        redirect_refused: None,
+        not_sent_hop: Some(redirects + 1),
+    }
+}
+
+/// A redirect the policy would not follow: the 3xx is the answer.
+struct Refusal {
+    why: &'static str,
+    redirects: u32,
+    sent: Option<CredentialFingerprint>,
+}
+
+impl Refusal {
+    fn finish(
+        self,
+        module: &str,
+        now_unix: u64,
+        current: &Request,
+        response: Response,
+        scrub: &dyn Fn(&str) -> String,
+    ) -> Fetched {
+        let mut fetched = finish(
+            module,
+            now_unix,
+            current,
+            response,
+            self.redirects,
+            self.sent,
+            Some(self.why),
+            scrub,
+        );
+        fetched.redirect_refused = Some(self.why);
+        fetched
+    }
+}
+
+/// Why `policy` refuses the hop from the chain that began at `first` to `next`, or
+/// `None` to follow it. **Pure.**
+fn refused_hop(policy: RedirectPolicy, first: &str, next: &str) -> Option<&'static str> {
+    let RedirectPolicy::SameSite { site } = policy else {
+        return None;
+    };
+    let (Ok(first), Ok(next)) = (parse_http_uri(first), parse_http_uri(next)) else {
+        return Some("redirect refused: unparseable hop");
+    };
+    let (Some(a), Some(b)) = (first.host(), next.host()) else {
+        return Some("redirect refused: no host");
+    };
+    let same_site = a.eq_ignore_ascii_case(b) || (in_site(a, site) && in_site(b, site));
+    if !same_site {
+        return Some("redirect refused: off-site hop");
+    }
+    if first.scheme_str() == Some("https") && next.scheme_str() != Some("https") {
+        return Some("redirect refused: https to http downgrade");
+    }
+    None
+}
+
+/// `host` is `site` or a subdomain of it: the monolith's
+/// `registrable_domain(host) == registrable_domain(site)` for a `site` with no
+/// Public Suffix List rule at or below it. Trims, lowercases and drops trailing dots
+/// as the monolith did; an IP literal or an empty label is never in a site. **Pure.**
+fn in_site(host: &str, site: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() || host.split('.').any(str::is_empty) || host.starts_with('[') {
+        return false;
+    }
+    host == site
+        || host
+            .strip_suffix(site)
+            .is_some_and(|rest| rest.ends_with('.'))
 }
 
 /// Delta-seconds only; HTTP-date values are ignored rather than guessed at.
 fn parse_retry_after(v: &str) -> Option<u64> {
     v.trim().parse().ok()
+}
+
+/// `url` with any `user:pass@` removed from its authority. **Pure.**
+fn without_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_owned();
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    match authority.rsplit_once('@') {
+        Some((_, host)) => format!("{scheme}://{host}{tail}"),
+        None => url.to_owned(),
+    }
 }
 
 fn without_credentials(request: &Request) -> Request {
@@ -339,7 +531,9 @@ fn redirect_target(current: &Request, response: &Response) -> Result<Option<Requ
     };
     let url = resolve_location(&current.url, location)?;
     let mut next = current.clone();
-    next.url = url;
+    // A redirect target's userinfo is never sent: the transport would turn it into
+    // an `Authorization: Basic` header.
+    next.url = without_userinfo(&url);
     let to_get = response.status == 303
         || (matches!(response.status, 301 | 302) && current.method == Method::Post);
     if to_get {
@@ -417,7 +611,10 @@ mod tests {
             f,
             Request::get(url),
             c,
-            &FetchOptions { max_redirects: max },
+            &FetchOptions {
+                max_redirects: max,
+                ..FetchOptions::default()
+            },
             "t",
             100,
         )
@@ -829,5 +1026,152 @@ mod tests {
         let r = run(&f, "https://a.example/", None, 5).expect("fetch");
         assert_eq!(r.redirects, 1);
         assert!(f.seen.borrow().iter().all(|req| req.timeout.is_none()));
+    }
+
+    #[test]
+    fn same_site_follows_the_monolith_s_redirect_verdict() {
+        let site = RedirectPolicy::SameSite { site: "stolen.tax" };
+        let first = "https://stolen.tax/api/v2/index.php?path=snusbase";
+        for next in [
+            "https://stolen.tax/other",
+            "https://STOLEN.TAX/other",
+            "https://api.stolen.tax/v2",
+            "https://a.b.stolen.tax/v2",
+            "https://stolen.tax:8443/v2",
+            "https://stolen.tax./v2",
+        ] {
+            assert_eq!(refused_hop(site, first, next), None, "{next}");
+        }
+        for (next, why) in [
+            ("https://evil.example/", "redirect refused: off-site hop"),
+            (
+                "https://stolen.tax@evil.example/",
+                "redirect refused: off-site hop",
+            ),
+            (
+                "https://stolen.tax:443@evil.example/",
+                "redirect refused: off-site hop",
+            ),
+            ("https://xstolen.tax/", "redirect refused: off-site hop"),
+            (
+                "https://stolen.tax.evil.example/",
+                "redirect refused: off-site hop",
+            ),
+            ("https://a..stolen.tax/", "redirect refused: off-site hop"),
+            ("https://127.0.0.1/", "redirect refused: off-site hop"),
+            ("https://[::1]/", "redirect refused: off-site hop"),
+            (
+                "http://stolen.tax/",
+                "redirect refused: https to http downgrade",
+            ),
+            (
+                "http://api.stolen.tax/",
+                "redirect refused: https to http downgrade",
+            ),
+        ] {
+            assert_eq!(refused_hop(site, first, next), Some(why), "{next}");
+        }
+        assert_eq!(
+            refused_hop(RedirectPolicy::Any, first, "http://evil.example/"),
+            None
+        );
+    }
+
+    #[test]
+    fn userinfo_is_dropped_from_a_redirect_target() {
+        assert_eq!(
+            without_userinfo("https://u:p@www.stolen.tax/x?a=b@c"),
+            "https://www.stolen.tax/x?a=b@c"
+        );
+        assert_eq!(
+            without_userinfo("https://stolen.tax:443@evil.example/"),
+            "https://evil.example/"
+        );
+        assert_eq!(
+            without_userinfo("https://a.example/p"),
+            "https://a.example/p"
+        );
+    }
+
+    #[test]
+    fn a_pinned_credential_goes_only_to_its_origin_and_never_back_after_leaving() {
+        let c =
+            cred("tok-abcdef-123456", AuthStyle::Bearer).only_for_origin("https://a.example:443");
+        let f = Fake::new(vec![
+            Ok(resp(302, &[("location", "https://b.a.example/")], "")),
+            Ok(resp(302, &[("location", "https://a.example/back")], "")),
+            Ok(resp(200, &[], "")),
+        ]);
+        let r = run(&f, "https://a.example/start", Some(&c), 5).expect("fetch");
+        let seen = f.seen.borrow();
+        assert!(seen[0].header_value("authorization").is_some());
+        assert!(seen[1].header_value("authorization").is_none());
+        assert!(
+            seen[2].header_value("authorization").is_none(),
+            "re-attached on return"
+        );
+        assert!(r.credential_sent.is_none());
+
+        let elsewhere = Fake::new(vec![Ok(resp(200, &[], ""))]);
+        run(&elsewhere, "https://a.example:8443/", Some(&c), 0).expect("fetch");
+        assert!(
+            elsewhere.seen.borrow()[0]
+                .header_value("authorization")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_custom_key_header_is_stripped_off_origin_even_if_the_caller_set_it() {
+        let c = cred("tok-abcdef-123456", AuthStyle::Header("X-Feed".into()));
+        let f = Fake::new(vec![
+            Ok(resp(307, &[("location", "https://b.example/")], "")),
+            Ok(resp(200, &[], "")),
+        ]);
+        fetch(
+            &f,
+            Request::get("https://a.example/").header("X-Feed", "caller-copy"),
+            Some(&c),
+            &FetchOptions::default(),
+            "t",
+            100,
+        )
+        .expect("fetch");
+        let seen = f.seen.borrow();
+        assert_eq!(
+            seen[0]
+                .headers
+                .iter()
+                .filter(|(k, _)| k == "X-Feed")
+                .count(),
+            1
+        );
+        assert!(seen[1].header_value("x-feed").is_none());
+    }
+
+    #[test]
+    fn an_unusable_location_is_a_refused_hop_under_same_site() {
+        let f = Fake::new(vec![Ok(resp(
+            302,
+            &[("location", "javascript:alert(1)")],
+            "",
+        ))]);
+        let r = fetch(
+            &f,
+            Request::get("https://stolen.tax/"),
+            None,
+            &FetchOptions {
+                max_redirects: 9,
+                redirect_policy: RedirectPolicy::SameSite { site: "stolen.tax" },
+            },
+            "t",
+            100,
+        )
+        .expect("a refused hop, not an error");
+        assert_eq!(
+            r.redirect_refused,
+            Some("redirect refused: unusable Location")
+        );
+        assert_eq!(f.seen.borrow().len(), 1);
     }
 }

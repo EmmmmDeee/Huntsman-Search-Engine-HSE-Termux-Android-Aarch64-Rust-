@@ -1060,3 +1060,484 @@ fn a_slow_redirect_chain_on_a_real_socket_stops_at_the_lookup_deadline() {
         report.truncation
     );
 }
+
+/// A clock whose sleeps overrun by `extra`, as a real sleep can.
+struct Overrun<'c> {
+    clock: &'c FakeClock,
+    extra: Duration,
+}
+
+impl Clock for Overrun<'_> {
+    fn now(&self) -> std::time::Instant {
+        self.clock.now()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        self.clock.advance(duration + self.extra);
+    }
+}
+
+#[test]
+fn a_retry_with_no_budget_left_is_not_sent_or_counted() {
+    let clock = FakeClock::new();
+    let over = Overrun {
+        clock: &clock,
+        extra: Duration::from_secs(1),
+    };
+    // A 3 s pause fits the 4 s left at 116 s, but the sleep overruns to 120 s.
+    let t = Script::new(&clock, vec![("snusbase", vec![(116, 429, Some("3"), "")])]);
+    let err = lookup_with_clock(&t, &over, &keys(), "user@example.com", "scan", 0).unwrap_err();
+    assert_eq!(t.paths(), ["snusbase"]);
+    assert_eq!(
+        err,
+        StolenTaxError::BudgetExhausted {
+            skipped: vec!["osintcat", "hudsonrock"],
+            failed: vec![PathFailure {
+                path: "snusbase",
+                reason: "HTTP 429 (RateLimited) after 1 of 3 attempts; the 120s lookup budget ran out before the next one".into(),
+            }],
+        }
+    );
+}
+
+// ---- Redirects on real sockets, loopback only -------------------------------------
+//
+// Each origin a test uses (`https://stolen.tax:443`, `https://api.stolen.tax:443`,
+// `https://evil.example:443`, ...) is its own local server. `Mapped` sits below the
+// fetch layer: fetch decides on the real URLs (and `KEY_ORIGIN` is untouched), and
+// only the socket goes to 127.0.0.1. Every server records every request head it got.
+
+type Handler = dyn Fn(&str) -> (u64, String) + Send + Sync;
+
+struct Origin {
+    port: u16,
+    heads: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Origin {
+    /// `answer(request target)` -> (delay in ms, raw HTTP response).
+    fn serve(answer: Box<Handler>) -> Self {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let heads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = heads.clone();
+        let answer: std::sync::Arc<Handler> = answer.into();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut sock) = stream else { continue };
+                let (log, answer) = (log.clone(), answer.clone());
+                std::thread::spawn(move || {
+                    sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match sock.read(&mut chunk) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&buf).into_owned();
+                    log.lock().unwrap().push(head.clone());
+                    let target = head.split(' ').nth(1).unwrap_or_default().to_owned();
+                    let (delay, reply) = answer(&target);
+                    std::thread::sleep(Duration::from_millis(delay));
+                    let _ = sock.write_all(reply.as_bytes());
+                });
+            }
+        });
+        Self { port, heads }
+    }
+
+    fn heads(&self) -> Vec<String> {
+        self.heads.lock().unwrap().clone()
+    }
+}
+
+fn json_reply(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+fn redirect_reply(to: &str) -> String {
+    format!(
+        "HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+}
+
+/// The `path=` value of a request target.
+fn v2_path(target: &str) -> &str {
+    target
+        .split_once("path=")
+        .map_or("", |(_, rest)| rest.split('&').next().unwrap_or(""))
+}
+
+/// No credential of any kind in a request head: not ours, and none the transport
+/// could mint (`Authorization: Basic` from userinfo).
+fn keyless(head: &str) -> bool {
+    !head.to_ascii_lowercase().contains("authorization:") && !head.contains(KEY)
+}
+
+fn carries_the_key(head: &str) -> bool {
+    head.lines().any(|l| {
+        l.split_once(':').is_some_and(|(k, v)| {
+            k.eq_ignore_ascii_case("authorization") && v.trim() == format!("Bearer {KEY}")
+        })
+    })
+}
+
+struct Mapped {
+    inner: crate::http::UreqTransport,
+    map: Vec<(&'static str, u16)>,
+}
+
+impl Mapped {
+    fn new(map: Vec<(&'static str, &Origin)>) -> Self {
+        Self {
+            inner: crate::http::UreqTransport::new(&TransportConfig {
+                egress: crate::egress::EgressPolicy::Unrestricted,
+                ..transport_config()
+            }),
+            map: map.into_iter().map(|(o, s)| (o, s.port)).collect(),
+        }
+    }
+}
+
+impl Transport for Mapped {
+    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        let origin = crate::http::origin_of(&request.url).unwrap();
+        let port = self
+            .map
+            .iter()
+            .find(|(o, _)| *o == origin)
+            .unwrap_or_else(|| panic!("no stand-in for {origin}"))
+            .1;
+        let rest = request.url.split_once("://").unwrap().1;
+        let tail = &rest[rest.find(['/', '?']).unwrap_or(rest.len())..];
+        let mut local = request.clone();
+        local.url = format!("http://127.0.0.1:{port}{tail}");
+        self.inner.send(&local)
+    }
+}
+
+fn mapped_lookup(t: &Mapped, budget: Duration) -> Result<StolenTaxReport, StolenTaxError> {
+    lookup_within(
+        t,
+        &SystemClock,
+        budget,
+        &keys(),
+        "user@example.com",
+        "scan",
+        0,
+    )
+}
+
+fn heads_for<'h>(heads: &'h [String], path: &str) -> Vec<&'h String> {
+    heads
+        .iter()
+        .filter(|h| v2_path(h.split(' ').nth(1).unwrap_or_default()) == path)
+        .collect()
+}
+
+/// Legacy parity: the monolith followed a same-site HTTPS redirect.
+#[test]
+fn redirect_same_site_https_hop_is_followed_and_its_evidence_kept() {
+    let st = Origin::serve(Box::new(|t: &str| {
+        match (v2_path(t), t.contains("moved=1")) {
+            ("snusbase", false) => (0, redirect_reply("/api/v2/index.php?path=snusbase&moved=1")),
+            ("snusbase", true) => (0, json_reply(SNUS_HIT)),
+            _ => (0, json_reply(EMPTY)),
+        }
+    }));
+    let t = Mapped::new(vec![("https://stolen.tax:443", &st)]);
+    let report = mapped_lookup(&t, Duration::from_secs(10)).unwrap();
+    assert!(report.failed_paths.is_empty(), "{:?}", report.failed_paths);
+    assert!(has(&report, &EntityKind::Email, "alt@example.com"));
+    let heads = st.heads();
+    let snus = heads_for(&heads, "snusbase");
+    assert_eq!(snus.len(), 2);
+    assert!(snus[1].contains("moved=1"));
+    // Same origin, exactly https://stolen.tax:443: the key goes on both hops.
+    assert!(snus.iter().all(|h| carries_the_key(h)));
+}
+
+/// A same-site subdomain is followed (parity) but gets no key (tightening), and a
+/// hop back to stolen.tax after leaving it does not get the key back either.
+/// Userinfo in a followed Location is never sent (no `Authorization: Basic`).
+#[test]
+fn redirect_subdomain_hop_is_followed_without_the_key() {
+    let st = Origin::serve(Box::new(|t: &str| {
+        match (v2_path(t), t.contains("back=1")) {
+            ("snusbase", false) => (
+                0,
+                redirect_reply("https://api.stolen.tax/v2/index.php?path=snusbase"),
+            ),
+            ("snusbase", true) => (0, json_reply(SNUS_HIT)),
+            ("osintcat", _) => (
+                0,
+                redirect_reply("https://user:pw@www.stolen.tax/v2/index.php?path=osintcat"),
+            ),
+            _ => (0, json_reply(EMPTY)),
+        }
+    }));
+    let api = Origin::serve(Box::new(|_: &str| {
+        (
+            0,
+            redirect_reply("https://stolen.tax/api/v2/index.php?path=snusbase&back=1"),
+        )
+    }));
+    let www = Origin::serve(Box::new(|_: &str| (0, json_reply(OSINT_HIT))));
+    let t = Mapped::new(vec![
+        ("https://stolen.tax:443", &st),
+        ("https://api.stolen.tax:443", &api),
+        ("https://www.stolen.tax:443", &www),
+    ]);
+    let report = mapped_lookup(&t, Duration::from_secs(10)).unwrap();
+    assert!(report.failed_paths.is_empty(), "{:?}", report.failed_paths);
+    assert!(has(&report, &EntityKind::Email, "alt@example.com"));
+    assert!(
+        report
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username)
+    );
+
+    let api_heads = api.heads();
+    assert_eq!(api_heads.len(), 1);
+    assert!(keyless(&api_heads[0]), "{}", api_heads[0]);
+    let st_heads = st.heads();
+    let snus = heads_for(&st_heads, "snusbase");
+    assert_eq!(snus.len(), 2);
+    assert!(carries_the_key(snus[0]));
+    assert!(
+        snus[1].contains("back=1") && keyless(snus[1]),
+        "{}",
+        snus[1]
+    );
+    let www_heads = www.heads();
+    assert_eq!(www_heads.len(), 1);
+    assert!(keyless(&www_heads[0]), "{}", www_heads[0]);
+}
+
+/// `https://stolen.tax@evil.example/` and `https://stolen.tax:443@evil.example/` are
+/// hosts `evil.example`: off-site, refused before any request, so the key cannot
+/// reach it.
+#[test]
+fn redirect_userinfo_trick_is_another_host_and_never_gets_the_key() {
+    let st = Origin::serve(Box::new(|t: &str| match v2_path(t) {
+        "snusbase" => (0, redirect_reply("https://stolen.tax@evil.example/collect")),
+        "osintcat" => (
+            0,
+            redirect_reply("https://stolen.tax:443@evil.example/collect"),
+        ),
+        _ => (0, json_reply(HUDSON_HIT)),
+    }));
+    let evil = Origin::serve(Box::new(|_: &str| (0, json_reply(SNUS_HIT))));
+    let t = Mapped::new(vec![
+        ("https://stolen.tax:443", &st),
+        ("https://evil.example:443", &evil),
+    ]);
+    let report = mapped_lookup(&t, Duration::from_secs(10)).unwrap();
+    assert!(evil.heads().is_empty(), "evil.example was contacted");
+    let failed: Vec<(&str, &str)> = report
+        .failed_paths
+        .iter()
+        .map(|f| (f.path, f.reason.as_str()))
+        .collect();
+    assert_eq!(
+        failed,
+        [
+            (
+                "snusbase",
+                "HTTP 302 (RedirectChanged); redirect refused: off-site hop"
+            ),
+            (
+                "osintcat",
+                "HTTP 302 (RedirectChanged); redirect refused: off-site hop"
+            ),
+        ]
+    );
+    assert!(has(&report, &EntityKind::Credential, "stealer:HOST-1"));
+}
+
+/// The monolith's same-site rule ignores the port, so `https://stolen.tax:8443/` is
+/// followed. It is not `KEY_ORIGIN`, so it gets no key.
+#[test]
+fn redirect_port_change_is_followed_without_the_key() {
+    let st = Origin::serve(Box::new(|t: &str| match v2_path(t) {
+        "snusbase" => (
+            0,
+            redirect_reply("https://stolen.tax:8443/api/v2/index.php?path=snusbase"),
+        ),
+        _ => (0, json_reply(EMPTY)),
+    }));
+    let other_port = Origin::serve(Box::new(|_: &str| (0, json_reply(SNUS_HIT))));
+    let t = Mapped::new(vec![
+        ("https://stolen.tax:443", &st),
+        ("https://stolen.tax:8443", &other_port),
+    ]);
+    let report = mapped_lookup(&t, Duration::from_secs(10)).unwrap();
+    assert!(report.failed_paths.is_empty(), "{:?}", report.failed_paths);
+    assert!(has(&report, &EntityKind::Email, "alt@example.com"));
+    let heads = other_port.heads();
+    assert_eq!(heads.len(), 1);
+    assert!(keyless(&heads[0]), "{}", heads[0]);
+}
+
+/// `https` to `http` is refused even on the same host, before anything is sent.
+#[test]
+fn redirect_http_downgrade_is_refused_before_any_request() {
+    let st = Origin::serve(Box::new(|t: &str| match v2_path(t) {
+        "snusbase" => (
+            0,
+            redirect_reply("http://stolen.tax/api/v2/index.php?path=snusbase"),
+        ),
+        _ => (0, json_reply(HUDSON_HIT)),
+    }));
+    let plain = Origin::serve(Box::new(|_: &str| (0, json_reply(SNUS_HIT))));
+    let t = Mapped::new(vec![
+        ("https://stolen.tax:443", &st),
+        ("http://stolen.tax:80", &plain),
+    ]);
+    let report = mapped_lookup(&t, Duration::from_secs(10)).unwrap();
+    assert!(plain.heads().is_empty(), "the http hop was requested");
+    assert_eq!(report.failed_paths.len(), 1);
+    assert_eq!(
+        report.failed_paths[0].reason,
+        "HTTP 302 (RedirectChanged); redirect refused: https to http downgrade"
+    );
+}
+
+/// The monolith followed at most 9 hops (`MAX_REDIRECT_HOPS = 10` counted the
+/// original request): 10 requests, then the path fails.
+#[test]
+fn redirect_chain_stops_at_the_monolith_hop_limit() {
+    let st = Origin::serve(Box::new(|t: &str| match v2_path(t) {
+        "snusbase" => {
+            let hop: u32 = t
+                .split_once("hop=")
+                .map_or(0, |(_, n)| n.parse().unwrap_or(0));
+            (
+                0,
+                redirect_reply(&format!("/api/v2/index.php?path=snusbase&hop={}", hop + 1)),
+            )
+        }
+        _ => (0, json_reply(HUDSON_HIT)),
+    }));
+    let t = Mapped::new(vec![("https://stolen.tax:443", &st)]);
+    let report = mapped_lookup(&t, Duration::from_secs(10)).unwrap();
+    let heads = st.heads();
+    assert_eq!(heads_for(&heads, "snusbase").len(), 10);
+    assert_eq!(report.failed_paths.len(), 1);
+    assert_eq!(
+        report.failed_paths[0].reason,
+        "HTTP 302 (RedirectChanged); redirect limit reached (9 followed)"
+    );
+}
+
+/// A slow same-site chain is followed hop by hop, each hop capped by what is left
+/// of the lookup budget, and stops at the deadline.
+#[test]
+fn redirect_slow_same_site_chain_stops_at_the_lookup_deadline() {
+    let st = Origin::serve(Box::new(|t: &str| match v2_path(t) {
+        "snusbase" => {
+            let hop: u32 = t
+                .split_once("hop=")
+                .map_or(0, |(_, n)| n.parse().unwrap_or(0));
+            (
+                300,
+                redirect_reply(&format!("/api/v2/index.php?path=snusbase&hop={}", hop + 1)),
+            )
+        }
+        _ => (0, json_reply(EMPTY)),
+    }));
+    let t = Mapped::new(vec![("https://stolen.tax:443", &st)]);
+    let budget = Duration::from_millis(1200);
+    let started = std::time::Instant::now();
+    let err = mapped_lookup(&t, budget).unwrap_err();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed <= budget + Duration::from_millis(500),
+        "{elapsed:?}"
+    );
+    let StolenTaxError::BudgetExhausted { skipped, failed } = &err else {
+        panic!("{err:?}");
+    };
+    assert_eq!(skipped, &["osintcat", "hudsonrock"]);
+    assert_eq!(failed.len(), 1);
+    assert!(
+        failed[0].reason.contains("TtfbTimeout"),
+        "{}",
+        failed[0].reason
+    );
+    assert!(heads_for(&st.heads(), "snusbase").len() >= 3);
+}
+
+#[test]
+fn a_decode_error_names_its_category_and_position_never_the_body() {
+    let marker = "QUOTED-MARKER-7f3a";
+    for body in [
+        format!(r#"{{"success":"{marker}"}}"#),
+        format!(r#"{{"success":true,"data":null,"{marker}"#),
+        format!("not json {marker}"),
+    ] {
+        let err = decode_path("snusbase", body.as_bytes()).unwrap_err();
+        assert!(!err.contains(marker), "{err}");
+        assert!(err.starts_with("could not decode response: "), "{err}");
+        assert!(err.contains(" error at line 1 column "), "{err}");
+    }
+    let err = decode_path(
+        "snusbase",
+        format!(r#"{{"success":"{marker}"}}"#).as_bytes(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        "could not decode response: data error at line 1 column 31"
+    );
+}
+
+#[test]
+fn a_long_provider_error_is_cut_to_120_chars() {
+    let long = "é".repeat(10 * 1024);
+    let body = serde_json::json!({"success": false, "error": long}).to_string();
+    let err = decode_path("snusbase", body.as_bytes()).unwrap_err();
+    let words = err
+        .strip_prefix("success=false, provider reported failure: ")
+        .unwrap();
+    assert_eq!(words.chars().count(), 120);
+    assert!(words.chars().all(|c| c == 'é'));
+
+    let controls = serde_json::json!({"success": false, "error": "a\nb\u{1b}[31m"}).to_string();
+    let err = decode_path("snusbase", controls.as_bytes()).unwrap_err();
+    assert!(err.ends_with("a\u{fffd}b\u{fffd}[31m"), "{err:?}");
+}
+
+#[test]
+fn the_key_is_scrubbed_from_a_provider_error_before_it_is_cut() {
+    // The key straddles the 120-char cut: truncating first would leave a prefix of
+    // it that no longer matches the scrubber.
+    for lead in [0usize, 60, 110, 119] {
+        let message = format!("{}{KEY}{}", "x".repeat(lead), "y".repeat(200));
+        let body = serde_json::json!({"success": false, "error": message}).to_string();
+        let t = Paths::ok(&[("snusbase", body.as_str())]);
+        let err = go(&t, "user@example.com").unwrap_err();
+        let StolenTaxError::Failed(first) = &err else {
+            panic!("{err:?}");
+        };
+        let words = first
+            .reason
+            .strip_prefix("success=false, provider reported failure: ")
+            .unwrap_or_else(|| panic!("{}", first.reason));
+        let expected: String = scrub_secrets(&message, &[KEY]).chars().take(120).collect();
+        assert_eq!(words, expected, "lead {lead}");
+        for n in 6..=KEY.len() {
+            assert!(
+                !words.contains(&KEY[..n]),
+                "lead {lead}: {n}-char key prefix kept"
+            );
+        }
+    }
+}

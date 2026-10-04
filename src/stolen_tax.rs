@@ -12,6 +12,15 @@
 //! [`crate::fetch`]. Results are merged and deduplicated into Email / Username pivots
 //! and `Credential` markers (`breach:{corpus}`, `stealer:{host}`).
 //!
+//! Redirects: followed as the monolith followed them (`util/http/ssrf.rs`
+//! `redirect_verdict`): same site only (`stolen.tax` or a subdomain, any port), never
+//! `https` to `http`, at most [`MAX_REDIRECTS`] hops; a refused hop is not requested
+//! and its 3xx fails the path. The key goes only to [`KEY_ORIGIN`] exactly, and only
+//! while the chain has not left it: a followed hop elsewhere (a subdomain, another
+//! port) is sent with the key header stripped. That is a deliberate tightening; the
+//! monolith's client dropped `Authorization` only when the host or port changed
+//! from the previous hop.
+//!
 //! Never emitted: cleartext passwords, hashes, `top_passwords`. The wire types do not
 //! declare those fields, so they cannot become entity values.
 //!
@@ -39,6 +48,7 @@
 //! source: nothing in this crate calls it automatically.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -47,7 +57,7 @@ use serde_json::Value;
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::deadline::{Clock, Deadline, SystemClock};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, normalise};
-use crate::fetch::{AuthStyle, Credential, FetchOptions, Fetched, fetch_within};
+use crate::fetch::{AuthStyle, Credential, FetchOptions, Fetched, RedirectPolicy, fetch_within};
 use crate::http::{Request, Transport, TransportConfig};
 use crate::keys::{Keys, Secret};
 use crate::redact::scrub_secrets;
@@ -60,6 +70,17 @@ pub const KEY_SLOT: &str = "HUNTSMAN_STOLEN_TAX_KEY";
 const API_BASE: &str = "https://stolen.tax/api/v2/index.php?path=";
 /// Cascade order: snusbase primary, then the secondary corpora, always all three.
 const PATHS: [&str; 3] = ["snusbase", "osintcat", "hudsonrock"];
+/// The only origin the key is ever sent to: scheme `https`, host exactly
+/// `stolen.tax`, port 443. A compile-time constant; tests stand in for stolen.tax
+/// below the fetch layer (a URL-mapping transport), never by changing this.
+pub const KEY_ORIGIN: &str = "https://stolen.tax:443";
+/// The registrable domain redirects may stay within (the monolith's same-site rule).
+/// Its public suffix is `tax`, with no Public Suffix List rule below it.
+const SITE: &str = "stolen.tax";
+/// Redirect hops followed per request. The monolith refused the hop that would make
+/// `previous.len() >= MAX_REDIRECT_HOPS` (10), and `previous` includes the original
+/// request, so it followed at most 9.
+pub const MAX_REDIRECTS: u32 = 9;
 /// Budget for the whole lookup, every path included. The monolith's engine stopped
 /// the three-path cascade at `max_timeout_ms() = 120_000` (snusbase alone takes
 /// ~30–50 s).
@@ -211,8 +232,9 @@ fn lookup_within<T: Transport + ?Sized>(
             now_unix,
             &deadline,
         )? {
-            Ok(chunk) => merge_data(&mut merged, chunk),
-            Err(reason) => failures.push(PathFailure { path, reason }),
+            PathOutcome::Data(chunk) => merge_data(&mut merged, chunk),
+            PathOutcome::Failed(reason) => failures.push(PathFailure { path, reason }),
+            PathOutcome::NotSent => skipped.push(path),
         }
     }
     assemble(&merged, failures, skipped, query, scan_id)
@@ -227,13 +249,23 @@ fn credential(secret: Secret, now_unix: u64) -> Result<Credential, StolenTaxErro
     })
     .map_err(|e| StolenTaxError::Refused(e.to_string()))?;
     Credential::new(authority, secret, AuthStyle::Bearer)
+        .map(|c| c.only_for_origin(KEY_ORIGIN))
         .map_err(|e| StolenTaxError::Refused(e.to_string()))
 }
 
+/// How one path ended.
+enum PathOutcome {
+    Data(StolenTaxData),
+    /// Diagnostic text, key scrubbed.
+    Failed(String),
+    /// Not sent: the budget was spent before its first attempt went out.
+    NotSent,
+}
+
 /// One path: a POST, retried on the same key while stolen.tax answers `429` (at most
-/// [`ATTEMPTS_PER_PATH`] attempts), every attempt and pause inside `deadline`. Outer
-/// `Err` aborts the cascade (refused before sending); inner `Err` is this path's
-/// failure, and the cascade continues.
+/// [`ATTEMPTS_PER_PATH`] attempts), every attempt, hop and pause inside `deadline`.
+/// An attempt that would start with nothing left of the budget is not sent and is
+/// not counted. Outer `Err` aborts the cascade (refused before sending).
 fn query_path<T: Transport + ?Sized>(
     transport: &T,
     credential: &Credential,
@@ -242,9 +274,20 @@ fn query_path<T: Transport + ?Sized>(
     body: &[u8],
     now_unix: u64,
     deadline: &Deadline<'_>,
-) -> Result<Result<StolenTaxData, String>, StolenTaxError> {
-    let mut attempt = 1u8;
+) -> Result<PathOutcome, StolenTaxError> {
+    let budget_secs = deadline.budget().as_secs();
+    let ran_out = |attempts: u8, last: Option<SourceOutcomeKind>| match last {
+        None => PathOutcome::NotSent,
+        Some(kind) => PathOutcome::Failed(format!(
+            "HTTP 429 ({kind:?}) after {attempts} of {ATTEMPTS_PER_PATH} attempts; the {budget_secs}s lookup budget ran out before the next one"
+        )),
+    };
+    let mut attempts = 0u8;
+    let mut last_429 = None;
     loop {
+        if deadline.expired() {
+            return Ok(ran_out(attempts, last_429));
+        }
         let cap = deadline.remaining().min(TIMEOUT);
         let request = Request::post(format!("{API_BASE}{path}"), body.to_vec())
             .header("Content-Type", "application/json")
@@ -254,21 +297,39 @@ fn query_path<T: Transport + ?Sized>(
             transport,
             request,
             Some(credential),
-            &FetchOptions { max_redirects: 0 },
+            &FetchOptions {
+                max_redirects: MAX_REDIRECTS,
+                redirect_policy: RedirectPolicy::SameSite { site: SITE },
+            },
             deadline,
             SRC,
             now_unix,
         )
         .map_err(|e| StolenTaxError::Refused(e.to_string()))?;
+        match fetched.not_sent_hop {
+            Some(1) => return Ok(ran_out(attempts, last_429)),
+            Some(hop) => {
+                return Ok(PathOutcome::Failed(format!(
+                    "no response (TtfbTimeout); the {budget_secs}s lookup budget ran out before redirect hop {hop}"
+                )));
+            }
+            None => {}
+        }
+        attempts += 1;
         let rate_limited = fetched
             .response
             .as_ref()
             .is_some_and(|response| response.status == 429);
         if !rate_limited {
-            return Ok(answer(path, fetched, secret, cap, deadline.budget()));
+            return Ok(
+                match answer(path, fetched, secret, cap, deadline.budget()) {
+                    Ok(data) => PathOutcome::Data(data),
+                    Err(reason) => PathOutcome::Failed(reason),
+                },
+            );
         }
-        let gave_up = if attempt >= ATTEMPTS_PER_PATH {
-            format!("after {attempt} attempts")
+        let gave_up = if attempts >= ATTEMPTS_PER_PATH {
+            format!("after {attempts} attempts")
         } else {
             let pause = retry_pause(
                 fetched
@@ -277,16 +338,15 @@ fn query_path<T: Transport + ?Sized>(
                     .and_then(|r| r.header_value("retry-after")),
             );
             if deadline.sleep_within(pause) {
-                attempt += 1;
+                last_429 = Some(fetched.outcome.kind);
                 continue;
             }
             format!(
-                "after {attempt} of {ATTEMPTS_PER_PATH} attempts; a {}s Retry-After pause would outlast the {}s lookup budget",
+                "after {attempts} of {ATTEMPTS_PER_PATH} attempts; a {}s Retry-After pause would outlast the {budget_secs}s lookup budget",
                 pause.as_secs(),
-                deadline.budget().as_secs()
             )
         };
-        return Ok(Err(format!(
+        return Ok(PathOutcome::Failed(format!(
             "HTTP 429 ({:?}) {gave_up}",
             fetched.outcome.kind
         )));
@@ -327,10 +387,17 @@ fn answer(
         });
     };
     if !(200..300).contains(&response.status) {
-        return Err(format!(
-            "HTTP {} ({:?})",
-            response.status, fetched.outcome.kind
-        ));
+        let mut reason = format!("HTTP {} ({:?})", response.status, fetched.outcome.kind);
+        if let Some(why) = fetched.redirect_refused {
+            reason.push_str("; ");
+            reason.push_str(why);
+        } else if (300..400).contains(&response.status) && fetched.redirects >= MAX_REDIRECTS {
+            let _ = write!(
+                reason,
+                "; redirect limit reached ({MAX_REDIRECTS} followed)"
+            );
+        }
+        return Err(reason);
     }
     if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
         return Err(format!(
@@ -341,15 +408,25 @@ fn answer(
     if response.truncated {
         return Err("response exceeds the body limit".into());
     }
-    decode_path(path, &response.body).map_err(|reason| scrub(&reason))
+    decode_path_scrubbed(path, &response.body, &[secret.expose()]).map_err(|reason| scrub(&reason))
 }
 
 /// Envelope → normalised rows for one path. A `success: false` envelope is a
 /// failure in the provider's own words: a zero-hit search answers `success: true`
 /// with empty data, so `false` is never "no results". **Pure.**
+#[cfg(test)]
 fn decode_path(path: &str, body: &[u8]) -> Result<StolenTaxData, String> {
+    decode_path_scrubbed(path, body, &[])
+}
+
+/// [`decode_path`] with `secrets` scrubbed out of the provider's words.
+fn decode_path_scrubbed(
+    path: &str,
+    body: &[u8],
+    secrets: &[&str],
+) -> Result<StolenTaxData, String> {
     let envelope: StolenTaxResponse =
-        serde_json::from_slice(body).map_err(|e| format!("could not decode response: {e}"))?;
+        serde_json::from_slice(body).map_err(|e| decode_error_text(&e))?;
     if !envelope.success {
         let message = envelope.error.as_deref().unwrap_or("no error text");
         let class = if crate::service_defs::looks_like_auth_failure_text(message) {
@@ -357,12 +434,47 @@ fn decode_path(path: &str, body: &[u8]) -> Result<StolenTaxData, String> {
         } else {
             "provider reported failure"
         };
-        return Err(format!("success=false, {class}: {message}"));
+        return Err(format!(
+            "success=false, {class}: {}",
+            provider_words(message, secrets)
+        ));
     }
     match envelope.data {
         Some(data) => normalize_path(path, data),
         None => Ok(StolenTaxData::default()),
     }
+}
+
+/// Longest stretch of the provider's own `error` text kept in a diagnostic.
+const PROVIDER_WORDS_MAX_CHARS: usize = 120;
+
+/// A response that is not the v2 envelope: the error's category and position only.
+/// Never serde's message, which can quote the body. **Pure.**
+fn decode_error_text(e: &serde_json::Error) -> String {
+    let category = match e.classify() {
+        serde_json::error::Category::Io => "io",
+        serde_json::error::Category::Syntax => "syntax",
+        serde_json::error::Category::Data => "data",
+        serde_json::error::Category::Eof => "eof",
+    };
+    format!(
+        "could not decode response: {category} error at line {} column {}",
+        e.line(),
+        e.column()
+    )
+}
+
+/// The provider's `error` text as it may appear in a diagnostic. In this order:
+/// every secret scrubbed (first, so a truncation cannot cut a key into a fragment
+/// the scrubber no longer matches), then at most [`PROVIDER_WORDS_MAX_CHARS`]
+/// characters (on a char boundary), then every control character replaced by
+/// U+FFFD one for one. **Pure.**
+fn provider_words(message: &str, secrets: &[&str]) -> String {
+    scrub_secrets(message, secrets)
+        .chars()
+        .take(PROVIDER_WORDS_MAX_CHARS)
+        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .collect()
 }
 
 /// Merge the cascade into the report, or fail when there is nothing to report and a
