@@ -90,11 +90,7 @@ fn main() -> ExitCode {
         println!("huntsman-recon {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    if argv
-        .iter()
-        .skip(1)
-        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
-    {
+    if argv.len() == 2 && matches!(argv[1].as_str(), "-h" | "--help") {
         print_command_help(&argv[0]);
         return ExitCode::SUCCESS;
     }

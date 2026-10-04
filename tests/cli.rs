@@ -101,6 +101,13 @@ fn help_and_version_are_available() {
         );
     }
 
+    let positional_help = bin().args(["classify", "200", "--help"]).output().unwrap();
+    assert!(positional_help.status.success());
+    assert!(
+        String::from_utf8_lossy(&positional_help.stdout).contains("outcome=inconclusive"),
+        "a positional response body equal to --help must reach classify"
+    );
+
     let version = bin().arg("--version").output().unwrap();
     assert!(version.status.success());
     assert_eq!(
