@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
+use huntsman_recon::classifier::classify as classify_indicator;
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
@@ -38,11 +39,12 @@ use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, 
 use huntsman_recon::source_outcome::{
     SourceHealthAction, SourceOutcomeKind, classify_fetch, recommended_action,
 };
+use huntsman_recon::source_registry::routes_for;
 use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -59,6 +61,7 @@ fn main() -> ExitCode {
         Some("coarsen") => coarsen_cmd(args.next()),
         Some("id") => id_cmd(args.next()),
         Some("search") => search_cmd(args.next(), args.next()),
+        Some("sources") => sources_cmd(args.next()),
         Some("classify") => classify(args.next(), args.next()),
         Some("fetch") => fetch_cmd(&args.collect::<Vec<_>>()),
         Some("keys") => keys_cmd(args.next()),
@@ -303,6 +306,36 @@ fn search_cmd(query: Option<String>, dir: Option<String>) -> ExitCode {
     }
     for hit in &hits {
         println!("{}\t{}\t{}", hit.score, hit.id, hit.source);
+    }
+    ExitCode::SUCCESS
+}
+
+fn sources_cmd(query: Option<String>) -> ExitCode {
+    let Some(query) = query else {
+        return fail(EX_USAGE, "usage: huntsman-recon sources QUERY");
+    };
+    let classified = classify_indicator(&query);
+    // Residual and unsupported kinds have no descriptors, so the empty-route check
+    // is the gate. A confidence floor here would drop low-confidence but routable
+    // kinds such as `@handle` usernames.
+    let routes = routes_for(&classified.kind, &classified.value);
+    if routes.is_empty() {
+        return fail(EX_DATAERR, "no actionable source routes");
+    }
+    println!(
+        "kind={} confidence={:.3} routes={}",
+        classified.kind.as_str(),
+        classified.confidence,
+        routes.len()
+    );
+    for route in routes {
+        println!(
+            "source={} execution={} access={} url={}",
+            route.source_id,
+            route.execution.as_str(),
+            route.access.as_str(),
+            route.url
+        );
     }
     ExitCode::SUCCESS
 }
