@@ -338,7 +338,12 @@ impl IpProvider for RdapProvider {
     }
 }
 
-fn copy_string(value: &Value, source: &str, target: &str, attributes: &mut BTreeMap<String, String>) {
+fn copy_string(
+    value: &Value,
+    source: &str,
+    target: &str,
+    attributes: &mut BTreeMap<String, String>,
+) {
     if let Some(text) = value
         .get(source)
         .and_then(Value::as_str)
@@ -399,7 +404,11 @@ fn notice_strings(value: &Value) -> Vec<String> {
         .into_iter()
         .flatten()
         .filter_map(|notice| {
-            let title = notice.get("title").and_then(Value::as_str).unwrap_or("").trim();
+            let title = notice
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             let descriptions: Vec<&str> = notice
                 .get("description")
                 .and_then(Value::as_array)
