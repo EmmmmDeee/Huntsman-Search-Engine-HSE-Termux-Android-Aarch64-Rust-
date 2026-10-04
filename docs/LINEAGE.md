@@ -154,6 +154,13 @@ intentional and pinned:
 | `unattributed_collectors` | 2 corpora (collector names) | 0 families | Legacy falls back to the collector name when a record names no corpus. Lineage must come from the response. |
 | `case_and_whitespace_variant` | 2 (`Adobe`, `ADOBE `) | 1 | Recon canonicalises families, so formatting cannot create a second family. |
 | `dump_plus_registry` | 1 (breach corpora only) | 2 | `abn_lookup` is explicitly bound to the authoritative ABR registry path; the registry family is therefore admitted independently of the breach dataset. |
+| Entity count, tampered: `hibp` x2, 2nd stored `source_family: "spoof-corpus"` [E] | 1 (raw sources) | 1 (main: 2) | Stricter than main, equal to legacy. A stored family no longer becomes a corroboration key. |
+| Entity count, tampered: `hibp` x2, 2nd stored `source_family: "abn_lookup"` [E] | 1 | 1 (main: 2) | Stricter than main, equal to legacy. |
+| Entity count, tampered: `hibp` x3, stored `a`, `b`, `c` [E] | 1 | 1 (main: 3) | Stricter than main, equal to legacy. |
+| Entity count, tampered: `hibp` + `dehashed`, `dehashed` stored `source_family: "hibp"` [E] | 2 | 2 (main: 1) | Looser than main, equal to legacy. A copied stored family can no longer collapse two real collectors either. |
+| Entity set, tampered: `hibp` + `search_engines` stored `source_family: "dehashed"` [E] | 2 {`hibp`, `search_engines`} | same (main: 2 {`dehashed`, `hibp`}) | Same count; the set names the real collector again, equal to legacy. |
+| Entity set, tampered: lone `hibp` stored `source_family: "recall"` [E] | 1 {`hibp`} | same (main: 1 {}, via the stored-strength fallback) | Same count; a stored non-corroborating family no longer hides the real collector, equal to legacy. |
+| Entity count, saved record with **no** stored family: `HIBP` + `hibp` (also ` hibp ` + `hibp`, `Recall` + `hibp`) [E] | 2 | 2 (unchanged) | Not changed. Canonicalising the raw `source` here would give 1, which legacy does not do, so it is not adopted; flagged for Chief. |
 | every fixture, probability absent | graded with no probability | held, `ProbabilityMissing` | Legacy grades corroboration and never auto-merges. Recon auto-merges only with a present, in-range probability. |
 | `dehashed`, two `source_url` domains, no dataset field [1] | 1 corpus (falls back to collector name), not corroborated | 0 families, held | Stricter count, same verdict. Record locators are not lineage (`source_url` is not a lineage field). |
 | `dehashed`, `source_id` `row-1` / `row-2`, no dataset field [1] | 1 corpus (falls back to collector name), not corroborated | 0 families, held | Stricter count, same verdict. Row ids are record locators, not lineage. |
@@ -175,6 +182,30 @@ The same comparison found these cases equal:
   tightening. It is not adopted, pending Chief's decision.
 - `Adobe` vs the Cyrillic lookalike `\u{0410}dobe`: legacy 2, recon 2. Neither normalises
   dataset names (see the trust boundary above).
+
+[E] `Entity::source_count` / `Entity::corroborating_sources` on a saved entity whose stored
+`provenance.source_family` disagrees with `provenance.source` (Security low finding on
+#684). Each row was run through legacy 7dca720 (capture method in
+`tests/fixtures/legacy_7dca720_breach_consensus.json`, which it reproduced on all nine
+fixtures), main (94668e43, and again at deb48f12 after #684 merged, with identical
+results) and this change. Legacy has no `source_family` field and counts
+raw `source` strings. `EvidenceProvenance::corroboration_key` now keys a record that has a
+stored family on `canonical_provenance_family(source)`, and a record without one on its raw
+`source`; the stored value itself is never a key. Pinned by `tests/corroboration_key.rs`,
+including the two threshold effects a spoofed second family had on main. With two sources
+`effective` is `1 - 0.65 * (1 - c)` for `c >= 0.35`, so from confidence 0.6154
+(`1 - 0.25/0.65`) up to 0.75 it lifted Probable to Verified (tested at 0.62, 0.65, 0.70
+and 0.74; 0.615 stays Probable), AU-003 fired at any confidence from 0.6154 up, and from
+0.7692 (`1 - 0.15/0.65`, tested at 0.85) the entity was marked saturated.
+Unchanged by this change, compared for completeness:
+
+- Honest records, the nine fixtures, (a)-(g), the Cyrillic and Kelvin-sign collectors:
+  identical on main and here.
+- Honest `hibp` + `HIBP`: legacy 2, recon 1 on main and here. `EvidenceProvenance::new`
+  stores the canonical family, so honest case variants were already one source.
+- Residual, flagged for Chief with the no-stored-family row: two `HIBP` records where only
+  one has its stored family removed count as 2 (`HIBP`, `hibp`) on main and here; legacy 1.
+  Canonicalising records without a stored family would close it but change the row above.
 
 The adversarial lineage suite additionally pins the fail-closed cases that motivated the
 review repair: record URLs and row ids contribute zero families; an unverified provider's
