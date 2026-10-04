@@ -187,12 +187,14 @@ The same comparison found these cases equal:
 `provenance.source_family` disagrees with `provenance.source` (Security low finding on
 #684). Each row was run through legacy 7dca720 (capture method in
 `tests/fixtures/legacy_7dca720_breach_consensus.json`, which it reproduced on all nine
-fixtures), main 94668e43 and this change. Legacy has no `source_family` field and counts
+fixtures), main (94668e43, and again at deb48f12 after #684 merged, with identical
+results) and this change. Legacy has no `source_family` field and counts
 raw `source` strings. `EvidenceProvenance::corroboration_key` now keys a record that has a
 stored family on `canonical_provenance_family(source)`, and a record without one on its raw
 `source`; the stored value itself is never a key. Pinned by `tests/corroboration_key.rs`,
-including the two threshold effects a spoofed second family had on main: confidence
-0.65-0.74 lifted from Probable to Verified with AU-003 firing, and saturation at 0.85.
+including the two threshold effects a spoofed second family had on main: at confidence
+0.64-0.74 it lifted Probable to Verified (tested at 0.65, 0.70 and 0.74), AU-003 fired at
+any confidence from 0.64 up, and at 0.85 the entity was marked saturated.
 Unchanged by this change, compared for completeness:
 
 - Honest records, the nine fixtures, (a)-(g), the Cyrillic and Kelvin-sign collectors:
