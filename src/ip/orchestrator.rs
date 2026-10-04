@@ -4,15 +4,16 @@
 //! parsing, the guarded fetch boundary owns network execution, and claim aggregation
 //! owns evidentiary truth. Ranking may change execution order but never claim state.
 
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 use crate::evidence_ancestry::canonical_family;
 use crate::http::Transport;
 
-use super::claims::apply_observations;
+use super::claims::{apply_observations, independent_support_count};
 use super::{
-    IpActionRecord, IpCapability, IpClaimKind, IpClaimState, IpInvestigation, IpProvider,
-    IpProviderAction, IpTarget, execute_provider_action,
+    IpActionRecord, IpCapability, IpClaimKind, IpClaimState, IpInvestigation, IpObservationKind,
+    IpProvider, IpProviderAction, IpTarget, execute_provider_action,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +43,9 @@ struct PendingAction<'a> {
     provider: &'a dyn IpProvider,
     action: IpProviderAction,
     reliability: f64,
+    optionality: f64,
+    request_cost: f64,
+    root: String,
     depth: u32,
 }
 
@@ -56,44 +60,32 @@ pub fn run_investigation<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> IpInvestigation {
     let mut investigation = IpInvestigation::new(target);
-    let mut pending = Vec::new();
-    let mut seen_work = BTreeSet::new();
-
-    for provider in providers {
-        let descriptor = provider.descriptor();
-        let reliability = sanitized_prior(descriptor.reliability_prior);
-        for action in provider.plan(&investigation.target) {
-            if mode == IpMode::Base && !is_base_capability(action.capability) {
-                investigation.actions_considered.push(IpActionRecord {
-                    provider_id: provider.id().into(),
-                    action_id: action.action_id,
-                    reason: "outside_base_frontier".into(),
-                    executed: false,
-                });
-                continue;
-            }
-
-            let work_key = work_key(&action);
-            if !seen_work.insert(work_key) {
-                investigation.actions_considered.push(IpActionRecord {
-                    provider_id: provider.id().into(),
-                    action_id: action.action_id,
-                    reason: "duplicate_upstream_target".into(),
-                    executed: false,
-                });
-                continue;
-            }
-
-            pending.push(PendingAction {
-                provider: *provider,
-                depth: initial_depth(action.capability),
-                action,
-                reliability,
-            });
-        }
+    if !investigation.target.is_public() {
+        investigation.termination_reason = Some("non_public_target".into());
+        return investigation;
     }
 
-    while !pending.is_empty() {
+    let mut pending = plan_actions(&investigation, providers, mode);
+
+    loop {
+        let admissible = pending
+            .iter()
+            .enumerate()
+            .filter(|(_, action)| action_has_positive_value(action, &investigation, mode))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+
+        if admissible.is_empty() {
+            investigation.termination_reason = Some(
+                match mode {
+                    IpMode::Base => "base_complete",
+                    IpMode::Deep => "fixed_point",
+                }
+                .into(),
+            );
+            break;
+        }
+
         if investigation.budget_used.actions >= budget.max_actions {
             investigation.termination_reason = Some("action_budget".into());
             break;
@@ -103,18 +95,16 @@ pub fn run_investigation<T: Transport + ?Sized>(
             break;
         }
 
-        let next = select_next(&pending, &investigation);
-        if pending[next].depth > budget.max_depth {
-            investigation.actions_considered.push(IpActionRecord {
-                provider_id: pending[next].provider.id().into(),
-                action_id: pending[next].action.action_id.clone(),
-                reason: "max_depth".into(),
-                executed: false,
-            });
+        let within_depth = admissible
+            .into_iter()
+            .filter(|index| pending[*index].depth <= budget.max_depth)
+            .collect::<Vec<_>>();
+        if within_depth.is_empty() {
             investigation.termination_reason = Some("max_depth".into());
             break;
         }
 
+        let next = select_next(&pending, &within_depth, &investigation);
         let work = pending.remove(next);
         investigation.actions_considered.push(IpActionRecord {
             provider_id: work.provider.id().into(),
@@ -124,8 +114,10 @@ pub fn run_investigation<T: Transport + ?Sized>(
         });
         investigation.budget_used.actions += 1;
         investigation.budget_used.calls += 1;
-        investigation.budget_used.max_depth_reached =
-            investigation.budget_used.max_depth_reached.max(work.depth);
+        investigation.budget_used.max_depth_reached = investigation
+            .budget_used
+            .max_depth_reached
+            .max(work.depth);
 
         let result = execute_provider_action(
             transport,
@@ -138,51 +130,141 @@ pub fn run_investigation<T: Transport + ?Sized>(
         apply_observations(&mut investigation);
     }
 
-    if investigation.termination_reason.is_none() {
-        investigation.termination_reason = Some(
-            match mode {
-                IpMode::Base => "base_complete",
-                IpMode::Deep => "fixed_point",
+    investigation
+}
+
+fn plan_actions<'a>(
+    investigation: &IpInvestigation,
+    providers: &[&'a dyn IpProvider],
+    mode: IpMode,
+) -> Vec<PendingAction<'a>> {
+    let mut pending = Vec::new();
+    for provider in providers {
+        let descriptor = provider.descriptor();
+        for action in provider.plan(&investigation.target) {
+            if mode == IpMode::Base && !is_base_capability(action.capability) {
+                continue;
             }
-            .into(),
-        );
+            let root = canonical_family(&action.lineage_family);
+            if root.is_empty() {
+                continue;
+            }
+            pending.push(PendingAction {
+                provider: *provider,
+                depth: capability_depth(action.capability),
+                action,
+                reliability: sanitized_prior(descriptor.reliability_prior),
+                optionality: sanitized_prior(descriptor.optionality_prior),
+                request_cost: sanitized_cost(descriptor.cost_per_request),
+                root,
+            });
+        }
     }
 
-    investigation
-}
-
-fn select_next(pending: &[PendingAction<'_>], investigation: &IpInvestigation) -> usize {
+    pending.sort_by(|left, right| static_quality_cmp(right, left));
+    let mut seen_roots = BTreeSet::new();
+    pending.retain(|action| seen_roots.insert((action.root.clone(), action.action.capability)));
     pending
-        .iter()
-        .enumerate()
-        .max_by(|(_, left), (_, right)| {
-            let left_unresolved = !capability_resolved(left.action.capability, investigation);
-            let right_unresolved = !capability_resolved(right.action.capability, investigation);
-            right
-                .depth
-                .cmp(&left.depth)
-                .then_with(|| left_unresolved.cmp(&right_unresolved))
-                .then_with(|| left.reliability.total_cmp(&right.reliability))
-                .then_with(|| right.provider.id().cmp(left.provider.id()))
-                .then_with(|| right.action.action_id.cmp(&left.action.action_id))
-        })
-        .map_or(0, |(index, _)| index)
 }
 
-fn action_reason(capability: IpCapability, investigation: &IpInvestigation) -> String {
-    if capability_resolved(capability, investigation) {
-        "corroborate_existing_claim".into()
-    } else {
-        "resolve_missing_claim".into()
+fn select_next(
+    pending: &[PendingAction<'_>],
+    admissible: &[usize],
+    investigation: &IpInvestigation,
+) -> usize {
+    admissible
+        .iter()
+        .copied()
+        .max_by(|left, right| dynamic_cmp(&pending[*left], &pending[*right], investigation))
+        .unwrap_or(0)
+}
+
+fn dynamic_cmp(
+    left: &PendingAction<'_>,
+    right: &PendingAction<'_>,
+    investigation: &IpInvestigation,
+) -> Ordering {
+    priority_class(left.action.capability, investigation)
+        .cmp(&priority_class(right.action.capability, investigation))
+        .then_with(|| static_quality_cmp(left, right))
+}
+
+fn static_quality_cmp(left: &PendingAction<'_>, right: &PendingAction<'_>) -> Ordering {
+    left.reliability
+        .total_cmp(&right.reliability)
+        .then_with(|| left.optionality.total_cmp(&right.optionality))
+        .then_with(|| right.request_cost.total_cmp(&left.request_cost))
+        .then_with(|| right.provider.id().cmp(left.provider.id()))
+        .then_with(|| right.action.action_id.cmp(&left.action.action_id))
+}
+
+fn action_has_positive_value(
+    action: &PendingAction<'_>,
+    investigation: &IpInvestigation,
+    mode: IpMode,
+) -> bool {
+    if !evidence_unlocks(action.action.capability, investigation) {
+        return false;
+    }
+
+    let kind = claim_kind(action.action.capability);
+    let support_count = independent_support_count(investigation, kind);
+    if mode == IpMode::Base {
+        return support_count == 0;
+    }
+
+    let contradicted = investigation
+        .claims
+        .iter()
+        .find(|claim| claim.kind == kind)
+        .is_some_and(|claim| claim.state == IpClaimState::Contradicted);
+    support_count < desired_independent_supports(action.action.capability, contradicted)
+}
+
+fn evidence_unlocks(capability: IpCapability, investigation: &IpInvestigation) -> bool {
+    match capability {
+        IpCapability::HistoricalDns | IpCapability::Certificate => investigation
+            .observations
+            .iter()
+            .any(|observation| observation.kind == IpObservationKind::ReverseDns),
+        _ => true,
     }
 }
 
-fn capability_resolved(capability: IpCapability, investigation: &IpInvestigation) -> bool {
-    let kind = claim_kind(capability);
-    investigation
+fn priority_class(capability: IpCapability, investigation: &IpInvestigation) -> u8 {
+    let unresolved = claim_needs_resolution(claim_kind(capability), investigation);
+    match (is_base_capability(capability), unresolved) {
+        (true, true) => 3,
+        (false, true) => 2,
+        (true, false) => 1,
+        (false, false) => 0,
+    }
+}
+
+fn claim_needs_resolution(kind: IpClaimKind, investigation: &IpInvestigation) -> bool {
+    !investigation
         .claims
         .iter()
         .any(|claim| claim.kind == kind && claim.state == IpClaimState::Supported)
+}
+
+const fn desired_independent_supports(capability: IpCapability, contradicted: bool) -> usize {
+    if contradicted {
+        return 3;
+    }
+    match capability {
+        IpCapability::ReverseDns | IpCapability::Service => 1,
+        IpCapability::Geolocation => 3,
+        _ => 2,
+    }
+}
+
+fn action_reason(capability: IpCapability, investigation: &IpInvestigation) -> String {
+    if claim_needs_resolution(claim_kind(capability), investigation) {
+        "resolve_missing_or_conflicted_claim".into()
+    } else {
+        "corroborate_existing_claim".into()
+    }
 }
 
 const fn claim_kind(capability: IpCapability) -> IpClaimKind {
@@ -207,13 +289,11 @@ const fn is_base_capability(capability: IpCapability) -> bool {
     )
 }
 
-const fn initial_depth(capability: IpCapability) -> u32 {
-    if is_base_capability(capability) { 0 } else { 1 }
-}
-
-fn work_key(action: &IpProviderAction) -> String {
-    let lineage = canonical_family(&action.lineage_family);
-    format!("{lineage}|{:?}|{}", action.capability, action.request.url)
+const fn capability_depth(capability: IpCapability) -> u32 {
+    match capability {
+        IpCapability::HistoricalDns | IpCapability::Certificate => 1,
+        _ => 0,
+    }
 }
 
 fn sanitized_prior(prior: f64) -> f64 {
@@ -221,5 +301,12 @@ fn sanitized_prior(prior: f64) -> f64 {
         prior.clamp(0.0, 1.0)
     } else {
         0.0
+    }
+}
+
+fn sanitized_cost(cost: Option<f64>) -> f64 {
+    match cost {
+        Some(value) if value.is_finite() && value >= 0.0 => value,
+        _ => f64::INFINITY,
     }
 }
