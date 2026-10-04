@@ -142,6 +142,16 @@ fn valid_200_rows_become_observations() {
 }
 
 #[test]
+fn clean_empty_rows_are_explicit_empty_failure_not_absence_evidence() {
+    let (provider, action) = action();
+    let transport = OneShot::response(200, r#"{"rows":[]}"#, false);
+    let result = execute_provider_action(&transport, &provider, &action, 123);
+    assert!(result.observations.is_empty(), "{:?}", result.observations);
+    assert_eq!(result.failures.len(), 1);
+    assert_eq!(result.failures[0].kind, IpFailureKind::Empty);
+}
+
+#[test]
 fn malformed_200_is_parse_failure_not_empty_evidence() {
     let (provider, action) = action();
     let transport = OneShot::response(200, "{broken", false);
@@ -197,6 +207,47 @@ fn auth_and_rate_limit_are_explicit_failures() {
             123,
         );
         assert_eq!(result.failures[0].kind, expected, "status={status}");
+    }
+}
+
+#[test]
+fn forbidden_and_server_errors_preserve_causal_failure_class() {
+    let cases = [
+        (
+            403,
+            "<html>checking your browser cloudflare</html>",
+            IpFailureKind::Provider,
+            SourceOutcomeKind::BotWaf,
+        ),
+        (
+            403,
+            "key revoked",
+            IpFailureKind::AuthRejected,
+            SourceOutcomeKind::AuthRejected,
+        ),
+        (
+            503,
+            "upstream unavailable",
+            IpFailureKind::Provider,
+            SourceOutcomeKind::Upstream5xx,
+        ),
+    ];
+    for (status, body, expected_kind, expected_outcome) in cases {
+        let (provider, action) = action();
+        let result = execute_provider_action(
+            &OneShot::response(status, body, false),
+            &provider,
+            &action,
+            123,
+        );
+        assert!(result.observations.is_empty(), "status={status}");
+        assert_eq!(result.failures.len(), 1, "status={status}");
+        assert_eq!(result.failures[0].kind, expected_kind, "status={status}");
+        assert_eq!(
+            result.failures[0].source_outcome,
+            Some(expected_outcome),
+            "status={status}"
+        );
     }
 }
 
