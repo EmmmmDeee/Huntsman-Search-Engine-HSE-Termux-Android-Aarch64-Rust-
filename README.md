@@ -32,6 +32,7 @@ cargo run -- check                     # self-acceptance; regenerates var/*.json
 cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
 cargo run -- search "brisbane port"    # built-in fixture
 cargo run -- search "brisbane port" docs/
+cargo run -- sources example.com       # classify + build curated routes; no network
 cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
 cargo run -- id "53 004 085 616"        # ABN/ACN/BSB, strict grouping
 cargo run -- geohash -27.4698,153.0251 9
@@ -60,6 +61,8 @@ Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys fi
   - any I/O error other than not found / not a directory (for example a mode-`200` file the owner cannot open, or a `$HOME` that cannot be searched).
 - Precedence: a slot present in the loaded file wins over the same environment variable; slots the file lacks fall back to the environment.
 - The file is read only when a credential slot is requested. Values never appear in output, warnings or errors; only slot names, line numbers and fingerprint prefixes do.
+
+`sources` is offline routing, not collection. It classifies the input using the existing Huntsman classifier and renders only compatible, independently curated public/browser search routes from `source_registry`. Generated routes are `LeadOnly`: a URL is never corroborating evidence by itself. External catalogue code or data is not embedded.
 
 Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch` got no response, 74 artifact write failure, 77 `fetch` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here). `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print the usage line.
 
