@@ -123,9 +123,10 @@ pub fn execute_provider_action<T: Transport + ?Sized>(
         return single_failure(
             provider.id(),
             failure_kind(outcome),
-            fetched.outcome.detail.unwrap_or_else(|| {
-                format!("provider response status={}", response.status)
-            }),
+            fetched
+                .outcome
+                .detail
+                .unwrap_or_else(|| format!("provider response status={}", response.status)),
             Some(outcome),
         );
     }
@@ -141,18 +142,12 @@ pub fn execute_provider_action<T: Transport + ?Sized>(
             observations,
             failures: Vec::new(),
         },
-        Err(IpProviderParseError::Parse(detail)) => single_failure(
-            provider.id(),
-            IpFailureKind::Parse,
-            detail,
-            Some(outcome),
-        ),
-        Err(IpProviderParseError::Schema(detail)) => single_failure(
-            provider.id(),
-            IpFailureKind::Schema,
-            detail,
-            Some(outcome),
-        ),
+        Err(IpProviderParseError::Parse(detail)) => {
+            single_failure(provider.id(), IpFailureKind::Parse, detail, Some(outcome))
+        }
+        Err(IpProviderParseError::Schema(detail)) => {
+            single_failure(provider.id(), IpFailureKind::Schema, detail, Some(outcome))
+        }
     }
 }
 
