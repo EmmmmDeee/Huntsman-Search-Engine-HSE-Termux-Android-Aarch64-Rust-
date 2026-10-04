@@ -1,9 +1,14 @@
 //! Evidence-gated IP investigation subsystem.
 
 pub mod model;
+pub mod provider;
 
 pub use model::{
     ALL_IP_CLAIM_KINDS, IpActionRecord, IpBudgetUsage, IpClaim, IpClaimKind, IpClaimState,
     IpFailure, IpFailureKind, IpInputError, IpInvestigation, IpObservation, IpObservationKind,
     IpScope, IpTarget, TemporalState,
+};
+pub use provider::{
+    IpCapability, IpProvider, IpProviderAction, IpProviderParseError, IpProviderResult,
+    execute_provider_action,
 };
