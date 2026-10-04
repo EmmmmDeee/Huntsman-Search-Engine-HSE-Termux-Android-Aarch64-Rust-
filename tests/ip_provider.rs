@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
+use huntsman_recon::dependency::ModuleCategory;
 use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip::{
     IpCapability, IpFailureKind, IpObservation, IpObservationKind, IpProvider, IpProviderAction,
@@ -10,7 +11,6 @@ use huntsman_recon::module::{
     AccessClass, CachePolicy, CostModel, EscalationBand, HistoricalDepthClass, ProviderDescriptor,
     RateLimitPolicy, RecursiveUsePolicy,
 };
-use huntsman_recon::dependency::ModuleCategory;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
 struct StubProvider;
