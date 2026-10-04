@@ -135,10 +135,9 @@ impl IpProvider for CloudflarePtrProvider {
                 .map(|value| value.trim_end_matches('.'))
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| IpProviderParseError::Schema("PTR answer has no hostname".into()))?;
-            let ttl = answer
-                .get("TTL")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| IpProviderParseError::Schema("PTR answer has no numeric TTL".into()))?;
+            let ttl = answer.get("TTL").and_then(Value::as_u64).ok_or_else(|| {
+                IpProviderParseError::Schema("PTR answer has no numeric TTL".into())
+            })?;
 
             let mut attributes = BTreeMap::new();
             attributes.insert("ttl".into(), ttl.to_string());
