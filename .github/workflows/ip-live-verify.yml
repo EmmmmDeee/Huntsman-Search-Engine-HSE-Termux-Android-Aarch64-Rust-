@@ -31,3 +31,5 @@ jobs:
           grep -Fq '"provider_id": "cloudflare_ptr"' live-ip.json
           grep -Fq '"failures": []' live-ip.json
           grep -Fq '"termination_reason": "base_complete"' live-ip.json
+
+# one-shot rerun for the RIPEstat decimal-string ASN repair
