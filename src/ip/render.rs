@@ -69,7 +69,10 @@ fn render_text_impl(investigation: &IpInvestigation, evidence: bool) -> String {
     let _ = writeln!(
         output,
         "termination={}",
-        investigation.termination_reason.as_deref().unwrap_or("none")
+        investigation
+            .termination_reason
+            .as_deref()
+            .unwrap_or("none")
     );
 
     if evidence {
