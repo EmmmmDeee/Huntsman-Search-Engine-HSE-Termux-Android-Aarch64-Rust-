@@ -68,8 +68,8 @@ Commands:
   web                   Start the loopback-only browser UI (default port: 8787)
 
 Run `huntsman-recon <COMMAND> --help` for command details.
-Search and sources do not collect remote results. `fetch` is the only command here
-that makes an HTTP request; its default egress policy is public-only.";
+Search and sources do not collect remote results. `fetch` is the only command
+that makes outbound HTTP requests; its default egress policy is public-only.";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -166,10 +166,10 @@ fn web_cmd(args: &[String]) -> ExitCode {
             Err(_) => return fail(EX_USAGE, "web PORT must be an integer in 0..=65535"),
         },
     };
-    huntsman_recon::web::run(port).map_or_else(
-        |error| fail(EX_IOERR, &format!("web server: {error}")),
-        |_| ExitCode::SUCCESS,
-    )
+    match huntsman_recon::web::run(port) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => fail(EX_IOERR, &format!("web server: {error}")),
+    }
 }
 
 fn fail(code: u8, msg: &str) -> ExitCode {

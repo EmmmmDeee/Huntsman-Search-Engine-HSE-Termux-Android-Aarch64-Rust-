@@ -1,10 +1,10 @@
 # Huntsman Recon
 
-Huntsman Recon is a Rust command-line toolkit for local search, guarded HTTP
-fetches, Australian identifier validation, geospatial utilities, and an
-append-only evidence ledger. It is designed to make evidence quality and
-uncertainty visible; a lead or verified claim is not an attribution or ATT&CK
-score.
+Huntsman Recon is a Rust CLI and loopback-only browser console for local search,
+guarded HTTP fetches, Australian identifier validation, geospatial utilities,
+and an append-only evidence ledger. It is designed to make evidence quality
+and uncertainty visible; a lead or verified claim is not an attribution or
+ATT&CK score.
 
 > **Status:** this is the `huntsman-recon` reconstruction, not the previous
 > `hse` monolith. It does not yet provide the old monolith's person-lookups.
@@ -37,7 +37,7 @@ huntsman-recon web
 ```
 
 `check` runs offline self-acceptance. `search` and `sources` are offline; only
-`fetch` makes an HTTP request. `fetch` uses public-only egress by default.
+`fetch` makes outbound HTTP requests. `fetch` uses public-only egress by default.
 `web` starts the loopback-only browser UI at <http://127.0.0.1:8787/>; its first
 iteration exposes status/configuration and search over bundled sample records,
 not active scans or SpiderFoot compatibility.

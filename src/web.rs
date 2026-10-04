@@ -15,14 +15,29 @@ const MAX_REQUEST_BYTES: usize = 8 * 1024;
 const MAX_QUERY_BYTES: usize = 512;
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
 
-const UI: &str = r##"<!doctype html>
+const UI: &str = r#"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark light">
 <title>Huntsman Recon · Local Console</title>
-<style>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body><div class="shell">
+<header><h1>Huntsman Recon <span class="meta">· Local Console</span></h1><span class="badge">loopback only</span></header>
+<main>
+<section class="panel" aria-labelledby="health-title"><h2 id="health-title">Service status</h2><div id="status" class="status" role="status">Connecting…</div><p id="config" class="hint">Loading configuration…</p></section>
+<section class="panel" aria-labelledby="search-title"><h2 id="search-title">Search local sample records</h2>
+<form id="search-form"><label class="meta" for="query">All search terms must match</label><input id="query" name="q" type="search" minlength="2" maxlength="512" required autocomplete="off" placeholder="e.g. brisbane port"><button type="submit">Search</button></form>
+<p class="hint">This first web release searches bundled demonstration records only. It does not run SpiderFoot scans or contact search providers.</p>
+<div id="results" aria-live="polite" class="empty">Enter two or more searchable characters to begin.</div>
+</section>
+<section class="panel"><h2>Compatibility status</h2><p class="hint">Termux Android arm64 is cross-built in CI. A successful cross-build does not prove installation or runtime behavior on a handset. SpiderFoot 4.0 feature parity is not claimed.</p></section>
+</main></div>
+<script src="/app.js" defer></script></body></html>"#;
+
+const CSS: &str = r"
 :root{font:16px/1.5 system-ui,sans-serif;color:#e9eff5;background:#101820;--muted:#9aabb9;--line:#334451;--accent:#83d3bd}
 *{box-sizing:border-box}body{margin:0}.shell{max-width:940px;margin:auto;padding:28px 20px}
 header{display:flex;justify-content:space-between;gap:16px;align-items:center;border-bottom:1px solid var(--line);padding-bottom:18px}
@@ -38,25 +53,14 @@ button:focus-visible,input:focus-visible{outline:3px solid #e4c36b;outline-offse
 table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
 th{color:var(--muted);font-weight:600}.empty{color:var(--muted);padding:14px 0}
 @media(max-width:600px){.shell{padding:18px 12px}form{flex-direction:column}header{align-items:flex-start;flex-direction:column}.panel{padding:15px}}
-</style>
-</head>
-<body><div class="shell">
-<header><h1>Huntsman Recon <span class="meta">· Local Console</span></h1><span class="badge">loopback only</span></header>
-<main>
-<section class="panel" aria-labelledby="health-title"><h2 id="health-title">Service status</h2><div id="status" class="status" role="status">Connecting…</div><p id="config" class="hint">Loading configuration…</p></section>
-<section class="panel" aria-labelledby="search-title"><h2 id="search-title">Search local sample records</h2>
-<form id="search-form"><label class="meta" for="query">All search terms must match</label><input id="query" name="q" type="search" minlength="2" maxlength="512" required autocomplete="off" placeholder="e.g. brisbane port"><button type="submit">Search</button></form>
-<p class="hint">This first web release searches bundled demonstration records only. It does not run SpiderFoot scans or contact search providers.</p>
-<div id="results" aria-live="polite" class="empty">Enter two or more searchable characters to begin.</div>
-</section>
-<section class="panel"><h2>Compatibility status</h2><p class="hint">Termux Android arm64 is cross-built in CI. A successful cross-build does not prove installation or runtime behavior on a handset. SpiderFoot 4.0 feature parity is not claimed.</p></section>
-</main></div>
-<script>
+";
+
+const JS: &str = r##"
 const statusNode=document.querySelector("#status"),configNode=document.querySelector("#config"),resultsNode=document.querySelector("#results");
 async function loadStatus(){try{const r=await fetch("/api/status");if(!r.ok)throw new Error("HTTP "+r.status);const s=await r.json();const dot=document.createElement("span");dot.className="dot";statusNode.replaceChildren(dot,document.createTextNode("Ready · "+s.product_version));configNode.textContent="Bind: "+s.bind+" · Data: "+s.data_mode+" · Network collection: disabled";}catch(e){statusNode.textContent="Status unavailable";statusNode.classList.add("error");configNode.textContent=String(e)}}
 document.querySelector("#search-form").addEventListener("submit",async e=>{e.preventDefault();const q=document.querySelector("#query").value;resultsNode.textContent="Searching…";resultsNode.className="empty";try{const r=await fetch("/api/search?q="+encodeURIComponent(q));const data=await r.json();if(!r.ok)throw new Error(data.error||"Request failed");if(!data.results.length){resultsNode.textContent="No matching records.";return}const table=document.createElement("table"),head=table.createTHead().insertRow();for(const label of ["Score","Record","Source"]){const th=document.createElement("th");th.textContent=label;head.append(th)}const body=table.createTBody();for(const hit of data.results){const row=body.insertRow();for(const value of [hit.score,hit.id,hit.source]){const cell=row.insertCell();cell.textContent=String(value)}}resultsNode.replaceChildren(table)}catch(err){resultsNode.textContent=String(err);resultsNode.className="empty error"}});
 loadStatus();
-</script></body></html>"##;
+"##;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct HttpResponse {
@@ -145,7 +149,7 @@ fn write_response(stream: &mut TcpStream, response: &HttpResponse) -> io::Result
     };
     write!(
         stream,
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n",
         response.status,
         reason,
         response.content_type,
@@ -199,6 +203,8 @@ pub fn handle_request(request: &[u8]) -> HttpResponse {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     match path {
         "/" => HttpResponse::new(200, "text/html; charset=utf-8", UI),
+        "/app.css" => HttpResponse::new(200, "text/css; charset=utf-8", CSS),
+        "/app.js" => HttpResponse::new(200, "application/javascript; charset=utf-8", JS),
         "/api/status" => HttpResponse::json(
             200,
             &json!({
@@ -379,6 +385,8 @@ mod tests {
             response.contains("X-Content-Type-Options: nosniff"),
             "{response}"
         );
+        assert!(response.contains("script-src 'self'"), "{response}");
+        assert!(!response.contains("unsafe-inline"), "{response}");
         assert!(response.contains("\"bind\":\"127.0.0.1\""), "{response}");
     }
 
@@ -396,7 +404,15 @@ mod tests {
         assert_eq!(ui.content_type, "text/html; charset=utf-8");
         let html = String::from_utf8(ui.body).expect("HTML");
         assert!(html.contains("Search local sample records"));
-        assert!(html.contains("/api/search"));
+        assert!(html.contains("/app.js"));
+        let js = handle_request(&request("/app.js"));
+        assert_eq!(js.content_type, "application/javascript; charset=utf-8");
+        assert!(
+            String::from_utf8(js.body)
+                .expect("JS")
+                .contains("/api/search")
+        );
+        assert_eq!(handle_request(&request("/app.css")).status, 200);
         assert!(html.contains("SpiderFoot 4.0 feature parity is not claimed"));
 
         let status = handle_request(&request("/api/status"));
@@ -417,8 +433,8 @@ mod tests {
         let response = handle_request(&request("/api/search?q=%3Cscript%3E"));
         assert_eq!(response.status, 200);
         assert_eq!(json_body(&response)["query"], "<script>");
-        assert!(UI.contains("cell.textContent=String(value)"));
-        assert!(!UI.contains("innerHTML"));
+        assert!(JS.contains("cell.textContent=String(value)"));
+        assert!(!JS.contains("innerHTML"));
     }
 
     #[test]
