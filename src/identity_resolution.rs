@@ -5,6 +5,13 @@
 //! Any contradiction blocks an automatic merge; support cannot compensate for it.
 //! `identity::resolve` stays the deterministic exact-key linker; this is the gate for
 //! probabilistic links above it.
+//!
+//! The merge rule has one authority, [`IdentityResolutionDecision::hold_reasons`]:
+//! an automatic merge needs a `Match` state, no contradiction or conflict, a present
+//! match probability in `[0, 1]` at or above the policy floor, and at least
+//! `min_independent_support_families` independent root families. Anything short of
+//! that is a held candidate with every reason stated, never a silent drop.
+//! `crate::lineage` derives those families from response data, not collector names.
 
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +42,11 @@ pub struct IdentityResolutionDecision {
     pub decided_at_unix: u64,
 }
 
+/// Default gate. Legacy parity (`hse` 7dca720, `core::breach_consensus`): a finding is
+/// corroborated only when at least two distinct corpora attest it
+/// (`ConsensusResult::is_corroborated`, `source_count() >= 2`), and two corpora are
+/// the first count whose `supported_ceiling` reaches 0.90. One corpus caps at 0.70,
+/// below `Classification::VERIFIED_MIN`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AutoMergePolicy {
     pub min_independent_support_families: usize,
@@ -48,6 +60,45 @@ impl Default for AutoMergePolicy {
             min_match_probability: 0.90,
         }
     }
+}
+
+/// Why an automatic merge was withheld. The candidate itself is always kept.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum HoldReason {
+    /// The policy floor is NaN, infinite, or outside `[0, 1]`. Kept as text so it
+    /// survives JSON. An invalid policy admits nothing.
+    InvalidPolicy {
+        min_match_probability: String,
+    },
+    /// Empty or identical entity uids, or an empty evidence node id.
+    InvalidCandidate,
+    /// No match probability was supplied. Absence is not consent.
+    ProbabilityMissing,
+    /// NaN, infinite, or outside `[0, 1]`. Kept as text so NaN survives JSON.
+    ProbabilityInvalid {
+        value: String,
+    },
+    ProbabilityBelowThreshold {
+        value: f64,
+        min: f64,
+    },
+    NotAMatch {
+        state: ResolutionState,
+    },
+    Contradicted {
+        count: usize,
+    },
+    TemporalConflict,
+    GeographicConflict,
+    /// A supporting node is missing from the ancestry graph or sits on a cycle.
+    UnknownAncestry {
+        detail: String,
+    },
+    InsufficientIndependentFamilies {
+        found: usize,
+        required: usize,
+    },
 }
 
 impl IdentityResolutionDecision {
@@ -75,24 +126,97 @@ impl IdentityResolutionDecision {
 
     /// Automatic merge is stricter than "probable". A probable link stays a hypothesis
     /// unless an operator promotes it. Non-compensatory: one contradiction, one conflict,
-    /// or unknown ancestry blocks regardless of probability or support count.
+    /// missing calibrated probability, or unknown ancestry blocks regardless of support count.
     #[must_use]
     pub fn allows_automatic_merge(
         &self,
         graph: &EvidenceAncestryGraph,
         policy: AutoMergePolicy,
     ) -> bool {
-        self.is_valid()
-            && self.state == ResolutionState::Match
-            && self.contradicting.is_empty()
-            && !self.temporal_conflict
-            && !self.geographic_conflict
+        self.hold_reasons(graph, policy).is_empty()
+    }
+
+    /// Every reason this decision may not merge automatically, in a fixed order.
+    /// Empty means auto-merge. The single authority behind
+    /// [`Self::allows_automatic_merge`].
+    #[must_use]
+    pub fn hold_reasons(
+        &self,
+        graph: &EvidenceAncestryGraph,
+        policy: AutoMergePolicy,
+    ) -> Vec<HoldReason> {
+        let families = graph
+            .independent_support_count(&self.supporting)
+            .map_err(|e| e.to_string());
+        self.hold_reasons_given(families, policy)
+    }
+
+    /// The rule itself, with the independent-family count already worked out
+    /// (`Err` is unknown ancestry). Every other condition is checked on `self` as
+    /// given, so a caller that counts families its own way (`crate::lineage`)
+    /// still gets the same validation and the same reason order.
+    pub(crate) fn hold_reasons_given(
+        &self,
+        families: Result<usize, String>,
+        policy: AutoMergePolicy,
+    ) -> Vec<HoldReason> {
+        let mut reasons = Vec::new();
+        let floor = policy.min_match_probability;
+        let floor_ok = floor.is_finite() && (0.0..=1.0).contains(&floor);
+        if !floor_ok {
+            reasons.push(HoldReason::InvalidPolicy {
+                min_match_probability: floor.to_string(),
+            });
+        }
+        let ids_ok = !self.left_entity_uid.trim().is_empty()
+            && !self.right_entity_uid.trim().is_empty()
+            && self.left_entity_uid != self.right_entity_uid
             && self
-                .probability
-                .is_none_or(|p| p >= policy.min_match_probability)
-            && self
-                .independent_support_families(graph)
-                .is_some_and(|n| n >= policy.min_independent_support_families.max(1))
+                .supporting
+                .iter()
+                .chain(&self.contradicting)
+                .all(|e| !e.0.trim().is_empty());
+        if !ids_ok {
+            reasons.push(HoldReason::InvalidCandidate);
+        }
+        match self.probability {
+            None => reasons.push(HoldReason::ProbabilityMissing),
+            Some(p) if !(p.is_finite() && (0.0..=1.0).contains(&p)) => {
+                reasons.push(HoldReason::ProbabilityInvalid {
+                    value: p.to_string(),
+                });
+            }
+            Some(p) if floor_ok && p < floor => {
+                reasons.push(HoldReason::ProbabilityBelowThreshold {
+                    value: p,
+                    min: floor,
+                });
+            }
+            Some(_) => {}
+        }
+        if self.state != ResolutionState::Match {
+            reasons.push(HoldReason::NotAMatch { state: self.state });
+        }
+        if !self.contradicting.is_empty() {
+            reasons.push(HoldReason::Contradicted {
+                count: self.contradicting.len(),
+            });
+        }
+        if self.temporal_conflict {
+            reasons.push(HoldReason::TemporalConflict);
+        }
+        if self.geographic_conflict {
+            reasons.push(HoldReason::GeographicConflict);
+        }
+        let required = policy.min_independent_support_families.max(1);
+        match families {
+            Err(detail) => reasons.push(HoldReason::UnknownAncestry { detail }),
+            Ok(found) if found < required => {
+                reasons.push(HoldReason::InsufficientIndependentFamilies { found, required });
+            }
+            Ok(_) => {}
+        }
+        reasons
     }
 }
 
@@ -162,6 +286,13 @@ mod tests {
     }
 
     #[test]
+    fn missing_probability_never_auto_merges() {
+        let mut d = decision(ResolutionState::Match, &["registry", "first-party"], &[]);
+        d.probability = None;
+        assert!(!d.allows_automatic_merge(&graph(), AutoMergePolicy::default()));
+    }
+
+    #[test]
     fn falsify_relabelled_mirrors_do_not_pass_two_source_gate() {
         let d = decision(ResolutionState::Match, &["mirror-a", "mirror-b"], &[]);
         assert_eq!(d.independent_support_families(&graph()), Some(1));
@@ -198,6 +329,117 @@ mod tests {
             !none.allows_automatic_merge(&graph(), lax),
             "zero support never merges"
         );
+    }
+
+    #[test]
+    fn hold_reasons_state_every_failure_in_order() {
+        let mut d = decision(
+            ResolutionState::Probable,
+            &["mirror-a", "mirror-b"],
+            &["court"],
+        );
+        d.probability = None;
+        d.temporal_conflict = true;
+        assert_eq!(
+            d.hold_reasons(&graph(), AutoMergePolicy::default()),
+            [
+                HoldReason::ProbabilityMissing,
+                HoldReason::NotAMatch {
+                    state: ResolutionState::Probable
+                },
+                HoldReason::Contradicted { count: 1 },
+                HoldReason::TemporalConflict,
+                HoldReason::InsufficientIndependentFamilies {
+                    found: 1,
+                    required: 2
+                },
+            ]
+        );
+        let ok = decision(ResolutionState::Match, &["registry", "first-party"], &[]);
+        assert_eq!(
+            ok.hold_reasons(&graph(), AutoMergePolicy::default()),
+            Vec::<HoldReason>::new()
+        );
+    }
+
+    #[test]
+    fn nan_infinite_and_out_of_range_probabilities_hold_with_their_value() {
+        for (p, text) in [
+            (f64::NAN, "NaN"),
+            (f64::INFINITY, "inf"),
+            (1.5, "1.5"),
+            (-0.1, "-0.1"),
+        ] {
+            let mut d = decision(ResolutionState::Match, &["registry", "first-party"], &[]);
+            d.probability = Some(p);
+            let reasons = d.hold_reasons(&graph(), AutoMergePolicy::default());
+            assert_eq!(
+                reasons,
+                [HoldReason::ProbabilityInvalid { value: text.into() }]
+            );
+            let json = serde_json::to_string(&reasons).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Vec<HoldReason>>(&json).unwrap(),
+                reasons
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_policy_floor_admits_nothing_and_round_trips() {
+        let d = decision(ResolutionState::Match, &["registry", "first-party"], &[]);
+        for (floor, text) in [
+            (f64::NAN, "NaN"),
+            (f64::INFINITY, "inf"),
+            (1.5, "1.5"),
+            (-0.1, "-0.1"),
+        ] {
+            let policy = AutoMergePolicy {
+                min_match_probability: floor,
+                ..AutoMergePolicy::default()
+            };
+            let reasons = d.hold_reasons(&graph(), policy);
+            assert_eq!(
+                reasons,
+                [HoldReason::InvalidPolicy {
+                    min_match_probability: text.into()
+                }]
+            );
+            let json = serde_json::to_string(&reasons).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Vec<HoldReason>>(&json).unwrap(),
+                reasons
+            );
+        }
+    }
+
+    /// Case table ported from `feat/authorized-active-probe` (9f1cef87, d22cefa2:
+    /// `tests/identity_resolution_adversarial.rs`), asserted directly on the merge rule
+    /// instead of through that branch's `identity_benchmark` harness.
+    #[test]
+    fn adversarial_cases_from_active_probe_branch() {
+        let case = |state, p: Option<f64>, support: &[&str], against: &[&str]| {
+            let mut d = decision(state, support, against);
+            d.probability = p;
+            d.allows_automatic_merge(&graph(), AutoMergePolicy::default())
+        };
+        let m = ResolutionState::Match;
+        let strong = ["registry", "first-party"];
+        assert!(
+            case(m, Some(0.99), &strong, &[]),
+            "strong independent match"
+        );
+        assert!(!case(m, None, &strong, &[]), "missing probability");
+        assert!(
+            !case(m, Some(0.99), &["mirror-a", "mirror-b"], &[]),
+            "mirrors"
+        );
+        assert!(!case(m, Some(0.999), &strong, &["court"]), "contradiction");
+        assert!(
+            !case(ResolutionState::Probable, Some(0.99), &strong, &[]),
+            "probable"
+        );
+        assert!(!case(m, Some(0.89), &strong, &[]), "below threshold");
     }
 
     #[test]

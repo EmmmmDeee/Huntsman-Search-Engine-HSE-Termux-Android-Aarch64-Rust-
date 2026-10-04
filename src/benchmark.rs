@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::coverage::{CoverageVerdict, Event, coverage_verdict, provider_coverage_from_events};
-use crate::dependency::{Target, TargetKind};
+use crate::dependency::Target;
 use crate::entity::Entity;
 use crate::graph::{EntityRelation, Graph};
 use crate::metrics::{ScanMetrics, compute};
@@ -192,6 +192,7 @@ pub fn report(
 mod tests {
     use super::*;
     use crate::coverage::{EventKind, SkipClass};
+    use crate::dependency::TargetKind;
     use crate::entity::EntityKind;
     use crate::graph::{EntityRelation, RelationKind};
 

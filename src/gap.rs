@@ -2,10 +2,10 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
-use crate::metrics::fraction;
 use crate::dependency::TargetKind;
 use crate::entity::Entity;
 use crate::graph::{EntityRelation, Graph};
+use crate::metrics::fraction;
 
 pub const EXPAND_FLOOR: f64 = 0.50;
 
@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(report.linked_seeds, 0);
         assert_eq!(report.isolated_seeds, 0);
         assert!(report.linked_fraction.abs() < f64::EPSILON);
-        assert!(report.orphans.is_empty());
+        assert!(report.orphans.is_empty(), "{:?}", report.orphans);
     }
 
     #[test]
