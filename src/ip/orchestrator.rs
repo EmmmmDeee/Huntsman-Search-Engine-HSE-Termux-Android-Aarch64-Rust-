@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 
 use crate::evidence_ancestry::canonical_family;
 use crate::http::Transport;
+use crate::module::HistoricalDepthClass;
 
 use super::claims::{apply_observations, independent_support_count};
 use super::{
@@ -43,6 +44,7 @@ struct PendingAction<'a> {
     provider: &'a dyn IpProvider,
     action: IpProviderAction,
     reliability: f64,
+    historical_depth: u8,
     optionality: f64,
     request_cost: f64,
     root: String,
@@ -150,6 +152,10 @@ fn plan_actions<'a>(
             pending.push(PendingAction {
                 provider: *provider,
                 depth: capability_depth(action.capability),
+                historical_depth: historical_depth_rank(
+                    action.capability,
+                    descriptor.historical_depth_class,
+                ),
                 action,
                 reliability: sanitized_prior(descriptor.reliability_prior),
                 optionality: sanitized_prior(descriptor.optionality_prior),
@@ -190,6 +196,7 @@ fn dynamic_cmp(
 fn static_quality_cmp(left: &PendingAction<'_>, right: &PendingAction<'_>) -> Ordering {
     left.reliability
         .total_cmp(&right.reliability)
+        .then_with(|| left.historical_depth.cmp(&right.historical_depth))
         .then_with(|| left.optionality.total_cmp(&right.optionality))
         .then_with(|| right.request_cost.total_cmp(&left.request_cost))
         .then_with(|| right.provider.id().cmp(left.provider.id()))
@@ -291,6 +298,20 @@ const fn capability_depth(capability: IpCapability) -> u32 {
     match capability {
         IpCapability::HistoricalDns | IpCapability::Certificate => 1,
         _ => 0,
+    }
+}
+
+const fn historical_depth_rank(
+    capability: IpCapability,
+    depth: HistoricalDepthClass,
+) -> u8 {
+    if !matches!(capability, IpCapability::HistoricalDns) {
+        return 0;
+    }
+    match depth {
+        HistoricalDepthClass::Live => 0,
+        HistoricalDepthClass::RollingWindow => 1,
+        HistoricalDepthClass::DeepArchive => 2,
     }
 }
 
