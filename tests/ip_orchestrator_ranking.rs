@@ -70,6 +70,7 @@ impl IpProvider for RankProvider {
     fn capabilities(&self) -> &'static [IpCapability] {
         match self.capability {
             IpCapability::Routing => &[IpCapability::Routing],
+            IpCapability::ReverseDns => &[IpCapability::ReverseDns],
             IpCapability::HistoricalDns => &[IpCapability::HistoricalDns],
             IpCapability::Geolocation => &[IpCapability::Geolocation],
             _ => &[],
@@ -102,6 +103,10 @@ impl IpProvider for RankProvider {
                 attributes.insert("asns".into(), "13335".into());
                 IpObservationKind::Routing
             }
+            IpCapability::ReverseDns => {
+                attributes.insert("hostname".into(), "host.example".into());
+                IpObservationKind::ReverseDns
+            }
             IpCapability::HistoricalDns => {
                 attributes.insert("hostname".into(), "historical.example".into());
                 IpObservationKind::HistoricalDns
@@ -126,11 +131,7 @@ impl IpProvider for RankProvider {
     }
 }
 
-fn provider(
-    id: &'static str,
-    capability: IpCapability,
-    lineage: &'static str,
-) -> RankProvider {
+fn provider(id: &'static str, capability: IpCapability, lineage: &'static str) -> RankProvider {
     RankProvider {
         id,
         capability,
@@ -187,15 +188,18 @@ fn independent_lineage_outranks_higher_reliability_duplicate_lineage_after_suppo
 }
 
 #[test]
-fn deep_archive_wins_a_tie_for_historical_dns() {
+fn deep_archive_wins_a_tie_for_historical_dns_after_hostname_evidence() {
+    let ptr = provider("ptr", IpCapability::ReverseDns, "dns-ptr-root");
     let live = provider("a-live", IpCapability::HistoricalDns, "live-root");
     let mut archive = provider("z-archive", IpCapability::HistoricalDns, "archive-root");
     archive.historical = HistoricalDepthClass::DeepArchive;
-    let providers: [&dyn IpProvider; 2] = [&live, &archive];
+    let providers: [&dyn IpProvider; 3] = [&live, &archive, &ptr];
 
     let result = run(&providers);
+    let executed = executed_ids(&result);
 
-    assert_eq!(executed_ids(&result)[0], "z-archive");
+    assert_eq!(executed[0], "ptr");
+    assert_eq!(executed[1], "z-archive");
 }
 
 #[test]
