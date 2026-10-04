@@ -13,6 +13,9 @@ use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredent
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::entity::{Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
+use huntsman_recon::evidence_ancestry::{
+    EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
+};
 use huntsman_recon::fetch::{Credential, FetchOptions, fetch};
 use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
 use huntsman_recon::fsio::write_atomic;
@@ -217,10 +220,11 @@ fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
     let Some((slot, style)) = &args.auth else {
         return Ok(None);
     };
-    let keys = match &args.keys_file {
-        Some(path) => Keys::load(path)?,
-        None => Keys::from_env(),
-    };
+    let resolved = Keys::resolve(args.keys_file.as_deref(), env::var_os("HOME").as_deref())?;
+    if let Some(warning) = &resolved.warning {
+        eprintln!("{warning}");
+    }
+    let keys = resolved.keys;
     let secret = keys
         .get(slot)
         .ok_or_else(|| Error::Invalid(format!("credential {slot} is not configured")))?;
@@ -560,6 +564,7 @@ fn check_overlay_gates() -> Gate {
     )?;
 
     check_lineage_gate()?;
+    check_ancestry_graph_gate()?;
 
     let delayed = FrontierState {
         delayed_retry_work: 1,
@@ -645,6 +650,56 @@ fn check_lineage_gate() -> Gate {
             .map(|o| &o.observation)
             .eq(&observations),
         "observation dropped or re-attributed",
+    )
+}
+
+/// Gate 5, graph half: the hand-built ancestry graph and `allows_automatic_merge`, the
+/// exact path `resolve::automatic_clusters` takes in production. Unlike the lineage
+/// graph (one root plus relay nodes), it has an explicit parent chain and a root that
+/// supports a candidate directly. Two mirrors of one dump are one family; a mirror plus
+/// an independent registry root are two.
+fn check_ancestry_graph_gate() -> Gate {
+    let mut graph = EvidenceAncestryGraph::default();
+    let nodes: [(&str, &str, &[&str]); 4] = [
+        ("dump", "Adobe 2013", &[]),
+        ("mirror-a", "provider-a", &["dump"]),
+        ("mirror-b", "provider-b", &["dump"]),
+        ("registry", "company registry", &[]),
+    ];
+    for (id, family, parents) in nodes {
+        graph
+            .insert(EvidenceAncestryNode {
+                id: id.into(),
+                source_family: family.into(),
+                parents: parents.iter().copied().map(EvidenceNodeId::from).collect(),
+                derived: !parents.is_empty(),
+            })
+            .map_err(|e| (5, e.to_string()))?;
+    }
+    let mirrors = IdentityResolutionDecision {
+        left_entity_uid: "a".into(),
+        right_entity_uid: "b".into(),
+        state: ResolutionState::Match,
+        probability: Some(0.99),
+        supporting: vec!["mirror-a".into(), "mirror-b".into()],
+        contradicting: vec![],
+        temporal_conflict: false,
+        geographic_conflict: false,
+        decided_at_unix: 0,
+    };
+    gate(
+        5,
+        !mirrors.allows_automatic_merge(&graph, AutoMergePolicy::default()),
+        "mirrors manufactured corroboration (ancestry graph)",
+    )?;
+    let independent = IdentityResolutionDecision {
+        supporting: vec!["mirror-a".into(), "registry".into()],
+        ..mirrors
+    };
+    gate(
+        5,
+        independent.allows_automatic_merge(&graph, AutoMergePolicy::default()),
+        "independent roots refused (ancestry graph)",
     )
 }
 

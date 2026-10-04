@@ -95,7 +95,7 @@ Evidence source: `legacy/` and the two root zip archives. Never delete, edit or 
 | `src/confidence.rs` (current owner) | MERGED OWNER | `src/confidence.rs` | Extended with legacy confidence/verification vocabulary and kept as the single owner. |
 | `src/evidence_ancestry.rs` (current owner) | MERGED OWNER | `src/evidence_ancestry.rs` | Kept as the single owner for independent-root support counting. |
 | `src/identity_resolution.rs` (current owner) | MERGED OWNER | `src/identity_resolution.rs` | Kept as the single owner for reversible, ancestry-aware merge decisions. `hold_reasons` is the one merge rule: it requires a present, in-range probability (a036d76e) and states every reason a candidate is held. |
-| `src/lineage.rs` (current owner) | MERGED OWNER | `src/lineage.rs` | Single owner for lineage read from response data (never the collector name) and for `resolve_with_lineage`, the observation → merge-outcome contract that `check` gate 5 runs. |
+| `src/lineage.rs` (current owner) | MERGED OWNER | `src/lineage.rs` | Single owner for lineage read from response data (never the collector name) and for `resolve_with_lineage`, the observation → merge-outcome contract that `check` gate 5 runs (alongside a hand-built `EvidenceAncestryGraph` checked through `allows_automatic_merge`). The registry gate recomputes the collector family from `provenance.source` (ASCII only) and never trusts the stored `source_family`. |
 
 ### Relation rebuild accounting
 
