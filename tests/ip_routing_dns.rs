@@ -54,6 +54,35 @@ fn ripestat_routed_ipv4_yields_prefix_and_every_announcing_asn() {
 }
 
 #[test]
+fn ripestat_live_numeric_string_asns_are_accepted_without_weakening_validation() {
+    let provider = RipeStatNetworkInfoProvider;
+    let target = IpTarget::parse("1.1.1.1").expect("target");
+    let action = provider.plan(&target).pop().expect("action");
+    let observations = provider
+        .parse(
+            &action,
+            &response(
+                r#"{"status":"ok","data":{"asns":["13335"," 20940 "],"prefix":"1.1.1.0/24"}}"#,
+            ),
+            123,
+        )
+        .expect("live RIPEstat numeric-string ASN response");
+    assert_eq!(
+        observations[0].attributes.get("asns").map(String::as_str),
+        Some("13335; 20940")
+    );
+
+    assert!(matches!(
+        provider.parse(
+            &action,
+            &response(r#"{"status":"ok","data":{"asns":["AS13335"],"prefix":"1.1.1.0/24"}}"#),
+            123
+        ),
+        Err(IpProviderParseError::Schema(_))
+    ));
+}
+
+#[test]
 fn ripestat_routed_ipv6_is_preserved() {
     let provider = RipeStatNetworkInfoProvider;
     let target = IpTarget::parse("2606:4700:4700::1111").expect("target");
