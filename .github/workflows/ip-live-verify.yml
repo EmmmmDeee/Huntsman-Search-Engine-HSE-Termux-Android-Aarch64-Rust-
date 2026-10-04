@@ -1,0 +1,33 @@
+name: ip-live-verify
+
+on:
+  push:
+    branches:
+      - design/ip-investigation-reconstruction-20261004
+    paths:
+      - .github/workflows/ip-live-verify.yml
+
+permissions:
+  contents: read
+
+jobs:
+  live-ip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Verify self-acceptance
+        run: cargo run --locked --quiet -- check
+      - name: Verify live RDAP RIPEstat and PTR path
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --quiet -- ip 1.1.1.1 --json | tee live-ip.json
+          grep -Fq '"provider_id": "rdap"' live-ip.json
+          grep -Fq '"provider_id": "ripestat_network_info"' live-ip.json
+          grep -Fq '"provider_id": "cloudflare_ptr"' live-ip.json
+          grep -Fq '"failures": []' live-ip.json
+          grep -Fq '"termination_reason": "base_complete"' live-ip.json
