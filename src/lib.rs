@@ -74,6 +74,7 @@ pub mod oui;
 pub mod oui_ieee;
 pub mod path;
 pub mod people_cli;
+pub mod people_save;
 pub mod pivot;
 pub mod place;
 pub mod postcode_au;
