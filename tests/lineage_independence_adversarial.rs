@@ -3,7 +3,7 @@ use huntsman_recon::evidence_ancestry::EvidenceNodeId;
 use huntsman_recon::identity_resolution::{
     AutoMergePolicy, HoldReason, IdentityResolutionDecision, ResolutionState,
 };
-use huntsman_recon::lineage::{MergeOutcome, Observation, resolve_with_lineage};
+use huntsman_recon::lineage::{Lineage, MergeOutcome, Observation, resolve_with_lineage};
 
 fn observation(id: &str, collector: &str, attrs: &[(&str, &str)]) -> Observation {
     Observation {
@@ -107,4 +107,98 @@ fn two_explicit_datasets_from_one_collector_remain_independent() {
     ]);
     assert_eq!(out.independent_families, ["adobe", "linkedin"]);
     assert_eq!(out.outcome, MergeOutcome::AutoMerge);
+}
+
+/// Security S2 (post-merge scan of #679): `provenance.source_family` is serde-loaded from
+/// saved data. A tampered local record from a non-registry collector that stores
+/// `source_family: "abn_lookup"` must not pass the registry gate.
+#[test]
+fn tampered_stored_source_family_cannot_claim_registry_class() {
+    let tampered: Evidence = serde_json::from_str(
+        r#"{
+            "provenance": {
+                "source": "hibp",
+                "source_family": "abn_lookup",
+                "recorded_at_unix": 1790000000
+            },
+            "summary": "tampered record",
+            "attributes": { "registry": "ABR" }
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(tampered.provenance.source_family, "abn_lookup");
+    let observations = vec![
+        observation("dump-1", "hibp", &[("breach", "Adobe")]),
+        Observation {
+            id: "tampered-1".into(),
+            evidence: tampered,
+        },
+    ];
+    let ids: Vec<&str> = observations.iter().map(|o| o.id.0.as_str()).collect();
+    let result = resolve_with_lineage(
+        observations.clone(),
+        vec![candidate(&ids)],
+        AutoMergePolicy::default(),
+    )
+    .unwrap();
+
+    // No registry family for the tampered record, and no extra family overall.
+    assert_eq!(result.observations[1].lineage, Lineage::Unattributed);
+    let out = &result.candidates[0];
+    assert_eq!(out.independent_families, ["adobe"]);
+    assert_eq!(
+        out.unattributed_support,
+        [EvidenceNodeId::from("tampered-1")]
+    );
+    assert_held_for_family_count(out, 1);
+    // The record itself is returned unchanged, stored value included.
+    assert!(
+        result
+            .observations
+            .iter()
+            .map(|o| &o.observation)
+            .eq(&observations)
+    );
+}
+
+fn assert_not_a_verified_registry_source(collector: &str) {
+    let out = resolve(vec![
+        observation("dump-1", "hibp", &[("breach", "Adobe")]),
+        observation("lookalike-1", collector, &[("registry", "ABR")]),
+    ]);
+    assert_eq!(
+        out.independent_families,
+        ["adobe"],
+        "collector {collector:?} was admitted as a verified registry source"
+    );
+    assert_held_for_family_count(&out, 1);
+}
+
+/// FTBB M1 test gap on #679: a collector name spelled with Cyrillic lookalike letters is
+/// a different string and must not match `VERIFIED_REGISTRY_SOURCES`.
+#[test]
+fn cyrillic_lookalike_collector_is_not_a_verified_registry_source() {
+    // Positive control: the exact allowlisted collector is admitted.
+    let genuine = resolve(vec![
+        observation("dump-1", "hibp", &[("breach", "Adobe")]),
+        observation("registry-1", "abn_lookup", &[("registry", "ABR")]),
+    ]);
+    assert_eq!(genuine.independent_families, ["abr", "adobe"]);
+
+    for collector in [
+        "\u{0430}bn_lookup",        // Cyrillic small a
+        "abn_l\u{043E}\u{043E}kup", // Cyrillic small o, twice
+        "\u{0410}BN_LOOKUP",        // Cyrillic capital A; lowercases to Cyrillic a
+    ] {
+        assert_not_a_verified_registry_source(collector);
+    }
+}
+
+/// Unicode lowercasing folds some non-ASCII letters onto ASCII: KELVIN SIGN (U+212A)
+/// lowercases to Latin `k`. The registry gate must not treat such a collector name
+/// as `abn_lookup`.
+#[test]
+fn case_folded_lookalike_collector_is_not_a_verified_registry_source() {
+    assert_eq!("\u{212A}".to_lowercase(), "k");
+    assert_not_a_verified_registry_source("abn_loo\u{212A}up");
 }

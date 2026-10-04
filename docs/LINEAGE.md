@@ -2,7 +2,17 @@
 
 Owners: `src/lineage.rs` (lineage from response data, the resolution contract) and
 `src/identity_resolution.rs` (the merge rule, `IdentityResolutionDecision::hold_reasons`).
-`check` exercises both as part of gate 5.
+`check` exercises both as part of gate 5, in two halves that both run:
+
+- lineage half (`check_lineage_gate`): observations go through `resolve_with_lineage`;
+  two collectors relaying one dump are one family and held, a dump plus a verified
+  registry auto-merges, a missing or NaN probability holds, and every observation comes
+  back unchanged;
+- graph half (`check_ancestry_graph_gate`): a hand-built `EvidenceAncestryGraph` with an
+  explicit parent chain (two mirrors under one dump) and a root that supports a
+  candidate directly (a registry), checked through `allows_automatic_merge`, the path
+  `resolve::automatic_clusters` takes. Two mirrors must not merge; a mirror plus the
+  registry must.
 
 ## Lineage comes from the response
 
@@ -49,11 +59,23 @@ prove dataset identity.
 Registry lineage is stricter because its source class is explicit: a `registry` attribute
 counts only when the collector is bound in `VERIFIED_REGISTRY_SOURCES`. An arbitrary
 provider claiming `registry=...` remains preserved evidence but contributes zero families.
+The gate recomputes the collector's family from `provenance.source` on every call and
+never reads the stored `provenance.source_family`. That field is deserialized from saved
+data, so a tampered local record with `source: "hibp"` and `source_family: "abn_lookup"`
+is not registry-class: its `registry` field contributes zero families, and the record is
+still returned unchanged. The collector name must also be ASCII before it is compared:
+Unicode lowercasing folds some non-ASCII letters onto ASCII (KELVIN SIGN U+212A becomes
+`k`), so `abn_loo\u{212A}up` would otherwise match `abn_lookup`. Lookalike spellings
+such as CYRILLIC SMALL LETTER A U+0430 (`\u{0430}bn_lookup`) are different strings and do
+not match.
 
-Current canonicalisation collapses whitespace and case. Unicode confusables and zero-width
-characters are not yet normalized as equivalent dataset names. Treat adapter-origin
-validation and stronger identifier canonicalisation as separate hardening work, not as
-capabilities already provided here.
+Dataset-name canonicalisation collapses whitespace and case only. Unicode confusables and
+zero-width characters are not normalised, so `Adobe` and `\u{0410}dobe` (CYRILLIC CAPITAL
+LETTER A) are two dataset families. Legacy 7dca720 also counts them as 2, so this is not a
+regression. The collector-name ASCII rule above is separate: it decides only whether a
+collector is a verified registry source. It never normalises, compares or rejects dataset
+values. Treat adapter-origin validation and stronger dataset-name canonicalisation as
+separate hardening work, not as capabilities already provided here.
 
 ## The merge rule
 
@@ -133,9 +155,31 @@ intentional and pinned:
 | `case_and_whitespace_variant` | 2 (`Adobe`, `ADOBE `) | 1 | Recon canonicalises families, so formatting cannot create a second family. |
 | `dump_plus_registry` | 1 (breach corpora only) | 2 | `abn_lookup` is explicitly bound to the authoritative ABR registry path; the registry family is therefore admitted independently of the breach dataset. |
 | every fixture, probability absent | graded with no probability | held, `ProbabilityMissing` | Legacy grades corroboration and never auto-merges. Recon auto-merges only with a present, in-range probability. |
+| `dehashed`, two `source_url` domains, no dataset field [1] | 1 corpus (falls back to collector name), not corroborated | 0 families, held | Stricter count, same verdict. Record locators are not lineage (`source_url` is not a lineage field). |
+| `dehashed`, `source_id` `row-1` / `row-2`, no dataset field [1] | 1 corpus (falls back to collector name), not corroborated | 0 families, held | Stricter count, same verdict. Row ids are record locators, not lineage. |
+
+[1] From Fix This Bullshit Bot's post-merge legacy comparison on #679, which ran legacy
+7dca720 against merged main bd0ccad with every input at probability 0.99. These cases are
+not in the fixture file. The recon values were rechecked against the current code. The
+same fail-closed behaviour is pinned by `record_urls_cannot_mint_independent_families` and
+`record_ids_cannot_mint_independent_families` in `tests/lineage_independence_adversarial.rs`.
+
+The same comparison found these cases equal:
+
+- `hibp` `breach: "Adobe"` + `hibp` `source_db: "company registry"`: legacy 2 corpora,
+  corroborated; recon 2 families, AutoMerge. A dataset field can still name a second
+  dataset from the same collector, as in legacy.
+- One collector citing two named datasets (`dehashed` `dbname` `Adobe` + `LinkedIn`, pinned
+  by `two_explicit_datasets_from_one_collector_remain_independent`): legacy 2, recon 2. This
+  matches legacy, so it is not a loosening. A one-collector-one-family rule would be a
+  tightening. It is not adopted, pending Chief's decision.
+- `Adobe` vs the Cyrillic lookalike `\u{0410}dobe`: legacy 2, recon 2. Neither normalises
+  dataset names (see the trust boundary above).
 
 The adversarial lineage suite additionally pins the fail-closed cases that motivated the
 review repair: record URLs and row ids contribute zero families; an unverified provider's
-`registry` field contributes zero; verified `abn_lookup` + ABR can contribute a registry
-root; and two explicitly named upstream datasets may still be represented through one
-aggregating collector.
+`registry` field contributes zero; a tampered record whose stored `source_family` claims
+`abn_lookup` contributes zero; a collector spelled with Cyrillic lookalikes or a
+case-folding sign (`\u{0430}bn_lookup`, `abn_loo\u{212A}up`) is not a verified registry
+source; verified `abn_lookup` + ABR can contribute a registry root; and two explicitly
+named upstream datasets may still be represented through one aggregating collector.
