@@ -80,7 +80,10 @@ DigiCert, …). Subdomains of the target's apex are tagged `subdomain`. Output i
 `recon stolen-tax QUERY [--keys FILE]` needs `HUNTSMAN_STOLEN_TAX_KEY` (keys file or
 environment; exit 66 without it, before any request). It POSTs the query to the v2
 snusbase, osintcat and hudsonrock paths with a Bearer key sent only to
-`https://stolen.tax`. The whole lookup (all three paths) has one 120 s budget, the
+`https://stolen.tax:443`. Redirects follow the monolith's same-site rule (up to 9
+hops within `stolen.tax` and its subdomains, never from https to http); a hop off
+that exact origin is sent without the key, and the key is never re-attached after
+it. The whole lookup (all three paths) has one 120 s budget, the
 monolith's module budget: each request gets only what is left of it, so the worst
 case is 120 s, not 3 x 120 s. A path the budget did not reach is not sent and is
 printed as `skipped_path=PATH`. A 429 is retried on the same key, at most three attempts per path, pausing for `Retry-After` (4 s when absent, never more than 4 s) only when the pause fits in the budget; any other failure is not retried. There is one key per slot: the monolith's key pool (rotation across several keys) is deferred to its own PR (see `docs/DISPOSITIONS.md`). (The monolith's engine instead dropped the whole result when the budget ran out, and cut it to 45 s on a resource-constrained device; see `docs/DISPOSITIONS.md`.) It prints emails, usernames and

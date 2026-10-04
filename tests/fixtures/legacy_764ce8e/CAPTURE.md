@@ -42,8 +42,12 @@ one pooled key, logged as `second`). Nine scenarios (the first key answering 429
 `Retry-After: 0`, 401, 403, an auth-shaped 400, an in-body dead key, an in-body quota
 error, 500; and both keys answering 429 or an in-body dead key) were run over the 13
 `stolen_tax_cases.json` cases, logging every request as `{path, key, status}`. The
-keys were throwaway per-case labels; the log and this
-fixture carry only `first`/`second` and statuses, never a key.
+keys were throwaway per-case labels, and neither the log nor this fixture carries a
+key: keys appear only as the labels `first`/`second`. Besides labels and statuses, the
+fixture holds the nine synthetic `first_key_answer` responses (status, headers and
+body) the loopback provider was scripted to send, and three `legacy_error` strings in
+which the monolith quoted those bodies. None of them is a secret or a real stolen.tax
+response.
 
 Derivation (the script below, run on that capture):
 
