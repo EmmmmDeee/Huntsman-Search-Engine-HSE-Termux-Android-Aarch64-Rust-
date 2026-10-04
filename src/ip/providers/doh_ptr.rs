@@ -86,7 +86,7 @@ impl IpProvider for CloudflarePtrProvider {
         if !target.is_public() {
             return Vec::new();
         }
-        let name = reverse_dns_name(target.address());
+        let name = reverse_dns_name(target.address);
         let request = Request::get(format!("{CLOUDFLARE_DOH_URL}?name={name}&type=PTR"))
             .header("Accept", "application/dns-json");
         vec![IpProviderAction {
