@@ -124,11 +124,13 @@ pub fn run_investigation<T: Transport + ?Sized>(
     }
 
     if investigation.termination_reason.is_none() {
-        investigation.termination_reason = Some(match mode {
-            IpMode::Base => "base_complete",
-            IpMode::Deep => "fixed_point",
-        }
-        .into());
+        investigation.termination_reason = Some(
+            match mode {
+                IpMode::Base => "base_complete",
+                IpMode::Deep => "fixed_point",
+            }
+            .into(),
+        );
     }
 
     investigation
@@ -149,7 +151,10 @@ fn select_next(pending: &[PendingAction<'_>], investigation: &IpInvestigation) -
 
 fn action_rank(action: &PendingAction<'_>, investigation: &IpInvestigation) -> (u8, u32) {
     (
-        u8::from(!capability_resolved(action.action.capability, investigation)),
+        u8::from(!capability_resolved(
+            action.action.capability,
+            investigation,
+        )),
         action.reliability_micros,
     )
 }
