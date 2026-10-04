@@ -301,10 +301,7 @@ const fn capability_depth(capability: IpCapability) -> u32 {
     }
 }
 
-const fn historical_depth_rank(
-    capability: IpCapability,
-    depth: HistoricalDepthClass,
-) -> u8 {
+const fn historical_depth_rank(capability: IpCapability, depth: HistoricalDepthClass) -> u8 {
     if !matches!(capability, IpCapability::HistoricalDns) {
         return 0;
     }
