@@ -148,9 +148,7 @@ impl IpProvider for RipeStatNetworkInfoProvider {
 }
 
 fn parse_asn(value: &Value) -> Result<u64, IpProviderParseError> {
-    let invalid = || {
-        IpProviderParseError::Schema("RIPEstat ASN is not an unsigned integer".into())
-    };
+    let invalid = || IpProviderParseError::Schema("RIPEstat ASN is not an unsigned integer".into());
     match value {
         Value::Number(number) => number.as_u64().ok_or_else(invalid),
         Value::String(raw) => {
