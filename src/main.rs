@@ -220,10 +220,11 @@ fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
     let Some((slot, style)) = &args.auth else {
         return Ok(None);
     };
-    let keys = match &args.keys_file {
-        Some(path) => Keys::load(path)?,
-        None => Keys::from_env(),
-    };
+    let resolved = Keys::resolve(args.keys_file.as_deref(), env::var_os("HOME").as_deref())?;
+    if let Some(warning) = &resolved.warning {
+        eprintln!("{warning}");
+    }
+    let keys = resolved.keys;
     let secret = keys
         .get(slot)
         .ok_or_else(|| Error::Invalid(format!("credential {slot} is not configured")))?;
