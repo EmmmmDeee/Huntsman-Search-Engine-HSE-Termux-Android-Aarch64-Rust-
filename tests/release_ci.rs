@@ -2,6 +2,7 @@
 //! root `.github/workflows/`; the copy under `legacy/` is inert. Deleting the
 //! root file (f0a1c64) silently stopped every main-channel pre-release.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -473,8 +474,13 @@ fn clean_fixture(dir: &Path) {
     .unwrap();
     // The 00..ff hex byte table and a decimal digit-pair table, as std links
     // them into every Rust binary: long hex runs that are not keys.
-    let hex_table: String = (0..=255u8).map(|b| format!("{b:02x}")).collect();
-    let digit_table: String = (0..100).map(|n| format!("{n:02}")).collect();
+    let (mut hex_table, mut digit_table) = (String::new(), String::new());
+    for b in 0..=255u8 {
+        write!(hex_table, "{b:02x}").unwrap();
+    }
+    for n in 0..100 {
+        write!(digit_table, "{n:02}").unwrap();
+    }
     fs::write(
         dir.join("bin"),
         [
@@ -579,7 +585,7 @@ fn scanner_fails_closed_when_a_tool_is_missing() {
         return;
     }
     let needed = [
-        "strings", "python3", "grep", "find", "sort", "cat", "mktemp", "rm",
+        "strings", "python3", "grep", "find", "sort", "cat", "mktemp", "rm", "realpath",
     ];
     let fixture = scratch("tools-fixture");
     clean_fixture(&fixture);
@@ -589,7 +595,7 @@ fn scanner_fails_closed_when_a_tool_is_missing() {
         [b"\x00 t=".as_slice(), ghp.as_bytes(), b" \x00\xfe"].concat(),
     )
     .unwrap();
-    for missing in [None, Some("strings"), Some("python3")] {
+    for missing in [None, Some("strings"), Some("python3"), Some("realpath")] {
         let bin = scratch(&format!("path-{}", missing.unwrap_or("all")));
         for name in needed.iter().filter(|n| Some(**n) != missing) {
             let src = tool(name).unwrap_or_else(|| panic!("{name} must be installed"));
@@ -1230,8 +1236,9 @@ fn hex_run_rule_catches_a_key_packed_against_other_hex() {
         assert_eq!(code, Some(1), "{file} must fail the scan:\n{text}");
         assert!(
             text.contains(&format!(
-                "FINDING file={}/{file} rule=hibp-key-hex (value withheld)",
-                dir.display()
+                "FINDING file={}/{file} resolved={}/{file} rule=hibp-key-hex (value withheld)",
+                dir.display(),
+                fs::canonicalize(&dir).unwrap().display()
             )),
             "{file}:\n{text}"
         );
@@ -1290,43 +1297,357 @@ fn scanner_matches_byte_wise_under_a_utf8_locale() {
     );
 }
 
-/// FTBB N7 / REFACTOR R2: `find -type f` does not list symlinks, so a
-/// symlink in the artifact would be skipped unscanned. It is refused.
+/// Runs `script ARG` under `timeout -k 2 10` (which signals the whole
+/// process group, so a runaway `find` dies too). Exit 124/137 means it hung.
+fn run_script_with_timeout(script: &Path, arg: &Path) -> (Option<i32>, String) {
+    let timeout = tool("timeout").expect("coreutils timeout must be installed");
+    let bash = tool("bash").expect("bash must be available");
+    let out = Command::new(timeout)
+        .args(["-k", "2", "10"])
+        .arg(bash)
+        .arg(script)
+        .arg(arg)
+        .output()
+        .expect("timeout must run");
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    (out.status.code(), text)
+}
+
+/// (case, set-up given (scratch root, root/dist, planted bytes) returning
+/// the scan argument, exit code, expected text, findings when exit is 1).
+type SymlinkCase = (
+    &'static str,
+    fn(&Path, &Path, &[u8]) -> PathBuf,
+    i32,
+    &'static str,
+);
+
+fn link(target: impl AsRef<Path>, at: impl AsRef<Path>) {
+    std::os::unix::fs::symlink(target, at).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+fn symlink_cases() -> Vec<SymlinkCase> {
+    vec![
+        // Followed inside the roots, and each real file scanned once.
+        (
+            "dir-inside",
+            |_, d, x| {
+                fs::create_dir_all(d.join("sub")).unwrap();
+                fs::write(d.join("sub/z-secret.bin"), x).unwrap();
+                link("sub", d.join("linkdir"));
+                d.to_owned()
+            },
+            1,
+            "dist/sub/z-secret.bin resolved=",
+        ),
+        (
+            "file-inside",
+            |_, d, x| {
+                fs::write(d.join("z-secret.bin"), x).unwrap();
+                link("z-secret.bin", d.join("link.bin"));
+                d.to_owned()
+            },
+            1,
+            "dist/z-secret.bin resolved=",
+        ),
+        (
+            "two-links-one-dir",
+            |_, d, x| {
+                fs::create_dir_all(d.join("sub")).unwrap();
+                fs::write(d.join("sub/z-secret.bin"), x).unwrap();
+                link("sub", d.join("link-a"));
+                link("sub", d.join("link-b"));
+                d.to_owned()
+            },
+            1,
+            "scanning each once",
+        ),
+        (
+            "two-links-no-direct-path",
+            |r, d, x| {
+                // Scanned through a symlinked parent: no listed path is the
+                // real one, so only the resolved-path dedupe keeps it to one.
+                fs::create_dir_all(d.join("sub")).unwrap();
+                fs::write(d.join("sub/z-secret.bin"), x).unwrap();
+                link("sub", d.join("link-a"));
+                link("sub", d.join("link-b"));
+                link(r, r.join("alias"));
+                r.join("alias/dist")
+            },
+            1,
+            "scanning each once (3 of 5)",
+        ),
+        (
+            "trailing-newline-names",
+            |_, d, x| {
+                fs::write(d.join("sec\n"), x).unwrap();
+                link("sec\n", d.join("lnk\n"));
+                d.to_owned()
+            },
+            1,
+            "scanning each once (3 of 4)",
+        ),
+        (
+            "symlink-argument",
+            |r, d, x| {
+                fs::write(d.join("z-secret.bin"), x).unwrap();
+                link(d, r.join("arg-link"));
+                r.join("arg-link")
+            },
+            1,
+            "dist/z-secret.bin resolved=",
+        ),
+        // Refused: outside the roots, broken, looping.
+        (
+            "proc-self-environ",
+            |_, d, _| {
+                link("/proc/self/environ", d.join("env"));
+                d.to_owned()
+            },
+            2,
+            "env::symlink resolves outside the scanned roots",
+        ),
+        (
+            "file-outside",
+            |r, d, x| {
+                fs::write(r.join("outside.bin"), x).unwrap();
+                link(r.join("outside.bin"), d.join("out.bin"));
+                d.to_owned()
+            },
+            2,
+            "out.bin::symlink resolves outside the scanned roots",
+        ),
+        (
+            "dir-outside",
+            |r, d, x| {
+                fs::create_dir_all(r.join("elsewhere")).unwrap();
+                fs::write(r.join("elsewhere/z.bin"), x).unwrap();
+                link(r.join("elsewhere"), d.join("out-dir"));
+                d.to_owned()
+            },
+            2,
+            "out-dir::symlink resolves outside the scanned roots",
+        ),
+        (
+            "dot-dot-escape",
+            |r, d, x| {
+                fs::write(r.join("outside.bin"), x).unwrap();
+                fs::create_dir_all(d.join("sub")).unwrap();
+                link("../../outside.bin", d.join("sub/esc"));
+                d.to_owned()
+            },
+            2,
+            "sub/esc::symlink resolves outside the scanned roots",
+        ),
+        (
+            "sibling-prefix-dir",
+            |r, d, x| {
+                fs::create_dir_all(r.join("dist-evil")).unwrap();
+                fs::write(r.join("dist-evil/z.bin"), x).unwrap();
+                link("../dist-evil", d.join("evil"));
+                d.to_owned()
+            },
+            2,
+            "evil::symlink resolves outside the scanned roots",
+        ),
+        (
+            "sibling-prefix-file",
+            |r, d, x| {
+                fs::create_dir_all(r.join("dist-evil")).unwrap();
+                fs::write(r.join("dist-evil/z.bin"), x).unwrap();
+                link("../dist-evil/z.bin", d.join("evil.bin"));
+                d.to_owned()
+            },
+            2,
+            "evil.bin::symlink resolves outside the scanned roots",
+        ),
+        (
+            "broken",
+            |_, d, _| {
+                link("does-not-exist", d.join("broken"));
+                d.to_owned()
+            },
+            2,
+            "broken::broken or looping symlink",
+        ),
+        (
+            "loop",
+            |_, d, _| {
+                link("loop-b", d.join("loop-a"));
+                link("loop-a", d.join("loop-b"));
+                d.to_owned()
+            },
+            2,
+            "::broken or looping symlink",
+        ),
+        (
+            "ancestor-loop",
+            |_, d, _| {
+                link(".", d.join("self"));
+                d.to_owned()
+            },
+            2,
+            "find failed on:",
+        ),
+        (
+            "fifo",
+            |_, d, _| {
+                let ok = Command::new("mkfifo").arg(d.join("pipe")).status().unwrap();
+                assert!(ok.success());
+                d.to_owned()
+            },
+            2,
+            "pipe::not a regular file, directory or symlink",
+        ),
+        (
+            "broken-symlink-argument",
+            |r, _, _| {
+                link(r.join("nowhere"), r.join("arg-link"));
+                r.join("arg-link")
+            },
+            2,
+            "cannot resolve scan path",
+        ),
+        // Last, so a mutant that follows links fails an earlier case first and
+        // never walks the real filesystem from /.
+        (
+            "link-to-filesystem-root",
+            |_, d, _| {
+                link("/", d.join("slash"));
+                d.to_owned()
+            },
+            2,
+            "slash::symlink resolves outside the scanned roots",
+        ),
+    ]
+}
+
+/// FTBB N7 / REFACTOR R2, one rule for both repos: a symlink that resolves
+/// inside the scanned roots is followed (each real file scanned once); a
+/// broken, looping or outside one exits 2 and is named. Temp dirs only, and
+/// every run is killed after 10 s, so a link to / cannot walk the real
+/// filesystem or hang the suite.
 #[test]
-fn scanner_refuses_a_symlink_instead_of_skipping_it() {
+fn scanner_follows_symlinks_inside_the_roots_and_refuses_the_rest() {
     if !scanner_tools_present() {
         return;
     }
-    let root = scratch("symlink");
-    let dir = root.join("dist");
-    fs::create_dir_all(&dir).unwrap();
-    clean_fixture(&dir);
     let ghp = fake_ghp();
-    let outside = root.join("outside.bin");
-    fs::write(
-        &outside,
-        [b"\x00 t=".as_slice(), ghp.as_bytes(), b" \x00"].concat(),
-    )
-    .unwrap();
-    std::os::unix::fs::symlink(&outside, dir.join("link.bin")).unwrap();
-    let inline = root.join("inlined-scan-for-keys.sh");
-    fs::write(&inline, inlined_scanner()).unwrap();
-    for script in [PathBuf::from(SCAN), inline] {
-        let ctx = format!("{} with a symlink", script.display());
-        let (code, text) = run_script(&script, &dir, None);
-        assert_eq!(code, Some(2), "{ctx} must fail closed with exit 2:\n{text}");
-        assert!(
-            text.contains("1 non-regular entries under")
-                && text.contains("link.bin::not a regular file"),
-            "{ctx}:\n{text}"
-        );
-        assert!(
-            !text.contains("files scanned:"),
-            "{ctx} must not scan:\n{text}"
-        );
-        assert_redacted(&text, &ghp, &ctx);
+    let planted = [b"\x00 t=".as_slice(), ghp.as_bytes(), b" \x00"].concat();
+    for (case, set_up, want, message) in symlink_cases() {
+        let root = scratch(&format!("symlink-{case}"));
+        let dir = root.join("dist");
+        fs::create_dir_all(&dir).unwrap();
+        clean_fixture(&dir);
+        let arg = set_up(&root, &dir, &planted);
+        let inline = root.join("inlined-scan-for-keys.sh");
+        fs::write(&inline, inlined_scanner()).unwrap();
+        for script in [PathBuf::from(SCAN), inline] {
+            let ctx = format!("{} with symlink case {case}", script.display());
+            let start = std::time::Instant::now();
+            let (code, text) = run_script_with_timeout(&script, &arg);
+            assert!(
+                !matches!(code, Some(124 | 137)) && start.elapsed().as_secs() < 10,
+                "{ctx} hung:\n{text}"
+            );
+            assert_eq!(code, Some(want), "{ctx}:\n{text}");
+            assert!(
+                text.contains(message),
+                "{ctx}: expected {message:?}:\n{text}"
+            );
+            if case == "link-to-filesystem-root" {
+                assert!(
+                    !text.contains("slash/"),
+                    "{ctx} must name no path under the link:\n{text}"
+                );
+            }
+            if want == 1 {
+                let real = format!(
+                    "resolved={}/dist/",
+                    fs::canonicalize(&root).unwrap().display()
+                );
+                assert!(
+                    text.contains(&real),
+                    "{ctx}: must print the resolved path:\n{text}"
+                );
+            }
+            if want == 2 {
+                assert!(
+                    !text.contains("files scanned:"),
+                    "{ctx} must not scan:\n{text}"
+                );
+            } else {
+                assert!(
+                    text.contains("key scan: 1 finding(s)"),
+                    "{ctx}: one token, one finding:\n{text}"
+                );
+            }
+            assert_redacted(&text, &ghp, &ctx);
+        }
+        let _ = fs::remove_dir_all(&root);
     }
-    let _ = fs::remove_dir_all(&root);
+}
+
+/// A scan path starting with `-` is a path, never a `find` option. A root
+/// named `-L`, `-H` or `-P` would otherwise switch find's link mode and walk
+/// "." instead. The current directory holds sentinels that only a walk of
+/// "." would reach: another planted key and a dangling link. Temp dirs only,
+/// under `timeout`.
+#[test]
+fn scanner_treats_a_dash_leading_root_as_a_path() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let ghp = fake_ghp();
+    let planted = [b"\x00 t=".as_slice(), ghp.as_bytes(), b" \x00"].concat();
+    let timeout = tool("timeout").expect("coreutils timeout must be installed");
+    let bash = tool("bash").expect("bash must be available");
+    for name in ["-dist", "-L", "-P", "-H"] {
+        let cwd = scratch(&format!("dash-root{name}"));
+        fs::create_dir_all(cwd.join(name)).unwrap();
+        clean_fixture(&cwd.join(name));
+        fs::write(cwd.join(name).join("z-secret.bin"), &planted).unwrap();
+        fs::create_dir_all(cwd.join("sibling")).unwrap();
+        fs::write(cwd.join("sibling/outside-secret.bin"), &planted).unwrap();
+        link("does-not-exist", cwd.join("dangling-outside-the-root"));
+        let inline = cwd.join("inlined-scan-for-keys.sh");
+        fs::write(&inline, inlined_scanner()).unwrap();
+        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join(SCAN);
+        for script in [file, inline] {
+            let ctx = format!("{} on root {name}", script.display());
+            let out = Command::new(&timeout)
+                .args(["-k", "2", "10"])
+                .arg(&bash)
+                .arg(&script)
+                .arg(name)
+                .current_dir(&cwd)
+                .output()
+                .expect("timeout must run");
+            let text = String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr);
+            assert!(
+                !matches!(out.status.code(), Some(124 | 137)),
+                "{ctx} hung:\n{text}"
+            );
+            assert_eq!(out.status.code(), Some(1), "{ctx} must scan it:\n{text}");
+            let want = format!(
+                "FINDING file=./{name}/z-secret.bin resolved={}/{name}/z-secret.bin rule=github-token (value withheld)",
+                fs::canonicalize(&cwd).unwrap().display()
+            );
+            assert!(text.contains(&want), "{ctx}: expected {want:?}:\n{text}");
+            assert!(text.contains("key scan: 1 finding(s)"), "{ctx}:\n{text}");
+            for outside in ["sibling", "outside-secret", "dangling-outside-the-root"] {
+                assert!(
+                    !text.contains(outside),
+                    "{ctx} walked outside the root:\n{text}"
+                );
+            }
+            assert_redacted(&text, &ghp, &ctx);
+        }
+        let _ = fs::remove_dir_all(&cwd);
+    }
 }
 
 /// UTF-16LE little-endian encoding of `s` (ASCII only).
@@ -1365,7 +1686,7 @@ fn scanner_reads_utf16le_strings_in_binaries() {
     }
     assert!(fs::read_to_string(SCAN)
         .unwrap()
-        .contains("wide=$(strings -a -e l -n 8 \"$f\") || { echo \"::error::strings -e l failed on $f\"; exit 1; }"));
+        .contains("wide=$(strings -a -e l -n 8 -- \"$src\") || { echo \"::error::strings -e l failed on $f\"; exit 1; }"));
 }
 
 /// FTBB N6: if the destination is a directory, `mv -f` would move the binary
@@ -1502,13 +1823,11 @@ struct StepRun {
     output: String,
 }
 
-/// Runs `script` with the fake `gh`; `fixtures` are (key, status, body).
-fn run_step(
-    name: &str,
-    script: &str,
-    fixtures: &[(&str, u16, String)],
-    envs: &[(&str, &str)],
-) -> StepRun {
+/// A fake `gh api` answer: (fixture key, HTTP status, body).
+type Answer = (String, u16, String);
+
+/// Runs `script` with the fake `gh`.
+fn run_step(name: &str, script: &str, fixtures: &[Answer], envs: &[(&str, &str)]) -> StepRun {
     let root = scratch(&format!("step-{name}"));
     let (fakes, data, tmp) = (root.join("fakes"), root.join("gh"), root.join("tmp"));
     for d in [&fakes, &data, &tmp] {
@@ -1559,93 +1878,89 @@ fn jq_present() -> bool {
     present
 }
 
+/// (case, fake answers, exit code, marker or `exists=` line).
+type ExistingCase = (&'static str, Vec<Answer>, i32, &'static str);
+
+fn existing_cases() -> Vec<ExistingCase> {
+    let tag_at = |ty: &str, sha: &str| -> Answer {
+        (
+            format!("git_ref_tags_{STEP_TAG}"),
+            200,
+            format!("{{\"object\":{{\"type\":\"{ty}\",\"sha\":\"{sha}\"}}}}"),
+        )
+    };
+    let here = || tag_at("commit", &step_sha());
+    let rel = |pre: bool, assets: &[(String, Option<String>)]| -> Answer {
+        (
+            format!("releases_tags_{STEP_TAG}"),
+            200,
+            release_json(pre, assets),
+        )
+    };
+    let full = complete_assets();
+    let mut missing = full.clone();
+    missing.pop();
+    let mut null_digest = full.clone();
+    null_digest[1].1 = None;
+    let mut duplicate = full.clone();
+    duplicate.push(duplicate[0].clone());
+    let ref_502: Answer = (format!("git_ref_tags_{STEP_TAG}"), 502, "{}".to_owned());
+    vec![
+        ("absent", vec![], 0, "exists=false"),
+        ("complete", vec![here(), rel(true, &full)], 0, "exists=true"),
+        ("ref-502", vec![ref_502], 15, "[refuse:ref-lookup-failed]"),
+        (
+            "other-commit",
+            vec![tag_at("commit", &"9".repeat(40)), rel(true, &full)],
+            11,
+            "[refuse:tag-elsewhere]",
+        ),
+        (
+            "annotated",
+            vec![tag_at("tag", &step_sha()), rel(true, &full)],
+            11,
+            "[refuse:tag-elsewhere]",
+        ),
+        (
+            "no-release",
+            vec![here()],
+            12,
+            "[refuse:tag-without-release]",
+        ),
+        (
+            "not-prerelease",
+            vec![here(), rel(false, &full)],
+            13,
+            "[refuse:not-prerelease]",
+        ),
+        (
+            "asset-missing",
+            vec![here(), rel(true, &missing)],
+            14,
+            "[refuse:asset-incomplete]",
+        ),
+        (
+            "null-digest",
+            vec![here(), rel(true, &null_digest)],
+            14,
+            "[refuse:asset-incomplete]",
+        ),
+        (
+            "duplicate",
+            vec![here(), rel(true, &duplicate)],
+            14,
+            "[refuse:asset-incomplete]",
+        ),
+    ]
+}
+
 #[test]
 fn existing_release_check_refuses_each_case_by_exit_code_and_marker() {
     if !jq_present() {
         return;
     }
     let script = step_script("Check for an existing");
-    let ref_key = format!("git_ref_tags_{STEP_TAG}");
-    let rel_key = format!("releases_tags_{STEP_TAG}");
-    let tag_at = |ty: &str, sha: &str| {
-        (
-            ref_key.as_str(),
-            200,
-            format!("{{\"object\":{{\"type\":\"{ty}\",\"sha\":\"{sha}\"}}}}"),
-        )
-    };
-    let here = tag_at("commit", &step_sha());
-    let rel = |pre: bool, assets: Vec<(String, Option<String>)>| {
-        (rel_key.as_str(), 200, release_json(pre, &assets))
-    };
-    let mut missing = complete_assets();
-    missing.pop();
-    let mut null_digest = complete_assets();
-    null_digest[1].1 = None;
-    let mut duplicate = complete_assets();
-    duplicate.push(duplicate[0].clone());
-    // (case, fixtures, exit code, marker or exists= line)
-    let cases: Vec<(&str, Vec<(&str, u16, String)>, i32, &str)> = vec![
-        ("absent", vec![], 0, "exists=false"),
-        (
-            "complete",
-            vec![here.clone(), rel(true, complete_assets())],
-            0,
-            "exists=true",
-        ),
-        (
-            "ref-502",
-            vec![(ref_key.as_str(), 502, "{}".to_owned())],
-            15,
-            "[refuse:ref-lookup-failed]",
-        ),
-        (
-            "other-commit",
-            vec![
-                tag_at("commit", &"9".repeat(40)),
-                rel(true, complete_assets()),
-            ],
-            11,
-            "[refuse:tag-elsewhere]",
-        ),
-        (
-            "annotated",
-            vec![tag_at("tag", &step_sha()), rel(true, complete_assets())],
-            11,
-            "[refuse:tag-elsewhere]",
-        ),
-        (
-            "no-release",
-            vec![here.clone()],
-            12,
-            "[refuse:tag-without-release]",
-        ),
-        (
-            "not-prerelease",
-            vec![here.clone(), rel(false, complete_assets())],
-            13,
-            "[refuse:not-prerelease]",
-        ),
-        (
-            "asset-missing",
-            vec![here.clone(), rel(true, missing)],
-            14,
-            "[refuse:asset-incomplete]",
-        ),
-        (
-            "null-digest",
-            vec![here.clone(), rel(true, null_digest)],
-            14,
-            "[refuse:asset-incomplete]",
-        ),
-        (
-            "duplicate",
-            vec![here.clone(), rel(true, duplicate)],
-            14,
-            "[refuse:asset-incomplete]",
-        ),
-    ];
-    for (case, fixtures, want, marker) in cases {
+    for (case, fixtures, want, marker) in existing_cases() {
         let run = run_step(&format!("existing-{case}"), &script, &fixtures, &[]);
         assert_eq!(run.code, Some(want), "{case}:\n{}", run.text);
         if want == 0 {
@@ -1670,24 +1985,37 @@ fn existing_release_check_refuses_each_case_by_exit_code_and_marker() {
     }
 }
 
-#[test]
-fn attestation_requirement_refuses_each_case_by_exit_code_and_marker() {
-    if !jq_present() {
-        return;
-    }
-    let script = step_script("Require a build provenance attestation");
-    let rel_key = format!("releases_tags_{STEP_TAG}");
-    let att_key = format!("attestations_{}", digest("a"));
-    let rel = (
-        rel_key.as_str(),
-        200,
-        release_json(true, &complete_assets()),
-    );
-    let mut no_digest = complete_assets();
+/// (case, `EXISTS`, `ATTESTATION_ID`, fake answers, exit code, marker).
+type AttestCase = (
+    &'static str,
+    &'static str,
+    &'static str,
+    Vec<Answer>,
+    i32,
+    &'static str,
+);
+
+fn attest_cases() -> Vec<AttestCase> {
+    let rel = |assets: &[(String, Option<String>)]| -> Answer {
+        (
+            format!("releases_tags_{STEP_TAG}"),
+            200,
+            release_json(true, assets),
+        )
+    };
+    let att = |status: u16, body: &str| -> Answer {
+        (
+            format!("attestations_{}", digest("a")),
+            status,
+            body.to_owned(),
+        )
+    };
+    let full = complete_assets();
+    let mut no_digest = full.clone();
     no_digest[0].1 = None;
-    let att = |status: u16, body: &str| (att_key.as_str(), status, body.to_owned());
-    // (case, EXISTS, ATTESTATION_ID, fixtures, exit code, marker)
-    let cases: Vec<(&str, &str, &str, Vec<(&str, u16, String)>, i32, &str)> = vec![
+    let one = "{\"attestations\":[{}]}";
+    let none = "{\"attestations\":[]}";
+    vec![
         (
             "new-attested",
             "false",
@@ -1708,7 +2036,7 @@ fn attestation_requirement_refuses_each_case_by_exit_code_and_marker() {
             "old-attested",
             "true",
             "",
-            vec![rel.clone(), att(200, "{\"attestations\":[{}]}")],
+            vec![rel(&full), att(200, one)],
             0,
             "1 build provenance attestation(s)",
         ),
@@ -1716,7 +2044,7 @@ fn attestation_requirement_refuses_each_case_by_exit_code_and_marker() {
             "old-none-404",
             "true",
             "",
-            vec![rel.clone(), att(404, "{}")],
+            vec![rel(&full), att(404, "{}")],
             24,
             "[refuse:unattested-release]",
         ),
@@ -1724,7 +2052,7 @@ fn attestation_requirement_refuses_each_case_by_exit_code_and_marker() {
             "old-none-empty",
             "true",
             "",
-            vec![rel.clone(), att(200, "{\"attestations\":[]}")],
+            vec![rel(&full), att(200, none)],
             24,
             "[refuse:unattested-release]",
         ),
@@ -1732,7 +2060,7 @@ fn attestation_requirement_refuses_each_case_by_exit_code_and_marker() {
             "old-lookup-502",
             "true",
             "",
-            vec![rel.clone(), att(502, "{}")],
+            vec![rel(&full), att(502, "{}")],
             23,
             "[refuse:attestation-lookup-failed]",
         ),
@@ -1740,13 +2068,21 @@ fn attestation_requirement_refuses_each_case_by_exit_code_and_marker() {
             "old-no-digest",
             "true",
             "",
-            vec![(rel_key.as_str(), 200, release_json(true, &no_digest))],
+            vec![rel(&no_digest)],
             22,
             "[refuse:no-asset-digest]",
         ),
         ("no-check", "", "", vec![], 25, "[refuse:no-existing-check]"),
-    ];
-    for (case, exists, id, fixtures, want, marker) in cases {
+    ]
+}
+
+#[test]
+fn attestation_requirement_refuses_each_case_by_exit_code_and_marker() {
+    if !jq_present() {
+        return;
+    }
+    let script = step_script("Require a build provenance attestation");
+    for (case, exists, id, fixtures, want, marker) in attest_cases() {
         let envs = [
             ("EXISTS", exists),
             ("ATTESTATION_ID", id),
