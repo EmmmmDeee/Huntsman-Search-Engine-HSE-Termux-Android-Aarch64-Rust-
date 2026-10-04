@@ -184,7 +184,9 @@ fn discover_rdap_provider<T: Transport + ?Sized>(
     let response = fetched.response.ok_or_else(|| {
         bootstrap_failure(
             bootstrap_failure_kind(outcome),
-            detail.unwrap_or_else(|| "IANA RDAP bootstrap produced no HTTP response".into()),
+            detail
+                .clone()
+                .unwrap_or_else(|| "IANA RDAP bootstrap produced no HTTP response".into()),
             Some(outcome),
         )
     })?;
