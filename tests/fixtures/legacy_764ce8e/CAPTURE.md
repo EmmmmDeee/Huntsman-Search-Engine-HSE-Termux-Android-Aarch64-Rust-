@@ -32,6 +32,95 @@ harness on the new inputs (2026-10-03 AEST); the only change in the output is th
 The crt.sh case with `"generate_unrelated": N` adds one entry whose `name_value` is
 `host{i}.other-{i}.net` for `i` in `0..N`, joined by newlines.
 
+## One-key 429 retry: `stolen_tax_single_key_expected.json`
+
+Derived, not recorded directly. The source is a second legacy capture on the same old
+tree (`4d5db3dc`), recorded 2026-10-03 (AEST) and kept out of the repository: the
+module's real `process()` and `util::http::keyed_cascade_json`, with the provider
+served on loopback and a two-key setup (the environment key, logged as `first`, plus
+one pooled key, logged as `second`). Nine scenarios (the first key answering 429 with
+`Retry-After: 0`, 401, 403, an auth-shaped 400, an in-body dead key, an in-body quota
+error, 500; and both keys answering 429 or an in-body dead key) were run over the 13
+`stolen_tax_cases.json` cases, logging every request as `{path, key, status}`. The
+keys were throwaway per-case labels; the log and this
+fixture carry only `first`/`second` and statuses, never a key.
+
+Derivation (the script below, run on that capture):
+
+- `attempts[path]` is the run of requests legacy sent on the first key for that path
+  before it asked the pool for another key. With a one-key pool there is no other
+  key: `next_pooled_key` returns `None` and `keyed_cascade_json` returns the last
+  attempt's error, so the path fails after exactly these attempts. The script
+  checks that all 13 cases agree and that the first key is never used again on a
+  path after the second key was asked.
+- `paths_captured_with_one_key` are the paths that really ran with one usable key
+  (the pooled key already burned, or never asked for): `osintcat` and `hudsonrock`
+  in `all_keys_429` (3 × 429 each) and `all_keys_in_body_dead` (1 request each),
+  and every path in the 500 scenario.
+- `legacy_error` is the module error when every case failed with one text
+  (`all_keys_*` and 500, where every key reached answered as the one key does);
+  otherwise `null`, because the second key rescued the lookup.
+
+`src/stolen_tax/differential.rs` (`single_key_attempts_match_the_legacy_cascade_with_one_key`)
+replays each scenario's first-key answer to the port with one key and requires the
+same attempts in the same order, a failed lookup, the status (or the provider's own
+words for an in-body error) in the failure, and no key in any error text.
+
+```python
+# Derive the one-key retry fixture from the legacy two-key rotation capture.
+import json, sys
+cap = sys.argv[1]
+cases = json.load(open(f"{cap}/stolen_tax_rotation_cases.json"))
+exp = json.load(open(f"{cap}/stolen_tax_rotation_expected.json"))
+PATHS = ["snusbase", "osintcat", "hudsonrock"]
+out = []
+for scen_in, scen in zip(cases, exp["scenarios"]):
+    assert scen_in["name"] == scen["name"]
+    per_case = []
+    for c in scen["cases"]:
+        attempts = {}
+        for p in PATHS:
+            reqs = [r for r in c["requests"] if r["path"] == p]
+            prefix = []
+            for r in reqs:
+                if r["key"] != "first":
+                    break
+                prefix.append(r["status"])
+            # Nothing on the first key after the second key was asked.
+            assert all(r["key"] != "first" for r in reqs[len(prefix):]), (scen["name"], p)
+            attempts[p] = prefix
+        per_case.append(attempts)
+    # The first key's answer does not depend on the case: every case agrees.
+    assert all(a == per_case[0] for a in per_case), scen["name"]
+    attempts = per_case[0]
+    # Where the second key was never asked for a path, legacy ran that path with a
+    # one-key pool (the second key was burned or never needed): its error is captured.
+    one_key_paths = [
+        p for p in PATHS
+        if all(r["key"] == "first" for r in scen["cases"][0]["requests"] if r["path"] == p)
+    ]
+    # The module error, where every case failed with one text: then every key the
+    # paths reached answered exactly as the one key does (all_keys_*, 500).
+    errors = {c["error"] for c in scen["cases"]}
+    error = errors.pop() if len(errors) == 1 and None not in errors else None
+    out.append({
+        "name": scen["name"],
+        "first_key_answer": scen_in["first_key"],
+        "attempts": attempts,
+        "paths_captured_with_one_key": one_key_paths,
+        "legacy_error": error,
+    })
+doc = {
+    "derived_from": "stolen_tax_rotation_expected.json: " + exp["captured_from"]
+    + "; two-key run (env key 'first' + pooled key 'second'), see CAPTURE.md",
+    "rule": "attempts[path] = the requests legacy sent on the first key for that path "
+    "before asking the pool for another key; with a one-key pool there is no other key, "
+    "so the path fails after them (keyed_cascade_json: next_pooled_key -> None -> Err)",
+    "scenarios": out,
+}
+print(json.dumps(doc, indent=2))
+```
+
 ## Harness (diff against `4d5db3dc`)
 
 ```diff

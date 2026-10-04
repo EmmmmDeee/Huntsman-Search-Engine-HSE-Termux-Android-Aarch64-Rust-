@@ -260,3 +260,112 @@ fn guard_rewrite_only_removes_unknown_facts() {
         ("Breach: Bare".to_owned(), Vec::new())
     );
 }
+
+const SINGLE_KEY: &str =
+    include_str!("../../tests/fixtures/legacy_764ce8e/stolen_tax_single_key_expected.json");
+
+/// Every request gets the scenario's one-key answer; logs (path, status) and checks
+/// each attempt carried the one configured key.
+struct OneKey {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    bearer: String,
+    log: std::cell::RefCell<Vec<(String, u16)>>,
+}
+
+impl Transport for OneKey {
+    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        let path = request.url.rsplit_once("path=").map(|(_, p)| p).unwrap();
+        assert_eq!(
+            request.header_value("authorization"),
+            Some(self.bearer.as_str()),
+            "every attempt is on the one key"
+        );
+        self.log.borrow_mut().push((path.to_owned(), self.status));
+        Ok(Response {
+            status: self.status,
+            headers: self.headers.clone(),
+            body: self.body.clone(),
+            truncated: false,
+        })
+    }
+}
+
+/// The monolith with a one-key pool (derived from the two-key rotation capture, see
+/// `CAPTURE.md`): a `429` gets three attempts on the key, everything else one, and
+/// then the path fails; with every path failing the lookup fails on the first.
+#[test]
+fn single_key_attempts_match_the_legacy_cascade_with_one_key() {
+    let fixture: Value = serde_json::from_str(SINGLE_KEY).unwrap();
+    let key = "st-fixture-key-0123456789";
+    let keys = Keys::parse(&format!("{KEY_SLOT}={key}\n")).unwrap();
+    let scenarios = fixture["scenarios"].as_array().unwrap();
+    assert_eq!(scenarios.len(), 9);
+    for scenario in scenarios {
+        let name = scenario["name"].as_str().unwrap();
+        let answer = &scenario["first_key_answer"];
+        let status = u16::try_from(answer["status"].as_u64().unwrap()).unwrap();
+        let transport = OneKey {
+            status,
+            headers: answer["headers"]
+                .as_object()
+                .map(|h| {
+                    h.iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_owned()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            body: answer["body"].as_str().unwrap().as_bytes().to_vec(),
+            bearer: format!("Bearer {key}"),
+            log: std::cell::RefCell::new(Vec::new()),
+        };
+        let clock = crate::deadline::FakeClock::new();
+        let err = lookup_with_clock(&transport, &clock, &keys, "user@example.com", "s", 0)
+            .expect_err(name);
+
+        // Same attempts, path by path, in cascade order.
+        let mut legacy = Vec::new();
+        for path in PATHS {
+            for s in scenario["attempts"][path].as_array().unwrap() {
+                legacy.push((path.to_owned(), u16::try_from(s.as_u64().unwrap()).unwrap()));
+            }
+        }
+        assert_eq!(*transport.log.borrow(), legacy, "{name}: attempts");
+        // Retry-After: 0 in the capture, so no pause was taken.
+        assert_eq!(clock.elapsed(), Duration::ZERO, "{name}");
+
+        let StolenTaxError::Failed(first) = &err else {
+            panic!("{name}: {err:?}");
+        };
+        assert_eq!(first.path, "snusbase", "{name}");
+        let reason = &first.reason;
+        assert!(!err.to_string().contains(key), "{name}: key in {err}");
+        if (200..300).contains(&status) {
+            let words: Value = serde_json::from_str(answer["body"].as_str().unwrap()).unwrap();
+            let words = words["error"].as_str().unwrap();
+            assert!(reason.contains(words), "{name}: {reason}");
+        } else {
+            assert!(
+                reason.starts_with(&format!("HTTP {status} ")),
+                "{name}: {reason}"
+            );
+        }
+        if status == 429 {
+            assert!(reason.ends_with("after 3 attempts"), "{name}: {reason}");
+        }
+        // Where legacy's own error was captured, the port names the same status or
+        // the provider's own words (it never carries a raw response body).
+        if let Some(legacy_error) = scenario["legacy_error"].as_str() {
+            let shared = if (200..300).contains(&status) {
+                legacy_error.rsplit_once(": ").unwrap().1.to_owned()
+            } else {
+                format!("HTTP {status}")
+            };
+            assert!(
+                legacy_error.contains(&shared) && reason.contains(&shared),
+                "{name}"
+            );
+        }
+    }
+}

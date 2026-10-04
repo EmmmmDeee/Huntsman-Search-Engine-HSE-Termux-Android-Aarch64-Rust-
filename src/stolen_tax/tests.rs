@@ -740,3 +740,323 @@ fn clear_email_login_skips_masked_and_empty() {
 fn an_unknown_path_is_a_decode_failure() {
     assert!(normalize_path("nope", Value::Null).is_err());
 }
+
+/// One scripted answer: delay in seconds, status, `Retry-After`, body.
+type Step = (u64, u16, Option<&'static str>, &'static str);
+/// Each path's steps, one per request (the last repeats).
+type Steps = Vec<(&'static str, Vec<Step>)>;
+
+/// Answers from a per-path script, one step per request (the last step repeats),
+/// advancing a fake clock by each step's delay.
+struct Script<'c> {
+    clock: &'c FakeClock,
+    steps: Steps,
+    sent: RefCell<Vec<(String, Duration)>>,
+}
+
+impl<'c> Script<'c> {
+    fn new(clock: &'c FakeClock, steps: Steps) -> Self {
+        Self {
+            clock,
+            steps,
+            sent: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn paths(&self) -> Vec<String> {
+        self.sent.borrow().iter().map(|(p, _)| p.clone()).collect()
+    }
+}
+
+impl Transport for Script<'_> {
+    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        let path = request.url.rsplit_once("path=").map(|(_, p)| p).unwrap();
+        let cap = request.timeout.expect("capped");
+        assert!(!cap.is_zero());
+        let n = self.sent.borrow().iter().filter(|(p, _)| p == path).count();
+        self.sent.borrow_mut().push((path.to_owned(), cap));
+        let (delay, status, retry_after, body) = self
+            .steps
+            .iter()
+            .find(|(p, _)| *p == path)
+            .map_or((0, 200, None, EMPTY), |(_, s)| s[n.min(s.len() - 1)]);
+        self.clock.advance(Duration::from_secs(delay));
+        Ok(Response {
+            status,
+            headers: retry_after
+                .map(|v| vec![("Retry-After".to_owned(), v.to_owned())])
+                .unwrap_or_default(),
+            body: body.as_bytes().to_vec(),
+            truncated: false,
+        })
+    }
+}
+
+fn scripted(clock: &FakeClock, t: &Script<'_>) -> Result<StolenTaxReport, StolenTaxError> {
+    lookup_with_clock(t, clock, &keys(), "user@example.com", "scan", 0)
+}
+
+#[test]
+fn retry_pause_reads_retry_after_like_the_monolith() {
+    // parse_retry_after_secs(value, 4, 4): delta-seconds, else 4; never above 4.
+    let secs = |v: Option<&str>| retry_pause(v).as_secs();
+    assert_eq!(secs(None), 4);
+    assert_eq!(secs(Some("0")), 0);
+    assert_eq!(secs(Some("2")), 2);
+    assert_eq!(secs(Some(" 3 ")), 3);
+    assert_eq!(secs(Some("4")), 4);
+    assert_eq!(secs(Some("30")), 4);
+    assert_eq!(secs(Some("-1")), 4);
+    assert_eq!(secs(Some("1.5")), 4);
+    assert_eq!(secs(Some("Wed, 21 Oct 2015 07:28:00 GMT")), 4);
+    assert_eq!(ATTEMPTS_PER_PATH, 3);
+}
+
+#[test]
+fn a_429_is_retried_on_the_same_key_and_its_answer_kept() {
+    let clock = FakeClock::new();
+    let t = Script::new(
+        &clock,
+        vec![(
+            "snusbase",
+            vec![
+                (1, 429, Some("2"), "rate limited"),
+                (1, 429, Some("2"), "rate limited"),
+                (1, 200, None, SNUS_HIT),
+            ],
+        )],
+    );
+    let report = scripted(&clock, &t).unwrap();
+    assert_eq!(
+        t.paths(),
+        ["snusbase", "snusbase", "snusbase", "osintcat", "hudsonrock"]
+    );
+    // Three 1 s answers and two 2 s pauses on snusbase.
+    assert_eq!(clock.elapsed(), Duration::from_secs(7));
+    assert!(report.failed_paths.is_empty(), "{:?}", report.failed_paths);
+    assert!(has(&report, &EntityKind::Email, "alt@example.com"));
+    let caps: Vec<Duration> = t.sent.borrow().iter().map(|(_, c)| *c).collect();
+    assert_eq!(
+        caps[..3],
+        [
+            Duration::from_secs(120),
+            Duration::from_secs(117),
+            Duration::from_secs(114)
+        ]
+    );
+}
+
+#[test]
+fn the_third_429_fails_the_path_after_capped_pauses() {
+    let clock = FakeClock::new();
+    let t = Script::new(
+        &clock,
+        vec![
+            ("snusbase", vec![(0, 429, Some("30"), "rate limited")]),
+            ("osintcat", vec![(0, 200, None, OSINT_HIT)]),
+        ],
+    );
+    let report = scripted(&clock, &t).unwrap();
+    assert_eq!(
+        t.paths(),
+        ["snusbase", "snusbase", "snusbase", "osintcat", "hudsonrock"]
+    );
+    // Retry-After: 30 is capped at 4 s, twice; no pause after the last attempt.
+    assert_eq!(clock.elapsed(), Duration::from_secs(8));
+    assert_eq!(report.failed_paths.len(), 1);
+    assert_eq!(report.failed_paths[0].path, "snusbase");
+    assert_eq!(
+        report.failed_paths[0].reason,
+        "HTTP 429 (RateLimited) after 3 attempts"
+    );
+}
+
+#[test]
+fn a_429_without_retry_after_pauses_four_seconds() {
+    let clock = FakeClock::new();
+    let t = Script::new(&clock, vec![("snusbase", vec![(0, 429, None, "")])]);
+    let err = scripted(&clock, &t).unwrap_err();
+    assert_eq!(clock.elapsed(), Duration::from_secs(8));
+    assert!(matches!(err, StolenTaxError::Failed(ref f) if f.path == "snusbase"));
+}
+
+#[test]
+fn a_retry_pause_never_outlasts_the_budget() {
+    let clock = FakeClock::new();
+    // snusbase rate-limits at 117 s: a 4 s pause would end past 120 s.
+    let t = Script::new(
+        &clock,
+        vec![
+            ("snusbase", vec![(117, 429, None, "rate limited")]),
+            ("osintcat", vec![(1, 200, None, OSINT_HIT)]),
+        ],
+    );
+    let report = scripted(&clock, &t).unwrap();
+    assert_eq!(t.paths(), ["snusbase", "osintcat", "hudsonrock"]);
+    assert_eq!(clock.elapsed(), Duration::from_secs(118));
+    assert_eq!(
+        report.failed_paths[0].reason,
+        "HTTP 429 (RateLimited) after 1 of 3 attempts; a 4s Retry-After pause would outlast the 120s lookup budget"
+    );
+    let caps: Vec<Duration> = t.sent.borrow().iter().map(|(_, c)| *c).collect();
+    assert_eq!(caps[1], Duration::from_secs(3));
+}
+
+#[test]
+fn only_a_429_is_retried() {
+    // The monolith's handle_keyed_error retries 429 alone; 503 with Retry-After,
+    // 401, 403, 5xx and in-body key errors get one attempt (no other key to try).
+    for (status, retry_after, body) in [
+        (503, Some("0"), "busy"),
+        (401, None, "Unauthorized"),
+        (403, None, "Forbidden"),
+        (502, None, "bad gateway"),
+        (200, None, r#"{"success":false,"error":"Invalid API key"}"#),
+    ] {
+        let clock = FakeClock::new();
+        let t = Script::new(
+            &clock,
+            vec![("snusbase", vec![(0, status, retry_after, body)])],
+        );
+        let _ = scripted(&clock, &t);
+        assert_eq!(
+            t.paths(),
+            ["snusbase", "osintcat", "hudsonrock"],
+            "{status}"
+        );
+        assert_eq!(clock.elapsed(), Duration::ZERO, "{status}");
+    }
+}
+
+#[test]
+fn a_transport_failure_is_not_retried() {
+    let transport = Paths {
+        answers: vec![("snusbase", Err(SourceOutcomeKind::ConnectFailure))],
+        seen: RefCell::new(Vec::new()),
+    };
+    let _ = go(&transport, "user@example.com");
+    let paths: Vec<String> = transport
+        .seen
+        .borrow()
+        .iter()
+        .map(|r| r.url.rsplit_once("path=").unwrap().1.to_owned())
+        .collect();
+    assert_eq!(paths, ["snusbase", "osintcat", "hudsonrock"]);
+}
+
+/// Real sockets, loopback only. Points the stolen.tax URLs at a local server; the
+/// request (credential included) is built for `https://stolen.tax` as in production.
+struct Loopback {
+    inner: crate::http::UreqTransport,
+    base: String,
+}
+
+impl Transport for Loopback {
+    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        let mut local = request.clone();
+        local.url = request.url.replacen("https://stolen.tax", &self.base, 1);
+        assert_ne!(local.url, request.url, "only stolen.tax is rerouted");
+        self.inner.send(&local)
+    }
+}
+
+/// Chief's test for the redirect-hop fix, at the stolen.tax level: osintcat is a
+/// slow redirect chain (every hop slower than the budget). The path stops at the
+/// deadline with a timeout, hudsonrock is listed as not sent, snusbase's evidence
+/// is kept, and the whole lookup ends within the budget plus a small tolerance.
+/// stolen.tax sends with `max_redirects: 0`, so the chain's first hop is all it
+/// ever requests.
+#[test]
+fn a_slow_redirect_chain_on_a_real_socket_stops_at_the_lookup_deadline() {
+    use std::io::{Read as _, Write as _};
+    use std::sync::{Arc, Mutex};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut sock) = stream else { continue };
+            let log = log.clone();
+            std::thread::spawn(move || {
+                sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match sock.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                let head = String::from_utf8_lossy(&buf).into_owned();
+                let line = head.lines().next().unwrap_or_default().to_owned();
+                let path = line
+                    .split_once("path=")
+                    .and_then(|(_, rest)| rest.split(['&', ' ']).next())
+                    .unwrap_or_default()
+                    .to_owned();
+                log.lock().unwrap().push(path.clone());
+                let reply = if path == "osintcat" {
+                    std::thread::sleep(Duration::from_millis(2500));
+                    "HTTP/1.1 302 Found\r\nLocation: /api/v2/index.php?path=osintcat&hop=1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
+                } else {
+                    std::thread::sleep(Duration::from_millis(100));
+                    let body = if path == "snusbase" {
+                        SNUS_HIT
+                    } else {
+                        HUDSON_HIT
+                    };
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let _ = sock.write_all(reply.as_bytes());
+            });
+        }
+    });
+
+    let transport = Loopback {
+        inner: crate::http::UreqTransport::new(&TransportConfig {
+            egress: crate::egress::EgressPolicy::Unrestricted,
+            ..transport_config()
+        }),
+        base: format!("http://127.0.0.1:{port}"),
+    };
+    let budget = Duration::from_millis(1200);
+    let started = std::time::Instant::now();
+    let report = lookup_within(
+        &transport,
+        &SystemClock,
+        budget,
+        &keys(),
+        "user@example.com",
+        "scan",
+        0,
+    )
+    .unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed <= budget + Duration::from_millis(500),
+        "{elapsed:?}"
+    );
+    assert_eq!(*seen.lock().unwrap(), ["snusbase", "osintcat"]);
+    assert!(has(&report, &EntityKind::Email, "alt@example.com"));
+    assert_eq!(report.failed_paths.len(), 1);
+    assert_eq!(report.failed_paths[0].path, "osintcat");
+    let reason = &report.failed_paths[0].reason;
+    assert!(
+        reason.starts_with("no response (TtfbTimeout); request capped at "),
+        "{reason}"
+    );
+    assert_eq!(report.skipped_paths, ["hudsonrock"]);
+    assert!(
+        report
+            .truncation
+            .as_deref()
+            .is_some_and(|t| t.contains("`hudsonrock` path(s) not sent")),
+        "{:?}",
+        report.truncation
+    );
+}

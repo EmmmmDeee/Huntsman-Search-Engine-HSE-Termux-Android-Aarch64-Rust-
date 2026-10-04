@@ -19,7 +19,18 @@
 //! the monolith's `max_timeout_ms() = 120_000` for the cascade. Each request is sent
 //! with what is left of it (never more than [`TIMEOUT`]); a path that would start
 //! after the budget is spent is not sent and is listed in
-//! [`StolenTaxReport::skipped_paths`]. Worst case: 120 s, not 3 x 120 s.
+//! [`StolenTaxReport::skipped_paths`]. Worst case: 120 s, not 3 x 120 s. The cap is
+//! recomputed from the lookup's [`Deadline`] before every hop and every retry
+//! ([`crate::fetch::fetch_within`]), so nothing a path does can outlive the budget.
+//!
+//! Rate limits: one key, no pool. A `429` is retried on the same key up to
+//! [`ATTEMPTS_PER_PATH`] attempts in all, pausing for `Retry-After` (delta-seconds,
+//! [`RETRY_PAUSE_CAP`] when absent or unparseable, never more than
+//! [`RETRY_PAUSE_CAP`]) inside the budget; after the last `429` the path fails. Every
+//! other failure (401, 403, 400, an in-body key or quota error, 5xx, a transport
+//! failure) fails the path on its first attempt. This is the monolith's
+//! `keyed_cascade_json` + `handle_keyed_error` with a one-key pool. The persistent
+//! key pool (rotation across keys) is deferred; see `docs/DISPOSITIONS.md`.
 //!
 //! Honest failure: a path that fails or is skipped while another produced evidence
 //! is reported in [`StolenTaxReport::failed_paths`] / [`StolenTaxReport::skipped_paths`]
@@ -36,7 +47,7 @@ use serde_json::Value;
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::deadline::{Clock, Deadline, SystemClock};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, normalise};
-use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
+use crate::fetch::{AuthStyle, Credential, FetchOptions, Fetched, fetch_within};
 use crate::http::{Request, Transport, TransportConfig};
 use crate::keys::{Keys, Secret};
 use crate::redact::scrub_secrets;
@@ -56,6 +67,12 @@ pub const LOOKUP_BUDGET: Duration = Duration::from_secs(120);
 /// Per-request ceiling (the transport timeout). A request is sent with
 /// `min(TIMEOUT, what is left of LOOKUP_BUDGET)`.
 pub const TIMEOUT: Duration = Duration::from_secs(120);
+/// Attempts on the one key when stolen.tax answers `429`: the first plus the
+/// monolith's two same-key retries (`attempt_with_key`, `retries = 2`).
+pub const ATTEMPTS_PER_PATH: u8 = 3;
+/// Longest pause between `429` attempts, and the pause when `Retry-After` is absent
+/// or not delta-seconds: the monolith's `retry_after_secs(headers, 4, 4)`.
+pub const RETRY_PAUSE_CAP: Duration = Duration::from_secs(4);
 
 // Confidence tiers carried over from the monolith's `core::confidence`.
 const MEDIUM: f64 = 0.50;
@@ -149,23 +166,51 @@ fn lookup_with_clock<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<StolenTaxReport, StolenTaxError> {
+    lookup_within(
+        transport,
+        clock,
+        LOOKUP_BUDGET,
+        keys,
+        query,
+        scan_id,
+        now_unix,
+    )
+}
+
+/// The lookup with its budget as a parameter, so a test against a real local server
+/// can use a budget of a second instead of [`LOOKUP_BUDGET`].
+fn lookup_within<T: Transport + ?Sized>(
+    transport: &T,
+    clock: &dyn Clock,
+    budget: Duration,
+    keys: &Keys,
+    query: &str,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<StolenTaxReport, StolenTaxError> {
     let secret = keys.get(KEY_SLOT).ok_or(StolenTaxError::MissingKey)?;
     let credential = credential(secret.clone(), now_unix)?;
     let body = serde_json::to_vec(&serde_json::json!({ "query": query }))
         .map_err(|e| StolenTaxError::Refused(e.to_string()))?;
 
-    let deadline = Deadline::start(clock, LOOKUP_BUDGET);
+    let deadline = Deadline::start(clock, budget);
     let mut merged = StolenTaxData::default();
     let mut failures = Vec::new();
     let mut skipped = Vec::new();
     for path in PATHS {
-        let remaining = deadline.remaining();
-        if remaining.is_zero() {
+        if deadline.expired() {
             skipped.push(path);
             continue;
         }
-        let cap = remaining.min(TIMEOUT);
-        match query_path(transport, &credential, &secret, path, &body, now_unix, cap)? {
+        match query_path(
+            transport,
+            &credential,
+            &secret,
+            path,
+            &body,
+            now_unix,
+            &deadline,
+        )? {
             Ok(chunk) => merge_data(&mut merged, chunk),
             Err(reason) => failures.push(PathFailure { path, reason }),
         }
@@ -185,8 +230,10 @@ fn credential(secret: Secret, now_unix: u64) -> Result<Credential, StolenTaxErro
         .map_err(|e| StolenTaxError::Refused(e.to_string()))
 }
 
-/// One POST, capped at `cap`. Outer `Err` aborts the cascade (refused before
-/// sending); inner `Err` is this path's failure, and the cascade continues.
+/// One path: a POST, retried on the same key while stolen.tax answers `429` (at most
+/// [`ATTEMPTS_PER_PATH`] attempts), every attempt and pause inside `deadline`. Outer
+/// `Err` aborts the cascade (refused before sending); inner `Err` is this path's
+/// failure, and the cascade continues.
 fn query_path<T: Transport + ?Sized>(
     transport: &T,
     credential: &Credential,
@@ -194,50 +241,107 @@ fn query_path<T: Transport + ?Sized>(
     path: &'static str,
     body: &[u8],
     now_unix: u64,
-    cap: Duration,
+    deadline: &Deadline<'_>,
 ) -> Result<Result<StolenTaxData, String>, StolenTaxError> {
-    let request = Request::post(format!("{API_BASE}{path}"), body.to_vec())
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json")
-        .with_timeout(cap);
-    let fetched = fetch(
-        transport,
-        request,
-        Some(credential),
-        &FetchOptions { max_redirects: 0 },
-        SRC,
-        now_unix,
-    )
-    .map_err(|e| StolenTaxError::Refused(e.to_string()))?;
-    let scrub = |text: &str| scrub_secrets(text, &[secret.expose()]);
-    let Some(response) = fetched.response else {
-        let kind = fetched.outcome.kind;
-        return Ok(Err(if cap < TIMEOUT {
-            format!(
-                "no response ({kind:?}); request capped at {:.1}s, the rest of the {}s lookup budget",
-                cap.as_secs_f64(),
-                LOOKUP_BUDGET.as_secs()
-            )
+    let mut attempt = 1u8;
+    loop {
+        let cap = deadline.remaining().min(TIMEOUT);
+        let request = Request::post(format!("{API_BASE}{path}"), body.to_vec())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .with_timeout(TIMEOUT);
+        let fetched = fetch_within(
+            transport,
+            request,
+            Some(credential),
+            &FetchOptions { max_redirects: 0 },
+            deadline,
+            SRC,
+            now_unix,
+        )
+        .map_err(|e| StolenTaxError::Refused(e.to_string()))?;
+        let rate_limited = fetched
+            .response
+            .as_ref()
+            .is_some_and(|response| response.status == 429);
+        if !rate_limited {
+            return Ok(answer(path, fetched, secret, cap, deadline.budget()));
+        }
+        let gave_up = if attempt >= ATTEMPTS_PER_PATH {
+            format!("after {attempt} attempts")
         } else {
-            format!("no response ({kind:?})")
-        }));
-    };
-    if !(200..300).contains(&response.status) {
+            let pause = retry_pause(
+                fetched
+                    .response
+                    .as_ref()
+                    .and_then(|r| r.header_value("retry-after")),
+            );
+            if deadline.sleep_within(pause) {
+                attempt += 1;
+                continue;
+            }
+            format!(
+                "after {attempt} of {ATTEMPTS_PER_PATH} attempts; a {}s Retry-After pause would outlast the {}s lookup budget",
+                pause.as_secs(),
+                deadline.budget().as_secs()
+            )
+        };
         return Ok(Err(format!(
-            "HTTP {} ({:?})",
-            response.status, fetched.outcome.kind
-        )));
-    }
-    if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
-        return Ok(Err(format!(
-            "response is not an API answer ({:?})",
+            "HTTP 429 ({:?}) {gave_up}",
             fetched.outcome.kind
         )));
     }
-    if response.truncated {
-        return Ok(Err("response exceeds the body limit".into()));
+}
+
+/// The pause before the next `429` attempt: `Retry-After` as delta-seconds, or
+/// [`RETRY_PAUSE_CAP`] when absent or unparseable (an HTTP-date included), never
+/// more than [`RETRY_PAUSE_CAP`]. The monolith's `parse_retry_after_secs(v, 4, 4)`.
+/// **Pure.**
+fn retry_pause(value: Option<&str>) -> Duration {
+    value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map_or(RETRY_PAUSE_CAP, |secs| {
+            Duration::from_secs(secs).min(RETRY_PAUSE_CAP)
+        })
+}
+
+/// What one fetched attempt means for its path.
+fn answer(
+    path: &str,
+    fetched: Fetched,
+    secret: &Secret,
+    cap: Duration,
+    budget: Duration,
+) -> Result<StolenTaxData, String> {
+    let scrub = |text: &str| scrub_secrets(text, &[secret.expose()]);
+    let Some(response) = fetched.response else {
+        let kind = fetched.outcome.kind;
+        return Err(if cap < TIMEOUT {
+            format!(
+                "no response ({kind:?}); request capped at {:.1}s, the rest of the {}s lookup budget",
+                cap.as_secs_f64(),
+                budget.as_secs()
+            )
+        } else {
+            format!("no response ({kind:?})")
+        });
+    };
+    if !(200..300).contains(&response.status) {
+        return Err(format!(
+            "HTTP {} ({:?})",
+            response.status, fetched.outcome.kind
+        ));
     }
-    Ok(decode_path(path, &response.body).map_err(|reason| scrub(&reason)))
+    if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
+        return Err(format!(
+            "response is not an API answer ({:?})",
+            fetched.outcome.kind
+        ));
+    }
+    if response.truncated {
+        return Err("response exceeds the body limit".into());
+    }
+    decode_path(path, &response.body).map_err(|reason| scrub(&reason))
 }
 
 /// Envelope → normalised rows for one path. A `success: false` envelope is a
