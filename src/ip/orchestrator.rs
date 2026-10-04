@@ -114,10 +114,8 @@ pub fn run_investigation<T: Transport + ?Sized>(
         });
         investigation.budget_used.actions += 1;
         investigation.budget_used.calls += 1;
-        investigation.budget_used.max_depth_reached = investigation
-            .budget_used
-            .max_depth_reached
-            .max(work.depth);
+        investigation.budget_used.max_depth_reached =
+            investigation.budget_used.max_depth_reached.max(work.depth);
 
         let result = execute_provider_action(
             transport,
