@@ -7,8 +7,7 @@ use std::process::Command;
 #[test]
 fn embedding_is_optional_release_safe_and_runtime_sources_are_not_required() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let scratch = root
-        .join("target")
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("hibp-build-{}", std::process::id()));
     let out = scratch.join("out");
     let home = scratch.join("home");
