@@ -133,7 +133,7 @@ fn action() -> (StubProvider, IpProviderAction) {
 #[test]
 fn valid_200_rows_become_observations() {
     let (provider, action) = action();
-    let transport = OneShot::response(200, r#"{"rows":["AS13335"]}"#.replace("\\\"", "\"").as_str(), false);
+    let transport = OneShot::response(200, r#"{"rows":["AS13335"]}"#, false);
     let result = execute_provider_action(&transport, &provider, &action, 123);
     assert_eq!(result.observations.len(), 1);
     assert!(result.failures.is_empty(), "{:?}", result.failures);
@@ -154,7 +154,7 @@ fn malformed_200_is_parse_failure_not_empty_evidence() {
 #[test]
 fn schema_drift_is_explicit_failure() {
     let (provider, action) = action();
-    let transport = OneShot::response(200, r#"{"different":[]}"#.replace("\\\"", "\"").as_str(), false);
+    let transport = OneShot::response(200, r#"{"different":[]}"#, false);
     let result = execute_provider_action(&transport, &provider, &action, 123);
     assert_eq!(result.failures[0].kind, IpFailureKind::Schema);
 }
@@ -162,7 +162,7 @@ fn schema_drift_is_explicit_failure() {
 #[test]
 fn truncated_200_cannot_become_clean_empty_evidence() {
     let (provider, action) = action();
-    let transport = OneShot::response(200, r#"{"rows":[]}"#.replace("\\\"", "\"").as_str(), true);
+    let transport = OneShot::response(200, r#"{"rows":[]}"#, true);
     let result = execute_provider_action(&transport, &provider, &action, 123);
     assert!(result.observations.is_empty(), "{:?}", result.observations);
     assert_eq!(result.failures[0].kind, IpFailureKind::Partial);
