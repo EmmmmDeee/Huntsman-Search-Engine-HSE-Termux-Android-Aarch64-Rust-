@@ -2,6 +2,7 @@
 
 pub mod claims;
 pub mod model;
+pub mod orchestrator;
 pub mod provider;
 pub mod providers;
 
