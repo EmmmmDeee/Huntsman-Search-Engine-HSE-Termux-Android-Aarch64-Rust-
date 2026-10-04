@@ -101,9 +101,9 @@ impl IpProvider for RipeStatNetworkInfoProvider {
 
         let mut asns = Vec::new();
         if let Some(raw_asns) = data.get("asns") {
-            let array = raw_asns
-                .as_array()
-                .ok_or_else(|| IpProviderParseError::Schema("RIPEstat asns is not an array".into()))?;
+            let array = raw_asns.as_array().ok_or_else(|| {
+                IpProviderParseError::Schema("RIPEstat asns is not an array".into())
+            })?;
             for asn in array {
                 let value = asn.as_u64().ok_or_else(|| {
                     IpProviderParseError::Schema("RIPEstat ASN is not an unsigned integer".into())
