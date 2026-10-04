@@ -22,6 +22,7 @@ use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
 use huntsman_recon::fsio::write_atomic;
 use huntsman_recon::geohash;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
+use huntsman_recon::hibp::cli::HibpCommand;
 use huntsman_recon::http::{
     Request, TransportConfig, UreqTransport, origin_of, parse_http_uri, redact_url,
 };
@@ -44,7 +45,7 @@ use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND ... | keys FILE | verify LEDGER]";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -64,6 +65,7 @@ fn main() -> ExitCode {
         Some("sources") => sources_cmd(args.next()),
         Some("classify") => classify(args.next(), args.next()),
         Some("fetch") => fetch_cmd(&args.collect::<Vec<_>>()),
+        Some("hibp") => hibp_cmd(args.collect()),
         Some("keys") => keys_cmd(args.next()),
         Some("verify") => verify(args.next()),
         Some("check") | None => check(),
@@ -148,6 +150,20 @@ fn id_cmd(token: Option<String>) -> ExitCode {
         Err(e) => return fail(EX_DATAERR, &e.to_string()),
     }
     ExitCode::SUCCESS
+}
+
+fn hibp_cmd(args: Vec<String>) -> ExitCode {
+    let cmd = HibpCommand::production();
+    let mut stdin = std::io::stdin().lock();
+    let mut out = std::io::stdout().lock();
+    let mut err = std::io::stderr().lock();
+    match cmd.run(&args, &mut stdin, &mut out, &mut err) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(failure) => {
+            eprintln!("hibp: {}", failure.message);
+            ExitCode::from(failure.exit_code)
+        }
+    }
 }
 
 fn fetch_cmd(args: &[String]) -> ExitCode {
@@ -315,9 +331,6 @@ fn sources_cmd(query: Option<String>) -> ExitCode {
         return fail(EX_USAGE, "usage: huntsman-recon sources QUERY");
     };
     let classified = classify_indicator(&query);
-    // Residual and unsupported kinds have no descriptors, so the empty-route check
-    // is the gate. A confidence floor here would drop low-confidence but routable
-    // kinds such as `@handle` usernames.
     let routes = routes_for(&classified.kind, &classified.value);
     if routes.is_empty() {
         return fail(EX_DATAERR, "no actionable source routes");
