@@ -108,11 +108,17 @@ fn network_object_becomes_allocation_observation_with_registry_context() {
     assert_eq!(observation.kind, IpObservationKind::Allocation);
     assert_eq!(observation.source_family, "rdap.apnic.net");
     assert_eq!(
-        observation.attributes.get("start_address").map(String::as_str),
+        observation
+            .attributes
+            .get("start_address")
+            .map(String::as_str),
         Some("1.1.1.0")
     );
     assert_eq!(
-        observation.attributes.get("end_address").map(String::as_str),
+        observation
+            .attributes
+            .get("end_address")
+            .map(String::as_str),
         Some("1.1.1.255")
     );
     assert_eq!(
