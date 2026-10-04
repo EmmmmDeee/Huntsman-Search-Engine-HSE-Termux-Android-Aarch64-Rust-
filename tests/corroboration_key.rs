@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use huntsman_recon::confidence::Classification;
+use huntsman_recon::confidence::{Classification, VERIFIED_MIN, effective};
 use huntsman_recon::correlator::{RuleContext, rule_au_003_high_corroboration};
 use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use huntsman_recon::roi::is_saturated;
@@ -129,8 +129,10 @@ fn au_003_fires(entity: &Entity) -> bool {
     !rule_au_003_high_corroboration(&RuleContext::new(&entities, &[]), "scan-1", 0).is_empty()
 }
 
-/// On main a spoofed second family lifted `source_count` from 1 to 2, which at
-/// confidence 0.65-0.74 crossed `VERIFIED_MIN` (0.75) and fired AU-003.
+/// On main a spoofed second family lifted `source_count` from 1 to 2. With two sources
+/// `effective` is `1 - 0.65 * (1 - c)`, which crosses `VERIFIED_MIN` (0.75) and fires
+/// AU-003 from confidence 0.6154 (`1 - 0.25/0.65`) up; one source stays Probable below
+/// 0.75. The edges are pinned by the two band-edge tests below.
 #[test]
 fn tampered_family_cannot_lift_probable_to_verified_or_fire_au_003() {
     for confidence in [0.65, 0.70, 0.74] {
@@ -149,8 +151,50 @@ fn tampered_family_cannot_lift_probable_to_verified_or_fire_au_003() {
     }
 }
 
-/// On main a spoofed second family met `SATURATION_CORROBORATION` (2) and, at
-/// confidence 0.85, marked the entity saturated.
+/// Lower edge of the band: at confidence 0.62 two sources give `effective` 0.753, so on
+/// main the spoofed entity was Verified and fired AU-003. It must stay Probable here
+/// while two real collectors still reach Verified.
+#[test]
+fn band_lower_edge_spoofed_family_stays_probable_at_0_62() {
+    assert!(effective(0.62, 2) >= VERIFIED_MIN);
+    assert!(effective(0.62, 1) < VERIFIED_MIN);
+
+    let spoofed = reloaded_at(0.62, &["hibp", "hibp"], &[(1, "spoof-corpus")]);
+    assert_eq!(spoofed.source_count(), 1);
+    assert_eq!(spoofed.classify(), Classification::Probable);
+    assert!(!au_003_fires(&spoofed), "AU-003 fired at c=0.62");
+
+    let real = reloaded_at(0.62, &["hibp", "dehashed"], &[]);
+    assert_eq!(real.classify(), Classification::Verified);
+    assert!(au_003_fires(&real), "control c=0.62");
+}
+
+/// Just under the edge (0.6154): at 0.615 two sources give `effective` 0.74975, so the
+/// spoofed entity and even two real collectors stay Probable and AU-003 does not fire.
+#[test]
+fn just_under_band_edge_stays_probable() {
+    assert!(effective(0.6154, 2) >= VERIFIED_MIN);
+    assert!(effective(0.6153, 2) < VERIFIED_MIN);
+
+    for (collectors, stored) in [
+        (&["hibp", "hibp"][..], &[(1, "spoof-corpus")][..]),
+        (&["hibp", "dehashed"], &[]),
+    ] {
+        let entity = reloaded_at(0.615, collectors, stored);
+        assert_eq!(
+            entity.classify(),
+            Classification::Probable,
+            "{collectors:?}"
+        );
+        assert!(
+            !au_003_fires(&entity),
+            "AU-003 fired for {collectors:?} at c=0.615"
+        );
+    }
+}
+
+/// On main a spoofed second family met `SATURATION_CORROBORATION` (2) and, from
+/// confidence 0.7692 (`1 - 0.15/0.65`; tested at 0.85), marked the entity saturated.
 #[test]
 fn tampered_family_cannot_mark_an_entity_saturated() {
     let spoofed = reloaded_at(0.85, &["hibp", "hibp"], &[(1, "spoof-corpus")]);

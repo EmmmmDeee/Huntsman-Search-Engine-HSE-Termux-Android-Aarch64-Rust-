@@ -192,9 +192,11 @@ results) and this change. Legacy has no `source_family` field and counts
 raw `source` strings. `EvidenceProvenance::corroboration_key` now keys a record that has a
 stored family on `canonical_provenance_family(source)`, and a record without one on its raw
 `source`; the stored value itself is never a key. Pinned by `tests/corroboration_key.rs`,
-including the two threshold effects a spoofed second family had on main: at confidence
-0.64-0.74 it lifted Probable to Verified (tested at 0.65, 0.70 and 0.74), AU-003 fired at
-any confidence from 0.64 up, and at 0.85 the entity was marked saturated.
+including the two threshold effects a spoofed second family had on main. With two sources
+`effective` is `1 - 0.65 * (1 - c)` for `c >= 0.35`, so from confidence 0.6154
+(`1 - 0.25/0.65`) up to 0.75 it lifted Probable to Verified (tested at 0.62, 0.65, 0.70
+and 0.74; 0.615 stays Probable), AU-003 fired at any confidence from 0.6154 up, and from
+0.7692 (`1 - 0.15/0.65`, tested at 0.85) the entity was marked saturated.
 Unchanged by this change, compared for completeness:
 
 - Honest records, the nine fixtures, (a)-(g), the Cyrillic and Kelvin-sign collectors:
