@@ -11,6 +11,9 @@ release yet; pushes to `main` publish `main-<sha7>` pre-releases (#672). Release
 
 ### Added
 
+- `sources` command: classifies an input and prints curated public search
+  routes from `source_registry`, offline and `LeadOnly`; the classifier also
+  recognises decimal-degree coordinates (#671).
 - Android aarch64 cross-build in CI (`android-aarch64` job, API level 24),
   with ELF machine and `/system/bin/linker64` interpreter checks, a SHA-256
   sidecar, and a 14-day `huntsman-recon-aarch64-linux-android` artifact on
