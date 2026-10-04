@@ -1,5 +1,6 @@
 //! Evidence-gated IP investigation subsystem.
 
+pub mod claims;
 pub mod model;
 pub mod provider;
 pub mod providers;
