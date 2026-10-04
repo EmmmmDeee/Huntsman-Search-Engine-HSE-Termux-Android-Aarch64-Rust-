@@ -140,6 +140,16 @@ atomic mode-600 files. Debug/errors omit keys, tokens and upstream error bodies.
 All integration evidence here is offline fake-transport testing; live HIBP and
 Termux handset acceptance remain unverified.
 
+## Opt-in ASIC people-register library
+
+`huntsman_recon::asic_persons::lookup` queries three keyless ASIC registers on
+data.gov.au CKAN (banned and disqualified persons, financial advisers, credit
+representatives) through the shared `fetch` boundary and an injected
+`http::Transport`. A name with fewer than two alphabetic tokens makes no
+request. Challenge pages, truncated bodies, and CKAN `success: false` envelopes
+are not evidence of absence. Tests use a scripted transport; there is no CLI
+arm and no live run in this crate.
+
 ## Lineage and the automatic-merge rule
 
 `huntsman_recon::lineage::resolve_with_lineage` takes parsed observations and candidate merge decisions. It derives countable lineage from explicit upstream dataset fields and, where the acquisition path is verified, registry identity; record URLs/ids and collector names do not create independent families. Two collectors relaying one dataset therefore count as one family. It returns every observation and every candidate. A candidate auto-merges only with two independent families and a present, in-range match probability of at least 0.90 (legacy `breach_consensus` parity). Otherwise it is held, with every reason stated. `check` gate 5 runs it, and separately checks a hand-built ancestry graph through `allows_automatic_merge`, the path `resolve::automatic_clusters` uses. See `docs/LINEAGE.md`.
