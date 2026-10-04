@@ -606,7 +606,7 @@ fn an_unnamed_osintcat_corpus_mints_no_placeholder_marker() {
 
 #[test]
 fn hudsonrock_stealers_emit_markers_and_clear_emails_never_passwords() {
-    let body = r#"{"success":true,"data":{"stealers":[{"computer_name":"DESKTOP-ABC","operating_system":"Windows 11","date_compromised":"2026-08-30T00:00:00.000Z","ip":"27.56.***.***","top_logins":["clear.user@example.com","m***d@example.com",""],"top_passwords":["PW_MUST_NOT_EMIT"]}]}}"#;
+    let body = r#"{"success":true,"data":{"stealers":[{"computer_name":"DESKTOP-ABC","operating_system":"Windows 11","date_compromised":"2026-08-30T00:00:00.000Z","ip":"192.0.2.***","top_logins":["clear.user@example.com","m***d@example.com",""],"top_passwords":["PW_MUST_NOT_EMIT"]}]}}"#;
     let transport = Paths::ok(&[("hudsonrock", body)]);
     let report = go(&transport, "user@example.com").unwrap();
     assert!(has(&report, &EntityKind::Credential, "stealer:DESKTOP-ABC"));
@@ -621,7 +621,7 @@ fn hudsonrock_stealers_emit_markers_and_clear_emails_never_passwords() {
         .unwrap();
     assert_eq!(
         marker.evidence[0].summary,
-        "Stealer hit: stealer:DESKTOP-ABC (date: 2026-08-30T00:00:00.000Z; path=hudsonrock; os=Windows 11; ip=27.56.***.***)"
+        "Stealer hit: stealer:DESKTOP-ABC (date: 2026-08-30T00:00:00.000Z; path=hudsonrock; os=Windows 11; ip=192.0.2.***)"
     );
 }
 

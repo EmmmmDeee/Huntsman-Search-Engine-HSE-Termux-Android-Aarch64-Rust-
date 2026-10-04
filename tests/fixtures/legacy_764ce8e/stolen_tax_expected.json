@@ -56,7 +56,7 @@
             {
               "attributes": {},
               "source": "stolen_tax",
-              "summary": "Stealer hit: stealer:HOST-1 (date: 2026-08-30T00:00:00.000Z; path=hudsonrock; os=Windows 11; ip=27.56.***.***)"
+              "summary": "Stealer hit: stealer:HOST-1 (date: 2026-08-30T00:00:00.000Z; path=hudsonrock; os=Windows 11; ip=192.0.2.***)"
             }
           ],
           "kind": "Credential",
@@ -487,7 +487,7 @@
             {
               "attributes": {},
               "source": "stolen_tax",
-              "summary": "Stealer hit: stealer:DESKTOP-ABC (date: 2026-08-30T00:00:00.000Z; path=hudsonrock; os=Windows 11; ip=27.56.***.***)"
+              "summary": "Stealer hit: stealer:DESKTOP-ABC (date: 2026-08-30T00:00:00.000Z; path=hudsonrock; os=Windows 11; ip=192.0.2.***)"
             }
           ],
           "kind": "Credential",
@@ -501,7 +501,7 @@
             {
               "attributes": {},
               "source": "stolen_tax",
-              "summary": "Stealer hit: stealer:LAPTOP-XYZ (date: 2026-08-25T00:00:00.000Z; path=hudsonrock; os=Windows 10; ip=103.196.***.**)"
+              "summary": "Stealer hit: stealer:LAPTOP-XYZ (date: 2026-08-25T00:00:00.000Z; path=hudsonrock; os=Windows 10; ip=198.51.100.**)"
             }
           ],
           "kind": "Credential",
@@ -615,7 +615,7 @@
             {
               "attributes": {},
               "source": "stolen_tax",
-              "summary": "Stealer hit: stealer:HOST-1 (date: 2026-01-01T00:00:00Z; path=hudsonrock; os=Linux; ip=1.2.***.***)"
+              "summary": "Stealer hit: stealer:HOST-1 (date: 2026-01-01T00:00:00Z; path=hudsonrock; os=Linux; ip=203.0.113.***)"
             }
           ],
           "kind": "Credential",

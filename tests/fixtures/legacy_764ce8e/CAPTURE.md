@@ -22,6 +22,13 @@ them. They were recorded before the port and are not edited by hand.
   stolen.tax must match except for the guard: no `breach:osintcat`/`stealer:unknown`
   placeholder markers, and no `unknown` stand-in facts in evidence text.
 
+The stealer IPs in `stolen_tax_cases.json` are RFC 5737 documentation addresses
+(`192.0.2.***`, `198.51.100.**`, `203.0.113.***`, masked as the provider masks them).
+They replaced routable-looking prefixes (`27.56.`, `103.196.`, `1.2.`), and
+`stolen_tax_expected.json` was re-captured from the same legacy tree with the same
+harness on the new inputs (2026-10-03 AEST); the only change in the output is the
+`ip=` text in four stealer evidence summaries.
+
 The crt.sh case with `"generate_unrelated": N` adds one entry whose `name_value` is
 `host{i}.other-{i}.net` for `i` in `0..N`, joined by newlines.
 

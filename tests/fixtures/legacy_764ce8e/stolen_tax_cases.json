@@ -57,7 +57,7 @@
                 "computer_name": "HOST-1",
                 "operating_system": "Windows 11",
                 "date_compromised": "2026-08-30T00:00:00.000Z",
-                "ip": "27.56.***.***",
+                "ip": "192.0.2.***",
                 "top_logins": [
                   "clear@example.com"
                 ],
@@ -262,7 +262,7 @@
                 "computer_name": "DESKTOP-ABC",
                 "operating_system": "Windows 11",
                 "date_compromised": "2026-08-30T00:00:00.000Z",
-                "ip": "27.56.***.***",
+                "ip": "192.0.2.***",
                 "top_logins": [
                   "clear.user@example.com",
                   "a****@gmail.com",
@@ -278,7 +278,7 @@
                 "computer_name": "LAPTOP-XYZ",
                 "operating_system": "Windows 10",
                 "date_compromised": "2026-08-25T00:00:00.000Z",
-                "ip": "103.196.***.**",
+                "ip": "198.51.100.**",
                 "top_logins": [
                   "user@example.com"
                 ],
@@ -363,7 +363,7 @@
                 "computer_name": "HOST-1",
                 "operating_system": "Linux",
                 "date_compromised": "2026-01-01T00:00:00Z",
-                "ip": "1.2.***.***",
+                "ip": "203.0.113.***",
                 "top_logins": [
                   "alt@example.com",
                   "other@example.com"
