@@ -62,11 +62,7 @@ impl IpProvider for RipeStatNetworkInfoProvider {
         if !target.is_public() {
             return Vec::new();
         }
-        let url = append_query_param(
-            RIPESTAT_NETWORK_INFO_URL,
-            "resource",
-            &target.canonical(),
-        );
+        let url = append_query_param(RIPESTAT_NETWORK_INFO_URL, "resource", &target.canonical());
         vec![IpProviderAction {
             action_id: format!("ripestat-network-info:{}", target.canonical()),
             capability: IpCapability::Routing,
