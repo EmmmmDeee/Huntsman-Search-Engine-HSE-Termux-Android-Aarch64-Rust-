@@ -89,7 +89,12 @@ fn ripestat_empty_asns_do_not_become_negative_attribution() {
         Some("1.1.1.0/24")
     );
     assert!(!observations[0].attributes.contains_key("asns"));
-    assert!(!observations[0].summary.to_ascii_lowercase().contains("no asn"));
+    assert!(
+        !observations[0]
+            .summary
+            .to_ascii_lowercase()
+            .contains("no asn")
+    );
 }
 
 #[test]
@@ -102,7 +107,11 @@ fn ripestat_malformed_or_schema_drifted_response_fails_closed() {
         Err(IpProviderParseError::Parse(_))
     ));
     assert!(matches!(
-        provider.parse(&action, &response(r#"{"status":"ok","data":{"asns":[13335]}}"#), 123),
+        provider.parse(
+            &action,
+            &response(r#"{"status":"ok","data":{"asns":[13335]}}"#),
+            123
+        ),
         Err(IpProviderParseError::Schema(_))
     ));
 }
@@ -185,7 +194,11 @@ fn cloudflare_ptr_malformed_or_wrong_answer_shape_fails_closed() {
         Err(IpProviderParseError::Parse(_))
     ));
     assert!(matches!(
-        provider.parse(&action, &response(r#"{"Status":0,"Answer":"not-an-array"}"#), 123),
+        provider.parse(
+            &action,
+            &response(r#"{"Status":0,"Answer":"not-an-array"}"#),
+            123
+        ),
         Err(IpProviderParseError::Schema(_))
     ));
 }
