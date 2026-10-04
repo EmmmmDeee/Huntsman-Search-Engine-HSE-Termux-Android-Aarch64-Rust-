@@ -1,6 +1,6 @@
 # Architecture
 
-Target design for the first-principles reconstruction of Huntsman as the single package `huntsman-recon`. Every statement about the code is labelled. **CURRENT** means it is true of `main` at `1ea6c304` and can be checked in `src/`, `tests/` or CI. **PLANNED** means it is a target that no code on `main` implements yet. The CAPABILITIES status column is CURRENT, MIGRATION POLICY is a rule set for every reconstruction PR, and ORDERED BACKLOG is PLANNED. `tests/architecture_doc.rs` checks the module map against the module tree `src/lib.rs` compiles (layer placement, the "Not compiled" row, upward edges and cycles), the section order, and the CAPABILITIES rows (pinned numbers and names, statuses, acceptance criteria and counts).
+Target design for the first-principles reconstruction of Huntsman as the single package `huntsman-recon`. Every statement about the code is labelled. **CURRENT** means it is true of `main` at `bd0ccad8` and can be checked in `src/`, `tests/` or CI. **PLANNED** means it is a target that no code on `main` implements yet. The CAPABILITIES status column is CURRENT, MIGRATION POLICY is a rule set for every reconstruction PR, and ORDERED BACKLOG is PLANNED. `tests/architecture_doc.rs` checks the module map against the module tree `src/lib.rs` compiles (layer placement, the "Not compiled" row, upward edges and cycles), the section order, and the CAPABILITIES rows (pinned numbers and names, statuses, acceptance criteria and counts).
 
 The capability oracle is git commit `7dca720` (root crate `huntsman-search-engine` v1.41.0, binary `hse`, last published release `main-7dca720`). `legacy/hse-monolith-v1.41.0/` is a different, earlier snapshot of the same monolith (its `src/` differs from `7dca720` in 677 paths: 56 present in only one tree, 621 with different bytes). It is used for per-file accounting in `docs/DISPOSITIONS.md`, and as the oracle only where `7dca720` lacks a path (`src/modules/au_people/` and `src/modules/au_electoral/`, both deleted in #635). Nothing under `legacy/` is ever modified.
 
@@ -23,7 +23,7 @@ Every row's acceptance criteria include **D** and **N**:
 - **L**: one live run against the real source, with a receipt (command, UTC time, response hash, exit code) tied to the commit SHA.
 - **S**: Security & Secrets Bot review, required for every boundary and secrets change.
 
-CURRENT: no row meets **D** yet, because no differential harness exists on `main`. "REGRESSION" marks a capability that `hse` at `7dca720` exposed and `main` does not.
+CURRENT: no row meets **D** yet. The one differential test on `main`, `tests/lineage_legacy.rs` (#679), covers part of row 9: legacy `core::breach_consensus` grouping and thresholds on nine recorded fixtures. There is no general differential harness. "REGRESSION" marks a capability that `hse` at `7dca720` exposed and `main` does not.
 
 Status counts: REIMPLEMENTED 2, PARTIAL 10, NOT YET REBUILT 11 (21 of 23 rows are regressions).
 
@@ -37,7 +37,7 @@ Status counts: REIMPLEMENTED 2, PARTIAL 10, NOT YET REBUILT 11 (21 of 23 rows ar
 | 6 | stolen.tax breach search | `src/modules/stolen_tax/` (keyed) | NOT YET REBUILT. REGRESSION | REFACTOR Bot | D, N, L (operator key), S |
 | 7 | Domain recon (crt.sh, DNS, SPF, DMARC) | `src/modules/crtsh/` and the DNS/mail modules | PARTIAL. REGRESSION: `dns`, `spf`, `dmarc`, `tlsrpt`, `recon` have no caller; crt.sh not rebuilt | REFACTOR Bot | D, N, L. crt.sh is keyless |
 | 8 | Unified, recursive and batch scan | `hse scan` (auto kind, `--depth`, `--input-file`), `hse batch` | NOT YET REBUILT. REGRESSION: `scan` exits 64 | REFACTOR Bot | D, N. Same seeds give the same entity set as legacy at each depth |
-| 9 | Identity resolution on collected evidence | `src/core/{resolve,coref,correlator}/`, `hse-core` | PARTIAL. REGRESSION: library only, fixtures in `check`; lineage is caller-declared; `probability: None` passes the merge gate | REFACTOR Bot | D, N. One dataset via two collectors gives one root family and no auto-merge |
+| 9 | Identity resolution on collected evidence | `src/core/{resolve,coref,correlator}/`, `hse-core` | PARTIAL. REGRESSION: library only, fixtures in `check`; `lineage` derives families from response fields and holds a candidate with no probability (#679, `docs/LINEAGE.md`), but no collector feeds it | REFACTOR Bot | D, N. One dataset via two collectors gives one root family and no auto-merge |
 | 10 | Response cache and source pacing | `src/util/{response_cache,circuit_breaker,backoff.rs}` | PARTIAL. REGRESSION: `circuit` has no caller | Software Development Bot | D, N. A cache hit returns the identical evidence and lineage |
 | 11 | Saved results, export, diff | `src/storage/`, `hse export`, `hse diff` | PARTIAL. REGRESSION: `ledger` and `verify` work for `check` claims only; `store`, `gexf`, `diff` have no CLI | Software Development Bot | D, N. Save, reload and `verify` round-trip byte-identically |
 | 12 | Offline utilities: `geo`, `geohash`, `coarsen`, `id` | `src/util/{geo,geohash,abn,bsb}/`, `src/util/redact.rs` | REIMPLEMENTED | Software Development Bot | D, N. Legacy vectors replayed through the CLI |
@@ -47,7 +47,7 @@ Status counts: REIMPLEMENTED 2, PARTIAL 10, NOT YET REBUILT 11 (21 of 23 rows ar
 | 16 | Entity extraction from text | `hse investigate`, `ingest`, `import` | PARTIAL. REGRESSION: `classifier`, `classify_module` have no CLI | REFACTOR Bot | D, N. No text leaves the device |
 | 17 | Web UI and HTTP API | `hse serve`; `src/{web,api}/` | NOT YET REBUILT. REGRESSION | REFACTOR Bot | D, N, S. Loopback bind by default |
 | 18 | Radio and device sensing | `hse radar`, `live`, `cells`, `signal`; `src/modules/{termux_sensor,device_cell}.rs` | PARTIAL. REGRESSION: `radar`, `rf`, `oui`, `geoint` have no CLI and no sensor input | REFACTOR Bot | D, N |
-| 19 | ATT&CK and assurance reports | `hse attack`, `assurance`, `bsi`, `report`, `audit`, `benchmark`, `gaps` | PARTIAL. REGRESSION: Navigator/STIX only from `check`; `assurance`, `benchmark`, `gap` are not compiled (G8) | REFACTOR Bot | D, N |
+| 19 | ATT&CK and assurance reports | `hse attack`, `assurance`, `bsi`, `report`, `audit`, `benchmark`, `gaps` | PARTIAL. REGRESSION: Navigator/STIX only from `check`; `assurance`, `benchmark`, `gap` are compiled (#675) but have no CLI | REFACTOR Bot | D, N |
 | 20 | Diagnostics and self-test | `hse diagnostics`, `doctor`, `selftest`, `build-sha` | PARTIAL. REGRESSION: `check` runs gates 2–11 on fixtures; no install or provider diagnostics | Fix This Bullshit Bot | D, N |
 | 21 | Module catalogue and config | `hse modules`, `config` | NOT YET REBUILT. REGRESSION: `module`, `service_defs` have no CLI | REFACTOR Bot | D, N. Every listed module is reachable |
 | 22 | Self-update and release | `hse update`; `release.yml` (deleted in `f0a1c64c`) | NOT YET REBUILT. REGRESSION: no release workflow on main | Fix This Bullshit Bot | D, N. Asset is `huntsman-recon` built from the tagged SHA |
@@ -66,11 +66,10 @@ CURRENT. One package, one library (`src/lib.rs`) and one binary (`src/main.rs`, 
 | L2 network boundary | `classify`, `source_outcome`, `egress`, `credential_origin`, `http`, `keys`, `fetch`, `fetch_cli` | The only network path (see BOUNDARIES) |
 | L3 normalisation | `textnorm`, `canonical`, `validation`, `domains`, `address_au`, `postcode_au`, `au_id`, `breach`, `spf`, `dmarc`, `tlsrpt` | Canonical forms, validators, record parsers; `postcode_au` also has one postcode lookup over an injected `http::Transport` (its only crate dependency is `http`), and `au_id` re-exports it (`src/au_id.rs:13`) |
 | L4 source clients | `ckan`, `mediawiki`, `atproto`, `dns`, `hibp`, `service_defs`, `key_health`, `scraper_health`, `recon` | Request builders and response parsers. Only `dns`, `hibp` and `service_defs` send, each over a transport passed in, except `hibp::HibpClient::production`, which builds its own `UreqTransport` (see BOUNDARIES) |
-| L5 entity model and analysis | `entity`, `identity`, `relation`, `graph`, `coref`, `correlator`, `cross_scan`, `dependency`, `module`, `attack`, `attack_catalog`, `exposure`, `profiles`, `leads`, `timeline`, `community`, `diff`, `path`, `pivot`, `intelligence`, `classifier`, `classify_module` | Entities, evidence, relations, correlation rules |
+| L5 entity model and analysis | `entity`, `identity`, `relation`, `graph`, `coref`, `correlator`, `cross_scan`, `dependency`, `module`, `attack`, `attack_catalog`, `exposure`, `profiles`, `leads`, `timeline`, `community`, `diff`, `path`, `pivot`, `intelligence`, `classifier`, `classify_module`, `lineage`, `assurance`, `benchmark`, `coverage`, `diamond`, `gap`, `metrics`, `roi`, `trust` | Entities, evidence, relations, correlation rules; lineage from response data and the merge-rule front-end (`lineage`); assurance, coverage and gap reports |
 | L6 GEOINT and RF | `geo`, `geometry`, `rf`, `geoint` | Coordinates, places, RF sightings |
 | L7 records and outputs | `ledger`, `session`, `store`, `stix`, `navigator`, `search`, `gexf`, `snake_graph` | Hash-chained ledger, session store, exports, local search |
 | Binary | `main` | Dispatch for the 10 commands; calls L0, L1, L2, L3, L5, L6 and L7 directly, never L4 |
-| Not compiled (G8) | `assurance`, `benchmark`, `coverage`, `diamond`, `gap`, `metrics`, `roi`, `trust` | Files in `src/` missing from `src/lib.rs`; #675 compiles them |
 
 PLANNED: a collector layer between L4 and L5 that turns a selector into source requests and a source response into `entity::Evidence` plus an `evidence_ancestry` node. It is the missing causal boundary named in the audit. The binary reaches L4 only through it.
 
@@ -85,7 +84,7 @@ CURRENT:
   - `service_defs::probe_service` (`src/service_defs.rs:465`) places its `key: &str` argument as the service's `KeyPlacement` says (`build_probe_request`, `:349`) and sends it to the service's fixed `test_url` with the default 5 redirects; a key in a header is dropped on a cross-origin hop, because every header placement name in the registry contains `key` or is `Authorization`.
 - Bodies are read under a byte cap and flagged `truncated`. Sensitive headers never appear in `Debug` output, and diagnostics pass through `redact::scrub_secrets`.
 - `keys` refuses a keys file that group or others can access (`mode & 0o077 != 0`; 600 or stricter passes) and prints slot names and fingerprint prefixes, never values.
-- Library code that sends takes its transport as an argument: `fetch::fetch` (`T: Transport + ?Sized`), `dns::resolve_with_pool` and `resolve_with_config`, `postcode_au::localities_with` (`T: Transport`), `service_defs::probe_service` (`T: Transport + ?Sized`), the `hibp::oauth` functions (`&dyn Transport`) and `hibp::HibpClient::new` and `with_config` (`Arc<dyn Transport + Send + Sync>`). The one exception is `HibpClient::production` (`src/hibp/client.rs:154-161`), which builds its own `UreqTransport` with the default egress policy. Tests inject fakes; the `fetch` command builds its `UreqTransport` in `src/main.rs:157`.
+- Library code that sends takes its transport as an argument: `fetch::fetch` (`T: Transport + ?Sized`), `dns::resolve_with_pool` and `resolve_with_config`, `postcode_au::localities_with` (`T: Transport`), `service_defs::probe_service` (`T: Transport + ?Sized`), the `hibp::oauth` functions (`&dyn Transport`) and `hibp::HibpClient::new` and `with_config` (`Arc<dyn Transport + Send + Sync>`). The one exception is `HibpClient::production` (`src/hibp/client.rs:154-161`), which builds its own `UreqTransport` with the default egress policy. Tests inject fakes; the `fetch` command builds its `UreqTransport` in `src/main.rs:156`.
 
 PLANNED: every new source goes through `fetch` and the guarded transport; no module adds a second HTTP client. Gap to close: `hibp` and `service_defs::probe_service` send keys through a `fetch::Credential` built from an `AuthenticationAuthority` instead of setting them themselves, and `HibpClient::production` takes its transport from the caller. Every change to `egress`, `http`, `fetch`, `keys`, `credential_origin`, `hibp` key handling or `build.rs` requires Security & Secrets Bot review.
 
@@ -95,7 +94,8 @@ CURRENT:
 - `http::Transport::send(&Request) -> Result<Response, TransportFailure>`. A non-2xx status is a `Response`, not an error.
 - `fetch` returns a typed `source_outcome::SourceOutcomeKind` and never "found": a 200 is `Inconclusive` until a parser produces rows, and a challenge page is `BotWaf` at any status.
 - `source_outcome::recommended_action` maps an outcome to `Accept`, `Retry`, `Backoff`, `RequireCredential`, `Quarantine`, `RequireContractVerification` or `Investigate`.
-- `identity_resolution::IdentityResolutionDecision::allows_automatic_merge` is non-compensatory: one contradiction, a temporal or geographic conflict, or unknown ancestry blocks the merge regardless of support.
+- `identity_resolution::IdentityResolutionDecision::allows_automatic_merge` is `hold_reasons(..).is_empty()` and non-compensatory: one contradiction, a temporal or geographic conflict, unknown ancestry, or a missing, non-finite, out-of-range or below-floor probability blocks the merge regardless of support. Each failed condition is returned as a `HoldReason`, in a fixed order (`docs/LINEAGE.md`).
+- `lineage::resolve_with_lineage` returns every observation and every candidate in input order, each candidate `AutoMerge` or `Held { reasons }`; it drops nothing.
 - `ledger`: each entry's hash covers the previous hash plus the claim. `verify` prints `entries`, `admitted` and `tip`, and exits 65 on a broken chain.
 - CLI exit codes: 0 success, 64 usage, 65 bad data or broken ledger, 66 unreadable input, 69 no response, 74 artifact write failure, 77 egress refusal; `check` uses 2–11 for its gates. `tests/readme.rs` enforces these.
 
@@ -111,21 +111,24 @@ CURRENT:
 - `check` regenerates `var/*.json` byte-identically (CI runs `git diff --exit-code -- var/`).
 - The two root zip archives are pinned by SHA-256 (`tests/legacy_reference.rs`). `legacy/` is never modified.
 - The README examples, usage line, exit codes and gate range match the binary (`tests/readme.rs`); `docs/DISPOSITIONS.md` counts match `legacy/` (`tests/dispositions.rs`); this file's module map, dependency claims and capability rows match `src/` (`tests/architecture_doc.rs`).
+- Every `.rs` file under `src/` is compiled (#675); `tests/architecture_doc.rs` fails on a file the module tree does not reach.
+- In `lineage`, mirrors of one named dataset count as one family whatever the collectors are called, and record URLs, record ids and collector names never create a family (`tests/lineage_merge_rule.rs`, `tests/lineage_independence_adversarial.rs`).
+- Automatic merge requires a present, finite probability in `[0, 1]` at or above the policy floor; `probability: None` holds the candidate (`HoldReason::ProbabilityMissing`).
 
 PLANNED:
-- Mirrors of one dataset count as one source, whatever the collectors are called.
-- Automatic merge requires an explicit calibrated probability (`probability: None` must block).
-- Every file in `src/` is compiled (G8, #675).
+- Every collector's output goes through `lineage`, so mirrors of one dataset count as one source end to end.
+- Collectors supply a calibrated match probability; `lineage` supplies none.
 - No result reaches output without a lineage root.
 
 ## DATA
 
 CURRENT:
 - `entity::Entity` carries `entity::Evidence`; each `Evidence` has an `EvidenceProvenance` (`source`, `source_family`, `scan_id`, `recorded_at_unix`) and an optional `ancestry_node`.
-- `evidence_ancestry::EvidenceAncestryNode` has `id`, `source_family`, `parents` and `derived`. `canonical_family` only normalises case and whitespace. All of these fields are set by the caller; no code derives them from a response.
+- `evidence_ancestry::EvidenceAncestryNode` has `id`, `source_family`, `parents` and `derived`. `canonical_family` only normalises case and whitespace. Callers set these fields, except `lineage::resolve_with_lineage`, which builds the graph from `Evidence::attributes`.
+- Lineage (#679, `docs/LINEAGE.md`): `lineage::Lineage::of` takes the family from the first non-blank response field among `dbname`, `breach`, `source_db`, `database_name` and `dataset`, or `registry` only from a collector in `VERIFIED_REGISTRY_SOURCES` (currently `abn_lookup`); never from the collector name, `source_url` or `source_id`. Each family is one root `lineage:<family>`, so two collectors relaying one dataset share one root. A response that names no dataset, or several in one field, is kept and contributes zero families.
 - Files: `check` writes `var/ledger.json`, `var/navigator.json` and `var/stix-bundle.json`. `store` writes bounded (1 MiB) JSON sessions atomically and refuses symlinks. `hibp::oauth` token files are mode 600.
 
-PLANNED, lineage: `source_family` and `parents` come from the response data, never from the collector's name. The root is the dataset or breach identifier the response reports (for example the HIBP breach `Name`, a CKAN `resource_id`, a crt.sh log entry), plus any upstream the response itself names. Two collectors that reach the same dataset share one root. A response that names no dataset gets a root derived from the source origin and the response hash, marked `derived: false`, and cannot by itself justify an automatic merge. This is the scope of `feat/recon-lineage-merge-rule`.
+PLANNED, lineage: collectors fill those fields from the response data: the dataset or breach identifier the response reports (for example the HIBP breach `Name`, a CKAN `resource_id`, a crt.sh log entry), plus any upstream the response itself names. A response that names no dataset gets a root derived from the source origin and the response hash, marked `derived: false`, which cannot by itself justify an automatic merge (today it contributes zero families). Dataset names are not yet canonicalised for Unicode confusables or zero-width characters (`docs/LINEAGE.md`, trust boundary).
 
 ## EXECUTION
 
@@ -151,7 +154,7 @@ PLANNED: a source failure is recorded per source with its outcome and does not a
 
 CURRENT gates (CI `ci.yml`, toolchains 1.87 and stable, owned by Fix This Bullshit Bot):
 - `cargo fmt --check` and `cargo clippy --all-targets --locked -- -D warnings` (stable).
-- `cargo test --locked`: unit tests, `tests/accept.rs`, `cli.rs`, `http_local.rs` (loopback sockets only), `legacy_reference.rs`, `readme.rs`, `dispositions.rs`, `android_ci.rs`, `hibp_build.rs`, `architecture_doc.rs`.
+- `cargo test --locked`: unit tests, `tests/accept.rs`, `cli.rs`, `http_local.rs` (loopback sockets only), `legacy_reference.rs`, `readme.rs`, `dispositions.rs`, `android_ci.rs`, `hibp_build.rs`, `architecture_doc.rs`, `lineage_merge_rule.rs`, `lineage_legacy.rs`, `lineage_independence_adversarial.rs`.
 - `cargo run -- check`, then `git diff --exit-code -- var/`.
 - The Android aarch64 cross-build.
 
@@ -175,9 +178,9 @@ Rules for every reconstruction PR from this one on:
 
 ## ORDERED BACKLOG
 
-PLANNED, in this order. "In flight" means work has started on that branch; none of it is on `main` yet.
-1. People-lookup pipeline, end to end: CLI command, fetch, provider, parse, evidence, merge decision, saved file, `verify`, output and exit codes. It needs at least one keyless public people source (candidate: `asic_persons` over data.gov.au CKAN) and one live keyless run with a receipt tied to the commit. In flight: `feat/recon-lineage-merge-rule` (REFACTOR Bot) and the HIBP CLI PR (`feat/hibp-cli`, Software Development Bot).
+PLANNED, in this order. "In flight" means work has started on that branch and is not on `main` yet; "Done" names the PR that put it on `main`.
+1. People-lookup pipeline, end to end: CLI command, fetch, provider, parse, evidence, merge decision, saved file, `verify`, output and exit codes. It needs at least one keyless public people source (candidate: `asic_persons` over data.gov.au CKAN) and one live keyless run with a receipt tied to the commit. Done: the lineage and merge rule, as a library (#679, REFACTOR Bot). In flight: the HIBP CLI PR (`feat/hibp-cli`, Software Development Bot).
 2. Port `au_people`, `asic_persons` and HIBP first, each with a differential test against legacy output.
 3. stolen.tax and crt.sh (`feat/recon-stolen-tax-v2-crtsh`, in flight).
-4. Compile the 8 orphan modules (G8, `chore/g8-orphan-modules`, #675, in flight).
+4. Compile the 8 orphan modules (G8). Done: #675.
 5. The rest of CAPABILITIES, ranked by user value.

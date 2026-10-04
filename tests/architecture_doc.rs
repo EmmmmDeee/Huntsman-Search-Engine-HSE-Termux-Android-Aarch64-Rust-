@@ -52,7 +52,7 @@ const PINNED_LAYERS: [&str; 8] = [
     "classify source_outcome egress credential_origin http keys fetch fetch_cli",
     "textnorm canonical validation domains address_au postcode_au au_id breach spf dmarc tlsrpt",
     "ckan mediawiki atproto dns hibp service_defs key_health scraper_health recon",
-    "entity identity relation graph coref correlator cross_scan dependency module attack attack_catalog exposure profiles leads timeline community diff path pivot intelligence classifier classify_module",
+    "entity identity relation graph coref correlator cross_scan dependency module attack attack_catalog exposure profiles leads timeline community diff path pivot intelligence classifier classify_module lineage assurance benchmark coverage diamond gap metrics roi trust",
     "geo geometry rf geoint",
     "ledger session store stix navigator search gexf snake_graph",
 ];
