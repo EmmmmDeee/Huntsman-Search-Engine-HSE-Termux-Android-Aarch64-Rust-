@@ -1,7 +1,46 @@
-# huntsman
+# Huntsman Recon
 
-One crate, `huntsman-recon`. The current version lives in `src/`; the two legacy zip archives in the repository root and their extracted copies in `legacy/` are permanent read-only reference (see below).
-Target design, module map and per-capability status against legacy `7dca720`: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Huntsman Recon is a Rust command-line toolkit for local search, guarded HTTP
+fetches, Australian identifier validation, geospatial utilities, and an
+append-only evidence ledger. It is designed to make evidence quality and
+uncertainty visible; a lead or verified claim is not an attribution or ATT&CK
+score.
+
+> **Status:** this is the `huntsman-recon` reconstruction, not the previous
+> `hse` monolith. It does not yet provide the old monolith's person-lookups.
+> Legacy archives and extracted files are preserved as read-only references,
+> not installable/current source. See [architecture and status](ARCHITECTURE.md).
+
+## Install on Termux (Android arm64)
+
+Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the
+[official GitHub releases](https://github.com/termux/termux-app/releases), then
+run this one-line source install:
+
+```sh
+pkg update && pkg install -y git rust clang && HUNTSMAN_HIBP_NO_EMBED=1 cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git --locked --root "$PREFIX" huntsman-recon
+```
+
+This builds the current `main` source on-device, installs
+`$PREFIX/bin/huntsman-recon`, and prevents accidental build-time embedding of a
+locally configured HIBP key. Rust 1.87 or newer is required. For prebuilt,
+release-pinned installation, Linux development setup, upgrades, and
+troubleshooting, see [`docs/INSTALL.md`](docs/INSTALL.md).
+
+## First commands
+
+```sh
+huntsman-recon --help
+huntsman-recon check
+huntsman-recon search "brisbane port"
+```
+
+`check` runs offline self-acceptance. `search` and `sources` are offline; only
+`fetch` makes an HTTP request. `fetch` uses public-only egress by default.
+Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
+before using credentials or network access.
+
+## Repository map
 
 | Path | Contents |
 | --- | --- |
@@ -12,7 +51,9 @@ Target design, module map and per-capability status against legacy `7dca720`: [`
 | `legacy/` | Byte-identical extraction of both archives. Not part of the build. |
 | `*.zip` (root) | The two legacy archives. Pinned by hash in `tests/legacy_reference.rs`; never delete, edit or move them. |
 
-Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands; `check` exercises egress, origin, placeholder and URL-redaction rules as gate 11, without a socket). A challenge page is not a hit. No paid source is called automatically; HIBP is an explicit opt-in library client. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
+For contributors: one Rust package (`huntsman-recon`), Rust 1.87+, no workspace.
+The binary's full command list is available with `huntsman-recon --help`;
+run `huntsman-recon COMMAND --help` for command-specific usage.
 
 ```
 cargo test
