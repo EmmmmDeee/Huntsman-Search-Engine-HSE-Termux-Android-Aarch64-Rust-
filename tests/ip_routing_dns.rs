@@ -231,4 +231,3 @@ fn cloudflare_ptr_malformed_or_wrong_answer_shape_fails_closed() {
         Err(IpProviderParseError::Schema(_))
     ));
 }
-
