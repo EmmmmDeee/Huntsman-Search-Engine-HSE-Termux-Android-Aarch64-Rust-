@@ -17,6 +17,7 @@ Local search, recorder and ledger, with a guarded fetch layer (egress policy, cr
 cargo test
 cargo run -- check                     # self-acceptance; regenerates var/*.json
 cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
+cargo run -- ip 192.0.2.10 --json      # documentation/reserved target; classified locally, zero network calls
 cargo run -- search "brisbane port"    # built-in fixture
 cargo run -- search "brisbane port" docs/
 cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
@@ -27,6 +28,8 @@ cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
 ```
+
+`ip <IP> [--json] [--deep] [--evidence]` canonicalises IPv4/IPv6 input and classifies non-public targets without launching public-provider requests. Public targets use the guarded transport, official IANA RDAP bootstrap/RIR path, RIPEstat network-info, and Cloudflare JSON DoH PTR under a bounded investigation budget. `--deep` enables bounded enrichment scheduling; `--evidence` adds provenance details without changing claim state; `--json` serializes the same investigation facts used by the human renderer. Source failures remain explicit and do not erase independent successful evidence.
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
 
