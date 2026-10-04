@@ -105,10 +105,7 @@ impl IpProvider for RipeStatNetworkInfoProvider {
                 IpProviderParseError::Schema("RIPEstat asns is not an array".into())
             })?;
             for asn in array {
-                let value = asn.as_u64().ok_or_else(|| {
-                    IpProviderParseError::Schema("RIPEstat ASN is not an unsigned integer".into())
-                })?;
-                asns.push(value);
+                asns.push(parse_asn(asn)?);
             }
         }
 
@@ -147,5 +144,22 @@ impl IpProvider for RipeStatNetworkInfoProvider {
             retrieved_at_unix,
             raw_digest: None,
         }])
+    }
+}
+
+fn parse_asn(value: &Value) -> Result<u64, IpProviderParseError> {
+    let invalid = || {
+        IpProviderParseError::Schema("RIPEstat ASN is not an unsigned integer".into())
+    };
+    match value {
+        Value::Number(number) => number.as_u64().ok_or_else(invalid),
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || !trimmed.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(invalid());
+            }
+            trimmed.parse::<u64>().map_err(|_| invalid())
+        }
+        _ => Err(invalid()),
     }
 }
