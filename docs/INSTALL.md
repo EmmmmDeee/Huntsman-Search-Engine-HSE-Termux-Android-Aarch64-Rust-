@@ -27,6 +27,7 @@ Start with:
 huntsman-recon --help
 huntsman-recon check
 huntsman-recon search "brisbane port"
+huntsman-recon web
 ```
 
 Upgrade by running the same `cargo install` command again. To build a specific
@@ -80,4 +81,10 @@ cargo run --locked -- check
 `check` is offline and regenerates `var/*.json`; CI verifies these artifacts
 remain byte-identical to their committed versions. See the [README](../README.md)
 for runnable examples, credential-file rules, command exit codes, and project
-boundaries.
+boundaries. The browser UI binds to `127.0.0.1:8787` by default; open that
+address in the handset browser. Stop the server with Ctrl-C in Termux. It
+currently serves read-only status/configuration and search over bundled sample
+records, not active reconnaissance scans.
+
+See [COMPATIBILITY.md](COMPATIBILITY.md) for the current support matrix and the
+explicitly unverified handset requirements.

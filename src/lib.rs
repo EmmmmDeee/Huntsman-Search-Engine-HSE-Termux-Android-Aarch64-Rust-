@@ -106,6 +106,7 @@ pub mod trust;
 pub mod uid;
 pub mod union_find;
 pub mod validation;
+pub mod web;
 pub mod xml;
 
 pub use entity::{Entity, EntityKind, EntityRef, Evidence, EvidenceProvenance};

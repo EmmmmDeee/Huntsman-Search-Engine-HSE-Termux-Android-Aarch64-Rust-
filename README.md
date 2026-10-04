@@ -33,10 +33,14 @@ troubleshooting, see [`docs/INSTALL.md`](docs/INSTALL.md).
 huntsman-recon --help
 huntsman-recon check
 huntsman-recon search "brisbane port"
+huntsman-recon web
 ```
 
 `check` runs offline self-acceptance. `search` and `sources` are offline; only
 `fetch` makes an HTTP request. `fetch` uses public-only egress by default.
+`web` starts the loopback-only browser UI at <http://127.0.0.1:8787/>; its first
+iteration exposes status/configuration and search over bundled sample records,
+not active scans or SpiderFoot compatibility.
 Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
 before using credentials or network access.
 
@@ -54,6 +58,8 @@ before using credentials or network access.
 For contributors: one Rust package (`huntsman-recon`), Rust 1.87+, no workspace.
 The binary's full command list is available with `huntsman-recon --help`;
 run `huntsman-recon COMMAND --help` for command-specific usage.
+See the [Termux and SpiderFoot compatibility matrix](docs/COMPATIBILITY.md)
+for verified targets and remaining gaps.
 
 ```
 cargo test
@@ -69,6 +75,7 @@ cargo run -- coarsen -27.4698,153.0251 # one decimal place, ~11 km
 cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
+cargo run -- web --help                 # local browser UI options
 ```
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.

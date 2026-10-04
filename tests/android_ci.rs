@@ -36,6 +36,9 @@ fn ci_cross_builds_the_actual_termux_target() {
         "HUNTSMAN_HIBP_NO_EMBED",
         "llvm-readelf",
         "/system/bin/linker64",
+        "llvm-strings\" -a \"$BIN\" | grep -Fq 'Huntsman Recon",
+        "llvm-strings\" -a \"$BIN\" | grep -Fq '/api/status'",
+        "llvm-strings\" -a \"$BIN\" | grep -Fq '127.0.0.1'",
     ] {
         assert!(ci.contains(required), "{CI} must contain {required:?}");
     }

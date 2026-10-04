@@ -44,7 +44,7 @@ use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER | web [PORT]]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
 
@@ -65,6 +65,7 @@ Commands:
   fetch                 Make a guarded HTTP request (network access)
   keys                  Validate a private keys file; print slots and fingerprints
   verify                Verify a saved evidence ledger
+  web                   Start the loopback-only browser UI (default port: 8787)
 
 Run `huntsman-recon <COMMAND> --help` for command details.
 Search and sources do not collect remote results. `fetch` is the only command here
@@ -106,6 +107,7 @@ fn main() -> ExitCode {
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
         Some("keys") => keys_cmd(remaining.next()),
         Some("verify") => verify(remaining.next()),
+        Some("web") => web_cmd(&remaining.collect::<Vec<_>>()),
         Some("check") | None => check(),
         Some(other) => fail(EX_USAGE, &format!("unknown command: {other}\n{USAGE}")),
     }
@@ -142,12 +144,28 @@ fn print_command_help(command: &str) {
         "verify" => {
             "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
         }
+        "web" => "web [PORT]\nStart the browser UI on 127.0.0.1. Defaults to port 8787; this UI searches bundled sample records only.",
         _ => {
             println!("{HELP}\n{USAGE}");
             return;
         }
     };
     println!("{help}\n  -h, --help  Show this help");
+}
+
+fn web_cmd(args: &[String]) -> ExitCode {
+    if args.len() > 1 {
+        return fail(EX_USAGE, "usage: huntsman-recon web [PORT]");
+    }
+    let port = match args.first() {
+        None => 8787,
+        Some(value) => match value.parse::<u16>() {
+            Ok(port) => port,
+            Err(_) => return fail(EX_USAGE, "web PORT must be an integer in 0..=65535"),
+        },
+    };
+    huntsman_recon::web::run(port)
+        .map_or_else(|error| fail(EX_IOERR, &format!("web server: {error}")), |_| ExitCode::SUCCESS)
 }
 
 fn fail(code: u8, msg: &str) -> ExitCode {
