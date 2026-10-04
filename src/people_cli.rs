@@ -5,6 +5,8 @@
 //! through [`crate::lineage::resolve_with_lineage`]. Tests inject fakes; live CKAN
 //! is not run here.
 
+use std::fmt::Write;
+
 use crate::asic_persons::{self, Report};
 use crate::error::Error;
 use crate::evidence_ancestry::EvidenceNodeId;
@@ -56,13 +58,14 @@ fn render(report: &Report) -> Result<String, String> {
 
     let mut out = format!("entities={}\n", report.entities.len());
     for entity in &report.entities {
-        out.push_str(&format!(
-            "{}\t{}\t{:.2}\t{}\n",
+        let _ = writeln!(
+            out,
+            "{}\t{}\t{:.2}\t{}",
             entity.kind,
             entity.raw_value,
             entity.confidence,
             entity.tags.join(",")
-        ));
+        );
     }
     for outcome in &report.outcomes {
         let found = outcome
@@ -72,7 +75,7 @@ fn render(report: &Report) -> Result<String, String> {
             .ok()
             .and_then(|v| v.as_str().map(str::to_owned))
             .unwrap_or_default();
-        out.push_str(&format!("{}\t{kind}\tfound={found}\n", outcome.module));
+        let _ = writeln!(out, "{}\t{kind}\tfound={found}", outcome.module);
     }
 
     let observations = observations(report);
@@ -81,9 +84,9 @@ fn render(report: &Report) -> Result<String, String> {
     }
     let resolution = resolve_with_lineage(observations, Vec::new(), AutoMergePolicy::default())
         .map_err(|e| e.to_string())?;
-    out.push_str(&format!("lineage={}\n", resolution.observations.len()));
+    let _ = writeln!(out, "lineage={}", resolution.observations.len());
     for item in &resolution.observations {
-        out.push_str(&format!("{}\n", lineage_line(item)));
+        let _ = writeln!(out, "{}", lineage_line(item));
     }
     Ok(out)
 }
