@@ -3,8 +3,8 @@
 All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-The crate (`huntsman-recon`, version `0.2.0` in `Cargo.toml`) has no tagged
-release yet. Release policy: only pre-releases (`main-<sha7>` plus a rolling
+The crate (`huntsman-recon`, version `0.2.0` in `Cargo.toml`) has no stable
+release yet; pushes to `main` publish `main-<sha7>` pre-releases (#672). Release policy: only pre-releases (`main-<sha7>` plus a rolling
 `latest`); a stable release needs the owner's explicit approval.
 
 ## [Unreleased]
@@ -53,7 +53,7 @@ release yet. Release policy: only pre-releases (`main-<sha7>` plus a rolling
   clippy (`assert_is_empty`) (#669).
 - README has a "Which binary to use" section. The legacy `hse` (pre-release
   `main-7dca720`) has the person-lookup providers. `huntsman-recon` has no
-  person lookups yet and is not in any GitHub release yet.
+  person lookups yet and ships only as `main-<sha7>` pre-releases.
 - README documents build and install steps, the `fetch` options, how keys are
   supplied, the CI artifact download, and the release state.
 
@@ -61,7 +61,8 @@ release yet. Release policy: only pre-releases (`main-<sha7>` plus a rolling
 
 - The monolith's release, audit, bench-smoke, copilot-setup-steps, fuzz,
   live-drift, rust-clippy and secret-scan workflows, `rust-toolchain.toml`, `docs/INSTALL.md` and the previous
-  `CHANGELOG.md` (f0a1c64c). The current workflow publishes no GitHub Release.
+  `CHANGELOG.md` (f0a1c64c). A release workflow for `huntsman-recon` was
+  restored in #672.
 
 ### Fixed
 
@@ -69,10 +70,12 @@ release yet. Release policy: only pre-releases (`main-<sha7>` plus a rolling
   `legacy/` (78ce7723). #665 therefore has no effect on the current tree, and
   #663 merged no changes.
 - SeekNow bulk import build on the pre-reconstruction tree (#661).
-- `src/hibp/key.rs` documentation no longer refers to `~/.huntsman.env` or a
-  `ModuleContext`, neither of which this crate has.
+- `src/hibp/key.rs` documentation no longer refers to a `ModuleContext`, which
+  this crate does not have, or says the HIBP key chain reads `~/.huntsman.env`;
+  it does not (the binary's `~/.huntsman.env` auto-load, #674, supplies `fetch`
+  credential slots).
 - README said `check` gate 5 exercises `credential_origin` and `eval`; it
   exercises `source_outcome`, `evidence_ancestry`, `identity_resolution` and
-  `termination` only.
+  `termination` of the overlay modules.
 - `docs/RECONSTRUCTION_2026-10-02.md` names the archives as committed and
   gives the monolith archive's file count (1314 files, 1727 zip entries).
