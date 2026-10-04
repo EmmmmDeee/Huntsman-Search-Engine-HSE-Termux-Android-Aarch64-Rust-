@@ -387,19 +387,22 @@ Policy change (network and credentials now allowed):
 | --- | ---: | --- | --- | --- |
 | `src/modules/asic_persons/mod.rs` | 629 | REBUILT | `src/asic_persons.rs`, `src/people_cli.rs`, `src/people_save.rs` | Keyless data.gov.au CKAN collector for banned/disqualified persons, financial advisers and credit representatives. Blocking `fetch` over an injected transport; emit oracles ported from legacy fixtures. Coordinates use `postcode_au::offline_centroid` (L3), not `geo` (L6). `people NAME [--save FILE]` is the collection front-end (`people_cli`) and runs evidence through `lineage::resolve_with_lineage`; `people_save` writes an unverified ledger `verify` reloads. Tests never hit the live portal. |
 | `src/modules/asic_persons/tests.rs` | 424 | MERGED | `src/asic_persons.rs` tests | Legacy emit, name-match, controller and checksum fixtures plus scripted-transport lookup, envelope-failure and challenge-page cases. |
+| `src/modules/asic_director/mod.rs` | 397 | REBUILT | `src/asic_director.rs` | Keyless ASIC Connect Online HTML scrape of director appointments. Blocking `fetch` over an injected transport. Challenge pages, truncated bodies and non-success HTTP are never evidence. ACN emission requires checksum validation. Coordinates use `postcode_au::offline_centroid` (L3), not `geo`/`city_coords` (L6). Library only: not called from `people` (live Connect is WAF-blocked). Tests never hit the live portal. ATT&CK self-labels are not copied. |
+| `src/modules/asic_director/tests.rs` | 275 | MERGED | `src/asic_director.rs` tests | Legacy emit, whole-word match, checksum-invalid ACN, request_failed, HTML entity decode and scripted-transport lookup/challenge cases. The ignored wall-clock linearity test is not rebuilt. |
 
 ### Notes
 
 - Live CKAN (`asic_persons_live_finds_a_banned_person`) is not rebuilt: capability row 4 still requires D and L.
-- `asic_director`, `au_people` and `au_electoral` remain unlisted.
+- Live ASIC Connect (`asic_director`) is WAF-blocked (403); the library is tested on a fake transport only.
+- `au_people` and `au_electoral` remain unlisted.
 
 ## Not yet dispositioned
 
-Legacy `src/` files of the monolith that no section above lists yet (893 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
+Legacy `src/` files of the monolith that no section above lists yet (891 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
 
 | Legacy area | Files not listed | Of |
 | --- | ---: | ---: |
-| `src/modules/` (providers) | 540 | 542 |
+| `src/modules/` (providers) | 538 | 542 |
 | `src/util/` | 116 | 213 |
 | `src/core/` | 49 | 203 |
 | `src/app/` | 45 | 45 |
