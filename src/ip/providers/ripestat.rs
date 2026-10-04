@@ -1,4 +1,4 @@
-//! RIPEstat network-info routing provider.
+//! `RIPEstat` network-info routing provider.
 
 use std::collections::BTreeMap;
 
