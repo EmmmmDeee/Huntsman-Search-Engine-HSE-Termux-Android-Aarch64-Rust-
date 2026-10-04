@@ -11,6 +11,7 @@
 )]
 
 pub mod address_au;
+pub mod asic_persons;
 pub mod assurance;
 pub mod atproto;
 pub mod attack;
@@ -72,6 +73,7 @@ pub mod navigator;
 pub mod oui;
 pub mod oui_ieee;
 pub mod path;
+pub mod people_cli;
 pub mod pivot;
 pub mod place;
 pub mod postcode_au;

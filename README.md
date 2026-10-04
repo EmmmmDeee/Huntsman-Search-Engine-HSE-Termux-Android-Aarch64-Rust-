@@ -35,8 +35,9 @@ huntsman-recon check
 huntsman-recon search "brisbane port"
 ```
 
-`check` runs offline self-acceptance. `search` and `sources` are offline; only
-`fetch` makes an HTTP request. `fetch` uses public-only egress by default.
+`check` runs offline self-acceptance. `search` and `sources` are offline.
+`fetch` and `people` (two-token names) make HTTP requests and use public-only
+egress by default.
 Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
 before using credentials or network access.
 
@@ -69,6 +70,7 @@ cargo run -- coarsen -27.4698,153.0251 # one decimal place, ~11 km
 cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
+cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network
 ```
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
@@ -93,7 +95,7 @@ Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys fi
 
 `sources` is offline routing, not collection. It classifies the input using the existing Huntsman classifier and renders only compatible, independently curated public/browser search routes from `source_registry`. Generated routes are `LeadOnly`: a URL is never corroborating evidence by itself. External catalogue code or data is not embedded.
 
-Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input, 69 `fetch` got no response, 74 artifact write failure, 77 egress policy refused the destination. `check` uses 2–11 for its individual gates.
+Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input, 69 `fetch` got no response or `people` registers were unusable, 74 artifact write failure, 77 egress policy refused the destination. `check` uses 2–11 for its individual gates.
 
 `tests/readme.rs` runs every example above (except the internet `fetch`), checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`.
 
@@ -139,6 +141,19 @@ randomness comes from `/dev/urandom`. Token stores support memory or bounded,
 atomic mode-600 files. Debug/errors omit keys, tokens and upstream error bodies.
 All integration evidence here is offline fake-transport testing; live HIBP and
 Termux handset acceptance remain unverified.
+
+## Opt-in ASIC people-register library
+
+`huntsman_recon::asic_persons::lookup` queries three keyless ASIC registers on
+data.gov.au CKAN (banned and disqualified persons, financial advisers, credit
+representatives) through the shared `fetch` boundary and an injected
+`http::Transport`. A name with fewer than two alphabetic tokens makes no
+request. Challenge pages, truncated bodies, and CKAN `success: false` envelopes
+are not evidence of absence. The binary exposes `people NAME` (unquoted words
+are joined) through `people_cli`, which feeds emitted evidence through
+`lineage::resolve_with_lineage`. Tests use a scripted transport; the README
+example is the skip path. Two-token names query CKAN and are not run in CI.
+There is no live receipt.
 
 ## Lineage and the automatic-merge rule
 

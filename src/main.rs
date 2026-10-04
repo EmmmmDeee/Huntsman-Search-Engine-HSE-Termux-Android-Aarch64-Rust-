@@ -33,6 +33,7 @@ use huntsman_recon::keys::{Keys, is_configured_value};
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage};
 use huntsman_recon::navigator::layer;
+use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleRun};
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
@@ -44,7 +45,7 @@ use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
 
@@ -61,14 +62,15 @@ Commands:
   id                    Classify and validate an Australian ABN, ACN, or BSB
   search                Search the built-in fixture or one local text directory
   sources               Classify an indicator and print curated routes (offline)
+  people                Look up a name on keyless ASIC people registers
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
   keys                  Validate a private keys file; print slots and fingerprints
   verify                Verify a saved evidence ledger
 
 Run `huntsman-recon <COMMAND> --help` for command details.
-Search and sources do not collect remote results. `fetch` is the only command here
-that makes an HTTP request; its default egress policy is public-only.";
+Search and sources do not collect remote results. `fetch` and `people` (two-token
+names) make HTTP requests; their default egress policy is public-only.";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -102,6 +104,7 @@ fn main() -> ExitCode {
         Some("id") => id_cmd(remaining.next()),
         Some("search") => search_cmd(remaining.next(), remaining.next()),
         Some("sources") => sources_cmd(remaining.next()),
+        Some("people") => people_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
         Some("keys") => keys_cmd(remaining.next()),
@@ -132,6 +135,7 @@ fn print_command_help(command: &str) {
         "sources" => {
             "sources QUERY\nClassify an indicator and print curated public/browser search routes. Does not fetch those routes."
         }
+        "people" => PEOPLE_HELP,
         "classify" => {
             "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
         }
@@ -153,6 +157,22 @@ fn print_command_help(command: &str) {
 fn fail(code: u8, msg: &str) -> ExitCode {
     eprintln!("{msg}");
     ExitCode::from(code)
+}
+
+fn people_cmd(args: &[String]) -> ExitCode {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let transport = UreqTransport::new(&TransportConfig::default());
+    match people_cli::run(&transport, args, now) {
+        PeopleRun::Usage => fail(EX_USAGE, PEOPLE_USAGE),
+        PeopleRun::Printed(text) => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        PeopleRun::Network(msg) => fail(EX_NOPERM, &msg),
+        PeopleRun::Failed(msg) => fail(EX_UNAVAILABLE, &msg),
+    }
 }
 
 fn geo(a: Option<String>, b: Option<String>) -> ExitCode {

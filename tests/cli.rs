@@ -91,6 +91,7 @@ fn help_and_version_are_available() {
     for (command, usage) in [
         ("geo", "geo LAT,LON LAT,LON"),
         ("search", "search QUERY [DIR]"),
+        ("people", "people NAME"),
         ("fetch", "fetch URL [--body]"),
     ] {
         let out = bin().args([command, "--help"]).output().unwrap();
@@ -114,6 +115,24 @@ fn help_and_version_are_available() {
         String::from_utf8(version.stdout).unwrap(),
         format!("huntsman-recon {}\n", env!("CARGO_PKG_VERSION"))
     );
+}
+
+#[test]
+fn people_skips_single_token_without_network() {
+    let out = bin().args(["people", "Madonna"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("skipped"),
+        "skip path must print a skip line: {stdout:?}"
+    );
+}
+
+#[test]
+fn people_missing_name_is_usage() {
+    let out = bin().arg("people").output().unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty(), "{:?}", out.stdout);
 }
 
 #[test]
