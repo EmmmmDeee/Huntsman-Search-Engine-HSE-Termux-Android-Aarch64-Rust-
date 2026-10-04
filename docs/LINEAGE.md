@@ -2,7 +2,17 @@
 
 Owners: `src/lineage.rs` (lineage from response data, the resolution contract) and
 `src/identity_resolution.rs` (the merge rule, `IdentityResolutionDecision::hold_reasons`).
-`check` exercises both as part of gate 5.
+`check` exercises both as part of gate 5, in two halves that both run:
+
+- lineage half (`check_lineage_gate`): observations go through `resolve_with_lineage`;
+  two collectors relaying one dump are one family and held, a dump plus a verified
+  registry auto-merges, a missing or NaN probability holds, and every observation comes
+  back unchanged;
+- graph half (`check_ancestry_graph_gate`): a hand-built `EvidenceAncestryGraph` with an
+  explicit parent chain (two mirrors under one dump) and a root that supports a
+  candidate directly (a registry), checked through `allows_automatic_merge`, the path
+  `resolve::automatic_clusters` takes. Two mirrors must not merge; a mirror plus the
+  registry must.
 
 ## Lineage comes from the response
 
