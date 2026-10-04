@@ -25,6 +25,7 @@ use huntsman_recon::identity::{PersonRecord, resolve};
 use huntsman_recon::identity_resolution::{
     AutoMergePolicy, HoldReason, IdentityResolutionDecision, ResolutionState,
 };
+use huntsman_recon::ip::cli::run_ip_cli;
 use huntsman_recon::keys::{Keys, is_configured_value};
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage};
@@ -39,7 +40,7 @@ use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | ip <IP> [--json] [--deep] [--evidence] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -51,6 +52,7 @@ const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
+        Some("ip") => ip_cmd(&args.collect::<Vec<_>>()),
         Some("geo") => geo(args.next(), args.next()),
         Some("geohash") => geohash_cmd(args.next(), args.next().as_deref()),
         Some("coarsen") => coarsen_cmd(args.next()),
@@ -72,6 +74,19 @@ fn main() -> ExitCode {
 fn fail(code: u8, msg: &str) -> ExitCode {
     eprintln!("{msg}");
     ExitCode::from(code)
+}
+
+fn ip_cmd(args: &[String]) -> ExitCode {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    match run_ip_cli(args, now) {
+        Ok(output) => {
+            print!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error.exit_code(), &error.to_string()),
+    }
 }
 
 fn geo(a: Option<String>, b: Option<String>) -> ExitCode {
