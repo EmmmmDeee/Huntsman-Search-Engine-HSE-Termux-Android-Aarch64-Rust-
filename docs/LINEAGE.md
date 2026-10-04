@@ -49,6 +49,11 @@ prove dataset identity.
 Registry lineage is stricter because its source class is explicit: a `registry` attribute
 counts only when the collector is bound in `VERIFIED_REGISTRY_SOURCES`. An arbitrary
 provider claiming `registry=...` remains preserved evidence but contributes zero families.
+The gate recomputes the collector's family from `provenance.source` on every call and
+never reads the stored `provenance.source_family`. That field is deserialized from saved
+data, so a tampered local record with `source: "hibp"` and `source_family: "abn_lookup"`
+is not registry-class: its `registry` field contributes zero families, and the record is
+still returned unchanged.
 
 Current canonicalisation collapses whitespace and case. Unicode confusables and zero-width
 characters are not yet normalized as equivalent dataset names. Treat adapter-origin
@@ -136,6 +141,7 @@ intentional and pinned:
 
 The adversarial lineage suite additionally pins the fail-closed cases that motivated the
 review repair: record URLs and row ids contribute zero families; an unverified provider's
-`registry` field contributes zero; verified `abn_lookup` + ABR can contribute a registry
+`registry` field contributes zero; a tampered record whose stored `source_family` claims
+`abn_lookup` contributes zero; verified `abn_lookup` + ABR can contribute a registry
 root; and two explicitly named upstream datasets may still be represented through one
 aggregating collector.
