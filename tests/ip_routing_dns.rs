@@ -130,7 +130,6 @@ fn cloudflare_ptr_plans_json_doh_request() {
     assert_eq!(
         action.request.url,
         "https://cloudflare-dns.com/dns-query?name=1.1.1.1.in-addr.arpa&type=PTR"
-            .replace("1.1.1.1.in-addr.arpa", "1.1.1.1.in-addr.arpa")
     );
     assert_eq!(
         action.request.header_value("Accept"),
