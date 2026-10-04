@@ -43,6 +43,8 @@ pub struct ComparisonEvidence {
     pub false_merge_delta: isize,
     pub evidence_completeness_delta: f64,
     pub adversarial_pass: bool,
+    pub holdout_pass: bool,
+    pub critical_guardrails_pass: bool,
     pub worst_decile_delta: f64,
     pub cost_ratio: f64,
     pub dominated_by_alternative: bool,
@@ -77,6 +79,8 @@ pub fn decide(evidence: ComparisonEvidence, policy: EvalPolicy) -> Decision {
         && evidence.false_merge_delta <= policy.max_false_merge_delta
         && evidence.evidence_completeness_delta >= policy.min_evidence_completeness_delta
         && evidence.adversarial_pass
+        && evidence.holdout_pass
+        && evidence.critical_guardrails_pass
         && evidence.worst_decile_delta >= policy.min_worst_decile_delta
         && evidence.cost_ratio <= policy.max_cost_ratio;
 
@@ -102,6 +106,8 @@ mod tests {
             false_merge_delta: 0,
             evidence_completeness_delta: 0.02,
             adversarial_pass: true,
+            holdout_pass: true,
+            critical_guardrails_pass: true,
             worst_decile_delta: 0.0,
             cost_ratio: 1.2,
             dominated_by_alternative: false,
@@ -129,6 +135,20 @@ mod tests {
             decide(robust_gain(), EvalPolicy::default()),
             Decision::Promote
         );
+    }
+
+    #[test]
+    fn holdout_failure_blocks_promotion() {
+        let mut evidence = robust_gain();
+        evidence.holdout_pass = false;
+        assert_eq!(decide(evidence, EvalPolicy::default()), Decision::Repair);
+    }
+
+    #[test]
+    fn critical_guardrail_failure_blocks_promotion() {
+        let mut evidence = robust_gain();
+        evidence.critical_guardrails_pass = false;
+        assert_eq!(decide(evidence, EvalPolicy::default()), Decision::Repair);
     }
 
     #[test]

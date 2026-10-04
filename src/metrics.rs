@@ -3,10 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::confidence::Classification;
-use crate::entity::{Entity, Evidence, EvidenceProvenance};
+use crate::entity::Entity;
 use crate::eval::stats::mean;
 use crate::graph::{EntityRelation, Graph, UNREACHABLE};
-use crate::tags;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TierCounts {
@@ -246,8 +245,9 @@ fn density(edges: usize, n: usize) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::EntityKind;
+    use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
     use crate::graph::{EntityRelation, RelationKind};
+    use crate::tags;
 
     fn ent(kind: EntityKind, value: &str, confidence: f64) -> Entity {
         Entity::new(kind, value, confidence, "scan")
@@ -265,8 +265,16 @@ mod tests {
         let metrics = compute(&[], &[]);
         assert_eq!(metrics.total_entities, 0);
         assert_eq!(metrics.total_relations, 0);
-        assert!(metrics.entities_by_kind.is_empty());
-        assert!(metrics.relations_by_kind.is_empty());
+        assert!(
+            metrics.entities_by_kind.is_empty(),
+            "{:?}",
+            metrics.entities_by_kind
+        );
+        assert!(
+            metrics.relations_by_kind.is_empty(),
+            "{:?}",
+            metrics.relations_by_kind
+        );
         assert!(metrics.mean_confidence.abs() < f64::EPSILON);
         assert!(metrics.median_confidence.abs() < f64::EPSILON);
         assert!(metrics.corroborated_fraction.abs() < f64::EPSILON);
