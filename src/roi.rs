@@ -1,5 +1,5 @@
 use crate::dependency::ModuleCategory;
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+use crate::entity::{Entity, EntityKind};
 
 pub const SATURATION_CORROBORATION: u32 = 2;
 pub const SATURATION_CONFIDENCE: f64 = 0.85;
@@ -261,6 +261,8 @@ const _: () = assert!(W_GEO * 4.0 < W_INFO, "W_GEO must stay well below W_INFO")
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{Evidence, EvidenceProvenance};
+
     fn make(confidence: f64, corroboration: usize) -> Entity {
         let mut entity = Entity::new(EntityKind::Email, "x@y.com", confidence, "scan");
         for idx in 1..corroboration {

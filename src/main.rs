@@ -11,6 +11,7 @@ use huntsman_recon::classify::classify_response;
 use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::egress::EgressPolicy;
+use huntsman_recon::entity::{Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
 use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
@@ -25,10 +26,11 @@ use huntsman_recon::http::{
 };
 use huntsman_recon::identity::{PersonRecord, resolve};
 use huntsman_recon::identity_resolution::{
-    AutoMergePolicy, IdentityResolutionDecision, ResolutionState,
+    AutoMergePolicy, HoldReason, IdentityResolutionDecision, ResolutionState,
 };
 use huntsman_recon::keys::{Keys, is_configured_value};
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
+use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage};
 use huntsman_recon::navigator::layer;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
@@ -218,10 +220,11 @@ fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
     let Some((slot, style)) = &args.auth else {
         return Ok(None);
     };
-    let keys = match &args.keys_file {
-        Some(path) => Keys::load(path)?,
-        None => Keys::from_env(),
-    };
+    let resolved = Keys::resolve(args.keys_file.as_deref(), env::var_os("HOME").as_deref())?;
+    if let Some(warning) = &resolved.warning {
+        eprintln!("{warning}");
+    }
+    let keys = resolved.keys;
     let secret = keys
         .get(slot)
         .ok_or_else(|| Error::Invalid(format!("credential {slot} is not configured")))?;
@@ -560,6 +563,102 @@ fn check_overlay_gates() -> Gate {
         "WAF demanded credentials",
     )?;
 
+    check_lineage_gate()?;
+    check_ancestry_graph_gate()?;
+
+    let delayed = FrontierState {
+        delayed_retry_work: 1,
+        ..FrontierState::default()
+    };
+    gate(
+        5,
+        decide_termination(delayed, TerminationSignals::default()).is_none(),
+        "delayed work called a fixed point",
+    )?;
+    Ok(())
+}
+
+/// Gate 5, lineage half: families come from the response fields, not the collector.
+/// Two collectors relaying one dump are one family and cannot auto-merge; a dump plus
+/// an independent registry can, but only with a present, in-range probability.
+/// Every observation and candidate comes back.
+fn check_lineage_gate() -> Gate {
+    let record = |id: &str, collector: &str, field: &str, value: &str| Observation {
+        id: id.into(),
+        evidence: Evidence::new(EvidenceProvenance::new(collector), "fixture record")
+            .with_attr(field, value),
+    };
+    let observations = vec![
+        record("hibp-1", "hibp", "breach", "Adobe 2013"),
+        record("dehashed-1", "dehashed", "dbname", "ADOBE  2013"),
+        record("abr-1", "abn_lookup", "registry", "company registry"),
+    ];
+    let mirrors = IdentityResolutionDecision {
+        left_entity_uid: "a".into(),
+        right_entity_uid: "b".into(),
+        state: ResolutionState::Match,
+        probability: Some(0.99),
+        supporting: vec!["hibp-1".into(), "dehashed-1".into()],
+        contradicting: vec![],
+        temporal_conflict: false,
+        geographic_conflict: false,
+        decided_at_unix: 0,
+    };
+    let independent = IdentityResolutionDecision {
+        supporting: vec!["dehashed-1".into(), "abr-1".into()],
+        ..mirrors.clone()
+    };
+    let unscored = IdentityResolutionDecision {
+        probability: None,
+        ..independent.clone()
+    };
+    let nan = IdentityResolutionDecision {
+        probability: Some(f64::NAN),
+        ..independent.clone()
+    };
+    let resolution = resolve_with_lineage(
+        observations.clone(),
+        vec![mirrors, independent, unscored, nan],
+        AutoMergePolicy::default(),
+    )
+    .map_err(|e| (5, e.to_string()))?;
+    let [mirrors, independent, unscored, nan] = resolution.candidates.as_slice() else {
+        return Err((5, "a merge candidate was dropped".into()));
+    };
+    gate(
+        5,
+        mirrors.independent_families.len() == 1 && mirrors.outcome != MergeOutcome::AutoMerge,
+        "mirrors manufactured corroboration",
+    )?;
+    gate(
+        5,
+        independent.outcome == MergeOutcome::AutoMerge,
+        "independent roots refused",
+    )?;
+    let held_for = |c: &CandidateOutcome, want: fn(&HoldReason) -> bool| matches!(&c.outcome, MergeOutcome::Held { reasons } if reasons.iter().any(want));
+    gate(
+        5,
+        held_for(unscored, |r| *r == HoldReason::ProbabilityMissing)
+            && held_for(nan, |r| matches!(r, HoldReason::ProbabilityInvalid { .. })),
+        "merge without a valid probability",
+    )?;
+    gate(
+        5,
+        resolution
+            .observations
+            .iter()
+            .map(|o| &o.observation)
+            .eq(&observations),
+        "observation dropped or re-attributed",
+    )
+}
+
+/// Gate 5, graph half: the hand-built ancestry graph and `allows_automatic_merge`, the
+/// exact path `resolve::automatic_clusters` takes in production. Unlike the lineage
+/// graph (one root plus relay nodes), it has an explicit parent chain and a root that
+/// supports a candidate directly. Two mirrors of one dump are one family; a mirror plus
+/// an independent registry root are two.
+fn check_ancestry_graph_gate() -> Gate {
     let mut graph = EvidenceAncestryGraph::default();
     let nodes: [(&str, &str, &[&str]); 4] = [
         ("dump", "Adobe 2013", &[]),
@@ -591,7 +690,7 @@ fn check_overlay_gates() -> Gate {
     gate(
         5,
         !mirrors.allows_automatic_merge(&graph, AutoMergePolicy::default()),
-        "mirrors manufactured corroboration",
+        "mirrors manufactured corroboration (ancestry graph)",
     )?;
     let independent = IdentityResolutionDecision {
         supporting: vec!["mirror-a".into(), "registry".into()],
@@ -600,19 +699,8 @@ fn check_overlay_gates() -> Gate {
     gate(
         5,
         independent.allows_automatic_merge(&graph, AutoMergePolicy::default()),
-        "independent roots refused",
-    )?;
-
-    let delayed = FrontierState {
-        delayed_retry_work: 1,
-        ..FrontierState::default()
-    };
-    gate(
-        5,
-        decide_termination(delayed, TerminationSignals::default()).is_none(),
-        "delayed work called a fixed point",
-    )?;
-    Ok(())
+        "independent roots refused (ancestry graph)",
+    )
 }
 
 /// RCVF recorder gate: full terminate refuses an empty tip and binds to the real one.
