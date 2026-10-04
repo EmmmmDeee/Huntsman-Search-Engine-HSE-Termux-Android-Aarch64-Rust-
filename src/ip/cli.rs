@@ -23,8 +23,7 @@ use super::{
     IpFailure, IpFailureKind, IpInvestigation, IpProvider, IpProviderParseError, IpTarget,
 };
 
-pub const IP_USAGE: &str =
-    "usage: huntsman-recon ip <IP> [--json] [--deep] [--evidence]";
+pub const IP_USAGE: &str = "usage: huntsman-recon ip <IP> [--json] [--deep] [--evidence]";
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum IpCliError {
@@ -60,7 +59,8 @@ pub fn run_ip_cli(args: &[String], now_unix: u64) -> Result<String, IpCliError> 
         return Err(IpCliError::Usage(IP_USAGE.into()));
     }
 
-    let target = IpTarget::parse(raw_target).map_err(|error| IpCliError::Data(error.to_string()))?;
+    let target =
+        IpTarget::parse(raw_target).map_err(|error| IpCliError::Data(error.to_string()))?;
     let mut json = false;
     let mut deep = false;
     let mut evidence = false;
@@ -213,7 +213,10 @@ fn discover_rdap_provider<T: Transport + ?Sized>(
     let base_url = bootstrap.base_url_for(target.address).ok_or_else(|| {
         bootstrap_failure(
             IpFailureKind::Schema,
-            format!("IANA RDAP bootstrap has no route for {}", target.canonical()),
+            format!(
+                "IANA RDAP bootstrap has no route for {}",
+                target.canonical()
+            ),
             Some(outcome),
         )
     })?;
