@@ -65,7 +65,7 @@ fn main() -> ExitCode {
         Some("sources") => sources_cmd(args.next()),
         Some("classify") => classify(args.next(), args.next()),
         Some("fetch") => fetch_cmd(&args.collect::<Vec<_>>()),
-        Some("hibp") => hibp_cmd(args.collect()),
+        Some("hibp") => hibp_cmd(&args.collect::<Vec<_>>()),
         Some("keys") => keys_cmd(args.next()),
         Some("verify") => verify(args.next()),
         Some("check") | None => check(),
@@ -152,18 +152,13 @@ fn id_cmd(token: Option<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn hibp_cmd(args: Vec<String>) -> ExitCode {
-    let cmd = HibpCommand::production();
-    let mut stdin = std::io::stdin().lock();
-    let mut out = std::io::stdout().lock();
-    let mut err = std::io::stderr().lock();
-    match cmd.run(&args, &mut stdin, &mut out, &mut err) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(failure) => {
-            eprintln!("hibp: {}", failure.message);
-            ExitCode::from(failure.exit_code)
-        }
-    }
+fn hibp_cmd(args: &[String]) -> ExitCode {
+    ExitCode::from(HibpCommand::production().run(
+        args,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    ))
 }
 
 fn fetch_cmd(args: &[String]) -> ExitCode {
@@ -331,6 +326,9 @@ fn sources_cmd(query: Option<String>) -> ExitCode {
         return fail(EX_USAGE, "usage: huntsman-recon sources QUERY");
     };
     let classified = classify_indicator(&query);
+    // Residual and unsupported kinds have no descriptors, so the empty-route check
+    // is the gate. A confidence floor here would drop low-confidence but routable
+    // kinds such as `@handle` usernames.
     let routes = routes_for(&classified.kind, &classified.value);
     if routes.is_empty() {
         return fail(EX_DATAERR, "no actionable source routes");
