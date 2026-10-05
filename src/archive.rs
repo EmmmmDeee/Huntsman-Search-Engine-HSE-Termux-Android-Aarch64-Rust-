@@ -278,7 +278,7 @@ pub fn classify_archive_path(path: &str, query: &str) -> Vec<ArchiveInterest> {
         .filter(|segment| !segment.is_empty())
         .collect();
     let basename = segments.last().copied().unwrap_or("");
-    let extension = basename.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
+    let extension = basename.rsplit_once('.').map_or("", |(_, ext)| ext);
     let mut interests = BTreeSet::new();
 
     if matches!(
@@ -308,7 +308,7 @@ pub fn classify_archive_path(path: &str, query: &str) -> Vec<ArchiveInterest> {
         interests.insert(ArchiveInterest::ArchiveOrBackup);
     }
     if matches!(basename, ".env" | "id_rsa" | "wp-config.php")
-        || segments.iter().any(|segment| *segment == ".git")
+        || segments.contains(&".git")
         || matches!(extension, "ini" | "toml" | "yaml" | "yml")
         || (basename.starts_with("config.")
             && matches!(extension, "json" | "xml" | "ini" | "toml" | "yaml" | "yml"))
