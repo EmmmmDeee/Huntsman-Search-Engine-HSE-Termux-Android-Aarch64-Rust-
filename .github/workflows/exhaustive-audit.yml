@@ -30,6 +30,8 @@ jobs:
             disposition='KEEP'
             rationale=''
             case "$path" in
+              .github/workflows/exhaustive-audit.yml)
+                class='audit-instrumentation'; materiality='temporary'; disposition='REMOVE'; rationale='temporary exhaustive-audit instrumentation; excluded from authoritative baseline N and removed before final branch' ;;
               legacy/README.md)
                 class='legacy-provenance'; materiality='supporting'; rationale='documents canonical legacy oracle trees and must remain aligned with provenance invariants' ;;
               legacy/*)
@@ -72,12 +74,16 @@ jobs:
 
           rows=$(( $(wc -l < audit-manifest.tsv) - 1 ))
           unclassified=$(awk -F '\t' 'NR>1 && $2=="UNCLASSIFIED" {n++} END {print n+0}' audit-manifest.tsv)
+          audit_only=$(awk -F '\t' 'NR>1 && $2=="audit-instrumentation" {n++} END {print n+0}' audit-manifest.tsv)
+          baseline_n=$((n - audit_only))
           legacy=$(awk -F '\t' 'NR>1 && $2 ~ /^legacy-/ {n++} END {print n+0}' audit-manifest.tsv)
           active=$(awk -F '\t' 'NR>1 && $2=="active-rust" {n++} END {print n+0}' audit-manifest.tsv)
           tests=$(awk -F '\t' 'NR>1 && ($2=="integration-test" || $2=="test-fixture") {n++} END {print n+0}' audit-manifest.tsv)
           docs=$(awk -F '\t' 'NR>1 && ($2=="documentation" || $2=="design-record" || $2=="root-documentation") {n++} END {print n+0}' audit-manifest.tsv)
 
           echo "TRACKED_N=$n"
+          echo "AUDIT_ONLY=$audit_only"
+          echo "AUTHORITATIVE_BASELINE_N=$baseline_n"
           echo "MANIFEST_ROWS=$rows"
           echo "UNCLASSIFIED=$unclassified"
           echo "LEGACY_OR_PROVENANCE=$legacy"
@@ -91,6 +97,7 @@ jobs:
 
           test "$rows" -eq "$n"
           test "$unclassified" -eq 0
+          test "$audit_only" -eq 1
           test "$(find legacy/hse-monolith-v1.41.0 -type f | wc -l | tr -d ' ')" -eq 1314
           test "$(find legacy/refactor-overlay-feef60a -type f | wc -l | tr -d ' ')" -eq 40
 
@@ -127,9 +134,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash .github/scripts/scan-for-keys.sh
+          bash .github/scripts/scan-for-keys.sh \
+            .github .gitignore ARCHITECTURE.md CHANGELOG.md Cargo.lock Cargo.toml README.md \
+            build.rs docs install.sh legacy src tests var
 
       - name: Upload audit manifest
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: exhaustive-audit-manifest
