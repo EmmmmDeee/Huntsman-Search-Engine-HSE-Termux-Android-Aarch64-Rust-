@@ -1,11 +1,11 @@
-//! Run the dedicated embedder with fake keys, without mutating process environment.
+//! Prove the HIBP build script never embeds runtime credentials.
 
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
 #[test]
-fn embedding_is_optional_release_safe_and_runtime_sources_are_not_required() {
+fn build_marker_is_always_empty_and_never_leaks_runtime_sources() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("hibp-build-{}", std::process::id()));
@@ -24,40 +24,24 @@ fn embedding_is_optional_release_safe_and_runtime_sources_are_not_required() {
             .unwrap()
             .success()
     );
-    for (env_key, file_key, disable, expected) in [
-        (None, None, None, ""),
-        (Some("fake-env-key"), None, None, "fake-env-key"),
-        (None, Some(" fake-file-key \n"), None, "fake-file-key"),
-        (
-            Some("fake-env-key"),
-            Some("fake-file-key"),
-            None,
-            "fake-env-key",
-        ),
-        (
-            Some("changeme"),
-            Some("fake-file-key"),
-            None,
-            "fake-file-key",
-        ),
-        (
-            Some("insert_key_here"),
-            Some("fake-file-key"),
-            None,
-            "fake-file-key",
-        ),
-        (Some("fake-env-key"), Some("fake-file-key"), Some("CI"), ""),
+
+    for (env_key, file_key, disable) in [
+        (None, None, None),
+        (Some("fake-env-key"), None, None),
+        (None, Some(" fake-file-key \n"), None),
+        (Some("fake-env-key"), Some("fake-file-key"), None),
+        (Some("changeme"), Some("fake-file-key"), None),
+        (Some("insert_key_here"), Some("fake-file-key"), None),
+        (Some("fake-env-key"), Some("fake-file-key"), Some("CI")),
         (
             Some("fake-env-key"),
             Some("fake-file-key"),
             Some("HSE_RELEASE"),
-            "",
         ),
         (
             Some("fake-env-key"),
             Some("fake-file-key"),
             Some("HUNTSMAN_HIBP_NO_EMBED"),
-            "",
         ),
     ] {
         if let Some(value) = file_key {
@@ -70,6 +54,7 @@ fn embedding_is_optional_release_safe_and_runtime_sources_are_not_required() {
         } else {
             let _ = fs::remove_file(&key_file);
         }
+
         let mut command = Command::new(&binary);
         for name in [
             "HIBP_API_KEY",
@@ -86,16 +71,18 @@ fn embedding_is_optional_release_safe_and_runtime_sources_are_not_required() {
         if let Some(name) = disable {
             command.env(name, "1");
         }
+
         let result = command.output().unwrap();
         assert!(result.status.success());
         assert_eq!(
             fs::read_to_string(out.join("hibp_embedded_key.txt")).unwrap(),
-            expected
+            ""
         );
         let output = String::from_utf8(result.stdout).unwrap();
         assert!(!output.contains("fake-env-key") && !output.contains("fake-file-key"));
         assert!(output.contains("rerun-if-env-changed=HIBP_API_KEY"));
         assert!(output.contains("rerun-if-changed="));
     }
+
     fs::remove_dir_all(scratch).unwrap();
 }
