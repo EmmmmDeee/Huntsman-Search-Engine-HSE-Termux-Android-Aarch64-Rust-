@@ -91,7 +91,7 @@ fn help_and_version_are_available() {
     for (command, usage) in [
         ("geo", "geo LAT,LON LAT,LON"),
         ("search", "search QUERY [DIR]"),
-        ("people", "people NAME"),
+        ("people", "people NAME [--save FILE]"),
         ("fetch", "fetch URL [--body]"),
     ] {
         let out = bin().args([command, "--help"]).output().unwrap();
@@ -131,6 +131,30 @@ fn people_skips_single_token_without_network() {
 #[test]
 fn people_missing_name_is_usage() {
     let out = bin().arg("people").output().unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty(), "{:?}", out.stdout);
+}
+
+#[test]
+fn people_skip_does_not_write_save_file() {
+    let dir = scratch("people-skip-save");
+    let path = dir.join("skipped.json");
+    let out = bin()
+        .args(["people", "Madonna", "--save"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("skipped"), "{stdout:?}");
+    assert!(!stdout.contains("saved="), "{stdout:?}");
+    assert!(!path.exists(), "skip must not create {}", path.display());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn people_save_without_path_is_usage() {
+    let out = bin().args(["people", "--save"]).output().unwrap();
     assert_eq!(out.status.code(), Some(64));
     assert!(out.stdout.is_empty(), "{:?}", out.stdout);
 }
