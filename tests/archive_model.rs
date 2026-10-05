@@ -81,7 +81,9 @@ fn merge_keeps_first_last_count_and_per_dataset_aggregates() {
             "20240101000000",
             Some(200),
             Some("text/html"),
-            Some("https://web.archive.org/web/20240101000000/https://example.com/admin/login?next=%2F"),
+            Some(
+                "https://web.archive.org/web/20240101000000/https://example.com/admin/login?next=%2F",
+            ),
         ),
         capture(
             ArchiveSource::Wayback,
@@ -91,7 +93,9 @@ fn merge_keeps_first_last_count_and_per_dataset_aggregates() {
             "20240201000000",
             None,
             None,
-            Some("https://web.archive.org/web/20240201000000/http://example.com/admin/login?next=%2F"),
+            Some(
+                "https://web.archive.org/web/20240201000000/http://example.com/admin/login?next=%2F",
+            ),
         ),
         capture(
             ArchiveSource::CommonCrawl,
@@ -191,26 +195,28 @@ fn unknown_status_or_mime_is_not_invented() {
 #[test]
 fn interest_classification_marks_patterns_without_asserting_security_facts() {
     assert!(classify_archive_path("/report.pdf", "").contains(&ArchiveInterest::Document));
-    assert!(
-        classify_archive_path("/backup.sql", "").contains(&ArchiveInterest::ArchiveOrBackup)
-    );
-    assert!(
-        classify_archive_path("/.env", "").contains(&ArchiveInterest::ConfigurationLike)
-    );
+    assert!(classify_archive_path("/backup.sql", "").contains(&ArchiveInterest::ArchiveOrBackup));
+    assert!(classify_archive_path("/.env", "").contains(&ArchiveInterest::ConfigurationLike));
     assert!(classify_archive_path("/assets/app.js", "").contains(&ArchiveInterest::ScriptLike));
-    assert!(
-        classify_archive_path("/admin/login", "").contains(&ArchiveInterest::AdminAuthApiLike)
-    );
-    assert!(
-        classify_archive_path("/search", "q=hse").contains(&ArchiveInterest::Parameterized)
-    );
+    assert!(classify_archive_path("/admin/login", "").contains(&ArchiveInterest::AdminAuthApiLike));
+    assert!(classify_archive_path("/search", "q=hse").contains(&ArchiveInterest::Parameterized));
 }
 
 #[test]
 fn interest_classification_has_near_miss_negatives() {
-    for path in ["/administratorial/home", "/apiary/index", "/configurator/home"] {
+    for path in [
+        "/administratorial/home",
+        "/apiary/index",
+        "/configurator/home",
+    ] {
         let interests = classify_archive_path(path, "");
-        assert!(!interests.contains(&ArchiveInterest::AdminAuthApiLike), "{path}");
-        assert!(!interests.contains(&ArchiveInterest::ConfigurationLike), "{path}");
+        assert!(
+            !interests.contains(&ArchiveInterest::AdminAuthApiLike),
+            "{path}"
+        );
+        assert!(
+            !interests.contains(&ArchiveInterest::ConfigurationLike),
+            "{path}"
+        );
     }
 }
