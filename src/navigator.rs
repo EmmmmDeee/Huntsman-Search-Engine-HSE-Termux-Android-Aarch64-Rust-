@@ -1,9 +1,9 @@
-//! ATT&CK Navigator layer. Techniques appear only when a ledger entry admits interop.
-//! A catalog row is not a score.
+//! ATT&CK Navigator layers for the evidence ledger and TA0043 coverage.
+//! Catalogue membership is metadata, not evidence of implementation.
 
 use serde_json::{Value, json};
 
-use crate::attack::{Coverage, attack_spec_major};
+use crate::attack::{Coverage, reconnaissance_spec_major};
 use crate::ledger::{LedgerEntry, bindings};
 
 #[must_use]
@@ -31,14 +31,15 @@ pub fn layer_with(entries: &[LedgerEntry], bindings: &[(&str, &str)]) -> Value {
     }
     json!({
         "name": "huntsman-ledger",
-        "versions": {"attack": attack_spec_major(), "navigator": "4.9", "layer": "4.5"},
+        "versions": {"attack": reconnaissance_spec_major(), "navigator": "4.9", "layer": "4.5"},
         "domain": "enterprise-attack",
-        "description": "Generated only from admitted ledger entries. Absence is not a zero score.",
+        "description": "TA0043 entries generated only from admitted ledger claims. Absence is not a zero score.",
         "techniques": techniques
     })
 }
 
-/// Reconnaissance coverage layer over the explicit ATT&CK catalogue.
+/// Reconnaissance leaf-capability layer. Parent techniques are roll-ups in the
+/// `Coverage` object and are not emitted as independently scored techniques.
 #[must_use]
 pub fn coverage_layer(coverage: &Coverage, scan_label: &str) -> Value {
     let max_score = coverage
@@ -57,7 +58,7 @@ pub fn coverage_layer(coverage: &Coverage, scan_label: &str) -> Value {
                 "tactic": "reconnaissance",
                 "score": item.entity_count,
                 "enabled": true,
-                "comment": item.technique.name,
+                "comment": format!("{} — observed capability evidence", item.technique.name),
             })
         })
         .collect();
@@ -67,14 +68,23 @@ pub fn coverage_layer(coverage: &Coverage, scan_label: &str) -> Value {
             "tactic": "reconnaissance",
             "score": 0,
             "enabled": false,
-            "comment": item.name,
+            "comment": format!("{} — capability gap", item.name),
+        }));
+    }
+    for item in &coverage.intentional_exclusions {
+        techniques.push(json!({
+            "techniqueID": item.id,
+            "tactic": "reconnaissance",
+            "score": 0,
+            "enabled": false,
+            "comment": format!("{} — intentional product-scope exclusion", item.name),
         }));
     }
     json!({
-        "name": format!("huntsman-recon — {scan_label} (Reconnaissance coverage)"),
-        "versions": { "attack": attack_spec_major(), "navigator": "5.1.0", "layer": "4.5" },
+        "name": format!("huntsman-recon — {scan_label} (Reconnaissance leaf capabilities)"),
+        "versions": { "attack": reconnaissance_spec_major(), "navigator": "5.1.0", "layer": "4.5" },
         "domain": "enterprise-attack",
-        "description": "Reconnaissance-only coverage view. Disabled techniques are honest gaps.",
+        "description": "TA0043 actionable-leaf capability view. Parent families are roll-ups, not independent scores. Disabled entries are gaps or intentional exclusions as stated in comments. Scores are observation counts, not detection effectiveness.",
         "sorting": 3,
         "hideDisabled": false,
         "techniques": techniques,
@@ -131,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn layer_uses_catalog_attack_major_version() {
+    fn layer_uses_current_reconnaissance_major_version() {
         let entry = seal(&Claim {
             claim: "bound".into(),
             source: "test".into(),
@@ -142,18 +152,25 @@ mod tests {
             does_not_show: "not a live scan".into(),
         });
         let value = layer_with(&[entry], &[("src/x.rs", "T1595.001")]);
-        assert_eq!(value["versions"]["attack"], attack::attack_spec_major());
+        assert_eq!(
+            value["versions"]["attack"],
+            attack::reconnaissance_spec_major()
+        );
     }
 
     #[test]
-    fn coverage_layer_emits_covered_and_gap_techniques() {
+    fn coverage_layer_emits_exactly_actionable_leaves() {
         let mut exercised = std::collections::BTreeMap::new();
         exercised.insert("T1596.002".to_string(), 5);
         let coverage = attack::coverage(&exercised);
         let value = coverage_layer(&coverage, "scan-abc");
-        assert_eq!(value["versions"]["attack"], attack::attack_spec_major());
+        assert_eq!(
+            value["versions"]["attack"],
+            attack::reconnaissance_spec_major()
+        );
         let techniques = value["techniques"].as_array().unwrap();
-        assert_eq!(techniques.len(), attack::reconnaissance().len());
+        assert_eq!(techniques.len(), attack::reconnaissance_leaves().len());
+        assert!(techniques.iter().all(|item| item["techniqueID"] != "T1596"));
         let whois = techniques
             .iter()
             .find(|item| item["techniqueID"] == "T1596.002")
@@ -162,10 +179,22 @@ mod tests {
         assert_eq!(whois["enabled"], true);
         let phishing = techniques
             .iter()
-            .find(|item| item["techniqueID"] == "T1598")
+            .find(|item| item["techniqueID"] == "T1598.001")
             .unwrap();
         assert_eq!(phishing["score"], 0);
         assert_eq!(phishing["enabled"], false);
+        assert!(phishing["comment"]
+            .as_str()
+            .unwrap()
+            .contains("intentional product-scope exclusion"));
+        let threat_vendor = techniques
+            .iter()
+            .find(|item| item["techniqueID"] == "T1681")
+            .unwrap();
+        assert!(threat_vendor["comment"]
+            .as_str()
+            .unwrap()
+            .contains("capability gap"));
         assert_eq!(value["gradient"]["maxValue"], 5);
     }
 }
