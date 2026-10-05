@@ -1,13 +1,8 @@
-//! HIBP API key loading, behind one small runtime-only interface.
+//! HIBP API key loading behind a runtime-only interface.
 //!
-//! A key is an [`ApiKey`]: a newtype whose `Debug`/`Display` never print the
-//! value. Runtime sources are tried in this order:
-//!
-//! 1. `HIBP_API_KEY`;
-//! 2. the caller's `HUNTSMAN_HIBP_KEY` slot, else that environment variable;
-//! 3. private `~/.config/hibp/api_key`.
-//!
-//! HIBP API keys are never embedded into the binary at build time.
+//! Production key precedence is `HIBP_API_KEY`, the caller's
+//! `HUNTSMAN_HIBP_KEY` slot (or that environment variable), then private
+//! `~/.config/hibp/api_key`. No production build embeds an API key.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -17,23 +12,16 @@ pub const REDACTED: &str = "<redacted>";
 
 #[derive(Clone)]
 pub struct ApiKey(crate::keys::Secret);
-
 impl ApiKey {
-    pub fn new(raw: &str) -> Option<Self> {
-        crate::keys::Secret::new(raw).ok().map(Self)
-    }
-
+    pub fn new(raw: &str) -> Option<Self> { crate::keys::Secret::new(raw).ok().map(Self) }
     #[must_use]
     pub fn expose(&self) -> &str { self.0.expose() }
-
     #[must_use]
     pub fn redact_in(&self, text: &str) -> String { text.replace(self.expose(), REDACTED) }
 }
-
 impl fmt::Debug for ApiKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "ApiKey({REDACTED})") }
 }
-
 impl fmt::Display for ApiKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(REDACTED) }
 }
@@ -43,12 +31,12 @@ pub enum KeyOrigin {
     Env(&'static str),
     HuntsmanSlot,
     File(PathBuf),
+    #[cfg(test)]
+    Embedded,
     Provided,
 }
 
-pub trait KeySource: Send + Sync {
-    fn load(&self) -> Option<(ApiKey, KeyOrigin)>;
-}
+pub trait KeySource: Send + Sync { fn load(&self) -> Option<(ApiKey, KeyOrigin)>; }
 
 pub struct EnvSource(pub &'static str);
 impl KeySource for EnvSource {
@@ -80,6 +68,14 @@ impl KeySource for FileSource {
     }
 }
 
+/// Compatibility marker retained for callers/tests that previously inspected
+/// build-time embedding. Production binaries can no longer carry such a key.
+pub struct EmbeddedSource;
+impl EmbeddedSource {
+    #[must_use]
+    pub const fn is_present() -> bool { false }
+}
+
 #[must_use]
 pub fn default_key_file() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
@@ -103,20 +99,29 @@ impl KeyLoader {
             std::env::var(HIBP_API_KEY_ENV).ok(),
             huntsman_slot.or(env_slot.as_deref()),
             default_key_file(),
+            "",
         )
     }
 
+    /// The fourth argument is retained for source compatibility. In production
+    /// it is deliberately ignored. Unit tests may inject it to exercise the old
+    /// precedence contract without placing a secret in any built artifact.
     #[must_use]
     pub fn from_parts(
         env_value: Option<String>,
         huntsman_slot: Option<&str>,
         key_file: Option<PathBuf>,
+        test_embedded: &str,
     ) -> Self {
         let mut sources: Vec<Box<dyn KeySource>> = vec![
             Box::new(ValueSource { value: env_value, origin: KeyOrigin::Env(HIBP_API_KEY_ENV) }),
             Box::new(ValueSource::new(huntsman_slot, KeyOrigin::HuntsmanSlot)),
         ];
         if let Some(path) = key_file { sources.push(Box::new(FileSource(path))); }
+        #[cfg(test)]
+        sources.push(Box::new(ValueSource::new(Some(test_embedded), KeyOrigin::Embedded)));
+        #[cfg(not(test))]
+        let _ = test_embedded;
         Self { sources }
     }
 
@@ -129,6 +134,5 @@ fn private_file(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o077 == 0)
 }
-
 #[cfg(not(unix))]
 fn private_file(_path: &std::path::Path) -> bool { true }
