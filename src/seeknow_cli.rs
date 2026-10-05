@@ -4,7 +4,9 @@
 //! here so the binary reaches the L4 [`crate::seeknow`] client only through L5.
 
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::fmt::Write;
+use std::path::{Path, PathBuf};
 
 use crate::collector::{CollectionLimits, CollectionOutcome};
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
@@ -33,8 +35,34 @@ pub enum SeekNowCliRun {
     Usage,
     Printed(String),
     BadData(String),
+    Input(String),
     NoPerm(String),
     Unavailable(String),
+}
+
+#[must_use]
+pub fn run<T: Transport + ?Sized>(
+    transport: &T,
+    args: &[String],
+    home: Option<&OsStr>,
+    now_unix: u64,
+) -> SeekNowCliRun {
+    let (command_args, explicit_keys) = match split_keys_arg(args) {
+        Ok(parsed) => parsed,
+        Err(()) => return SeekNowCliRun::Usage,
+    };
+    let resolved = match Keys::resolve(explicit_keys.as_deref(), home) {
+        Ok(resolved) => resolved,
+        Err(error) => return SeekNowCliRun::Input(format!("cannot load SeekNow keys: {error}")),
+    };
+    let mut result = run_with_keys(transport, &command_args, &resolved.keys, now_unix);
+    if let Some(warning) = resolved.warning {
+        if let Some(text) = result_text_mut(&mut result) {
+            text.push('\n');
+            text.push_str(&warning);
+        }
+    }
+    result
 }
 
 #[must_use]
@@ -83,6 +111,28 @@ pub fn run_with_keys<T: Transport + ?Sized>(
         "search" => run_search(transport, &credential, &args[1..], now_unix),
         _ => SeekNowCliRun::Usage,
     }
+}
+
+fn split_keys_arg(args: &[String]) -> Result<(Vec<String>, Option<PathBuf>), ()> {
+    let mut command = Vec::with_capacity(args.len());
+    let mut explicit = None;
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--keys" {
+            let Some(path) = args.get(index + 1) else {
+                return Err(());
+            };
+            if explicit.is_some() || path.starts_with("--") {
+                return Err(());
+            }
+            explicit = Some(Path::new(path).to_path_buf());
+            index += 2;
+        } else {
+            command.push(args[index].clone());
+            index += 1;
+        }
+    }
+    Ok((command, explicit))
 }
 
 fn credential_from_keys(keys: &Keys, now_unix: u64) -> Result<Credential, String> {
@@ -261,4 +311,15 @@ fn outcome_name(kind: SourceOutcomeKind) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_else(|| "unknown".into())
+}
+
+fn result_text_mut(result: &mut SeekNowCliRun) -> Option<&mut String> {
+    match result {
+        SeekNowCliRun::Printed(text)
+        | SeekNowCliRun::BadData(text)
+        | SeekNowCliRun::Input(text)
+        | SeekNowCliRun::NoPerm(text)
+        | SeekNowCliRun::Unavailable(text) => Some(text),
+        SeekNowCliRun::Usage => None,
+    }
 }
