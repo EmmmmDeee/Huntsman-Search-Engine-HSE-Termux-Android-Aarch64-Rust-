@@ -66,12 +66,12 @@ CURRENT. One package, one library (`src/lib.rs`) and one binary (`src/main.rs`, 
 | L2 network boundary | `classify`, `source_outcome`, `egress`, `credential_origin`, `http`, `keys`, `fetch`, `fetch_cli` | The only network path (see BOUNDARIES) |
 | L3 normalisation | `textnorm`, `canonical`, `validation`, `domains`, `address_au`, `postcode_au`, `au_id`, `breach`, `archive`, `spf`, `dmarc`, `tlsrpt` | Canonical forms, validators and record parsers; `archive` models archive-URL identity and deterministic capture aggregation over `canonical`; `postcode_au` also has one postcode lookup over an injected `http::Transport` (its only crate dependency is `http`), and `au_id` re-exports it (`src/au_id.rs:13`) |
 | L4 source clients | `ckan`, `mediawiki`, `atproto`, `dns`, `hibp`, `service_defs`, `key_health`, `scraper_health`, `recon` | Request builders and response parsers. Only `dns`, `hibp` and `service_defs` send, each over a transport passed in, except `hibp::HibpClient::production`, which builds its own `UreqTransport` (see BOUNDARIES) |
-| L5 entity model and analysis | `entity`, `identity`, `relation`, `graph`, `coref`, `correlator`, `cross_scan`, `dependency`, `module`, `attack`, `attack_catalog`, `exposure`, `profiles`, `leads`, `timeline`, `community`, `diff`, `path`, `pivot`, `intelligence`, `classifier`, `classify_module`, `lineage`, `assurance`, `benchmark`, `coverage`, `diamond`, `gap`, `metrics`, `roi`, `trust`, `source_registry`, `asic_persons`, `people_cli` | Entities, evidence, relations, correlation rules; lineage from response data and the merge-rule front-end (`lineage`); assurance, coverage and gap reports; offline `LeadOnly` search routes per entity kind (`source_registry`); keyless ASIC people-register collector (`asic_persons`); `people` collection front-end (`people_cli`) |
+| L5 entity model and analysis | `entity`, `identity`, `relation`, `graph`, `coref`, `correlator`, `cross_scan`, `dependency`, `module`, `attack`, `attack_catalog`, `exposure`, `profiles`, `leads`, `timeline`, `community`, `diff`, `path`, `pivot`, `intelligence`, `classifier`, `classify_module`, `lineage`, `assurance`, `benchmark`, `coverage`, `diamond`, `gap`, `metrics`, `roi`, `trust`, `source_registry`, `collector`, `asic_persons`, `people_cli` | Entities, evidence, relations, correlation rules; lineage from response data and the merge-rule front-end (`lineage`); reusable bounded collection contracts (`collector`); assurance, coverage and gap reports; offline `LeadOnly` search routes per entity kind (`source_registry`); keyless ASIC people-register collector (`asic_persons`); `people` collection front-end (`people_cli`) |
 | L6 GEOINT and RF | `geo`, `geometry`, `rf`, `geoint` | Coordinates, places, RF sightings |
 | L7 records and outputs | `ledger`, `session`, `store`, `stix`, `navigator`, `search`, `gexf`, `snake_graph` | Hash-chained ledger, session store, exports, local search |
 | Binary | `main` | Dispatch for the 12 commands; calls L0, L1, L2, L3, L5, L6 and L7 directly, never L4 |
 
-PLANNED: a collector layer between L4 and L5 that turns a selector into source requests and a source response into `entity::Evidence` plus an `evidence_ancestry` node. It is the missing causal boundary named in the audit. The binary reaches L4 only through it.
+CURRENT: `collector` is the source-agnostic L5 boundary between source clients and evidence/entity interpretation. It defines bounded `CollectionLimits`, per-request `ObservationReceipt`, typed candidate pivots, aggregate `CollectionBatch` outcomes and a synchronous `Collector` trait over an injected `http::Transport`. It opens no sockets and creates no lineage families itself. PLANNED: source-specific collectors progressively route reconstructed providers through this boundary; the binary reaches L4 only through those L5 adapters.
 
 ## BOUNDARIES
 
@@ -95,13 +95,13 @@ CURRENT:
 - `http::Transport::send(&Request) -> Result<Response, TransportFailure>`. A non-2xx status is a `Response`, not an error.
 - `fetch` returns a typed `source_outcome::SourceOutcomeKind` and never "found": a 200 is `Inconclusive` until a parser produces rows, and a challenge page is `BotWaf` at any status.
 - `source_outcome::recommended_action` maps an outcome to `Accept`, `Retry`, `Backoff`, `RequireCredential`, `Quarantine`, `RequireContractVerification` or `Investigate`.
+- `collector::Collector::collect(&Entity, &dyn Transport, &CollectionLimits, now_unix) -> Result<CollectionBatch, CollectorError>` is the generic synchronous keyless collection boundary. `CollectionBatch` carries per-request causal receipts; a zero becomes `ValidZero` only after a source-specific contract validates it.
 - `identity_resolution::IdentityResolutionDecision::allows_automatic_merge` is `hold_reasons(..).is_empty()` and non-compensatory: one contradiction, a temporal or geographic conflict, unknown ancestry, or a missing, non-finite, out-of-range or below-floor probability blocks the merge regardless of support. Each failed condition is returned as a `HoldReason`, in a fixed order (`docs/LINEAGE.md`).
 - `lineage::resolve_with_lineage` returns every observation and every candidate in input order, each candidate `AutoMerge` or `Held { reasons }`; it drops nothing.
 - `ledger`: each entry's hash covers the previous hash plus the claim. `verify` prints `entries`, `admitted` and `tip`, and exits 65 on a broken chain.
 - CLI exit codes: 0 success, 64 usage, 65 bad data or broken ledger, 66 unreadable input, 69 no response, 74 artifact write failure, 77 egress refusal; `check` uses 2–11 for its gates. `tests/readme.rs` enforces these.
 
 PLANNED:
-- Collector contract: `collect(selector, &dyn Transport) -> (SourceOutcomeKind, Vec<Evidence>)`. Zero rows with a `Success` outcome is `ValidZero`, not a failure.
 - Each people-lookup command documents and tests the same exit-code set.
 
 ## INVARIANTS
