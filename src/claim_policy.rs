@@ -29,6 +29,11 @@ pub struct VerificationPolicy {
     pub min_proven_roots: usize,
     pub require_resolved_ancestry: bool,
     pub required_natures: Vec<EvidenceNature>,
+    /// Claim-specific semantic obligations. Each key must be observed with at
+    /// least one of its explicitly accepted values in attached support evidence.
+    /// Empty by default for backwards-compatible policies.
+    #[serde(default)]
+    pub required_attributes: BTreeMap<String, BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -36,6 +41,7 @@ pub enum VerificationBlocker {
     UnknownAncestry,
     CanonicalAncestryRequired,
     MissingRequiredEvidenceNature,
+    MissingRequiredEvidenceAttribute,
     InsufficientIndependentSupport,
     IncompleteIndependenceProof,
     UndefeatedDefeater,
@@ -102,6 +108,30 @@ fn defeat_blocks_verification(defeat: &Defeat) -> bool {
     }
 }
 
+fn observe_attributes(
+    observed: &mut BTreeMap<String, BTreeSet<String>>,
+    attributes: &BTreeMap<String, String>,
+) {
+    for (key, value) in attributes {
+        observed
+            .entry(key.clone())
+            .or_default()
+            .insert(value.clone());
+    }
+}
+
+fn required_attributes_satisfied(
+    policy: &VerificationPolicy,
+    observed: &BTreeMap<String, BTreeSet<String>>,
+) -> bool {
+    policy.required_attributes.iter().all(|(key, accepted)| {
+        !accepted.is_empty()
+            && observed
+                .get(key)
+                .is_some_and(|values| values.iter().any(|value| accepted.contains(value)))
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finish_assessment(
     policy: &VerificationPolicy,
@@ -111,6 +141,7 @@ fn finish_assessment(
     unresolved_support: usize,
     independence_incomplete: bool,
     present_natures: &[EvidenceNature],
+    observed_attributes: &BTreeMap<String, BTreeSet<String>>,
     has_blocking_defeat: bool,
     canonical_ancestry: bool,
 ) -> ClaimAssessment {
@@ -133,6 +164,9 @@ fn finish_assessment(
         .any(|required| !present_natures.contains(required))
     {
         blockers.insert(VerificationBlocker::MissingRequiredEvidenceNature);
+    }
+    if !required_attributes_satisfied(policy, observed_attributes) {
+        blockers.insert(VerificationBlocker::MissingRequiredEvidenceAttribute);
     }
     if has_blocking_defeat {
         blockers.insert(VerificationBlocker::UndefeatedDefeater);
@@ -186,6 +220,7 @@ impl IntelligenceLedger {
         let mut proven_roots = BTreeSet::new();
         let mut unresolved_support = 0usize;
         let mut present_natures = Vec::new();
+        let mut observed_attributes = BTreeMap::new();
 
         for evidence_id in &claim.support {
             let evidence = self
@@ -200,6 +235,7 @@ impl IntelligenceLedger {
             if !present_natures.contains(&evidence.nature) {
                 present_natures.push(evidence.nature.clone());
             }
+            observe_attributes(&mut observed_attributes, &evidence.attributes);
         }
 
         Ok(finish_assessment(
@@ -210,6 +246,7 @@ impl IntelligenceLedger {
             unresolved_support,
             false,
             &present_natures,
+            &observed_attributes,
             !claim.contradictions.is_empty()
                 || claim.defeats.iter().any(defeat_blocks_verification),
             false,
@@ -225,7 +262,8 @@ impl IntelligenceLedger {
     /// root result is unresolved ancestry and therefore fails closed whenever
     /// the policy requires resolved ancestry. Multiple resolved roots satisfy a
     /// multi-route policy only when the graph carries explicit evidence proving
-    /// the required mutually independent routes.
+    /// the required mutually independent routes. Semantic attribute obligations
+    /// are checked independently and cannot be compensated by route volume.
     ///
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
@@ -246,6 +284,7 @@ impl IntelligenceLedger {
         let mut resolved_nodes = Vec::new();
         let mut unresolved_support = 0usize;
         let mut present_natures = Vec::new();
+        let mut observed_attributes = BTreeMap::new();
 
         for evidence_id in &claim.support {
             let evidence = self
@@ -255,6 +294,7 @@ impl IntelligenceLedger {
             if !present_natures.contains(&evidence.nature) {
                 present_natures.push(evidence.nature.clone());
             }
+            observe_attributes(&mut observed_attributes, &evidence.attributes);
 
             let Some(node_id) = bindings.get(evidence_id) else {
                 unresolved_support += 1;
@@ -289,6 +329,7 @@ impl IntelligenceLedger {
             unresolved_support,
             route_count.incomplete,
             &present_natures,
+            &observed_attributes,
             !claim.contradictions.is_empty()
                 || claim.defeats.iter().any(defeat_blocks_verification),
             true,
