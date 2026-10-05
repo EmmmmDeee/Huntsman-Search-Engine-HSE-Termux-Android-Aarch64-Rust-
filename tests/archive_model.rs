@@ -70,7 +70,7 @@ fn archive_url_rejects_non_http_invalid_and_hostless_values() {
 }
 
 #[test]
-fn merge_keeps_first_last_count_and_per_dataset_aggregates() {
+fn merge_keeps_first_last_count_and_per_dataset_observations() {
     let url = "https://example.com/admin/login?next=%2F";
     let records = merge_captures(vec![
         capture(
@@ -111,36 +111,33 @@ fn merge_keeps_first_last_count_and_per_dataset_aggregates() {
 
     assert_eq!(records.len(), 1);
     let record = &records[0];
-    assert_eq!(record.first_seen, "20240101000000");
-    assert_eq!(record.last_seen, "20240301000000");
-    assert_eq!(record.capture_count, 3);
-    assert_eq!(record.datasets.len(), 2);
+    assert_eq!(record.observations.len(), 2);
 
     let cc = record
-        .datasets
+        .observations
         .iter()
-        .find(|dataset| dataset.dataset == "common_crawl")
-        .expect("Common Crawl aggregate");
+        .find(|observation| observation.dataset == "common_crawl")
+        .expect("Common Crawl observation");
     assert_eq!(cc.capture_count, 1);
     assert_eq!(cc.collections, vec!["CC-MAIN-2026-30"]);
-    assert_eq!(cc.latest_status, Some(301));
+    assert_eq!(cc.status, Some(301));
 
     let wayback = record
-        .datasets
+        .observations
         .iter()
-        .find(|dataset| dataset.dataset == "internet_archive_wayback")
-        .expect("Wayback aggregate");
+        .find(|observation| observation.dataset == "internet_archive_wayback")
+        .expect("Wayback observation");
     assert_eq!(wayback.capture_count, 2);
     assert!(wayback.collections.is_empty());
     assert_eq!(wayback.first_seen, "20240101000000");
     assert_eq!(wayback.last_seen, "20240201000000");
-    assert_eq!(wayback.latest_status, Some(200));
-    assert_eq!(wayback.latest_mime.as_deref(), Some("text/html"));
+    assert_eq!(wayback.status, Some(200));
+    assert_eq!(wayback.mime.as_deref(), Some("text/html"));
     assert_eq!(wayback.source_urls.len(), 2);
 }
 
 #[test]
-fn same_dataset_multiple_captures_remain_one_dataset() {
+fn same_dataset_multiple_captures_remain_one_dataset_observation() {
     let records = merge_captures(vec![
         capture(
             ArchiveSource::CommonCrawl,
@@ -165,13 +162,13 @@ fn same_dataset_multiple_captures_remain_one_dataset() {
     ]);
 
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0].datasets.len(), 1);
-    assert_eq!(records[0].datasets[0].dataset, "common_crawl");
+    assert_eq!(records[0].observations.len(), 1);
+    assert_eq!(records[0].observations[0].dataset, "common_crawl");
     assert_eq!(
-        records[0].datasets[0].collections,
+        records[0].observations[0].collections,
         vec!["CC-MAIN-2026-26", "CC-MAIN-2026-30"]
     );
-    assert_eq!(records[0].datasets[0].capture_count, 2);
+    assert_eq!(records[0].observations[0].capture_count, 2);
 }
 
 #[test]
@@ -187,9 +184,9 @@ fn unknown_status_or_mime_is_not_invented() {
         None,
     )]);
 
-    let dataset = &records[0].datasets[0];
-    assert_eq!(dataset.latest_status, None);
-    assert_eq!(dataset.latest_mime, None);
+    let observation = &records[0].observations[0];
+    assert_eq!(observation.status, None);
+    assert_eq!(observation.mime, None);
 }
 
 #[test]
