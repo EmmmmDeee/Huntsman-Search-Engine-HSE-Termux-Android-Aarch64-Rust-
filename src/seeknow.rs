@@ -125,8 +125,8 @@ fn execute_search<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<SeekNowSearchResult, Error> {
     let body = build_search_body(search)?;
-    let request = Request::post(format!("{API_BASE}{path}"), body)
-        .header("Content-Type", "application/json");
+    let request =
+        Request::post(format!("{API_BASE}{path}"), body).header("Content-Type", "application/json");
     let fetched = fetch(
         transport,
         request,
