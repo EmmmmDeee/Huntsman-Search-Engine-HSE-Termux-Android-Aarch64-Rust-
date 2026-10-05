@@ -131,10 +131,16 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         calls.contains(&format!("--root {}", prefix.display())),
         "{calls}"
     );
-    assert!(!calls.contains("--force"), "repeat installs must not force a rebuild: {calls}");
+    assert!(
+        !calls.contains("--force"),
+        "repeat installs must not force a rebuild: {calls}"
+    );
     assert!(calls.contains("hibp=1"), "{calls}");
     assert!(
-        calls.contains(&format!("target={}/.cache/huntsman-recon-target", temp.display())),
+        calls.contains(&format!(
+            "target={}/.cache/huntsman-recon-target",
+            temp.display()
+        )),
         "default build cache must persist across installer invocations: {calls}"
     );
 
