@@ -16,13 +16,7 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 const MODULE: &str = "wayback";
 const DATASET: &str = "internet_archive_wayback";
 const CDX_ENDPOINT: &str = "https://web.archive.org/cdx/search/cdx";
-const REQUIRED_FIELDS: [&str; 5] = [
-    "timestamp",
-    "original",
-    "mimetype",
-    "statuscode",
-    "digest",
-];
+const REQUIRED_FIELDS: [&str; 5] = ["timestamp", "original", "mimetype", "statuscode", "digest"];
 
 #[derive(Debug, Clone, Copy)]
 pub struct WaybackQuery<'a> {
@@ -260,11 +254,7 @@ fn optional_cell(value: &str) -> Option<&str> {
     }
 }
 
-fn drift_outcome(
-    now_unix: u64,
-    status: u16,
-    detail: impl Into<String>,
-) -> SourceExecutionOutcome {
+fn drift_outcome(now_unix: u64, status: u16, detail: impl Into<String>) -> SourceExecutionOutcome {
     let mut outcome = SourceExecutionOutcome::success(MODULE, now_unix, 0)
         .with_http_status(status)
         .with_detail(detail);
