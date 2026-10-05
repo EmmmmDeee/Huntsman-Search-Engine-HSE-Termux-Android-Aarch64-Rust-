@@ -63,7 +63,10 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
     assert!(calls.contains("hibp=1 cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git"), "{calls}");
     assert!(calls.contains(&format!("--rev {rev}")), "{calls}");
     assert!(calls.contains("--locked"), "{calls}");
-    assert!(calls.contains(&format!("--root {}", prefix.display())), "{calls}");
+    assert!(
+        calls.contains(&format!("--root {}", prefix.display())),
+        "{calls}"
+    );
     assert!(calls.contains("--force huntsman-recon"), "{calls}");
 
     let _ = fs::remove_dir_all(&temp);
