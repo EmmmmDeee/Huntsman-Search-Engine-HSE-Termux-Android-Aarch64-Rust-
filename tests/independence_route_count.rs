@@ -1,9 +1,8 @@
 use std::collections::BTreeSet;
 
-use huntsman_recon::IndependenceRouteCount;
 use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
-    IndependenceEvidence,
+    IndependenceEvidence, IndependenceRouteCount,
 };
 use huntsman_recon::retrieval_artifact::ArtifactId;
 
