@@ -261,7 +261,8 @@ impl EvidenceAncestryGraph {
             return Err(AncestryError::IndependenceNodeNotRoot(right));
         }
 
-        evidence.method_id = evidence.method_id.trim().to_owned();
+        let normalized_method_id = evidence.method_id.trim().to_owned();
+        evidence.method_id = normalized_method_id;
         if evidence.method_id.is_empty() {
             return Err(AncestryError::EmptyIndependenceMethod);
         }
@@ -279,7 +280,8 @@ impl EvidenceAncestryGraph {
             return Err(AncestryError::EmptyIndependenceArtifact);
         }
         if let IndependenceBasis::OtherVersionedRule(rule) = &mut evidence.basis {
-            *rule = rule.trim().to_owned();
+            let normalized_rule = rule.trim().to_owned();
+            *rule = normalized_rule;
             if rule.is_empty() {
                 return Err(AncestryError::EmptyIndependenceRule);
             }
