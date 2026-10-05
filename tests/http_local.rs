@@ -6,8 +6,9 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::Duration;
 
+use huntsman_recon::deadline::{Deadline, SystemClock};
 use huntsman_recon::egress::EgressPolicy;
-use huntsman_recon::fetch::{FetchOptions, fetch};
+use huntsman_recon::fetch::{FetchOptions, fetch, fetch_within};
 use huntsman_recon::http::{Request, Transport, TransportConfig, UreqTransport};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
@@ -188,4 +189,188 @@ fn a_silent_server_times_out() {
         .expect_err("timeout");
     assert_eq!(failure.kind, SourceOutcomeKind::TtfbTimeout, "{failure:?}");
     hold.join().expect("holder");
+}
+
+/// A server that accepts and then says nothing for `hold`.
+fn silent(hold: Duration) -> (u16, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let handle = thread::spawn(move || {
+        let (sock, _) = listener.accept().expect("accept");
+        thread::sleep(hold);
+        drop(sock);
+    });
+    (port, handle)
+}
+
+#[test]
+fn a_request_cap_cuts_the_transport_timeout_short() {
+    let (port, hold) = silent(Duration::from_millis(3000));
+    let t = UreqTransport::new(&TransportConfig {
+        timeout: Duration::from_secs(10),
+        egress: EgressPolicy::Unrestricted,
+        ..TransportConfig::default()
+    });
+    let started = std::time::Instant::now();
+    let failure = t
+        .send(
+            &Request::get(format!("http://127.0.0.1:{port}/"))
+                .with_timeout(Duration::from_millis(300)),
+        )
+        .expect_err("capped");
+    assert_eq!(failure.kind, SourceOutcomeKind::TtfbTimeout, "{failure:?}");
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "{:?}",
+        started.elapsed()
+    );
+    hold.join().expect("holder");
+}
+
+#[test]
+fn a_request_cap_never_raises_the_transport_timeout() {
+    let (port, hold) = silent(Duration::from_millis(3000));
+    let t = UreqTransport::new(&TransportConfig {
+        timeout: Duration::from_millis(300),
+        egress: EgressPolicy::Unrestricted,
+        ..TransportConfig::default()
+    });
+    let started = std::time::Instant::now();
+    let failure = t
+        .send(
+            &Request::get(format!("http://127.0.0.1:{port}/"))
+                .with_timeout(Duration::from_secs(60)),
+        )
+        .expect_err("transport timeout still applies");
+    assert_eq!(failure.kind, SourceOutcomeKind::TtfbTimeout, "{failure:?}");
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "{:?}",
+        started.elapsed()
+    );
+    hold.join().expect("holder");
+}
+
+#[test]
+fn a_request_cap_also_bounds_a_stalled_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let hold = thread::spawn(move || {
+        let (mut sock, _) = listener.accept().expect("accept");
+        read_request(&mut sock);
+        let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial");
+        let _ = sock.flush();
+        thread::sleep(Duration::from_millis(3000));
+    });
+    let t = UreqTransport::new(&TransportConfig {
+        timeout: Duration::from_secs(10),
+        egress: EgressPolicy::Unrestricted,
+        ..TransportConfig::default()
+    });
+    let started = std::time::Instant::now();
+    let failure = t
+        .send(
+            &Request::get(format!("http://127.0.0.1:{port}/"))
+                .with_timeout(Duration::from_millis(300)),
+        )
+        .expect_err("body read capped");
+    // The status line and headers arrived; the cap fired while reading the body.
+    assert_eq!(failure.kind, SourceOutcomeKind::BodyTimeout, "{failure:?}");
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "{:?}",
+        started.elapsed()
+    );
+    hold.join().expect("holder");
+}
+
+/// A redirect chain far longer than the redirect limit, each hop answering `302`
+/// to the next after `delay`. Returns the port and the request lines seen. The
+/// server thread is left in `accept` when the test ends.
+fn slow_redirect_chain(delay: Duration) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    thread::spawn(move || {
+        for (hop, stream) in listener.incoming().enumerate() {
+            let Ok(mut sock) = stream else { continue };
+            let head = read_request(&mut sock);
+            log.lock()
+                .expect("log")
+                .push(head.lines().next().unwrap_or_default().to_owned());
+            thread::sleep(delay);
+            let _ = sock.write_all(
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: /hop{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    hop + 1
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    (port, seen)
+}
+
+/// Security review on 5f446416: every redirect hop used to be sent with the full
+/// request cap again, so five slow hops could run five caps. The cap now bounds
+/// the whole fetch. 400 ms hops under a 1 s cap: the third hop gets 200 ms and
+/// times out at the cap, instead of six hops taking 2.4 s.
+#[test]
+fn a_slow_redirect_chain_stops_at_the_request_cap() {
+    let (port, seen) = slow_redirect_chain(Duration::from_millis(400));
+    let cap = Duration::from_millis(1000);
+    let started = std::time::Instant::now();
+    let fetched = fetch(
+        &lab_transport(1024),
+        Request::get(format!("http://127.0.0.1:{port}/hop0")).with_timeout(cap),
+        None,
+        &FetchOptions::default(),
+        "local",
+        1,
+    )
+    .expect("fetch");
+    let elapsed = started.elapsed();
+    assert!(elapsed <= cap + Duration::from_millis(500), "{elapsed:?}");
+    assert_eq!(
+        fetched.outcome.kind,
+        SourceOutcomeKind::TtfbTimeout,
+        "{fetched:?}"
+    );
+    assert!(fetched.response.is_none());
+    assert_eq!(fetched.redirects, 2);
+    assert_eq!(seen.lock().expect("log").len(), 3);
+}
+
+/// The same chain inside a caller's deadline (how stolen.tax spends its lookup
+/// budget): an uncapped request still stops when the deadline does.
+#[test]
+fn a_slow_redirect_chain_stops_at_the_deadline() {
+    let (port, seen) = slow_redirect_chain(Duration::from_millis(400));
+    let budget = Duration::from_millis(1000);
+    let clock = SystemClock;
+    let deadline = Deadline::start(&clock, budget);
+    let fetched = fetch_within(
+        &lab_transport(1024),
+        Request::get(format!("http://127.0.0.1:{port}/hop0")),
+        None,
+        &FetchOptions::default(),
+        &deadline,
+        "local",
+        1,
+    )
+    .expect("fetch");
+    let elapsed = deadline.elapsed();
+    assert!(
+        elapsed <= budget + Duration::from_millis(500),
+        "{elapsed:?}"
+    );
+    assert_eq!(
+        fetched.outcome.kind,
+        SourceOutcomeKind::TtfbTimeout,
+        "{fetched:?}"
+    );
+    assert!(fetched.response.is_none());
+    assert!(fetched.redirects <= 2, "{}", fetched.redirects);
+    assert!(seen.lock().expect("log").len() <= 3);
 }

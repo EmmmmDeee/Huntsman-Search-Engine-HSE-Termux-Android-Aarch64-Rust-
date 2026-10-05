@@ -634,7 +634,7 @@ fn bin(home: &PathBuf) -> Command {
 fn binary_registers_hibp_and_keyed_lookups_need_a_key() {
     let home = scratch_home("bin");
     let usage = bin(&home).arg("no-such-command").output().unwrap();
-    assert!(String::from_utf8_lossy(&usage.stderr).contains("| hibp SUBCOMMAND]"));
+    assert!(String::from_utf8_lossy(&usage.stderr).contains("| hibp SUBCOMMAND"));
     let help = bin(&home).args(["hibp", "help"]).output().unwrap();
     assert_eq!(help.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&help.stdout).starts_with("usage: huntsman-recon hibp ["));

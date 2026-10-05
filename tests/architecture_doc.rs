@@ -49,7 +49,7 @@ const LAYERS: [&str; 8] = [
 const PINNED_LAYERS: [&str; 8] = [
     "error sha256 json timefmt union_find tags xml uid stage event fsio signals place geohash redact termination circuit oui_ieee oui radar",
     "evidence_ancestry confidence identity_resolution resolve eval",
-    "classify source_outcome egress credential_origin http keys fetch fetch_cli",
+    "classify source_outcome egress credential_origin http keys fetch fetch_cli deadline",
     "textnorm canonical validation domains address_au postcode_au au_id breach spf dmarc tlsrpt",
     "ckan mediawiki atproto dns hibp service_defs key_health scraper_health recon",
     "entity identity relation graph coref correlator cross_scan dependency module attack attack_catalog exposure profiles leads timeline community diff path pivot intelligence classifier classify_module lineage assurance benchmark coverage diamond gap metrics roi trust",
@@ -620,6 +620,16 @@ impl Tree {
         let mut roots = Vec::new();
         tree.walk(&main_path, 0, "huntsman_recon", &mut roots);
         tree.main_deps = tree.resolve(&roots, "main");
+        let investigate_path = src.join("bin/investigate.rs");
+        let mut investigate_roots = Vec::new();
+        tree.walk(
+            &investigate_path,
+            0,
+            "huntsman_recon",
+            &mut investigate_roots,
+        );
+        tree.main_deps
+            .extend(tree.resolve(&investigate_roots, "investigate"));
         tree
     }
 
@@ -820,8 +830,8 @@ fn module_map_matches_the_compiled_tree() {
     );
     assert_eq!(
         map.binary,
-        ["main"],
-        "the Binary row must be exactly `main`"
+        ["main", "investigate"],
+        "the Binary row must name every executable entry point"
     );
 
     let src = root().join("src");
