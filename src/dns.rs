@@ -1,5 +1,6 @@
 //! DNS helpers rebuilt from `util/dns`.
-//! The network-facing resolver pool uses the shared HTTP transport so tests use fakes.
+//! DoH queries go through `fetch` over an injected transport so tests use fakes
+//! and a challenge page is a wall, not a JSON parse error.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
@@ -10,7 +11,8 @@ use crate::{
     canonical,
     dmarc::{self, DmarcPolicy},
     domains,
-    http::{Request, Response, Transport, TransportConfig, TransportFailure},
+    fetch::{FetchOptions, Fetched, fetch},
+    http::{Request, Response, Transport, TransportConfig, TransportFailure, append_query_param},
     source_outcome::SourceOutcomeKind,
     spf::{self, AllPolicy},
     textnorm::escape_controls,
@@ -79,6 +81,9 @@ pub enum ResolveErrorKind {
     Timeout,
     Upstream,
     Empty,
+    BotWaf,
+    RateLimited,
+    Truncated,
 }
 
 impl ResolveErrorKind {
@@ -88,6 +93,9 @@ impl ResolveErrorKind {
             Self::Timeout => "timeout",
             Self::Upstream => "upstream",
             Self::Empty => "empty",
+            Self::BotWaf => "bot_waf",
+            Self::RateLimited => "rate_limited",
+            Self::Truncated => "truncated",
         }
     }
 }
@@ -158,7 +166,7 @@ pub fn resolver_config() -> ResolverPoolConfig {
 
 /// # Errors
 /// Returns the last transport or response error observed across the resolver pool.
-pub fn resolve_with_pool<T: Transport>(
+pub fn resolve_with_pool<T: Transport + ?Sized>(
     transport: &T,
     query: &ResolveQuery,
 ) -> Result<ResolveAnswer, ResolveError> {
@@ -167,8 +175,9 @@ pub fn resolve_with_pool<T: Transport>(
 
 /// # Errors
 /// Returns a transport, HTTP, parse, or empty-answer error if no configured resolver
-/// yields at least one record.
-pub fn resolve_with_config<T: Transport>(
+/// yields at least one record. A challenge page is [`ResolveErrorKind::BotWaf`],
+/// never an invalid-JSON parse.
+pub fn resolve_with_config<T: Transport + ?Sized>(
     transport: &T,
     query: &ResolveQuery,
     config: &ResolverPoolConfig,
@@ -176,8 +185,21 @@ pub fn resolve_with_config<T: Transport>(
     let mut last_error = None;
     for server in &config.name_servers {
         let request = build_request(server, query);
-        match transport.send(&request) {
-            Ok(response) => match parse_response(&response) {
+        match fetch(
+            transport,
+            request,
+            None,
+            &FetchOptions::no_redirects(),
+            "dns",
+            0,
+        ) {
+            Err(error) => {
+                last_error = Some(ResolveError {
+                    kind: ResolveErrorKind::Upstream,
+                    detail: error.to_string(),
+                });
+            }
+            Ok(fetched) => match interpret_fetched(&fetched) {
                 Ok(records) if !records.is_empty() => {
                     return Ok(ResolveAnswer {
                         server: server.clone(),
@@ -192,7 +214,6 @@ pub fn resolve_with_config<T: Transport>(
                 }
                 Err(error) => last_error = Some(error),
             },
-            Err(failure) => last_error = Some(map_transport_failure(failure)),
         }
     }
     Err(last_error.unwrap_or(ResolveError {
@@ -202,13 +223,71 @@ pub fn resolve_with_config<T: Transport>(
 }
 
 fn build_request(server: &ResolverServer, query: &ResolveQuery) -> Request {
-    Request::get(format!(
-        "{}?name={}&type={}",
-        server.doh_url,
-        query.name,
-        query.record_type.as_str()
-    ))
-    .header("accept", "application/dns-json")
+    let url = append_query_param(
+        &append_query_param(server.doh_url, "name", &query.name),
+        "type",
+        query.record_type.as_str(),
+    );
+    Request::get(url).header("accept", "application/dns-json")
+}
+
+fn interpret_fetched(fetched: &Fetched) -> Result<Vec<String>, ResolveError> {
+    match fetched.outcome.kind {
+        SourceOutcomeKind::BotWaf => {
+            return Err(ResolveError {
+                kind: ResolveErrorKind::BotWaf,
+                detail: fetched
+                    .outcome
+                    .detail
+                    .clone()
+                    .unwrap_or_else(|| "challenge page".into()),
+            });
+        }
+        SourceOutcomeKind::RateLimited => {
+            return Err(ResolveError {
+                kind: ResolveErrorKind::RateLimited,
+                detail: fetched
+                    .outcome
+                    .detail
+                    .clone()
+                    .unwrap_or_else(|| "rate limited".into()),
+            });
+        }
+        SourceOutcomeKind::TtfbTimeout | SourceOutcomeKind::BodyTimeout => {
+            return Err(ResolveError {
+                kind: ResolveErrorKind::Timeout,
+                detail: fetched
+                    .outcome
+                    .detail
+                    .clone()
+                    .unwrap_or_else(|| "timed out".into()),
+            });
+        }
+        _ => {}
+    }
+    let Some(response) = &fetched.response else {
+        return Err(ResolveError {
+            kind: ResolveErrorKind::Upstream,
+            detail: fetched
+                .outcome
+                .detail
+                .clone()
+                .unwrap_or_else(|| "no HTTP response".into()),
+        });
+    };
+    if crate::classify::is_challenge(&response.text()) {
+        return Err(ResolveError {
+            kind: ResolveErrorKind::BotWaf,
+            detail: "challenge page".into(),
+        });
+    }
+    if response.truncated {
+        return Err(ResolveError {
+            kind: ResolveErrorKind::Truncated,
+            detail: "truncated DNS response".into(),
+        });
+    }
+    parse_response(response)
 }
 
 fn parse_response(response: &Response) -> Result<Vec<String>, ResolveError> {
@@ -253,18 +332,6 @@ fn parse_response(response: &Response) -> Result<Vec<String>, ResolveError> {
     }
 }
 
-fn map_transport_failure(failure: TransportFailure) -> ResolveError {
-    let kind = match failure.kind {
-        SourceOutcomeKind::TtfbTimeout | SourceOutcomeKind::BodyTimeout => {
-            ResolveErrorKind::Timeout
-        }
-        _ => ResolveErrorKind::Upstream,
-    };
-    ResolveError {
-        kind,
-        detail: failure.detail,
-    }
-}
 
 #[must_use]
 pub fn unescape_dns_label(s: &str) -> String {
@@ -402,11 +469,11 @@ pub fn decode_txt(data: &str) -> String {
 /// Resolve apex A/AAAA/MX/NS/TXT plus `_dmarc` and `_smtp._tls` TXT, then parse
 /// SPF/DMARC/TLSRPT from those answers. One record-type failure does not abort
 /// the others. `None` means the selector is not a domain, URL or email.
-pub fn lookup_domain<T: Transport>(transport: &T, raw: &str) -> Option<DomainDns> {
+pub fn lookup_domain<T: Transport + ?Sized>(transport: &T, raw: &str) -> Option<DomainDns> {
     lookup_domain_with_config(transport, raw, &resolver_config())
 }
 
-pub fn lookup_domain_with_config<T: Transport>(
+pub fn lookup_domain_with_config<T: Transport + ?Sized>(
     transport: &T,
     raw: &str,
     config: &ResolverPoolConfig,
@@ -696,6 +763,79 @@ mod tests {
         );
         let email = soa_rname_to_email("invalid");
         assert!(email.is_empty(), "{email:?}");
+    }
+
+    fn challenge() -> Response {
+        Response {
+            status: 200,
+            headers: Vec::new(),
+            body: b"<html>checking your browser cloudflare</html>".to_vec(),
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn challenge_page_is_bot_waf_not_invalid_json_and_failsover() {
+        let transport = FakeTransport::new(vec![
+            Ok(challenge()),
+            Err(TransportFailure {
+                kind: SourceOutcomeKind::TtfbTimeout,
+                detail: "timed out".into(),
+                blocked: false,
+            }),
+            Ok(json_ok(&["1.2.3.4"])),
+        ]);
+        let answer = resolve_with_pool(
+            &transport,
+            &ResolveQuery {
+                name: "example.com".into(),
+                record_type: RecordType::A,
+            },
+        )
+        .expect("third provider succeeds after a wall");
+        assert_eq!(answer.server.provider, "Google");
+        assert_eq!(answer.records, ["1.2.3.4"]);
+    }
+
+    #[test]
+    fn truncated_body_is_truncated_not_a_partial_answer() {
+        let transport = FakeTransport::new(vec![Ok(Response {
+            status: 200,
+            headers: Vec::new(),
+            body: br#"{"Status":0,"Answer":[{"data":"1.2.3.4"}]}"#.to_vec(),
+            truncated: true,
+        })]);
+        let error = resolve_with_config(
+            &transport,
+            &ResolveQuery {
+                name: "example.com".into(),
+                record_type: RecordType::A,
+            },
+            &one_server(),
+        )
+        .expect_err("truncated is not an answer");
+        assert_eq!(error.kind, ResolveErrorKind::Truncated);
+        assert_eq!(error.detail, "truncated DNS response");
+    }
+
+    #[test]
+    fn rate_limit_is_not_an_empty_dns_answer() {
+        let transport = FakeTransport::new(vec![Ok(Response {
+            status: 429,
+            headers: Vec::new(),
+            body: b"retry later".to_vec(),
+            truncated: false,
+        })]);
+        let error = resolve_with_config(
+            &transport,
+            &ResolveQuery {
+                name: "example.com".into(),
+                record_type: RecordType::A,
+            },
+            &one_server(),
+        )
+        .expect_err("429 is rate limited");
+        assert_eq!(error.kind, ResolveErrorKind::RateLimited);
     }
 
     fn one_server() -> ResolverPoolConfig {

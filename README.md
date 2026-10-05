@@ -180,9 +180,11 @@ carry the `subdomain` tag. Output is
 
 `recon dns TARGET` accepts a domain, URL or email and queries Cloudflare, Quad9
 and Google DNS-over-HTTPS (JSON) for apex A, AAAA, MX, NS and TXT, plus
-`_dmarc` and `_smtp._tls` TXT. One record-type failure does not abort the
-others. Quoted TXT presentation is decoded before SPF (RFC 7208), DMARC
-(RFC 7489) and TLSRPT (RFC 8460) parsing. Output is
+`_dmarc` and `_smtp._tls` TXT, through `fetch` with redirects off. One
+record-type failure does not abort the others. A challenge page is `bot_waf`,
+a truncated body is `truncated`, and HTTP 429 is `rate_limited`; none of those
+is parsed as DNS JSON. Quoted TXT presentation is decoded before SPF (RFC 7208),
+DMARC (RFC 7489) and TLSRPT (RFC 8460) parsing. Output is
 `type<TAB>name<TAB>rdata<TAB>resolver` lines, then `spf_all=`, `dmarc_policy=`
 and `tlsrpt_emails=` when those records parse, plus `failed` rows. An invalid
 selector exits 65 before any request; no usable answer exits 69. DoH is
