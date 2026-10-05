@@ -297,12 +297,7 @@ fn seeknow_cmd(args: &[String]) -> ExitCode {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    match huntsman_recon::seeknow_cli::run(
-        &transport,
-        args,
-        env::var_os("HOME").as_deref(),
-        now,
-    ) {
+    match huntsman_recon::seeknow_cli::run(&transport, args, env::var_os("HOME").as_deref(), now) {
         SeekNowCliRun::Usage => fail(EX_USAGE, SEEKNOW_USAGE),
         SeekNowCliRun::Printed(text) => {
             print!("{text}");
