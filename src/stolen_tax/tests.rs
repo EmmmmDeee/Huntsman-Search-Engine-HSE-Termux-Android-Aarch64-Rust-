@@ -109,7 +109,8 @@ fn missing_key_fails_before_any_request() {
     let err = lookup(&transport, &Keys::default(), "a@example.com", "s", 0).unwrap_err();
     assert_eq!(err, StolenTaxError::MissingKey);
     assert!(err.to_string().contains(KEY_SLOT));
-    assert!(transport.seen.borrow().is_empty());
+    let seen = transport.seen.borrow();
+    assert!(seen.is_empty(), "{seen:?}");
 }
 
 #[test]

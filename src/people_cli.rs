@@ -275,12 +275,15 @@ mod tests {
             PeopleRun::Printed { text, report } => {
                 assert!(text.contains("skipped"), "{text}");
                 assert!(!text.contains("lineage="), "{text}");
-                assert!(report.entities.is_empty());
-                assert!(report.outcomes.is_empty());
+                let entities = &report.entities;
+                assert!(entities.is_empty(), "{entities:?}");
+                let outcomes = &report.outcomes;
+                assert!(outcomes.is_empty(), "{outcomes:?}");
             }
             other => panic!("{other:?}"),
         }
-        assert!(fake.seen.borrow().is_empty());
+        let seen = fake.seen.borrow();
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]
@@ -317,7 +320,8 @@ mod tests {
                 assert!(text.starts_with("entities=0\n"), "{text}");
                 assert!(text.contains("asic_persons.banned\tvalid_zero"), "{text}");
                 assert!(!text.contains("lineage="), "{text}");
-                assert!(report.entities.is_empty());
+                let entities = &report.entities;
+                assert!(entities.is_empty(), "{entities:?}");
                 assert_eq!(report.outcomes.len(), 3);
             }
             other => panic!("{other:?}"),

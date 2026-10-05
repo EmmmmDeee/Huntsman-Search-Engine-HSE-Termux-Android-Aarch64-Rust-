@@ -876,7 +876,8 @@ mod tests {
 
         let one = parse_controllers("SOME PARENT PTY LTD");
         assert_eq!(one, vec![("SOME PARENT PTY LTD".to_string(), None)]);
-        assert!(parse_controllers("  ~  ~ AB").is_empty());
+        let none = parse_controllers("  ~  ~ AB");
+        assert!(none.is_empty(), "{none:?}");
     }
 
     #[test]
@@ -1027,8 +1028,10 @@ mod tests {
     fn single_token_name_makes_no_request() {
         let fake = Fake::new(empty_script());
         let report = lookup(&fake, "Madonna", "t", 1).expect("no-op");
-        assert!(report.entities.is_empty());
-        assert!(fake.seen.borrow().is_empty());
+        let entities = &report.entities;
+        assert!(entities.is_empty(), "{entities:?}");
+        let seen = fake.seen.borrow();
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]
