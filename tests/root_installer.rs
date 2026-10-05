@@ -17,21 +17,9 @@ fn write_executable(path: &Path, body: &str) {
     fs::set_permissions(path, permissions).unwrap();
 }
 
-#[test]
-fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let installer = root.join("install.sh");
-    assert!(installer.is_file(), "root install.sh must exist");
-
-    let temp = scratch();
-    let prefix = temp.join("prefix");
-    let fake_bin = temp.join("fake-bin");
-    let fake_target_libdir = temp.join("rustlib");
-    let log = temp.join("install.log");
-    fs::create_dir_all(prefix.join("bin")).unwrap();
-    fs::create_dir_all(prefix.join("tmp")).unwrap();
-    fs::create_dir_all(&fake_bin).unwrap();
-    fs::create_dir_all(&fake_target_libdir).unwrap();
+fn install_fake_termux_toolchain(fake_bin: &Path, fake_target_libdir: &Path) {
+    fs::create_dir_all(fake_bin).unwrap();
+    fs::create_dir_all(fake_target_libdir).unwrap();
     fs::write(fake_target_libdir.join("libstd-test.rlib"), b"fixture").unwrap();
 
     write_executable(
@@ -83,6 +71,22 @@ esac
         &fake_bin.join("cargo"),
         "#!/bin/sh\nprintf 'hibp=%s cargo %s\\n' \"${HUNTSMAN_HIBP_NO_EMBED:-}\" \"$*\" >> \"$INSTALL_LOG\"\n",
     );
+}
+
+#[test]
+fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let installer = root.join("install.sh");
+    assert!(installer.is_file(), "root install.sh must exist");
+
+    let temp = scratch();
+    let prefix = temp.join("prefix");
+    let fake_bin = temp.join("fake-bin");
+    let fake_target_libdir = temp.join("rustlib");
+    let log = temp.join("install.log");
+    fs::create_dir_all(prefix.join("bin")).unwrap();
+    fs::create_dir_all(prefix.join("tmp")).unwrap();
+    install_fake_termux_toolchain(&fake_bin, &fake_target_libdir);
 
     let existing_path = std::env::var("PATH").unwrap_or_default();
     let path = format!("{}:{existing_path}", fake_bin.display());
