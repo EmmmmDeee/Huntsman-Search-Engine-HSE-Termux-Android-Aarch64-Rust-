@@ -9,7 +9,7 @@ score.
 > **Status:** this is the `huntsman-recon` reconstruction, not the previous
 > `hse` monolith. `people` provides a subset of the old monolith's person-lookups.
 > Canonical extracted legacy trees are preserved as read-only reconstruction references;
-> the original archive bytes remain recoverable from Git history. See
+> the two historical ZIP references remain byte-pinned at the repository root. See
 > [archive provenance](docs/ARCHIVE_PROVENANCE.md) and [architecture and status](ARCHITECTURE.md).
 
 ## Install on Termux (Android arm64)
@@ -51,7 +51,7 @@ before using credentials or network access.
 | `var/` | Artifacts written by `check` (`ledger.json`, `navigator.json`, `stix-bundle.json`). CI fails if `check` changes them. |
 | `docs/` | `RECONSTRUCTION_2026-10-02.md` (decisions and falsification passes) and `DISPOSITIONS.md` (per-file accounting of every legacy file). |
 | `legacy/` | Canonical extracted historical reference trees. Not part of the build. |
-| `docs/ARCHIVE_PROVENANCE.md` | SHA-256/Git identities and recovery commit for the removed root ZIP snapshots. |
+| `docs/ARCHIVE_PROVENANCE.md` | SHA-256/Git identities and extracted-tree mapping for the pinned root ZIP references. |
 | `.github/` | `workflows/ci.yml` (tests on Rust 1.87 and stable; aarch64 Android cross-build), `workflows/release.yml` (`main-<sha7>` pre-releases of `huntsman-recon`), `scripts/` (`scan-for-keys.sh`, `install-termux.sh`) and `actions/setup-ndk-aarch64` (NDK compiler and linker environment). |
 | `CHANGELOG.md` | Notable changes, Keep a Changelog format. |
 
