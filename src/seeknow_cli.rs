@@ -74,7 +74,7 @@ pub fn run_with_keys<T: Transport + ?Sized>(
             Ok(result) => {
                 let mut text = format!("outcome={}\n", outcome_name(result.outcome.kind));
                 for (key, value) in result.fields {
-                    let _ = writeln!(text, "{key}={value");
+                    let _ = writeln!(text, "{key}={value}");
                 }
                 finish_diagnostic(result.outcome, text)
             }
