@@ -56,7 +56,7 @@ geohash	leaf	geohash codec
 geoint	leaf	GEOINT distance and parsing helpers
 geometry	leaf	geometry helpers
 gexf	exporter	GEXF graph output
- graph	runtime	shared deterministic graph model
+graph	runtime	shared deterministic graph model
 hibp	adapter	HIBP source adapter
 http	leaf	single socket-opening transport boundary
 identity	leaf	legacy/simple person record resolution helper
