@@ -94,6 +94,50 @@ fn ledger_with(ids: &[(&str, &str)]) -> (IntelligenceLedger, ClaimId, Vec<Eviden
     (ledger, claim_id, evidence_ids)
 }
 
+fn generated_case(
+    count: usize,
+) -> (
+    IntelligenceLedger,
+    ClaimId,
+    Vec<EvidenceId>,
+    EvidenceAncestryGraph,
+    BTreeMap<EvidenceId, EvidenceNodeId>,
+) {
+    let mut ledger = IntelligenceLedger::default();
+    let claim_id = ClaimId::from("claim-generated");
+    ledger
+        .insert_claim(Claim::new(
+            claim_id.clone(),
+            "uid-1",
+            ClaimObject::Narrative("generated claim".into()),
+        ))
+        .unwrap();
+
+    let mut graph = EvidenceAncestryGraph::default();
+    let mut bindings = BTreeMap::new();
+    let mut evidence_ids = Vec::new();
+    for index in 0..count {
+        let evidence_name = format!("evidence-{index:02}");
+        let root_name = format!("root-{index:02}");
+        let evidence_id = ledger
+            .insert_evidence(evidence(&evidence_name, &format!("legacy-{index:02}")))
+            .unwrap();
+        ledger.attach_support(&claim_id, &evidence_id).unwrap();
+        graph
+            .insert(EvidenceAncestryNode {
+                id: EvidenceNodeId(root_name.clone()),
+                source_family: root_name.clone(),
+                parents: BTreeSet::new(),
+                derived: false,
+            })
+            .unwrap();
+        bindings.insert(evidence_id.clone(), EvidenceNodeId(root_name));
+        evidence_ids.push(evidence_id);
+    }
+
+    (ledger, claim_id, evidence_ids, graph, bindings)
+}
+
 #[test]
 fn direct_primary_evidence_exposes_candidate_to_verified_semantic_difference() {
     let (ledger, claim_id, ids) = ledger_with(&[("direct", "primary")]);
@@ -111,6 +155,9 @@ fn direct_primary_evidence_exposes_candidate_to_verified_semantic_difference() {
 
     assert_eq!(shadow.legacy_state, ClaimState::Candidate);
     assert_eq!(shadow.policy_state, ClaimState::Verified);
+    assert_eq!(shadow.distinct_resolved_roots, 1);
+    assert_eq!(shadow.proven_independent_routes, 1);
+    assert!(!shadow.independence_incomplete);
     assert!(shadow.reason_codes.contains("state:candidate->verified"));
 }
 
@@ -131,6 +178,9 @@ fn collapsed_mirrors_surface_the_independence_blocker_even_when_state_matches() 
 
     assert_eq!(shadow.legacy_state, ClaimState::Supported);
     assert_eq!(shadow.policy_state, ClaimState::Supported);
+    assert_eq!(shadow.distinct_resolved_roots, 1);
+    assert_eq!(shadow.proven_independent_routes, 1);
+    assert!(!shadow.independence_incomplete);
     assert!(
         shadow
             .blockers
@@ -140,6 +190,65 @@ fn collapsed_mirrors_surface_the_independence_blocker_even_when_state_matches() 
         shadow
             .reason_codes
             .contains("blocker:insufficient_independent_support")
+    );
+}
+
+#[test]
+fn legacy_verified_with_unproven_disjoint_roots_is_visibly_demoted() {
+    let (mut ledger, claim_id, ids) = ledger_with(&[("a", "legacy-a"), ("b", "legacy-b")]);
+    ledger.claims.get_mut(&claim_id).unwrap().state = ClaimState::Verified;
+    let (graph, bindings) = root_graph(&[(&ids[0], "registry"), (&ids[1], "court")]);
+
+    let shadow = compare_legacy_and_policy(
+        &ledger,
+        &claim_id,
+        &policy(2),
+        &graph,
+        &bindings,
+        &proof(&ids, &["registry", "court"], false),
+    )
+    .unwrap();
+
+    assert_eq!(shadow.legacy_state, ClaimState::Verified);
+    assert_eq!(shadow.policy_state, ClaimState::Supported);
+    assert_eq!(shadow.distinct_resolved_roots, 2);
+    assert_eq!(shadow.proven_independent_routes, 1);
+    assert!(!shadow.independence_incomplete);
+    assert!(
+        shadow
+            .reason_codes
+            .contains("blocker:insufficient_independent_support")
+    );
+    assert!(shadow.reason_codes.contains("state:verified->supported"));
+}
+
+#[test]
+fn independence_search_truncation_is_explicit_in_shadow_output() {
+    let (ledger, claim_id, ids, graph, bindings) = generated_case(24);
+
+    let shadow = compare_legacy_and_policy(
+        &ledger,
+        &claim_id,
+        &policy(2),
+        &graph,
+        &bindings,
+        &proof(&ids, &["complete"], false),
+    )
+    .unwrap();
+
+    assert_ne!(shadow.policy_state, ClaimState::Verified);
+    assert_eq!(shadow.distinct_resolved_roots, 24);
+    assert_eq!(shadow.proven_independent_routes, 1);
+    assert!(shadow.independence_incomplete);
+    assert!(
+        shadow
+            .blockers
+            .contains(&VerificationBlocker::IncompleteIndependenceProof)
+    );
+    assert!(
+        shadow
+            .reason_codes
+            .contains("blocker:incomplete_independence_proof")
     );
 }
 
@@ -159,6 +268,9 @@ fn incomplete_proof_is_visible_and_prevents_shadow_verification() {
     .unwrap();
 
     assert_eq!(shadow.policy_state, ClaimState::Supported);
+    assert_eq!(shadow.distinct_resolved_roots, 1);
+    assert_eq!(shadow.proven_independent_routes, 1);
+    assert!(!shadow.independence_incomplete);
     assert!(
         shadow
             .blockers
