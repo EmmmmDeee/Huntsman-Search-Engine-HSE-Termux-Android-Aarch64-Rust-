@@ -212,12 +212,11 @@ impl TelegramIndex {
             let mut score = 0usize;
             let mut matched = true;
             for term in &terms {
-                match self.postings.get(term).and_then(|posting| posting.get(key)) {
-                    Some(count) => score = score.saturating_add(*count),
-                    None => {
-                        matched = false;
-                        break;
-                    }
+                if let Some(count) = self.postings.get(term).and_then(|posting| posting.get(key)) {
+                    score = score.saturating_add(*count);
+                } else {
+                    matched = false;
+                    break;
                 }
             }
             if matched {
