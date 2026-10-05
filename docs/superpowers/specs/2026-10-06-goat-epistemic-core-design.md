@@ -1,10 +1,10 @@
 # Huntsman GOAT Epistemic Core — Canonical Design
 
 Date: 2026-10-06
-Status: approved architectural direction; canonical superseding design candidate
+Status: Approach B selected; written specification pending user review
 Baseline inspected: `cc183b10810ab358837b90d25605bf436edd928d`
 Supersedes where conflicting: `docs/superpowers/specs/2026-10-03-provenance-claim-kernel-design.md`
-Preserves all stronger, compatible invariants from the 2026-10-03 design.
+Preserves all stronger compatible invariants from the 2026-10-03 design.
 
 ## 1. Objective
 
@@ -12,77 +12,69 @@ Turn Huntsman's existing provenance/claim machinery into one production-grade ep
 
 1. what was attempted;
 2. what was retrieved or observed;
-3. what artifact or upstream origin the observation derives from;
-4. what proposition the observation supports, defeats, or leaves unresolved;
-5. whether an apparent negative result is actually admissible negative evidence;
-6. whether two pieces of support are proven independent, known dependent, or unresolved;
-7. what proof obligations remain unsatisfied;
+3. what artifact or upstream origin an observation derives from;
+4. what proposition it supports, defeats, or leaves unresolved;
+5. whether an apparent negative result is admissible negative evidence;
+6. whether two proof routes are proven distinct, known dependent, or unresolved;
+7. what proof obligations remain unsatisfied; and
 8. what additional collection action could materially change the decision state.
 
-The system optimizes for **verified decision quality**, not source count, finding count, HTTP success, visual similarity, provider diversity, confidence score, or raw recall.
+Optimize for **verified decision quality**, not provider count, finding count, HTTP success, visual similarity, confidence score, or raw recall.
 
 ## 2. Non-goals
 
-This design does not:
+Do not:
 
 - add a second truth system beside the existing provenance/claim kernel;
 - add a second scheduler beside the existing ROI/dispatch authority;
 - restore the legacy monolith;
 - require an LLM at runtime;
-- require a graph database, distributed log, or heavyweight event platform;
-- claim that a successful query proves completeness of the searched universe;
-- treat different providers, domains, labels, or root-family strings as automatic proof of causal independence;
+- require a graph database or distributed event platform;
+- treat a successful query as proof of global completeness;
+- treat different providers, URLs, domains, datasets, labels, or root-family strings as automatic proof-route independence;
 - claim legal chain-of-custody merely because artifacts are hashed;
-- make live external providers mandatory for deterministic tests;
-- allow provider-specific code to decide final claim truth;
+- make live providers mandatory for deterministic tests;
+- let provider-specific code decide final claim truth; or
 - allow missing information, truncation, or unknown provenance to strengthen a conclusion.
 
-## 3. Existing verified foundation to preserve
-
-The current repository already contains important pieces of the target architecture and they remain authoritative unless this design explicitly strengthens them.
+## 3. Existing foundation to preserve
 
 ### 3.1 Typed source outcomes
 
-`src/source_outcome.rs` already distinguishes successful retrieval, validated zero, auth failures, WAFs, transport failures, drift, anomalies, dead sources, and inconclusive outcomes. It correctly refuses to treat an unvalidated zero or HTTP 2xx as verified success.
+`src/source_outcome.rs` already separates `Success`, `ValidZero`, auth/WAF/transport failures, drift, anomalies, dead sources, and `Inconclusive`. Preserve the rule that an HTTP 2xx or unvalidated zero is not verified success.
 
-Preserve this boundary. Retrieval outcome remains a statement about execution, not claim truth.
+Retrieval outcome remains a statement about execution, not claim truth.
 
 ### 3.2 Provider-neutral collection envelopes
 
-`src/collection.rs` already separates collection events from raw observations. Preserve this separation and extend it rather than replacing it.
+`src/collection.rs` already separates collection events from raw observations. Extend that boundary rather than replacing it.
 
 ### 3.3 Mandatory evidence provenance
 
-`src/entity.rs` already makes provenance mandatory for evidence records. Preserve the canonical source-family hardening and non-corroborating-source rules.
+`src/entity.rs` already makes provenance mandatory for evidence and hardens source-family counting. Preserve it.
 
 ### 3.4 Canonical ancestry graph
 
-`src/evidence_ancestry.rs` already prevents derivations without parents, fails closed on missing parents and cycles, canonicalizes source families, and collapses copied reports onto common ancestry when that ancestry is known.
-
-Preserve iterative traversal, deterministic containers, and fail-closed behavior.
+`src/evidence_ancestry.rs` already rejects parentless derivations, fails closed on missing parents and cycles, canonicalizes source families, and collapses known common ancestry. Preserve iterative traversal and deterministic containers.
 
 ### 3.5 Claim-specific verification
 
-`src/claim_policy.rs` already separates verification from exploration/confidence scoring and enforces explicit obligations such as minimum proven roots, resolved ancestry, required evidence natures, blocking defeaters, and proof-environment completeness.
-
-Preserve the principle that confidence and provider count cannot directly promote claim truth.
+`src/claim_policy.rs` already separates verification from exploration/confidence scoring and enforces explicit obligations. Preserve the rule that confidence and provider count cannot directly promote claim truth.
 
 ## 4. Governing epistemic laws
 
-These laws are non-bypassable below provider and caller control.
-
-1. **Retrieval is not truth.** A successful fetch proves only that a retrieval contract succeeded.
-2. **Zero is not universal absence.** A validated zero proves only that one sufficiently understood query returned no matching rows in its observable scope.
-3. **Negative evidence is capability-gated.** A no-result can weaken a claim only if the source could have observed the proposition under adequate applicability, scope, completeness, temporal relevance, and query correctness.
-4. **Unknown independence is not independence.** Lack of a recorded common cause cannot create independent support.
-5. **Duplication is idempotent.** Copies, mirrors, reposts, transforms, screenshots, provider replicas, and repeated retrievals cannot manufacture additional proof roots.
-6. **Derivation is non-generative.** A derived assertion cannot acquire provenance roots or evidentiary authority absent from its premises.
+1. **Retrieval is not truth.** A successful fetch proves only that its retrieval contract succeeded.
+2. **Zero is not universal absence.** A validated zero proves only that one understood query returned no matching rows in its observable scope.
+3. **Negative evidence is capability-gated.** A no-result may weaken a claim only when applicability, scope, completeness, temporal relevance, freshness, and query correctness justify that inference.
+4. **Unknown proof-route independence is not independence.** Lack of a recorded common cause cannot create corroboration.
+5. **Duplication is idempotent.** Copies, mirrors, reposts, transforms, screenshots, provider replicas, and repeated retrievals cannot manufacture proof routes.
+6. **Derivation is non-generative.** A derived assertion cannot acquire roots, authority, or integrity absent from its premises.
 7. **Information loss is non-strengthening.** Removing provenance, scope, time, dependency, integrity, or method information cannot strengthen a claim.
-8. **Truncation is conservative.** Resource bounds may weaken or mark incomplete; they cannot strengthen.
-9. **Proof obligations are non-compensatory.** Quantity cannot compensate for a missing mandatory evidence class, identity binding, authority requirement, temporal condition, integrity requirement, or coverage condition.
-10. **Defeaters survive aggregation.** Rebuttals, underminers, undercutters, and unresolved relations cannot disappear inside a scalar score.
-11. **Invalidation propagates.** Dependent claims and derivations must weaken when required foundations fail.
-12. **Policy is versioned.** Claim assessment is reproducible only from evidence plus explicit reasoning-policy versions.
+8. **Truncation is conservative.** Resource bounds may preserve or weaken state; they cannot strengthen it.
+9. **Proof obligations are non-compensatory.** Quantity cannot replace a missing mandatory evidence class, identity binding, authority requirement, temporal condition, integrity condition, coverage condition, or independence condition.
+10. **Defeaters survive aggregation.** Material rebuttals, underminers, undercutters, and unresolved relations cannot disappear inside scalar scoring.
+11. **Invalidation propagates.** Dependent conclusions must weaken when required foundations fail.
+12. **Policy is versioned.** Assessment must be reproducible from evidence plus explicit policy/method versions.
 
 ## 5. Canonical architecture
 
@@ -105,9 +97,7 @@ No layer may silently collapse into another.
 
 ## 6. RetrievalAttempt: reproducible execution evidence
 
-Introduce a canonical immutable retrieval-attempt record. `CollectionEvent` may remain the compatibility/runtime envelope, but every consequential attempt must be projectable into this richer record.
-
-Required fields:
+Introduce a canonical immutable retrieval-attempt record. `CollectionEvent` may remain a compatibility/runtime envelope, but every consequential attempt must be projectable into the richer form.
 
 ```rust
 struct RetrievalAttempt {
@@ -135,30 +125,19 @@ struct RetrievalAttempt {
 
 ### 6.1 Query fingerprint
 
-The query fingerprint must be derived from the normalized effective query contract, not merely a human-readable search term. Where applicable it includes:
+Derive the fingerprint from the normalized effective query contract, including applicable target, filters, pagination bounds, result mode, selected endpoint/surface, region/locale, transformation identifier, and provider-contract version.
 
-- target;
-- filters;
-- pagination bounds;
-- result mode;
-- selected surface/endpoint;
-- relevant region/locale;
-- transformation/crop identifier;
-- provider-contract version.
-
-Secrets and bearer credentials must never enter the fingerprint material.
+Credentials, secrets, bearer tokens, cookies, or other secret material must never enter fingerprint input or persisted diagnostics.
 
 ### 6.2 Transformations
 
-A derived query asset such as an image crop, normalized phone number, OCR extraction, decompressed document, keyframe, resized image, or canonicalized identifier must name its parent artifact and deterministic transformation recipe/version where reproducible.
+A crop, normalized identifier, OCR extraction, decompressed document, keyframe, resized image, or other derived query asset names its parent artifact plus deterministic recipe/version where reproducible.
 
-A transformation can create a new artifact but never a new evidentiary root merely by existing.
+Transformation can create an artifact; it cannot create an independent proof route merely by existing.
 
 ## 7. RetrievalArtifact: content-addressed observation objects
 
-Introduce or complete one canonical artifact model representing retrieved or locally derived objects.
-
-Minimum fields:
+Use one canonical artifact model for retrieved or locally derived objects.
 
 ```rust
 struct RetrievalArtifact {
@@ -175,15 +154,13 @@ struct RetrievalArtifact {
 }
 ```
 
-The artifact id should be deterministic where safe and practical. Raw content need not be retained indefinitely when privacy, storage, provider terms, or mobile constraints make retention undesirable; the metadata and digest remain sufficient for integrity checks when content retention is prohibited or unnecessary.
+Artifact ids must be deterministic when the source material safely permits it. Raw bytes may be omitted or expired for privacy, storage, provider-contract, or mobile-resource reasons; retained metadata must not imply that discarded bytes remain independently verifiable.
 
 ## 8. Provenance DAG: causal provenance, not label diversity
 
-Evolve `EvidenceAncestryGraph` into the single canonical provenance authority rather than creating a parallel graph.
+Evolve `EvidenceAncestryGraph` into the sole canonical provenance authority rather than creating a parallel graph.
 
 ### 8.1 Node kinds
-
-Add explicit semantic node kinds:
 
 ```rust
 enum ProvenanceNodeKind {
@@ -197,25 +174,15 @@ enum ProvenanceNodeKind {
 }
 ```
 
-### 8.2 Edge kinds
+### 8.2 Relation semantics
 
-Where useful, distinguish relations such as:
+The canonical model must be able to distinguish at least: `RetrievedFrom`, `CopiedFrom`, `DerivedFrom`, `ExtractedFrom`, `PublishedFrom`, `TransformedFrom`, and `ContainedIn`.
 
-- `RetrievedFrom`;
-- `CopiedFrom`;
-- `DerivedFrom`;
-- `ExtractedFrom`;
-- `PublishedFrom`;
-- `TransformedFrom`;
-- `ContainedIn`.
+The first implementation may encode relation semantics on adjacency records rather than introduce a heavyweight edge object, but relation meaning must be explicit and versioned before it is used for proof.
 
-The initial implementation may encode edge semantics compactly if a richer edge object would create unnecessary migration cost, but the logical distinction must be preserved in the canonical model.
+### 8.3 Proof-route relationship
 
-### 8.3 Independence state
-
-Replace the assumption that disjoint recorded roots prove independence.
-
-Canonical result:
+Replace the current assumption that disjoint recorded root families imply independent support.
 
 ```rust
 enum IndependenceState {
@@ -228,16 +195,46 @@ enum IndependenceState {
 Rules:
 
 - known shared provenance root -> `KnownDependent`;
-- explicit, validated evidence of distinct causal origins -> `ProvenIndependent`;
-- merely different provider ids, source-family labels, URLs, domains, datasets, or currently disjoint recorded root labels -> `Unknown` unless an independence rule/policy proves otherwise;
-- missing ancestry -> `Unknown`;
-- provenance cycle or invalid graph -> assessment error/fail closed, never independent.
+- missing ancestry, invalid ancestry, or merely disjoint provider/source-family labels -> `Unknown`;
+- `ProvenIndependent` requires an explicit `IndependenceEvidence` record accepted by a versioned policy;
+- a cycle or invalid graph fails closed and can never produce `ProvenIndependent`.
 
-The default system must prefer under-crediting independence to inventing it.
+### 8.4 IndependenceEvidence
+
+Independence is itself a claim requiring a basis; it is never inferred merely from absence of a recorded shared root.
+
+```rust
+struct IndependenceEvidence {
+    left_root: EvidenceNodeId,
+    right_root: EvidenceNodeId,
+    basis: IndependenceBasis,
+    method_id: String,
+    method_version: u32,
+    supporting_artifact_ids: BTreeSet<ArtifactId>,
+    observed_at_unix: u64,
+}
+
+enum IndependenceBasis {
+    DistinctAuthenticatedPrimaryOrigins,
+    DistinctDirectSensorObservations,
+    ExplicitUpstreamProvenance,
+    OtherVersionedRule(String),
+}
+```
+
+A basis is admissible only when its method contract demonstrates distinct proof origins for the specific claim domain. Distinct hashes, websites, provider ids, domains, timestamps, or source-family strings alone are insufficient.
+
+`OtherVersionedRule` is fail-closed: an unknown rule version never establishes independence.
+
+The term `ProvenIndependent` means **proven distinct proof routes under the governing policy**, not statistical independence of all possible hidden causes.
+
+### 8.5 Compatibility boundary
+
+Existing `root_families`, `are_independent`, and `independent_support_count` may remain temporarily for diagnostics and legacy differential tests, but after Phase 1 they must not be consumed by verification-capable claim promotion unless routed through the new tri-state relationship and independence policy.
 
 ## 9. ObservationCapability: source capability contracts
 
-Introduce versioned capability contracts describing what a source can and cannot observe.
+Introduce conservative versioned capability contracts.
 
 ```rust
 struct ObservationCapability {
@@ -253,15 +250,11 @@ struct ObservationCapability {
 }
 ```
 
-Capability contracts must be conservative. Unknown completeness remains unknown. Marketing claims or undocumented assumptions cannot silently become capability guarantees.
-
-Provider drift can invalidate or downgrade capability state until reverified.
+Unknown completeness remains unknown. Marketing claims and undocumented assumptions cannot become capability guarantees. Provider drift invalidates or downgrades affected capability state until reverified.
 
 ## 10. Negative-evidence admission
 
 `SourceOutcomeKind::ValidZero` remains an execution outcome, not automatically negative evidence.
-
-Introduce a claim-relative decision:
 
 ```rust
 enum NegativeEvidenceDecision {
@@ -271,49 +264,36 @@ enum NegativeEvidenceDecision {
 }
 ```
 
-A zero may become admissible negative evidence only when all policy-required dimensions are satisfied:
+A zero becomes admissible negative evidence only when all policy-required dimensions pass:
 
-- the queried source is capable of observing the proposition;
-- the target/query maps correctly to the proposition;
+- the source can observe the proposition;
+- query/target mapping is correct;
 - temporal scope is relevant;
-- coverage/completeness is sufficient;
+- completeness/coverage is sufficient;
 - freshness is sufficient;
 - the attempt was not truncated;
 - the provider contract validated the zero;
-- no material drift, WAF, auth, quota, parser, schema, or interaction failure contaminated the attempt;
-- the governing claim policy permits negative inference from that capability class.
+- no material drift, WAF, auth, quota, transport, parser, schema, or interaction failure contaminated the attempt; and
+- claim policy permits negative inference from that capability class.
 
 Examples:
 
-- `HIBP returned zero breaches for this account at T` may be established when the query contract is validated.
-- `This account has never appeared in any breach` is not established merely by a HIBP zero.
+- `HIBP returned zero breaches for this account at T` may be established by a validated query contract.
+- `This account has never appeared in any breach` is not established by that zero.
 - `Reverse-image engine X returned no exact indexed match for crop Y at T` may be established.
 - `This image has never appeared online` is not established by that result.
 
 ## 11. Assertions and claim contributions
 
-Retain the 2026-10-03 typed-assertion model and make all provider output pass through it before consequential claim adjudication.
+Retain the typed-assertion model from the 2026-10-03 design. Consequential provider output must pass through it before claim adjudication.
 
-An assertion must identify:
+An assertion identifies subject, versioned predicate, object/value, time/interval, extraction or verification method, artifact/premise references, provenance nodes, material assumptions, integrity state, and whether it is direct, derived, or negative evidence.
 
-- subject;
-- versioned predicate;
-- object/value;
-- time or temporal interval;
-- extraction/verification method;
-- artifact/premise references;
-- provenance node(s);
-- relevant assumptions;
-- integrity state;
-- whether it is direct, derived, or negative evidence.
-
-A `ClaimContribution` records claim-relative support or defeat and the dimensions that matter for that claim, including directness, identity binding, authority, temporal fit, applicability, and assumptions.
+`ClaimContribution` records claim-relative support/defeat plus directness, identity binding, authority, temporal fit, applicability, assumptions, and negative-evidence admissibility where relevant.
 
 ## 12. VerificationPolicy v2
 
-Extend the current `VerificationPolicy` without reintroducing scalar truth scoring.
-
-Target obligations:
+Extend the current policy without reintroducing scalar truth scoring.
 
 ```rust
 struct VerificationPolicy {
@@ -334,84 +314,33 @@ struct VerificationPolicy {
 }
 ```
 
-Compatibility fields from the current policy may remain while migration is in progress, but the verification-capable path must eventually use the richer obligations.
+Compatibility fields may remain during migration, but the verification-capable path ultimately uses the richer obligations.
 
 ## 13. Orthogonal assessment state
 
-Do not collapse truth into one confidence value.
+Do not collapse claim state into one confidence value.
 
-A consequential claim assessment should expose at least:
+Expose at least:
 
-### Epistemic
+- **Epistemic:** Candidate, Supported, Verified, Contested, Underdetermined, Refuted.
+- **Temporal:** Current, Historical, Stale, Superseded, Unknown.
+- **Coverage:** Complete, MateriallyComplete, Partial, Failed, Unknown.
+- **Provenance:** Resolved, Partial, Unknown.
+- **Integrity:** Verified, Unverified, Failed.
 
-- Candidate
-- Supported
-- Verified
-- Contested
-- Underdetermined
-- Refuted
-
-### Temporal
-
-- Current
-- Historical
-- Stale
-- Superseded
-- Unknown
-
-### Coverage
-
-- Complete
-- MateriallyComplete
-- Partial
-- Failed
-- Unknown
-
-### Provenance
-
-- Resolved
-- Partial
-- Unknown
-
-### Integrity
-
-- Verified
-- Unverified
-- Failed
-
-Exploration confidence remains permitted for ranking collection actions and UI prioritization only.
+Exploration confidence remains permitted for search ranking and UI prioritization only.
 
 ## 14. Defeaters and contradictions
 
-Preserve structured defeat from the 2026-10-03 design:
+Preserve structured defeat: `Rebut`, `Undermine`, `Undercut`, `Supersede`, `Compatible`, and `UnknownRelation`.
 
-- `Rebut`;
-- `Undermine`;
-- `Undercut`;
-- `Supersede`;
-- `Compatible`;
-- `UnknownRelation`.
-
-A disagreement is not automatically a contradiction. Temporal, scope, subject-resolution, and predicate compatibility must be evaluated before defeat affects the claim.
+Disagreement is not automatically contradiction. Evaluate temporal compatibility, scope, subject resolution, and predicate compatibility before defeat affects a claim.
 
 ## 15. Proof environments
 
-Continue using bounded minimal proof environments.
+Continue bounded minimal proof environments. A proof environment contains only material justification: assertion ids, provenance nodes/roots, required `IndependenceEvidence`, dependency domains, derivations, assumptions, capability/coverage predicates, and integrity predicates.
 
-Each environment records only the material justification required for a claim state:
-
-- assertion ids;
-- provenance nodes/roots;
-- explicit independence evidence where required;
-- dependency domains;
-- derivations;
-- assumptions;
-- coverage/capability predicates;
-- integrity predicates.
-
-Subsumed supersets are removed. Alternative minimal proof environments remain distinct.
-
-If enumeration exceeds deterministic limits, mark proof incomplete and prevent strengthening.
+Remove subsumed supersets. Preserve alternative minimal environments independently. Hitting deterministic bounds marks proof incomplete and blocks strengthening.
 
 ## 16. Tamper-evident audit trail
 
@@ -422,15 +351,11 @@ entry[n].previous_digest = digest(entry[n-1])
 entry[n].digest = SHA256(canonical(entry[n] without digest) || previous_digest)
 ```
 
-This provides tamper evidence and reproducibility checks. It must be described as tamper-evident audit provenance, not automatically as legal chain-of-custody.
-
-Audit-chain corruption must fail verification explicitly rather than being silently repaired.
+This provides tamper evidence and reproducibility checks, not an automatic legal chain-of-custody claim. Corruption must fail verification explicitly rather than be silently repaired.
 
 ## 17. Media and reverse-image intelligence as a consumer
 
-The OSINT Combine lesson becomes a general consumer of the epistemic core rather than a special truth system.
-
-Target image flow:
+Treat the OSINT Combine lesson as a consumer of the epistemic core, not a special truth system.
 
 ```text
 input image
@@ -438,7 +363,7 @@ input image
  -> EXIF/XMP/IPTC where present
  -> OCR / visible text / watermark candidates
  -> optional perceptual fingerprints
- -> deterministic derived crops / transforms
+ -> deterministic crops / transforms
  -> retrieval attempts across available visual-search surfaces
  -> retrieved pages/assets
  -> provenance DAG
@@ -447,124 +372,103 @@ input image
  -> claim assessment
 ```
 
-Required semantic distinction:
+Keep exact/near duplicate evidence, visual-similarity leads, OCR pivots, model hypotheses, page-containing-image evidence, earliest-observed publication, and source-provenance claims semantically separate.
 
-- exact/near duplicate evidence;
-- visual similarity lead;
-- OCR/text pivot;
-- model hypothesis;
-- page-containing-image evidence;
-- earliest observed publication;
-- confirmed/probable source only when proof obligations are satisfied.
+`No exact matches` never automatically means `original`, `unique`, or `never published`.
 
-`No exact matches` is never automatically `original`, `unique`, or `never published`.
-
-External AI/geolocation predictions, when ingested, remain hypotheses or derived assertions requiring independent verification. Huntsman's runtime core remains LLM-free.
+External AI/geolocation predictions, if ingested, remain hypotheses or derived assertions requiring independent verification. Runtime remains LLM-free.
 
 ## 18. Resource model for Termux
 
-The design must remain viable on unprivileged Android aarch64.
+Remain viable on unprivileged Android aarch64. Prefer safe Rust, SQLite, compact typed ids, adjacency lists, deterministic maps/sets where serialized order matters, memoized root/dependency calculations, bounded proof enumeration, incremental dirty-subgraph recomputation, and optional artifact-body retention.
 
-Prefer:
-
-- safe Rust;
-- SQLite for durable indexed state;
-- compact typed ids;
-- adjacency lists rather than a graph database;
-- `BTreeMap`/`BTreeSet` where deterministic serialization matters;
-- memoized root/dependency calculations;
-- bounded proof-environment enumeration;
-- incremental dirty-subgraph recomputation;
-- optional artifact-body retention with mandatory metadata/digest retention where lawful and useful.
-
-Avoid O(n^2) global comparisons when indexed ancestry/dependency structures can answer the same question near-linearly.
+Avoid O(n^2) global comparison where indexed ancestry/dependency structures can answer the same question near-linearly.
 
 ## 19. Truth maintenance and invalidation
 
-Maintain reverse indexes sufficient to recompute only affected state:
+Maintain reverse indexes sufficient for affected-subgraph recomputation:
 
 - retrieval attempt -> artifact;
 - artifact -> assertions;
 - provenance node -> artifacts/assertions;
 - assertion -> claim contributions;
+- independence evidence -> affected proof environments;
 - capability contract -> affected negative contributions;
-- policy version -> claim assessments;
+- policy version -> assessments;
 - assumption -> dependent proof environments;
 - claim -> downstream hypotheses/inferences.
 
-When any foundation is invalidated, stale, superseded, drifted, corrupted, or reclassified, mark dependants dirty and recompute deterministically.
-
-No cached stronger assessment may survive after its last satisfying proof environment disappears.
+When a foundation is invalidated, stale, superseded, drifted, corrupted, or reclassified, mark dependants dirty and recompute deterministically. No cached stronger state may survive after its last satisfying proof environment disappears.
 
 ## 20. First decisive falsification tests
 
-Implementation begins with tests that fail on the current semantics where appropriate.
+### A — disjoint labels do not prove independence
 
-### Test A — disjoint labels do not prove independence
+Different provider/source-family labels without admissible `IndependenceEvidence` -> `Unknown`, not two independent proof routes.
 
-Two support nodes with different provider/source-family labels but no explicit causal-independence evidence must return `IndependenceState::Unknown`, not independent support count two.
+### B — known shared origin is dependent
 
-### Test B — known shared origin is dependent
+Two replicas of one primary artifact -> `KnownDependent` and at most one independent route.
 
-Two provider replicas derived from one primary artifact must return `KnownDependent` and contribute at most one independent proof route.
+### C — explicit proof-route independence can be established
 
-### Test C — explicit independent origins can verify independence
+Two roots plus admissible `IndependenceEvidence` satisfying the governing method/policy -> `ProvenIndependent`.
 
-Two authenticated primary records with explicit non-overlapping origin evidence satisfying the independence policy may return `ProvenIndependent`.
+### D — valid zero is not automatically negative evidence
 
-### Test D — valid zero is not automatically negative evidence
+`ValidZero` without sufficient capability -> `Indeterminate` or `Inadmissible`, never claim defeat.
 
-`SourceOutcomeKind::ValidZero` without a sufficient capability contract must produce `NegativeEvidenceDecision::Indeterminate` or `Inadmissible`, never claim defeat.
+### E — failed retrieval cannot become negative evidence
 
-### Test E — failed retrieval cannot become negative evidence
+WAF, auth failure, rate limit, transport failure, drift, truncation, or inconclusive execution cannot masquerade as a clean negative.
 
-WAF, auth failure, rate limit, transport failure, schema drift, parser drift, truncation, or inconclusive execution cannot weaken an existence claim as if the provider returned a clean negative.
+### F — weaker capability cannot strengthen a claim
 
-### Test F — weaker capability cannot strengthen a claim
+Downgrading completeness, freshness, temporal scope, or applicability can only preserve or weaken negative evidentiary force.
 
-Downgrading completeness, freshness, temporal scope, or applicability must never make negative evidence stronger.
+### G — duplicate/transform invariance
 
-### Test G — duplicate/transform invariance
+Adding N mirrors, screenshots, crops, normalized copies, or provider replicas of one root cannot increase proven distinct proof routes.
 
-Adding N mirrors, screenshots, crops, normalized copies, or provider replicas of the same root cannot increase proven independence.
-
-### Test H — information-loss monotonicity
+### H — information-loss monotonicity
 
 Removing provenance, independence evidence, integrity proof, temporal precision, identity binding, or coverage cannot strengthen epistemic state.
 
-### Test I — truncation monotonicity
+### I — truncation monotonicity
 
-Truncating proof or collection may preserve or weaken state, never strengthen it.
+Truncating proof or collection cannot strengthen state.
 
-### Test J — invalidation propagation
+### J — invalidation propagation
 
-Invalidating a required artifact, capability contract, premise, provenance edge, or audit-chain segment must weaken every dependent proof environment and assessment appropriately.
+Invalidating a required artifact, capability contract, premise, provenance edge, independence record, or audit-chain segment weakens dependent proof environments and assessments as required.
 
 ## 21. Migration sequence
 
 ### Phase 1 — semantic hardening
 
-- introduce `IndependenceState`;
-- stop treating disjoint recorded root families as automatically proven independent;
-- preserve current behavior in a diagnostic/shadow path for differential comparison;
-- add falsification/property tests.
+- add `IndependenceState`, `IndependenceEvidence`, and versioned independence-method validation;
+- change verification-capable assessment so disjoint root labels alone never satisfy independence;
+- keep legacy `are_independent` / support-count behavior only as diagnostic compatibility oracles;
+- add property/falsification tests before production cutover.
+
+**Phase-1 cutover gate:** no verification-capable claim path may call legacy boolean/count independence APIs directly.
 
 ### Phase 2 — retrieval reproducibility
 
 - add `RetrievalAttempt` and artifact digests;
-- project existing `CollectionEvent`/`RawObservation` into the richer model;
+- project existing `CollectionEvent` / `RawObservation` into the richer model;
 - preserve compatibility readers/writers where required;
-- ensure secrets never enter fingerprints or persisted diagnostics.
+- prove secrets cannot enter fingerprints or persisted diagnostics.
 
 ### Phase 3 — capability-gated negatives
 
 - add `ObservationCapability` and `NegativeEvidenceDecision`;
 - migrate clean-negative semantics source-by-source;
-- default unknown providers/capabilities to non-admissible or indeterminate negative evidence.
+- default unknown capabilities to indeterminate/inadmissible negative evidence.
 
 ### Phase 4 — policy v2
 
-- extend claim-specific obligations for directness, identity binding, authority, temporal fit, integrity, coverage, and independence;
+- extend obligations for directness, identity binding, authority, temporal fit, integrity, coverage, and independence;
 - keep exploration scores separate;
 - run new adjudication in shadow mode against current fixtures/scans.
 
@@ -576,16 +480,16 @@ Invalidating a required artifact, capability contract, premise, provenance edge,
 
 ### Phase 6 — media intelligence consumer
 
-- implement image/document artifact processing and reverse-search orchestration only after the epistemic substrate is stable;
+- implement image/document artifact processing and reverse-search orchestration only after the substrate is stable;
 - route exact/near/similar/OCR/model outputs through ordinary assertions and policies.
 
 ### Phase 7 — production cutover
 
-Cut over only when claim-by-claim differential results are understood, regressions are accepted, and verification gates pass.
+Cut over only when claim-by-claim differential results are understood, intended strictness changes are accepted, and verification gates pass.
 
 ## 22. Verification gates
 
-A completion claim requires fresh evidence for every applicable layer:
+Completion requires fresh evidence for each applicable layer:
 
 1. unit tests for new types and policy logic;
 2. property/metamorphic tests for monotonicity and duplication invariants;
@@ -595,42 +499,45 @@ A completion claim requires fresh evidence for every applicable layer:
 6. corruption tests for artifact digests and audit chain;
 7. migration/compatibility tests for persisted state;
 8. `cargo fmt --check`;
-9. `cargo clippy --locked --all-targets --all-features -- -D warnings` where repository CI contract permits;
+9. clippy under the repository's pinned CI contract with warnings denied;
 10. `cargo test --locked`;
 11. release build verification;
-12. Android aarch64 cross-build under the repository's pinned/toolchain contract;
-13. explicit separation between cross-build success and real handset execution;
+12. Android aarch64 cross-build under the pinned toolchain contract;
+13. explicit separation of cross-build success from real handset execution; and
 14. real Termux handset verification before claiming handset runtime behavior verified.
 
 ## 23. Acceptance criteria
 
-This design is successfully implemented only when Huntsman can demonstrate all of the following:
+Implementation is accepted only when Huntsman demonstrates all of the following:
 
-- it can reproduce the material conditions of a consequential retrieval attempt without persisting secrets;
-- an execution zero cannot silently become universal absence;
-- negative evidence requires a validated, claim-relevant capability contract;
+- material conditions of consequential retrieval attempts are reproducible without persisting secrets;
+- execution zero cannot silently become universal absence;
+- negative evidence requires a validated claim-relevant capability contract;
 - different providers do not automatically become independent witnesses;
-- unknown independence remains unknown;
+- unknown proof-route relationship remains unknown;
 - known shared ancestry collapses duplicate proof routes;
+- `ProvenIndependent` requires explicit admissible independence evidence;
 - derivations and transformations cannot manufacture roots;
 - every consequential claim exposes satisfied obligations and blockers;
 - missing mandatory proof dimensions cannot be compensated by quantity or confidence;
 - resource truncation and information loss cannot strengthen claims;
 - invalidations propagate deterministically;
-- artifact and audit integrity failures are visible and fail closed;
+- artifact/audit integrity failures are visible and fail closed;
 - proof replay is deterministic under the same evidence and policy versions;
 - mobile resource bounds remain enforced;
-- no runtime LLM is required;
-- existing verified useful capability is preserved unless a deliberately stricter epistemic rule demotes an unsupported conclusion.
+- no runtime LLM is required; and
+- verified useful capability is preserved unless deliberately stricter epistemic rules demote unsupported conclusions.
 
 ## 24. Decision
 
 Adopt **Approach B: complete and harden the existing canonical epistemic kernel**.
 
-Do not create a parallel evidence-fusion subsystem. Do not start with provider proliferation or image-engine automation. The implementation order is:
+Do not create a parallel evidence-fusion subsystem and do not begin with provider proliferation or image-engine automation.
+
+Implementation order:
 
 ```text
-PROVEN INDEPENDENCE
+PROVEN PROOF-ROUTE INDEPENDENCE
  -> REPRODUCIBLE RETRIEVAL ATTEMPTS
  -> ARTIFACT INTEGRITY
  -> CAPABILITY-GATED NEGATIVE EVIDENCE
@@ -639,4 +546,4 @@ PROVEN INDEPENDENCE
  -> MEDIA / REVERSE-IMAGE CONSUMERS
 ```
 
-This order maximizes cross-system benefit and minimizes the risk of attaching more collectors to insufficient evidence semantics.
+This sequence maximizes cross-system benefit while minimizing the risk of attaching more collectors to insufficient evidence semantics.
