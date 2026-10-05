@@ -3,6 +3,7 @@ use huntsman_recon::archive::{
     parse_archive_url,
 };
 
+#[allow(clippy::too_many_arguments)] // compact fixture constructor; production API is unchanged
 fn capture(
     source: ArchiveSource,
     dataset: &str,
@@ -128,7 +129,7 @@ fn merge_keeps_first_last_count_and_per_dataset_observations() {
         .find(|observation| observation.dataset == "internet_archive_wayback")
         .expect("Wayback observation");
     assert_eq!(wayback.capture_count, 2);
-    assert!(wayback.collections.is_empty());
+    assert_eq!(wayback.collections, Vec::<String>::new());
     assert_eq!(wayback.first_seen, "20240101000000");
     assert_eq!(wayback.last_seen, "20240201000000");
     assert_eq!(wayback.status, Some(200));
