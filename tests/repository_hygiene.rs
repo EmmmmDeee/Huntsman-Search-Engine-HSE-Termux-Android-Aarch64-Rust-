@@ -5,22 +5,10 @@ const OPAQUE_ARCHIVE_SUFFIXES: &[&str] = &[
     ".zip", ".7z", ".rar", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar.zst",
 ];
 
-const PINNED_REFERENCE_ARCHIVES: &[(&str, &str)] = &[
-    (
-        "huntsman-hse-endtoend-refactor-overlay-feef60a.zip",
-        "bba70abb0ac7f8c1f1ade818580273a78d169628c14b4b908ff6a5c08e90faf7",
-    ),
-    (
-        "huntsman-search-engine-hse-termux-android-aarch64-rust--main (10).zip",
-        "c3c7f843a1c495f443344a228ce2707b097d53edaa7aea2238347452b7495241",
-    ),
-];
-
 #[test]
-fn repository_root_contains_only_pinned_reference_archives() {
+fn repository_root_contains_no_opaque_archives() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut offenders = Vec::new();
-    let mut found_pinned = Vec::new();
 
     for entry in fs::read_dir(&root).expect("repository root") {
         let entry = entry.expect("repository entry");
@@ -32,39 +20,15 @@ fn repository_root_contains_only_pinned_reference_archives() {
             .iter()
             .any(|suffix| name.ends_with(suffix))
         {
-            if let Some((_, expected_hash)) = PINNED_REFERENCE_ARCHIVES
-                .iter()
-                .find(|(pinned_name, _)| *pinned_name == name)
-            {
-                let bytes = fs::read(entry.path()).expect("pinned archive");
-                let actual_hash =
-                    huntsman_recon::sha256::hex32(&huntsman_recon::sha256::sha256(&bytes));
-                assert_eq!(
-                    actual_hash, *expected_hash,
-                    "pinned archive changed: {name}"
-                );
-                found_pinned.push(name);
-            } else {
-                offenders.push(name);
-            }
+            offenders.push(name);
         }
     }
 
     offenders.sort();
-    found_pinned.sort();
-    let mut required_pinned: Vec<String> = PINNED_REFERENCE_ARCHIVES
-        .iter()
-        .map(|(name, _)| (*name).to_owned())
-        .collect();
-    required_pinned.sort();
-    assert_eq!(
-        found_pinned, required_pinned,
-        "both byte-pinned historical reference archives must remain at the repository root"
-    );
     assert_eq!(
         offenders,
         Vec::<String>::new(),
-        "only the two byte-pinned historical references are permitted as root archives"
+        "opaque archive snapshots are forbidden at the repository root; use canonical extracted references under legacy/ and record historical container identity in docs/ARCHIVE_PROVENANCE.md"
     );
 }
 
