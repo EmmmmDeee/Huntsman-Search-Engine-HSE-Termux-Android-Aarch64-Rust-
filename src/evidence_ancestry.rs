@@ -10,6 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::retrieval_artifact::ArtifactId;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EvidenceNodeId(pub String);
@@ -32,18 +34,68 @@ pub struct EvidenceAncestryNode {
     pub derived: bool,
 }
 
-/// Deserialisation re-runs `insert` on every node, so a stored graph cannot carry
-/// what `insert` refuses: an empty family, a parentless derivation, or a key that
-/// is not the node's id.
+/// Why two roots are treated as proven independent.
+///
+/// A label, provider, URL, or dataset name is not a basis. Only an explicit,
+/// versioned method record can move a pair out of `Unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum IndependenceBasis {
+    DistinctAuthenticatedPrimaryOrigins,
+    DistinctDirectSensorObservations,
+    ExplicitUpstreamProvenance,
+}
+
+/// Explicit, versioned evidence that two root nodes do not share a proof route.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct IndependenceEvidence {
+    pub left_root: EvidenceNodeId,
+    pub right_root: EvidenceNodeId,
+    pub basis: IndependenceBasis,
+    pub method_id: String,
+    pub method_version: u32,
+    pub supporting_artifact_ids: BTreeSet<ArtifactId>,
+    pub observed_at_unix: u64,
+}
+
+/// Conservative independence of two evidence nodes after ancestry resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum IndependenceState {
+    /// Explicit accepted evidence exists for the resolved root pair, and the
+    /// nodes share no root.
+    ProvenIndependent,
+    /// The nodes reach at least one common root. Shared ancestry dominates any
+    /// independence assertion.
+    KnownDependent,
+    /// Disjoint or otherwise unresolved. Unknown never strengthens a claim.
+    Unknown,
+}
+
+/// Lower bound on mutually proven-independent proof routes.
+///
+/// `incomplete` means the search budget ended before the bound was closed.
+/// A truncated search may under-count; it never over-counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndependenceRouteCount {
+    pub proven: usize,
+    pub incomplete: bool,
+}
+
+/// Deserialisation re-runs validating inserts, so a stored graph cannot carry
+/// what constructors refuse: an empty family, a parentless derivation, a key
+/// that is not the node's id, or an independence record that names a non-root.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RawGraph")]
 pub struct EvidenceAncestryGraph {
     nodes: BTreeMap<EvidenceNodeId, EvidenceAncestryNode>,
+    #[serde(default)]
+    independence: Vec<IndependenceEvidence>,
 }
 
 #[derive(Deserialize)]
 struct RawGraph {
     nodes: BTreeMap<EvidenceNodeId, EvidenceAncestryNode>,
+    #[serde(default)]
+    independence: Vec<IndependenceEvidence>,
 }
 
 impl TryFrom<RawGraph> for EvidenceAncestryGraph {
@@ -56,6 +108,11 @@ impl TryFrom<RawGraph> for EvidenceAncestryGraph {
                 return Err(format!("graph key {} holds node {}", key.0, node.id.0));
             }
             graph.insert(node).map_err(|e| e.to_string())?;
+        }
+        for evidence in raw.independence {
+            graph
+                .insert_independence_evidence(evidence)
+                .map_err(|e| e.to_string())?;
         }
         Ok(graph)
     }
@@ -73,6 +130,18 @@ pub enum AncestryError {
     EmptySourceFamily(EvidenceNodeId),
     #[error("derived evidence node {} names no parent", .0.0)]
     DerivedWithoutParent(EvidenceNodeId),
+    #[error("independence evidence must name two distinct roots")]
+    IndependenceNotDistinct,
+    #[error("independence evidence names a node that is not a root: {}", .0.0)]
+    IndependenceNotRoot(EvidenceNodeId),
+    #[error("independence evidence has an empty method id")]
+    EmptyIndependenceMethod,
+    #[error("independence evidence method version must be greater than zero")]
+    InvalidIndependenceVersion,
+    #[error("independence evidence cites no supporting artifact")]
+    IndependenceWithoutArtifact,
+    #[error("conflicting independence evidence for the same root pair")]
+    ConflictingIndependence,
 }
 
 /// Canonical family key: whitespace runs collapsed, Unicode lowercase. Conservative:
@@ -194,6 +263,263 @@ impl EvidenceAncestryGraph {
     ) -> Result<bool, AncestryError> {
         Ok(self.root_families(a)?.is_disjoint(&self.root_families(b)?))
     }
+
+    /// Record explicit independence for a canonical root pair.
+    ///
+    /// Diagnostic family labels are not accepted as proof. The record must name
+    /// two existing root nodes, a non-empty versioned method, and at least one
+    /// supporting artifact. An identical resubmission is a no-op. A different
+    /// record for the same pair is rejected rather than overwritten.
+    ///
+    /// # Errors
+    /// Missing nodes, non-roots, identical endpoints, empty method, version
+    /// zero, no artifact, or conflicting evidence for the pair.
+    pub fn insert_independence_evidence(
+        &mut self,
+        mut evidence: IndependenceEvidence,
+    ) -> Result<(), AncestryError> {
+        if evidence.left_root == evidence.right_root {
+            return Err(AncestryError::IndependenceNotDistinct);
+        }
+        self.require_root(&evidence.left_root)?;
+        self.require_root(&evidence.right_root)?;
+        let method_id = evidence.method_id.trim().to_owned();
+        if method_id.is_empty() {
+            return Err(AncestryError::EmptyIndependenceMethod);
+        }
+        evidence.method_id = method_id;
+        if evidence.method_version == 0 {
+            return Err(AncestryError::InvalidIndependenceVersion);
+        }
+        if evidence.supporting_artifact_ids.is_empty() {
+            return Err(AncestryError::IndependenceWithoutArtifact);
+        }
+        if evidence.left_root > evidence.right_root {
+            std::mem::swap(&mut evidence.left_root, &mut evidence.right_root);
+        }
+        if let Some(existing) = self.independence.iter().find(|existing| {
+            existing.left_root == evidence.left_root && existing.right_root == evidence.right_root
+        }) {
+            if existing != &evidence {
+                return Err(AncestryError::ConflictingIndependence);
+            }
+            return Ok(());
+        }
+        self.independence.push(evidence);
+        self.independence.sort();
+        Ok(())
+    }
+
+    /// Proven, known-dependent, or unknown independence after root resolution.
+    ///
+    /// Shared ancestry wins over any stored independence record. A disjoint
+    /// pair is `ProvenIndependent` only when each side resolves to exactly one
+    /// root and accepted evidence exists for that root pair. Every other
+    /// disjoint case stays `Unknown`.
+    ///
+    /// # Errors
+    /// Missing nodes or cycles in either ancestry. Fails closed.
+    pub fn independence_state(
+        &self,
+        a: &EvidenceNodeId,
+        b: &EvidenceNodeId,
+    ) -> Result<IndependenceState, AncestryError> {
+        let left = self.root_ids(a)?;
+        let right = self.root_ids(b)?;
+        if left.intersection(&right).next().is_some() {
+            return Ok(IndependenceState::KnownDependent);
+        }
+        if left.len() == 1 && right.len() == 1 {
+            let mut left_root = left.iter().next().expect("len checked").clone();
+            let mut right_root = right.iter().next().expect("len checked").clone();
+            if left_root > right_root {
+                std::mem::swap(&mut left_root, &mut right_root);
+            }
+            if self.independence.iter().any(|evidence| {
+                evidence.left_root == left_root && evidence.right_root == right_root
+            }) {
+                return Ok(IndependenceState::ProvenIndependent);
+            }
+        }
+        Ok(IndependenceState::Unknown)
+    }
+
+    /// Conservative count of mutually proven-independent routes.
+    ///
+    /// `required == 0` proves nothing. `required == 1` is satisfied by any
+    /// single resolved root and does not consult pairwise evidence. Larger
+    /// requirements search deterministic combinations and stop at `required`
+    /// or `max_search_states`. Budget exhaustion returns the proven lower
+    /// bound with `incomplete: true` and never invents a route.
+    ///
+    /// # Errors
+    /// Missing nodes or cycles while resolving roots.
+    pub fn proven_independent_route_count<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a EvidenceNodeId>,
+        required: usize,
+        max_search_states: usize,
+    ) -> Result<IndependenceRouteCount, AncestryError> {
+        let roots = self.resolved_roots(ids)?;
+        if required == 0 || roots.is_empty() {
+            return Ok(IndependenceRouteCount {
+                proven: 0,
+                incomplete: false,
+            });
+        }
+        if required == 1 {
+            return Ok(IndependenceRouteCount {
+                proven: 1,
+                incomplete: false,
+            });
+        }
+
+        let mut proven = 1usize;
+        let mut inspected = 0usize;
+        let target = required.min(roots.len());
+        for size in 2..=target {
+            let mut combo = (0..size).collect::<Vec<_>>();
+            loop {
+                if inspected == max_search_states {
+                    return Ok(IndependenceRouteCount {
+                        proven,
+                        incomplete: true,
+                    });
+                }
+                inspected += 1;
+                if self.subset_proven_independent(&roots, &combo)? {
+                    proven = size;
+                    break;
+                }
+                if !advance_combination(&mut combo, roots.len()) {
+                    break;
+                }
+            }
+            if proven < size {
+                break;
+            }
+        }
+        Ok(IndependenceRouteCount {
+            proven,
+            incomplete: false,
+        })
+    }
+
+    fn require_root(&self, id: &EvidenceNodeId) -> Result<(), AncestryError> {
+        let node = self
+            .nodes
+            .get(id)
+            .ok_or_else(|| AncestryError::MissingNode(id.clone()))?;
+        if !node.parents.is_empty() || node.derived {
+            return Err(AncestryError::IndependenceNotRoot(id.clone()));
+        }
+        Ok(())
+    }
+
+    fn root_ids(&self, id: &EvidenceNodeId) -> Result<BTreeSet<EvidenceNodeId>, AncestryError> {
+        let mut roots = BTreeSet::new();
+        let mut done: BTreeSet<&EvidenceNodeId> = BTreeSet::new();
+        let mut on_path: BTreeSet<&EvidenceNodeId> = BTreeSet::new();
+        let start = self
+            .nodes
+            .get_key_value(id)
+            .ok_or_else(|| AncestryError::MissingNode(id.clone()))?
+            .0;
+        let mut stack: Vec<(&EvidenceNodeId, bool)> = vec![(start, false)];
+        while let Some((current, expanded)) = stack.pop() {
+            if expanded {
+                on_path.remove(current);
+                done.insert(current);
+                continue;
+            }
+            if done.contains(current) {
+                continue;
+            }
+            if !on_path.insert(current) {
+                return Err(AncestryError::Cycle(current.clone()));
+            }
+            let node = &self.nodes[current];
+            stack.push((current, true));
+            if node.parents.is_empty() {
+                roots.insert(current.clone());
+            }
+            for parent in &node.parents {
+                let (key, _) = self
+                    .nodes
+                    .get_key_value(parent)
+                    .ok_or_else(|| AncestryError::MissingNode(parent.clone()))?;
+                if on_path.contains(key) {
+                    return Err(AncestryError::Cycle(key.clone()));
+                }
+                if !done.contains(key) {
+                    stack.push((key, false));
+                }
+            }
+        }
+        Ok(roots)
+    }
+
+    /// Distinct root node identities reachable from `ids`.
+    ///
+    /// Family labels are not identities. Missing nodes and cycles fail closed.
+    ///
+    /// # Errors
+    /// As [`Self::root_families`].
+    pub fn distinct_root_ids<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a EvidenceNodeId>,
+    ) -> Result<BTreeSet<EvidenceNodeId>, AncestryError> {
+        let mut roots = BTreeSet::new();
+        for id in ids {
+            roots.extend(self.root_ids(id)?);
+        }
+        Ok(roots)
+    }
+
+    fn resolved_roots<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a EvidenceNodeId>,
+    ) -> Result<Vec<EvidenceNodeId>, AncestryError> {
+        let mut roots = BTreeSet::new();
+        for id in ids {
+            roots.extend(self.root_ids(id)?);
+        }
+        Ok(roots.into_iter().collect())
+    }
+
+    fn subset_proven_independent(
+        &self,
+        roots: &[EvidenceNodeId],
+        indexes: &[usize],
+    ) -> Result<bool, AncestryError> {
+        for (i, left_index) in indexes.iter().enumerate() {
+            for right_index in &indexes[i + 1..] {
+                let state = self.independence_state(&roots[*left_index], &roots[*right_index])?;
+                if state != IndependenceState::ProvenIndependent {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+}
+
+fn advance_combination(combo: &mut [usize], n: usize) -> bool {
+    let k = combo.len();
+    if k == 0 || n < k {
+        return false;
+    }
+    for i in (0..k).rev() {
+        let limit = n - k + i;
+        if combo[i] < limit {
+            combo[i] += 1;
+            for j in i + 1..k {
+                combo[j] = combo[j - 1] + 1;
+            }
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -345,6 +671,244 @@ mod tests {
         assert_eq!(
             graph.root_families(&"s".into()),
             Err(AncestryError::Cycle("s".into()))
+        );
+    }
+
+    fn evidence(left: &str, right: &str) -> IndependenceEvidence {
+        IndependenceEvidence {
+            left_root: left.into(),
+            right_root: right.into(),
+            basis: IndependenceBasis::DistinctAuthenticatedPrimaryOrigins,
+            method_id: "method:primary-origin".into(),
+            method_version: 1,
+            supporting_artifact_ids: BTreeSet::from([ArtifactId::from("sha256:evidence")]),
+            observed_at_unix: 10,
+        }
+    }
+
+    #[test]
+    fn disjoint_root_labels_are_unknown_without_explicit_independence() {
+        let mut graph = EvidenceAncestryGraph::default();
+        graph.insert(node("a", "registry", &[], false)).unwrap();
+        graph.insert(node("b", "court-record", &[], false)).unwrap();
+        assert_eq!(
+            graph.independence_state(&"a".into(), &"b".into()).unwrap(),
+            IndependenceState::Unknown
+        );
+    }
+
+    #[test]
+    fn shared_root_is_known_dependent_even_if_labels_differ() {
+        let mut graph = EvidenceAncestryGraph::default();
+        graph.insert(node("raw", "corpus", &[], false)).unwrap();
+        graph
+            .insert(node("a", "provider-a", &["raw"], true))
+            .unwrap();
+        graph
+            .insert(node("b", "provider-b", &["raw"], true))
+            .unwrap();
+        assert_eq!(
+            graph.independence_state(&"a".into(), &"b".into()).unwrap(),
+            IndependenceState::KnownDependent
+        );
+    }
+
+    #[test]
+    fn explicit_valid_independence_is_symmetric() {
+        let mut graph = EvidenceAncestryGraph::default();
+        graph.insert(node("a", "registry", &[], false)).unwrap();
+        graph.insert(node("b", "court-record", &[], false)).unwrap();
+        graph
+            .insert_independence_evidence(evidence("b", "a"))
+            .unwrap();
+        graph
+            .insert_independence_evidence(evidence("a", "b"))
+            .unwrap();
+        assert_eq!(
+            graph.independence_state(&"a".into(), &"b".into()).unwrap(),
+            IndependenceState::ProvenIndependent
+        );
+        assert_eq!(
+            graph.independence_state(&"b".into(), &"a".into()).unwrap(),
+            IndependenceState::ProvenIndependent
+        );
+    }
+
+    #[test]
+    fn invalid_independence_evidence_is_rejected() {
+        let mut graph = EvidenceAncestryGraph::default();
+        graph.insert(node("root", "registry", &[], false)).unwrap();
+        graph.insert(node("other", "court", &[], false)).unwrap();
+        graph
+            .insert(node("derived", "copy", &["root"], true))
+            .unwrap();
+
+        assert!(matches!(
+            graph.insert_independence_evidence(evidence("root", "root")),
+            Err(AncestryError::IndependenceNotDistinct)
+        ));
+        assert!(matches!(
+            graph.insert_independence_evidence(evidence("root", "missing")),
+            Err(AncestryError::MissingNode(_))
+        ));
+        assert!(matches!(
+            graph.insert_independence_evidence(evidence("root", "derived")),
+            Err(AncestryError::IndependenceNotRoot(_))
+        ));
+        let mut empty_method = evidence("root", "other");
+        empty_method.method_id = "   ".into();
+        assert!(matches!(
+            graph.insert_independence_evidence(empty_method),
+            Err(AncestryError::EmptyIndependenceMethod)
+        ));
+        let mut version_zero = evidence("root", "other");
+        version_zero.method_version = 0;
+        assert!(matches!(
+            graph.insert_independence_evidence(version_zero),
+            Err(AncestryError::InvalidIndependenceVersion)
+        ));
+        let mut no_artifact = evidence("root", "other");
+        no_artifact.supporting_artifact_ids.clear();
+        assert!(matches!(
+            graph.insert_independence_evidence(no_artifact),
+            Err(AncestryError::IndependenceWithoutArtifact)
+        ));
+    }
+
+    #[test]
+    fn deserialization_cannot_bypass_independence_validation() {
+        let bad = r#"{"nodes":{"a":{"id":"a","source_family":"a","parents":[],"derived":false}},"independence":[{"left_root":"a","right_root":"missing","basis":"DistinctAuthenticatedPrimaryOrigins","method_id":"m","method_version":1,"supporting_artifact_ids":["sha256:x"],"observed_at_unix":1}]}"#;
+        assert!(serde_json::from_str::<EvidenceAncestryGraph>(bad).is_err());
+
+        let mut graph = EvidenceAncestryGraph::default();
+        graph.insert(node("a", "registry", &[], false)).unwrap();
+        graph.insert(node("b", "court", &[], false)).unwrap();
+        graph
+            .insert_independence_evidence(evidence("a", "b"))
+            .unwrap();
+        let back: EvidenceAncestryGraph =
+            serde_json::from_str(&serde_json::to_string(&graph).unwrap()).unwrap();
+        assert_eq!(back, graph);
+    }
+
+    #[test]
+    fn two_disjoint_unproven_roots_count_as_one_route() {
+        let mut graph = EvidenceAncestryGraph::default();
+        graph.insert(node("a", "registry", &[], false)).unwrap();
+        graph.insert(node("b", "court", &[], false)).unwrap();
+        assert_eq!(
+            graph
+                .proven_independent_route_count([&"a".into(), &"b".into()], 2, 16)
+                .unwrap(),
+            IndependenceRouteCount {
+                proven: 1,
+                incomplete: false
+            }
+        );
+    }
+
+    #[test]
+    fn two_explicitly_independent_roots_count_as_two_routes() {
+        let mut graph = EvidenceAncestryGraph::default();
+        graph.insert(node("a", "registry", &[], false)).unwrap();
+        graph.insert(node("b", "court", &[], false)).unwrap();
+        graph
+            .insert_independence_evidence(evidence("a", "b"))
+            .unwrap();
+        assert_eq!(
+            graph
+                .proven_independent_route_count([&"a".into(), &"b".into()], 2, 16)
+                .unwrap(),
+            IndependenceRouteCount {
+                proven: 2,
+                incomplete: false
+            }
+        );
+    }
+
+    #[test]
+    fn mirror_nodes_over_one_root_count_as_one_route() {
+        let mut graph = EvidenceAncestryGraph::default();
+        graph.insert(node("raw", "corpus", &[], false)).unwrap();
+        graph
+            .insert(node("a", "provider-a", &["raw"], true))
+            .unwrap();
+        graph
+            .insert(node("b", "provider-b", &["raw"], true))
+            .unwrap();
+        assert_eq!(
+            graph
+                .proven_independent_route_count([&"a".into(), &"b".into()], 2, 16)
+                .unwrap(),
+            IndependenceRouteCount {
+                proven: 1,
+                incomplete: false
+            }
+        );
+    }
+
+    #[test]
+    fn three_roots_can_satisfy_two_when_one_proven_pair_exists() {
+        let mut graph = EvidenceAncestryGraph::default();
+        graph.insert(node("a", "registry", &[], false)).unwrap();
+        graph.insert(node("b", "court", &[], false)).unwrap();
+        graph.insert(node("c", "sensor", &[], false)).unwrap();
+        graph
+            .insert_independence_evidence(evidence("a", "b"))
+            .unwrap();
+        assert_eq!(
+            graph
+                .proven_independent_route_count([&"a".into(), &"b".into(), &"c".into()], 2, 16)
+                .unwrap(),
+            IndependenceRouteCount {
+                proven: 2,
+                incomplete: false
+            }
+        );
+    }
+
+    #[test]
+    fn search_budget_exhaustion_is_incomplete_and_never_strengthens() {
+        let mut graph = EvidenceAncestryGraph::default();
+        graph.insert(node("a", "registry", &[], false)).unwrap();
+        graph.insert(node("b", "court", &[], false)).unwrap();
+        graph.insert(node("c", "sensor", &[], false)).unwrap();
+        graph
+            .insert_independence_evidence(evidence("a", "b"))
+            .unwrap();
+        assert_eq!(
+            graph
+                .proven_independent_route_count([&"a".into(), &"b".into(), &"c".into()], 2, 0)
+                .unwrap(),
+            IndependenceRouteCount {
+                proven: 1,
+                incomplete: true
+            }
+        );
+    }
+
+    #[test]
+    fn required_zero_and_one_have_bounded_semantics() {
+        let mut graph = EvidenceAncestryGraph::default();
+        graph.insert(node("a", "registry", &[], false)).unwrap();
+        graph.insert(node("b", "court", &[], false)).unwrap();
+        assert_eq!(
+            graph
+                .proven_independent_route_count([&"a".into(), &"b".into()], 0, 0)
+                .unwrap(),
+            IndependenceRouteCount {
+                proven: 0,
+                incomplete: false
+            }
+        );
+        assert_eq!(
+            graph
+                .proven_independent_route_count([&"a".into(), &"b".into()], 1, 0)
+                .unwrap(),
+            IndependenceRouteCount {
+                proven: 1,
+                incomplete: false
+            }
         );
     }
 }

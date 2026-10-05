@@ -166,3 +166,95 @@ fn incomplete_proof_is_visible_and_prevents_shadow_verification() {
     );
     assert!(shadow.reason_codes.contains("blocker:incomplete_proof"));
 }
+
+#[test]
+fn unproven_disjoint_roots_surface_insufficient_independent_support() {
+    let (mut ledger, claim_id, ids) = ledger_with(&[("a", "legacy-a"), ("b", "legacy-b")]);
+    ledger.claims.get_mut(&claim_id).unwrap().state = ClaimState::Verified;
+    let mut graph = EvidenceAncestryGraph::default();
+    graph
+        .insert(EvidenceAncestryNode {
+            id: EvidenceNodeId::from("root-a"),
+            source_family: "registry".into(),
+            parents: BTreeSet::new(),
+            derived: false,
+        })
+        .unwrap();
+    graph
+        .insert(EvidenceAncestryNode {
+            id: EvidenceNodeId::from("root-b"),
+            source_family: "court".into(),
+            parents: BTreeSet::new(),
+            derived: false,
+        })
+        .unwrap();
+    let bindings = BTreeMap::from([
+        (ids[0].clone(), EvidenceNodeId::from("root-a")),
+        (ids[1].clone(), EvidenceNodeId::from("root-b")),
+    ]);
+
+    let shadow = compare_legacy_and_policy(
+        &ledger,
+        &claim_id,
+        &policy(2),
+        &graph,
+        &bindings,
+        &proof(&ids, &["registry", "court"], false),
+    )
+    .unwrap();
+
+    assert_eq!(shadow.legacy_state, ClaimState::Verified);
+    assert_eq!(shadow.policy_state, ClaimState::Supported);
+    assert_eq!(shadow.distinct_resolved_roots, 2);
+    assert_eq!(shadow.proven_independent_routes, 1);
+    assert!(
+        shadow
+            .reason_codes
+            .contains("blocker:insufficient_independent_support")
+    );
+}
+
+#[test]
+fn independence_search_truncation_is_visible_in_shadow() {
+    let pairs = (0..50)
+        .map(|index| (format!("e{index}"), format!("origin-{index}")))
+        .collect::<Vec<_>>();
+    let pair_refs = pairs
+        .iter()
+        .map(|(id, origin)| (id.as_str(), origin.as_str()))
+        .collect::<Vec<_>>();
+    let (mut ledger, claim_id, ids) = ledger_with(&pair_refs);
+    ledger.claims.get_mut(&claim_id).unwrap().state = ClaimState::Verified;
+    let mut graph = EvidenceAncestryGraph::default();
+    let mut bindings = BTreeMap::new();
+    for (evidence_id, (id, _)) in ids.iter().zip(pair_refs) {
+        let root = EvidenceNodeId(format!("root-{id}"));
+        graph
+            .insert(EvidenceAncestryNode {
+                id: root.clone(),
+                source_family: id.into(),
+                parents: BTreeSet::new(),
+                derived: false,
+            })
+            .unwrap();
+        bindings.insert(evidence_id.clone(), root);
+    }
+
+    let shadow = compare_legacy_and_policy(
+        &ledger,
+        &claim_id,
+        &policy(2),
+        &graph,
+        &bindings,
+        &proof(&ids, &["truncated"], false),
+    )
+    .unwrap();
+
+    assert_ne!(shadow.policy_state, ClaimState::Verified);
+    assert!(shadow.independence_incomplete);
+    assert!(
+        shadow
+            .reason_codes
+            .contains("blocker:incomplete_independence_proof")
+    );
+}

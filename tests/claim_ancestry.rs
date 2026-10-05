@@ -2,12 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use huntsman_recon::claim_policy::{VerificationBlocker, VerificationPolicy};
 use huntsman_recon::evidence_ancestry::{
-    EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
+    EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
+    IndependenceEvidence,
 };
 use huntsman_recon::intelligence::{
     Claim, ClaimId, ClaimObject, ClaimState, EvidenceId, EvidenceNature, EvidenceRecord,
     IntelligenceLedger, SourceAuthority, SourceLineage,
 };
+use huntsman_recon::retrieval_artifact::ArtifactId;
 
 fn evidence(id: &str, declared_origin: &str) -> EvidenceRecord {
     EvidenceRecord {
@@ -160,5 +162,122 @@ fn ancestry_cycle_fails_closed_instead_of_creating_roots() {
         assessment
             .blockers
             .contains(&VerificationBlocker::UnknownAncestry)
+    );
+}
+
+fn independence(left: &str, right: &str) -> IndependenceEvidence {
+    IndependenceEvidence {
+        left_root: EvidenceNodeId::from(left),
+        right_root: EvidenceNodeId::from(right),
+        basis: IndependenceBasis::DistinctAuthenticatedPrimaryOrigins,
+        method_id: "method:primary-origin".into(),
+        method_version: 1,
+        supporting_artifact_ids: BTreeSet::from([ArtifactId::from("sha256:independence")]),
+        observed_at_unix: 10,
+    }
+}
+
+#[test]
+fn disjoint_root_labels_do_not_satisfy_two_route_policy_without_independence_evidence() {
+    let (ledger, claim_id, ids) = ledger_with_support(&[("a", "legacy-a"), ("b", "legacy-b")]);
+    let mut graph = EvidenceAncestryGraph::default();
+    graph.insert(node("root-a", "registry", &[])).unwrap();
+    graph.insert(node("root-b", "court", &[])).unwrap();
+    let bindings = BTreeMap::from([
+        (ids[0].clone(), EvidenceNodeId::from("root-a")),
+        (ids[1].clone(), EvidenceNodeId::from("root-b")),
+    ]);
+
+    let assessment = ledger
+        .assess_claim_with_ancestry(&claim_id, &policy(2), &graph, &bindings)
+        .unwrap();
+
+    assert_eq!(assessment.distinct_resolved_roots, 2);
+    assert_eq!(assessment.proven_roots, 1);
+    assert!(!assessment.independence_incomplete);
+    assert_eq!(assessment.epistemic, ClaimState::Supported);
+    assert!(
+        assessment
+            .blockers
+            .contains(&VerificationBlocker::InsufficientIndependentSupport)
+    );
+}
+
+#[test]
+fn explicit_independence_can_satisfy_two_route_policy() {
+    let (ledger, claim_id, ids) = ledger_with_support(&[("a", "legacy-a"), ("b", "legacy-b")]);
+    let mut graph = EvidenceAncestryGraph::default();
+    graph.insert(node("root-a", "registry", &[])).unwrap();
+    graph.insert(node("root-b", "court", &[])).unwrap();
+    graph
+        .insert_independence_evidence(independence("root-a", "root-b"))
+        .unwrap();
+    let bindings = BTreeMap::from([
+        (ids[0].clone(), EvidenceNodeId::from("root-a")),
+        (ids[1].clone(), EvidenceNodeId::from("root-b")),
+    ]);
+
+    let assessment = ledger
+        .assess_claim_with_ancestry(&claim_id, &policy(2), &graph, &bindings)
+        .unwrap();
+
+    assert_eq!(assessment.proven_roots, 2);
+    assert_eq!(assessment.epistemic, ClaimState::Verified);
+}
+
+#[test]
+fn known_shared_origin_stays_one_route() {
+    let (ledger, claim_id, ids) =
+        ledger_with_support(&[("mirror-a", "legacy-a"), ("mirror-b", "legacy-b")]);
+    let mut graph = EvidenceAncestryGraph::default();
+    graph.insert(node("raw", "shared-corpus", &[])).unwrap();
+    graph
+        .insert(node("mirror-a-node", "provider-a", &["raw"]))
+        .unwrap();
+    graph
+        .insert(node("mirror-b-node", "provider-b", &["raw"]))
+        .unwrap();
+    let bindings = BTreeMap::from([
+        (ids[0].clone(), EvidenceNodeId::from("mirror-a-node")),
+        (ids[1].clone(), EvidenceNodeId::from("mirror-b-node")),
+    ]);
+
+    let assessment = ledger
+        .assess_claim_with_ancestry(&claim_id, &policy(2), &graph, &bindings)
+        .unwrap();
+
+    assert_eq!(assessment.distinct_resolved_roots, 1);
+    assert_eq!(assessment.proven_roots, 1);
+    assert_ne!(assessment.epistemic, ClaimState::Verified);
+}
+
+#[test]
+fn independence_search_truncation_blocks_verification() {
+    let pairs = (0..50)
+        .map(|index| (format!("e{index}"), format!("origin-{index}")))
+        .collect::<Vec<_>>();
+    let pair_refs = pairs
+        .iter()
+        .map(|(id, origin)| (id.as_str(), origin.as_str()))
+        .collect::<Vec<_>>();
+    let (ledger, claim_id, ids) = ledger_with_support(&pair_refs);
+    let mut graph = EvidenceAncestryGraph::default();
+    let mut bindings = BTreeMap::new();
+    for (evidence_id, (id, _)) in ids.iter().zip(pair_refs) {
+        let root = EvidenceNodeId(format!("root-{id}"));
+        graph.insert(node(root.0.as_str(), id, &[])).unwrap();
+        bindings.insert(evidence_id.clone(), root);
+    }
+
+    let assessment = ledger
+        .assess_claim_with_ancestry(&claim_id, &policy(2), &graph, &bindings)
+        .unwrap();
+
+    assert!(assessment.independence_incomplete);
+    assert_ne!(assessment.epistemic, ClaimState::Verified);
+    assert!(
+        assessment
+            .blockers
+            .contains(&VerificationBlocker::IncompleteIndependenceProof)
     );
 }
