@@ -21,10 +21,16 @@ fn disjoint_unproven_roots_do_not_boost_confidence() {
     let mut graph = EvidenceAncestryGraph::default();
     graph.insert(root("registry", "company registry")).unwrap();
     graph.insert(root("profile", "profile page")).unwrap();
-    let support = [EvidenceNodeId::from("registry"), EvidenceNodeId::from("profile")];
+    let support = [
+        EvidenceNodeId::from("registry"),
+        EvidenceNodeId::from("profile"),
+    ];
 
     let effective = effective_from_ancestry(0.6, &graph, &support).unwrap();
-    assert!((effective - 0.6).abs() < 1e-12, "unproven diversity boosted to {effective}");
+    assert!(
+        (effective - 0.6).abs() < 1e-12,
+        "unproven diversity boosted to {effective}"
+    );
 }
 
 #[test]
@@ -43,8 +49,14 @@ fn explicit_independence_can_boost_confidence() {
             observed_at_unix: 1,
         })
         .unwrap();
-    let support = [EvidenceNodeId::from("registry"), EvidenceNodeId::from("profile")];
+    let support = [
+        EvidenceNodeId::from("registry"),
+        EvidenceNodeId::from("profile"),
+    ];
 
     let effective = effective_from_ancestry(0.6, &graph, &support).unwrap();
-    assert!(effective > 0.7, "proven independence did not corroborate: {effective}");
+    assert!(
+        effective > 0.7,
+        "proven independence did not corroborate: {effective}"
+    );
 }
