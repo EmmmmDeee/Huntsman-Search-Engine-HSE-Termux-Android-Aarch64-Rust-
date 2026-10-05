@@ -143,13 +143,25 @@ fn execute_search<T: Transport + ?Sized>(
             outcome: fetched.outcome,
         });
     };
+    Ok(parse_search_response(
+        response,
+        fetched.outcome,
+        module,
+        now_unix,
+    ))
+}
 
+fn parse_search_response(
+    response: Response,
+    fetched_outcome: SourceExecutionOutcome,
+    module: &str,
+    now_unix: u64,
+) -> SeekNowSearchResult {
     let meta = response_meta(&response);
     if response.truncated {
-        return Ok(SeekNowSearchResult {
-            rows: Vec::new(),
+        return result_with_outcome(
             meta,
-            outcome: outcome_with(
+            outcome_with(
                 module,
                 SourceOutcomeKind::ParserDrift,
                 now_unix,
@@ -157,40 +169,22 @@ fn execute_search<T: Transport + ?Sized>(
                 None,
                 "truncated response body",
             ),
-        });
+        );
     }
 
-    // Body-independent causal states remain authoritative. Auth/plan and rate/quota
-    // states are the exception: SeekNow's top-level JSON envelope refines those.
-    if !matches!(
-        fetched.outcome.kind,
-        SourceOutcomeKind::Inconclusive
-            | SourceOutcomeKind::AuthRejected
-            | SourceOutcomeKind::AuthRequired
-            | SourceOutcomeKind::RateLimited
-            | SourceOutcomeKind::Upstream4xx
-    ) {
-        return Ok(SeekNowSearchResult {
-            rows: Vec::new(),
-            meta,
-            outcome: fetched.outcome,
-        });
+    if !response_body_may_refine(fetched_outcome.kind) {
+        return result_with_outcome(meta, fetched_outcome);
     }
 
     let value: Value = match serde_json::from_slice(&response.body) {
         Ok(value) => value,
-        Err(_) if fetched.outcome.kind != SourceOutcomeKind::Inconclusive => {
-            return Ok(SeekNowSearchResult {
-                rows: Vec::new(),
-                meta,
-                outcome: fetched.outcome,
-            });
+        Err(_) if fetched_outcome.kind != SourceOutcomeKind::Inconclusive => {
+            return result_with_outcome(meta, fetched_outcome);
         }
         Err(_) => {
-            return Ok(SeekNowSearchResult {
-                rows: Vec::new(),
+            return result_with_outcome(
                 meta,
-                outcome: outcome_with(
+                outcome_with(
                     module,
                     SourceOutcomeKind::ParserDrift,
                     now_unix,
@@ -198,15 +192,14 @@ fn execute_search<T: Transport + ?Sized>(
                     None,
                     "response body is not valid JSON",
                 ),
-            });
+            );
         }
     };
 
     if let Some(kind) = provider_failure_kind(&value, response.status) {
-        return Ok(SeekNowSearchResult {
-            rows: Vec::new(),
+        return result_with_outcome(
             meta,
-            outcome: outcome_with(
+            outcome_with(
                 module,
                 kind,
                 now_unix,
@@ -214,22 +207,17 @@ fn execute_search<T: Transport + ?Sized>(
                 Some(0),
                 "provider reported request failure",
             ),
-        });
+        );
     }
 
-    if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
-        return Ok(SeekNowSearchResult {
-            rows: Vec::new(),
-            meta,
-            outcome: fetched.outcome,
-        });
+    if fetched_outcome.kind != SourceOutcomeKind::Inconclusive {
+        return result_with_outcome(meta, fetched_outcome);
     }
 
     let Some(items) = recognized_items(&value) else {
-        return Ok(SeekNowSearchResult {
-            rows: Vec::new(),
+        return result_with_outcome(
             meta,
-            outcome: outcome_with(
+            outcome_with(
                 module,
                 SourceOutcomeKind::SchemaDrift,
                 now_unix,
@@ -237,17 +225,13 @@ fn execute_search<T: Transport + ?Sized>(
                 None,
                 "response has no recognized result array",
             ),
-        });
+        );
     };
 
     if items.is_empty() {
         let mut outcome = SourceExecutionOutcome::valid_zero(module, now_unix);
         outcome.http_status = Some(response.status);
-        return Ok(SeekNowSearchResult {
-            rows: Vec::new(),
-            meta,
-            outcome,
-        });
+        return result_with_outcome(meta, outcome);
     }
 
     let rows = items.iter().filter_map(minimal_row).collect::<Vec<_>>();
@@ -257,11 +241,33 @@ fn execute_search<T: Transport + ?Sized>(
         outcome.kind = SourceOutcomeKind::SchemaDrift;
         outcome.detail = Some("result array contained no supported row objects".into());
     }
-    Ok(SeekNowSearchResult {
+    SeekNowSearchResult {
         rows,
         meta,
         outcome,
-    })
+    }
+}
+
+fn response_body_may_refine(kind: SourceOutcomeKind) -> bool {
+    matches!(
+        kind,
+        SourceOutcomeKind::Inconclusive
+            | SourceOutcomeKind::AuthRejected
+            | SourceOutcomeKind::AuthRequired
+            | SourceOutcomeKind::RateLimited
+            | SourceOutcomeKind::Upstream4xx
+    )
+}
+
+fn result_with_outcome(
+    meta: SeekNowResponseMeta,
+    outcome: SourceExecutionOutcome,
+) -> SeekNowSearchResult {
+    SeekNowSearchResult {
+        rows: Vec::new(),
+        meta,
+        outcome,
+    }
 }
 
 fn build_search_body(search: &SeekNowSearch) -> Result<Vec<u8>, Error> {
