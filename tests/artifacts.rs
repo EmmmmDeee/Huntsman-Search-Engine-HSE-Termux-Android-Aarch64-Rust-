@@ -28,8 +28,10 @@ fn snapshot() -> AnalysisSnapshot {
 fn repeated_rendering_is_deterministic() {
     let snapshot = snapshot();
     let report = analyze_snapshot(&snapshot);
-    let left = render_artifacts(&snapshot, &report, &[], &PipelineLimits::default()).expect("artifacts");
-    let right = render_artifacts(&snapshot, &report, &[], &PipelineLimits::default()).expect("artifacts");
+    let left =
+        render_artifacts(&snapshot, &report, &[], &PipelineLimits::default()).expect("artifacts");
+    let right =
+        render_artifacts(&snapshot, &report, &[], &PipelineLimits::default()).expect("artifacts");
     assert_eq!(left, right);
 }
 
@@ -37,13 +39,20 @@ fn repeated_rendering_is_deterministic() {
 fn all_graph_artifacts_come_from_the_same_snapshot() {
     let snapshot = snapshot();
     let report = analyze_snapshot(&snapshot);
-    let artifacts = render_artifacts(&snapshot, &report, &[], &PipelineLimits::default()).expect("artifacts");
-    let ArtifactPayload::Ready(report_json) = &artifacts.report_json else { panic!("report omitted") };
+    let artifacts =
+        render_artifacts(&snapshot, &report, &[], &PipelineLimits::default()).expect("artifacts");
+    let ArtifactPayload::Ready(report_json) = &artifacts.report_json else {
+        panic!("report omitted")
+    };
     let report_text = String::from_utf8_lossy(report_json);
     assert!(report_text.contains("\"node_count\":2"));
-    let ArtifactPayload::Ready(gexf) = &artifacts.gexf else { panic!("gexf omitted") };
+    let ArtifactPayload::Ready(gexf) = &artifacts.gexf else {
+        panic!("gexf omitted")
+    };
     assert!(String::from_utf8_lossy(gexf).contains("<nodes>"));
-    let ArtifactPayload::Ready(snake) = &artifacts.snake_graph else { panic!("snake omitted") };
+    let ArtifactPayload::Ready(snake) = &artifacts.snake_graph else {
+        panic!("snake omitted")
+    };
     assert!(!snake.is_empty());
 }
 
@@ -60,10 +69,15 @@ fn stix_and_navigator_do_not_invent_admitted_claims() {
         evidence_level: EvidenceLevel::Inference,
         does_not_show: "not verified".to_string(),
     });
-    let artifacts = render_artifacts(&snapshot, &report, &[entry], &PipelineLimits::default()).expect("artifacts");
-    let ArtifactPayload::Ready(stix) = &artifacts.stix else { panic!("stix omitted") };
+    let artifacts = render_artifacts(&snapshot, &report, &[entry], &PipelineLimits::default())
+        .expect("artifacts");
+    let ArtifactPayload::Ready(stix) = &artifacts.stix else {
+        panic!("stix omitted")
+    };
     assert!(String::from_utf8_lossy(stix).contains("\"objects\":[]"));
-    let ArtifactPayload::Ready(navigator) = &artifacts.navigator else { panic!("navigator omitted") };
+    let ArtifactPayload::Ready(navigator) = &artifacts.navigator else {
+        panic!("navigator omitted")
+    };
     assert!(String::from_utf8_lossy(navigator).contains("\"techniques\":[]"));
 }
 
@@ -71,9 +85,18 @@ fn stix_and_navigator_do_not_invent_admitted_claims() {
 fn oversized_artifacts_are_omitted_not_truncated_into_invalid_data() {
     let snapshot = snapshot();
     let report = analyze_snapshot(&snapshot);
-    let limits = PipelineLimits { max_export_bytes: 16, ..PipelineLimits::default() };
+    let limits = PipelineLimits {
+        max_export_bytes: 16,
+        ..PipelineLimits::default()
+    };
     let artifacts = render_artifacts(&snapshot, &report, &[], &limits).expect("artifacts");
     assert!(artifacts.truncated);
-    assert!(matches!(artifacts.report_json, ArtifactPayload::OmittedTooLarge { .. }));
-    assert!(matches!(artifacts.gexf, ArtifactPayload::OmittedTooLarge { .. }));
+    assert!(matches!(
+        artifacts.report_json,
+        ArtifactPayload::OmittedTooLarge { .. }
+    ));
+    assert!(matches!(
+        artifacts.gexf,
+        ArtifactPayload::OmittedTooLarge { .. }
+    ));
 }
