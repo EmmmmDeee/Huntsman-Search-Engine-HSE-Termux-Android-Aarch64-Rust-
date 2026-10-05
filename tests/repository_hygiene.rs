@@ -36,10 +36,9 @@ fn repository_root_contains_no_opaque_snapshot_archives() {
 fn archive_documentation_tracks_the_canonical_extracted_state() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let readme = fs::read_to_string(root.join("README.md")).expect("README.md");
-    let architecture =
-        fs::read_to_string(root.join("ARCHITECTURE.md")).expect("ARCHITECTURE.md");
-    let dispositions = fs::read_to_string(root.join("docs/DISPOSITIONS.md"))
-        .expect("docs/DISPOSITIONS.md");
+    let architecture = fs::read_to_string(root.join("ARCHITECTURE.md")).expect("ARCHITECTURE.md");
+    let dispositions =
+        fs::read_to_string(root.join("docs/DISPOSITIONS.md")).expect("docs/DISPOSITIONS.md");
     let reconstruction = fs::read_to_string(root.join("docs/RECONSTRUCTION_2026-10-02.md"))
         .expect("docs/RECONSTRUCTION_2026-10-02.md");
 
