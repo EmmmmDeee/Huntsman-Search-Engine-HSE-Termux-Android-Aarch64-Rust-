@@ -1,6 +1,6 @@
+use huntsman_recon::EntityKind;
 use huntsman_recon::collector::{CollectionLimits, CollectorError, ObservationReceipt};
 use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
-use huntsman_recon::EntityKind;
 
 #[test]
 fn default_collection_limits_are_bounded() {
