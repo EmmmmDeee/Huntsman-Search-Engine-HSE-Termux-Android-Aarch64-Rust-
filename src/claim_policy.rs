@@ -101,42 +101,46 @@ fn defeat_blocks_verification(defeat: &Defeat) -> bool {
     }
 }
 
-fn finish_assessment(
-    policy: &VerificationPolicy,
+struct AssessmentInputs<'a> {
     support_empty: bool,
     proven_roots: usize,
     distinct_resolved_roots: usize,
     independence_incomplete: bool,
     unresolved_support: usize,
-    present_natures: &[EvidenceNature],
+    present_natures: &'a [EvidenceNature],
     has_blocking_defeat: bool,
     canonical_ancestry: bool,
+}
+
+fn finish_assessment(
+    policy: &VerificationPolicy,
+    inputs: AssessmentInputs<'_>,
 ) -> ClaimAssessment {
     let mut blockers = BTreeSet::new();
-    if policy.require_resolved_ancestry && unresolved_support > 0 {
+    if policy.require_resolved_ancestry && inputs.unresolved_support > 0 {
         blockers.insert(VerificationBlocker::UnknownAncestry);
     }
-    if !canonical_ancestry {
+    if !inputs.canonical_ancestry {
         blockers.insert(VerificationBlocker::CanonicalAncestryRequired);
     }
-    if proven_roots < policy.min_proven_roots {
+    if inputs.proven_roots < policy.min_proven_roots {
         blockers.insert(VerificationBlocker::InsufficientIndependentSupport);
     }
-    if independence_incomplete {
+    if inputs.independence_incomplete {
         blockers.insert(VerificationBlocker::IncompleteIndependenceProof);
     }
     if policy
         .required_natures
         .iter()
-        .any(|required| !present_natures.contains(required))
+        .any(|required| !inputs.present_natures.contains(required))
     {
         blockers.insert(VerificationBlocker::MissingRequiredEvidenceNature);
     }
-    if has_blocking_defeat {
+    if inputs.has_blocking_defeat {
         blockers.insert(VerificationBlocker::UndefeatedDefeater);
     }
 
-    let epistemic = if support_empty {
+    let epistemic = if inputs.support_empty {
         ClaimState::Candidate
     } else if blockers.is_empty() {
         ClaimState::Verified
@@ -147,10 +151,10 @@ fn finish_assessment(
     ClaimAssessment {
         epistemic,
         blockers,
-        proven_roots,
-        distinct_resolved_roots,
-        independence_incomplete,
-        unresolved_support,
+        proven_roots: inputs.proven_roots,
+        distinct_resolved_roots: inputs.distinct_resolved_roots,
+        independence_incomplete: inputs.independence_incomplete,
+        unresolved_support: inputs.unresolved_support,
         proof_environment_count: 0,
         proof_incomplete: false,
     }
@@ -251,15 +255,17 @@ impl IntelligenceLedger {
         let compatibility_root_count = proven_roots.len();
         Ok(finish_assessment(
             policy,
-            claim.support.is_empty(),
-            compatibility_root_count,
-            compatibility_root_count,
-            false,
-            unresolved_support,
-            &present_natures,
-            !claim.contradictions.is_empty()
-                || claim.defeats.iter().any(defeat_blocks_verification),
-            false,
+            AssessmentInputs {
+                support_empty: claim.support.is_empty(),
+                proven_roots: compatibility_root_count,
+                distinct_resolved_roots: compatibility_root_count,
+                independence_incomplete: false,
+                unresolved_support,
+                present_natures: &present_natures,
+                has_blocking_defeat: !claim.contradictions.is_empty()
+                    || claim.defeats.iter().any(defeat_blocks_verification),
+                canonical_ancestry: false,
+            },
         ))
     }
 
@@ -329,15 +335,17 @@ impl IntelligenceLedger {
 
         Ok(finish_assessment(
             policy,
-            claim.support.is_empty(),
-            route_count.proven,
-            resolved_root_ids.len(),
-            route_count.incomplete,
-            unresolved_support,
-            &present_natures,
-            !claim.contradictions.is_empty()
-                || claim.defeats.iter().any(defeat_blocks_verification),
-            true,
+            AssessmentInputs {
+                support_empty: claim.support.is_empty(),
+                proven_roots: route_count.proven,
+                distinct_resolved_roots: resolved_root_ids.len(),
+                independence_incomplete: route_count.incomplete,
+                unresolved_support,
+                present_natures: &present_natures,
+                has_blocking_defeat: !claim.contradictions.is_empty()
+                    || claim.defeats.iter().any(defeat_blocks_verification),
+                canonical_ancestry: true,
+            },
         ))
     }
 }
