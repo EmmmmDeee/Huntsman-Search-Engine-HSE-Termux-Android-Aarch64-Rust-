@@ -61,7 +61,7 @@ CURRENT. One package and library (`src/lib.rs`), with command dispatch in `src/m
 
 | Layer | Modules | Role |
 | --- | --- | --- |
-| L0 primitives | `error`, `sha256`, `json`, `timefmt`, `union_find`, `tags`, `xml`, `uid`, `stage`, `event`, `fsio`, `signals`, `place`, `geohash`, `redact`, `termination`, `circuit`, `oui_ieee`, `oui`, `radar` | Pure helpers, bounded file I/O (`fsio`), retry and cache state (`circuit`) |
+| L0 primitives | `error`, `sha256`, `json`, `timefmt`, `union_find`, `tags`, `xml`, `uid`, `stage`, `event`, `fsio`, `signals`, `place`, `geohash`, `redact`, `termination`, `circuit`, `oui_ieee`, `oui`, `radar`, `retrieval_artifact` | Pure helpers, stable artifact identifiers (`retrieval_artifact`), bounded file I/O (`fsio`), retry and cache state (`circuit`) |
 | L1 evidence core | `evidence_ancestry`, `confidence`, `identity_resolution`, `resolve`, `eval` | Ancestry graph, independent-family counting, merge gate, scoring |
 | L2 network boundary | `classify`, `source_outcome`, `egress`, `credential_origin`, `http`, `keys`, `fetch`, `fetch_cli`, `deadline` | The only network path (see BOUNDARIES); `deadline` provides one time budget across several requests |
 | L3 normalisation | `textnorm`, `canonical`, `validation`, `domains`, `address_au`, `postcode_au`, `au_id`, `breach`, `archive`, `spf`, `dmarc`, `tlsrpt` | Canonical forms, validators and record parsers; `archive` models archive-URL identity and deterministic capture aggregation over `canonical`; `postcode_au` also has one postcode lookup over an injected `http::Transport` (its only crate dependency is `http`), and `au_id` re-exports it (`src/au_id.rs:13`) |
