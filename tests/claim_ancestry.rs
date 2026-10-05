@@ -86,9 +86,7 @@ fn ledger_with_support(ids: &[(&str, &str)]) -> (IntelligenceLedger, ClaimId, Ve
     (ledger, claim_id, evidence_ids)
 }
 
-fn ledger_with_generated_support(
-    count: usize,
-) -> (IntelligenceLedger, ClaimId, Vec<EvidenceId>) {
+fn ledger_with_generated_support(count: usize) -> (IntelligenceLedger, ClaimId, Vec<EvidenceId>) {
     let mut ledger = IntelligenceLedger::default();
     let claim_id = ClaimId::from("claim-generated");
     ledger
