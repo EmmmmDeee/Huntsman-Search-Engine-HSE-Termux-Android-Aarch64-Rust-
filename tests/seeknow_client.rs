@@ -157,7 +157,7 @@ fn provider_failures_are_classified_from_top_level_envelope_only() {
             ScriptedTransport::new(vec![response_with(status, body, Vec::new(), false)]);
         let result = search_fast(&transport, &credential(), &auto_search(), 9).unwrap();
         assert_eq!(result.outcome.kind, expected, "{body}");
-        assert!(result.rows.is_empty());
+        assert_eq!(result.rows.len(), 0);
     }
 
     let leaked_text = r#"{
