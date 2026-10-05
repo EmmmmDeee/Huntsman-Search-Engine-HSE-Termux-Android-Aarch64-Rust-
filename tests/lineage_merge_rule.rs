@@ -1,5 +1,8 @@
 //! The lineage + merge-rule contract, exercised only through the public API a
 //! collection front-end calls: `lineage::resolve_with_lineage`.
+//!
+//! Lineage family labels remain useful diagnostics and de-duplication keys, but are
+//! not themselves proof that two observations are independent acquisition routes.
 
 use huntsman_recon::entity::{Evidence, EvidenceProvenance};
 use huntsman_recon::evidence_ancestry::EvidenceNodeId;
@@ -57,6 +60,13 @@ fn reasons(outcome: &CandidateOutcome) -> &[HoldReason] {
     }
 }
 
+fn insufficient_one() -> HoldReason {
+    HoldReason::InsufficientIndependentFamilies {
+        found: 1,
+        required: 2,
+    }
+}
+
 #[test]
 fn same_dataset_through_two_collectors_is_one_family_and_no_auto_merge() {
     let out = one(corpus(), candidate(&["hibp-1", "dehashed-1"], Some(0.99)));
@@ -64,28 +74,31 @@ fn same_dataset_through_two_collectors_is_one_family_and_no_auto_merge() {
     assert_eq!(
         out.outcome,
         MergeOutcome::Held {
-            reasons: vec![HoldReason::InsufficientIndependentFamilies {
-                found: 1,
-                required: 2
-            }]
+            reasons: vec![insufficient_one()]
         }
     );
 }
 
 #[test]
-fn missing_probability_is_held_with_a_reason() {
+fn missing_probability_and_unproven_independence_are_both_reported() {
     let out = one(corpus(), candidate(&["hibp-1", "dehashed-2"], None));
     assert_eq!(out.independent_families, ["adobe", "linkedin"]);
-    assert_eq!(reasons(&out), [HoldReason::ProbabilityMissing]);
+    assert_eq!(reasons(&out), [HoldReason::ProbabilityMissing, insufficient_one()]);
     assert_eq!(out.decision.probability, None);
 }
 
 #[test]
-fn nan_or_out_of_range_probability_is_held_with_a_reason() {
+fn invalid_probability_does_not_hide_unproven_independence() {
     for p in [f64::NAN, f64::NEG_INFINITY, 1.000_001, -0.5] {
         let out = one(corpus(), candidate(&["hibp-1", "dehashed-2"], Some(p)));
         assert!(
-            matches!(reasons(&out), [HoldReason::ProbabilityInvalid { .. }]),
+            matches!(
+                reasons(&out),
+                [
+                    HoldReason::ProbabilityInvalid { .. },
+                    HoldReason::InsufficientIndependentFamilies { found: 1, required: 2 }
+                ]
+            ),
             "{p}: {:?}",
             out.outcome
         );
@@ -93,24 +106,27 @@ fn nan_or_out_of_range_probability_is_held_with_a_reason() {
     let low = one(corpus(), candidate(&["hibp-1", "dehashed-2"], Some(0.89)));
     assert!(matches!(
         reasons(&low),
-        [HoldReason::ProbabilityBelowThreshold { .. }]
+        [
+            HoldReason::ProbabilityBelowThreshold { .. },
+            HoldReason::InsufficientIndependentFamilies { found: 1, required: 2 }
+        ]
     ));
 }
 
 #[test]
-fn two_independent_families_and_a_valid_probability_auto_merge() {
+fn distinct_lineage_labels_do_not_auto_merge_without_independence_proof() {
     for support in [
         ["hibp-1", "dehashed-2"],
         ["dehashed-1", "dehashed-2"],
         ["hibp-1", "abr-1"],
     ] {
         let out = one(corpus(), candidate(&support, Some(0.95)));
-        assert_eq!(out.outcome, MergeOutcome::AutoMerge, "{support:?}");
         assert_eq!(out.independent_families.len(), 2);
+        assert_eq!(reasons(&out), [insufficient_one()], "{support:?}");
     }
-    // The floor is inclusive.
+    // The probability floor remains inclusive; independence is an orthogonal gate.
     let edge = one(corpus(), candidate(&["hibp-1", "dehashed-2"], Some(0.90)));
-    assert_eq!(edge.outcome, MergeOutcome::AutoMerge);
+    assert_eq!(reasons(&edge), [insufficient_one()]);
 }
 
 #[test]
@@ -132,7 +148,7 @@ fn collector_name_never_becomes_lineage() {
 }
 
 #[test]
-fn verified_registry_counts_but_record_locators_do_not() {
+fn verified_registry_counts_as_a_family_but_record_locators_do_not() {
     let obs = vec![
         observation("registry", "abn_lookup", &[("registry", "ABR")]),
         observation(
@@ -234,7 +250,7 @@ fn nothing_is_dropped_truncated_or_misattributed() {
         .iter()
         .map(|c| c.outcome == MergeOutcome::AutoMerge)
         .collect();
-    assert_eq!(merged, [false, false, false, true, false]);
+    assert_eq!(merged, [false, false, false, false, false]);
     assert_eq!(
         r.candidates[4].unattributed_support,
         [
@@ -272,8 +288,8 @@ fn invalid_policy_is_rejected_before_resolving() {
     }
 }
 
-/// Review fix: unknown support is reported in the rule's fixed order, and the
-/// original decision is still validated (an empty support id is `InvalidCandidate`).
+/// Unknown support is reported in the rule's fixed order, and the original decision is
+/// still validated (an empty support id is `InvalidCandidate`).
 #[test]
 fn unknown_support_keeps_validation_and_reason_order() {
     let empty = one(corpus(), candidate(&["hibp-1", ""], Some(0.99)));
