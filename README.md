@@ -1,7 +1,47 @@
-# huntsman
+# Huntsman Recon
 
-One crate, `huntsman-recon`. The current version lives in `src/`; the two legacy zip archives in the repository root and their extracted copies in `legacy/` are permanent read-only reference (see below).
-Target design, module map and per-capability status against legacy `7dca720`: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Huntsman Recon is a Rust command-line toolkit for local search, guarded HTTP
+fetches, Australian identifier validation, geospatial utilities, and an
+append-only evidence ledger. It is designed to make evidence quality and
+uncertainty visible; a lead or verified claim is not an attribution or ATT&CK
+score.
+
+> **Status:** this is the `huntsman-recon` reconstruction, not the previous
+> `hse` monolith. `people` provides a subset of the old monolith's person-lookups.
+> Legacy archives and extracted files are preserved as read-only references,
+> not installable/current source. See [architecture and status](ARCHITECTURE.md).
+
+## Install on Termux (Android arm64)
+
+Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the
+[official GitHub releases](https://github.com/termux/termux-app/releases), then
+run this one-line source install:
+
+```sh
+pkg update && pkg install -y git rust clang && HUNTSMAN_HIBP_NO_EMBED=1 cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git --locked --root "$PREFIX" huntsman-recon
+```
+
+This builds the current `main` source on-device, installs
+`$PREFIX/bin/huntsman-recon`, and prevents accidental build-time embedding of a
+locally configured HIBP key. Rust 1.87 or newer is required. For prebuilt,
+release-pinned installation, Linux development setup, upgrades, and
+troubleshooting, see [`docs/INSTALL.md`](docs/INSTALL.md).
+
+## First commands
+
+```sh
+huntsman-recon --help
+huntsman-recon check
+huntsman-recon search "brisbane port"
+```
+
+`check` runs offline self-acceptance. `search` and `sources` are offline.
+`fetch`, `hibp`, `recon` and `people` (two-token names) make HTTP requests and
+use public-only egress by default.
+Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
+before using credentials or network access.
+
+## Repository map
 
 | Path | Contents |
 | --- | --- |
@@ -18,13 +58,17 @@ Target design, module map and per-capability status against legacy `7dca720`: [`
 
 | | `hse` (legacy v1.41.0 monolith) | `huntsman-recon` (this tree, in progress) |
 | --- | --- | --- |
-| Person lookups | Yes. Provider modules such as `asic_persons`, `asic_director`, `username_search`, `phone_au` and `bluesky_user` (195 `pub mod` entries in `src/modules/mod.rs` at `7dca720b`), plus `hse scan`, `hse investigate` and `hse serve`. Whether each provider works live has not been re-verified. | **No.** No command calls a person-lookup provider. `sources` classifies an input (a person or organisation name, an email address, an `@username`, a domain, an IP address or coordinates) and only prints curated public search or browser URLs for it, offline and `LeadOnly`; nothing is fetched. `search` reads only local documents, and the HIBP client is a library API that no command calls. |
+| Person lookups | Yes. Provider modules such as `asic_persons`, `asic_director`, `username_search`, `phone_au` and `bluesky_user` (195 `pub mod` entries in `src/modules/mod.rs` at `7dca720b`), plus `hse scan`, `hse investigate` and `hse serve`. Whether each provider works live has not been re-verified. | **Partial.** `people` calls `asic_persons`, `asic_director`, `au_people` and `au_electoral` for names with at least two alphabetic tokens. `sources` classifies an input (a person or organisation name, an email address, an `@username`, a domain, an IP address or coordinates) and only prints curated public search or browser URLs for it, offline and `LeadOnly`; nothing is fetched. `search` reads only local documents; `hibp` provides explicit opt-in HIBP lookups. |
 | Source | Commit `7dca720b`. The closest copy in this tree is `legacy/hse-monolith-v1.41.0/`, which is read-only and not built; it is not byte-identical to `7dca720b`. | `src/` |
 | Where to get it | GitHub pre-release `main-7dca720` (asset `hse-aarch64-linux-android`, built from `7dca720b`) | A GitHub pre-release `main-<sha7>` (asset `huntsman-recon-aarch64-linux-android`), the CI artifact of the same name from a `main` push (see "Downloads"), or a source build |
 
-Use `hse` if you need person lookups today. `huntsman-recon` is its in-progress replacement. Since #672, every push to `main` publishes it as a `main-<sha7>` pre-release. There is no rolling `latest` pre-release: the workflow creates or moves `latest` only when the repository variable `PROMOTE_RECON_TO_LATEST` is `true`, and it is unset. GitHub's "Latest release" is the stable legacy `hse` release `v1.41.0`.
+`huntsman-recon` is the in-progress replacement, with a subset of the legacy person-lookup providers. Since #672, every push to `main` publishes it as a `main-<sha7>` pre-release. There is no rolling `latest` pre-release: the workflow creates or moves `latest` only when the repository variable `PROMOTE_RECON_TO_LATEST` is `true`, and it is unset. GitHub's "Latest release" is the stable legacy `hse` release `v1.41.0`.
 
-Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands; `check` exercises egress, origin, placeholder and URL-redaction rules as gate 11, without a socket). A challenge page is not a hit. No paid source is called automatically; HIBP is an explicit opt-in library client. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
+Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands; `check` exercises egress, origin, placeholder and URL-redaction rules as gate 11, without a socket). A challenge page is not a hit. No paid source is called automatically; HIBP is explicit opt-in via the CLI or library. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
+
+For contributors: one Rust package (`huntsman-recon`), Rust 1.87+, no workspace.
+The binary's full command list is available with `huntsman-recon --help`;
+run `huntsman-recon COMMAND --help` for command-specific usage.
 
 ```
 cargo test
@@ -40,6 +84,10 @@ cargo run -- coarsen -27.4698,153.0251 # one decimal place, ~11 km
 cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
+cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network
+cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
+cargo run -- hibp help
+cargo run -- recon crtsh https://example.com/
 ```
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
@@ -64,7 +112,7 @@ Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys fi
 
 `sources` is offline routing, not collection. It classifies the input using the existing Huntsman classifier and renders only compatible, independently curated public/browser search routes from `source_registry`. Generated routes are `LeadOnly`: a URL is never corroborating evidence by itself. External catalogue code or data is not embedded.
 
-Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch` got no response, 74 artifact write failure, 77 `fetch` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here). `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print the usage line.
+Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch` got no response or `people` registers were unusable, 74 artifact write failure, 77 `fetch` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal. `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print help and the usage line.
 
 `tests/readme.rs` runs every example above (except the internet `fetch`), checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`.
 
@@ -157,6 +205,25 @@ randomness comes from `/dev/urandom`. Token stores support memory or bounded,
 atomic mode-600 files. Debug/errors omit keys, tokens and upstream error bodies.
 All integration evidence here is offline fake-transport testing; live HIBP and
 Termux handset acceptance remain unverified.
+
+## Opt-in ASIC people-register library
+
+`huntsman_recon::asic_persons::lookup` queries three keyless ASIC registers on
+data.gov.au CKAN (banned and disqualified persons, financial advisers, credit
+representatives) through the shared `fetch` boundary and an injected
+`http::Transport`. A name with fewer than two alphabetic tokens makes no
+request. Challenge pages, truncated bodies, and CKAN `success: false` envelopes
+are not evidence of absence. The binary exposes `people NAME [--save FILE]`
+(unquoted words are joined) through `people_cli`, which also runs
+`asic_director`, `au_people` and `au_electoral` over the same transport and
+feeds emitted evidence through `lineage::resolve_with_lineage`. One source
+`Invalid` or BotWaf does not abort the others. `--save FILE` writes an
+unverified hash-chained ledger of outcomes and entities that `verify FILE`
+reloads byte-identically (`admitted=0`; a register row is not identity
+resolution). Skip (fewer than two alphabetic tokens) makes no request and does
+not write. Tests use a scripted transport; the README examples are the skip
+path. Two-token names query those sources and are not run in CI. There is no
+live receipt. Live ASIC Connect is WAF-blocked.
 
 ## Lineage and the automatic-merge rule
 
