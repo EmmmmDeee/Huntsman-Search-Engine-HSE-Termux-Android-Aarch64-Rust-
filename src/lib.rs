@@ -11,12 +11,15 @@
 )]
 
 pub mod address_au;
+pub mod asic_director;
 pub mod asic_persons;
 pub mod assurance;
 pub mod atproto;
 pub mod attack;
 pub mod attack_catalog;
+pub mod au_electoral;
 pub mod au_id;
+pub mod au_people;
 pub mod benchmark;
 pub mod breach;
 pub mod canonical;

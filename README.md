@@ -7,10 +7,9 @@ uncertainty visible; a lead or verified claim is not an attribution or ATT&CK
 score.
 
 > **Status:** this is the `huntsman-recon` reconstruction, not the previous
-> `hse` monolith. `people NAME` looks up keyless ASIC people registers; email,
-> username and phone lookups are not restored yet. Legacy archives and extracted
-> files are preserved as read-only references, not installable/current source.
-> See [architecture and status](ARCHITECTURE.md).
+> `hse` monolith. It does not yet provide the old monolith's person-lookups.
+> Legacy archives and extracted files are preserved as read-only references,
+> not installable/current source. See [architecture and status](ARCHITECTURE.md).
 
 ## Install on Termux (Android arm64)
 
@@ -72,12 +71,10 @@ cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network
-cargo run -- people Madonna --save skipped.json  # skip path does not write skipped.json
+cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
 ```
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
-
-`people NAME --save FILE` writes an unverified huntsman-ledger-v2 chain after a completed lookup; the skip path does not write. `verify FILE` then reports `admitted=0`.
 
 Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys file and the process environment. The file is `NAME=value` lines (`export`, quotes, blank lines and `#` comments allowed; placeholder values count as unset) and is parsed by `keys::Keys::parse`, the parser `--keys FILE` and `keys FILE` use through `Keys::load`.
 
@@ -153,11 +150,14 @@ data.gov.au CKAN (banned and disqualified persons, financial advisers, credit
 representatives) through the shared `fetch` boundary and an injected
 `http::Transport`. A name with fewer than two alphabetic tokens makes no
 request. Challenge pages, truncated bodies, and CKAN `success: false` envelopes
-are not evidence of absence. The binary exposes `people NAME` (unquoted words
-are joined) through `people_cli`, which feeds emitted evidence through
-`lineage::resolve_with_lineage`. Tests use a scripted transport; the README
-example is the skip path. Two-token names query CKAN and are not run in CI.
-There is no live receipt.
+are not evidence of absence. The binary exposes `people NAME [--save FILE]`
+(unquoted words are joined) through `people_cli`, which feeds emitted evidence
+through `lineage::resolve_with_lineage`. `--save FILE` writes an unverified
+hash-chained ledger of outcomes and entities that `verify FILE` reloads
+byte-identically (`admitted=0`; a register row is not identity resolution).
+Skip (fewer than two alphabetic tokens) makes no request and does not write.
+Tests use a scripted transport; the README examples are the skip path.
+Two-token names query CKAN and are not run in CI. There is no live receipt.
 
 ## Lineage and the automatic-merge rule
 

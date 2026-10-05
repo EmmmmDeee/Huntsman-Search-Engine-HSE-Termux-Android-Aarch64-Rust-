@@ -33,7 +33,7 @@ use huntsman_recon::keys::{Keys, is_configured_value};
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage};
 use huntsman_recon::navigator::layer;
-use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleRun};
+use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::people_save;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
@@ -161,29 +161,34 @@ fn fail(code: u8, msg: &str) -> ExitCode {
 }
 
 fn people_cmd(args: &[String]) -> ExitCode {
-    let Some(parsed) = people_cli::parse_args(args) else {
-        return fail(EX_USAGE, PEOPLE_USAGE);
+    let parsed = match PeopleArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return fail(EX_USAGE, &format!("{e}\n{PEOPLE_USAGE}")),
     };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let transport = UreqTransport::new(&TransportConfig::default());
     match people_cli::run(&transport, &parsed.name, now) {
-        PeopleRun::Usage => fail(EX_USAGE, PEOPLE_USAGE),
-        PeopleRun::Printed {
-            text,
-            entities,
-            skipped,
-        } => {
+        PeopleRun::Printed { text, report } => {
             print!("{text}");
             if let Some(path) = parsed.save {
-                if !skipped {
-                    if let Err(e) = people_save::write(Path::new(&path), &entities) {
-                        return fail(EX_IOERR, &e.to_string());
-                    }
+                if report.entities.is_empty() && report.outcomes.is_empty() {
+                    return ExitCode::SUCCESS;
                 }
+                match people_save::save(&path, &report.entities, &report.outcomes) {
+                    Ok(entries) => {
+                        println!("saved={}", path.display());
+                        println!("entries={}", entries.len());
+                        println!("tip={}", entries.last().map_or("none", |e| e.hash.as_str()));
+                        ExitCode::SUCCESS
+                    }
+                    Err(Error::Store(msg)) => fail(EX_IOERR, &msg),
+                    Err(e) => fail(EX_DATAERR, &e.to_string()),
+                }
+            } else {
+                ExitCode::SUCCESS
             }
-            ExitCode::SUCCESS
         }
         PeopleRun::Network(msg) => fail(EX_NOPERM, &msg),
         PeopleRun::Failed(msg) => fail(EX_UNAVAILABLE, &msg),

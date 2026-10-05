@@ -1,14 +1,15 @@
 //! Collection front-end for `huntsman-recon people`.
 //!
-//! Lookup stays in [`crate::asic_persons`]. This module parses NAME and `--save FILE`,
-//! runs that lookup over an injected [`crate::http::Transport`], and feeds each
-//! evidence item through [`crate::lineage::resolve_with_lineage`]. Persistence is
-//! [`crate::people_save`] in the binary. Tests inject fakes; live CKAN is not run here.
+//! Lookup stays in [`crate::asic_persons`]. This module parses the name, runs that
+//! lookup over an injected [`crate::http::Transport`], and feeds each evidence item
+//! through [`crate::lineage::resolve_with_lineage`]. Tests inject fakes; live CKAN
+//! is not run here. Saving a ledger is L7 ([`crate::people_save`]); this module
+//! only parses `--save`.
 
 use std::fmt::Write;
+use std::path::PathBuf;
 
 use crate::asic_persons::{self, Report};
-use crate::entity::Entity;
 use crate::error::Error;
 use crate::evidence_ancestry::EvidenceNodeId;
 use crate::http::Transport;
@@ -19,71 +20,70 @@ use crate::uid;
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
 people NAME [--save FILE]
-Look up NAME on keyless ASIC people registers (data.gov.au CKAN). Fewer than two alphabetic tokens makes no request.
---save FILE writes an unverified huntsman-ledger-v2 chain after a completed lookup; the skip path does not write.";
+Look up NAME on keyless ASIC people registers (data.gov.au CKAN). Fewer than two alphabetic tokens makes no request. --save FILE writes an unverified ledger that verify can reload; skip does not write.";
 
-/// Parsed `people` arguments. `name` is joined into the lookup string.
+/// Parsed `people` arguments. The name is the positional tokens joined with spaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeopleArgs {
-    pub name: Vec<String>,
-    pub save: Option<String>,
+    pub name: String,
+    pub save: Option<PathBuf>,
+}
+
+impl PeopleArgs {
+    /// # Errors
+    /// [`Error::Invalid`] when NAME is missing, `--save` has no path, `--save` is
+    /// repeated, or an unknown option is present.
+    pub fn parse(args: &[String]) -> Result<Self, Error> {
+        let mut name_parts = Vec::new();
+        let mut save = None;
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
+            match arg.as_str() {
+                "--save" => {
+                    if save.is_some() {
+                        return Err(Error::Invalid("only one --save".into()));
+                    }
+                    let path = it
+                        .next()
+                        .cloned()
+                        .ok_or_else(|| Error::Invalid("--save needs a value".into()))?;
+                    if path.is_empty() || path.starts_with("--") {
+                        return Err(Error::Invalid("--save needs a file path".into()));
+                    }
+                    save = Some(PathBuf::from(path));
+                }
+                flag if flag.starts_with("--") => {
+                    return Err(Error::Invalid(format!("unknown option {flag}")));
+                }
+                positional => name_parts.push(positional.to_owned()),
+            }
+        }
+        if name_parts.is_empty() {
+            return Err(Error::Invalid("missing NAME".into()));
+        }
+        Ok(Self {
+            name: name_parts.join(" "),
+            save,
+        })
+    }
 }
 
 /// Result of one `people` invocation, before the binary maps it to an exit code.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PeopleRun {
-    Usage,
-    Printed {
-        text: String,
-        entities: Vec<Entity>,
-        skipped: bool,
-    },
+    Printed { text: String, report: Report },
     Network(String),
     Failed(String),
 }
 
-/// Split `args` into NAME tokens and an optional `--save FILE`.
+/// Look up `name` over `transport` and render entities, outcomes, and lineage.
+/// A single-token name prints the skip line and makes no request.
 #[must_use]
-pub fn parse_args(args: &[String]) -> Option<PeopleArgs> {
-    let mut name = Vec::new();
-    let mut save = None;
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--save" {
-            if save.is_some() {
-                return None;
-            }
-            i += 1;
-            let file = args.get(i).filter(|file| !file.is_empty())?;
-            save = Some((*file).clone());
-        } else {
-            name.push(args[i].clone());
-        }
-        i += 1;
-    }
-    if name.is_empty() {
-        return None;
-    }
-    Some(PeopleArgs { name, save })
-}
-
-/// Parse `args` as NAME, look up over `transport`, and render entities, outcomes,
-/// and lineage. An empty argument list is usage. A single-token name prints the
-/// skip line and makes no request.
-#[must_use]
-pub fn run<T: Transport + ?Sized>(transport: &T, args: &[String], now_unix: u64) -> PeopleRun {
-    if args.is_empty() {
-        return PeopleRun::Usage;
-    }
-    let name = args.join(" ");
-    let scan_id = uid::scan_id("person", &name);
-    match asic_persons::lookup(transport, &name, &scan_id, now_unix) {
+pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> PeopleRun {
+    let scan_id = uid::scan_id("person", name);
+    match asic_persons::lookup(transport, name, &scan_id, now_unix) {
         Ok(report) => match render(&report) {
-            Ok(text) => PeopleRun::Printed {
-                skipped: report.entities.is_empty() && report.outcomes.is_empty(),
-                entities: report.entities,
-                text,
-            },
+            Ok(text) => PeopleRun::Printed { text, report },
             Err(msg) => PeopleRun::Failed(msg),
         },
         Err(Error::Network(msg)) => PeopleRun::Network(msg),
@@ -238,51 +238,45 @@ mod tests {
     }
 
     #[test]
-    fn missing_name_is_usage() {
-        let fake = Fake::new(HashMap::new());
-        assert_eq!(run(&fake, &[], 1), PeopleRun::Usage);
-        assert!(fake.seen.borrow().is_empty());
-        assert_eq!(parse_args(&[]), None);
-        assert_eq!(parse_args(&["--save".into(), "out.json".into()]), None);
-        assert_eq!(parse_args(&["Madonna".into(), "--save".into()]), None);
+    fn missing_name_is_invalid() {
+        assert!(matches!(
+            PeopleArgs::parse(&[]),
+            Err(Error::Invalid(msg)) if msg == "missing NAME"
+        ));
     }
 
     #[test]
-    fn parse_args_extracts_save_path() {
+    fn parse_joins_name_and_accepts_save() {
+        let parsed = PeopleArgs::parse(&[
+            "Bill".into(),
+            "--save".into(),
+            "out.json".into(),
+            "Abbott".into(),
+        ])
+        .unwrap();
+        assert_eq!(parsed.name, "Bill Abbott");
         assert_eq!(
-            parse_args(&[
-                "Jane".into(),
-                "Citizen".into(),
-                "--save".into(),
-                "out.json".into()
-            ]),
-            Some(PeopleArgs {
-                name: vec!["Jane".into(), "Citizen".into()],
-                save: Some("out.json".into()),
-            })
+            parsed.save.as_deref(),
+            Some(PathBuf::from("out.json").as_path())
         );
-        assert_eq!(
-            parse_args(&["--save".into(), "out.json".into(), "Madonna".into()]),
-            Some(PeopleArgs {
-                name: vec!["Madonna".into()],
-                save: Some("out.json".into()),
-            })
-        );
+    }
+
+    #[test]
+    fn parse_rejects_unknown_option_and_bare_save() {
+        assert!(PeopleArgs::parse(&["Bill".into(), "--depth".into()]).is_err());
+        assert!(PeopleArgs::parse(&["--save".into()]).is_err());
+        assert!(PeopleArgs::parse(&["--save".into(), "--save".into(), "x".into()]).is_err());
     }
 
     #[test]
     fn single_token_prints_skip_and_makes_no_request() {
         let fake = Fake::new(HashMap::new());
-        match run(&fake, &["Madonna".into()], 1) {
-            PeopleRun::Printed {
-                text,
-                skipped,
-                entities,
-            } => {
+        match run(&fake, "Madonna", 1) {
+            PeopleRun::Printed { text, report } => {
                 assert!(text.contains("skipped"), "{text}");
                 assert!(!text.contains("lineage="), "{text}");
-                assert!(skipped);
-                assert!(entities.is_empty(), "{entities:?}");
+                assert!(report.entities.is_empty());
+                assert!(report.outcomes.is_empty());
             }
             other => panic!("{other:?}"),
         }
@@ -299,20 +293,15 @@ mod tests {
             ))),
         );
         let fake = Fake::new(script);
-        match run(&fake, &["Bill".into(), "Abbott".into()], 1) {
-            PeopleRun::Printed {
-                text,
-                skipped,
-                entities,
-            } => {
+        match run(&fake, "Bill Abbott", 1) {
+            PeopleRun::Printed { text, report } => {
                 assert!(text.contains("Bill Abbott"), "{text}");
                 assert!(text.contains("asic_persons.banned"), "{text}");
                 assert!(
                     text.contains("dataset\tasic banned & disqualified persons"),
                     "person evidence must count as the banned dataset family: {text}"
                 );
-                assert!(!skipped);
-                assert!(!entities.is_empty(), "{entities:?}");
+                assert!(!report.entities.is_empty(), "{report:?}");
                 assert_eq!(fake.seen.borrow().len(), 3);
             }
             other => panic!("{other:?}"),
@@ -322,20 +311,40 @@ mod tests {
     #[test]
     fn joined_args_are_the_lookup_name() {
         let fake = Fake::new(empty_script());
-        match run(&fake, &["Jane".into(), "Citizen".into()], 1) {
-            PeopleRun::Printed {
-                text,
-                skipped,
-                entities,
-            } => {
+        let parsed = PeopleArgs::parse(&["Jane".into(), "Citizen".into()]).unwrap();
+        match run(&fake, &parsed.name, 1) {
+            PeopleRun::Printed { text, report } => {
                 assert!(text.starts_with("entities=0\n"), "{text}");
                 assert!(text.contains("asic_persons.banned\tvalid_zero"), "{text}");
                 assert!(!text.contains("lineage="), "{text}");
-                assert!(!skipped);
-                assert!(entities.is_empty(), "{entities:?}");
+                assert!(report.entities.is_empty());
+                assert_eq!(report.outcomes.len(), 3);
             }
             other => panic!("{other:?}"),
         }
         assert_eq!(fake.seen.borrow().len(), 3);
+    }
+
+    #[test]
+    fn valid_zero_report_saves_and_reloads() {
+        let fake = Fake::new(empty_script());
+        match run(&fake, "Jane Citizen", 1) {
+            PeopleRun::Printed { report, .. } => {
+                let dir = std::env::temp_dir()
+                    .join(format!("huntsman-people-cli-save-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                let path = dir.join("people.json");
+                let entries =
+                    crate::people_save::save(&path, &report.entities, &report.outcomes).unwrap();
+                assert_eq!(entries.len(), 3);
+                let loaded = crate::ledger::load_chain(&path).unwrap();
+                assert_eq!(loaded, entries);
+                let admitted = crate::ledger::admitted(&loaded);
+                assert!(admitted.is_empty(), "{admitted:?}");
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }
