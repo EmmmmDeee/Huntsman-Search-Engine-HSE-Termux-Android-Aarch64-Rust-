@@ -139,7 +139,7 @@ impl IntelligenceLedger {
     /// This path is diagnostic only: it can report support and blockers but can
     /// never produce `Verified`, because flat lineage metadata is not the
     /// canonical ancestry authority. Use [`Self::assess_claim_with_ancestry`]
-    /// for verification-capable assessment.
+    /// for canonical ancestry diagnostics.
     ///
     /// Confidence dimensions and provider count are intentionally excluded from
     /// this decision.
@@ -189,13 +189,16 @@ impl IntelligenceLedger {
     }
 
     /// Evaluates one claim using [`EvidenceAncestryGraph`] as the sole ancestry
-    /// authority. The binding map is a projection from ledger evidence ids to
-    /// graph nodes; legacy `source_id`, `origin_id`, and cached family labels do
-    /// not contribute proof in this path.
+    /// authority, but does not certify `Verified` without an auditable proof
+    /// environment. The binding map projects ledger evidence ids to graph nodes;
+    /// legacy `source_id`, `origin_id`, and cached family labels do not contribute
+    /// proof in this path.
     ///
     /// A missing binding, missing graph node, missing parent, cycle, or empty
-    /// root result is unresolved ancestry and therefore fails closed whenever
-    /// the policy requires resolved ancestry.
+    /// root result is unresolved ancestry. Even when ancestry and policy gates
+    /// otherwise pass, this diagnostic method adds `MissingProofEnvironment` and
+    /// caps the result at `Supported`. Verification requires a separate
+    /// proof-validating path so proof bookkeeping cannot become a bypass.
     ///
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
@@ -243,6 +246,7 @@ impl IntelligenceLedger {
             !claim.contradictions.is_empty()
                 || claim.defeats.iter().any(defeat_blocks_verification),
             true,
-        ))
+        )
+        .with_proof_environments(&ProofEnvironmentSet::default()))
     }
 }
