@@ -47,6 +47,17 @@ pub enum IndependenceState {
     Unknown,
 }
 
+/// Conservative result of bounded independent-route search.
+///
+/// `proven` is always a lower bound established by completed search work. If
+/// `incomplete` is true, the search budget ended before the requested cardinality
+/// was fully decided; truncation can therefore weaken but never strengthen proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndependenceRouteCount {
+    pub proven: usize,
+    pub incomplete: bool,
+}
+
 /// Classes of evidence that may establish distinct causal origins.
 ///
 /// `OtherVersionedRule` is retained for forward-compatible persisted evidence, but
@@ -201,6 +212,21 @@ fn basis_is_accepted(basis: &IndependenceBasis) -> bool {
             | IndependenceBasis::DistinctDirectSensorObservations
             | IndependenceBasis::ExplicitUpstreamProvenance
     )
+}
+
+fn advance_combination(indices: &mut [usize], universe_len: usize) -> bool {
+    let width = indices.len();
+    for position in (0..width).rev() {
+        let maximum = universe_len - width + position;
+        if indices[position] < maximum {
+            indices[position] += 1;
+            for next in position + 1..width {
+                indices[next] = indices[next - 1] + 1;
+            }
+            return true;
+        }
+    }
+    false
 }
 
 impl EvidenceAncestryGraph {
@@ -405,6 +431,106 @@ impl EvidenceAncestryGraph {
             IndependenceState::ProvenIndependent
         } else {
             IndependenceState::Unknown
+        })
+    }
+
+    /// Count only routes whose pairwise independence has been explicitly proven.
+    ///
+    /// The algorithm resolves and deduplicates canonical provenance roots, then tests
+    /// combinations in deterministic lexicographic order from cardinality two upward.
+    /// A single resolved root is intrinsically one route; additional routes count only
+    /// when every pair in the candidate subset is `ProvenIndependent`.
+    ///
+    /// `max_search_states` bounds combination evaluations. If the budget ends while an
+    /// undecided cardinality still has candidates, this returns the strongest already-proven
+    /// lower bound with `incomplete = true`. `Unknown` never counts.
+    ///
+    /// # Errors
+    /// Missing nodes, missing parents, or cycles fail closed as ancestry errors.
+    pub fn proven_independent_route_count<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a EvidenceNodeId>,
+        required: usize,
+        max_search_states: usize,
+    ) -> Result<IndependenceRouteCount, AncestryError> {
+        let mut root_set = BTreeSet::new();
+        for id in ids {
+            root_set.extend(self.root_ids(id)?);
+        }
+
+        if required == 0 {
+            return Ok(IndependenceRouteCount {
+                proven: 0,
+                incomplete: false,
+            });
+        }
+        if root_set.is_empty() {
+            return Ok(IndependenceRouteCount {
+                proven: 0,
+                incomplete: false,
+            });
+        }
+
+        let roots: Vec<_> = root_set.into_iter().collect();
+        let mut proven = 1;
+        if required == 1 || roots.len() == 1 {
+            return Ok(IndependenceRouteCount {
+                proven,
+                incomplete: false,
+            });
+        }
+
+        let target = required.min(roots.len());
+        let mut searched_states = 0usize;
+
+        for width in 2..=target {
+            let mut combination: Vec<usize> = (0..width).collect();
+            loop {
+                if searched_states >= max_search_states {
+                    return Ok(IndependenceRouteCount {
+                        proven,
+                        incomplete: true,
+                    });
+                }
+                searched_states += 1;
+
+                let mut all_proven = true;
+                'pairs: for left in 0..width {
+                    for right in left + 1..width {
+                        if self.independence_state(
+                            &roots[combination[left]],
+                            &roots[combination[right]],
+                        )? != IndependenceState::ProvenIndependent
+                        {
+                            all_proven = false;
+                            break 'pairs;
+                        }
+                    }
+                }
+
+                if all_proven {
+                    proven = width;
+                    break;
+                }
+                if !advance_combination(&mut combination, roots.len()) {
+                    return Ok(IndependenceRouteCount {
+                        proven,
+                        incomplete: false,
+                    });
+                }
+            }
+
+            if proven >= required {
+                return Ok(IndependenceRouteCount {
+                    proven,
+                    incomplete: false,
+                });
+            }
+        }
+
+        Ok(IndependenceRouteCount {
+            proven,
+            incomplete: false,
         })
     }
 
