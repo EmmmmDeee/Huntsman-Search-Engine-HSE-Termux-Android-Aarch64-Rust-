@@ -19,6 +19,12 @@ pub struct ShadowAssessment {
     pub policy_state: ClaimState,
     pub blockers: BTreeSet<VerificationBlocker>,
     pub reason_codes: BTreeSet<String>,
+    #[serde(default)]
+    pub distinct_resolved_roots: usize,
+    #[serde(default)]
+    pub proven_independent_routes: usize,
+    #[serde(default)]
+    pub independence_incomplete: bool,
 }
 
 /// Compares the stored legacy claim state with the canonical ancestry + policy
@@ -66,6 +72,9 @@ pub fn compare_legacy_and_policy(
         policy_state: assessment.epistemic,
         blockers: assessment.blockers,
         reason_codes,
+        distinct_resolved_roots: assessment.distinct_resolved_roots,
+        proven_independent_routes: assessment.proven_roots,
+        independence_incomplete: assessment.independence_incomplete,
     })
 }
 
@@ -84,6 +93,7 @@ const fn blocker_code(blocker: VerificationBlocker) -> &'static str {
         VerificationBlocker::CanonicalAncestryRequired => "canonical_ancestry_required",
         VerificationBlocker::MissingRequiredEvidenceNature => "missing_required_evidence_nature",
         VerificationBlocker::InsufficientIndependentSupport => "insufficient_independent_support",
+        VerificationBlocker::IncompleteIndependenceProof => "incomplete_independence_proof",
         VerificationBlocker::UndefeatedDefeater => "undefeated_defeater",
         VerificationBlocker::MissingProofEnvironment => "missing_proof_environment",
         VerificationBlocker::IncompleteProof => "incomplete_proof",
