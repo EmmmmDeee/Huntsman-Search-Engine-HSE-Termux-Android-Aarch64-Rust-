@@ -364,7 +364,11 @@ impl EvidenceAncestryGraph {
         evidence.left_root = left.clone();
         evidence.right_root = right.clone();
 
-        if let Some(existing) = self.independence.get(&left).and_then(|pairs| pairs.get(&right)) {
+        if let Some(existing) = self
+            .independence
+            .get(&left)
+            .and_then(|pairs| pairs.get(&right))
+        {
             if existing == &evidence {
                 return Ok(());
             }
