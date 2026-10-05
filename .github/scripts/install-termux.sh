@@ -6,7 +6,7 @@
 # (the newest legacy hse build).
 #
 # Opt-in (HUNTSMAN_CHANNEL=recon): the huntsman-recon pre-release, an
-# in-progress replacement that cannot run person lookups yet, into
+# in-progress replacement with a subset of person lookups, into
 # $PREFIX/bin/huntsman-recon. Release HUNTSMAN_RELEASE_TAG, default: the
 # main-<sha7> release this script was attached to.
 #
@@ -33,7 +33,7 @@ case "$CHANNEL" in
     TAG="${HUNTSMAN_RELEASE_TAG:-$RECON_TAG_DEFAULT}"
     ASSET="huntsman-recon-aarch64-linux-android"
     DEST_NAME="huntsman-recon"
-    echo "Note: huntsman-recon is an in-progress replacement and cannot run person lookups yet."
+    echo "Note: huntsman-recon provides partial person lookups; it does not replace the full HSE server."
     ;;
   *) die "HUNTSMAN_CHANNEL must be 'hse' (default) or 'recon'" ;;
 esac
@@ -43,6 +43,9 @@ case "$(uname -m)" in aarch64 | arm64) ;; *) die "these binaries are aarch64 onl
 for c in curl sha256sum install mktemp mv cut; do
   command -v "$c" >/dev/null 2>&1 || die "missing $c (pkg install curl coreutils)"
 done
+if [ "$CHANNEL" = recon ]; then
+  command -v timeout >/dev/null 2>&1 || die "missing timeout (pkg install coreutils)"
+fi
 
 base="https://github.com/${REPO}/releases/download/${TAG}"
 dest="$PREFIX/bin/$DEST_NAME"
@@ -61,5 +64,17 @@ install -m 0755 "$tmp/$ASSET" "$stage" || die "could not stage $stage; $dest lef
 want="$(cut -d' ' -f1 "$tmp/$ASSET.sha256")"
 got="$(sha256sum "$stage" | cut -d' ' -f1)"
 [ -n "$want" ] && [ "$got" = "$want" ] || die "staged copy failed the sha256 check; $dest left unchanged"
+
+# A valid download hash does not establish that this handset can execute the
+# binary. Run offline acceptance in a disposable directory before replacing it.
+# Keep generated ledgers out of the caller's working directory and cap hangs.
+if [ "$CHANNEL" = recon ]; then
+  mkdir "$tmp/acceptance"
+  (
+    cd "$tmp/acceptance"
+    timeout 30 "$stage" check &&
+    timeout 30 "$stage" verify var/ledger.json
+  ) || die "offline runtime acceptance failed; $dest left unchanged"
+fi
 mv -f "$stage" "$dest" || die "could not move $stage into place; $dest left unchanged"
 echo "Installed $dest (${TAG})"
