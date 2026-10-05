@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use huntsman_recon::claim_policy::{VerificationBlocker, VerificationPolicy};
+use huntsman_recon::evidence_ancestry::{
+    EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
+};
 use huntsman_recon::intelligence::{
     Claim, ClaimId, ClaimObject, ClaimState, EvidenceId, EvidenceNature, EvidenceRecord,
     IntelligenceLedger, SourceAuthority, SourceLineage,
@@ -96,6 +99,42 @@ fn flat_lineage_compatibility_path_cannot_verify_without_canonical_ancestry() {
     );
     assert_eq!(assessment.proven_roots, 1);
     assert_eq!(assessment.unresolved_support, 0);
+}
+
+#[test]
+fn canonical_ancestry_without_a_proof_environment_cannot_verify() {
+    let (mut ledger, claim_id) = ledger_with_claim("claim-canonical-no-proof");
+    let evidence_id = ledger
+        .insert_evidence(evidence(
+            "canonical",
+            Some("primary-artifact"),
+            EvidenceNature::Observed,
+        ))
+        .unwrap();
+    ledger.attach_support(&claim_id, &evidence_id).unwrap();
+
+    let root_id = EvidenceNodeId::from("root-primary-artifact");
+    let mut graph = EvidenceAncestryGraph::default();
+    graph
+        .insert(EvidenceAncestryNode {
+            id: root_id.clone(),
+            source_family: "primary-artifact".into(),
+            parents: BTreeSet::new(),
+            derived: false,
+        })
+        .unwrap();
+    let bindings = BTreeMap::from([(evidence_id, root_id)]);
+
+    let assessment = ledger
+        .assess_claim_with_ancestry(&claim_id, &observed_policy(1, true), &graph, &bindings)
+        .unwrap();
+
+    assert_eq!(assessment.epistemic, ClaimState::Supported);
+    assert!(
+        assessment
+            .blockers
+            .contains(&VerificationBlocker::MissingProofEnvironment)
+    );
 }
 
 #[test]
