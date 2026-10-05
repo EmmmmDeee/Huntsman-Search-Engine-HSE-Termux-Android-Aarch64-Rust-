@@ -9,7 +9,7 @@ score.
 > **Status:** this is the `huntsman-recon` reconstruction, not the previous
 > `hse` monolith. `people` provides a subset of the old monolith's person-lookups.
 > Canonical extracted legacy trees are preserved as read-only reconstruction references;
-> the original archive bytes remain recoverable from Git history. See
+> the two historical ZIP references remain byte-pinned at the repository root. See
 > [archive provenance](docs/ARCHIVE_PROVENANCE.md) and [architecture and status](ARCHITECTURE.md).
 
 ## Install on Termux (Android arm64)
@@ -51,7 +51,7 @@ before using credentials or network access.
 | `var/` | Artifacts written by `check` (`ledger.json`, `navigator.json`, `stix-bundle.json`). CI fails if `check` changes them. |
 | `docs/` | `RECONSTRUCTION_2026-10-02.md` (decisions and falsification passes) and `DISPOSITIONS.md` (per-file accounting of every legacy file). |
 | `legacy/` | Canonical extracted historical reference trees. Not part of the build. |
-| `docs/ARCHIVE_PROVENANCE.md` | SHA-256/Git identities and recovery commit for the removed root ZIP snapshots. |
+| `docs/ARCHIVE_PROVENANCE.md` | SHA-256/Git identities and extracted-tree mapping for the pinned root ZIP references. |
 | `.github/` | `workflows/ci.yml` (tests on Rust 1.87 and stable; aarch64 Android cross-build), `workflows/release.yml` (`main-<sha7>` pre-releases of `huntsman-recon`), `scripts/` (`scan-for-keys.sh`, `install-termux.sh`) and `actions/setup-ndk-aarch64` (NDK compiler and linker environment). |
 | `CHANGELOG.md` | Notable changes, Keep a Changelog format. |
 
@@ -113,7 +113,7 @@ Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys fi
 
 `sources` is offline routing, not collection. It classifies the input using the existing Huntsman classifier and renders only compatible, independently curated public/browser search routes from `source_registry`. Generated routes are `LeadOnly`: a URL is never corroborating evidence by itself. External catalogue code or data is not embedded.
 
-Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch` got no response or `people` registers were unusable, 74 artifact write failure, 77 `fetch` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal. `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print help and the usage line.
+Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch` or `recon` got no usable response or `people` registers were unusable, 74 artifact write failure, 77 `fetch` or `recon` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal. `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print help and the usage line.
 
 `tests/readme.rs` runs every example above (except the internet `fetch`), checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`.
 
@@ -138,6 +138,27 @@ The refactor-overlay foundations preserved under `legacy/refactor-overlay-feef60
 Rebuilt monolith utilities: `au_id` (ABN, ACN, BSB), `geohash`, `confidence` (corroboration, ancestry-aware), `redact` (coordinate coarsening, secret scrubbing). `check` exercises them as gate 10.
 
 See `docs/RECONSTRUCTION_2026-10-02.md`.
+
+## Recon sources: crt.sh and stolen.tax
+
+`recon crtsh TARGET` accepts a domain, URL or email and queries crt.sh with a
+30-second timeout. HTTP 502, 503 and 429 responses are retried at most twice,
+two seconds apart; challenge pages are never retried. Results include distinct
+SAN names and non-public issuing CAs. Wildcard names, role or infrastructure
+mailboxes, and public-CA issuers are filtered; subdomains of the target apex
+carry the `subdomain` tag. Output is
+`kind<TAB>value<TAB>confidence<TAB>tags`, with control characters escaped.
+
+`recon stolen-tax QUERY [--keys FILE]` is an explicit paid lookup requiring
+`HUNTSMAN_STOLEN_TAX_KEY`; a missing key exits 66 before any request. The v2
+snusbase, osintcat and hudsonrock paths share one 120-second budget. Requests
+use the key only for `https://stolen.tax:443`; same-site redirects are bounded,
+and the key is not reattached after leaving that origin. HTTP 429 is retried
+on the same key up to three attempts per path, with `Retry-After` capped at
+four seconds. Partial results name failed or skipped paths. The legacy
+persistent multi-key pool is deferred; paid lookups are never automatic.
+Differential fixtures record the legacy output, with blank-name/host placeholder
+markers intentionally suppressed.
 
 ## Build and install
 

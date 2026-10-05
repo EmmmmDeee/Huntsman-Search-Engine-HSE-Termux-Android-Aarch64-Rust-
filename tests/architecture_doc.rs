@@ -47,9 +47,9 @@ const LAYERS: [&str; 8] = [
 /// change, made here and in the map together. A new module needs no pin; the dependency
 /// checks place it.
 const PINNED_LAYERS: [&str; 8] = [
-    "error sha256 json timefmt union_find tags xml uid stage event fsio signals place geohash redact termination circuit oui_ieee oui radar deadline",
+    "error sha256 json timefmt union_find tags xml uid stage event fsio signals place geohash redact termination circuit oui_ieee oui radar",
     "evidence_ancestry confidence identity_resolution resolve eval",
-    "classify source_outcome egress credential_origin http keys fetch fetch_cli",
+    "classify source_outcome egress credential_origin http keys fetch fetch_cli deadline",
     "textnorm canonical validation domains address_au postcode_au au_id breach spf dmarc tlsrpt",
     "ckan mediawiki atproto dns hibp service_defs key_health scraper_health recon",
     "entity identity relation graph coref correlator cross_scan dependency module attack attack_catalog exposure profiles leads timeline community diff path pivot intelligence classifier classify_module lineage assurance benchmark coverage diamond gap metrics roi trust",

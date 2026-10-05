@@ -24,7 +24,11 @@ fn offline_runtime_executes_the_shared_spine_end_to_end() {
     assert_eq!(outcome.normalization.accepted.len(), 2);
     assert_eq!(outcome.snapshot.entities.len(), 2);
     assert_eq!(outcome.report.metrics.total_entities, 2);
-    assert!(!outcome.plan.selected.is_empty());
+    assert!(
+        !outcome.plan.selected.is_empty(),
+        "{:?}",
+        outcome.plan.selected
+    );
     assert!(matches!(
         outcome.artifacts.report_json,
         ArtifactPayload::Ready(_)
@@ -63,8 +67,12 @@ fn session_records_execution_without_claiming_live_collection() {
     )
     .expect("outcome");
     let session = session_for_outcome(&input(), &outcome).expect("session");
-    assert!(!session.executions.is_empty());
-    assert!(!session.verifications.is_empty());
+    assert!(!session.executions.is_empty(), "{:?}", session.executions);
+    assert!(
+        !session.verifications.is_empty(),
+        "{:?}",
+        session.verifications
+    );
     assert!(
         session
             .termination

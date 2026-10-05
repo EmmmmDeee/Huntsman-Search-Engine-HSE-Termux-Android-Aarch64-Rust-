@@ -1,6 +1,6 @@
 //! Reconstructed huntsman.
 //! Recorder contract, identity, GEOINT, hashed ledger, STIX and Navigator gates, plus a
-//! guarded HTTP layer (`egress`, `http`, `fetch`, `keys`). Challenge pages are not results.
+//! guarded HTTP layer (`egress`, `http`, `fetch`, `keys`, `deadline`). Challenge pages are not results.
 //! Pure logic stays separate from I/O so every decision can be tested without a network.
 
 #![deny(unsafe_code)]

@@ -12,7 +12,8 @@ Evidence source: the canonical extracted trees under `legacy/`. Original archive
 4. [Parsers and signals](#parsers-and-signals)
 5. [Validation, domains and text](#validation-domains-and-text)
 6. [AU people registers](#au-people-registers)
-7. [Not yet dispositioned](#not-yet-dispositioned)
+7. [Providers restored from 764ce8e](#providers-restored-from-764ce8e)
+8. [Not yet dispositioned](#not-yet-dispositioned)
 
 ## ATT&CK, assurance and analytics
 
@@ -404,13 +405,26 @@ Policy change (network and credentials now allowed):
 - `au_people` is called from `people` and tested on a fake transport only; live TPS is not run in CI.
 - `au_electoral` is called from `people` and tested on a fake transport only; live commissions are not run in CI.
 
+## Providers restored from 764ce8e
+
+The v1.41.0 source rows below are accounted against the newer stolen.tax v2 and
+crt.sh implementations ported onto the guarded fetch layer. The differential
+fixtures record legacy outputs; the blank-name/host guard intentionally omits
+placeholder markers and unknown stand-in facts.
+
+| Legacy path | Lines | Decision | New module | Defect found / evidence or reason |
+| --- | ---: | --- | --- | --- |
+| `src/modules/crtsh/mod.rs` | 382 | REIMPLEMENT | `src/crtsh.rs` | 30-second timeout; retries only HTTP 502/503/429, at most three attempts two seconds apart. Challenge, truncated and malformed responses fail closed. Differential fixtures match records, confidence, tags and evidence attributes without a result cap. |
+| `src/modules/crtsh/tests.rs` | 345 | MERGED | `src/crtsh/tests.rs`, `src/crtsh/differential.rs` | Legacy cases use fake transports; query shape, entity kinds, retry bounds, challenge pages, truncation and redirects are covered. |
+| `src/modules/stolen_tax/mod.rs` | 485 | REIMPLEMENT | `src/stolen_tax.rs` | v2 POST cascade with origin-scoped credentials, bounded same-site redirects, one 120-second lookup deadline and same-key 429 retries. Differential tests cover the legacy cascade; persistent key-pool rotation remains deferred. Password and hash fields are never declared. |
+
 ## Not yet dispositioned
 
-Legacy `src/` files of the monolith that no section above lists yet (884 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
+Legacy `src/` files of the monolith that no section above lists yet (881 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
 
 | Legacy area | Files not listed | Of |
 | --- | ---: | ---: |
-| `src/modules/` (providers) | 531 | 542 |
+| `src/modules/` (providers) | 528 | 542 |
 | `src/util/` | 116 | 213 |
 | `src/core/` | 49 | 203 |
 | `src/app/` | 45 | 45 |
