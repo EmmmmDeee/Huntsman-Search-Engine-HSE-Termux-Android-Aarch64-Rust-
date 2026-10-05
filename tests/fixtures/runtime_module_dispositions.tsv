@@ -89,6 +89,7 @@ recon	leaf	host reconnaissance helpers
 redact	leaf	secret and location redaction
 relation	runtime	structural relation derivation
 resolve	leaf	conservative automatic merge application for supplied decisions
+retrieval_artifact	leaf	stable retrieval artifact identifier for provenance evidence
 rf	leaf	radio-frequency model utility
 roi	runtime	dispatch utility scoring
 runtime	runtime	high-level investigation composition root
