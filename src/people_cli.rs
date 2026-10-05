@@ -2,7 +2,7 @@
 //!
 //! Lookup runs [`crate::asic_persons`], [`crate::asic_director`], [`crate::au_people`]
 //! and [`crate::au_electoral`] over one injected [`crate::http::Transport`]. One
-//! source's [`Error::Invalid`] or BotWaf does not abort the others. Evidence is
+//! source's [`Error::Invalid`] or `BotWaf` does not abort the others. Evidence is
 //! fed through [`crate::lineage::resolve_with_lineage`]. Tests inject fakes; live
 //! sources are not run here. Saving a ledger is L7 ([`crate::people_save`]); this
 //! module only parses `--save`.
@@ -255,7 +255,11 @@ fn failure_outcome(
 }
 
 fn usable(report: &Report) -> bool {
-    !report.entities.is_empty() || report.outcomes.iter().any(|outcome| outcome.kind.is_accepted())
+    !report.entities.is_empty()
+        || report
+            .outcomes
+            .iter()
+            .any(|outcome| outcome.kind.is_accepted())
 }
 
 fn name_tokens(name: &str) -> Vec<String> {
@@ -278,7 +282,6 @@ fn merge_by_uid(entities: &mut Vec<Entity>) {
 }
 
 fn render(report: &Report) -> Result<String, String> {
-
     let mut out = format!("entities={}\n", report.entities.len());
     for entity in &report.entities {
         let _ = writeln!(
@@ -408,7 +411,8 @@ mod tests {
                     .unwrap_or_else(|| panic!("unexpected resource {id}"));
             }
             let html = self.html.borrow();
-            if let Some((_, response)) = html.iter().find(|(needle, _)| request.url.contains(needle))
+            if let Some((_, response)) =
+                html.iter().find(|(needle, _)| request.url.contains(needle))
             {
                 return Ok(Response {
                     status: response.status,

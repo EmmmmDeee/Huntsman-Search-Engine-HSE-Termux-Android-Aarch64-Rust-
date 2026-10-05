@@ -23,7 +23,6 @@ fn provenance(label: &str) -> (&'static str, &'static str) {
         "asic_director" => ("asic_director", "src/asic_director.rs"),
         "au_people" => ("au_people", "src/au_people.rs"),
         "au_electoral" => ("au_electoral", "src/au_electoral.rs"),
-        "asic_persons" => (SOURCE, COMPONENT),
         _ => (SOURCE, COMPONENT),
     }
 }
