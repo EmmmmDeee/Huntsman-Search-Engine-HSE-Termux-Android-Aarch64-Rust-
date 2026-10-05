@@ -53,7 +53,7 @@ Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys fi
 
 `sources` is offline routing, not collection. It classifies the input using the existing Huntsman classifier and renders only compatible, independently curated public/browser search routes from `source_registry`. Generated routes are `LeadOnly`: a URL is never corroborating evidence by itself. External catalogue code or data is not embedded.
 
-Exit codes: 64 usage, 65 bad data or invalid upstream request, 66 unreadable input or missing required credential, 69 unavailable/no response, 74 artifact write failure, 77 egress refusal, authentication rejection or unavailable entitlement. `check` uses 2–11 for its individual gates.
+Exit codes: 64 usage, 65 bad data or invalid upstream request, 66 unreadable input or missing required credential, 69 unavailable/no response, 74 artifact write failure, 77 egress refusal or authentication rejection or unavailable entitlement. `check` uses 2–11 for its individual gates.
 
 `tests/readme.rs` runs every offline example above, checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`. Network HIBP examples below are exercised through a fake transport by `tests/hibp_cli.rs` rather than against the internet in CI.
 
