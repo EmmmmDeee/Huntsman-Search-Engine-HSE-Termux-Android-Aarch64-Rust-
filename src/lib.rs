@@ -93,6 +93,7 @@ pub mod relation;
 pub mod resolve;
 pub mod rf;
 pub mod roi;
+pub mod runtime;
 pub mod scraper_health;
 pub mod search;
 pub mod service_defs;
