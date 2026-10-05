@@ -47,9 +47,8 @@ pub fn run<T: Transport + ?Sized>(
     home: Option<&OsStr>,
     now_unix: u64,
 ) -> SeekNowCliRun {
-    let (command_args, explicit_keys) = match split_keys_arg(args) {
-        Ok(parsed) => parsed,
-        Err(()) => return SeekNowCliRun::Usage,
+    let Ok((command_args, explicit_keys)) = split_keys_arg(args) else {
+        return SeekNowCliRun::Usage;
     };
     let resolved = match Keys::resolve(explicit_keys.as_deref(), home) {
         Ok(resolved) => resolved,

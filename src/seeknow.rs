@@ -234,7 +234,7 @@ fn execute_json_get<T: Transport + ?Sized>(
         transport,
         Request::get(format!("{API_BASE}{path}")),
         Some(credential),
-        &FetchOptions { max_redirects: 0 },
+        &FetchOptions::no_redirects(),
         module,
         now_unix,
     )?;
@@ -345,7 +345,7 @@ fn execute_search<T: Transport + ?Sized>(
         transport,
         request,
         Some(credential),
-        &FetchOptions { max_redirects: 0 },
+        &FetchOptions::no_redirects(),
         module,
         now_unix,
     )?;

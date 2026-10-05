@@ -59,7 +59,7 @@ pub fn wayback_lookup<T: Transport + ?Sized>(
         transport,
         request,
         None,
-        &FetchOptions::default(),
+        &FetchOptions::no_redirects(),
         MODULE,
         now_unix,
     )?;
