@@ -25,7 +25,10 @@ fn offline_runtime_executes_the_shared_spine_end_to_end() {
     assert_eq!(outcome.snapshot.entities.len(), 2);
     assert_eq!(outcome.report.metrics.total_entities, 2);
     assert!(!outcome.plan.selected.is_empty());
-    assert!(matches!(outcome.artifacts.report_json, ArtifactPayload::Ready(_)));
+    assert!(matches!(
+        outcome.artifacts.report_json,
+        ArtifactPayload::Ready(_)
+    ));
 }
 
 #[test]
@@ -62,9 +65,16 @@ fn session_records_execution_without_claiming_live_collection() {
     let session = session_for_outcome(&input(), &outcome).expect("session");
     assert!(!session.executions.is_empty());
     assert!(!session.verifications.is_empty());
-    assert!(session.termination.as_ref().is_some_and(|term| term.partial));
-    assert!(session
-        .termination
-        .as_ref()
-        .is_some_and(|term| term.residual_uncertainty.contains("offline")));
+    assert!(
+        session
+            .termination
+            .as_ref()
+            .is_some_and(|term| term.partial)
+    );
+    assert!(
+        session
+            .termination
+            .as_ref()
+            .is_some_and(|term| term.residual_uncertainty.contains("offline"))
+    );
 }
