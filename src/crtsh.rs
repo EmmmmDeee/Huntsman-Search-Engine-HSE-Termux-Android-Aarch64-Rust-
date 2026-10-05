@@ -232,9 +232,7 @@ where
         .map_err(|e| CrtShError::Refused(e.to_string()))?;
         let Some(response) = fetched.response else {
             let kind = fetched.outcome.kind;
-            if transport_retries < TRANSIENT_TRANSPORT_RETRIES
-                && is_transient_crt_transport(kind)
-            {
+            if transport_retries < TRANSIENT_TRANSPORT_RETRIES && is_transient_crt_transport(kind) {
                 transport_retries += 1;
                 pause(TRANSIENT_PAUSE);
                 continue;
@@ -248,8 +246,7 @@ where
             return Err(CrtShError::NotAnAnswer(SourceOutcomeKind::BotWaf));
         }
         if !(200..300).contains(&response.status) {
-            if status_retries + 1 < TRANSIENT_ATTEMPTS && is_transient_crt_status(response.status)
-            {
+            if status_retries + 1 < TRANSIENT_ATTEMPTS && is_transient_crt_status(response.status) {
                 status_retries += 1;
                 pause(TRANSIENT_PAUSE);
                 continue;
