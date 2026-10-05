@@ -17,7 +17,8 @@ use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::entity::{Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
 use huntsman_recon::evidence_ancestry::{
-    EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
+    EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
+    IndependenceEvidence,
 };
 use huntsman_recon::fetch::{Credential, FetchOptions, fetch};
 use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
@@ -40,6 +41,7 @@ use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, Pe
 use huntsman_recon::people_save;
 use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
+use huntsman_recon::retrieval_artifact::ArtifactId;
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::seeknow_cli::{SEEKNOW_HELP, SEEKNOW_USAGE, SeekNowCliRun};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
@@ -900,10 +902,9 @@ fn check_overlay_gates() -> Gate {
     Ok(())
 }
 
-/// Gate 5, lineage half: families come from the response fields, not the collector.
-/// Two collectors relaying one dump are one family and cannot auto-merge; a dump plus
-/// an independent registry can, but only with a present, in-range probability.
-/// Every observation and candidate comes back.
+/// Gate 5, lineage half: family labels come from response fields, not collectors.
+/// They remain useful diagnostics but cannot by themselves prove independent routes.
+/// Every observation and candidate comes back, and lineage-only pairs stay held.
 fn check_lineage_gate() -> Gate {
     let record = |id: &str, collector: &str, field: &str, value: &str| Observation {
         id: id.into(),
@@ -926,25 +927,25 @@ fn check_lineage_gate() -> Gate {
         geographic_conflict: false,
         decided_at_unix: 0,
     };
-    let independent = IdentityResolutionDecision {
+    let disjoint_labels = IdentityResolutionDecision {
         supporting: vec!["dehashed-1".into(), "abr-1".into()],
         ..mirrors.clone()
     };
     let unscored = IdentityResolutionDecision {
         probability: None,
-        ..independent.clone()
+        ..disjoint_labels.clone()
     };
     let nan = IdentityResolutionDecision {
         probability: Some(f64::NAN),
-        ..independent.clone()
+        ..disjoint_labels.clone()
     };
     let resolution = resolve_with_lineage(
         observations.clone(),
-        vec![mirrors, independent, unscored, nan],
+        vec![mirrors, disjoint_labels, unscored, nan],
         AutoMergePolicy::default(),
     )
     .map_err(|e| (5, e.to_string()))?;
-    let [mirrors, independent, unscored, nan] = resolution.candidates.as_slice() else {
+    let [mirrors, disjoint_labels, unscored, nan] = resolution.candidates.as_slice() else {
         return Err((5, "a merge candidate was dropped".into()));
     };
     gate(
@@ -952,12 +953,18 @@ fn check_lineage_gate() -> Gate {
         mirrors.independent_families.len() == 1 && mirrors.outcome != MergeOutcome::AutoMerge,
         "mirrors manufactured corroboration",
     )?;
+    let held_for = |c: &CandidateOutcome, want: fn(&HoldReason) -> bool| matches!(&c.outcome, MergeOutcome::Held { reasons } if reasons.iter().any(want));
     gate(
         5,
-        independent.outcome == MergeOutcome::AutoMerge,
-        "independent roots refused",
+        disjoint_labels.independent_families.len() == 2
+            && held_for(disjoint_labels, |r| {
+                *r == HoldReason::InsufficientIndependentFamilies {
+                    found: 1,
+                    required: 2,
+                }
+            }),
+        "lineage labels manufactured independence",
     )?;
-    let held_for = |c: &CandidateOutcome, want: fn(&HoldReason) -> bool| matches!(&c.outcome, MergeOutcome::Held { reasons } if reasons.iter().any(want));
     gate(
         5,
         held_for(unscored, |r| *r == HoldReason::ProbabilityMissing)
@@ -975,11 +982,9 @@ fn check_lineage_gate() -> Gate {
     )
 }
 
-/// Gate 5, graph half: the hand-built ancestry graph and `allows_automatic_merge`, the
-/// exact path `resolve::automatic_clusters` takes in production. Unlike the lineage
-/// graph (one root plus relay nodes), it has an explicit parent chain and a root that
-/// supports a candidate directly. Two mirrors of one dump are one family; a mirror plus
-/// an independent registry root are two.
+/// Gate 5, graph half: the hand-built ancestry graph exercises both failure and success.
+/// Shared ancestry is dependent; disjoint roots are still unknown until an explicit,
+/// versioned independence record backed by an artifact is inserted.
 fn check_ancestry_graph_gate() -> Gate {
     let mut graph = EvidenceAncestryGraph::default();
     let nodes: [(&str, &str, &[&str]); 4] = [
@@ -1020,8 +1025,26 @@ fn check_ancestry_graph_gate() -> Gate {
     };
     gate(
         5,
+        !independent.allows_automatic_merge(&graph, AutoMergePolicy::default()),
+        "unproven disjoint roots auto-merged (ancestry graph)",
+    )?;
+    graph
+        .insert_independence_evidence(IndependenceEvidence {
+            left_root: "dump".into(),
+            right_root: "registry".into(),
+            basis: IndependenceBasis::ExplicitUpstreamProvenance,
+            method_id: "check:explicit-upstream".into(),
+            method_version: 1,
+            supporting_artifact_ids: [ArtifactId::from("sha256:check-provenance")]
+                .into_iter()
+                .collect(),
+            observed_at_unix: 1,
+        })
+        .map_err(|e| (5, e.to_string()))?;
+    gate(
+        5,
         independent.allows_automatic_merge(&graph, AutoMergePolicy::default()),
-        "independent roots refused (ancestry graph)",
+        "explicitly proven independent roots refused (ancestry graph)",
     )
 }
 
