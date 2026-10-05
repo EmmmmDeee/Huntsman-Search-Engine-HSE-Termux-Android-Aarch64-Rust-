@@ -46,7 +46,10 @@ fn termination_for(snapshot: &AnalysisSnapshot) -> TerminationReason {
 fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
     let graph = Graph::build(&snapshot.entities, &snapshot.relations);
     InvestigationReport {
-        intelligence: intelligence::build_intelligence_report(&snapshot.entities, &snapshot.relations),
+        intelligence: intelligence::build_intelligence_report(
+            &snapshot.entities,
+            &snapshot.relations,
+        ),
         metrics: metrics::compute(&snapshot.entities, &snapshot.relations),
         gaps: gap::analyze(&snapshot.entities, &snapshot.relations),
         pivots: pivot::rank_pivots(&graph),
