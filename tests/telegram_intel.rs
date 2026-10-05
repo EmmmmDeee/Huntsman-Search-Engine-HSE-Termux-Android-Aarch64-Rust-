@@ -39,9 +39,9 @@ fn local_search_requires_every_distinct_query_term_and_is_deterministic() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].record.peer_id, 1);
     assert_eq!(hits[0].score, 3);
-    assert!(index.search("", 10).is_empty());
-    assert!(index.search("!", 10).is_empty());
-    assert!(index.search("brisbane", 0).is_empty());
+    assert_eq!(index.search("", 10), Vec::new());
+    assert_eq!(index.search("!", 10), Vec::new());
+    assert_eq!(index.search("brisbane", 0), Vec::new());
 }
 
 #[test]
@@ -94,6 +94,6 @@ fn capacity_evicts_oldest_record_deterministically() {
     assert_eq!(evicted.peer_id, 1);
     assert_eq!(evicted.message_id, 1);
     assert_eq!(index.len(), 2);
-    assert!(index.search("oldest", 10).is_empty());
+    assert_eq!(index.search("oldest", 10), Vec::new());
     assert_eq!(index.search("gamma", 10).len(), 1);
 }
