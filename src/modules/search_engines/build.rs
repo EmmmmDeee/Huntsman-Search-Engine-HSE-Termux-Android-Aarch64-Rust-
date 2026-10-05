@@ -1,0 +1,961 @@
+//! Search-result → entity construction for [`super::SearchEngines`].
+//!
+//! Behaviour-preserving extraction from `mod.rs`: `build_entities` keeps its
+//! name, signature and logic. The social-host / confirmed-profile classifiers it
+//! consults stay in `mod.rs` (also used by the extraction helpers there) and are
+//! reached via `super::`.
+
+use super::helpers::*;
+use super::{extract_family_names, is_confirmed_profile, is_social_host};
+use crate::core::{confidence, module::ModuleResult};
+
+pub(super) fn build_entities(
+    target: &Target,
+    scan_id: &str,
+    results: &[SearchResult],
+    url_engine_count: &std::collections::HashMap<String, u32>,
+) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    if results.is_empty() {
+        return result;
+    }
+
+    let terms = target_terms(target);
+
+    // Multi-engine corroboration boosts entity confidence because different
+    // engines have different indexes — an independent match is strong evidence
+    // of relevance. The count of how many engines confirmed each URL is supplied
+    // by the caller, computed from the PRE-dedup results via `url_engine_counts`.
+    // It MUST NOT be recomputed from `results` here: by the time the module
+    // reaches entity construction `results` has been deduped to one
+    // `SearchResult` per canonical URL, so every URL would map to a single
+    // engine and the corroboration boost would silently collapse to 1. We still
+    // iterate the deduped `results` for entity EMISSION (one entity per URL, and
+    // so per-result snippet emails/phones are not double-counted) — only the
+    // corroboration count comes from the wider pre-dedup map.
+
+    let mut seen_domains: HashSet<String> = HashSet::new();
+    let mut seen_emails: HashSet<String> = HashSet::new();
+    let mut seen_phones: HashSet<String> = HashSet::new();
+    let target_domain = match target.kind {
+        TargetKind::Domain => Some(target.value.to_lowercase()),
+        TargetKind::Email => target.value.rsplit_once('@').map(|(_, d)| d.to_lowercase()),
+        _ => None,
+    };
+
+    // A location seed (an Address or Coordinates value fed back by recursion) is
+    // a coarse place, not an identity: virtually every real street address or
+    // lat/lon has SOME web presence via real-estate / aggregator / mapping sites
+    // regardless of the subject, so a search hit re-affirms nothing about the
+    // person. Computed once and consulted everywhere below that would otherwise
+    // treat "the web returned a result for this seed" as genuine corroboration —
+    // the parent stamp here, the snippet-address gate, and the URL demotion.
+    let location_seed = matches!(target.kind, TargetKind::Address | TargetKind::Coordinates);
+
+    // Parent entity with search metadata — a self-referencing re-affirmation of
+    // the seed. Skip it entirely for a location seed: it shares the seed's UID,
+    // so minting it at the flat 0.82 "this identifier has real web presence"
+    // confidence merges (via `absorb`, GREATEST semantics) straight back into the
+    // seed address and manufactured false corroboration for ANY address pivot — a
+    // live scan flat-stamped ~19 mutually-exclusive breach addresses (spanning
+    // many different US states) at an identical 0.82 this way. Web presence is
+    // real corroboration for a genuine identity (email/username/domain) but
+    // tautological for a place, so a location seed earns no re-affirmation; the
+    // gated per-result extraction below still emits whatever the pages genuinely
+    // yield, tiered on its own merits.
+    // Whether a result is about the subject at all: the one predicate behind
+    // the seed's re-affirmation and every per-result extraction below. A
+    // location seed has no identity anchor; a phone must appear as a number,
+    // an ABN/ACN as its digits in any grouping;
+    // a person must appear as their surname with a compatible given name; a
+    // multi-part handle as every one of its parts; any other subject's
+    // distinctive term — a single-token subject's only term, an email local
+    // part's last token — must appear in the result's snippet, title or URL.
+    // See `result_names_the_subject` in the loop for the reasoning behind each
+    // branch.
+    let names_the_subject = |r: &SearchResult| -> bool {
+        let combined_text = format!("{} {}", r.title, r.snippet);
+        if location_seed {
+            false
+        } else if matches!(target.kind, TargetKind::Phone) {
+            result_mentions_phone(&format!("{combined_text} {}", r.url), &target.value)
+        } else if matches!(target.kind, TargetKind::AbnAcn) {
+            // A business number, like a phone, is a precise identifier named
+            // by its digits in any grouping: the single-term token match below
+            // failed an unspaced seed against the spaced `"ABN 74 067 173 835"`
+            // a snippet prints (and a spaced seed's `835` against the unspaced
+            // number a registry title prints), so an ABN seed stopped mining
+            // its own ACN once REQ-SEARCH-007 gated that loop (REQ-SEARCH-015).
+            result_mentions_business_number(&format!("{combined_text} {}", r.url), &target.value)
+        } else if matches!(target.kind, TargetKind::Domain) {
+            // A domain's distinctive term is the domain itself: its labels
+            // are the web's own vocabulary (`com`, `index`, `mail`), and the
+            // engines answer a `site:` query about a domain they have never
+            // indexed with results for the query's other tokens — 49 hosts
+            // for a domain nobody registered (REQ-CANARY-003, the sweep's
+            // known-negative control).
+            let hay = format!("{combined_text} {}", r.url).to_lowercase();
+            target_domain
+                .as_deref()
+                .is_some_and(|d| names_domain_token(&hay, d.trim_start_matches("www.")))
+        } else if matches!(target.kind, TargetKind::Organisation) {
+            // An organisation's distinctive term is its name, not its corporate
+            // form. The last token of "Carora Vovilo Pty Ltd" is the suffix
+            // "ltd", shared by every "... Pty Ltd" company, so the surname
+            // branch below filed real firms (CAROLINARA PTY LTD, CARORA GROUP
+            // PTY LTD) as the control org's own — 16 fabricated entities for a
+            // company nobody holds (REQ-SEARCH-005, the org analog of
+            // REQ-CANARY-003's "a domain's last label is the web's
+            // vocabulary"). Require every distinctive (non-corporate-form)
+            // token, so a different company that shares only one is not the
+            // subject; fall back to the whole value when the name is nothing
+            // but corporate-form words.
+            let hay = format!("{combined_text} {}", r.url).to_lowercase();
+            let distinctive: Vec<&str> = terms
+                .iter()
+                .map(String::as_str)
+                .filter(|t| !is_generic_org_token(t))
+                .collect();
+            if distinctive.is_empty() {
+                names_word_token(&hay, &target.value.to_lowercase())
+            } else {
+                distinctive.iter().all(|term| names_word_token(&hay, term))
+            }
+        } else {
+            let hay = format!("{combined_text} {}", r.url).to_lowercase();
+            let last_term = || {
+                terms
+                    .last()
+                    .is_some_and(|term| names_word_token(&hay, term.as_str()))
+            };
+            match target.kind {
+                // A person is named by their surname WITH a compatible given
+                // name beside it, read by the identity gate's own parser. The
+                // surname alone is every relative's and namesake's: a live "Ian
+                // Thorpe" scan re-affirmed the seed off, and mined contact
+                // details, companies and addresses from, pages about Bill,
+                // Jamie and Mark Thorpe (REQ-SEARCH-008). A mononym has no
+                // structure to test and keeps the single-term check.
+                TargetKind::FullName => crate::core::scan::text_names_person(&hay, &target.value)
+                    .unwrap_or_else(last_term),
+                // A multi-part handle is named by all of its parts, like an
+                // organisation: `thorpe` alone does not name `ian_thorpe` —
+                // it names `mark.thorpe.9` just as well.
+                TargetKind::Username if terms.len() >= 2 => {
+                    terms.iter().all(|t| names_word_token(&hay, t))
+                }
+                _ => last_term(),
+            }
+        }
+    };
+    // Whether a URL's PATH names the subject as a whole token — the gate for
+    // mining a result/snippet URL as the subject's own `Url`. Kind-aware, like
+    // `names_the_subject`: an organisation needs the conjunction of its
+    // distinctive tokens (a single shared token minted a stranger's
+    // `facebook.com/sougi.ceremo` as the org control's page — REQ-SEARCH-006),
+    // a person the surname with a compatible given name, a multi-part handle
+    // every part (a bare surname minted Spokeo's `Bill-Thorpe` page as "Ian
+    // Thorpe"'s own — REQ-SEARCH-008), anything else its distinctive anchor.
+    let url_names_target = |url: &str| -> bool {
+        match target.kind {
+            TargetKind::Organisation => url_matches_org_target(url, &terms),
+            TargetKind::FullName => url_matches_person_target(url, &target.value, &terms),
+            TargetKind::Username => url_matches_handle_target(url, &terms),
+            _ => url_matches_target(url, &terms),
+        }
+    };
+    // The results that name the subject. The engines answer a term no page
+    // contains with fuzzy results — 94 to 148 of them for a twelve-character
+    // handle nobody holds (REQ-SEARCH-002, the sweep's known-negative
+    // control) — so "the web returned results" re-affirms nothing by itself:
+    // only a result that names the subject does.
+    let naming_subject = results.iter().filter(|r| names_the_subject(r)).count();
+
+    if !location_seed && naming_subject > 0 {
+        let engines_hit: HashSet<&str> = results.iter().map(|r| r.engine).collect();
+        let queries_run: HashSet<&str> = results.iter().map(|r| r.query.as_str()).collect();
+        // Search re-affirmation of seed identity (2-engine discovery boost)
+        let mut parent = target.to_entity(confidence::CORROBORATED, scan_id);
+        parent.tag("search-enriched");
+        let mut engines_list: Vec<&str> = engines_hit.iter().copied().collect();
+        engines_list.sort_unstable();
+        parent.add_evidence(
+            Evidence::new(
+                SRC,
+                format!(
+                    "Search across {} engine(s) returned {} result(s) from {} quer{}",
+                    engines_hit.len(),
+                    results.len(),
+                    queries_run.len(),
+                    if queries_run.len() == 1 { "y" } else { "ies" },
+                ),
+            )
+            .with_attr("result_count", results.len().to_string())
+            .with_attr("results_naming_subject", naming_subject.to_string())
+            .with_attr("engines", engines_list.join(", "))
+            .with_attr("queries_run", queries_run.len().to_string()),
+        );
+        result.push(parent);
+    }
+
+    for r in results {
+        let host = extract_host(&r.url);
+        if host.is_empty() {
+            continue;
+        }
+        // Whether this result is about the subject at all (`names_the_subject`
+        // above): decided before the host is classified, because an external
+        // host is the subject's estate only when its page names the subject.
+        let result_names_the_subject = names_the_subject(r);
+
+        let domain = extract_registrable(&host);
+        // Canonicalise before classifying/deduping, not the raw `host` — a
+        // result host of "www.<target>" is a proper subdomain of the raw
+        // seed by string shape alone, but `Entity::new` strips the "www."
+        // label internally, so it collapses onto the seed's own apex uid.
+        // Tagging it SUBDOMAIN then survives onto the merged apex entity via
+        // `Entity::merge`'s tag-union — a real, common case: the site's own
+        // "www" homepage is exactly what search engines index.
+        let (host_canonical, is_subdomain) = match target_domain.as_ref() {
+            Some(td) => crate::util::domains::classify_domain_candidate(&host, td),
+            None => (host.clone(), false),
+        };
+
+        let n_engines = url_engine_count
+            .get(&canonicalize_url(&r.url))
+            .copied()
+            .unwrap_or(1);
+
+        if is_subdomain && seen_domains.insert(host_canonical.clone()) {
+            let mut e = Entity::new(EntityKind::Domain, &host, confidence::HIGH_PLUS, scan_id);
+            e.corroboration = n_engines;
+            e.tag(tags::SUBDOMAIN);
+            e.tag(tags::SEARCH_DISCOVERED);
+            e.add_evidence(build_search_evidence(r));
+            result.push(e);
+        } else if result_names_the_subject
+            // An external host is the seed's estate only when its page names
+            // the seed. The engines answer a `site:` query about a domain they
+            // have never indexed with results for the query's other tokens
+            // (`intitle:"index of" ".git" site:<nobody>.com` → index.hr,
+            // index.hu, merriam-webster.com's "index"), and every one of
+            // those hosts was filed as the domain's estate at 0.45 — 49 of
+            // them for a domain nobody registered (REQ-CANARY-003).
+            && matches!(target.kind, TargetKind::Domain)
+            // Bare EXTERNAL registrable domains are only a meaningful finding for
+            // a DOMAIN seed (relationship/estate discovery). For a person / email
+            // / username seed, the SERP host is just where the name happened to
+            // appear — an unbounded long tail of irrelevant sites (crazygames.com,
+            // csdn.net, mathway.com, funeral notices for a different person) that
+            // no blocklist can ever fully cover. The genuinely relevant pages are
+            // already captured as Url entities by the path-match gate, so suppress
+            // bare external domains entirely for non-domain seeds.
+            && target_domain.as_ref().is_none_or(|td| domain != *td)
+            && !is_generic_domain(&domain)
+            && !is_search_tooling_domain(&domain)
+            // A bare SERP-result host that is a mega/social PLATFORM or a freemail
+            // provider is never the subject's own asset — it is merely *where* a
+            // mention surfaced (the specific profile/page is still kept as a Url
+            // entity by the path-match gate). Emitting facebook.com / youtube.com /
+            // gmail.com as standalone Domain findings is exactly the generic noise
+            // that buries individualised PII; drop it here.
+            && !crate::util::domains::is_social_platform(&domain)
+            && !crate::util::domains::is_freemail(&domain)
+            // Mega platforms and shared infrastructure (whatsapp.com, qq.com,
+            // office365.com, blog.google, fast.com, time.is, …) are the haystack
+            // a result sits in, never the subject's own asset. The util social/
+            // freemail lists miss most of them; core's is_noncentral_domain is
+            // the authoritative mega+infra set, so consult it here too.
+            && !crate::core::scan::is_noncentral_domain(&domain)
+            && seen_domains.insert(domain.clone())
+        {
+            let mut e = Entity::new(EntityKind::Domain, &domain, confidence::LOW_MEDIUM, scan_id);
+            e.corroboration = n_engines;
+            e.tag(tags::EXTERNAL);
+            e.tag(tags::SEARCH_DISCOVERED);
+            e.add_evidence(build_search_evidence(r));
+            result.push(e);
+        }
+
+        // Extract emails from title + snippet text
+        let combined_text = format!("{} {}", r.title, r.snippet);
+
+        // Subject-relevance gate — shared by every extraction below that mines
+        // free-text snippet content (email, phone, ABN/ACN, organisation,
+        // address): a name search returns fuzzy namesakes (a live "Cindy
+        // Haynes" scan surfaced a "Cindy He" UNSW staff page; separately, a
+        // "Riley Morley" scan pulled
+        // `pr@rileyjorja.com` off an unrelated "Riley (@rileyj)" Instagram bio
+        // that never mentions "Morley" anywhere), and trusting THEIR contact
+        // details injects a false attribution onto the real subject at
+        // meaningful confidence (email/phone start at PROBABLE, 0.55-0.60) —
+        // materially worse than the address case this gate was first built for,
+        // since a wrong email/phone is directly actionable PII, not just a
+        // wrong locality. For a person, require the surname WITH a compatible
+        // given name beside it somewhere in this result's title, snippet or
+        // URL before extracting anything from it: the given name alone is the
+        // "Cindy He" collision, and the surname alone is every relative's and
+        // namesake's — a live "Ian Thorpe" scan mined a Spokeo "Bill Thorpe"
+        // listing and "JAMIE THORPE PLUMBING PTY LTD" this way (REQ-SEARCH-008).
+        // A multi-part handle needs every one of its parts. A location seed has no subject-identity anchor to gate
+        // on: `target_terms` splits its value into place tokens, so
+        // `terms.last()` is the trailing postcode/state, which every
+        // aggregator page that indexed the address reproduces verbatim — the
+        // gate would be tautologically true, so a location seed never mines
+        // snippet PII at all (mirrors the parent-reaffirmation skip above).
+        // A phone is a PRECISE identifier — the number itself (in any format)
+        // must appear before mining this result's snippet PII/geo. Without
+        // this a phone seed (a single token) fell through to a permissive
+        // branch and mined every irrelevant result: a live +61 scan geocoded
+        // a generic "Ghan, NT" weather page that never contained the number
+        // into a confident NT location (`helpers::relevance::result_mentions_phone`).
+        // For any other subject the distinctive term — a multi-part name's
+        // surname, a single-token subject's only term — must appear in this
+        // result's snippet, title or URL. A single-token subject collides too:
+        // the engines answer a string no page contains with fuzzy results,
+        // and mining those snippets attributed a stranger's email and a
+        // stranger's handle to a twelve-character handle nobody holds
+        // (REQ-SEARCH-002, observed 2026-09-15 by the sweep's known-negative
+        // control: 148 results from Bing and Dogpile for 23 queries about
+        // it). A subject with no distinctive term at all mines nothing.
+        if result_names_the_subject {
+            for email in extract_emails_from_text(&combined_text) {
+                if crate::util::domains::is_infrastructure_email(&email) {
+                    continue;
+                }
+
+                let email_valid_for_seed =
+                    email_plausibly_belongs_to_seed(&email, &target.kind, &target.value);
+
+                if seen_emails.insert(email.clone()) {
+                    let email_confidence = if email_valid_for_seed {
+                        confidence::MEDIUM_PLUS
+                    } else {
+                        confidence::MEDIUM_HIGH
+                    };
+                    let mut e = Entity::new(EntityKind::Email, &email, email_confidence, scan_id);
+                    e.tag(tags::WEB_SCRAPED);
+                    e.tag(tags::SEARCH_DISCOVERED);
+                    if !email_valid_for_seed {
+                        e.tag("email_domain_unverified");
+                    }
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!(
+                                "[{}] Email found on {} — {}",
+                                r.engine,
+                                extract_host(&r.url),
+                                r.url
+                            ),
+                        )
+                        .with_attr("url", &r.url)
+                        .with_attr("engine", r.engine)
+                        .with_attr("query", &r.query)
+                        .with_attr("domain_validated", email_valid_for_seed.to_string()),
+                    );
+                    result.push(e);
+                } else if let Some(existing) = result
+                    .entities
+                    .iter_mut()
+                    .find(|e| e.kind == EntityKind::Email && e.value == email)
+                {
+                    if email_valid_for_seed {
+                        existing.confidence =
+                            (existing.confidence + 0.10).min(confidence::HIGH_PLUSPLUS_PLUS);
+                    } else {
+                        existing.confidence =
+                            (existing.confidence + 0.05).min(confidence::HIGH_PLUS);
+                    }
+                    existing.corroboration = existing.corroboration.saturating_add(1);
+                }
+            }
+
+            for phone in extract_phones_from_text(&combined_text) {
+                if seen_phones.insert(phone.clone()) {
+                    let mut e =
+                        Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM_HIGH, scan_id);
+                    e.tag(tags::WEB_SCRAPED);
+                    e.tag(tags::SEARCH_DISCOVERED);
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!(
+                                "[{}] Phone found on {} — {}",
+                                r.engine,
+                                extract_host(&r.url),
+                                r.url
+                            ),
+                        )
+                        .with_attr("url", &r.url)
+                        .with_attr("engine", r.engine),
+                    );
+                    result.push(e);
+                } else if let Some(existing) = result
+                    .entities
+                    .iter_mut()
+                    .find(|e| e.kind == EntityKind::Phone && e.value == phone)
+                {
+                    existing.confidence =
+                        (existing.confidence + 0.12).min(confidence::HIGH_PLUSPLUS);
+                    existing.corroboration = existing.corroboration.saturating_add(1);
+                }
+            }
+
+            // ABN/ACN numbers from snippet text — behind the same gate. A
+            // checksum-valid "ABN nn nnn nnn nnn" is minted at PROBABLE, so an
+            // ungated loop filed a bank's own ABN off its support-page footer
+            // and every registry page a location seed returned as the
+            // subject's business identifier (REQ-SEARCH-007).
+            for (num, kind_label) in extract_abn_acn_from_text(&combined_text) {
+                if seen_domains.insert(format!("@abn:{num}")) {
+                    let mut e = Entity::new(EntityKind::AbnAcn, &num, confidence::HIGH, scan_id);
+                    e.tag(tags::SEARCH_DISCOVERED);
+                    e.tag(kind_label);
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!(
+                                "[{}] {} {} found on {} — {}",
+                                r.engine,
+                                kind_label,
+                                num,
+                                extract_host(&r.url),
+                                r.url
+                            ),
+                        )
+                        .with_attr("url", &r.url)
+                        .with_attr("engine", r.engine)
+                        .with_attr("number_type", kind_label),
+                    );
+                    result.push(e);
+                }
+            }
+        }
+
+        // Extract organisation names from snippet text — gated on the SAME
+        // `result_names_the_subject` subject-relevance check as email/phone/
+        // address (it was the one snippet-miner left ungated). The org
+        // extractor's internal term filter accepts a single loose token match,
+        // so a `rhino.ryno23` scan minted the org "Discover Rhino Rack's range
+        // at Repco …" off a "Rhino Rack" product page that never named the
+        // subject — the token "rhino" collided with the brand. Requiring the
+        // distinctive last term (here "ryno23") rejects it.
+        let snippet_orgs = if result_names_the_subject {
+            extract_organisations_from_text(&combined_text, &terms)
+        } else {
+            Vec::new()
+        };
+        for org in snippet_orgs {
+            let org_key = org.to_lowercase();
+            if seen_domains.insert(format!("@org:{org_key}")) {
+                let mut e = Entity::new(
+                    EntityKind::Organisation,
+                    &org,
+                    confidence::LOW_MEDIUM,
+                    scan_id,
+                );
+                e.tag(tags::SEARCH_DISCOVERED);
+                e.add_evidence(build_search_evidence(r));
+                result.push(e);
+            }
+        }
+
+        // Extract addresses from snippet text (geolocation pivot).
+        // Confidence is tiered by content richness:
+        //   City + State + Postcode → 0.55 (well-localised, AU-specific)
+        //   City + State only       → 0.45 (standard locality mention)
+        //   AU place contextual     → 0.42 (context-inferred, no explicit state)
+        // Corroboration cap (`corr_cap` below) must stay strictly below
+        // `Classification::VERIFIED_MIN` (0.75, not 0.60 as an earlier revision
+        // of this comment claimed): pure repetition of the SAME source type
+        // (`search_engines`, one evidence entry per hit) is exactly the case
+        // `Entity::c_effective`'s distinct-source model is designed not to
+        // over-credit, and an address entity must never present as Verified on
+        // that basis alone. Live-reproduced (2026-07-15): a real "Brett Lawnton"
+        // scan pushed "Lawnton, QLD" (a real Brisbane suburb that happens to
+        // share the subject's surname) to `corroboration=99`/`class=VERIFIED`
+        // purely from ~99 real-estate/reverse-lookup pages about the SUBURB, not
+        // the subject — the surname/placename collision let every such page
+        // satisfy `result_names_the_subject` below, and the old 0.75 cap for a
+        // postcode-qualified address sat exactly AT `VERIFIED_MIN`, so as few as
+        // 2-3 hits could cross it.
+        //
+        // Gated on the same `result_names_the_subject` subject-relevance check
+        // computed above for email/phone extraction (originally: a live "Cindy
+        // Haynes" scan surfaced a "Cindy He" UNSW staff page; trusting THEIR
+        // address injected a false "Sydney, NSW" location that contradicted the
+        // real QLD evidence and drove a wrong-state AU-056 jurisdiction plus a
+        // 700 km geo-divergence).
+        let has_postcode = |addr: &str| {
+            addr.split_whitespace()
+                .last()
+                .is_some_and(crate::util::postcode_au::is_shaped)
+        };
+        let snippet_addresses = if result_names_the_subject {
+            let mut found = extract_addresses_from_text(&combined_text);
+            // On a name scan, a "City, State" whose city names a person carrying
+            // the scanned surname — a people-search listing title, or a venue
+            // named after a surname-bearer ("Ian Thorpe Aquatic Centre in
+            // Ultimo") — is not a place the subject is at, while "Ian Thorpe in
+            // Ultimo" locates the subject in Ultimo (a relative "in" a place
+            // does not) and "Box Hill North" is a suburb
+            // (REQ-SEARCH-ADDR-001/002/003/004). Deduplicated in order, since
+            // a recovered place can equal an address found beside it.
+            if target.kind == TargetKind::FullName {
+                let mut kept: Vec<String> = Vec::with_capacity(found.len());
+                for a in found {
+                    if let Some(place) = surname_bearer_locality(&a, &target.value)
+                        && !kept.contains(&place)
+                    {
+                        kept.push(place);
+                    }
+                }
+                found = kept;
+            }
+            found
+        } else {
+            Vec::new()
+        };
+        // `extract_addresses_from_text` deliberately emits BOTH a bare "City,
+        // STATE" and a more specific postcode-qualified "City, STATE 1234" for
+        // the SAME underlying locality when both appear in one result's text
+        // (its own pass 3: "an AU postcode... appended as a more-specific
+        // variant of a matched City, STATE"), and `normalise_address_key`
+        // deliberately collapses both to the same dedup key — by design, so a
+        // bare mention in one result and a postcode-qualified mention in a
+        // DIFFERENT result correctly merge into one entity. But without this
+        // dedup, the SAME result's two variants would ALSO merge with each
+        // other, double-counting one real search hit as two independent
+        // corroborations (two +0.10 confidence bumps, two `corroboration`
+        // increments) — found in review of the corroboration-cap fix above.
+        // Collapse to at most one variant per normalised key, per result,
+        // preferring the postcode-qualified (more informative) form, before
+        // the corroboration loop below ever sees more than one entry for it.
+        // Vec-based (not a HashMap) and insertion-ordered so the choice is
+        // deterministic (CONVENTIONS.md §5), not dependent on hash iteration.
+        let snippet_addresses: Vec<String> = {
+            let mut deduped: Vec<(String, String)> = Vec::new();
+            for addr in snippet_addresses {
+                let key = normalise_address_key(&addr);
+                match deduped.iter_mut().find(|(k, _)| *k == key) {
+                    Some(slot) if has_postcode(&addr) && !has_postcode(&slot.1) => {
+                        slot.1 = addr;
+                    }
+                    Some(_) => {}
+                    None => deduped.push((key, addr)),
+                }
+            }
+            deduped.into_iter().map(|(_, addr)| addr).collect()
+        };
+        for addr in snippet_addresses {
+            let addr_key = format!("@addr:{}", normalise_address_key(&addr));
+            let has_postcode = has_postcode(&addr);
+            let base_conf = if has_postcode {
+                confidence::MEDIUM_HIGH
+            } else {
+                confidence::LOW_MEDIUM
+            };
+            // Cap for multi-source merge: postcode-qualified can reach HIGH_PLUS;
+            // bare city+state is capped lower at HIGH. Both stay strictly below
+            // `Classification::VERIFIED_MIN` (0.75) — pure repetition of the
+            // same source type must land at most in the Probable range, never
+            // Verified (see this block's header comment for the live "Brett
+            // Lawnton" case that crossed 0.75 via repetition alone).
+            let corr_cap = if has_postcode {
+                confidence::HIGH_PLUS
+            } else {
+                confidence::HIGH
+            };
+            if seen_domains.insert(addr_key.clone()) {
+                let mut e = Entity::new(EntityKind::Address, &addr, base_conf, scan_id);
+                e.tag(tags::SEARCH_DISCOVERED);
+                e.tag(tags::WEB_SCRAPED);
+                if has_postcode {
+                    e.tag("au-postcode");
+                }
+                // Attach au-state tag immediately so AU-056 jurisdiction
+                // cross-check fires on this address without re-parsing.
+                if let Some(state) = crate::util::address_au::state_code(&addr) {
+                    e.tag(format!("au-state:{state}"));
+                }
+                e.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!(
+                            "[{}] Address near {} — {}",
+                            r.engine,
+                            extract_host(&r.url),
+                            r.url
+                        ),
+                    )
+                    .with_attr("url", &r.url)
+                    .with_attr("engine", r.engine),
+                );
+                result.push(e);
+            } else {
+                // Address seen before — boost via merge (corroboration increases).
+                // Use the normalised key for lookup so "Gatton, QLD" and
+                // "Gatton, Queensland" merge rather than forking into two entities.
+                let norm = normalise_address_key(&addr);
+                if let Some(existing) = result.entities.iter_mut().find(|e| {
+                    e.kind == EntityKind::Address && normalise_address_key(&e.value) == norm
+                }) {
+                    existing.confidence = (existing.confidence + 0.10).min(corr_cap);
+                    existing.corroboration = existing.corroboration.saturating_add(1);
+                    existing.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("[{}] Address corroborated — {}", r.engine, r.url),
+                        )
+                        .with_attr("url", &r.url)
+                        .with_attr("engine", r.engine),
+                    );
+                }
+            }
+        }
+
+        // Emit Url entities only for pages whose URL path contains a
+        // target-derived term. People-search homepages (spokeo.com/,
+        // whitepages.com/people-search) are excluded unless the path
+        // also contains a target term — only specific profile pages
+        // like peekyou.com/jerome_despal pass.
+        if url_names_target(&r.url)
+            && seen_domains.insert(format!("@url:{}", canonicalize_url(&r.url)))
+        {
+            // Elevate a CONFIRMED profile — the result URL is the searched
+            // username's own page on a canonical social host (handle path ==
+            // seed). That's the strongest username-search finding, so emit it at
+            // high confidence (Probable→Verified once corroborated) and tag it,
+            // distinct from a generic 0.50 page that merely contains the term.
+            let confirmed = is_confirmed_profile(target, &r.url, &host);
+            // A URL discovered while the *seed itself is a location* (an Address
+            // or Coordinates fed back by recursion — e.g. the suburb "Regents
+            // Park, QLD") matched a place term, not a person term: it is a
+            // generic suburb / real-estate-listing page, not the subject's PII.
+            // A live "Haigen Bamford" scan flooded with dozens of
+            // realestate.com.au / domain.com.au / suburb-profile pages this way.
+            // Demote these to a quarantined candidate (below the MEDIUM expansion
+            // floor, excluded from confirmed correlation) so they neither inflate
+            // results nor recurse into more suburb spam — unless the URL is a
+            // confirmed profile, which is identity-bearing regardless of seed.
+            // `location_seed` is the function-scoped binding computed once above.
+            // A code-repo URL that matched only on a repo/file name while its
+            // owner handle is unrelated to the target (e.g.
+            // `github.com/ExponentiAI/HAIGEN` — an AI project, not the subject's
+            // account). The owner is the identity-bearing segment, so this is a
+            // wrong-identity match: quarantine it like a generic-location hit.
+            let offtarget_repo = is_offtarget_repo_url(&r.url, &terms);
+            let base = if confirmed {
+                confidence::HIGH_PLUSPLUS_PLUS
+            } else if location_seed || offtarget_repo {
+                confidence::SPECULATIVE // Quarantine level for candidate filtering
+            } else {
+                confidence::MEDIUM
+            };
+            let mut e = Entity::new(EntityKind::Url, &r.url, base, scan_id);
+            // Credit cross-ENGINE agreement, like the domain branch does: a URL
+            // (especially a confirmed profile) independently returned by N engines
+            // is far stronger than one from a single engine. Without this the
+            // highest-value findings were stuck at base confidence even under
+            // unanimous engine agreement; now N engines lift `c_effective` (a
+            // confirmed profile + ≥2 engines crosses into the Verified tier).
+            e.corroboration = n_engines;
+            e.tag(tags::SEARCH_DISCOVERED);
+            if confirmed {
+                e.tag("confirmed-profile");
+            } else if location_seed {
+                e.tag("generic-location");
+                e.tag("candidate");
+            } else if offtarget_repo {
+                e.tag("offtarget-repo");
+                e.tag("candidate");
+            }
+            // A hit on a court / judgment / legislation host is a document that
+            // names every party and officer in it, not a page about the subject
+            // alone: tag it so the engine reads it as a source rather than
+            // pivoting into the strangers it lists (same treatment `austlii`
+            // gives its own hits).
+            if is_court_record_host(&host) {
+                e.tag(tags::SOURCE_DOCUMENT);
+            }
+            e.add_evidence(build_search_evidence(r));
+            result.push(e);
+        }
+
+        // Extract usernames and person names from social profile URLs
+        if let Some(username) = extract_path_username(&r.url) {
+            let lower_user = username.to_lowercase();
+            let is_social = is_social_host(&host);
+            // Regression: `seen_domains.insert(...)` used to be part of this
+            // guard, claiming the `@username:` dedup key BEFORE `score_username`
+            // ran. An off-target hit (score 0, no entity emitted) still
+            // permanently claimed the key, so a LATER, genuinely-matching
+            // occurrence of the identical username string in another result
+            // found `insert` already `false` and was silently dropped — never
+            // even scored. The key is now claimed only once a candidate has
+            // actually earned an entity (`score >= 1`), so a zero-score attempt
+            // leaves the door open for a stronger later occurrence.
+            // A handle in a result's path is the subject's only when the
+            // result names the subject (REQ-SEARCH-002): the fuzzy results for
+            // a handle nobody holds carried `github.com/openai`.
+            if result_names_the_subject
+                && is_social
+                && lower_user.len() >= 3
+                && !is_navigation_path(&lower_user)
+            {
+                let (score, confidence) = score_username(&lower_user, &host, &terms, r);
+                if score >= 1 && seen_domains.insert(format!("@username:{lower_user}")) {
+                    let mut e = Entity::new(EntityKind::Username, &lower_user, confidence, scan_id);
+                    e.tag(tags::SEARCH_DISCOVERED);
+                    e.tag("social-profile");
+                    if score < 3 {
+                        e.tag("candidate");
+                    }
+                    e.add_evidence(build_search_evidence(r));
+                    result.push(e);
+                }
+            }
+
+            // People-search sites encode real names in paths:
+            // peekyou.com/jerome_despal → "Jerome Despal"
+            let people_hosts = [
+                "peekyou.com",
+                "spokeo.com",
+                "nuwber.com",
+                "whitepages.com.au",
+                "locatefamily.com",
+                "peoplefinder.com.au",
+                "searchfind.com.au",
+                "ancestry.com.au",
+            ];
+            if people_hosts
+                .iter()
+                .any(|s| crate::util::domains::is_or_subdomain_of(&host, s))
+                && lower_user.contains('_')
+                && lower_user.len() >= 5
+            {
+                let name = username.replace(['_', '-'], " ");
+                let name_key = name.to_lowercase();
+                // The people-search path encodes a name only if it's the
+                // SUBJECT's: these aggregator result pages cross-link to
+                // unrelated index entries (a "Haigen Bamford" search surfaced
+                // `peekyou.com/_bochary` → a phantom Person "bochary"). Require
+                // the extracted name to share a target term before trusting it.
+                let on_target = terms
+                    .iter()
+                    .any(|t| t.len() >= 3 && name_key.split_whitespace().any(|w| w == t));
+                if on_target && seen_domains.insert(format!("@person:{name_key}")) {
+                    let mut e = Entity::new(EntityKind::Person, &name, confidence::MEDIUM, scan_id);
+                    e.tag(tags::SEARCH_DISCOVERED);
+                    e.tag("people-search");
+                    e.add_evidence(build_search_evidence(r));
+                    result.push(e);
+                }
+            }
+        }
+
+        // Snippet-embedded social-profile links: the result URL is one page, but
+        // its snippet often names the subject's OTHER profiles ("also at
+        // https://github.com/alice"). Mine social-host URLs from the snippet body
+        // and run them through the SAME username gate the result URL uses, so the
+        // precision is identical (score_username term-overlap; weak scores stay
+        // candidate-quarantined) — only the source URL differs. Zero extra HTTP:
+        // the snippet is already fetched. Deduped against the result-URL pass via
+        // the shared `@username:` key, so a handle found both ways emits once.
+        for snippet_url in extract_urls_from_text(&combined_text) {
+            let s_host = extract_host(&snippet_url);
+            if s_host.is_empty() {
+                continue;
+            }
+
+            // (a) A subject-relevant page NAMED in the snippet (its path carries a
+            // target term) is a Url pivot the result URL didn't carry — a
+            // portfolio, repo, or profile the subject's page links to. A confirmed
+            // profile (handle path == seed on a canonical host) is high-value; any
+            // other path-match is a secondary mention, emitted CANDIDATE-tier
+            // (quarantined from confirmed correlation) so an incidentally-linked
+            // page can't masquerade as the subject's own. Stricter than the
+            // result-URL path, which promotes a bare path-match to 0.50.
+            if url_names_target(&snippet_url)
+                && seen_domains.insert(format!("@url:{}", canonicalize_url(&snippet_url)))
+            {
+                let confirmed = is_confirmed_profile(target, &snippet_url, &s_host);
+                let mut e = Entity::new(
+                    EntityKind::Url,
+                    &snippet_url,
+                    if confirmed {
+                        confidence::HIGH_PLUSPLUS
+                    } else {
+                        confidence::LOW
+                    },
+                    scan_id,
+                );
+                e.tag(tags::SEARCH_DISCOVERED);
+                e.tag("snippet-link");
+                if confirmed {
+                    e.tag("confirmed-profile");
+                } else {
+                    e.tag("candidate");
+                }
+                // A court / judgment host named in a snippet is a document too —
+                // never a seed to mine (see the result-URL branch above).
+                if is_court_record_host(&s_host) {
+                    e.tag(tags::SOURCE_DOCUMENT);
+                }
+                e.add_evidence(build_search_evidence(r));
+                result.push(e);
+            }
+
+            // (b) A social-host profile link → the handle, via the SAME username
+            // gate the result URL uses (score_username term-overlap; weak scores
+            // stay candidate-quarantined). Deduped against the result-URL pass via
+            // the shared `@username:` key, so a handle found both ways emits once.
+            if !is_social_host(&s_host) {
+                continue;
+            }
+            let Some(uname) = extract_path_username(&snippet_url) else {
+                continue;
+            };
+            let lower_user = uname.to_lowercase();
+            if lower_user.len() < 3 || is_navigation_path(&lower_user) {
+                continue;
+            }
+            // Same reordering as the result-URL pass above: claim the shared
+            // `@username:` dedup key only once `score_username` has actually
+            // earned an entity, not before — a zero-score attempt from either
+            // pass must not block a stronger later occurrence from the other.
+            let (score, confidence) = score_username(&lower_user, &s_host, &terms, r);
+            if score >= 1 && seen_domains.insert(format!("@username:{lower_user}")) {
+                let mut e = Entity::new(EntityKind::Username, &lower_user, confidence, scan_id);
+                e.tag(tags::SEARCH_DISCOVERED);
+                e.tag("social-profile");
+                e.tag("snippet-link");
+                if score < 3 {
+                    e.tag("candidate");
+                }
+                e.add_evidence(build_search_evidence(r));
+                result.push(e);
+            }
+        }
+    }
+
+    // Extract family members: people sharing the target's last name found in
+    // search results (e.g., "Jeanette Despal" when target is "Jerome Despal").
+    //
+    // A shared surname in a search snippet is a SPECULATIVE lead, not a confirmed
+    // relative: for a distinctive surname the SERPs surface unrelated global
+    // namesakes (a live "Matthew Diegmann" scan minted "Dominique Diegmann" from a
+    // ski-race page and "Elaine Diegmann" from a US healthcare NPI). So these are
+    // emitted candidate-tier — retained as leads (Network/full views) but excluded
+    // from the subject's confirmed footprint, the correlator and the exposure
+    // index, and never outranking the evidence-grounded registry relatives
+    // (`qld_unclaimed`'s `family-candidate`, ~0.35) the way the old 0.45 did.
+    let family = extract_family_names(results, target);
+    for (name, source_url) in &family {
+        let key = format!("@person:{}", name.to_lowercase());
+        if seen_domains.insert(key) {
+            let mut e = Entity::new(EntityKind::Person, name, confidence::LOW_MEDIUM, scan_id);
+            e.tag(tags::SEARCH_DISCOVERED);
+            e.tag("family-member");
+            e.add_evidence(
+                Evidence::new(SRC, format!("Shares surname with target — {source_url}"))
+                    .with_attr("url", source_url),
+            );
+            e.demote_to_candidate();
+            result.push(e);
+        }
+    }
+
+    // Sort entities in a structured order suitable for both human
+    // review and LLM consumption: parent entity first (it has the
+    // ── Inline geocoding: known AU/world city coordinates ────────────
+    // Produce Coordinates entities for addresses that match known cities.
+    // This avoids waiting for forward_geocode's Nominatim API call and
+    // enables the geo expansion chain immediately.
+    {
+        let mut seen_coords: HashSet<String> = HashSet::new();
+        let addr_snapshot: Vec<(String, f64, u32)> = result
+            .entities
+            .iter()
+            .filter(|e| {
+                // All extracted addresses qualify for inline geocoding — the
+                // minimum base confidence is now 0.42 so no address falls below
+                // this gate. The corroboration bypass (>= 2) is kept for any
+                // edge-case address emitted at a lower confidence by other modules.
+                e.kind == EntityKind::Address
+                    && (e.confidence >= confidence::LOW || e.corroboration >= 2)
+            })
+            .map(|e| (e.value.clone(), e.confidence, e.corroboration))
+            .collect();
+        for (addr, conf, corr) in &addr_snapshot {
+            if let Some((lat, lon)) = known_city_coords(addr) {
+                let coords = format!("{lat:.4},{lon:.4}");
+                if seen_coords.insert(coords.clone()) {
+                    // Floor at MEDIUM_HIGH: a city match from a search snippet is city-
+                    // level precision, comparable to a forward geocode (geocode.rs
+                    // emits HIGH_PLUS for AU). We use MEDIUM_HIGH as the minimum (not
+                    // LOW_MEDIUM×0.82 which could sink to 0.37) with a corroboration
+                    // lift and a cap at 0.72 (just below the Verified VERY_HIGH
+                    // threshold — it remains Probable until a more-authoritative
+                    // source corroborates).
+                    let corr_boost = (*corr as f64 - 1.0).max(0.0) * 0.05;
+                    let geo_conf = (conf.max(confidence::MEDIUM_HIGH) + corr_boost).min(0.72);
+                    let mut ce = Entity::new(EntityKind::Coordinates, &coords, geo_conf, scan_id);
+                    ce.tag("geoint");
+                    ce.tag(tags::SEARCH_GEOCODED);
+                    // `city_coords` returns a city, suburb or postcode
+                    // centroid, never a street point: an area standing in for
+                    // a place, which the engine must not pivot into reverse
+                    // geocoders and cadastre lookups as if it were precise
+                    // (REQ-GEO-007).
+                    ce.tag(tags::COARSE);
+                    // Tag au-state from coordinates so AU-056 jurisdiction
+                    // cross-check can fire without re-parsing lat/lon strings.
+                    if crate::util::geo::is_in_australia(lat, lon) {
+                        ce.tag("au-relevant");
+                        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+                            ce.tag(format!("au-state:{state}"));
+                        }
+                    }
+                    ce.add_evidence(
+                        Evidence::new(SRC, format!("Geocoded from search address: {addr}"))
+                            .with_attr("source_address", addr)
+                            .with_attr("method", "known-city-lookup"),
+                    );
+                    result.push(ce);
+                }
+            }
+        }
+    }
+
+    // highest confidence), then by kind priority (identity entities
+    // first, infrastructure last), then by descending confidence,
+    // then alphabetically by value within each tier.
+    result.entities.sort_by(|a, b| {
+        fn kind_rank(k: &EntityKind) -> u8 {
+            match k {
+                EntityKind::Person => 0,
+                EntityKind::Email => 1,
+                EntityKind::Username => 2,
+                EntityKind::Phone => 3,
+                EntityKind::Organisation => 4,
+                EntityKind::AbnAcn => 5,
+                EntityKind::Address => 6,
+                EntityKind::Url => 7,
+                EntityKind::Domain => 8,
+                _ => 9,
+            }
+        }
+        kind_rank(&a.kind)
+            .cmp(&kind_rank(&b.kind))
+            .then(
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(a.value.cmp(&b.value))
+    });
+
+    result
+}

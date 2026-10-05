@@ -1,0 +1,2895 @@
+//! Unit tests for target/scan types and scoring.
+//!
+//! Split out of the module file (mechanical, behaviour-preserving) so the
+//! source reads as implementation; tests reach private items via `use super::*`.
+
+use super::*;
+
+#[test]
+fn sanitise_strips_surrounding_quotes_and_stray_punctuation() {
+    // The exact real failure: a full_name target arrived quoted.
+    assert_eq!(sanitise_target_input("\"Jordan Avery\""), "Jordan Avery");
+    // Quote + trailing comma (CSV/list paste).
+    assert_eq!(sanitise_target_input("\"Jordan Avery\","), "Jordan Avery");
+    assert_eq!(sanitise_target_input("'jdoe'"), "jdoe");
+    assert_eq!(sanitise_target_input("  jdoe ;"), "jdoe");
+    // Unicode smart quotes.
+    assert_eq!(
+        sanitise_target_input("\u{201C}Jane Roe\u{201D}"),
+        "Jane Roe"
+    );
+    // Inner punctuation/quotes are preserved — only the bounding layer goes.
+    assert_eq!(sanitise_target_input("a\"b"), "a\"b");
+    assert_eq!(sanitise_target_input("o'brien"), "o'brien");
+    // Idempotent on already-clean input; doesn't mangle structured kinds.
+    assert_eq!(
+        sanitise_target_input("jordanavery@gmail.com"),
+        "jordanavery@gmail.com"
+    );
+    // Regression: an invisible/format char adjacent to a surrounding quote must not
+    // shield the quote from the strip. Before the fix the zero-width char sat
+    // between the quote and the edge (so first/last weren't the quote pair), the
+    // unwrap skipped it, and `strip_invisible` — run afterwards — removed the char,
+    // leaving `"jdoe"` (quotes intact) on the value.
+    assert_eq!(sanitise_target_input("\u{200b}\"jdoe\""), "jdoe");
+    assert_eq!(sanitise_target_input("\"jdoe\"\u{200b}"), "jdoe");
+    // …and the sanitised value is a fixed point (re-sanitising is a no-op).
+    let once = sanitise_target_input("\u{200d}\"Jane Roe\",");
+    assert_eq!(once, "Jane Roe");
+    assert_eq!(sanitise_target_input(&once), once);
+    assert_eq!(sanitise_target_input(""), "");
+}
+
+#[test]
+fn target_new_sanitises_quoted_full_name() {
+    // End-to-end through the user-input boundary: the quotes never reach
+    // the stored value (and thus never reach name permutations).
+    let t = Target::new(TargetKind::FullName, "\"Jordan Avery\"");
+    assert_eq!(t.value, "Jordan Avery");
+}
+
+#[test]
+fn options_default_is_inert() {
+    let o = ScanOptions::default();
+    assert!(o.modules.is_none());
+    assert_eq!(o.throttle_ms, 0);
+    assert!(!o.free_only);
+    assert!(!o.passive_only);
+    assert_eq!(o.depth, 0);
+    assert!((o.min_expand_confidence - 0.50).abs() < 1e-9);
+    // Gentle by default (2, not 4) so deep/everything scans don't flood the
+    // link or trip provider rate limits.
+    assert_eq!(o.max_concurrent, 2);
+}
+
+#[test]
+fn clamp_depth_enforces_max_depth() {
+    assert_eq!(MAX_DEPTH, 5);
+    let over = ScanOptions {
+        depth: 99,
+        ..Default::default()
+    };
+    assert_eq!(
+        over.clamp_depth().depth,
+        MAX_DEPTH,
+        "deep request is capped"
+    );
+    let under = ScanOptions {
+        depth: 2,
+        ..Default::default()
+    };
+    assert_eq!(under.clamp_depth().depth, 2, "in-range depth is untouched");
+}
+
+#[test]
+fn optimal_depth_never_exceeds_max_depth_and_is_at_least_one() {
+    // Iterate the CANONICAL kind list so a newly-added TargetKind is forced
+    // through the depth model (the exhaustive `match`es panic-free here).
+    for &kind in crate::core::dependency::ALL_TARGET_KINDS {
+        for paid in [true, false] {
+            let (d, c) = optimal_depth(kind, paid);
+            assert!(
+                (1..=MAX_DEPTH).contains(&d),
+                "{kind:?} paid={paid}: depth {d}"
+            );
+            assert!((0.40..=0.55).contains(&c), "{kind:?} paid={paid}: conf {c}");
+        }
+    }
+}
+
+#[test]
+fn optimal_depth_is_differentiated_not_pinned_at_ceiling() {
+    // Regression guard for the old bug: the hand-tuned 4/5 constants were
+    // all flattened to 3 by `.min(MAX_DEPTH)`, so depth carried no signal.
+    // The yield model MUST spread depth across the [1, MAX_DEPTH] range.
+    let depths: std::collections::BTreeSet<u32> = crate::core::dependency::ALL_TARGET_KINDS
+        .iter()
+        .flat_map(|&k| [optimal_depth(k, true).0, optimal_depth(k, false).0])
+        .collect();
+    assert!(
+        depths.len() >= 3,
+        "depth must be differentiated across kinds, saw only {depths:?}"
+    );
+    assert!(
+        depths.contains(&1),
+        "some terminal seed must resolve at depth 1"
+    );
+    // The auto-selector's own ceiling, which is NOT `MAX_DEPTH`. `MAX_DEPTH` is
+    // the clamp on an operator-requested depth; `optimal_depth` instead walks
+    // the yield curve and stops where marginal yield dies, which for the richest
+    // seed is the third round. The two were the same number until the clamp was
+    // raised to 5 for the live radar — a radio observation starts further from
+    // an identity than a typed seed, so the radar asks for depth explicitly
+    // rather than through this model. Asserting against `MAX_DEPTH` here would
+    // couple the yield model to a limit that is not about yield at all.
+    const AUTO_DEPTH_CEILING: u32 = 3;
+    const _: () = assert!(AUTO_DEPTH_CEILING <= MAX_DEPTH);
+    assert!(
+        depths.contains(&AUTO_DEPTH_CEILING),
+        "some rich seed must earn the full auto budget, saw {depths:?}"
+    );
+    assert!(
+        depths.iter().all(|d| *d <= MAX_DEPTH),
+        "auto depth must never exceed the clamp, saw {depths:?}"
+    );
+
+    // Rich identity seeds with paid keys earn the full budget…
+    for k in [
+        TargetKind::Email,
+        TargetKind::FullName,
+        TargetKind::Username,
+        TargetKind::Domain,
+    ] {
+        assert_eq!(
+            optimal_depth(k, true).0,
+            AUTO_DEPTH_CEILING,
+            "{k:?} paid → the full auto budget"
+        );
+        assert_eq!(optimal_depth(k, false).0, 2, "{k:?} keyless → 2");
+    }
+    // …terminal / registry seeds resolve in a single round.
+    for k in [
+        TargetKind::Coordinates,
+        TargetKind::AbnAcn,
+        TargetKind::ApiKey,
+    ] {
+        assert_eq!(optimal_depth(k, true).0, 1, "{k:?} is terminal");
+        assert_eq!(optimal_depth(k, false).0, 1, "{k:?} is terminal");
+    }
+}
+
+#[test]
+fn optimal_depth_paid_tier_is_never_shallower_than_free() {
+    for &kind in crate::core::dependency::ALL_TARGET_KINDS {
+        assert!(
+            optimal_depth(kind, true).0 >= optimal_depth(kind, false).0,
+            "{kind:?}: paid depth must be ≥ free depth"
+        );
+    }
+}
+
+#[test]
+fn optimal_depth_respects_the_marginal_yield_floor() {
+    // The core statistical invariant: the chosen depth D is exactly the
+    // cutoff of the yield curve — round D clears the floor, and round D+1
+    // (if one exists below MAX_DEPTH) does not. This is what makes the
+    // depth a *decision* rather than a constant.
+    for &kind in crate::core::dependency::ALL_TARGET_KINDS {
+        for paid in [true, false] {
+            let (d, _) = optimal_depth(kind, paid);
+            assert!(
+                predicted_marginal_yield(kind, paid, d) >= MARGINAL_YIELD_FLOOR - f64::EPSILON,
+                "{kind:?} paid={paid}: round {d} must clear the floor"
+            );
+            if d < MAX_DEPTH {
+                assert!(
+                    predicted_marginal_yield(kind, paid, d + 1) < MARGINAL_YIELD_FLOOR,
+                    "{kind:?} paid={paid}: round {} must fall below the floor",
+                    d + 1
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn predicted_marginal_yield_decays_monotonically_with_round() {
+    // 0 < q < 1 and m₁ > 0 ⇒ each round is strictly less productive than
+    // the last — the property the depth cutoff relies on.
+    for &kind in crate::core::dependency::ALL_TARGET_KINDS {
+        for paid in [true, false] {
+            let mut prev = f64::INFINITY;
+            for round in 1..=MAX_DEPTH + 1 {
+                let y = predicted_marginal_yield(kind, paid, round);
+                assert!(y > 0.0, "{kind:?}: yield must stay positive");
+                assert!(y < prev, "{kind:?} round {round}: yield must decay");
+                prev = y;
+            }
+        }
+    }
+}
+
+#[test]
+fn seed_yield_ordering_matches_observed_transcript() {
+    // Live transcript: FullName seed surfaced 446 entities, Username 91.
+    // The model's round-1 yields must preserve that ≫ ordering, and the
+    // richest identity seeds must out-yield terminal seeds.
+    for paid in [true, false] {
+        assert!(
+            seed_marginal_yield(TargetKind::FullName, paid)
+                > seed_marginal_yield(TargetKind::Username, paid)
+        );
+        assert!(
+            seed_marginal_yield(TargetKind::Email, paid)
+                >= seed_marginal_yield(TargetKind::FullName, paid)
+        );
+        assert!(
+            seed_marginal_yield(TargetKind::Username, paid)
+                > seed_marginal_yield(TargetKind::ApiKey, paid)
+        );
+    }
+}
+
+#[test]
+fn auto_min_expand_confidence_rises_with_depth_within_band() {
+    // Deeper scans are more selective; every value stays in [0.40, 0.55];
+    // the paid tier starts no higher than the free tier at equal depth.
+    for paid in [true, false] {
+        let c1 = auto_min_expand_confidence(1, paid);
+        let c2 = auto_min_expand_confidence(2, paid);
+        let c3 = auto_min_expand_confidence(3, paid);
+        assert!(
+            c1 <= c2 && c2 <= c3,
+            "confidence floor must rise with depth"
+        );
+        for c in [c1, c2, c3] {
+            assert!((0.40..=0.55).contains(&c));
+        }
+    }
+    for d in 1..=MAX_DEPTH {
+        assert!(auto_min_expand_confidence(d, true) <= auto_min_expand_confidence(d, false));
+    }
+}
+
+#[test]
+fn identity_overlap_ties_aliases_and_rejects_strangers() {
+    let subject = "jordanavery@gmail.com";
+    // Real aliases share a ≥4 substring with the subject handle.
+    assert!(identity_overlaps(subject, "jordanavery"));
+    assert!(identity_overlaps(subject, "therealfatjordan")); // "jordan"
+    assert!(identity_overlaps(subject, "jord.avery")); // "avery"/"jord"
+    assert!(identity_overlaps("Jordan Avery", "becky.avery")); // "avery"
+    // Unrelated handles do NOT — the wrong-identity rabbit holes.
+    assert!(!identity_overlaps(subject, "arizonambb"));
+    assert!(!identity_overlaps(subject, "centenario"));
+    assert!(!identity_overlaps(subject, "ideasfactory009"));
+    // Symmetry + email-local extraction.
+    assert!(identity_overlaps("jordanavery", "jordanavery@x.org"));
+    // Short identities must match exactly.
+    assert!(identity_overlaps("abc", "abc"));
+    assert!(!identity_overlaps("abc", "abd"));
+    // Empty / punctuation-only never matches.
+    assert!(!identity_overlaps("", "jordanavery"));
+    assert!(!identity_overlaps("...", "jordanavery"));
+}
+
+#[test]
+fn wrong_identity_pivot_gates_only_unrelated_weak_single_source_identities() {
+    use crate::core::entity::EntityKind;
+    let subject = vec!["jordanavery".to_string()];
+
+    // The canonical rabbit hole: an unrelated, weak, single-source handle.
+    assert!(is_wrong_identity_pivot(
+        &EntityKind::Username,
+        0.50,
+        1,
+        "arizonambb",
+        &subject
+    ));
+
+    // A genuine alias overlapping the subject is NEVER gated.
+    assert!(!is_wrong_identity_pivot(
+        &EntityKind::Username,
+        0.50,
+        1,
+        "therealfatjordan", // shares "jordan"
+        &subject
+    ));
+
+    // Verified confidence earns expansion even with no overlap.
+    assert!(!is_wrong_identity_pivot(
+        &EntityKind::Person,
+        0.80,
+        1,
+        "arizonambb",
+        &subject
+    ));
+
+    // Multi-source corroboration earns expansion even with no overlap.
+    assert!(!is_wrong_identity_pivot(
+        &EntityKind::Username,
+        0.50,
+        2,
+        "arizonambb",
+        &subject
+    ));
+
+    // Non-identity kinds are never subject to the gate.
+    assert!(!is_wrong_identity_pivot(
+        &EntityKind::Domain,
+        0.10,
+        1,
+        "arizonambb",
+        &subject
+    ));
+
+    // An empty subject set (no confirmed identity yet) still gates an
+    // unrelated weak handle — there is nothing for it to overlap with.
+    assert!(is_wrong_identity_pivot(
+        &EntityKind::Username,
+        0.50,
+        1,
+        "arizonambb",
+        &[]
+    ));
+}
+
+#[test]
+fn identity_norm_strips_to_email_local_and_alnum() {
+    assert_eq!(identity_norm("Matt.Avery@gmail.com"), "mattavery");
+    assert_eq!(identity_norm("the_real-matt"), "therealmatt");
+}
+
+#[test]
+fn is_mega_domain_matches_roots_subdomains_and_www() {
+    for d in [
+        "facebook.com",
+        "www.facebook.com",
+        "m.facebook.com",
+        "PINTEREST.COM",
+        "api.twitter.com",
+        "github.com",
+        // Profile-hosting platforms. A scan may legitimately discover a profile
+        // URL on one of these, but the platform's own estate (its domain, CDN
+        // and subdomains) must never be attributed to the subject.
+        "onlyfans.com",
+        "cdn.onlyfans.com",
+        "fansly.com",
+        "media.fansly.com",
+        "patreon.com",
+        "soundcloud.com",
+        "steamcommunity.com",
+        "vimeo.com",
+        // People-search aggregators — the stranger co-occurrence noise this list
+        // exists to dampen.
+        "fastpeoplesearch.com",
+        "thatsthem.com",
+        "clustrmaps.com",
+        "zoominfo.com",
+        "rocketreach.co",
+    ] {
+        assert!(is_mega_domain(d), "{d} should be a mega-domain");
+    }
+    for d in [
+        "target-company.com.au",
+        "johndoe.com",
+        "notfacebook.com", // suffix look-alike must not match
+        "facebookx.com",
+    ] {
+        assert!(!is_mega_domain(d), "{d} must NOT be a mega-domain");
+    }
+}
+
+#[test]
+fn is_infra_domain_matches_shared_providers() {
+    // The shared mail/DNS/registrar infra that flooded the real scan.
+    for d in [
+        "secureserver.net",
+        "cns1.secureserver.net",
+        "u10020310.ct.sendgrid.net",
+        "ns10.dnsmadeeasy.com",
+        "a1-245.akam.net",
+        "ns-664.awsdns-19.net",    // AWS Route 53 (varying shard root)
+        "ns-1778.awsdns-30.co.uk", // …including the co.uk shard
+        "MIMECAST.COM",
+        "jomax.net",     // GoDaddy registrar/abuse mail (dns@jomax.net)
+        "ns1.jomax.net", // …and its nameservers
+        "epik.com",      // registrar / nameserver provider
+        "ns3.epik.com",
+        "registrar-servers.com", // Namecheap control-plane
+        // Cloud DNS / CDN / cloud-app / ESP / mail-gateway infra (suffix-matched
+        // on the realistic NS / CNAME / MX forms they surface as).
+        "ns1-05.azure-dns.com",
+        "ns2-09.azure-dns.net",
+        "ns-cloud-a1.googledomains.com",
+        "ns1.cloudns.net",
+        // VPS/cloud hosts' own default nameservers (the exact shape a
+        // domain-scan's own NS lookup surfaces for a subject hosted there —
+        // this flooded `web_crawler` with a bare `ns1.digitalocean.com`
+        // crawl target in a real scan before these were added).
+        "ns1.digitalocean.com",
+        "ns3.digitalocean.com",
+        "ns1.linode.com",
+        "hydrogen.ns.hetzner.com",
+        "helium.ns.hetzner.de",
+        "ns100.ovh.net",
+        "myapp.azureedge.net",
+        "myservice.cloudapp.net",
+        "django-env.elasticbeanstalk.com",
+        "us5.list-manage.com",
+        "target-com.mail.protection.outlook.com", // M365 EOP MX
+        "mx.emailsrvr.com",
+    ] {
+        assert!(is_infra_domain(d), "{d} should be shared infra");
+        assert!(is_noncentral_domain(d), "{d} should be non-central");
+    }
+    // A subject's own domain (even on a normal registrar) is NOT infra.
+    for d in ["target-company.com.au", "johndoe.org", "acme-widgets.com"] {
+        assert!(!is_infra_domain(d), "{d} must NOT be shared infra");
+    }
+    // The M365 gateway suffix must NOT swallow `outlook.com` freemail itself —
+    // a subject's `…@outlook.com` is a prime finding, never infra.
+    assert!(
+        !is_infra_domain("outlook.com"),
+        "outlook.com freemail is not infra"
+    );
+}
+
+#[test]
+fn expansion_weight_dampens_mega_domains() {
+    let facebook = expansion_weight(TargetKind::Domain, 1.0, "facebook.com", false);
+    let specific = expansion_weight(TargetKind::Domain, 1.0, "target-company.com.au", false);
+    assert!(
+        specific > facebook * 5.0,
+        "target-specific domain ({specific:.1}) should far outrank facebook ({facebook:.1})"
+    );
+}
+
+#[test]
+fn expansion_weight_address_beats_mega_domain() {
+    let addr = expansion_weight(TargetKind::Address, 0.80, "Brisbane, QLD", false);
+    let fb = expansion_weight(TargetKind::Domain, 1.0, "facebook.com", false);
+    assert!(
+        addr > fb,
+        "validated address ({addr:.1}) should outrank dampened mega-domain ({fb:.1})"
+    );
+}
+
+#[test]
+fn cidr_is_geo_convergent_and_outranks_its_parent_asn() {
+    // A CIDR enumerates into host IPs that geo-resolve, so it must carry a
+    // geo-proximity boost — not fall through to the non-geo 1.0 default, which
+    // ranked it BELOW the ASN that produced it (inverted ordering, since a Cidr
+    // is one hop CLOSER to coordinates than its ASN). At equal confidence the
+    // geo-convergence ladder must read ASN < Cidr < IpAddress.
+    let asn = expansion_weight(TargetKind::Asn, 0.8, "AS13335", false);
+    let cidr = expansion_weight(TargetKind::Cidr, 0.8, "192.0.2.0/24", false);
+    let ip = expansion_weight(TargetKind::IpAddress, 0.8, "192.0.2.10", false);
+    assert!(
+        asn < cidr && cidr < ip,
+        "geo-convergence ladder must be ASN ({asn:.2}) < Cidr ({cidr:.2}) < IP ({ip:.2})"
+    );
+    // And a Cidr must beat a non-geo terminal kind of equal confidence — proof
+    // it is no longer treated as non-geo (boost 1.0).
+    let crypto = expansion_weight(TargetKind::CryptoAddress, 0.8, "bc1qxyz", false);
+    assert!(
+        cidr > crypto,
+        "Cidr ({cidr:.2}) is geo-convergent vs crypto ({crypto:.2})"
+    );
+}
+
+#[test]
+fn ssid_is_geo_convergent_on_par_with_its_wigle_peer_mac() {
+    // An SSID geo-resolves through WiGLE (ssid_search → Coordinates) in exactly
+    // one hop — the same path a MacAddress takes (bssid_lookup → Coordinates) —
+    // so it must carry the same geo-proximity boost, not fall through to the
+    // non-geo 1.0 default (which the `wigle` module, geo_npv 14.0, and
+    // seed_marginal_yield all contradict). At equal confidence, and since both
+    // share geo_npv 14.0 with no domain dampener, their expansion weights match.
+    let ssid = expansion_weight(TargetKind::Ssid, 0.8, "HomeNetwork", false);
+    let mac = expansion_weight(TargetKind::MacAddress, 0.8, "aa:bb:cc:dd:ee:ff", false);
+    assert!(
+        (ssid - mac).abs() < 1e-9,
+        "SSID ({ssid:.3}) must rank on par with its WiGLE peer MAC ({mac:.3})"
+    );
+    // And an SSID must beat a non-geo terminal kind of equal confidence — proof
+    // it is no longer scored as non-geo (boost 1.0).
+    let crypto = expansion_weight(TargetKind::CryptoAddress, 0.8, "bc1qxyz", false);
+    assert!(
+        ssid > crypto,
+        "SSID ({ssid:.2}) is geo-convergent vs crypto ({crypto:.2})"
+    );
+}
+
+#[test]
+fn expansion_weight_respects_confidence() {
+    let high = expansion_weight(TargetKind::Domain, 0.90, "example.com", false);
+    let low = expansion_weight(TargetKind::Domain, 0.45, "example.com", false);
+    assert!(high > low * 1.9);
+}
+
+#[test]
+fn convex_budget_lifts_identity_above_saturated_infrastructure() {
+    // Completes the convex (optionality / barbell) budget feature: proves the
+    // engine's exact composition — base weight × optionality_multiplier — does
+    // what the flag claims, not just that the multiplier math is right in
+    // isolation. Models the canonical case the feature exists for: a cheap,
+    // information-rich, uncertain, single-source IDENTITY lead vs an expensive,
+    // saturated, heavily-corroborated INFRASTRUCTURE domain.
+    use crate::core::convex::optionality_multiplier;
+    let strat = ExpansionStrategy::BreadthFirst;
+
+    // Base ranking (no --convex-budget): the engine multiplies the strategy
+    // weight by the corroboration prior. Expected value favours the saturated,
+    // well-corroborated domain over the uncertain single-source email.
+    let id_base = expansion_weight_for_strategy(
+        strat,
+        TargetKind::Email,
+        0.55,
+        "jordan@gmail.com",
+        false,
+        0.9,
+    ) * corroboration_prior(1);
+    let infra_base =
+        expansion_weight_for_strategy(strat, TargetKind::Domain, 0.95, "example.com", false, 0.6)
+            * corroboration_prior(6);
+    assert!(
+        infra_base > id_base,
+        "without convex budget, expected value ranks infra above identity ({infra_base:.3} vs {id_base:.3})"
+    );
+
+    // With --convex-budget the engine multiplies in the optionality factor
+    // (convexity premium ÷ dispatch cost). It must flip the order — and the tilt
+    // toward identity is monotone (the identity:infra ratio strictly increases).
+    let id_final = id_base * optionality_multiplier(TargetKind::Email, 1, 0.55, 0.9);
+    let infra_final = infra_base * optionality_multiplier(TargetKind::Domain, 6, 0.95, 0.6);
+    assert!(
+        id_final > infra_final,
+        "convex budget must lift the cheap rich identity lead above saturated infra ({id_final:.3} vs {infra_final:.3})"
+    );
+    assert!(
+        id_final / infra_final > id_base / infra_base,
+        "convex re-weighting must strictly increase the identity:infra ratio"
+    );
+}
+
+#[test]
+fn corroboration_prior_is_neutral_at_one_source_and_grows_diminishingly() {
+    // Single source must not penalise vs today's behaviour: exactly 1.0.
+    assert!((corroboration_prior(1) - 1.0).abs() < 1e-12);
+    // 0 is floored to 1 (defensive).
+    assert!((corroboration_prior(0) - 1.0).abs() < 1e-12);
+    // Strictly increasing with independent sources…
+    assert!(corroboration_prior(2) > corroboration_prior(1));
+    assert!(corroboration_prior(4) > corroboration_prior(2));
+    assert!(corroboration_prior(8) > corroboration_prior(4));
+    // …with diminishing returns (concave: each doubling adds a constant,
+    // shrinking increment relative to the level).
+    let d_1_2 = corroboration_prior(2) - corroboration_prior(1);
+    let d_2_4 = corroboration_prior(4) - corroboration_prior(2);
+    assert!((d_1_2 - d_2_4).abs() < 1e-9, "ln doubling steps are equal");
+    assert!(corroboration_prior(4) - corroboration_prior(2) < d_1_2 * 1.0 + 1e-9);
+}
+
+#[test]
+fn corroboration_prior_refines_within_tier_never_overrides_geo() {
+    // A heavily-corroborated FAR entity must still rank below a
+    // single-source geo-proximate IP — corroboration refines order within
+    // a geo tier, it does not invert the geo-convergence priority.
+    let far_8src =
+        expansion_weight(TargetKind::Organisation, 0.80, "x", false) * corroboration_prior(8);
+    let ip_1src =
+        expansion_weight(TargetKind::IpAddress, 0.80, "8.8.8.8", false) * corroboration_prior(1);
+    assert!(
+        ip_1src > far_8src,
+        "geo-proximate IP ({ip_1src:.1}) must outrank corroborated org ({far_8src:.1})"
+    );
+    // But within the SAME kind, corroboration breaks the c_eff=1.0 tie.
+    let a = expansion_weight(TargetKind::Email, 1.0, "a@x.com", true) * corroboration_prior(6);
+    let b = expansion_weight(TargetKind::Email, 1.0, "b@x.com", true) * corroboration_prior(1);
+    assert!(a > b, "6-source email must outrank 1-source at equal c_eff");
+}
+
+#[test]
+fn mega_domain_list_catches_common_noise() {
+    assert!(domain_expansion_factor("facebook.com") < 0.5);
+    assert!(domain_expansion_factor("www.reddit.com") < 0.5);
+    assert!(domain_expansion_factor("whitepages.com") < 0.5);
+    assert!((domain_expansion_factor("target-specific.com.au") - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn target_kind_round_trips_via_entity_kind() {
+    for tk in [
+        TargetKind::Email,
+        TargetKind::Username,
+        TargetKind::Phone,
+        TargetKind::FullName,
+        TargetKind::IpAddress,
+        TargetKind::Domain,
+        TargetKind::Url,
+        TargetKind::Asn,
+        TargetKind::Coordinates,
+        TargetKind::Address,
+        TargetKind::Organisation,
+        TargetKind::AbnAcn,
+        TargetKind::ApiKey,
+    ] {
+        let ek = tk.to_entity_kind();
+        assert_eq!(TargetKind::from_entity_kind(&ek), Some(tk));
+    }
+}
+
+#[test]
+fn unscannable_entity_kinds_return_none() {
+    assert!(TargetKind::from_entity_kind(&EntityKind::Password).is_none());
+    assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
+}
+
+#[test]
+fn mac_address_entity_expands() {
+    assert_eq!(
+        TargetKind::from_entity_kind(&EntityKind::MacAddress),
+        Some(TargetKind::MacAddress)
+    );
+}
+
+#[test]
+fn api_key_entity_expands() {
+    assert_eq!(
+        TargetKind::from_entity_kind(&EntityKind::ApiKey),
+        Some(TargetKind::ApiKey)
+    );
+}
+
+#[test]
+fn options_round_trip_json() {
+    let o = ScanOptions {
+        modules: Some(vec!["hibp".into(), "crtsh".into()]),
+        throttle_ms: 250,
+        free_only: true,
+        ..Default::default()
+    };
+    let s = serde_json::to_string(&o).expect("should succeed");
+    let back: ScanOptions = serde_json::from_str(&s).expect("should succeed");
+    assert_eq!(back.modules.as_ref().expect("should succeed").len(), 2);
+    assert_eq!(back.throttle_ms, 250);
+    assert!(back.free_only);
+}
+
+#[test]
+fn scan_request_round_trip() {
+    let req = ScanRequest {
+        kind: Some(TargetKind::Email),
+        value: "x@y.com".into(),
+        options: ScanOptions::default(),
+    };
+    let s = serde_json::to_string(&req).expect("should succeed");
+    assert!(s.contains("\"kind\":\"email\""));
+
+    // Omitted kind → None → auto-detected; the field is skipped on the wire.
+    let auto: ScanRequest = serde_json::from_str(r#"{"value":"x@y.com"}"#).expect("should succeed");
+    assert_eq!(auto.kind, None);
+    assert_eq!(auto.resolved_kind(), TargetKind::Email);
+    assert!(
+        !serde_json::to_string(&auto)
+            .expect("should succeed")
+            .contains("kind")
+    );
+}
+
+// ── TargetKind::detect — unified-scan auto-detection ──────────────────────
+
+#[test]
+fn detect_classifies_structured_kinds() {
+    use TargetKind::*;
+    let cases = [
+        ("https://example.com/page", Url),
+        ("http://x.io", Url),
+        ("alice@example.com", Email),
+        ("8.8.8.8", IpAddress),
+        ("2001:4860:4860::8888", IpAddress),
+        ("aa:bb:cc:dd:ee:ff", MacAddress),
+        ("AA-BB-CC-DD-EE-FF", MacAddress),
+        // Cisco dotted form — accepted by Target::validate(MacAddress), so
+        // detect must classify it too (it previously fell through to Domain
+        // for letters-only hex, or Username when a group carried a digit).
+        ("aabb.ccdd.eeff", MacAddress),
+        ("AB12.CD34.EF56", MacAddress),
+        ("-33.8688,151.2093", Coordinates),
+        // Self-evident rich coordinate notations now auto-detect too (the
+        // handle-shaped Maidenhead and bare space-separated decimals do not).
+        ("27°28'35.8\"S 153°00'59.8\"E", Coordinates), // degrees-minutes-seconds
+        ("geo:-27.4766,153.0166", Coordinates),        // RFC 5870 geo: URI
+        ("8FVC9G8F+6X", Coordinates),                  // Plus Code / Open Location Code
+        ("AS13335", Asn),
+        ("as15169", Asn),
+        ("51824753556", AbnAcn),    // valid ABN (ATO worked example)
+        ("51 824 753 556", AbnAcn), // spaced ABN
+        ("+61 400 123 456", Phone),
+        ("(07) 3000 1234", Phone),
+        // Cell-tower ID (mcc-mnc-lac-cid) — more specific than a dialable digit run,
+        // so it classifies as DeviceId, NOT Phone. Regression: the phone check
+        // previously ran first and swallowed it, leaving DeviceId dead.
+        ("505-1-2020-12345", DeviceId),
+        ("310-410-7-84215", DeviceId),
+        // CIDR — checked after a bare IP, before domain.
+        ("192.0.2.0/24", Cidr),
+        ("2001:db8::/48", Cidr),
+        // Crypto wallet addresses — checked before the free-text fallback so a
+        // pasted address is never mis-bucketed as a Username.
+        ("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", CryptoAddress), // BTC P2PKH (genesis)
+        ("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", CryptoAddress), // BTC bech32
+        ("0x742d35Cc6634C0532925a3b844Bc454e4438f44e", CryptoAddress), // ETH
+        ("example.com", Domain),
+        ("sub.example.co.uk", Domain),
+    ];
+    for (value, want) in cases {
+        assert_eq!(TargetKind::detect(value), want, "detect({value:?})");
+    }
+}
+
+#[test]
+fn rich_coordinate_notations_normalise_to_canonical_decimal() {
+    // A self-evident notation auto-detects AND its value is canonicalised to the
+    // 6-dp "lat,lon" every downstream geo consumer already speaks.
+    let dms = Target::detect("27°28'35.8\"S 153°00'59.8\"E");
+    assert_eq!(dms.kind, TargetKind::Coordinates);
+    assert_eq!(dms.value, "-27.476611,153.016611");
+
+    let geo = Target::detect("geo:-27.4766,153.0166");
+    assert_eq!(geo.kind, TargetKind::Coordinates);
+    assert_eq!(geo.value, "-27.476600,153.016600");
+
+    // A Maidenhead locator is handle-shaped, so it is NOT auto-detected …
+    assert_ne!(TargetKind::detect("QG62kn"), TargetKind::Coordinates);
+    // … yet an explicit `--kind coordinates` accepts and normalises it.
+    let grid = Target::new(TargetKind::Coordinates, "QG62kn");
+    assert_eq!(grid.value, "-27.437500,152.875000");
+}
+
+#[test]
+fn detect_classifies_free_text() {
+    use TargetKind::*;
+    assert_eq!(TargetKind::detect("jsmith"), Username);
+    assert_eq!(TargetKind::detect("shinigami_jerome"), Username);
+    assert_eq!(TargetKind::detect("Jordan Avery"), FullName);
+    assert_eq!(TargetKind::detect("Acme Pty Ltd"), Organisation);
+    assert_eq!(TargetKind::detect("Globex Corporation"), Organisation);
+    assert_eq!(TargetKind::detect("123 Main St, Springfield"), Address);
+}
+
+#[test]
+fn detect_disambiguates_overlapping_shapes() {
+    // Dotted-but-valid IP beats domain.
+    assert_eq!(TargetKind::detect("8.8.8.8"), TargetKind::IpAddress);
+    // 11 digits that are NOT a valid ABN fall through to phone.
+    assert_eq!(TargetKind::detect("12345678901"), TargetKind::Phone);
+    // A valid ABN of the same length is recognised as the registry id.
+    assert_eq!(TargetKind::detect("51824753556"), TargetKind::AbnAcn);
+    // '+' is valid only once and only leading: a stray internal '+' is not
+    // a phone, but a normal international number still is.
+    assert_ne!(TargetKind::detect("+123+4567"), TargetKind::Phone);
+    assert_eq!(TargetKind::detect("+61400123456"), TargetKind::Phone);
+}
+
+#[test]
+fn detect_never_panics_on_junk() {
+    let big = "x".repeat(2000);
+    let junk = [
+        "",
+        "   ",
+        "@",
+        "a@b",
+        "...",
+        "::::::",
+        "+",
+        "AS",
+        "9999",
+        "🦀",
+        "a b c d e f",
+        "-",
+        big.as_str(),
+    ];
+    for v in junk {
+        let _ = TargetKind::detect(v); // must not panic
+    }
+}
+
+#[test]
+fn detect_then_validate_round_trips_clean_values() {
+    // A value detected from a clean input must pass Target::validate, so the
+    // unified path never produces a target the engine would reject.
+    // Real (non-placeholder) values: `validate` rejects reserved
+    // documentation domains like example.com, so use live ones here.
+    for v in [
+        "alice@proton.me",
+        "cloudflare.com",
+        "8.8.8.8",
+        "AS13335",
+        "+61400123456",
+        "Jordan Avery",
+        "jsmith",
+        "https://cloudflare.com/p",
+    ] {
+        let t = Target::detect(v);
+        assert!(
+            t.validate().is_ok(),
+            "detect+validate failed for {v:?}: {t:?}"
+        );
+    }
+}
+
+#[test]
+fn target_detect_resolves_and_normalises() {
+    let t = Target::detect("Alice@Example.Com");
+    assert_eq!(t.kind, TargetKind::Email);
+    assert_eq!(t.value, "alice@example.com"); // email normalisation lowercases
+    // Quoted name: detection sees through the quotes; value is sanitised.
+    let t2 = Target::detect("\"Jordan Avery\"");
+    assert_eq!(t2.kind, TargetKind::FullName);
+    assert_eq!(t2.value, "Jordan Avery");
+}
+
+#[test]
+fn auto_detect_sanitises_before_classifying() {
+    // Regression (PR #102 review): the auto-detect paths must sanitise paste
+    // artifacts (surrounding quotes + trailing separators) BEFORE
+    // classifying, exactly as `Target::new` sanitises the stored value —
+    // otherwise a pasted `"https://x.com",` is classed `Username` while the
+    // stored value is a URL, routing the scan through the wrong modules.
+    let dirty = "\"https://cloudflare.com\",";
+    assert_eq!(detect_kind(dirty), TargetKind::Url);
+    assert_eq!(Target::detect(dirty).kind, TargetKind::Url);
+    // The shared helper is what every entry point uses:
+    let req = ScanRequest {
+        kind: None,
+        value: dirty.to_string(),
+        options: ScanOptions::default(),
+    };
+    assert_eq!(req.resolved_kind(), TargetKind::Url);
+    // And the detected kind agrees with the value the target will store.
+    assert_eq!(Target::detect(dirty).value, "https://cloudflare.com");
+}
+
+// ── Target::validate ────────────────────────────────────────────────────
+#[test]
+fn validate_rejects_empty_and_oversize() {
+    assert!(Target::new(TargetKind::Email, "").validate().is_err());
+    assert!(
+        Target::new(TargetKind::Email, "x".repeat(2000))
+            .validate()
+            .is_err()
+    );
+}
+
+#[test]
+fn validate_rejects_control_chars() {
+    assert!(
+        Target::new(TargetKind::Email, "x@y\ncom")
+            .validate()
+            .is_err()
+    );
+}
+
+#[test]
+fn validate_rejects_mixed_script_homograph() {
+    // A Cyrillic-`а` `pаypal.com` reads as the ASCII brand but is a distinct
+    // entity — the classic homograph spoof — and must be rejected.
+    assert!(
+        Target::new(TargetKind::Domain, "p\u{0430}ypal.com")
+            .validate()
+            .is_err()
+    );
+    // The clean ASCII seed passes (no behavioural change for legitimate input).
+    assert!(
+        Target::new(TargetKind::Domain, "paypal.com")
+            .validate()
+            .is_ok()
+    );
+}
+
+#[test]
+fn validate_verbose_names_the_ascii_skeleton_for_a_homograph() {
+    // The operator-facing detail `validate`'s bare &'static str can't carry:
+    // WHAT the spoofed value normalizes to, not just that it was rejected.
+    let err = Target::new(TargetKind::Domain, "p\u{0430}ypal.com")
+        .validate_verbose()
+        .expect_err("a mixed-script homograph must still be rejected");
+    assert!(
+        err.contains("mixed-script homograph"),
+        "must keep validate()'s original reason: {err}"
+    );
+    assert!(
+        err.contains("ascii skeleton: paypal.com"),
+        "must name the normalized ASCII form: {err}"
+    );
+
+    // Every OTHER rejection reuses validate()'s exact static message, unchanged.
+    assert_eq!(
+        Target::new(TargetKind::Email, "x@y\ncom").validate_verbose(),
+        Target::new(TargetKind::Email, "x@y\ncom")
+            .validate()
+            .map_err(std::borrow::Cow::Borrowed)
+    );
+
+    // The clean ASCII seed still passes (no behavioural change for legitimate
+    // input) and allocates nothing (Cow::Borrowed on the Ok/other-error path
+    // is the whole point — this is a happy-path capability add, not a hot-path
+    // regression).
+    assert!(
+        Target::new(TargetKind::Domain, "paypal.com")
+            .validate_verbose()
+            .is_ok()
+    );
+}
+
+#[test]
+fn sanitise_strips_invisible_unicode() {
+    // A zero-width joiner padded into a value is removed at the ingestion
+    // boundary so the two spellings finally normalise to one (fixes silent
+    // non-dedup); clean input is unchanged.
+    assert_eq!(sanitise_target_input("jo\u{200D}hn"), "john");
+    assert_eq!(sanitise_target_input("john"), "john");
+}
+
+#[test]
+fn validate_email() {
+    assert!(Target::new(TargetKind::Email, "a@b.com").validate().is_ok());
+    assert!(
+        Target::new(TargetKind::Email, "noatsign")
+            .validate()
+            .is_err()
+    );
+    assert!(Target::new(TargetKind::Email, "@b.com").validate().is_err());
+    assert!(Target::new(TargetKind::Email, "a@b").validate().is_err()); // no dot
+}
+
+#[test]
+fn validate_abn_acn_requires_9_or_11_digits() {
+    // ABN (11) / ACN (9), spaces & punctuation ignored.
+    assert!(
+        Target::new(TargetKind::AbnAcn, "51824753556")
+            .validate()
+            .is_ok()
+    );
+    assert!(
+        Target::new(TargetKind::AbnAcn, "51 824 753 556")
+            .validate()
+            .is_ok()
+    );
+    assert!(
+        Target::new(TargetKind::AbnAcn, "004085616")
+            .validate()
+            .is_ok()
+    );
+    // Non-registry junk (e.g. a handle) must fail fast, not dispatch a no-op.
+    assert!(
+        Target::new(TargetKind::AbnAcn, "Kylo4kylo")
+            .validate()
+            .is_err()
+    );
+    assert!(Target::new(TargetKind::AbnAcn, "12345").validate().is_err());
+}
+
+#[test]
+fn validate_mac_requires_six_hex_octets() {
+    assert!(
+        Target::new(TargetKind::MacAddress, "AA:BB:CC:DD:EE:FF")
+            .validate()
+            .is_ok()
+    );
+    assert!(
+        Target::new(TargetKind::MacAddress, "aa-bb-cc-dd-ee-ff")
+            .validate()
+            .is_ok()
+    );
+    assert!(
+        Target::new(TargetKind::MacAddress, "aabbccddeeff")
+            .validate()
+            .is_ok()
+    );
+    assert!(
+        Target::new(TargetKind::MacAddress, "Kylo4kylo")
+            .validate()
+            .is_err()
+    );
+    assert!(
+        Target::new(TargetKind::MacAddress, "AA:BB:CC:DD:EE")
+            .validate()
+            .is_err()
+    ); // 5 octets
+    assert!(
+        Target::new(TargetKind::MacAddress, "ZZ:BB:CC:DD:EE:FF")
+            .validate()
+            .is_err()
+    ); // non-hex
+}
+
+#[test]
+fn validate_domain() {
+    assert!(
+        Target::new(TargetKind::Domain, "cloudflare.com")
+            .validate()
+            .is_ok()
+    );
+    assert!(
+        Target::new(TargetKind::Domain, "single")
+            .validate()
+            .is_err()
+    ); // no dot
+    assert!(
+        Target::new(TargetKind::Domain, "bad domain.com")
+            .validate()
+            .is_err()
+    ); // space
+    // Reserved/placeholder domains are rejected at the seed boundary.
+    assert!(
+        Target::new(TargetKind::Domain, "example.com")
+            .validate()
+            .is_err(),
+        "example.com is a reserved placeholder — must not be scannable"
+    );
+    assert!(
+        Target::new(TargetKind::Email, "jordan@example.com")
+            .validate()
+            .is_err(),
+        "placeholder email host must be rejected"
+    );
+}
+
+#[test]
+fn validate_ip() {
+    assert!(
+        Target::new(TargetKind::IpAddress, "1.1.1.1")
+            .validate()
+            .is_ok()
+    );
+    assert!(Target::new(TargetKind::IpAddress, "::1").validate().is_ok());
+    assert!(
+        Target::new(TargetKind::IpAddress, "999.999.999.999")
+            .validate()
+            .is_err()
+    );
+}
+
+#[test]
+fn validate_asn() {
+    assert!(Target::new(TargetKind::Asn, "AS13335").validate().is_ok());
+    assert!(Target::new(TargetKind::Asn, "13335").validate().is_ok());
+    assert!(Target::new(TargetKind::Asn, "BS13335").validate().is_err());
+}
+
+#[test]
+fn validate_phone() {
+    assert!(
+        Target::new(TargetKind::Phone, "+1-234-567-8901")
+            .validate()
+            .is_ok()
+    );
+    assert!(Target::new(TargetKind::Phone, "+1").validate().is_err()); // too short
+}
+
+#[test]
+fn validate_coordinates() {
+    assert!(
+        Target::new(TargetKind::Coordinates, "-33.8688,151.2093")
+            .validate()
+            .is_ok()
+    );
+    assert!(
+        Target::new(TargetKind::Coordinates, "91,0")
+            .validate()
+            .is_err()
+    ); // lat out of range
+    assert!(
+        Target::new(TargetKind::Coordinates, "0,181")
+            .validate()
+            .is_err()
+    ); // lon out of range
+    assert!(
+        Target::new(TargetKind::Coordinates, "not-coords")
+            .validate()
+            .is_err()
+    );
+}
+
+// ── ExpansionStrategy ───────────────────────────────────────────────────
+
+#[test]
+fn expansion_strategy_default_is_geo_converge() {
+    assert_eq!(ExpansionStrategy::default(), ExpansionStrategy::GeoConverge);
+    assert_eq!(ExpansionStrategy::default().as_str(), "geo_converge");
+}
+
+#[test]
+fn effective_max_concurrent_clamps_operator_input() {
+    // `max_concurrent` is deserialised straight from API/CLI input into the
+    // engine's `Semaphore::new`, which PANICS above `Semaphore::MAX_PERMITS`.
+    // `effective_max_concurrent()` is the single chokepoint that bounds it, so a
+    // config value can neither crash the scan nor defeat the gentle-pacing
+    // default. 0 (sequential) passes through; in-range values are unchanged; an
+    // absurd value — including the `usize::MAX` that would otherwise panic
+    // Semaphore::new — is clamped to MAX_CONCURRENT.
+    let mk = |n: usize| ScanOptions {
+        max_concurrent: n,
+        ..Default::default()
+    };
+    assert_eq!(mk(0).effective_max_concurrent(), 0, "sequential preserved");
+    assert_eq!(
+        mk(2).effective_max_concurrent(),
+        2,
+        "gentle default unchanged"
+    );
+    assert_eq!(
+        mk(MAX_CONCURRENT).effective_max_concurrent(),
+        MAX_CONCURRENT,
+        "at the ceiling"
+    );
+    assert_eq!(
+        mk(MAX_CONCURRENT + 1).effective_max_concurrent(),
+        MAX_CONCURRENT,
+        "above the ceiling clamps"
+    );
+    assert_eq!(
+        mk(usize::MAX).effective_max_concurrent(),
+        MAX_CONCURRENT,
+        "the Semaphore::new-panicking value is bounded"
+    );
+}
+
+#[test]
+fn effective_throttle_ms_clamps_to_ceiling() {
+    // throttle_ms is an UNINTERRUPTIBLE inter-module sleep; an extreme value
+    // would hold a scan past its wall-time watchdog. 0 (no throttle) and in-range
+    // values pass through; anything above the ceiling is bounded.
+    let mk = |n: u64| ScanOptions {
+        throttle_ms: n,
+        ..Default::default()
+    };
+    assert_eq!(mk(0).effective_throttle_ms(), 0, "no throttle preserved");
+    assert_eq!(mk(250).effective_throttle_ms(), 250, "in-range unchanged");
+    assert_eq!(
+        mk(THROTTLE_CEILING_MS).effective_throttle_ms(),
+        THROTTLE_CEILING_MS
+    );
+    assert_eq!(
+        mk(u64::MAX).effective_throttle_ms(),
+        THROTTLE_CEILING_MS,
+        "a units-confused huge throttle is bounded to the ceiling"
+    );
+}
+
+#[test]
+fn effective_confidence_floors_coerce_non_finite_to_safe_defaults() {
+    // A CLI `--min-confidence nan` / `--min-expand-confidence inf` parses via
+    // clap's f64::from_str (which accepts nan/inf), and a non-finite threshold
+    // silently inverts the < comparison — NaN makes it always-false (filter
+    // disabled / expand everything), +inf always-true (expand nothing). The
+    // effective_* accessors coerce ONLY the meaningless non-finite case; a finite
+    // value (even an unusual one) is left exactly as the operator set it.
+    let with = |f: f64| ScanOptions {
+        min_expand_confidence: f,
+        min_confidence: Some(f),
+        min_marginal_yield: Some(f),
+        ..Default::default()
+    };
+    // Finite values pass through untouched (operator intent preserved).
+    let ok = with(0.42);
+    assert!((ok.effective_min_expand_confidence() - 0.42).abs() < 1e-9);
+    assert_eq!(ok.effective_min_confidence(), Some(0.42));
+    assert_eq!(ok.effective_min_marginal_yield(), Some(0.42));
+    // Non-finite collapses to the safe default (expand floor) / None (filters).
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let b = with(bad);
+        assert_eq!(
+            b.effective_min_expand_confidence(),
+            crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE,
+            "non-finite expand floor -> product default"
+        );
+        assert_eq!(
+            b.effective_min_confidence(),
+            None,
+            "non-finite drop filter -> disabled (None), never inverted"
+        );
+        assert_eq!(b.effective_min_marginal_yield(), None);
+    }
+}
+
+#[test]
+fn target_kind_canonical_str_matches_serde() {
+    // CONVENTIONS.md §3: canonical_str is the persisted `scans.target_kind`
+    // column, a scan_id hash input, and the event/API wire label — and its
+    // doc explicitly promises it equals the serde form. Pin every variant so
+    // a future TargetKind rename can't split the hand-written string from the
+    // derive. Iterates the canonical list, so a new variant is forced through.
+    for &k in crate::core::dependency::ALL_TARGET_KINDS {
+        let json = serde_json::to_string(&k).expect("should succeed");
+        assert_eq!(json.trim_matches('"'), k.canonical_str(), "{k:?}");
+    }
+}
+
+#[test]
+fn scan_status_as_str_matches_serde() {
+    // §3 pin. as_str is the persisted `scans.status` value AND
+    // `latest_finished_scan` hard-codes these strings in its SQL
+    // `json_extract(...) IN ('complete', 'aborted')` probe — a drift between
+    // as_str and the serde form would silently break that query (no finished
+    // scan found).
+    for st in [
+        ScanStatus::Pending,
+        ScanStatus::Running,
+        ScanStatus::Complete,
+        ScanStatus::Failed,
+        ScanStatus::Aborted,
+    ] {
+        let json = serde_json::to_string(&st).expect("should succeed");
+        assert_eq!(json.trim_matches('"'), st.as_str(), "{st:?}");
+    }
+}
+
+#[test]
+fn expansion_strategy_every_variant_round_trips_as_str_serde_and_from_str() {
+    // DRIFT GUARD (was a hardcoded 4-variant array a 5th variant would skip).
+    // `as_str` is the single wire form shared by serde, the CLI
+    // `--expansion-strategy` arg, and `FromStr`, so all three must agree for
+    // EVERY variant. `EVERY` is walked by an arm-less `match` (no `_`): adding an
+    // `ExpansionStrategy` variant fails to compile here until it is listed, then
+    // the loop proves as_str == serde, serde round-trips, and FromStr(as_str)
+    // round-trips for the whole set — the compile-forced exhaustiveness the
+    // sibling `target_kind_canonical_str_matches_serde` gets from ALL_TARGET_KINDS.
+    const EVERY: &[ExpansionStrategy] = &[
+        ExpansionStrategy::GeoConverge,
+        ExpansionStrategy::BreadthFirst,
+        ExpansionStrategy::DepthFirst,
+        ExpansionStrategy::RichestFirst,
+    ];
+    for &s in EVERY {
+        match s {
+            ExpansionStrategy::GeoConverge
+            | ExpansionStrategy::BreadthFirst
+            | ExpansionStrategy::DepthFirst
+            | ExpansionStrategy::RichestFirst => {}
+        }
+        let json = serde_json::to_string(&s).expect("should succeed");
+        assert_eq!(json.trim_matches('"'), s.as_str(), "as_str vs serde: {s:?}");
+        let back: ExpansionStrategy = serde_json::from_str(&json).expect("should succeed");
+        assert_eq!(back, s, "serde round-trip: {s:?}");
+        let parsed: ExpansionStrategy = s.as_str().parse().expect("should succeed");
+        assert_eq!(parsed, s, "FromStr(as_str) round-trip: {s:?}");
+    }
+}
+
+#[test]
+fn expansion_strategy_from_str_treats_empty_as_default() {
+    let parsed: ExpansionStrategy = "".parse().expect("should succeed");
+    assert_eq!(parsed, ExpansionStrategy::default());
+}
+
+#[test]
+fn expansion_strategy_from_str_rejects_unknown_with_useful_message() {
+    let err = "wat"
+        .parse::<ExpansionStrategy>()
+        .expect_err("should be an error");
+    assert!(err.contains("wat"));
+    assert!(err.contains("geo_converge"));
+    assert!(err.contains("breadth_first"));
+    assert!(err.contains("depth_first"));
+    assert!(err.contains("richest_first"));
+}
+
+#[test]
+fn strategy_geo_converge_matches_legacy_weight_at_full_richness() {
+    let legacy = expansion_weight(TargetKind::Domain, 0.8, "example.com", false);
+    let strat = expansion_weight_for_strategy(
+        ExpansionStrategy::GeoConverge,
+        TargetKind::Domain,
+        0.8,
+        "example.com",
+        false,
+        1.0,
+    );
+    assert!((legacy - strat).abs() < 1e-9);
+}
+
+#[test]
+fn strategy_breadth_first_is_geo_agnostic() {
+    // BreadthFirst should rank IP and Domain similarly when c_eff
+    // matches — geo_proximity_boost no longer dominates.
+    let ip = expansion_weight_for_strategy(
+        ExpansionStrategy::BreadthFirst,
+        TargetKind::IpAddress,
+        0.8,
+        "1.1.1.1",
+        false,
+        0.5,
+    );
+    let domain = expansion_weight_for_strategy(
+        ExpansionStrategy::BreadthFirst,
+        TargetKind::Domain,
+        0.8,
+        "example.com",
+        false,
+        0.5,
+    );
+    // Same c_eff and richness → identical weight under BreadthFirst.
+    assert!((ip - domain).abs() < 1e-9);
+}
+
+#[test]
+fn strategy_richest_first_prioritises_high_richness() {
+    let rich = expansion_weight_for_strategy(
+        ExpansionStrategy::RichestFirst,
+        TargetKind::Email,
+        0.6,
+        "a@b.com",
+        false,
+        1.0,
+    );
+    let poor = expansion_weight_for_strategy(
+        ExpansionStrategy::RichestFirst,
+        TargetKind::Email,
+        0.9,
+        "a@b.com",
+        false,
+        0.1,
+    );
+    // Richer entity wins despite lower confidence.
+    assert!(rich > poor);
+}
+
+#[test]
+fn strategy_depth_first_sorts_by_confidence() {
+    let high = expansion_weight_for_strategy(
+        ExpansionStrategy::DepthFirst,
+        TargetKind::Domain,
+        0.95,
+        "example.com",
+        false,
+        0.5,
+    );
+    let low = expansion_weight_for_strategy(
+        ExpansionStrategy::DepthFirst,
+        TargetKind::Domain,
+        0.55,
+        "example.com",
+        false,
+        1.0,
+    );
+    // c_eff dominates even when low-confidence has max richness.
+    assert!(high > low);
+}
+
+#[test]
+fn scan_options_default_uses_geo_converge() {
+    let opts = ScanOptions::default();
+    assert_eq!(opts.expansion_strategy, ExpansionStrategy::GeoConverge);
+}
+
+#[test]
+fn scan_options_serde_round_trips_expansion_strategy() {
+    let opts = ScanOptions {
+        expansion_strategy: ExpansionStrategy::RichestFirst,
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&opts).expect("should succeed");
+    let back: ScanOptions = serde_json::from_str(&json).expect("should succeed");
+    assert_eq!(back.expansion_strategy, ExpansionStrategy::RichestFirst);
+}
+
+#[test]
+fn validate_url() {
+    assert!(
+        Target::new(TargetKind::Url, "https://example.com/path")
+            .validate()
+            .is_ok()
+    );
+    assert!(
+        Target::new(TargetKind::Url, "http://x.com")
+            .validate()
+            .is_ok()
+    );
+    assert!(
+        Target::new(TargetKind::Url, "ftp://nope.com")
+            .validate()
+            .is_err()
+    );
+    assert!(
+        Target::new(TargetKind::Url, "not-a-url")
+            .validate()
+            .is_err()
+    );
+}
+
+/// An `options` object that omits a field must behave like omitting the whole
+/// `options` object: both are "operator expressed no preference". The depth
+/// field already had this guard (default_scan_depth); max_concurrent silently
+/// fell back to 0/sequential from `"options": {}` while an options-less
+/// request ran at the product default of 2.
+#[test]
+fn empty_options_object_matches_product_defaults() {
+    let from_empty: ScanOptions = serde_json::from_str("{}").expect("should succeed");
+    let product = ScanOptions::default();
+    assert_eq!(
+        from_empty.max_concurrent, product.max_concurrent,
+        "omitted max_concurrent must deserialise to the product default"
+    );
+    assert_eq!(from_empty.regional_search, product.regional_search);
+    // depth, min_expand_confidence and max_entities are the DOCUMENTED
+    // divergences: the library `Default` stays inert/deterministic for
+    // programmatic callers (depth 0, floor 0.50, uncapped) while the serde field
+    // defaults apply the COMPREHENSIVE product values so an API/web request that
+    // omits them is as thorough as `hse scan`.
+    assert_eq!(from_empty.depth, DEFAULT_SCAN_DEPTH);
+    assert!((from_empty.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() < 1e-9);
+    assert_eq!(from_empty.max_entities, Some(DEFAULT_MAX_ENTITIES));
+    // An explicit 0 is still honoured as fully-sequential.
+    let explicit: ScanOptions =
+        serde_json::from_str(r#"{"max_concurrent":0}"#).expect("should succeed");
+    assert_eq!(explicit.max_concurrent, 0);
+}
+
+/// Every seed must get the FULL recursion budget to converge on geolocation —
+/// permanently, on every product surface, without the operator asking for it.
+///
+/// The default expansion strategy is `GeoConverge`, which weights each round
+/// toward the candidates one hop from an Address/Coordinates. That weighting can
+/// only pay off if the recursion is actually allowed to run far enough for the
+/// longest geo chains to close. `Email → Person → Address → Coordinates` needs
+/// four hops; `Username → Person → Domain → IpAddress → Coordinates` needs five.
+/// While the product default sat at 3 (below the `MAX_DEPTH` ceiling of 5), those
+/// chains were cut off mid-walk no matter how strongly the strategy favoured
+/// them — the scan converged toward a location it was never given the budget to
+/// reach.
+///
+/// This pins the guarantee on the two surfaces that serve real scans — the CLI
+/// product options and an API request that omits `depth` — so a future
+/// "let's make the default cheaper" change has to break a test that states the
+/// cost of doing so, rather than silently shortening every geo chain.
+#[test]
+fn every_seed_gets_the_full_recursion_budget_to_reach_geolocation() {
+    // The product default is the ceiling, not some fraction of it.
+    assert_eq!(
+        DEFAULT_SCAN_DEPTH, MAX_DEPTH,
+        "a seed must be able to walk the full {MAX_DEPTH}-hop chain to a coordinate; \
+         defaulting below the ceiling truncates the longest geo paths"
+    );
+
+    // Surface 1: the CLI/product options bundle.
+    let product = default_scan_options();
+    assert_eq!(
+        product.depth, MAX_DEPTH,
+        "`hse scan` with no --depth must run the full recursion"
+    );
+    assert_eq!(
+        product.expansion_strategy,
+        ExpansionStrategy::GeoConverge,
+        "the depth budget only converges on geo because GeoConverge is the default \
+         weighting — if this ever changes, the depth rationale above no longer holds"
+    );
+
+    // Surface 2: an API/web request that omits `depth` entirely.
+    let from_api: ScanOptions =
+        serde_json::from_str(r#"{}"#).expect("an empty options object must deserialise");
+    assert_eq!(
+        from_api.depth, MAX_DEPTH,
+        "an API scan that omits depth must be as deep as the CLI's — the web UI is \
+         the primary surface and must not silently get a shallower geo walk"
+    );
+
+    // The depth is spendable: the ceiling clamp must not fight the default, or
+    // every single scan would emit the "clamped to MAX_DEPTH" warning.
+    let clamped = ScanOptions {
+        depth: DEFAULT_SCAN_DEPTH,
+        ..ScanOptions::default()
+    }
+    .clamp_depth();
+    assert_eq!(
+        clamped.depth, DEFAULT_SCAN_DEPTH,
+        "the product default must sit AT the ceiling, never above it"
+    );
+}
+
+/// Locks the DECOUPLING of the library default from the serde field defaults.
+/// The library `ScanOptions::default()` — used by programmatic callers and the
+/// test suite — must STAY conservative (depth 0 single-round, expansion floor
+/// 0.50 Probable, uncapped) for determinism, even though the CLI/API/web product
+/// surface now defaults to the comprehensive full depth / floor 0.20 / cap 2500.
+#[test]
+fn library_default_stays_conservative_and_decoupled_from_serde() {
+    let d = ScanOptions::default();
+    assert_eq!(d.depth, 0, "library default is single-round");
+    assert!(
+        (d.min_expand_confidence - 0.50).abs() < 1e-9,
+        "library default expansion floor stays at the conservative 0.50"
+    );
+    assert_eq!(d.max_entities, None, "library default stays uncapped");
+    // …and these MUST differ from the comprehensive product/serde defaults,
+    // i.e. the decoupling is real, not an accidental equality.
+    assert_ne!(d.depth, DEFAULT_SCAN_DEPTH);
+    assert!((d.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() > 1e-9);
+    assert_ne!(d.max_entities, Some(DEFAULT_MAX_ENTITIES));
+}
+
+/// A `ScanRequest` deserialised either with the whole `options` object omitted
+/// or with a present-but-empty `options:{}` must yield the SAME comprehensive
+/// product defaults as `hse scan`: DEFAULT_SCAN_DEPTH, expansion floor 0.20, entity cap
+/// 2500. This is the API/SPA-thoroughness guarantee.
+#[test]
+fn scan_request_defaults_to_comprehensive_options() {
+    for body in [r#"{"value":"x"}"#, r#"{"value":"x","options":{}}"#] {
+        let req: ScanRequest = serde_json::from_str(body).expect("should succeed");
+        assert_eq!(req.options.depth, DEFAULT_SCAN_DEPTH, "depth for {body}");
+        // Deliberately a LITERAL as well as the symbolic assertion above, so
+        // moving the constant can never silently change the API's behaviour.
+        // 5 = the full `MAX_DEPTH` recursion budget: an API/web scan must get
+        // the same complete geo walk as the CLI, not a truncated one.
+        assert_eq!(req.options.depth, 5, "depth literal for {body}");
+        assert!(
+            (req.options.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() < 1e-9,
+            "expansion floor for {body}"
+        );
+        assert!(
+            (req.options.min_expand_confidence - 0.20).abs() < 1e-9,
+            "expansion floor literal for {body}"
+        );
+        assert_eq!(
+            req.options.max_entities,
+            Some(DEFAULT_MAX_ENTITIES),
+            "entity cap for {body}"
+        );
+        assert_eq!(
+            req.options.max_entities,
+            Some(2500),
+            "entity cap literal for {body}"
+        );
+    }
+}
+
+#[test]
+fn rule_md_comprehensive_defaults_match_product_constants() {
+    let rule = include_str!("../../../RULE.md");
+    let expected = format!("depth {DEFAULT_SCAN_DEPTH}, expansion floor 0.20, entity cap");
+    assert!(
+        rule.contains(&expected),
+        "RULE.md must track the comprehensive defaults line with the current depth"
+    );
+    assert!(
+        !rule.contains("depth 3, expansion floor 0.20"),
+        "RULE.md must not contain the stale comprehensive depth phrase"
+    );
+}
+
+/// Property tests for the pure target-model functions — this module eats
+/// untrusted, user-supplied text, so the doctrine (unit tests AND `proptest`
+/// no-panic / invariant properties) applies to every entry point.
+#[cfg(test)]
+mod prop {
+    use super::super::*;
+    use proptest::prelude::*;
+
+    fn any_target_kind() -> impl Strategy<Value = TargetKind> {
+        prop::sample::select(crate::core::dependency::ALL_TARGET_KINDS.to_vec())
+    }
+
+    proptest! {
+        /// `TargetKind::detect` and the raw-input `detect_kind` are TOTAL: they
+        /// never panic on ANY input — arbitrary bytes, multibyte, control chars —
+        /// and always return a kind. The unified-scan contract is that the caller
+        /// always gets a target to run; a panic here would abort the request.
+        #[test]
+        fn detect_never_panics(v in ".{0,80}") {
+            let _ = TargetKind::detect(&v);
+            let _ = detect_kind(&v);
+        }
+
+        /// `sanitise_target_input` is IDEMPOTENT — a fixed point. Re-sanitising an
+        /// already-sanitised value must not change it, or the same pasted seed keys
+        /// to two different values across runs. Regression guard for the class where
+        /// an invisible/format char adjacent to a surrounding quote (`\u{200b}"x"`)
+        /// shielded the quote on the first pass but is removed by a re-sanitise,
+        /// leaking the quote onto the value.
+        #[test]
+        fn sanitise_is_idempotent(v in ".{0,80}") {
+            let once = sanitise_target_input(&v);
+            let twice = sanitise_target_input(&once);
+            prop_assert_eq!(&once, &twice, "value={:?}", v);
+        }
+
+        /// `Target::validate` is TOTAL over every (kind, value): for any kind paired
+        /// with arbitrary text it returns Ok/Err but NEVER panics — no unchecked
+        /// slice / parse / index on user input can escape it.
+        #[test]
+        fn validate_never_panics(kind in any_target_kind(), v in ".{0,80}") {
+            let t = Target { kind, value: v };
+            let _ = t.validate();
+        }
+    }
+}
+
+#[test]
+fn module_accounting_line_discloses_that_a_running_scan_has_no_counters_yet() {
+    // The defect this pins: `modules_*` are written once, in `finalise_scan`.
+    // A dossier or debug bundle exported mid-scan therefore read
+    // "0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped" — six
+    // zeros that an operator reads as "nothing ran" — for scans whose own
+    // event streams recorded 60 modules done, 9 errored and 11 skipped.
+    let mut scan = Scan::new("scan-live", Target::new(TargetKind::Email, "a@b.com"));
+    scan.status = ScanStatus::Running;
+    let line = scan.module_accounting_line();
+
+    // The counts are still reported verbatim — nothing is invented or hidden.
+    assert!(
+        line.starts_with("0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped"),
+        "the six columns must still be reported as-is: {line}"
+    );
+    // …but they must never stand alone as if they were final.
+    assert!(
+        line.contains("NOT YET FINAL"),
+        "a non-terminal scan must disclose that its counters are unwritten: {line}"
+    );
+    assert!(
+        line.contains("running"),
+        "the disclosure must name the state that makes them unwritten: {line}"
+    );
+
+    // Pending has the same problem — the row exists before dispatch begins.
+    scan.status = ScanStatus::Pending;
+    assert!(scan.module_accounting_line().contains("NOT YET FINAL"));
+}
+
+#[test]
+fn module_accounting_line_is_bare_counts_once_the_scan_is_terminal() {
+    // The disclosure must not leak into the common case: for every terminal
+    // status the counters ARE final, and the sentence stays the canonical
+    // six-count string every renderer has always printed.
+    for status in [
+        ScanStatus::Complete,
+        ScanStatus::Failed,
+        ScanStatus::Aborted,
+    ] {
+        let mut scan = Scan::new("scan-done", Target::new(TargetKind::Email, "a@b.com"));
+        scan.status = status;
+        scan.modules_run = 12;
+        scan.modules_errored = 2;
+        scan.modules_timed_out = 3;
+        scan.modules_skipped = 1;
+        scan.modules_cached = 4;
+        scan.modules_deduped = 5;
+        assert_eq!(
+            scan.module_accounting_line(),
+            "12 run, 2 errored, 3 timed out, 1 skipped, 4 cached, 5 deduped",
+            "terminal status {status:?} must render bare counts with no caveat"
+        );
+    }
+}
+
+#[test]
+fn scan_status_is_terminal_partitions_every_variant() {
+    // Exhaustive: `is_terminal` gates whether the derived columns can be
+    // trusted, so a new variant must be classified deliberately, not defaulted.
+    assert!(!ScanStatus::Pending.is_terminal());
+    assert!(!ScanStatus::Running.is_terminal());
+    assert!(ScanStatus::Complete.is_terminal());
+    assert!(ScanStatus::Failed.is_terminal());
+    assert!(ScanStatus::Aborted.is_terminal());
+}
+
+// ── StopReason / completeness disclosure ───────────────────────────────────
+//
+// The defect these pin: a scan cut short by `max_entities` /
+// `max_wall_time_secs` reaches `ScanStatus::Complete` exactly like one that
+// exhausted its candidates, and the engine used to discard the expansion's
+// `StopReason` entirely (`let _ = self.run_expansion(...)`). Every consumer
+// that reads a finished scan back from the store therefore reported a
+// truncated search as a complete answer — which invites "absent from this
+// scan" to be read as "does not exist", the one claim an intelligence artifact
+// must never make falsely.
+
+fn scan_for(status: ScanStatus, stop_reason: Option<StopReason>) -> Scan {
+    let mut s = Scan::new(
+        "abcdef0123456789",
+        Target {
+            kind: TargetKind::Email,
+            value: "a@b.test".into(),
+        },
+    );
+    s.status = status;
+    s.stop_reason = stop_reason;
+    s
+}
+
+#[test]
+fn stop_reason_truncated_separates_budget_cutoffs_from_exhaustion() {
+    // Exhaustive over the enum: a new variant must be classified deliberately.
+    // The two benign reasons mean the search space really was covered; the two
+    // budget reasons mean it was not.
+    assert!(!StopReason::NoMoreCandidates.truncated());
+    assert!(!StopReason::DepthExhausted.truncated());
+    assert!(StopReason::MaxEntities(500).truncated());
+    assert!(StopReason::MaxWallTime(60).truncated());
+    // Cancelled is surfaced by ScanStatus::Aborted, which every disclosure path
+    // keys off separately — counting it here too would double-warn one event.
+    assert!(!StopReason::Cancelled.truncated());
+}
+
+#[test]
+fn stop_reason_label_names_the_budget_that_cut_the_scan_short() {
+    // The label is single-sourced: it is what the live `ExpansionStop` event,
+    // the persisted record and every renderer all print, so an operator can
+    // match the warning in a dossier to the event in the stream.
+    assert!(StopReason::MaxEntities(500).label().contains("500"));
+    assert!(StopReason::MaxWallTime(60).label().contains("60"));
+    assert!(
+        StopReason::NoMoreCandidates
+            .label()
+            .contains("no more high-confidence candidates")
+    );
+}
+
+#[test]
+fn a_truncated_complete_scan_is_caveated_and_an_exhaustive_one_is_not() {
+    let truncated = scan_for(ScanStatus::Complete, Some(StopReason::MaxEntities(500)));
+    let caveat = truncated
+        .completeness_caveat("this scan")
+        .expect("a budget-truncated scan must never read as a complete answer");
+    assert!(caveat.contains("TRUNCATED"), "{caveat}");
+    assert!(
+        caveat.contains("not evidence"),
+        "the caveat must say absence here is not evidence of absence: {caveat}"
+    );
+    assert!(caveat.contains("500"), "must name the budget: {caveat}");
+
+    // …and the converse: genuinely exhaustive scans must NOT acquire a caveat,
+    // or the warning becomes noise operators learn to ignore.
+    for benign in [StopReason::NoMoreCandidates, StopReason::DepthExhausted] {
+        assert_eq!(
+            scan_for(ScanStatus::Complete, Some(benign)).completeness_caveat("this scan"),
+            None,
+            "{benign:?} is a complete answer"
+        );
+    }
+}
+
+/// `FinaliseTally` is the one authority for the `scan.error` a finalise writes
+/// when the store refused some of what the scan produced (Copilot review of
+/// #649). Its message lists only the artefacts that lost a write, in finalise
+/// order, with the FIRST error — and keeps the entity-only wording the live
+/// engine wrote before the tally existed.
+#[test]
+fn finalise_tally_message_lists_each_short_write_in_finalise_order() {
+    let clean = FinaliseTally::default();
+    assert_eq!(clean.message(), None, "nothing attempted, nothing lost");
+
+    let mut all_ok = FinaliseTally::default();
+    all_ok.add(FinaliseWrite::Entities, 40, 0, None);
+    all_ok.add(FinaliseWrite::Relations, 12, 0, None);
+    assert!(all_ok.record(FinaliseWrite::Correlations, Ok::<(), &str>(())));
+    assert_eq!(all_ok.message(), None, "every write persisted");
+    assert_eq!(all_ok.persisted(FinaliseWrite::Relations), 12);
+
+    // Entity-only: the pre-tally live-engine wording, word for word.
+    let mut ents = FinaliseTally::default();
+    ents.add(FinaliseWrite::Entities, 50, 3, Some("disk full".into()));
+    assert_eq!(
+        ents.message().as_deref(),
+        Some("3/50 entities failed to persist: disk full")
+    );
+
+    // Relations then correlations, recorded out of order: listed in finalise
+    // order, the first RECORDED error kept.
+    let mut t = FinaliseTally::default();
+    assert!(!t.record(FinaliseWrite::Correlations, Err::<(), _>("locked")));
+    for i in 0..40 {
+        let outcome: Result<(), &str> = if i < 2 { Err("busy") } else { Ok(()) };
+        t.record(FinaliseWrite::Relations, outcome);
+    }
+    for _ in 0..8 {
+        t.record(FinaliseWrite::Correlations, Ok::<(), &str>(()));
+    }
+    assert_eq!(
+        t.message().as_deref(),
+        Some("2/40 relations, 1/9 correlations failed to persist: locked")
+    );
+    assert_eq!(t.failed(FinaliseWrite::Relations), 2);
+    assert_eq!(t.persisted(FinaliseWrite::Correlations), 8);
+    // Deterministic: the same tally renders the same text.
+    assert_eq!(t.message(), t.clone().message());
+}
+
+/// The rest of what a finalise can fail to complete (review of #649, second
+/// round): a pass that failed outright — the correlator on a store read error
+/// or a panic, the cross-scan route learning, the boost pass — and the two
+/// writes that used to be log lines, the address-fold detach and the
+/// corroboration-boost re-persist. One message, deterministic: the write
+/// clause first, then one clause per failed pass, in finalise order.
+#[test]
+fn finalise_tally_message_names_failed_passes_and_every_write_kind() {
+    let mut passes = FinaliseTally::default();
+    passes.pass_failed(FinalisePass::CorroborationBoosts, "locked");
+    passes.pass_failed(
+        FinalisePass::Correlation,
+        crate::core::engine::CORRELATION_PASS_PANICKED,
+    );
+    // The first reason per pass is kept.
+    passes.pass_failed(FinalisePass::Correlation, "a later reason");
+    assert_eq!(
+        passes.message().as_deref(),
+        Some("correlation pass failed: panicked; corroboration boost pass failed: locked"),
+        "passes alone, in finalise order"
+    );
+    // An import's size skip leads: it precedes every other pass.
+    passes.pass_failed(FinalisePass::ImportEnrichment, "skipped");
+    assert!(
+        passes
+            .message()
+            .is_some_and(|m| m.starts_with("relation and correlation pass failed: skipped; ")),
+        "{:?}",
+        passes.message()
+    );
+    assert_eq!(
+        passes.pass_failure(FinalisePass::Correlation),
+        Some(crate::core::engine::CORRELATION_PASS_PANICKED)
+    );
+
+    let mut t = FinaliseTally::default();
+    t.add(
+        FinaliseWrite::CorroborationBoosts,
+        3,
+        3,
+        Some("full".into()),
+    );
+    t.add(FinaliseWrite::AddressFolds, 2, 2, Some("busy".into()));
+    t.add(FinaliseWrite::Entities, 40, 0, None);
+    t.pass_failed(FinalisePass::CrossScanRoutes, "unreadable");
+    assert_eq!(
+        t.message().as_deref(),
+        Some(
+            "2/2 address folds, 3/3 corroboration boosts failed to persist: full; \
+             cross-scan route pass failed: unreadable"
+        ),
+        "writes in finalise order with the first RECORDED error, then the pass"
+    );
+}
+
+/// A `Complete` scan whose finalise recorded a persistence shortfall is not a
+/// complete answer: `completeness_caveat` says so, ahead of any truncation —
+/// the same classification (and order) the export headers use.
+#[test]
+fn a_complete_scan_missing_stored_records_is_caveated() {
+    let mut s = scan_for(ScanStatus::Complete, Some(StopReason::NoMoreCandidates));
+    s.error = Some("2/40 relations failed to persist: disk full".into());
+    let caveat = s
+        .completeness_caveat("this scan")
+        .expect("a scan missing stored records must be caveated");
+    assert!(caveat.starts_with("this scan finished"), "{caveat}");
+    assert!(
+        caveat.contains("2/40 relations"),
+        "names the loss: {caveat}"
+    );
+    assert!(caveat.contains("not a finding"), "{caveat}");
+
+    // Ahead of a truncation: the stronger statement wins.
+    s.stop_reason = Some(StopReason::MaxEntities(500));
+    let caveat = s.completeness_caveat("this scan").expect("still caveated");
+    assert!(caveat.contains("its finalise did not complete"), "{caveat}");
+
+    // …and a whole scan stays silent.
+    s.error = None;
+    s.stop_reason = Some(StopReason::NoMoreCandidates);
+    assert_eq!(s.completeness_caveat("this scan"), None);
+}
+
+/// REQ-SCANSTATUS-017: an import stored partial because its relation and
+/// correlation pass was skipped for size is not told to "re-run the scan".
+/// A re-run of an import is a live scan of its label — it neither enriches
+/// the stored entities nor lifts the cap — and a re-import of the same data
+/// hits the same cap. The caveat names the remedy that works, without
+/// promising the links between batches it cannot derive; every other
+/// shortfall on a live scan keeps the re-run advice (an import's is
+/// REQ-SCANSTATUS-020's).
+#[test]
+fn an_import_skipped_for_size_is_not_told_to_re_run() {
+    let mut tally = FinaliseTally::default();
+    tally.import_enrichment_skipped(6000, 5000);
+    let err = tally.message().expect("the skip is recorded");
+    assert!(FinaliseTally::records_import_enrichment_skip(&err), "{err}");
+    let mut s = scan_for(ScanStatus::Complete, None);
+    s.error = Some(err);
+    let caveat = s.completeness_caveat("the import").expect("caveated");
+    assert!(!caveat.contains("re-run the scan"), "{caveat}");
+    assert!(caveat.contains("smaller batches"), "{caveat}");
+    assert!(caveat.contains("6000 entities exceed"), "{caveat}");
+    // The batch remedy does not promise the whole dossier's graph: each
+    // batch is enriched on its own, so cross-batch links are never derived.
+    assert!(!caveat.contains("to get its relations"), "{caveat}");
+    assert!(
+        caveat.ends_with("links between entities in different batches are not derived"),
+        "{caveat}"
+    );
+
+    // Behind a write shortfall, the skip still decides the remedy.
+    let mut both = FinaliseTally::default();
+    both.add(FinaliseWrite::Entities, 3, 1, Some("busy".into()));
+    both.import_enrichment_skipped(6000, 5000);
+    assert!(FinaliseTally::records_import_enrichment_skip(
+        &both.message().expect("recorded")
+    ));
+
+    // Control: on a LIVE scan's row any other shortfall is rebuilt by a
+    // re-run, and says so — a correlation pass that failed is not mistaken
+    // for the import's pass.
+    assert_eq!(s.origin, ScanOrigin::Live, "fixture: a live scan's row");
+    for other in [
+        "2/40 relations failed to persist: disk full",
+        "correlation pass failed: panicked",
+    ] {
+        assert!(
+            !FinaliseTally::records_import_enrichment_skip(other),
+            "{other}"
+        );
+        s.error = Some(other.into());
+        let caveat = s.completeness_caveat("this scan").expect("caveated");
+        assert!(
+            caveat.ends_with("re-run the scan to rebuild it"),
+            "{caveat}"
+        );
+    }
+}
+
+/// REQ-SCANSTATUS-020: no shortfall on an import is sent to a re-run. The
+/// store refusing 2 of 40 relation writes on a web upload left the row
+/// `Complete` with that shortfall, and the caveat said "re-run the scan to
+/// rebuild it": `/scans/{id}/rerun` is a live network scan of the import's
+/// label, which rebuilds none of the import's relations. The remedy now
+/// follows the row's origin, which the import's row lifecycle records.
+#[test]
+fn an_import_shortfall_is_not_told_to_re_run() {
+    let mut import = scan_for(ScanStatus::Complete, None);
+    import.origin = ScanOrigin::Import;
+    // A refused write and a pass that failed on a store read; a pass that
+    // panicked is `an_import_whose_correlator_panicked_is_not_told_to_re_import`.
+    for shortfall in [
+        "2/40 relations failed to persist: busy",
+        "correlation pass failed: database is locked",
+    ] {
+        import.error = Some(shortfall.into());
+        let caveat = import.completeness_caveat("the import").expect("caveated");
+        assert!(!caveat.contains("re-run the scan"), "{caveat}");
+        assert!(caveat.contains("a re-run is a live scan"), "{caveat}");
+        assert!(
+            caveat.ends_with("re-import the data to rebuild it"),
+            "{caveat}"
+        );
+    }
+
+    // The origin survives the store's JSON round trip, and a live scan's
+    // row is written exactly as before the field existed.
+    let json = serde_json::to_string(&import).expect("serialises");
+    let back: Scan = serde_json::from_str(&json).expect("round-trips");
+    assert_eq!(back.origin, ScanOrigin::Import);
+    let live = scan_for(ScanStatus::Complete, None);
+    let json = serde_json::to_string(&live).expect("serialises");
+    assert!(!json.contains("origin"), "{json}");
+}
+
+/// REQ-SCANSTATUS-021: the import pipeline is deterministic over the same
+/// data, so a correlation pass that panicked on an import panics again on a
+/// re-import of it. The caveat told the operator to "re-import the data to
+/// rebuild it", and a re-import gave the same partial scan. A panic is now
+/// told apart from a refused write or a failed store read: re-importing
+/// rebuilds the rest of a shortfall, never the correlations.
+#[test]
+fn an_import_whose_correlator_panicked_is_not_told_to_re_import() {
+    let mut import = scan_for(ScanStatus::Complete, None);
+    import.origin = ScanOrigin::Import;
+    let mut tally = FinaliseTally::default();
+    tally.pass_failed(FinalisePass::Correlation, CORRELATION_PASS_PANICKED);
+    let panicked = tally.message().expect("recorded");
+    assert!(FinaliseTally::records_correlation_panic(&panicked));
+    assert!(FinaliseTally::records_only_correlation_panic(&panicked));
+
+    import.error = Some(panicked.clone());
+    let caveat = import.completeness_caveat("the import").expect("caveated");
+    assert!(
+        !caveat.contains("re-import the data to rebuild it"),
+        "{caveat}"
+    );
+    assert!(!caveat.contains("re-run the scan"), "{caveat}");
+    assert!(
+        caveat.contains("neither re-running nor re-importing can rebuild it"),
+        "{caveat}"
+    );
+
+    // Beside a refused write, re-importing rebuilds that write; whether it
+    // rebuilds the correlations is not known (REQ-SCANSTATUS-027, below).
+    tally.add(FinaliseWrite::Relations, 40, 2, Some("busy".into()));
+    let both = tally.message().expect("recorded");
+    assert!(FinaliseTally::records_correlation_panic(&both));
+    assert!(!FinaliseTally::records_only_correlation_panic(&both));
+    import.error = Some(both);
+    let caveat = import.completeness_caveat("the import").expect("caveated");
+    assert!(
+        caveat.contains("re-importing the data rebuilds the rest of it"),
+        "{caveat}"
+    );
+    assert!(
+        !caveat.contains("re-import the data to rebuild it"),
+        "{caveat}"
+    );
+
+    // A store read the correlator failed on is not a panic.
+    assert!(!FinaliseTally::records_correlation_panic(
+        "correlation pass failed: database is locked"
+    ));
+    // A live scan re-collects its data, so its remedy is unchanged.
+    let mut live = scan_for(ScanStatus::Complete, None);
+    live.error = Some(panicked);
+    let caveat = live.completeness_caveat("the scan").expect("caveated");
+    assert!(
+        caveat.ends_with("re-run the scan to rebuild it"),
+        "{caveat}"
+    );
+}
+
+/// REQ-SCANSTATUS-027: a correlation panic recurs on a re-import only when
+/// the pass reads the same data. The correlator reads the scan's stored
+/// relations, and every other clause an import records beside a panic — a
+/// relation write the store refused, a derivation its time budget cut —
+/// means those relations were incomplete. The caveat asserted, as fact, that
+/// a re-import "panics again" and cannot rebuild the correlations, which a
+/// re-import that stores the whole graph can. It now says it may or may not,
+/// and keeps the certain wording for a panic over the whole graph.
+#[test]
+fn a_correlation_panic_over_an_incomplete_graph_is_not_called_certain() {
+    let mut import = scan_for(ScanStatus::Complete, None);
+    import.origin = ScanOrigin::Import;
+    let thinned: [fn(&mut FinaliseTally); 2] = [
+        |t| t.derivation_cut("structural"),
+        |t| t.add(FinaliseWrite::Relations, 40, 2, Some("busy".into())),
+    ];
+    for thin in thinned {
+        let mut tally = FinaliseTally::default();
+        thin(&mut tally);
+        tally.pass_failed(FinalisePass::Correlation, CORRELATION_PASS_PANICKED);
+        let err = tally.message().expect("recorded");
+        import.error = Some(err.clone());
+        let caveat = import.completeness_caveat("the import").expect("caveated");
+        assert!(!caveat.contains("panics again"), "{caveat}");
+        assert!(!caveat.contains("not its correlations"), "{caveat}");
+        assert!(
+            caveat.contains("may or may not rebuild its correlations"),
+            "{err}: {caveat}"
+        );
+    }
+
+    // Over the whole graph, the pass meets the same panic on the same data.
+    let mut tally = FinaliseTally::default();
+    tally.pass_failed(FinalisePass::Correlation, CORRELATION_PASS_PANICKED);
+    import.error = tally.message();
+    let caveat = import.completeness_caveat("the import").expect("caveated");
+    assert!(
+        caveat.contains("neither re-running nor re-importing can rebuild it"),
+        "{caveat}"
+    );
+    assert!(caveat.contains("meets the same panic"), "{caveat}");
+
+    // A correlator its budget cut is not a panic: a re-import can finish it.
+    let mut tally = FinaliseTally::default();
+    tally.correlation_cut(12, 40);
+    let err = tally.message().expect("recorded");
+    assert_eq!(
+        err,
+        "correlation pass failed: stopped at its time budget after 12 of its 40 rules"
+    );
+    import.error = Some(err);
+    let caveat = import.completeness_caveat("the import").expect("caveated");
+    assert!(
+        caveat.ends_with("re-import the data to rebuild it"),
+        "{caveat}"
+    );
+}
+
+/// REQ-SCANSTATUS-022: an aborted scan's finalise still runs and still
+/// records its shortfall, which the event, the webhook, `hse live` and the
+/// web log announce as partial. The caveat never read `error` on an abort
+/// and called its entities "final", so `hse scan`, `hse export` and the
+/// dossier never named the shortfall.
+#[test]
+fn an_aborted_scan_with_a_shortfall_names_it() {
+    let mut aborted = scan_for(ScanStatus::Aborted, None);
+    let whole = aborted.completeness_caveat("the scan").expect("caveated");
+    assert!(whole.contains("are final"), "{whole}");
+    assert!(!aborted.finalise_incomplete());
+
+    aborted.error = Some("5/40 relations failed to persist: busy".into());
+    assert!(aborted.finalise_incomplete());
+    let caveat = aborted.completeness_caveat("the scan").expect("caveated");
+    assert!(caveat.contains("(aborted)"), "{caveat}");
+    assert!(
+        caveat.contains("its finalise did not complete (5/40 relations failed to persist: busy)"),
+        "{caveat}"
+    );
+    assert!(!caveat.contains("are final"), "{caveat}");
+    assert!(caveat.contains("re-run the scan to rebuild it"), "{caveat}");
+    assert!(
+        caveat.ends_with("no further data will arrive for this scan"),
+        "{caveat}"
+    );
+    // The remedy follows the origin, as on a complete scan: a web upload
+    // cancelled at its second boundary is an import.
+    aborted.origin = ScanOrigin::Import;
+    let caveat = aborted.completeness_caveat("the upload").expect("caveated");
+    assert!(
+        caveat.contains("re-import the data to rebuild it"),
+        "{caveat}"
+    );
+}
+
+/// REQ-SCANSTATUS-024: a relation derivation its time budget cut short is
+/// recorded, between an import's size skip and the correlation pass, in fixed
+/// words around the last pass that completed.
+#[test]
+fn a_derivation_cut_is_recorded_in_finalise_order() {
+    let mut t = FinaliseTally::default();
+    t.pass_failed(FinalisePass::Correlation, "locked");
+    t.derivation_cut("resolution");
+    assert_eq!(
+        t.message().as_deref(),
+        Some(
+            "relation derivation failed: stopped at its time budget after the resolution \
+             pass; correlation pass failed: locked"
+        )
+    );
+    assert!(!FinaliseTally::records_import_enrichment_skip(
+        &t.message().expect("recorded")
+    ));
+}
+
+#[test]
+fn completeness_caveat_names_the_subject_it_was_given() {
+    // Callers refer to the scan differently ("scan latest", "scan a1b2", "this
+    // scan"); the single-sourced wording has to open with whichever they pass.
+    let s = scan_for(ScanStatus::Aborted, None);
+    assert!(
+        s.completeness_caveat("scan latest")
+            .expect("aborted is always caveated")
+            .starts_with("scan latest")
+    );
+}
+
+#[test]
+fn a_scan_row_written_before_stop_reason_existed_still_loads_and_stays_silent() {
+    // DATA INTEGRITY / backward compatibility. `Scan` round-trips through the
+    // `scans.data_json` column, so every row already on an operator's device
+    // predates this field. It must deserialise (not error, which would make
+    // existing scans unreadable) AND must not acquire a warning invented from
+    // its absence — `None` means "unknown", never "truncated".
+    let legacy = r#"{
+        "id": "old",
+        "target": {"kind": "email", "value": "a@b.test"},
+        "status": "complete",
+        "started_at": 1,
+        "finished_at": 2,
+        "entity_count": 3,
+        "error": null
+    }"#;
+    let scan: Scan = serde_json::from_str(legacy).expect("legacy scan rows must still deserialise");
+    assert_eq!(scan.stop_reason, None);
+    assert_eq!(scan.entity_count, 3);
+    assert_eq!(
+        scan.completeness_caveat("this scan"),
+        None,
+        "an unknown stop reason must never be reported as a truncation"
+    );
+}
+
+#[test]
+fn stop_reason_survives_the_json_round_trip_the_store_uses() {
+    // `upsert_scan` serialises the whole `Scan` to `data_json` and reads it
+    // back the same way, so the payload carried in that column is exactly this.
+    for reason in [
+        StopReason::NoMoreCandidates,
+        StopReason::DepthExhausted,
+        StopReason::MaxEntities(500),
+        StopReason::MaxWallTime(60),
+        StopReason::Cancelled,
+    ] {
+        let before = scan_for(ScanStatus::Complete, Some(reason));
+        let json = serde_json::to_string(&before).expect("scan serialises");
+        let after: Scan = serde_json::from_str(&json).expect("scan round-trips");
+        assert_eq!(
+            after.stop_reason,
+            Some(reason),
+            "{reason:?} must survive persistence"
+        );
+        assert_eq!(
+            after.completeness_caveat("s"),
+            before.completeness_caveat("s")
+        );
+    }
+}
+
+/// The infra-provider tables are one shared authority plus two disjoint,
+/// kind-specific extras — never two hand-mirrored copies again.
+///
+/// `util::domains::INFRA_PROVIDER_ROOTS` feeds BOTH classifiers
+/// (`is_infra_domain` for discovered hostnames, `is_infrastructure_email` for
+/// mailboxes); `INFRA_HOST_ONLY` and `INFRA_MAIL_ONLY` add what only one of
+/// them applies. Before the split the two lists mirrored a 24-root subset by
+/// hand and had drifted (six VPS hosts in one, not the other). What makes the
+/// split self-enforcing: no root appears in two tables (a root in both extras
+/// belongs in the shared roots; a root in the roots and an extra is a stale
+/// copy), no table repeats a root, every entry is a bare lowercase ASCII
+/// registrable root (both matchers compare raw bytes and assume it), and every
+/// shared root satisfies both classifiers, as a bare root, a host under it and
+/// a mailbox on it.
+#[test]
+fn infra_provider_tables_are_one_authority_plus_disjoint_extras() {
+    use super::classify::INFRA_HOST_ONLY;
+    use crate::util::domains::{INFRA_MAIL_ONLY, INFRA_PROVIDER_ROOTS, is_infrastructure_email};
+
+    let tables = [
+        ("INFRA_PROVIDER_ROOTS", INFRA_PROVIDER_ROOTS),
+        ("INFRA_HOST_ONLY", INFRA_HOST_ONLY),
+        ("INFRA_MAIL_ONLY", INFRA_MAIL_ONLY),
+    ];
+    for (name, table) in tables {
+        let mut seen = std::collections::HashSet::new();
+        for d in table {
+            assert!(
+                !d.is_empty()
+                    && d.bytes().all(|b| b.is_ascii_lowercase()
+                        || b.is_ascii_digit()
+                        || b == b'.'
+                        || b == b'-')
+                    && !d.starts_with('.')
+                    && !d.ends_with('.'),
+                "{name}: `{d}` is not a bare lowercase ASCII registrable root"
+            );
+            assert!(seen.insert(*d), "{name}: `{d}` is listed twice");
+        }
+    }
+    for (i, (a_name, a)) in tables.iter().enumerate() {
+        for (b_name, b) in &tables[i + 1..] {
+            let both: Vec<&&str> = a.iter().filter(|d| b.contains(*d)).collect();
+            assert!(
+                both.is_empty(),
+                "{a_name} and {b_name} both list {both:?} — a root in both extras belongs in \
+                 INFRA_PROVIDER_ROOTS; a root in the roots and an extra is a stale copy"
+            );
+        }
+    }
+    for d in INFRA_PROVIDER_ROOTS {
+        assert!(
+            is_infra_domain(d),
+            "shared root `{d}` must be infra for the hostname classifier"
+        );
+        assert!(
+            is_infra_domain(&format!("ns1.{d}")),
+            "a host under shared root `{d}` must be infra"
+        );
+        assert!(
+            is_infrastructure_email(&format!("jdoe@{d}")),
+            "a mailbox on shared root `{d}` must be infra for the mailbox classifier"
+        );
+    }
+}
+
+// ─── REQ-SCANOPTS-001: an unknown option key must never be silently dropped ───
+
+/// The defect, at the deserialisation layer it originates from: every
+/// `ScanOptions` field is absent-tolerant, so serde cannot tell a misspelled
+/// key from an omitted one — and omitted means "the default", which for the
+/// scope controls is the PERMISSIVE value. Pre-fix, this request ran an ACTIVE
+/// scan for an operator who asked for a passive one, and reported it as the
+/// scan they requested.
+#[test]
+fn a_misspelled_option_key_is_reported_not_defaulted() {
+    // CONTROL: spelled correctly, the operator's control lands and is not
+    // flagged. The fix cannot have been achieved by rejecting everything.
+    let good = serde_json::json!({ "passive_only": true });
+    assert!(
+        crate::core::scan::unknown_option_keys(&good).is_empty(),
+        "a key ScanOptions defines must never be reported as unknown"
+    );
+    let parsed: ScanOptions = serde_json::from_value(good).expect("should succeed");
+    assert!(parsed.passive_only, "control: correct spelling must apply");
+
+    // DEFECT: one character wrong. serde still accepts it silently…
+    let typo = serde_json::json!({ "passive-only": true });
+    let dropped: ScanOptions = serde_json::from_value(typo.clone()).expect("should succeed");
+    assert!(
+        !dropped.passive_only,
+        "premise: serde drops the unknown key — that is WHY the seam check exists"
+    );
+    // …so the seam check is the only thing standing between the operator and an
+    // unauthorised active scan.
+    assert_eq!(
+        crate::core::scan::unknown_option_keys(&typo),
+        vec!["passive-only".to_string()],
+        "a misspelled passive_only must be REPORTED, never silently defaulted"
+    );
+}
+
+/// Every scope, spend and authorisation control is covered — not just the one
+/// the defect was found through. Each of these defaults to the permissive
+/// value, so each fails OPEN when silently dropped.
+#[test]
+fn every_permissive_default_control_is_covered() {
+    for key in [
+        "passive_only",
+        "free_only",
+        "max_cost_usd",
+        "modules",
+        "exclude_modules",
+        "category_focus",
+        "max_wall_time_secs",
+        "gate_speculative",
+    ] {
+        assert!(
+            crate::core::scan::known_option_keys().contains(key),
+            "{key} is a scope/spend control and must be a recognised option name"
+        );
+        let mut obj = serde_json::Map::new();
+        obj.insert(format!("{key}_x"), serde_json::Value::Bool(true));
+        assert_eq!(
+            crate::core::scan::unknown_option_keys(&serde_json::Value::Object(obj)).len(),
+            1,
+            "a misspelling of {key} must be reported"
+        );
+    }
+}
+
+/// The suggestion resolves the realistic transcriptions of a real name, and
+/// declines to guess at one that is not a transcription of anything. An
+/// operator who accepts a wrong guess lands on a *different* control.
+#[test]
+fn nearest_option_key_suggests_only_transcriptions() {
+    for spelling in [
+        "passive-only",
+        "passiveOnly",
+        "PASSIVE_ONLY",
+        "passive only",
+    ] {
+        assert_eq!(
+            crate::core::scan::nearest_option_key(spelling).as_deref(),
+            Some("passive_only"),
+            "{spelling} is a transcription of passive_only and must resolve to it"
+        );
+    }
+    assert_eq!(
+        crate::core::scan::nearest_option_key("stealth_mode"),
+        None,
+        "a name that is not a transcription of any option must NOT be guessed at"
+    );
+}
+
+/// A non-object `options` yields no keys — that is a shape error, which
+/// deserialisation reports; the key check must not also claim it.
+#[test]
+fn a_non_object_options_value_reports_no_unknown_keys() {
+    for v in [
+        serde_json::json!(null),
+        serde_json::json!("passive"),
+        serde_json::json!([1, 2]),
+    ] {
+        assert!(crate::core::scan::unknown_option_keys(&v).is_empty());
+    }
+}
+
+/// The guard named in `known_option_keys`' own doc: the serde key set is
+/// derived from the type, so it must equal the type's declared fields. A field
+/// that gained `skip_serializing_if` would silently drop out of the known set
+/// and start being rejected as unknown — valid requests refused. A field that
+/// gained `#[serde(rename)]` would change the wire name. Both are real changes
+/// that must be made consciously, so both fail here.
+#[test]
+fn derived_key_set_matches_the_struct_fields() {
+    let src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/core/scan/options.rs"
+    ));
+    let start = src
+        .find("pub struct ScanOptions {")
+        .expect("ScanOptions must be declared in options.rs");
+    let body = &src[start..];
+    let end = body.find("\n}").expect("struct body must close");
+    let declared: std::collections::BTreeSet<String> = body[..end]
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let l = l.trim();
+            l.starts_with("pub")
+                .then(|| l.split_whitespace().nth(1))
+                .flatten()
+                .and_then(|f| f.split(':').next())
+                .map(str::to_string)
+        })
+        .collect();
+    // Vacuity guard: an extraction that found nothing would make the comparison
+    // below trivially true against an empty derived set.
+    assert!(
+        declared.len() >= 25,
+        "field extraction found only {} fields — the parse, not the struct, changed",
+        declared.len()
+    );
+    assert_eq!(
+        crate::core::scan::known_option_keys(),
+        declared,
+        "the serde key set and the declared fields have diverged"
+    );
+}
+
+/// REQ-IDENTITY-GATE-001: the structural person-name rule the engine's
+/// different-named-person gate applies. Surname-sharers and near-surnames all
+/// overlap the seed by ≥4 characters, so `identity_overlaps` alone could not
+/// tell a relative from the subject.
+#[test]
+fn person_names_compatible_reads_given_and_surname_positions() {
+    let seed = "Ian Thorpe";
+    for same in [
+        "Ian Thorpe",
+        "IAN THORPE",
+        "Ian James Thorpe",
+        "I. Thorpe",
+        "I J Thorpe",
+        "Thorpe, Ian",
+        "THORPE IAN",
+        "Dr Ian Thorpe OAM",
+        "Ian Thorpe (swimmer)",
+    ] {
+        assert_eq!(
+            person_names_compatible(seed, same),
+            Some(true),
+            "{same:?} can be the subject"
+        );
+    }
+    for other in [
+        "Ian Thorley",
+        "Aidan Thorpe",
+        "Megan Thorpe",
+        "Wendy Joan Thorpe",
+        "Ian Thorpe Aquatic Centre",
+        "Ian Symes-Thorpe",
+        "Jon Thorpe",
+    ] {
+        assert_eq!(
+            person_names_compatible(seed, other),
+            Some(false),
+            "{other:?} is a different person"
+        );
+    }
+    // A mononym carries no structure to compare: unknown, never "different".
+    assert_eq!(person_names_compatible(seed, "Thorpey"), None);
+    assert_eq!(person_names_compatible("Madonna", seed), None);
+    // Titles alone do not make a second token.
+    assert_eq!(person_names_compatible(seed, "Mr Thorpe"), None);
+}
+
+/// REQ-SEARCH-008: a search result names the subject only when the surname
+/// carries a compatible given name — the surname alone is every relative's and
+/// namesake's, and a live "Ian Thorpe" scan minted the Spokeo `Bill-Thorpe`
+/// page and "JAMIE THORPE PLUMBING PTY LTD" as the subject's own on it.
+#[test]
+fn text_names_person_needs_a_compatible_given_name_beside_the_surname() {
+    let seed = "Ian Thorpe";
+    for named in [
+        "Ian Thorpe - Commercial Portfolio Management Pty Ltd | LinkedIn",
+        "/in/ian-thorpe-4b080523/",
+        "/i-thorpe",
+        "/thorpe-ian",
+        "thorpe, ian",
+        "THORPE IAN J",
+        "Ian J Thorpe",
+        "Ian James Thorpe, director",
+        "Dr. I. Thorpe OAM",
+    ] {
+        assert_eq!(text_names_person(named, seed), Some(true), "{named:?}");
+    }
+    for other in [
+        "bill thorpe florida",
+        "https://www.spokeo.com/Mark-Thorpe",
+        "JAMIE THORPE PLUMBING PTY LTD - ABN 74067173835",
+        "Thorpe said the club would appeal",
+        "Mark Thorpe I think",
+        "Ian Symes-Thorpe",
+        "ianthorpe",
+        "Ian and the Thorpe family",
+    ] {
+        assert_eq!(text_names_person(other, seed), Some(false), "{other:?}");
+    }
+    // A mononym subject has no structure to test: the caller decides.
+    assert_eq!(text_names_person("x", "Cher"), None);
+    // A double-barrelled subject surname is matched as its sub-token run.
+    assert_eq!(
+        text_names_person("ian-symes-thorpe", "Ian Symes-Thorpe"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("ian thorpe", "Ian Symes-Thorpe"),
+        Some(false)
+    );
+}
+
+#[test]
+fn only_a_person_structurally_unlike_the_subject_is_another_named_person() {
+    use crate::core::entity::EntityKind;
+    let subject = vec!["Ian Thorpe".to_string()];
+    for other in ["Ian Thorley", "Megan Thorpe", "Ian Thorpe Aquatic Centre"] {
+        assert!(is_other_named_person(&EntityKind::Person, other, &subject));
+    }
+    // Every positional-agreement case, whatever its source count.
+    assert!(!is_other_named_person(
+        &EntityKind::Person,
+        "Ian James Thorpe",
+        &subject
+    ));
+    // A mononym falls through to the wrong-identity gate unchanged.
+    assert!(!is_other_named_person(
+        &EntityKind::Person,
+        "Thorpey",
+        &subject
+    ));
+    // Only people: a username is the wrong-identity gate's call.
+    assert!(!is_other_named_person(
+        &EntityKind::Username,
+        "meganthorpe",
+        &subject
+    ));
+    // No named subject (a non-name seed) → the rule has nothing to compare to.
+    assert!(!is_other_named_person(
+        &EntityKind::Person,
+        "Megan Thorpe",
+        &[]
+    ));
+    // Compatible with ANY subject name is enough to pivot.
+    let two = vec!["Ian Thorpe".to_string(), "Megan Thorpe".to_string()];
+    assert!(!is_other_named_person(
+        &EntityKind::Person,
+        "Megan Thorpe",
+        &two
+    ));
+}
+
+#[test]
+fn person_surname_is_read_through_the_name_parser() {
+    assert_eq!(
+        person_surname("Dr Ian Thorpe OAM").as_deref(),
+        Some("thorpe")
+    );
+    assert_eq!(person_surname("Thorpe, Ian").as_deref(), Some("thorpe"));
+    assert_eq!(
+        person_surname("Ian Thorpe (swimmer)").as_deref(),
+        Some("thorpe")
+    );
+    assert_eq!(person_surname("Thorpey"), None);
+}
+
+/// REQ-SCANNAME-001: the request check counts characters, not bytes, and
+/// touches nothing but the name.
+#[test]
+fn a_request_name_is_measured_in_characters_and_nothing_else_changes() {
+    let named = |n: String| ScanOptions {
+        name: Some(n),
+        depth: 2,
+        notes: Some("context".into()),
+        ..ScanOptions::default()
+    };
+    // 200 two-byte characters are 400 bytes, and still a name.
+    let ok = named("é".repeat(MAX_SCAN_NAME_CHARS))
+        .checked_for_request()
+        .expect("200 characters is within the limit");
+    assert_eq!(
+        ok.name.as_deref().map(|n| n.chars().count()),
+        Some(MAX_SCAN_NAME_CHARS)
+    );
+    assert_eq!(ok.depth, 2);
+    assert_eq!(ok.notes.as_deref(), Some("context"));
+    assert_eq!(
+        named("é".repeat(MAX_SCAN_NAME_CHARS + 1))
+            .checked_for_request()
+            .err(),
+        Some(ScanNameError::TooLong {
+            chars: MAX_SCAN_NAME_CHARS + 1
+        })
+    );
+    // No name at all passes through as no name.
+    assert_eq!(
+        ScanOptions::default().checked_for_request().unwrap().name,
+        None
+    );
+}
+
+/// REQ-SCANNAME-001: a stored name is one visible line. Invisible formatting
+/// characters are removed as a typed target's are, so a name can neither
+/// look blank nor render reversed; a pasted tab becomes a space; any other
+/// control character or a line or paragraph separator is refused.
+#[test]
+fn a_request_name_is_one_visible_line() {
+    let name = |n: &str| {
+        ScanOptions {
+            name: Some(n.into()),
+            ..ScanOptions::default()
+        }
+        .checked_for_request()
+        .map(|o| o.name)
+    };
+    // Zero-width space, word joiner, BOM and soft hyphen alone are no name.
+    assert_eq!(name("\u{200B}\u{2060}\u{FEFF}\u{00AD}"), Ok(None));
+    // A right-to-left override would reverse the title and the text after it.
+    assert_eq!(name("Q3 \u{202E}tidua"), Ok(Some("Q3 tidua".into())));
+    assert_eq!(name("Q3\taudit"), Ok(Some("Q3 audit".into())));
+    for broken in [
+        "Q3\u{2028}audit",
+        "Q3\u{2029}audit",
+        "Q3\raudit",
+        "Q3\u{85}audit",
+        "Q3\u{7}",
+    ] {
+        assert_eq!(name(broken), Err(ScanNameError::NotOneLine), "{broken:?}");
+    }
+    // A break at either end is trimmed away, not refused.
+    assert_eq!(name("\nQ3 audit\n"), Ok(Some("Q3 audit".into())));
+    // The messages say what is wrong and what to do.
+    assert!(
+        ScanNameError::NotOneLine
+            .to_string()
+            .contains("one line of text")
+    );
+    assert!(
+        ScanNameError::TooLong { chars: 201 }
+            .to_string()
+            .contains("201 characters, over the 200-character limit")
+    );
+}
+
+#[test]
+fn handle_names_person_needs_the_given_name_beside_the_surname() {
+    // REQ-IDENTITY-GATE-002 (scan 7258fc07, target "Ian Thorpe"): a ≥4-char
+    // substring bound every surname-bearing handle to the subject.
+    let subject = "Ian Thorpe";
+    for handle in [
+        "ianthorpe",
+        "ian.thorpe",
+        "_ianthorpe_",
+        "ianthorpe26",
+        "ianthorpeofficial",
+        "ian.thorpe@gmail.com",
+        "ianjthorpe",
+        "ian_j_thorpe",
+        "i.thorpe",
+        "ithorpe",
+        "thorpe_ian",
+        "thorpeian",
+        "thorpe_i",
+        "thorpei",
+        "iant",
+    ] {
+        assert_eq!(
+            handle_names_person(subject, handle),
+            Some(true),
+            "{handle} spells {subject}"
+        );
+    }
+    for handle in [
+        "carolthorpe70",
+        "megthorpeart",
+        "aidan_thorpe",
+        "damianthorpe",
+        "brianthorpe",
+        "christianthorpe",
+        "tharleschorpe",
+        "thorpe",
+        "thorpedo_m",
+        "jack_thorpe",
+        "john.thorpe@yahoo.com",
+        "thorpe_ivan",
+        "ithorpedo",
+    ] {
+        assert_eq!(
+            handle_names_person(subject, handle),
+            Some(false),
+            "{handle} does not spell {subject}"
+        );
+    }
+    // Initial forms and a compound/apostrophised surname.
+    assert_eq!(
+        handle_names_person("Kyle Diegmann", "kdiegmann"),
+        Some(true)
+    );
+    assert_eq!(handle_names_person("Haigen Bamford", "haigenb"), Some(true));
+    assert_eq!(
+        handle_names_person("Ian O'Neill", "ian.o.neill"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("Ian Symes-Thorpe", "ian_symes_thorpe"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("John Smith", "johnsmith_au"),
+        Some(true)
+    );
+    // A mononym has no structure to test.
+    assert_eq!(handle_names_person("Thorpey", "thorpey"), None);
+}
+
+/// REQ-SEARCH-012: a URL path has only `-` separators, so the subject's own
+/// slug carrying their middle name, or every part of a hyphenated given name,
+/// failed the "a middle name must be space-separated" rule and the subject's
+/// own profile URL was not minted. Tokens the subject's name does not carry
+/// still need whitespace.
+#[test]
+fn text_names_person_reads_the_subjects_own_middle_and_given_parts_across_any_separator() {
+    assert_eq!(
+        text_names_person("/in/ian-james-thorpe-1234", "Ian James Thorpe"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("/in/mary-jane-smith", "Mary-Jane Smith"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("/in/john-paul-george-smith", "John Paul George Smith"),
+        Some(true)
+    );
+    // A foreign middle token on a slug is still a double-barrelled surname …
+    assert_eq!(
+        text_names_person("/in/ian-symes-thorpe", "Ian James Thorpe"),
+        Some(false)
+    );
+    assert_eq!(
+        text_names_person("ian-symes-thorpe", "Ian Thorpe"),
+        Some(false)
+    );
+    // … and a slug of only the subject's middle name + surname names nobody.
+    assert_eq!(
+        text_names_person("/in/james-thorpe", "Ian James Thorpe"),
+        Some(false)
+    );
+}
+
+/// REQ-IDENTITY-GATE-003: a handle may spell the subject's full middle name —
+/// their own, run together or separated, or a foreign one as a whole run
+/// between separators — where a `-` before the surname still reads as a
+/// double-barrelled surname.
+#[test]
+fn handle_names_person_reads_a_full_middle_name() {
+    for handle in ["ian.james.thorpe", "ianjamesthorpe", "ian_james_thorpe_88"] {
+        assert_eq!(
+            handle_names_person("Ian James Thorpe", handle),
+            Some(true),
+            "{handle}"
+        );
+    }
+    assert_eq!(
+        handle_names_person("John Paul George Smith", "johnpaulgeorgesmith"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("John Paul George Smith", "john.george.smith"),
+        Some(true)
+    );
+    // A foreign middle name as its own run between separators.
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "ian.james.thorpe"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("Mary Jones", "mary.anne.jones"),
+        Some(true)
+    );
+    // Documented losses / refusals: a foreign middle run into its neighbours,
+    // a hyphen before the surname (a double-barrelled surname), a middle-name
+    // handle that does not start at the given name.
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "ianjamesthorpe"),
+        Some(false)
+    );
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "ian.symes-thorpe"),
+        Some(false)
+    );
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "brian.james.thorpe"),
+        Some(false)
+    );
+    assert_eq!(
+        handle_names_person("Ian Thorpe", "ian.and.meg.thorpe"),
+        Some(false)
+    );
+}
+
+/// REQ-IDENTITY-GATE-003: names and handles are compared in one alphabet.
+/// Handles are ASCII, so an unfolded accented name judged every handle of a
+/// Vietnamese or Spanish subject "does not spell it", and its unaccented record
+/// "a different person" — vetoing ownership and co-reference for HSE's primary
+/// jurisdiction.
+#[test]
+fn person_name_gates_fold_diacritics_on_both_sides() {
+    assert_eq!(
+        handle_names_person("Nguyễn Văn An", "nguyenvanan"),
+        Some(true)
+    );
+    // NFD input (combining marks) folds the same as NFC.
+    assert_eq!(
+        handle_names_person("Nguye\u{0302}\u{0303}n Va\u{0306}n An", "nguyen.van.an"),
+        Some(true)
+    );
+    assert_eq!(
+        handle_names_person("José García", "jose.garcia"),
+        Some(true)
+    );
+    assert_eq!(handle_names_person("José García", "josegarcia"), Some(true));
+    assert_eq!(
+        person_names_compatible("Nguyễn Văn An", "Nguyen Van An"),
+        Some(true)
+    );
+    assert_eq!(
+        person_names_compatible("José García", "Jose Garcia"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("/in/nguyen-van-an-12", "Nguyễn Văn An"),
+        Some(true)
+    );
+    assert_eq!(
+        text_names_person("Nguyễn Văn An - Giám đốc", "Nguyen Van An"),
+        Some(true)
+    );
+    // The fold is per character: a non-Latin name is kept, not emptied into a
+    // mononym, and still tells two people apart.
+    assert_eq!(
+        person_names_compatible("Иван Петров", "Иван Петров"),
+        Some(true)
+    );
+    assert_eq!(
+        person_names_compatible("Иван Петров", "Мария Петрова"),
+        Some(false)
+    );
+    assert_eq!(person_surname("Nguyễn Văn Ân").as_deref(), Some("an"));
+    // A different accented person stays different.
+    assert_eq!(
+        person_names_compatible("Nguyễn Văn An", "Trần Văn An"),
+        Some(false)
+    );
+}
+
+/// REQ-SEARCH-014: the one-letter tokens `a` and `i` are the English article
+/// and pronoun before they are initials. Read as initials in prose, `"Find a
+/// Baker near you"` named every Andrew Baker on the surname alone — the
+/// REQ-SEARCH-008 bypass reopened for every subject whose given name starts
+/// with A or I. A `.` (`"A. Baker"`) or a slug position (`/i-thorpe`) still
+/// marks them as initials, and every other letter is unaffected.
+#[test]
+fn the_article_and_the_pronoun_are_not_given_name_initials() {
+    for (text, seed) in [
+        ("Find a Baker near you", "Andrew Baker"),
+        ("He was a Thorpe by birth", "Alice Thorpe"),
+        ("Why I Thorpe-proofed my pool", "Ian Thorpe"),
+        ("Could I Thorpe", "Ian Thorpe"),
+        ("https://example.com/find-a-baker-near-you", "Andrew Baker"),
+        ("A Baker and a Thorpe walk into a bar", "Andrew Baker"),
+    ] {
+        assert_eq!(
+            text_names_person(text, seed),
+            Some(false),
+            "{text:?} / {seed:?}"
+        );
+    }
+    for (text, seed) in [
+        ("A. Baker, pastry chef", "Andrew Baker"),
+        ("Dr. I. Thorpe OAM", "Ian Thorpe"),
+        ("/i-thorpe", "Ian Thorpe"),
+        ("https://example.com/people/a-baker", "Andrew Baker"),
+        ("J Baker, Sydney", "John Baker"),
+        ("Andrew Baker", "Andrew Baker"),
+    ] {
+        assert_eq!(
+            text_names_person(text, seed),
+            Some(true),
+            "{text:?} / {seed:?}"
+        );
+    }
+}

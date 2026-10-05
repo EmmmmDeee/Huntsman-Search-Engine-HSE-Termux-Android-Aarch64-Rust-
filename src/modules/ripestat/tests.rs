@@ -1,0 +1,270 @@
+use super::*;
+
+    #[test]
+    fn build_asns_emits_prefixed_asn_with_prefix_evidence() {
+        let ni = NetworkInfo {
+            asns: vec!["15169".into(), "".into(), "notanum".into()],
+            prefix: Some("8.8.8.0/24".into()),
+        };
+        let es = build_asns(&ni, "scan");
+        // One ASN entity + one Cidr entity from the covering prefix.
+        assert_eq!(es.len(), 2, "valid numeric ASN + covering Cidr");
+        let asn_e = es.iter().find(|e| e.kind == EntityKind::Asn).expect("should succeed");
+        assert_eq!(asn_e.value, "AS15169");
+        assert!(asn_e.has_tag("ripestat"));
+        assert_eq!(
+            asn_e.evidence[0].attributes.get("prefix").expect("should succeed"),
+            "8.8.8.0/24"
+        );
+        let cidr_e = es.iter().find(|e| e.kind == EntityKind::Cidr).expect("should succeed");
+        assert_eq!(cidr_e.value, "8.8.8.0/24");
+        assert!(cidr_e.has_tag("network-prefix"));
+        // Single announcing ASN ⇒ the covering Cidr carries the origin `asn`
+        // as evidence, naming this prefix's origin network (AS15169).
+        assert_eq!(
+            cidr_e.evidence[0].attributes.get("asn").map(String::as_str),
+            Some("15169")
+        );
+    }
+
+    #[test]
+    fn build_asns_leaves_a_multi_origin_prefix_unattributed() {
+        // A MOAS (multiple-origin AS) prefix has no single owner to assert, so the
+        // covering Cidr must NOT carry an `asn` — the origin is left unattributed
+        // rather than naming an arbitrary one of the origins.
+        let ni = NetworkInfo {
+            asns: vec!["64512".into(), "64513".into()],
+            prefix: Some("203.0.113.0/24".into()),
+        };
+        let es = build_asns(&ni, "scan");
+        let cidr_e = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Cidr)
+            .expect("covering Cidr");
+        assert!(
+            !cidr_e.evidence[0].attributes.contains_key("asn"),
+            "a multi-origin prefix must not assert a single owner ASN"
+        );
+    }
+
+    #[test]
+    fn build_org_from_holder() {
+        let ao = AsOverview {
+            holder: Some("GOOGLE - Google LLC".into()),
+        };
+        let e = build_org(&ao, "scan").expect("should succeed");
+        assert_eq!(e.kind, EntityKind::Organisation);
+        assert_eq!(e.value, "GOOGLE - Google LLC");
+        assert!(e.has_tag("network-holder"));
+        // Empty / missing holder yields nothing.
+        assert!(build_org(&AsOverview::default(), "scan").is_none());
+    }
+
+    #[test]
+    fn build_abuse_emits_tagged_emails_and_filters_junk() {
+        let es = build_abuse(
+            &[
+                // Infrastructure provider desks — must be suppressed so they
+                // never enter the subject's identity cluster.
+                "network-abuse@google.com".into(),
+                "abuse@cloudflare.com".into(),
+                "not-an-email".into(),
+                // A non-provider mailbox on a private netblock survives.
+                "  ops@example.org ".into(),
+            ],
+            "scan",
+        );
+        assert_eq!(es.len(), 1, "only the non-infrastructure contact survives");
+        assert!(
+            es.iter()
+                .all(|e| e.kind == EntityKind::Email && e.has_tag("abuse-contact"))
+        );
+        let vals: Vec<&str> = es.iter().map(|e| e.value.as_str()).collect();
+        assert!(!vals.iter().any(|v| v.contains("google.com")));
+        assert!(!vals.iter().any(|v| v.contains("cloudflare.com")));
+        // Trimmed + normalised.
+        assert!(vals.iter().any(|v| v.contains("ops@example.org")));
+    }
+
+    #[test]
+    fn build_announced_prefixes_emits_deduped_sorted_cidrs() {
+        let ap = AnnouncedPrefixes {
+            prefixes: vec![
+                AnnouncedPrefix {
+                    prefix: Some("8.8.8.0/24".into()),
+                },
+                AnnouncedPrefix {
+                    prefix: Some("  8.8.4.0/24 ".into()),
+                },
+                // Duplicate of the first (post-trim) — must collapse.
+                AnnouncedPrefix {
+                    prefix: Some("8.8.8.0/24".into()),
+                },
+                // Malformed / no mask — dropped, never a junk CIDR.
+                AnnouncedPrefix {
+                    prefix: Some("not-a-prefix".into()),
+                },
+                AnnouncedPrefix { prefix: None },
+            ],
+        };
+        let es = build_announced_prefixes(&ap, "scan");
+        let vals: Vec<&str> = es.iter().map(|e| e.value.as_str()).collect();
+        // Deduped to two, in sorted (deterministic) order — not API order.
+        assert_eq!(vals, ["8.8.4.0/24", "8.8.8.0/24"]);
+        assert!(
+            es.iter()
+                .all(|e| e.kind == EntityKind::Cidr
+                    && e.has_tag("ripestat")
+                    && e.has_tag("network-prefix"))
+        );
+    }
+
+    #[test]
+    fn accepts_ip_and_asn_only() {
+        assert!(RipeStat.accepts(&Target::new(TargetKind::IpAddress, "8.8.8.8")));
+        assert!(RipeStat.accepts(&Target::new(TargetKind::Asn, "AS15169")));
+        assert!(!RipeStat.accepts(&Target::new(TargetKind::Email, "a@b.com")));
+    }
+
+    #[test]
+    fn module_metadata() {
+        let m = RipeStat;
+        assert_eq!(m.name(), "ripestat");
+        assert!(!m.description().is_empty());
+        assert_eq!(m.priority(), 107);
+        assert_eq!(m.max_timeout_ms(), 14_000);
+        assert!(!m.attack_techniques().is_empty());
+        assert!(m.produces().contains(&EntityKind::Asn));
+    }
+
+    #[test]
+    fn build_asns_rejects_non_numeric_and_empty() {
+        let ni = NetworkInfo {
+            asns: vec!["".into(), "not-a-number".into(), "abc123".into()],
+            prefix: None,
+        };
+        assert!(build_asns(&ni, "scan").is_empty());
+    }
+
+    #[test]
+    fn build_asns_dedupes_a_repeated_asn() {
+        // A repeated value in `asns` must not yield two ASN entities — matches
+        // `build_announced_prefixes`'s own BTreeSet dedup for the same file's
+        // other array-shaped field.
+        let ni = NetworkInfo {
+            asns: vec!["15169".into(), "15169".into()],
+            prefix: None,
+        };
+        let es = build_asns(&ni, "scan");
+        assert_eq!(
+            es.iter().filter(|e| e.kind == EntityKind::Asn).count(),
+            1,
+            "a repeated ASN must be deduplicated: {es:?}"
+        );
+    }
+
+    #[test]
+    fn build_abuse_emits_multiple_distinct() {
+        // Two different non-infrastructure contacts → both emitted.
+        let emails = vec!["ops@example.org".to_string(), "sec@example.net".to_string()];
+        let es = build_abuse(&emails, "scan");
+        assert_eq!(es.len(), 2);
+        assert!(es.iter().all(|e| e.kind == crate::core::entity::EntityKind::Email));
+    }
+
+    #[test]
+    fn build_abuse_dedupes_a_repeated_contact() {
+        let emails = vec!["ops@example.org".to_string(), "ops@example.org".to_string()];
+        let es = build_abuse(&emails, "scan");
+        assert_eq!(es.len(), 1, "a repeated abuse contact must be deduplicated: {es:?}");
+    }
+
+    /// A canned [`StatSource`]: `Ok(json)` per endpoint, or `Err` for an
+    /// endpoint that is down.
+    struct Canned(std::collections::HashMap<&'static str, std::result::Result<serde_json::Value, &'static str>>);
+
+    #[async_trait]
+    impl StatSource for Canned {
+        async fn data(&self, endpoint: &str, _resource: &str) -> Result<serde_json::Value> {
+            match self.0.get(endpoint) {
+                Some(Ok(v)) => Ok(v.clone()),
+                Some(Err(msg)) => Err(Error::module(SRC, (*msg).to_string())),
+                None => Err(Error::module(SRC, format!("no canned answer for {endpoint}"))),
+            }
+        }
+    }
+
+    /// REGRESSION (docs/PROVIDER_SWEEP_BACKLOG.md #31). Every RIPEstat
+    /// sub-fetch was `.ok()`'d, so a total outage — no endpoint answered —
+    /// returned an empty result that read as a clean "no network info, no
+    /// abuse contact" negative. With every endpoint down the module must
+    /// report the failure, naming RIPEstat and the endpoint, never `Ok`.
+    #[tokio::test]
+    async fn a_total_ripestat_outage_is_a_module_failure_not_a_clean_negative() {
+        let down = Canned(
+            [
+                ("network-info", Err("HTTP 503 Service Unavailable")),
+                ("as-overview", Err("HTTP 503 Service Unavailable")),
+                ("announced-prefixes", Err("HTTP 503 Service Unavailable")),
+                ("abuse-contact-finder", Err("HTTP 503 Service Unavailable")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        for (kind, value) in [
+            (TargetKind::IpAddress, "8.8.8.8"),
+            (TargetKind::Asn, "AS15169"),
+        ] {
+            let target = Target::new(kind, value);
+            let err = lookup(&down, &target, "test")
+                .await
+                .expect_err("no endpoint answered — must not be a clean negative");
+            let msg = err.to_string();
+            assert!(
+                msg.starts_with("[ripestat] RIPEstat ") && msg.contains("503"),
+                "{kind:?} {value}: {msg}"
+            );
+        }
+    }
+
+    /// Each endpoint stays best-effort: what the live endpoints returned is
+    /// kept even when a sibling endpoint is down — a partial answer is an
+    /// answer, not a failure.
+    #[tokio::test]
+    async fn a_partial_outage_keeps_the_endpoints_that_answered() {
+        let partial = Canned(
+            [
+                (
+                    "network-info",
+                    Ok(serde_json::json!({"asns": ["15169"], "prefix": "8.8.8.0/24"})),
+                ),
+                ("abuse-contact-finder", Err("HTTP 502 Bad Gateway")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
+        let r = lookup(&partial, &target, "test")
+            .await
+            .expect("network-info answered");
+        assert!(r.entities.iter().any(|e| e.kind == EntityKind::Asn && e.value == "AS15169"));
+        assert!(r.entities.iter().any(|e| e.kind == EntityKind::Cidr));
+    }
+
+    /// A shape the decoder does not recognise is a failure of THAT endpoint,
+    /// reported as such — and, alone, still a module failure rather than
+    /// "no data".
+    #[tokio::test]
+    async fn an_unexpected_data_shape_is_an_endpoint_failure() {
+        let drifted = Canned(
+            [
+                ("network-info", Ok(serde_json::json!({"asns": "not-a-list"}))),
+                ("abuse-contact-finder", Err("HTTP 503")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
+        let err = lookup(&drifted, &target, "test").await.expect_err("drift is not absence");
+        assert!(err.to_string().contains("unexpected data shape"), "{err}");
+    }

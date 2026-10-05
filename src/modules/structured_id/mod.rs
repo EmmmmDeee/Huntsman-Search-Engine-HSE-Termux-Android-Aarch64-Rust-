@@ -1,0 +1,384 @@
+//! Free, **offline** intelligence decoded from structured identifiers.
+//!
+//! Some widely-used IDs embed metadata that the systems emitting them rarely
+//! intend to leak. This module decodes it from the ID alone — no API, no key,
+//! no network — extending the deterministic-decode pattern of
+//! [`crate::modules::discord_snowflake`]:
+//!
+//! * **UUID version 1** carries the *generating machine's MAC address* (the
+//!   node field) and the *generation timestamp*. A leaked v1 UUID therefore
+//!   deanonymises the host that minted it — a genuine, well-known OSINT
+//!   technique — and dates it. (A v1 UUID with the multicast bit set used a
+//!   random node, not a real MAC, so that case yields a time but no MAC.)
+//! * **MongoDB ObjectID** encodes its creation time in the leading 4 bytes, so
+//!   a leaked ObjectID dates the record/account it identifies.
+//! * **ULID** and **KSUID** (record IDs, tokens, request IDs) each embed a
+//!   creation timestamp, so a leaked one dates whatever it identifies.
+//!
+//! These formats are unambiguous by shape (hyphenated 36-char UUID with a `1`
+//! version nibble; bare 24-hex ObjectID; 26-char Crockford-base32 ULID; 27-char
+//! base62 KSUID), so — unlike a bare decimal snowflake
+//! — there is no platform ambiguity. Every decoded time is range-validated to
+//! `[2000-01-01, now]`, but how STRONG a genuineness signal that window is
+//! varies by format's timestamp resolution, and confidence is scaled to
+//! match: UUIDv4's version nibble is a structural gate (a random hex/UUID-v4
+//! string yields nothing), and ULID's 48-bit millisecond timestamp makes a
+//! coincidental match against the window negligibly rare — but ObjectID's and
+//! KSUID's 32-bit SECOND-resolution timestamp is a much weaker filter
+//! (~20% / ~9% of random strings of the right shape land inside the window
+//! by chance), so those two are reported at a correspondingly lower
+//! confidence rather than claimed as certain. No mock: the data is read
+//! straight out of the ID.
+
+use async_trait::async_trait;
+
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence, unix_now},
+    error::Result,
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+    timeline::utc_date,
+};
+
+const SRC: &str = "structured_id";
+
+/// 100-ns intervals between the UUID epoch (1582-10-15) and the Unix epoch.
+const UUID_TICKS_BETWEEN_EPOCHS: u64 = 122_192_928_000_000_000;
+/// Plausibility floor — 2000-01-01. A decode outside `[floor, now]` is rejected.
+const PLAUSIBLE_FLOOR_SECS: i64 = 946_684_800;
+const DAY_SECS: i64 = 86_400;
+
+pub struct StructuredId;
+
+#[async_trait]
+impl Module for StructuredId {
+    fn name(&self) -> &'static str {
+        "structured_id"
+    }
+
+    fn description(&self) -> &'static str {
+        "Offline structured-ID decode — unmasks UUIDv1 to MAC + time and MongoDB ObjectID to time"
+    }
+
+    fn priority(&self) -> u8 {
+        103
+    }
+
+    fn is_passive(&self) -> bool {
+        // Pure offline decoding — no network, no I/O, no key.
+        true
+    }
+
+    /// Pure transform of data already in the graph — no observation of its
+    /// own, so its evidence never counts as a corroborating source (see
+    /// `Module::is_derivation` / `ENRICHMENT_ONLY_SOURCES`).
+    fn is_derivation(&self) -> bool {
+        true
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        // UUIDs / ObjectIDs fall to the residual Username kind. Kind-only so the
+        // dispatch index stays consistent; the format gate is in process().
+        matches!(t.kind, TargetKind::Username)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Social
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Username, EntityKind::MacAddress];
+        KINDS
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // The Social-category default (T1593.001 Social Media + T1589.003 Employee
+        // Names) is wrong for both legs: this module does not search social media —
+        // it decodes a structured ID OFFLINE — and emits no real-name `Person`. Its
+        // signal is the generating machine's MAC address embedded in a UUIDv1: host
+        // hardware identification, so it maps to T1592.001 (Gather Victim Host
+        // Information: Hardware), not the inherited social-presence pair.
+        &["T1592.001"]
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut result = ModuleResult::new();
+        let v = target.value.trim();
+        let plausible =
+            |secs: i64| (PLAUSIBLE_FLOOR_SECS..=unix_now() as i64 + DAY_SECS).contains(&secs);
+
+        // UUID version 1 — generation time + (real) node MAC.
+        if let Some((secs, mac)) = decode_uuid_v1(v)
+            && plausible(secs)
+        {
+            let date = utc_date(secs);
+            let mut e = target.to_entity(confidence::MEDIUM_PLUS, &ctx.scan_id);
+            e.tag("uuid-v1");
+            e.tag("derived");
+            e.tag("account-age");
+            let mut ev = Evidence::new(SRC, format!("UUIDv1 generated {date} (decoded offline)"))
+                .with_attr("uuid_created_date", date.as_str())
+                .with_attr("uuid_version", "1");
+            if let Some(ref m) = mac {
+                ev = ev.with_attr("uuid_node_mac", m.as_str());
+            }
+            e.add_evidence(ev);
+            result.push(e);
+
+            // The node MAC is a real device fingerprint — emit it first-class.
+            if let Some(m) = mac {
+                let mut me = Entity::new(
+                    EntityKind::MacAddress,
+                    &m,
+                    confidence::HIGH_PLUS,
+                    &ctx.scan_id,
+                );
+                me.tag("uuid-v1");
+                me.tag("derived");
+                me.add_evidence(
+                    Evidence::new(SRC, format!("Node MAC embedded in UUIDv1 `{v}`"))
+                        .with_attr("source_uuid", v),
+                );
+                result.push(me);
+            }
+            return Ok(result);
+        }
+
+        // Other timestamp-embedding IDs, each unambiguous by shape: MongoDB
+        // ObjectID, ULID, and KSUID all carry their own creation time. Each
+        // one's ONLY validation beyond shape/charset is the
+        // `[PLAUSIBLE_FLOOR_SECS, now]` window, so the per-format confidence
+        // must reflect how strong that window actually is as a genuineness
+        // signal — NOT a fixed constant across all three:
+        //   - ULID's 48-bit millisecond timestamp gives the window a ~0.3%
+        //     false-positive rate against a random 26-char base32 string —
+        //     negligible, so it keeps the same confidence UUIDv1 gets.
+        //   - ObjectID's and KSUID's 32-bit SECOND-resolution timestamp gives
+        //     the window a ~20% (ObjectID) / ~9% (KSUID) false-positive rate
+        //     against a random string of the right shape (computed directly
+        //     from PLAUSIBLE_FLOOR_SECS/unix_now() against each format's full
+        //     decodable range) — roughly 1-in-5 or 1-in-11 non-ID tokens (a
+        //     truncated hash, a session token, an unrelated breach-dump field)
+        //     would otherwise be reported as a confident, fabricated
+        //     "created DATE" finding. Demoted below MEDIUM_HIGH to reflect
+        //     that real uncertainty; there is no checksum in either format to
+        //     validate against instead, so this is the honest ceiling.
+        for (decode, fmt) in [
+            (
+                decode_objectid as fn(&str) -> Option<i64>,
+                IdFormat {
+                    tag: "mongodb-objectid",
+                    date_attr: "objectid_created_date",
+                    label: "MongoDB ObjectID",
+                    confidence: confidence::LOW_MEDIUM,
+                    false_positive_rate: Some("about 1 in 5 random 24-hex tokens"),
+                },
+            ),
+            (
+                decode_ulid,
+                IdFormat {
+                    tag: "ulid",
+                    date_attr: "ulid_created_date",
+                    label: "ULID",
+                    confidence: confidence::MEDIUM_HIGH,
+                    false_positive_rate: None,
+                },
+            ),
+            (
+                decode_ksuid,
+                IdFormat {
+                    tag: "ksuid",
+                    date_attr: "ksuid_created_date",
+                    label: "KSUID",
+                    confidence: confidence::LOW_MEDIUM,
+                    false_positive_rate: Some("about 1 in 11 random 27-character tokens"),
+                },
+            ),
+        ] {
+            if let Some(secs) = decode(v)
+                && plausible(secs)
+            {
+                emit_creation(target, &ctx.scan_id, &fmt, secs, &mut result);
+                break;
+            }
+        }
+
+        Ok(result)
+    }
+}
+
+/// Decode a version-1 UUID into `(unix_seconds, Some(mac) if a real node MAC)`.
+/// `None` for any string that isn't a syntactically valid v1 UUID.
+fn decode_uuid_v1(s: &str) -> Option<(i64, Option<String>)> {
+    let b = s.as_bytes();
+    if b.len() != 36 || b[8] != b'-' || b[13] != b'-' || b[18] != b'-' || b[23] != b'-' {
+        return None;
+    }
+    let hex: String = s.chars().filter(|c| *c != '-').collect();
+    if hex.len() != 32 || !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    // Version nibble (13th hex digit) must be `1`.
+    if hex.as_bytes()[12] != b'1' {
+        return None;
+    }
+    let time_low = u64::from_str_radix(&hex[0..8], 16).ok()?;
+    let time_mid = u64::from_str_radix(&hex[8..12], 16).ok()?;
+    let time_hi = u64::from_str_radix(&hex[12..16], 16).ok()? & 0x0FFF;
+    let ticks = (time_hi << 48) | (time_mid << 32) | time_low;
+    let unix_secs = (ticks.checked_sub(UUID_TICKS_BETWEEN_EPOCHS)? / 10_000_000) as i64;
+
+    let node = &hex[20..32];
+    let first_octet = u8::from_str_radix(&node[0..2], 16).ok()?;
+    // The multicast/locally-administered bit (bit 0 of the first octet) is set
+    // when the node is random, not a hardware MAC — so only a unicast node is a
+    // real device address.
+    let mac = (first_octet & 0x01 == 0).then(|| {
+        format!(
+            "{}:{}:{}:{}:{}:{}",
+            &node[0..2],
+            &node[2..4],
+            &node[4..6],
+            &node[6..8],
+            &node[8..10],
+            &node[10..12]
+        )
+    });
+    Some((unix_secs, mac))
+}
+
+/// Decode a MongoDB ObjectID's creation time (its leading 4 bytes are a
+/// big-endian Unix-seconds timestamp). `None` if `s` isn't a 24-hex ObjectID.
+fn decode_objectid(s: &str) -> Option<i64> {
+    if s.len() != 24 || !s.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    i64::from_str_radix(&s[0..8], 16).ok()
+}
+
+/// Crockford base32 alphabet (no `I`, `L`, `O`, `U`) — the ULID encoding.
+const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/// Base62 alphabet — the KSUID encoding.
+const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+/// KSUID epoch (2014-05-13T16:53:20Z) as a Unix-seconds offset.
+const KSUID_EPOCH_SECS: i64 = 1_400_000_000;
+
+/// One Crockford base32 digit → value (case-insensitive; the ambiguous letters
+/// `I`/`L` map to 1 and `O` to 0 per the spec). `None` for a non-base32 char.
+fn crockford_val(c: u8) -> Option<u64> {
+    match c.to_ascii_uppercase() {
+        b'O' => Some(0),
+        b'I' | b'L' => Some(1),
+        u => CROCKFORD.iter().position(|&x| x == u).map(|p| p as u64),
+    }
+}
+
+/// Decode a ULID's creation time. A ULID is 26 Crockford-base32 chars whose
+/// leading 10 chars encode a 48-bit millisecond timestamp. `None` if `s` is not
+/// a 26-char all-base32 ULID (so a random/non-ULID string is rejected).
+fn decode_ulid(s: &str) -> Option<i64> {
+    if s.len() != 26 {
+        return None;
+    }
+    let mut ms: u64 = 0;
+    for (i, &b) in s.as_bytes().iter().enumerate() {
+        let v = crockford_val(b)?;
+        if i < 10 {
+            ms = (ms << 5) | v;
+        }
+    }
+    Some(((ms & 0xFFFF_FFFF_FFFF) / 1000) as i64)
+}
+
+/// Decode a KSUID's creation time. A KSUID is 27 base62 chars decoding to a
+/// 20-byte value whose leading 4 bytes are a big-endian seconds offset from the
+/// KSUID epoch. `None` if `s` is not a valid 27-char base62 KSUID.
+fn decode_ksuid(s: &str) -> Option<i64> {
+    if s.len() != 27 {
+        return None;
+    }
+    // base62-decode into a 20-byte big-endian bignum.
+    let mut bytes = [0u8; 20];
+    for &c in s.as_bytes() {
+        let mut carry = BASE62.iter().position(|&x| x == c)? as u32;
+        for b in bytes.iter_mut().rev() {
+            let acc = u32::from(*b) * 62 + carry;
+            *b = (acc & 0xFF) as u8;
+            carry = acc >> 8;
+        }
+        if carry != 0 {
+            return None; // overflows 20 bytes — not a KSUID
+        }
+    }
+    let ts = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    Some(i64::from(ts) + KSUID_EPOCH_SECS)
+}
+
+/// One timestamp-only ID format's decode metadata: its tag, the evidence
+/// attribute its decoded date is reported under, its display label, and its
+/// confidence.
+///
+/// `confidence` is per-format, not a fixed constant: it must reflect how
+/// strong each format's ONLY validation — the `[PLAUSIBLE_FLOOR_SECS, now]`
+/// window — actually is. See the call site for the per-format rationale.
+struct IdFormat {
+    tag: &'static str,
+    date_attr: &'static str,
+    label: &'static str,
+    confidence: f64,
+    /// For a format whose second-resolution timestamp lets a sizeable share
+    /// of random same-shape tokens through the plausibility window, that
+    /// measured share — the decoded date is then a candidate lead about a
+    /// token that MAY be an ID, never an asserted account-age finding
+    /// (backlog #45). `None` for ULID, whose window is selective enough to
+    /// assert.
+    false_positive_rate: Option<&'static str>,
+}
+
+/// Enrich the seed ID with its decoded creation date — shared by the
+/// ObjectID / ULID / KSUID timestamp-only decoders.
+fn emit_creation(
+    target: &Target,
+    scan_id: &str,
+    fmt: &IdFormat,
+    secs: i64,
+    result: &mut ModuleResult,
+) {
+    let date = utc_date(secs);
+    let mut e = target.to_entity(fmt.confidence, scan_id);
+    e.tag(fmt.tag);
+    e.tag("derived");
+    e.tag("account-age");
+    let summary = match fmt.false_positive_rate {
+        Some(rate) => format!(
+            "{} — if this token is one — created {date} (decoded offline; {rate} passes this shape check)",
+            fmt.label
+        ),
+        None => format!("{} created {date} (decoded offline)", fmt.label),
+    };
+    let mut ev = Evidence::new(SRC, summary)
+        .with_attr(fmt.date_attr, date.as_str())
+        .with_attr("decoder", fmt.tag);
+    if let Some(rate) = fmt.false_positive_rate {
+        // The window is the format's ONLY validation (no checksum) and it
+        // passes `rate` of random tokens of the right shape — a truncated
+        // hash, a session token, a breach-dump field. The date is a candidate
+        // lead, quarantined out of exports, the timeline and the correlator
+        // until something confirms the value is an ID (backlog #45).
+        e.demote_to_candidate();
+        ev = ev
+            .with_attr(
+                "validation",
+                "timestamp plausibility window only — the format has no checksum",
+            )
+            .with_attr("false_positive_rate", rate);
+    }
+    e.add_evidence(ev);
+    result.push(e);
+}
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
+}

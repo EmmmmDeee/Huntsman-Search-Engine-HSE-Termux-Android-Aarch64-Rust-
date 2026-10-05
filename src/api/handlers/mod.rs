@@ -1,0 +1,1199 @@
+// HTTP handlers.
+//
+// Every handler returns `impl IntoResponse` so we can mix `Json`,
+// `(StatusCode, Json)`, and `Sse<...>` freely. Error paths emit a
+// `{"error": "..."}` JSON body with the appropriate status.
+
+use std::{convert::Infallible, sync::Arc};
+
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::{
+        IntoResponse,
+        sse::{Event as SseEvent, KeepAlive, Sse},
+    },
+};
+use futures::Stream;
+use serde::Serialize;
+use serde_json::{Value, json};
+use tokio_stream::{StreamExt as _, wrappers::BroadcastStream};
+
+use super::AppState;
+use crate::core::{
+    event::{Event, EventBus},
+    module::ModuleContext,
+    scan::{Target, TargetKind},
+};
+use crate::util::keys;
+
+// ─── Shared response helpers ───────────────────────────────────────────────
+
+/// Construct and validate a `Target`, mapping a validation failure to the
+/// canonical client-facing `invalid target: …` message. The single source of
+/// truth for target admission shared by the scan-create and live-create paths,
+/// so the rule and its error wording can't diverge between them.
+pub(crate) fn validated_target(kind: TargetKind, value: String) -> Result<Target, String> {
+    let target = Target::new(kind, value);
+    target
+        .validate_verbose()
+        .map_err(|msg| format!("invalid target: {msg}"))?;
+    Ok(target)
+}
+
+/// A `500` with a `{ "error": <msg> }` body — the server-error sibling of
+/// [`bad_request`] / [`not_found`], for a storage or internal failure. One shape
+/// for every 500 so API consumers parse errors uniformly.
+pub(crate) fn internal_error(err: &impl ToString) -> axum::response::Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "error": err.to_string() })),
+    )
+        .into_response()
+}
+
+/// A `404` with a `{ "error": "not found" }` body — returned when a scan / entity
+/// / sub-resource id doesn't exist, in the shared error shape.
+pub(crate) fn not_found() -> axum::response::Response {
+    (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+}
+
+/// Loopback-only access gate shared by every mutating or sensitive-metadata
+/// endpoint (key read/write, update trigger, cell DB import/clear, debug log
+/// downloads, key-pool/harvest status): only a client connecting from a
+/// loopback address may invoke them. Returns the `403` response to send for a
+/// non-loopback peer, or `None` when the call is allowed.
+///
+/// NB: this trusts the socket peer address. Behind a loopback-bound reverse
+/// proxy every forwarded client appears as loopback, so this is a
+/// localhost-architecture guard, not an authenticated-caller check — the same
+/// limitation every one of these handlers already carried individually before
+/// they shared this one gate.
+pub(crate) fn reject_non_loopback(
+    peer: &std::net::SocketAddr,
+    message: &str,
+) -> Option<axum::response::Response> {
+    if peer.ip().is_loopback() {
+        None
+    } else {
+        Some(forbidden(message))
+    }
+}
+
+/// 400 with a `{ "error": <msg> }` body — the client-error sibling of
+/// [`internal_error`] / [`not_found`]. Accepts both `&'static str` literals and
+/// owned `String`s (e.g. a `format!`-built validation message), so the ~10
+/// open-coded `(BAD_REQUEST, Json(json!({"error": …})))` sites share one shape.
+pub(crate) fn bad_request(msg: impl Into<String>) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": msg.into() })),
+    )
+        .into_response()
+}
+
+/// Reject an operator-supplied options object that carries a key its type does
+/// not define, naming the key and the option it was probably meant to be.
+///
+/// THE one error-message authority for this check, shared by every request
+/// seam that has an options object — `scan`, `scan/batch` and `live`. The
+/// check itself is cheap to re-implement per handler, which is exactly the
+/// danger: three hand-written copies of "unrecognised option" would drift in
+/// wording, in whether they name the offending key, and in whether they say
+/// the option was *not applied* — and that last clause is the whole point.
+///
+/// `field` is the object's name in the request body (`"options"`, `"live"`) so
+/// a message about a two-object request says which half was wrong.
+///
+/// The caller supplies `known` rather than a type parameter because the two
+/// objects in a live request have different types; see
+/// [`crate::core::wire_keys::known_keys`].
+pub(crate) fn reject_unknown_option_keys(
+    raw: &Value,
+    field: &str,
+    known: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    let Some(supplied) = raw.get(field) else {
+        return Ok(());
+    };
+    let unknown = crate::core::wire_keys::unknown_keys(supplied, known);
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    // Resolved once: both the per-key detail and the catalogue decision need it.
+    let suggestions: Vec<(String, Option<String>)> = unknown
+        .iter()
+        .map(|k| (k.clone(), crate::core::wire_keys::nearest_key(k, known)))
+        .collect();
+    let detail: Vec<String> = suggestions
+        .iter()
+        .map(|(k, near)| match near {
+            Some(near) => format!("{k} (did you mean {near}?)"),
+            None => k.clone(),
+        })
+        .collect();
+    // Spell out the catalogue only when nothing could be suggested — when the
+    // key IS a transcription of a real option, naming that one option is the
+    // whole answer and the rest is noise. Either way the names come from the
+    // same derived set as the check itself, so the message cannot cite a stale
+    // catalogue.
+    let catalogue = if suggestions.iter().all(|(_, near)| near.is_some()) {
+        String::new()
+    } else {
+        let accepted: Vec<&str> = known.iter().map(String::as_str).collect();
+        format!(" Accepted keys for {field}: {}", accepted.join(", "))
+    };
+    Err(format!(
+        "unrecognised {field} key(s): {} — NOT applied, so the request would \
+         have run with the default.{catalogue}",
+        detail.join(", ")
+    ))
+}
+
+/// A `403 Forbidden` JSON error, the access-control sibling of [`bad_request`]
+/// (e.g. a failed CSRF/loopback check). One shape for every refusal.
+pub(crate) fn forbidden(msg: impl Into<String>) -> axum::response::Response {
+    (StatusCode::FORBIDDEN, Json(json!({ "error": msg.into() }))).into_response()
+}
+
+/// Run a blocking `Store` operation off the async reactor and normalise the
+/// outcome for a handler — THE off-reactor primitive for all API handlers.
+///
+/// Every `Store` method takes the global SQLite connection mutex, so calling one
+/// inline on an async handler pins the ~2-worker reactor thread for the whole
+/// query — a cascade `delete_scan`, a batch of writes, or a large
+/// `entities_for_scan` read then stalls every unrelated request sharing that
+/// thread. This runs the closure on the blocking pool; on success it yields the
+/// value, and on a store error or a task-join failure it yields a ready `500` for
+/// the caller to `return`. All handlers use this single canonical primitive so
+/// the off-reactor hop and error mapping live in exactly one place.
+pub(crate) async fn offload_store<T, F>(f: F) -> Result<T, axum::response::Response>
+where
+    F: FnOnce() -> crate::core::error::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(internal_error(&e)),
+        Err(e) => Err(internal_error(&format!("db task failed: {e}"))),
+    }
+}
+
+/// The canonical list envelope every list endpoint returns:
+/// `{ "<key>": [items…], "count": <n> }`. One shape so the SPA and CLI parse
+/// every collection response (entities, relations, correlations, …) identically.
+pub(crate) fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response::Response {
+    let n = items.len();
+    let mut map = serde_json::Map::new();
+    map.insert(
+        key.to_string(),
+        serde_json::to_value(items).unwrap_or(Value::Null),
+    );
+    map.insert("count".to_string(), Value::Number(n.into()));
+    (StatusCode::OK, Json(Value::Object(map))).into_response()
+}
+
+/// Paginated list response: `{ "<key>": [items…], "count": <returned>, "total": <all>, "offset": <o>, "limit": <l> }`.
+/// The `count` field holds the returned item count; `total` is the full size before pagination.
+/// Enables clients to track position in a large result set without materialising everything.
+pub(crate) fn ok_paginated_list<T: Serialize>(
+    key: &str,
+    items: Vec<T>,
+    total: usize,
+    offset: usize,
+    limit: usize,
+) -> axum::response::Response {
+    let count = items.len();
+    let mut map = serde_json::Map::new();
+    map.insert(
+        key.to_string(),
+        serde_json::to_value(items).unwrap_or(Value::Null),
+    );
+    map.insert("count".to_string(), Value::Number(count.into()));
+    map.insert("total".to_string(), Value::Number(total.into()));
+    map.insert("offset".to_string(), Value::Number(offset.into()));
+    map.insert("limit".to_string(), Value::Number(limit.into()));
+    (StatusCode::OK, Json(Value::Object(map))).into_response()
+}
+
+/// Queue a created `scan`: register it as in flight, write its `pending` row,
+/// then hand it to the engine on the async runtime — the HTTP layer's
+/// fire-and-forget hand-off (the request returns `202` immediately). Every
+/// scan-creating handler goes through here.
+///
+/// Registering before the row exists is what lets a `pending` row with no
+/// registry entry mean what [`crate::core::scan::Scan::is_interrupted`] takes
+/// it to mean: the process that queued it died. The other order left a moment
+/// in which a reader saw a healthy queued scan as interrupted
+/// (REQ-SCANSTATUS-038).
+///
+/// Wires up everything the background run needs: a [`crate::core::cancel::CancelHandle`]
+/// registered so `POST /scans/{id}/cancel` can stop it, a per-scan HTTP client
+/// stamped with the scan id (`x-huntsman-trace`) so outbound calls correlate in
+/// upstream logs, and the scan-concurrency semaphore that bounds how many scans
+/// run at once on a low-RAM device.
+///
+/// # Errors
+///
+/// The store's error, as text, when the row could not be written. The scan is
+/// then neither registered nor run.
+pub(crate) async fn queue_scan(
+    state: &Arc<AppState>,
+    scan: crate::core::scan::Scan,
+    target: Target,
+) -> Result<(), String> {
+    let sid = scan.id.clone();
+    let cancel = crate::core::cancel::CancelHandle::new();
+    let cancel_guard = super::CancelRegistryGuard::install(
+        Arc::clone(&state.cancellations),
+        sid.clone(),
+        cancel.clone(),
+    );
+    let store = Arc::clone(&state.store);
+    let row = scan.clone();
+    match tokio::task::spawn_blocking(move || store.upsert_scan(&row)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e.to_string()),
+        Err(e) => return Err(format!("db task failed: {e}")),
+    }
+    let bus_clone = state.bus.clone();
+    // Per-scan client stamped with the scan id (x-huntsman-trace) so outbound
+    // calls correlate to this scan in a proxy/upstream log, mirroring the CLI.
+    let http_clone = crate::util::http::build_client_with_trace(&sid);
+    let engine = Arc::clone(&state.engine);
+    let sem = Arc::clone(&state.scan_semaphore);
+    let store_clone = Arc::clone(&state.store);
+    tokio::spawn(async move {
+        let _cancel_guard = cancel_guard;
+        let api_keys = keys::populate_and_load().await;
+        let ctx = ModuleContext {
+            scan_id: sid.clone(),
+            bus: bus_clone,
+            http: http_clone,
+            keys: api_keys,
+            cancel,
+        };
+        let Ok(_permit) = sem.acquire().await else {
+            tracing::warn!(scan_id = %sid, "scan semaphore closed");
+            return;
+        };
+        match engine.run_panic_safe(scan, target, ctx).await {
+            Ok(completed) => {
+                // Mirror the CLI's post-scan diagnostics: update the cross-scan
+                // module-stats ledger so API/web scans feed adaptive routing the
+                // same as `hse scan` CLI runs do.
+                if let Ok(entities) = store_clone.entities_for_scan(&sid) {
+                    let wall_ms = completed
+                        .finished_at
+                        .and_then(|f| f.checked_sub(completed.started_at))
+                        .unwrap_or(0)
+                        .saturating_mul(1000);
+                    crate::util::diagnostics::analyse(
+                        &sid,
+                        completed.target.kind.canonical_str(),
+                        &completed.target.value,
+                        wall_ms,
+                        &entities,
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(scan_id = %sid, error = %e, "scan failed"),
+        }
+    });
+    Ok(())
+}
+
+// ─── Core read/system handlers ──────────────────────────────────────────────
+// Health/version/stats, engine/module/scraper health, capability probing,
+// selftest, log access, the system debug bundle, the module registry, and
+// entity search — the surface `settings_handlers`'s own doc comment refers to
+// as what `handlers` "keeps" once every other concern is split out. Scan CRUD
+// itself already moved to `scan_handlers`; this banner used to say "Scan CRUD
+// handlers" long after that move, describing none of what's actually below it.
+
+pub async fn health() -> Json<Value> {
+    Json(json!({ "status": "ok", "version": crate::VERSION }))
+}
+
+/// The ids of every scan THIS process is running: the keys of the one in-flight
+/// registry, which `queue_scan` populates for a one-shot scan and the live
+/// loop (`core::live`) for each iteration. Both install the entry before the
+/// scan's row is written and drop it after the engine's final status write, so
+/// within one process a row can never read `pending` or `running` without an
+/// entry here. The only way to observe that combination is a process that died
+/// without the cooperative drain. (A registry only ONE of the two spawn paths filled
+/// would have reported every live iteration as interrupted — observed on the
+/// first draft of this fix, and the reason the registry moved into `core`.)
+pub(crate) fn in_flight_scan_ids(
+    registry: &super::CancelRegistry,
+) -> std::collections::HashSet<String> {
+    registry.lock().keys().cloned().collect()
+}
+
+// REQ-SCANSTATUS-001 derived `interrupted` here, from this process's
+// registry alone, for `running` rows only. `Scan::is_interrupted` is now the
+// one rule (REQ-SCANSTATUS-038): it also asks whether another `hse` process
+// on the same database is running the scan, and it covers a `pending` row,
+// since every create path registers a scan before writing its row
+// (`queue_scan`). The row is still never rewritten.
+
+/// The one way a `Scan` becomes API JSON: its serialised fields plus the
+/// derived, non-persisted `interrupted` and `finalise_incomplete` flags.
+/// `GET /scans`, `GET /scans/{id}` and `GET /radar/history` all route through
+/// here so they cannot disagree.
+///
+/// `finalise_incomplete` is [`crate::core::scan::Scan::finalise_incomplete`]:
+/// a `complete` or `aborted` row whose finalise recorded a shortfall is
+/// partial, as every export of it reads it and as its `scan_complete` event
+/// says. The web scan list, the scan-info Status row and the radar sweep
+/// list read it for their status pill, which otherwise showed such a scan as
+/// a green `complete` (REQ-SCANSTATUS-030).
+pub(crate) fn scan_json(
+    scan: &crate::core::scan::Scan,
+    in_flight: &std::collections::HashSet<String>,
+) -> Value {
+    let mut v = serde_json::to_value(scan).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to serialize scan to JSON value");
+        json!({})
+    });
+    if let Value::Object(map) = &mut v {
+        map.insert(
+            "interrupted".to_string(),
+            Value::Bool(scan.is_interrupted(Some(in_flight))),
+        );
+        map.insert(
+            "finalise_incomplete".to_string(),
+            Value::Bool(scan.finalise_incomplete()),
+        );
+    }
+    v
+}
+
+/// Pure aggregation of dashboard scan statistics — the per-status histogram and
+/// the entity/dedup totals — over a scan list. Split out of [`stats`] so the
+/// summation logic is unit-testable without a live store + async handler.
+///
+/// The histogram's keys are what each row's status pill reads, never the
+/// stored status alone: a `running` row nobody is running is `interrupted`
+/// ([`Scan::is_interrupted`](crate::core::scan::Scan::is_interrupted)), and a
+/// finished row whose finalise fell short
+/// ([`Scan::finalise_incomplete`](crate::core::scan::Scan::finalise_incomplete))
+/// is `partial` (a `Complete` one) or `aborted_partial` (an `Aborted` one) —
+/// the `partial` / `aborted · partial` its scan-list row, its exports and the
+/// dashboard's own Recent Scans table call it. Counted under its stored
+/// status, it raised the dashboard's green `complete` tally beside the Recent
+/// Scans row that read it `partial` (REQ-SCANSTATUS-034).
+#[derive(Default, PartialEq, Eq, Debug)]
+pub(crate) struct ScanStatsAgg {
+    pub by_status: std::collections::BTreeMap<&'static str, u64>,
+    pub total_entities: u64,
+    pub total_deduped: u64,
+}
+
+pub(crate) fn aggregate_scan_stats(
+    scans: &[crate::core::scan::Scan],
+    in_flight: &std::collections::HashSet<String>,
+) -> ScanStatsAgg {
+    let mut agg = ScanStatsAgg::default();
+    for scan in scans {
+        // An interrupted row is a `pending` or `running` row nobody is
+        // running; counting it under its status is what made `/stats` report
+        // a dead scan as in progress forever (REQ-SCANSTATUS-001, -002).
+        let bucket = if scan.is_interrupted(Some(in_flight)) {
+            "interrupted"
+        } else if scan.finalise_incomplete() {
+            match scan.status {
+                crate::core::scan::ScanStatus::Aborted => "aborted_partial",
+                _ => "partial",
+            }
+        } else {
+            scan.status.as_str()
+        };
+        *agg.by_status.entry(bucket).or_insert(0) += 1;
+        agg.total_entities += scan.entity_count as u64;
+        agg.total_deduped += scan.modules_deduped as u64;
+    }
+    agg
+}
+
+pub async fn stats(
+    State(s): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> impl IntoResponse {
+    let store = Arc::clone(&s.store);
+    let scans = match offload_store(move || store.list_scans(10_000)).await {
+        Ok(scans) => scans,
+        Err(e) => return e,
+    };
+    let in_flight = in_flight_scan_ids(&s.cancellations);
+    let ScanStatsAgg {
+        by_status,
+        total_entities,
+        total_deduped,
+    } = aggregate_scan_stats(&scans, &in_flight);
+    let modules = s.engine.modules().len();
+    let live_sessions = s.live.list().len();
+
+    // Surface SeekNow + OathNet + WiGLE budget consumption so operators
+    // can see how much of each daily quota the current process has
+    // burned. All providers share `util::budget::QuotaBudget` so the
+    // wire format is identical; WiGLE has four sub-budgets (geo /
+    // bssid / cell / bluetooth) so its block nests one level deeper.
+    let seeknow = budget_block(crate::util::see_know::budget_snapshot());
+    let oathnet = budget_block(crate::util::oathnet::budget_snapshot());
+    let wigle = crate::modules::wigle::budget_snapshot();
+    let wigle_account = crate::modules::wigle::account_status();
+    // The operator's own WiGLE account username is identity, so it is exposed
+    // only to a loopback peer — the same gate every key/account endpoint
+    // (`/keys/*`, settings) already applies. Under an operator-chosen LAN bind a
+    // non-loopback client still gets the full dashboard feed, minus this one
+    // field; `verified` / `last_polled_ts` are non-identifying status and stay.
+    let wigle_user = if peer.ip().is_loopback() {
+        wigle_account.user
+    } else {
+        None
+    };
+    let wigle_block = json!({
+        "geo":       budget_block(wigle.geo),
+        "bssid":     budget_block(wigle.bssid),
+        "cell":      budget_block(wigle.cell),
+        "bluetooth": budget_block(wigle.bluetooth),
+        "account":   {
+            // `verified == false` means the WiGLE account has not yet
+            // confirmed the email-verification step, which gates the
+            // database queries (operator-facing warning). `null` means
+            // we haven't polled `/profile/user` yet this process. WiGLE
+            // exposes no per-call usage endpoint, so quota counts aren't
+            // reported here.
+            "verified":           wigle_account.verified,
+            "user":               wigle_user,
+            "last_polled_ts":     wigle_account.last_polled_ts,
+        },
+    });
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "scans_total": scans.len(),
+            "scans_by_status": by_status,
+            "entities_total": total_entities,
+            "modules_deduped_total": total_deduped,
+            "modules": modules,
+            "live_sessions": live_sessions,
+            "version": crate::VERSION,
+            "seeknow": seeknow,
+            "oathnet": oathnet,
+            "wigle":   wigle_block,
+        })),
+    )
+        .into_response()
+}
+
+/// Convert a [`crate::util::budget::BudgetSnapshot`] into the
+/// JSON shape used by the `/api/v1/stats` endpoint. Centralised so
+/// every quota-spending provider serialises identically.
+fn budget_block(snap: crate::util::budget::BudgetSnapshot) -> Value {
+    json!({
+        "scan_used":       snap.scan_used,
+        "scan_cap":        snap.scan_cap,
+        "session_used":    snap.session_used,
+        "session_cap":     snap.session_cap,
+        "quota_exhausted": snap.quota_exhausted,
+    })
+}
+
+pub async fn version() -> Json<Value> {
+    // `version` alone cannot distinguish two builds from different `main`
+    // commits between version bumps, which is how a stale install passed for a
+    // current one. `commit`/`dirty` name the exact revision; `verifiable` says
+    // whether that name can be trusted (a dirty build is not its SHA).
+    Json(json!({
+        "version": crate::VERSION,
+        "commit": crate::BUILD_SHA,
+        "dirty": crate::BUILD_DIRTY,
+        "verifiable": crate::build_sha_is_verifiable(),
+        "build_id": crate::build_id(),
+    }))
+}
+
+/// Search-engine liveness panel data. Serves the latest cached sweep (populated
+/// by the periodic + startup background task in `hse serve`); if no sweep has run
+/// yet, runs one lazily. Each engine reports up/blocked/down + latency + result
+/// count. Backs the web liveness panel and `hse engines`.
+pub async fn engines_health() -> Json<Value> {
+    use crate::modules::search_engines::health::{EngineStatus, cached_or_empty};
+    // Serve the cached sweep (instant, hermetic); never probe on the request
+    // path. The startup/periodic sweep in `hse serve` populates it; a cold cache
+    // returns an empty snapshot and the panel auto-refreshes.
+    let snap = cached_or_empty();
+    let count = |st: EngineStatus| snap.engines.iter().filter(|h| h.status == st).count();
+    let engines: Vec<Value> = snap
+        .engines
+        .iter()
+        .map(|h| {
+            json!({
+                "engine": h.name,
+                "status": h.status.as_str(),
+                "latency_ms": h.latency_ms,
+                "results": h.results,
+                "detail": h.detail,
+                // True when this engine has been silenced for the current scan
+                // after returning nothing for 3+ consecutive seeds.
+                "session_dead": crate::modules::search_engines::session_dead(h.name),
+            })
+        })
+        .collect();
+    Json(json!({
+        "checked_at": snap.checked_at,
+        "total": snap.engines.len(),
+        "up": count(EngineStatus::Up),
+        "blocked": count(EngineStatus::Blocked),
+        "down": count(EngineStatus::Down),
+        "engines": engines,
+    }))
+}
+
+/// Shape a module-health snapshot into the `GET /api/v1/modules/health` wire
+/// JSON. Split out of the handler so the mapping is unit-testable without
+/// depending on the live process-global health state — that state is shared
+/// across the whole test binary (mirrors why `app::doctor::format_module_health`
+/// takes a plain [`crate::core::engine::ModuleHealth`] rather than reading the
+/// global directly).
+pub(crate) fn module_health_json(unhealthy: &[crate::core::engine::ModuleHealth]) -> Value {
+    let modules: Vec<Value> = unhealthy
+        .iter()
+        .map(|h| {
+            json!({
+                "name": h.name,
+                "consecutive_failures": h.consecutive_failures,
+                "last_success_at": h.last_success_at,
+            })
+        })
+        .collect();
+    let count = modules.len();
+    json!({ "modules": modules, "count": count })
+}
+
+/// `GET /api/v1/modules/health` — every module currently showing a failure
+/// streak this process, worst-first (`PROBLEM_TREE` T2.7 / `SOLUTION_TREE`
+/// SOL-HEALTH-SIGNAL). Empty `modules: []` on a freshly-started or fully
+/// healthy process — mirrors `hse doctor`'s "quiet unless something's
+/// actually wrong" behaviour, the same live dispatch-outcome data that
+/// backs it, just reachable from the web/API surface instead of only the CLI.
+pub async fn modules_health() -> Json<Value> {
+    Json(module_health_json(
+        &crate::core::engine::module_health_report(),
+    ))
+}
+
+/// `GET /api/v1/health/scrapers` — per-source scraper health (`PROBLEM_TREE`
+/// T2.7 / `SOLUTION_TREE` SOL-HEALTH-SIGNAL), the SPA counterpart of `hse
+/// doctor`'s "Scraper health" section: derived from the persisted
+/// `ModuleDone`/`ModuleError` event log across ALL scans (a rolling window,
+/// not just the current one — see [`crate::util::scraper_health`]'s doc), so
+/// a source that has errored on every one of its last N dispatches is
+/// visible even if those scans ran days ago in unrelated invocations. Powers
+/// the Engines page's "Scraper health" panel.
+pub async fn scraper_health(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    use crate::util::scraper_health::{RECENT_EVENTS_WINDOW, aggregate_source_health};
+
+    let store = Arc::clone(&s.store);
+    let events =
+        match offload_store(move || store.recent_module_outcome_events(RECENT_EVENTS_WINDOW)).await
+        {
+            Ok(events) => events,
+            Err(e) => return e,
+        };
+    let health = aggregate_source_health(&events);
+    let drifted: Vec<Value> = health
+        .iter()
+        .filter(|h| h.is_drifted())
+        .map(|h| {
+            json!({
+                "module": h.module,
+                "consecutive_failures": h.consecutive_failures,
+                "last_success_at": h.last_success_at,
+                "last_error": h.last_error,
+            })
+        })
+        .collect();
+    // Silent zero-yield ("parse-rate") drift: a module that completes
+    // without erroring but has quietly stopped finding anything, on a
+    // source proven capable of yielding — distinct from `drifted` above.
+    let yield_drifted: Vec<Value> = health
+        .iter()
+        .filter(|h| h.is_yield_drifted())
+        .map(|h| {
+            json!({
+                "module": h.module,
+                "consecutive_zero_yield": h.consecutive_zero_yield,
+                "last_success_at": h.last_success_at,
+            })
+        })
+        .collect();
+    Json(json!({
+        "tracked": health.len(),
+        "events_checked": events.len(),
+        "drifted_threshold": crate::util::scraper_health::DRIFTED_THRESHOLD,
+        "drifted": drifted,
+        "yield_drift_threshold": crate::util::scraper_health::YIELD_DRIFT_THRESHOLD,
+        "yield_drifted": yield_drifted,
+    }))
+    .into_response()
+}
+
+/// Shape a live capability-probe sweep into the `GET /api/v1/capabilities/probe`
+/// wire JSON. Split out of the handler so the mapping is unit-testable without
+/// touching the network (the handler just runs the real fleet probe and hands
+/// its reports here).
+pub(crate) fn capability_probe_json(
+    reports: &[crate::selftest::capability_probe::ProbeReport],
+) -> Value {
+    use crate::selftest::capability_probe::{ProbeOutcome, is_canary};
+
+    let (
+        mut alive,
+        mut empty,
+        mut unreachable,
+        mut timed_out,
+        mut rate_limited,
+        mut blocked,
+        mut skipped,
+        mut panicked,
+    ) = (
+        0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
+    );
+    let modules: Vec<Value> = reports
+        .iter()
+        .map(|r| {
+            let (outcome, found, reason) = match &r.outcome {
+                ProbeOutcome::Alive { found } => {
+                    alive += 1;
+                    ("alive", Some(*found), None)
+                }
+                ProbeOutcome::Empty => {
+                    empty += 1;
+                    ("empty", None, None)
+                }
+                ProbeOutcome::Unreachable { reason } => {
+                    unreachable += 1;
+                    ("unreachable", None, Some(reason.clone()))
+                }
+                ProbeOutcome::TimedOut => {
+                    timed_out += 1;
+                    ("timed-out", None, None)
+                }
+                ProbeOutcome::RateLimited { reason } => {
+                    rate_limited += 1;
+                    ("rate-limited", None, Some(reason.clone()))
+                }
+                ProbeOutcome::Blocked { reason } => {
+                    blocked += 1;
+                    ("blocked", None, Some(reason.clone()))
+                }
+                ProbeOutcome::Skipped { class, reason } => {
+                    skipped += 1;
+                    (
+                        "skipped",
+                        None,
+                        Some(format!("{}: {reason}", class.as_str())),
+                    )
+                }
+                ProbeOutcome::Panicked { message } => {
+                    panicked += 1;
+                    ("panicked", None, Some(message.clone()))
+                }
+            };
+            json!({
+                "module": r.module,
+                "kind": r.kind.canonical_str(),
+                "value": r.value,
+                "outcome": outcome,
+                "found": found,
+                "reason": reason,
+                "canary": is_canary(r.module),
+                "drift": r.is_confirmed_drift(),
+                // A canary that answered nothing on any of its retried
+                // attempts — provider down or endpoint retired; distinct from
+                // drift (the wire shape was never seen) and from a tolerated
+                // non-canary transport failure.
+                "dead_canary": r.is_dead_canary(),
+            })
+        })
+        .collect();
+    let drift: Vec<&str> = reports
+        .iter()
+        .filter(|r| r.is_confirmed_drift())
+        .map(|r| r.module)
+        .collect();
+    let dead_canaries: Vec<&str> = reports
+        .iter()
+        .filter(|r| r.is_dead_canary())
+        .map(|r| r.module)
+        .collect();
+    json!({
+        "probed": reports.len(),
+        "alive": alive,
+        "empty": empty,
+        "unreachable": unreachable,
+        "timed_out": timed_out,
+        "rate_limited": rate_limited,
+        "blocked": blocked,
+        "skipped": skipped,
+        "panicked": panicked,
+        "drift": drift,
+        "dead_canaries": dead_canaries,
+        "modules": modules,
+    })
+}
+
+/// `POST /api/v1/capabilities/probe` — the **proactive** capability preflight:
+/// probe every keyless module against its real provider right now and report
+/// alive / empty / unreachable / timed-out / rate-limited / blocked / skipped /
+/// panicked per module (a dead canary flagged on its row), flagging
+/// confirmed drift (a curated canary that reached its provider yet parsed
+/// nothing, or any module that panicked on the live response). This is the
+/// on-demand, network-bound HTTP twin of `hse doctor --live`, sharing the exact
+/// probe implementation ([`crate::selftest::capability_probe`]) so the Web UI, the
+/// CLI, and the weekly CI drift sweep can never diverge.
+///
+/// Distinct from the two passive health endpoints: `/modules/health` (this
+/// process's failure streaks) and `/health/scrapers` (persisted cross-scan
+/// drift) both only know what real scans already tried — this one actively
+/// verifies capability before an investigation relies on it. Powers the Engines
+/// page's "Run live capability probe" panel. Bounded concurrency keeps a
+/// full-fleet sweep from opening a socket storm on a low-power Termux device.
+pub async fn capabilities_probe() -> Json<Value> {
+    let reports = crate::selftest::capability_probe::probe_keyless_fleet(8).await;
+    // Persist any confirmed drift so it survives past this one response — the
+    // CLI's offline `hse doctor` can then surface it (see
+    // `capability_probe::recent_confirmed_drift`) without the operator having
+    // to re-run the live probe.
+    crate::selftest::capability_probe::record_confirmed_drift(&reports);
+    // The same for a dead canary: this sweep's reading joins the memory the
+    // next live sweep — here, `hse doctor --live` or the live-drift workflow —
+    // judges against. The panel shows the reading; the verdict is the memory's.
+    crate::selftest::capability_probe::judge_dead_canaries(&reports);
+    Json(capability_probe_json(&reports))
+}
+
+/// `GET /api/v1/selftest` — run the full module + feature self-validation suite
+/// on demand and return the structured report. Powers the Settings page's
+/// "Run self-test" button. Offline + side-effect-free (a throwaway temp DB).
+pub async fn selftest_run() -> impl IntoResponse {
+    Json(crate::selftest::run().await)
+}
+
+/// `GET /api/v1/logs` — download the in-memory verbose debug-log ring buffer as
+/// a text attachment. The buffer captures the project's default TRACE-level
+/// logs for the life of the process (bounded; see `util::log_capture`).
+///
+/// **Loopback-only.** The ring buffer holds TRACE-level logs — scan targets and
+/// discovered PII — the same operator-data class the key-pool and settings
+/// endpoints already restrict. Under a LAN bind it must not stream to arbitrary
+/// peers, so it carries the identical `peer.ip().is_loopback()` gate they do.
+pub async fn logs_download(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> impl IntoResponse {
+    if let Some(rejection) = reject_non_loopback(&peer, "debug logs are loopback-only") {
+        return rejection;
+    }
+    let body = crate::util::log_capture::dump();
+    let filename = format!("hse-debug-{}.log", crate::core::entity::unix_now());
+    crate::api::scan_export::attachment_response(body, "text/plain; charset=utf-8", &filename)
+}
+
+/// `GET /api/v1/logs/tail?after=N` — the **live** counterpart to
+/// [`logs_download`]: return only the verbose-log lines committed since the
+/// caller's cursor, as JSON, so the Web UI can stream the debug log the way the
+/// Termux CLI shows it instead of forcing a whole-file download.
+///
+/// `after` is the [`crate::util::log_capture::Tail::cursor`] from the previous
+/// call (omit or `0` for a first read). The response is
+/// `{ lines: [..], cursor: N, missed: M, dropped: D }`: `cursor` is what to
+/// pass next, `missed` is lines evicted before this read could return them (a
+/// real gap the UI surfaces, never silently skips), and `dropped` is the ring's
+/// all-time eviction count for parity with the download header.
+///
+/// **Loopback-only**, identical to [`logs_download`]: the ring holds TRACE-level
+/// logs — scan targets and discovered PII — so it must never stream to a LAN
+/// peer under a non-loopback bind.
+pub async fn logs_tail(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(rejection) = reject_non_loopback(&peer, "debug logs are loopback-only") {
+        return rejection;
+    }
+    // A malformed/absent `after` reads as 0 (a first read) rather than erroring:
+    // the endpoint is a convenience poll, and 0 is the safe "give me the current
+    // ring" default. `dropped` is derived as cursor - retained so the UI can
+    // show the all-time eviction total without a second lock/endpoint.
+    let after = params
+        .get("after")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let tail = crate::util::log_capture::tail(after);
+    Json(json!({
+        "lines": tail.lines,
+        "cursor": tail.cursor,
+        "missed": tail.missed,
+        "dropped": tail.dropped,
+    }))
+    .into_response()
+}
+
+/// `GET /api/v1/debug/bundle` — the consolidated **system self-diagnosis
+/// bundle**: one download that encompasses the whole engine's diagnostic +
+/// validation state (an auto-computed DETECTED ISSUES verdict, the environment
+/// fingerprint, the full self-test, live + cross-scan module/engine/scraper
+/// health, the recent-scan index with each failed scan's error, the recent
+/// verbose log ring, and the source-file manifest). It joins the otherwise-
+/// scattered `/health` · `/selftest` · `/modules/health` · `/engines/health` ·
+/// `/health/scrapers` · `/logs` surfaces into ONE artifact organised so the
+/// engine can be repaired from this one file. Backs the Settings page's
+/// "Download full diagnostic bundle" button.
+///
+/// **Loopback-only** — like [`logs_download`], the artifact embeds the TRACE
+/// log ring (scan targets + discovered PII), so under a LAN bind it must not
+/// stream to arbitrary peers. Secret-free otherwise (key NAMES only, never
+/// values).
+pub async fn system_debug_bundle(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    State(s): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    if let Some(rejection) = reject_non_loopback(&peer, "the system debug bundle is loopback-only")
+    {
+        return rejection;
+    }
+    // Validation runs against a throwaway temp DB (offline, side-effect-free).
+    let selftest = crate::selftest::run().await;
+    // Store reads are blocking — off the reactor (matches `scan_debug_bundle`).
+    let store = Arc::clone(&s.store);
+    let (scans, events, db_integrity, wal_bytes) = match offload_store(move || {
+        let scans = store.list_scans(200)?;
+        let events = store
+            .recent_module_outcome_events(crate::util::scraper_health::RECENT_EVENTS_WINDOW)?;
+        // Real on-disk DB health. An integrity check that can't even run is
+        // itself a problem, so fold the error into a problem row rather than
+        // dropping it. The `-wal` size is best-effort off the default path
+        // (`None` when overridden / absent — an honest omission, never a false
+        // "healthy").
+        let db_integrity = store
+            .integrity_check()
+            .unwrap_or_else(|e| vec![format!("integrity check could not run: {e}")]);
+        let wal_bytes = std::fs::metadata(format!("{}-wal", crate::default_db_path()))
+            .ok()
+            .map(|m| m.len());
+        Ok((scans, events, db_integrity, wal_bytes))
+    })
+    .await
+    {
+        Ok(tuple) => tuple,
+        Err(e) => return e,
+    };
+    let scraper_events_checked = events.len();
+    let scraper_health = crate::util::scraper_health::aggregate_source_health(&events);
+    // One lock for body + count so the "N lines" header can't disagree with the
+    // dumped body (a line landing between two separate ring locks).
+    let (log_dump, log_lines) = crate::util::log_capture::dump_with_count();
+    // Update / build-freshness snapshot, read once under a poison-safe lock
+    // (mirrors `update_handlers::get_status`), preserving the `Error` payload.
+    let (update_commits_behind, update_last_checked, update_phase) = {
+        let info = s
+            .update_info
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let phase = match &info.phase {
+            crate::api::UpdatePhase::Idle => "idle".to_string(),
+            crate::api::UpdatePhase::Checking => "checking".to_string(),
+            crate::api::UpdatePhase::Applying => "applying".to_string(),
+            crate::api::UpdatePhase::Restarting => "restarting".to_string(),
+            crate::api::UpdatePhase::Error(msg) => format!("error: {msg}"),
+        };
+        (info.commits_behind, info.last_checked, phase)
+    };
+    // Value-free per-service key-pool summary (reuses `keys_status`'
+    // `summarize_pool`; never copies a key value). Mapped to the renderer's own
+    // owned type so `app::export` stays self-contained.
+    let key_pool: Vec<crate::app::export::KeyPoolSummary> =
+        super::settings_handlers::summarize_pool(&crate::util::key_pool::global_pool().snapshot())
+            .into_iter()
+            .map(|q| crate::app::export::KeyPoolSummary {
+                service: q.service,
+                total: q.total,
+                active: q.active,
+                untested: q.untested,
+                rate_limited: q.rate_limited,
+                exhausted: q.exhausted,
+                invalid: q.invalid,
+                revoked: q.revoked,
+                avg_health: q.avg_health,
+            })
+            .collect();
+    let inputs = crate::app::export::SystemDebugInputs {
+        selftest,
+        scans,
+        scraper_health,
+        scraper_events_checked,
+        log_dump,
+        log_lines,
+        key_pool,
+        db_integrity,
+        wal_bytes,
+        update_commits_behind,
+        update_last_checked,
+        update_phase,
+    };
+    // Render off the reactor too: it reads the log ring + spawns `curl` (via the
+    // environment fingerprint) — both blocking — and builds a potentially large
+    // string, so on the ~2-worker reactor it would otherwise stall peers.
+    let body = match offload_store(move || {
+        Ok::<_, crate::core::error::Error>(crate::app::export::render_system_debug_bundle(&inputs))
+    })
+    .await
+    {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let filename = format!("hse-system-debug-{}.txt", crate::core::entity::unix_now());
+    crate::api::scan_export::attachment_response(body, "text/plain; charset=utf-8", &filename)
+}
+
+pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
+    // Built from `Module::info()` — the same `ModuleInfo` the CLI's
+    // `hse modules --json` serializes — so this handler can no longer
+    // independently drift from it on any field's *value* (only the JSON
+    // *key names* below are deliberately kept distinct from `ModuleInfo`'s
+    // own serde names, for backward compatibility with the already-shipped
+    // web SPA, which reads `accepts` where `ModuleInfo` calls the same data
+    // `consumes`). See `modules_list_returns_array` (`tests/api.rs`).
+    let mods: Vec<Value> = s
+        .engine
+        .modules()
+        .iter()
+        .map(|m| {
+            let info = m.info();
+            let cost = serde_json::to_value(info.cost).unwrap_or(Value::Null);
+            json!({
+                "name":              info.name,
+                "priority":          info.priority,
+                "cost":              cost,
+                "passive":           info.passive,
+                "category":          info.category.as_str(),
+                "accepts":           info.consumes,
+                "produces":          info.produces,
+                "description":       info.description,
+                "attack_techniques": info.attack_techniques,
+                "provider":          serde_json::to_value(&info.provider).unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    let count = mods.len();
+    Json(json!({ "modules": mods, "count": count }))
+}
+
+/// Wire shape of `GET /api/v1/modules/graph`.
+///
+/// [`crate::core::dependency::ModuleGraphSummary`] is `#[serde(flatten)]`ed rather than re-listed field
+/// by field, which is how this payload used to be built. Hand-copying meant the
+/// wire format was a second, unchecked definition of a type that already derives
+/// `Serialize`: `terminal_kinds` was added to the summary and silently never
+/// reached a single client, because the handler simply did not mention it.
+/// Flattening keeps the existing top-level keys (`kinds`, `edges`) exactly where
+/// clients expect them while making the struct the only definition.
+#[derive(serde::Serialize)]
+struct ModuleGraphResponse {
+    #[serde(flatten)]
+    graph: crate::core::dependency::ModuleGraphSummary,
+    /// Distinct entity kinds any module emits. Derived, so it is not part of the
+    /// summary itself.
+    produced_kinds: Vec<String>,
+    module_count: usize,
+}
+
+/// `GET /api/v1/modules/graph` — pre-computed module dependency graph.
+///
+/// Returns the per-`TargetKind` dispatch index (with module counts and
+/// normalised richness scores) plus the per-module `consumes/produces`
+/// edges. The SPA renders this as a Sankey-style flow that shows
+/// "what does seed X unlock?" — a Spiderfoot 4.0 capability HSE
+/// surfaces with explicit data-flow declarations.
+pub async fn modules_graph(State(s): State<Arc<AppState>>) -> Json<Value> {
+    let graph = s.engine.graph();
+    let summary = graph.to_summary(s.engine.modules());
+    Json(
+        serde_json::to_value(ModuleGraphResponse {
+            produced_kinds: summary.produced_entity_kinds(),
+            module_count: s.engine.modules().len(),
+            graph: summary,
+        })
+        .unwrap_or_else(|_| json!({})),
+    )
+}
+
+pub async fn entity_get(
+    State(s): State<Arc<AppState>>,
+    Path(uid): Path<String>,
+) -> impl IntoResponse {
+    // Off-reactor: up to three sequential SQLite reads under the global
+    // connection mutex. Running them inline on the async reactor would block it,
+    // unlike every sibling handler here — so the whole read group moves to a
+    // blocking thread.
+    let store = Arc::clone(&s.store);
+    match offload_store(move || -> crate::core::error::Result<Option<_>> {
+        let Some(entity) = store.get_entity(&uid)? else {
+            return Ok(None);
+        };
+        let scan_ids = store.scan_ids_for_entity(&uid)?;
+        let obs_count = store.observation_count(&uid)?;
+        Ok(Some((entity, scan_ids, obs_count)))
+    })
+    .await
+    {
+        Ok(Some((entity, scan_ids, obs_count))) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "entity": entity,
+                "scan_ids": scan_ids,
+                "observation_count": obs_count,
+            })),
+        )
+            .into_response(),
+        Ok(None) => not_found(),
+        Err(e) => e,
+    }
+}
+
+pub async fn search_entities(
+    State(s): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let query = match params.get("q") {
+        Some(q) if !q.trim().is_empty() && q.len() <= 256 => q.trim(),
+        Some(q) if q.len() > 256 => {
+            return bad_request("query too long (max 256 chars)");
+        }
+        _ => {
+            return bad_request("missing or empty 'q' parameter");
+        }
+    };
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50)
+        .min(200);
+    // Off-reactor: the FTS query runs under the global SQLite mutex on a blocking
+    // thread, matching the sibling handlers' discipline.
+    let store = Arc::clone(&s.store);
+    let query_owned = query.to_string();
+    match offload_store(move || store.search_entities(&query_owned, limit)).await {
+        Ok(mut entities) => {
+            // Candidate quarantine, enforced everywhere else an entity-serving
+            // endpoint returns a Vec<Entity> — this is the one search reaches
+            // across the WHOLE database unscoped by scan, so a same-name
+            // stranger a breach search couldn't confirm as the subject (the
+            // canonical CANDIDATE case) must not resurface here after being
+            // held out of every scan-scoped default view.
+            crate::api::scan_handlers::apply_candidate_gate(&mut entities, &params);
+            ok_list("entities", entities)
+        }
+        Err(e) => e,
+    }
+}
+
+// ─── SSE event stream ──────────────────────────────────────────────────────
+//
+// The live event stream (scan progress + log lines pushed to the browser as
+// the graph grows) uses **Server-Sent Events, deliberately not WebSockets**.
+// The channel is strictly one-way (server → browser): there is no client→
+// server messaging over it — control actions (cancel a scan, stop a live
+// session) go through ordinary REST endpoints (`POST /scans/{id}/cancel`,
+// `DELETE /live/{id}`). For one-way server push, SSE is the lighter, simpler
+// fit: it is plain HTTP/1.1 with no upgrade handshake, the browser's native
+// `EventSource` reconnects automatically, and it avoids the bidirectional
+// framing/ping-pong machinery a WebSocket stack would add for zero benefit
+// here — which matters on low-power Termux. axum's `Sse` response sets the
+// `text/event-stream` content-type the `EventSource` client requires; the
+// `scan_events_endpoint_is_server_sent_events` test in `tests/api.rs` pins
+// that wire contract.
+
+const SSE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Build the SSE body stream shared by the scan- and live-event endpoints.
+///
+/// `accept` selects which bus events belong on this stream (by `scan_id` and/or
+/// live-session ownership). Centralising the plumbing here is what keeps the two
+/// endpoints from drifting — every subtle SSE property lives in one place:
+///
+/// * **Lag tolerance** — a slow client that overflows its broadcast buffer
+///   yields `Err(Lagged)`, which falls through to `_ => None`: the missed events
+///   are skipped but the stream stays open (dropping a few live-log lines under
+///   load beats tearing the stream down).
+/// * **Idle timeout** — if no *matching* event arrives within
+///   [`SSE_IDLE_TIMEOUT`] the stream ends, reclaiming a client that vanished
+///   without a clean close (half-open TCP the keep-alive write hasn't tripped
+///   yet). A finished scan stops emitting, so its stream closes ~timeout later,
+///   as intended; the browser's `EventSource` transparently reconnects if the
+///   session is still live (only relevant when an interval exceeds the timeout).
+/// * **Keep-alive** — periodic comment pings hold the connection open and surface
+///   a dead socket promptly via the failing write.
+///
+/// On client disconnect axum drops this stream, dropping the broadcast receiver
+/// and unsubscribing it — so there is no per-connection resource to leak.
+pub(crate) fn sse_event_stream<F>(
+    bus: &EventBus,
+    accept: F,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>> + use<F>>
+where
+    F: Fn(&Event) -> bool + Send + 'static,
+{
+    let stream = BroadcastStream::new(bus.subscribe())
+        .filter_map(move |msg| match msg {
+            Ok(event) if accept(&event) => {
+                let payload = serde_json::to_string(&event.kind).unwrap_or_default();
+                Some(Ok(SseEvent::default().data(payload)))
+            }
+            _ => None,
+        })
+        .timeout(SSE_IDLE_TIMEOUT)
+        .take_while(std::result::Result::is_ok)
+        .filter_map(std::result::Result::ok);
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+pub async fn scan_events_sse(
+    State(s): State<Arc<AppState>>,
+    Path(target_sid): Path<String>,
+) -> axum::response::Response {
+    // A scan this process is neither running nor has stored (it never
+    // existed, or it was deleted) is a 404, the rule `live_events_sse` applies
+    // to sessions (REQ-RESILIENCE-001). `EventSource` does not retry a non-200,
+    // whereas an open stream would sit silent for the idle timeout and then be
+    // reconnected to indefinitely. There is no window between the two checks,
+    // because every id a client can hold was registered before it was handed
+    // out and stays registered until the engine has written the row: a `202`
+    // from a `queue_scan` handler, and a live iteration's `LiveTick` (the loop
+    // reads the id back out of its registry guard, so it cannot announce one
+    // that is not yet in flight).
+    let in_flight = s.cancellations.lock().contains_key(&target_sid);
+    if !in_flight {
+        let store = Arc::clone(&s.store);
+        let sid = target_sid.clone();
+        match offload_store(move || store.get_scan(&sid)).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return not_found(),
+            Err(resp) => return resp,
+        }
+    }
+    sse_event_stream(&s.bus, move |event| event.scan_id == target_sid).into_response()
+}
+
+// ─── Tests (from scan.rs) ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
+}

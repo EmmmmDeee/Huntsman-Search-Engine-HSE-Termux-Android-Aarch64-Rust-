@@ -1,0 +1,946 @@
+//! Breach-record PII extraction for OathNet results.
+//!
+//! Turns a breach row into Email / Username / Phone / Person / IP / Address
+//! entities, gated by target-identity match (`TargetMatch`) so a name search
+//! doesn't emit strangers at full confidence. The shared entity pusher
+//! (`push_oathnet_entity`) lives here too. Reaches parent items via `use super::*`.
+
+use super::*;
+use crate::core::confidence;
+use crate::util::extract::CredentialField;
+
+// ─── Entity extraction ─────────────────────────────────────────────────────
+
+pub(super) fn breach_evidence(item: &Value) -> Evidence {
+    let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
+    let mut ev = Evidence::new(SRC, format!("Breach on {db}")).with_attr("dbname", &db);
+    for (field, attr) in [
+        // The breach's own occurrence date — `util::oathnet::search` additively
+        // stamps this onto the row from the response's sibling `dbname_info`
+        // block (keyed by this row's own `dbname`) when the row doesn't already
+        // carry one. Every entity built from this evidence is `breach`-tagged, so
+        // this is the canonical `breach_date` key AU-019's temporal breach-
+        // cluster rule (`rules/breach.rs`) reads — without it, oathnet-sourced
+        // hits (a paid, high-quality breach source) could never date-cluster
+        // with HIBP/IntelX/xposed_or_not/psbdmp/niamonx/hudsonrock.
+        ("breach_date", "breach_date"),
+        // Account join-keys — the email/username this record belongs to. The
+        // reused-secret correlator (AU-047) reads these off a leaked secret's
+        // evidence to tie the accounts that share it to one controller, and the
+        // dossier uses them as provenance ("which account leaked this"); the
+        // breach evidence previously omitted them, starving the correlator of the
+        // primary source's join-keys.
+        ("email", "email"),
+        ("username", "username"),
+        ("country", "country"),
+        ("gender", "gender"),
+        ("date_birth", "date_of_birth"),
+        ("created_at", "account_created"),
+        ("language", "language"),
+        ("account_id", "account_id"),
+        ("password", "password"),
+        ("password_hash", "password_hash"),
+        ("salt", "salt"),
+        ("ip", "ip"),
+        ("city", "city"),
+        ("state", "state"),
+        ("postal_code", "postal_code"),
+        ("bio", "bio"),
+        ("location", "location"),
+        ("employer", "employer"),
+        ("company", "employer"),
+        ("organization", "employer"),
+        ("organisation", "employer"),
+        ("workplace", "employer"),
+        ("discordid", "discord_id"),
+        ("instagram", "instagram"),
+        ("linkedin", "linkedin"),
+        ("iban", "iban"),
+        // Australian government identifiers + stated relationships, so the
+        // breach-PII correlators (AU-073/074/075) see them when a dump carries
+        // them. Source-name variants normalise to the canonical key each rule
+        // scans for; absent fields are simply skipped, so these are inert on a
+        // record that doesn't include them.
+        ("tfn", "tfn"),
+        ("tax_file_number", "tfn"),
+        ("medicare", "medicare"),
+        ("medicare_number", "medicare"),
+        ("crn", "crn"),
+        ("centrelink_crn", "crn"),
+        ("drivers_license", "drivers_licence"),
+        ("driver_license", "drivers_licence"),
+        ("license_number", "drivers_licence"),
+        ("passport", "passport"),
+        ("passport_number", "passport"),
+        ("spouse", "spouse"),
+        ("partner", "partner"),
+        ("next_of_kin", "next_of_kin"),
+        ("emergency_contact", "emergency_contact"),
+    ] {
+        // Coerce numbers: breach dumps encode `postal_code`/`account_id`/`discordid`
+        // (and occasionally `date_birth`) as JSON ints, which the string-only read
+        // silently dropped from the evidence the correlators key on.
+        if let Some(v) = val_str_coerce(item, field) {
+            ev = ev.with_attr(attr, &v);
+        }
+    }
+    if let Some(age) = item.get("age") {
+        let s = if age.is_number() {
+            age.to_string()
+        } else {
+            age.as_str().unwrap_or("").to_string()
+        };
+        if !s.is_empty() {
+            ev = ev.with_attr("age", &s);
+        }
+    }
+    if let Some(f) = val_str(item, "followers") {
+        ev = ev.with_attr("followers", &f);
+    }
+
+    // Stamp the grouping attributes the household/associate correlators read off a
+    // Person's evidence — AU-049 (household), AU-050 (shared phone line), AU-051
+    // (same-surname kin) — so those cluster pivots fire on LIVE breach scans, not
+    // only on hand-imported text dossiers. The separate Phone / Address *entities*
+    // minted below are geo/pivot nodes; the clustering rules key off these evidence
+    // attrs (see `core::correlator::rules::assoc::{entity_phones,entity_residences}`).
+    if let Some(phone) = val_str_or_coerce(item, &["phone_number", "phone_national", "phone"]) {
+        ev = ev.with_attr("phone", &phone);
+    }
+    // The `address` attr is stamped only for a STREET-anchored residence: a bare
+    // city/postcode names a region thousands of people share and clustering on it
+    // would fuse strangers into a false household (the `is_specific_residence`
+    // residence gate AU-049/051 apply mirrors this intent). When a street is
+    // present the composed value is identical to the standalone Address entity's,
+    // so a Person's residence key aligns with that anchor node.
+    if let Some(street) = val_str(item, "address_street") {
+        let parts = [
+            Some(street),
+            val_str_coerce(item, "city"),
+            val_str_coerce(item, "state"),
+            val_str_coerce(item, "postal_code"),
+        ];
+        let addr = parts
+            .iter()
+            .flatten()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<&str>>()
+            .join(", ");
+        if !addr.is_empty() {
+            ev = ev.with_attr("address", &addr);
+        }
+    }
+    ev
+}
+
+/// Apply oathnet_pro's standard breach tags (`breach`, `oathnet-pro`, plus any
+/// record-specific `extra_tags` in order) and a cloned evidence record to `e`,
+/// then push it. Centralises the tag+evidence+push tail shared by every
+/// breach-derived entity kind; `extra_tags` preserves the exact serialised tag
+/// order (e.g. `candidate`, `geolocation-lead`, `discord`).
+pub(super) fn push_oathnet_entity(
+    result: &mut ModuleResult,
+    mut e: Entity,
+    ev: &Evidence,
+    extra_tags: &[&str],
+    is_target_row: bool,
+) {
+    e.tag(tags::BREACH);
+    e.tag("oathnet-pro");
+    for t in extra_tags {
+        e.tag(*t);
+    }
+    // (Source-sector tagging is applied universally at engine admission —
+    // `core::engine::enrich::tag_breach_sector` — for EVERY breach pool, so it
+    // is not done per-module here.)
+    // Quarantine policy, enforced in ONE place: a row that doesn't match the
+    // target identity yields CANDIDATE-strength, `candidate`-tagged entities, so
+    // EVERY breach-derived kind — email, username, domain, social handle — is
+    // gated uniformly (the prior code gated only phone/person/ip, letting a name
+    // search emit hundreds of strangers' emails/domains at full 0.70). The
+    // demotion semantics are the shared `Entity::demote_to_candidate`.
+    if !is_target_row {
+        e.demote_to_candidate();
+    }
+    e.add_evidence(ev.clone());
+    result.push(e);
+}
+
+/// Build the subject's breach **dossier** entity from the rows that matched the
+/// subject identity, or `None` when the subject does not appear in the page.
+///
+/// A broad search — above all a `full_name` — returns a page of strangers. The
+/// engine pre-inserts a seed anchor for the subject, so minting a 0.85
+/// `breach`-tagged parent off a ZERO-match page merged a false "breach hit" —
+/// and an aggregate dump of every stranger's name/country/DOB — straight onto
+/// that anchor. Gating on a real match keeps the subject's headline node honest,
+/// and aggregating identity attributes over the MATCHING rows ONLY (never the
+/// whole stranger-laden page) means the dossier reflects the subject's own
+/// records. Attributes are aggregated additively (order-preserving, deduplicated)
+/// so multiple hits and aliases are all retained, never overwritten.
+#[must_use]
+pub(super) fn breach_parent_entity(
+    target: &Target,
+    scan_id: &str,
+    matching: &[Value],
+    total_returned: usize,
+) -> Option<Entity> {
+    if matching.is_empty() {
+        return None;
+    }
+    let match_count = matching.len();
+    let top_dbs = oathnet::top_dbnames(matching, 5);
+    let countries = oathnet::distinct_field(matching, "country");
+    let names = oathnet::distinct_field(matching, "full_name");
+    let genders = oathnet::distinct_field(matching, "gender");
+    let dobs = oathnet::distinct_field(matching, "date_birth");
+    // Dossier-level credential-exposure signal: how many of the subject's own
+    // records leaked a fast, GPU-trivial hash (≈ plaintext once cracked).
+    let fast_hashes = matching
+        .iter()
+        .filter_map(|i| val_str(i, "password_hash"))
+        .filter(|h| identify_password_hash(h).is_some_and(|(_, fast)| fast))
+        .count();
+
+    let mut parent = target.to_entity(confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+    parent.tag(tags::BREACH);
+    parent.tag("oathnet-pro");
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "OathNet: {match_count} matching breach record(s) of {total_returned} — {}",
+            top_dbs.join(", ")
+        ),
+    )
+    .with_attr("hits", match_count.to_string())
+    .with_attr("records_returned", total_returned.to_string())
+    .with_attr("top_dbnames", top_dbs.join(", "));
+    if !countries.is_empty() {
+        ev = ev.with_attr("countries", countries.join(", "));
+    }
+    if !names.is_empty() {
+        ev = ev.with_attr("names", names.join("; "));
+    }
+    if !genders.is_empty() {
+        ev = ev.with_attr("genders", genders.join(", "));
+    }
+    if !dobs.is_empty() {
+        ev = ev.with_attr("dates_of_birth", dobs.join(", "));
+    }
+    if fast_hashes > 0 {
+        ev = ev.with_attr("fast_crackable_hashes", fast_hashes.to_string());
+    }
+    parent.add_evidence(ev);
+    Some(parent)
+}
+
+/// Extract a full page of breach records into entities, enforcing the
+/// candidate-flood cap.
+///
+/// Each row's target-match decision is precomputed by the caller (one pass that
+/// also feeds [`breach_parent_entity`]), passed in as `row_matches` aligned to
+/// `items`. Target-matching rows are always extracted in full; non-matching
+/// strangers are only sampled — at most `MAX_CANDIDATE_ROWS` of them — so a
+/// broad `full_name` search that returns a whole page of unrelated people can't
+/// drown a memory-constrained device in low-value `candidate` entities. API-key
+/// harvesting (`store_api_credential` + `extract_api_keys_from_item`) runs
+/// unconditionally for every row: a leaked tool credential is valuable
+/// independent of whether the row identifies the target, and such keys are rare
+/// enough never to flood.
+pub(super) fn extract_breach_page(
+    items: &[Value],
+    row_matches: &[bool],
+    scan_id: &str,
+    key_fp: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    debug_assert_eq!(
+        items.len(),
+        row_matches.len(),
+        "row_matches must be aligned 1:1 with items"
+    );
+    result.entities.reserve(items.len());
+    let mut candidate_rows = 0usize;
+    for (item, &is_target_row) in items.iter().zip(row_matches) {
+        // Target rows always extract; strangers only up to the cap.
+        if is_target_row {
+            extract_breach_entities_with(item, true, scan_id, key_fp, seen, result);
+        } else if candidate_rows < MAX_CANDIDATE_ROWS {
+            candidate_rows += 1;
+            extract_breach_entities_with(item, false, scan_id, key_fp, seen, result);
+        }
+        // Unconditional — independent of the candidate cap and the target
+        // match (see the doc comment), kept after PII extraction to preserve
+        // the original per-row ordering.
+        store_api_credential(item, SRC, scan_id, seen, result);
+        extract_api_keys_from_item(item, scan_id, SRC, seen, result);
+    }
+}
+
+#[cfg(test)]
+pub(super) fn extract_breach_entities(
+    item: &Value,
+    target_value: &str,
+    scan_id: &str,
+    key_fp: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let is_target_row = TargetMatch::new(target_value).matches(item);
+    extract_breach_entities_with(item, is_target_row, scan_id, key_fp, seen, result);
+}
+
+pub(super) fn extract_breach_entities_with(
+    item: &Value,
+    is_target_row: bool,
+    scan_id: &str,
+    key_fp: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    // Provenance: which provider + which exact API key returned this record
+    // (the source database/website is already on the evidence per row).
+    let ev = breach_evidence(item)
+        .with_attr("provider", "oathnet.org")
+        .with_attr("api_key_origin", key_fp);
+
+    // `is_target_row` (computed once per row by the caller via `TargetMatch`)
+    // decides whether this record belongs to the target. Breach databases hold
+    // millions of records and a broad search — above all a `full_name` —
+    // returns rows for many different people. A non-matching row is NOT
+    // discarded here: `push_oathnet_entity` demotes it to a quarantined
+    // `candidate` (out of the default view and the correlator) so genuine leads
+    // survive without flooding the result with strangers.
+
+    if let Some(email) = val_str(item, "email") {
+        let lower = email.to_lowercase();
+        // Canonicalise before the dedup insert, not the bare lowercase —
+        // `.to_lowercase()` case-folds but does not strip a breach-dump
+        // escape tail or surrounding quote characters the way `Entity::new`
+        // does internally, and this `seen` set is shared with
+        // `breach_rich::extract_breach_entities_with`'s own bio-mined email
+        // dedup (its own doc comment: "the shared `seen` set dedups any
+        // overlap"), which must canonicalise the SAME way or a dirty
+        // spelling from one path and a clean one from the other fail to
+        // dedup against each other despite collapsing onto the identical uid.
+        if looks_like_email(&lower)
+            && seen.insert(crate::core::entity::normalise(&EntityKind::Email, &email))
+        {
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id),
+                &ev,
+                &[],
+                is_target_row,
+            );
+        }
+    }
+
+    if let Some(uname) = val_str(item, "username") {
+        // A bare `.to_lowercase()` case-folds but does not strip a leading `@`
+        // sigil or wrapping quote the way `Entity::new` does internally via
+        // `core::entity::normalise`'s Username arm, so a row spelled "@jordan"
+        // and one spelled "jordan" each earned their own dedup slot here even
+        // though both collapse onto the same uid once constructed.
+        let canonical = crate::core::entity::normalise(&EntityKind::Username, &uname);
+        if canonical.len() >= 3 && seen.insert(canonical) {
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Username, &uname, confidence::HIGH, scan_id),
+                &ev,
+                &[],
+                is_target_row,
+            );
+        }
+    }
+
+    if let Some(ph) = val_str_or_coerce(item, &["phone_number", "phone_national", "phone"])
+        && has_min_digits(&ph, 7)
+        // A bare `.to_lowercase()` is a no-op on digits/punctuation, so two
+        // rows spelling the same number with different formatting each earned
+        // their own `seen` slot — dedup on the canonical form instead, same
+        // as `core::entity::normalise` will construct internally.
+        && seen.insert(crate::core::entity::normalise(&EntityKind::Phone, &ph))
+    {
+        push_oathnet_entity(
+            result,
+            Entity::new(EntityKind::Phone, &ph, confidence::HIGH_PLUS, scan_id),
+            &ev,
+            &[],
+            is_target_row,
+        );
+    }
+
+    if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
+        let t = n.trim();
+        // Some breach databases store `full_name = "{username} {username}"`
+        // when no real name is available (previously observed live: a
+        // scan seeded on this field emitted `Person("rhino-ryno23
+        // rhino-ryno23")`, which the engine expanded into a 123-entity,
+        // 94%-noise child scan) — reject that shape before it ever reaches
+        // the graph.
+        if t.len() >= 4
+            && t.contains(' ')
+            && !is_unusable_person_name(t)
+            && seen.insert(t.to_lowercase())
+        {
+            // Parity with SeekNow: stamp the record's demographics (DOB / gender
+            // / age) as normalized first-class tags on the Person, so OathNet's
+            // subject nodes filter/merge on the same signals SeekNow's do.
+            let id_tags = crate::util::identity::identity_tags(item);
+            let id_refs: Vec<&str> = id_tags.iter().map(String::as_str).collect();
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Person, t, confidence::HIGH_PLUS, scan_id),
+                &ev,
+                &id_refs,
+                is_target_row,
+            );
+        }
+    }
+
+    // Login IPs — the session `ip` AND the last-login `lastip`/`last_ip` are
+    // both geolocation leads tied to the account. snusbase-style records carry
+    // only `lastip`, so reading `ip` alone dropped the subject's login location;
+    // each distinct public address becomes its own lead.
+    for ip_field in ["ip", "lastip", "last_ip"] {
+        if let Some(ip) = val_str(item, ip_field)
+            && is_public_ip(&ip)
+            // A bare clone of the raw string doesn't canonicalise the way
+            // `core::entity::normalise`'s IpAddress arm does (parses and
+            // reformats — collapsing expanded/mixed-case IPv6 and an
+            // IPv4-mapped spelling), so two differently-formatted spellings
+            // of the same address each earned their own dedup slot despite
+            // colliding on the same uid once `Entity::new` constructs them.
+            && seen.insert(crate::core::entity::normalise(&EntityKind::IpAddress, &ip))
+        {
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::IpAddress, &ip, confidence::MEDIUM_PLUS, scan_id),
+                &ev,
+                &["geolocation-lead"],
+                is_target_row,
+            );
+        }
+    }
+
+    if let Some(country) = val_str(item, "country")
+        && !is_absent_marker(&country)
+        && seen.insert(format!("@country:{country}"))
+    {
+        // No centroid is derived from the country. `city_coords` is a gazetteer
+        // of CITIES — its 143 rows are city names and not one is a country, not
+        // even a city-state — so `city_coords(&country)` resolves to nothing for
+        // every country a breach record can carry. This leg existed on the
+        // premise, written into its own comment, of "a country name that happens
+        // to double as a tabulated city"; there is no such row, so it never fired
+        // (REQ-SHODAN-002). The composed-address and free-text-location legs
+        // below geocode strings the gazetteer can actually answer, and they carry
+        // the coordinate for this record. The country still becomes an Address.
+        push_oathnet_entity(
+            result,
+            Entity::new(
+                EntityKind::Address,
+                &country,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            ),
+            &ev,
+            &[],
+            is_target_row,
+        );
+    }
+
+    let street = val_str(item, "address_street");
+    let city = val_str_coerce(item, "city");
+    let state = val_str_coerce(item, "state");
+    // Include the postal code in the composed value (the breach record carries it
+    // — e.g. `23666` for HAMPTON, VA). A postcode-qualified address geocodes to
+    // the ZIP centroid instead of the whole city, the precision the downstream
+    // geocode + geo-correlation chain depends on; it was previously kept only on
+    // the evidence. Postcode alone never forms an address — the city/street gate
+    // still guards that — so a bare ZIP can't mint a useless node.
+    let postal = val_str_coerce(item, "postal_code");
+    if city.is_some() || street.is_some() {
+        let addr = [
+            street.as_deref(),
+            city.as_deref(),
+            state.as_deref(),
+            postal.as_deref(),
+        ]
+        .iter()
+        .flatten()
+        .map(|s| s.trim())
+        // `val_str` rejects empty strings but not whitespace-only ones, so trim
+        // each part and drop any that collapse to nothing — otherwise a blank
+        // `state`/`postal` would leave a `", ,"` gap or a trailing `", "` in the
+        // composed value and degrade geocoding. Also drop an absence sentinel
+        // (`\N`/`NULL`/redaction) part so it can't fuse strangers into one address.
+        .filter(|s| !s.is_empty() && !is_absent_marker(s))
+        .collect::<Vec<&str>>()
+        .join(", ");
+        if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr)
+                // `city_coords` is a many-to-one phrase lookup: this leg and
+                // the free-text-location leg gate on their OWN input text, but
+                // two differently-worded strings (a street address vs. a
+                // free-text location) can resolve to the identical centroid —
+                // so the dedup is keyed on the RESOLVED coordinate, shared
+                // between both legs via this same `seen` set.
+                && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+            {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                );
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("breach");
+                c.tag("oathnet-pro");
+                if !is_target_row {
+                    c.demote_to_candidate();
+                }
+                c.add_evidence(ev.clone());
+                result.push(c);
+            }
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Address, &addr, confidence::HIGH, scan_id),
+                &ev,
+                &[],
+                is_target_row,
+            );
+        }
+    }
+
+    // Free-text `location` field — emitted as an Address hint when no structured
+    // street/city/state address was found (or in addition to it if they differ).
+    // Requires ≥4 chars to filter out empty-string variants and single tokens like
+    // "US" that are already captured as the `country` evidence attribute.
+    if let Some(loc) = val_str(item, "location") {
+        let loc = loc.trim();
+        if loc.len() >= 4
+            && !is_absent_marker(loc)
+            && seen.insert(format!("@loc:{}", loc.to_lowercase()))
+        {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc)
+                // See the composed-address leg above: keyed on the resolved
+                // coordinate (shared `seen` set) so this doesn't mint a second
+                // Coordinates entity for a city that leg already resolved.
+                && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+            {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::SPECULATIVE,
+                    scan_id,
+                );
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("breach");
+                c.tag("oathnet-pro");
+                if !is_target_row {
+                    c.demote_to_candidate();
+                }
+                c.add_evidence(ev.clone());
+                result.push(c);
+            }
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Address, loc, confidence::LOW, scan_id),
+                &ev,
+                &["geo-hint", "free-text-location"],
+                is_target_row,
+            );
+        }
+    }
+
+    if let Some(did) = val_str_coerce(item, "discordid")
+        && seen.insert(format!("@discord:{did}"))
+    {
+        push_oathnet_entity(
+            result,
+            Entity::new(
+                EntityKind::Username,
+                format!("discord:{did}"),
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            ),
+            &ev,
+            &["discord"],
+            is_target_row,
+        );
+    }
+
+    // SteamID64 — parity with SeekNow's identity handling. OathNet shares the
+    // same V2 breach schema, so leaked SteamID64s appear here too; gate them by
+    // the shared strict heuristic and mint the same `steam:<id>` Username pivot
+    // (which feeds the gaming-endpoint expansion) instead of discarding them.
+    if let Some(sid) = val_str_or_coerce(item, &["steam_id", "steamid", "steam_id64"])
+        && crate::util::identity::looks_like_steam_id(&sid)
+        && seen.insert(format!("@steam:{sid}"))
+    {
+        push_oathnet_entity(
+            result,
+            Entity::new(
+                EntityKind::Username,
+                format!("steam:{sid}"),
+                confidence::MEDIUM_PLUS,
+                scan_id,
+            ),
+            &ev,
+            &["steam"],
+            is_target_row,
+        );
+    }
+
+    if let Some(ig) = val_str(item, "instagram")
+        // Absence gate — the same `is_absent_marker` the country / location /
+        // organisation emitters in this file already apply. It was never wired
+        // here, so a `\N` or `[NOT_SAVED]` column minted a Username entity that
+        // the engine then dispatches to username_search / search_engines as a
+        // live pivot.
+        && !is_absent_marker(&ig)
+        // A bare `.to_lowercase()` doesn't strip a leading `@` sigil or
+        // wrapping quote the way `Entity::new` does internally, so "@jordan"
+        // and "jordan" each earned their own dedup slot despite colliding on
+        // the same uid once constructed.
+        && seen.insert(format!(
+            "@ig:{}",
+            crate::core::entity::normalise(&EntityKind::Username, &ig)
+        ))
+    {
+        push_oathnet_entity(
+            result,
+            Entity::new(EntityKind::Username, &ig, confidence::MEDIUM_HIGH, scan_id),
+            &ev,
+            &["instagram"],
+            is_target_row,
+        );
+    }
+
+    // LinkedIn handle — unlocks proxycurl (paid LinkedIn enrichment).
+    // The field may contain a URL or a bare handle. Emit as Url if it
+    // looks like a URL, else as Username with a linkedin: prefix.
+    // Absence-gated for the same reason as `instagram` above: without it the
+    // bare-handle branch minted `linkedin:\N` / `linkedin:[not_saved]`, which
+    // reads as a real LinkedIn identity and unlocks the paid proxycurl leg.
+    if let Some(li) = val_str(item, "linkedin").filter(|s| !is_absent_marker(s)) {
+        let lower = li.to_lowercase();
+        if lower.contains("linkedin.com") {
+            if seen.insert(format!("@li:{lower}")) {
+                let url_val = if lower.starts_with("http") {
+                    li
+                } else {
+                    format!("https://{li}")
+                };
+                push_oathnet_entity(
+                    result,
+                    Entity::new(EntityKind::Url, &url_val, confidence::MEDIUM_PLUS, scan_id),
+                    &ev,
+                    &["linkedin"],
+                    is_target_row,
+                );
+            }
+        } else if seen.insert(format!("@li-handle:{lower}")) {
+            push_oathnet_entity(
+                result,
+                Entity::new(
+                    EntityKind::Username,
+                    format!("linkedin:{li}"),
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                ),
+                &ev,
+                &["linkedin"],
+                is_target_row,
+            );
+        }
+    }
+
+    // Employer / company → Organisation entity. Breach dumps from LinkedIn,
+    // dating apps, and e-commerce platforms frequently carry an employer or
+    // company field. Emitting it as Organisation feeds the employer_pivot and
+    // opencorporates chains — mirroring the see_know extractor.
+    for k in [
+        "employer",
+        "company",
+        "organization",
+        "organisation",
+        "workplace",
+    ] {
+        if let Some(org) = val_str(item, k) {
+            let org = org.trim();
+            if org.len() >= 2
+                && !is_absent_marker(org)
+                && seen.insert(format!("@org:{}", org.to_ascii_lowercase()))
+            {
+                let mut oe =
+                    Entity::new(EntityKind::Organisation, org, confidence::MEDIUM, scan_id);
+                oe.tag("oathnet");
+                oe.tag("employer-field");
+                push_oathnet_entity(result, oe, &ev, &[], is_target_row);
+            }
+        }
+    }
+
+    // Email-domain → Domain entity. The breach record carries the
+    // sender/account email's host as a dedicated field. Emitting it
+    // unlocks dns_intel/cert_intel/securitytrails/wayback/cloud_storage
+    // — all free modules — for that domain without further cost.
+    if let Some(ed) = val_str(item, "email_domain") {
+        let lower = ed.to_lowercase();
+        if crate::util::domains::looks_like_domain(&lower)
+            && seen.insert(format!("@edomain:{lower}"))
+        {
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Domain, &lower, confidence::MEDIUM_HIGH, scan_id),
+                &ev,
+                &["email-domain"],
+                is_target_row,
+            );
+        }
+    }
+
+    // Password hash → seed for pwned_passwords (free k-anonymity lookup
+    // confirms whether the hash is in known breach corpora). Emit as a
+    // low-confidence ApiKey entity tagged for that module.
+    if let Some(ph) = val_str(item, "password_hash")
+        // REQ-OATHNET-002. The gate was `ph.len() >= 32` alone, and the entity's
+        // VALUE is the hash string — so any two rows carrying the same long
+        // placeholder mint one shared node and fuse unrelated strangers, which
+        // `is_absent_marker`'s own doc calls "a false positive, the worst kind for
+        // an evidentiary tool". That is REQ-DEHASHED-001's harm in the hash slot.
+        //
+        // Reachability is UNOBSERVED, and the honest claim is no stronger: the
+        // longest capture sentinel this repository records is
+        // `UPGRADE_TO_SEE_FULL_DATA` (24 chars), so nothing known clears the
+        // 32-char floor today. This is the same classification the module already
+        // applies to the plaintext `password` field (below, and in `stealer.rs`),
+        // reaching the one field that was gated on length alone.
+        && !is_absent_marker(&ph)
+        && ph.len() >= 32
+        && seen.insert(format!(
+            "@pwhash:{}",
+            crate::util::str_util::truncate_safe(&ph, 16)
+        ))
+    {
+        // Hash intelligence: classify the algorithm + crackability so the dossier
+        // ranks credential exposure. A present, non-empty `salt` field defeats
+        // rainbow tables even for an otherwise-fast hash.
+        let hash_id = identify_password_hash(&ph);
+        let algo_tag = hash_id.map(|(a, _)| format!("hash:{a}"));
+        let mut extra: Vec<&str> = vec!["password-hash"];
+        if let Some(a) = &algo_tag {
+            extra.push(a);
+        }
+        if let Some((_, fast)) = hash_id {
+            extra.push(if fast {
+                "crackable:fast"
+            } else {
+                "crackable:slow"
+            });
+        }
+        // A salt defeats rainbow tables even for a fast hash. It arrives either as
+        // a dedicated `salt` field (Snusbase) or appended to the digest (OathNet:
+        // `"2f43… _:=j…"`, `"b3dd…,:xpay"`). Detect the appended form as a bare-hex
+        // digest with a non-empty remainder past the first separator — a prefixed
+        // KDF ($argon2/$2a$/…) carries its own salt, is already classified slow,
+        // and its option commas must not be misread as a salt separator.
+        let appended_salt = ph.trim().starts_with(|c: char| c.is_ascii_hexdigit())
+            && ph
+                .trim()
+                .split_once([' ', '\t', ':', ',', ';', '|'])
+                .is_some_and(|(digest, rest)| {
+                    digest.bytes().all(|b| b.is_ascii_hexdigit()) && !rest.trim().is_empty()
+                });
+        if appended_salt || val_str(item, "salt").is_some_and(|s| !s.trim().is_empty()) {
+            extra.push("salted");
+        }
+        // Offline reverse-lookup: if this unsalted digest is a known common
+        // password, recover the plaintext (pure, no network/GPU).
+        let cracked = crate::util::hashcat::crack_common(&ph);
+        if cracked.is_some() {
+            extra.push("cracked");
+        }
+        push_oathnet_entity(
+            result,
+            Entity::new(EntityKind::Password, &ph, confidence::MEDIUM, scan_id),
+            &ev,
+            &extra,
+            is_target_row,
+        );
+        // Synergy: surface the recovered weak plaintext as a first-class node.
+        if let Some(pt) = cracked
+            && seen.insert(format!("@pw:{}", pt.to_lowercase()))
+        {
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Password, pt, confidence::MEDIUM_HIGH, scan_id),
+                &ev,
+                &["cracked", "weak-password", "from-hash"],
+                is_target_row,
+            );
+        }
+    }
+
+    // Plaintext password → first-class Password entity: the canonical secret the
+    // reused-secret correlator (AU-047) and credential-exposure rule (AU-037)
+    // operate on, which the breach extractor never emitted (only the hash). The
+    // per-account dedup key lets the same password under two accounts survive as
+    // two same-value entities that merge by UID into one carrying both accounts'
+    // evidence — exactly the ≥2-account signal AU-047 fires on. Redacted
+    // sentinels and trivial (single-character / too-short) values are skipped.
+    if let Some(pw) = val_str(item, "password") {
+        let p = pw.trim();
+        match crate::util::extract::classify_credential_field(p) {
+            // A capture sentinel ([fail], UPGRADE_TO_SEE…) is not a secret — drop it.
+            CredentialField::Sentinel => {}
+            // An email mis-stored in the password slot is a lead, not a secret:
+            // minting it as a Password would forge a reused-secret link across every
+            // row with the same quirk. Recover it into the email pipeline instead,
+            // at modest confidence (the field placement is itself suspect).
+            CredentialField::Email => {
+                let lower = p.to_lowercase();
+                if seen.insert(format!("@pw-email:{lower}")) {
+                    push_oathnet_entity(
+                        result,
+                        Entity::new(EntityKind::Email, p, confidence::LOW_MEDIUM, scan_id),
+                        &ev,
+                        &["recovered-from-password"],
+                        is_target_row,
+                    );
+                }
+            }
+            CredentialField::Secret => {
+                let len = p.chars().count();
+                let first = p.chars().next();
+                let varied = p.chars().any(|c| Some(c) != first);
+                let acct = val_str(item, "email")
+                    .or_else(|| val_str(item, "username"))
+                    .unwrap_or_default()
+                    .to_lowercase();
+                if (6..=128).contains(&len)
+                    && varied
+                    && seen.insert(format!("@pw:{}:{acct}", p.to_lowercase()))
+                {
+                    push_oathnet_entity(
+                        result,
+                        Entity::new(EntityKind::Password, p, confidence::MEDIUM_HIGH, scan_id),
+                        &ev,
+                        &["plaintext-password"],
+                        is_target_row,
+                    );
+                }
+            }
+        }
+    }
+
+    // IBAN — a leaked bank-account number. Emit ONLY when the ISO 7064 mod-97
+    // check digit validates, so a redacted sentinel or a transcription error in
+    // the `iban` field never mints a bogus financial artifact. There is no
+    // dedicated financial EntityKind, so it lands as `Other("iban")`, tagged
+    // `financial` for the dossier/export.
+    if let Some(iban) = val_str(item, "iban")
+        && iban_is_valid(&iban)
+        && seen.insert(format!(
+            "@iban:{}",
+            iban.replace(|c: char| c.is_whitespace(), "").to_uppercase()
+        ))
+    {
+        push_oathnet_entity(
+            result,
+            Entity::new(
+                EntityKind::Other("iban".to_string()),
+                iban.trim(),
+                confidence::HIGH_PLUS,
+                scan_id,
+            ),
+            &ev,
+            &["iban", "financial"],
+            is_target_row,
+        );
+    }
+
+    // Additional social handles → Username pivots (mirroring the instagram
+    // handler above). Each unlocks username_search / search_engines for free, so
+    // extracting them squeezes more reach from a breach query already paid for.
+    // Redacted sentinels and out-of-range junk are filtered.
+    for (field, platform) in [
+        ("telegram", "telegram"),
+        ("twitter", "twitter"),
+        ("snapchat", "snapchat"),
+        ("facebook", "facebook"),
+        ("github", "github"),
+        ("tiktok", "tiktok"),
+        ("reddit", "reddit"),
+    ] {
+        if let Some(handle) = val_str(item, field) {
+            let h = handle.trim().trim_start_matches('@');
+            // `h.to_lowercase()` case-folds but does not strip a wrapping quote
+            // character (a CSV/SQL-dump export artifact) the way `Entity::new`
+            // does internally via `normalise`'s Username arm, so a dirty and a
+            // clean spelling of the same handle each earned their own dedup
+            // slot despite colliding on the same uid once constructed.
+            // `is_absent_marker`, not the narrower `is_redacted_sentinel` this used
+            // call: the latter matched only `UPGRADE_TO_SEE` / `REDACTED`, a
+            // STRICT SUBSET (`is_placeholder_secret`'s own first branch covers
+            // both), so the SQL-dump NULL `\N` — length 2, inside the window
+            // below — and every bracketed form (`[NOT_SAVED]`, `[fail]`,
+            // `<empty>`) minted a handle. One absence authority, tree-wide
+            // (`core::validation::is_absent_marker`, REQ-NAMEGATE-001).
+            if (2..=64).contains(&h.len())
+                && !is_absent_marker(h)
+                && seen.insert(format!(
+                    "@{platform}:{}",
+                    crate::core::entity::normalise(&EntityKind::Username, h)
+                ))
+            {
+                push_oathnet_entity(
+                    result,
+                    Entity::new(EntityKind::Username, h, confidence::MEDIUM_HIGH, scan_id),
+                    &ev,
+                    &[platform],
+                    is_target_row,
+                );
+            }
+        }
+    }
+
+    // Free-text `bio` mining — a profile bio routinely carries an alternate
+    // contact email or phone the structured columns miss. Reuse the canonical
+    // scanner-grade extractors (one definition of "what an email/phone looks like
+    // in free text") so this never drifts from the rest of the engine. Lower
+    // confidence than a structured field: these are inferred from prose.
+    if let Some(bio) = val_str(item, "bio") {
+        for email in crate::util::extract::emails(&bio) {
+            if seen.insert(email.clone()) {
+                push_oathnet_entity(
+                    result,
+                    Entity::new(EntityKind::Email, &email, confidence::MEDIUM_HIGH, scan_id),
+                    &ev,
+                    &["bio-mined"],
+                    is_target_row,
+                );
+            }
+        }
+        for phone in crate::util::extract::phones(&bio) {
+            if seen.insert(format!("@bio-phone:{phone}")) {
+                push_oathnet_entity(
+                    result,
+                    Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM, scan_id),
+                    &ev,
+                    &["bio-mined"],
+                    is_target_row,
+                );
+            }
+        }
+    }
+}

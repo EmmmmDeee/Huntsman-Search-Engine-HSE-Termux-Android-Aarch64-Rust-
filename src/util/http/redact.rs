@@ -1,0 +1,147 @@
+//! Credential and secret redaction for HTTP error bodies and URLs.
+
+/// Mask values for common credential query-param names inside an
+/// arbitrary text blob. Used by [`super::fetch::error_snippet`] before embedding
+/// upstream error bodies in module errors — many providers echo the
+/// request URL in their error response, and HSE keys often ride in
+/// the URL as a `?api_key=…` / `?apiKey=…` query parameter.
+///
+/// The matched names (`api_key`, `apikey`, `key`, `token`, `secret`,
+/// `access_token`, `accesstoken`, `auth`) cover the providers HSE keys directly
+/// (Hunter, WhoisXML, OpenCellID, Shodan, etc.) and the keyed tile servers
+/// `HUNTSMAN_TILE_UPSTREAM` may name (Thunderforest's `?apikey=`). A name
+/// matches in **any ASCII case**: a query parameter's name is spelled by its
+/// provider, not by HSE — `apiKey`, `apikey` and `APIKEY` are all in use — and
+/// a case-exact list had to guess every spelling, so Thunderforest's lowercase
+/// `apikey=` slipped past the camel-case entry (REQ-CRED-003). The redaction
+/// replaces the value with `***` and preserves the surrounding
+/// delimiters (and the name as the text spelled it) so the error message
+/// still reads naturally.
+pub(crate) fn redact_credentials(text: &str) -> String {
+    // Each literal already carries its trailing `=` so the match loop below
+    // compares directly against these bytes — no `format!("{name}=")` needed
+    // (and no per-position, per-name heap allocation: the old code built that
+    // string fresh at EVERY cursor position for EVERY name, up to
+    // `text.len() * CREDENTIAL_PARAMS.len()` allocations for a body with no
+    // credential match at all).
+    //
+    // Written lowercase because they are names, not spellings: the match below
+    // is ASCII-case-insensitive, so `apikey=` is `apiKey=` and `APIKEY=` too.
+    const CREDENTIAL_PARAMS: &[&str] = &[
+        "api_key=",
+        "apikey=",
+        "access_token=",
+        "accesstoken=",
+        "secret=",
+        "token=",
+        "auth=",
+        // `key` deliberately masks ANY `key=<value>` that follows a query
+        // boundary (the `preceded_by_boundary` check below stops it tripping on
+        // mid-word matches like `monkey=`). We accept over-redacting a benign
+        // `?key=…` rather than risk leaking a credential that rides as `?key=…`
+        // — over-redaction in an error string is harmless; under-redaction leaks.
+        "key=",
+    ];
+    // Build on bytes, not chars: copying one byte at a time into a `String`
+    // via `byte as char` would reinterpret every multi-byte UTF-8 sequence as
+    // Latin-1 codepoints and mojibake any non-ASCII error text (e.g. a
+    // provider's localised message). Each redacted run is bounded by an ASCII
+    // delimiter (`name=` … `& \n \r "` / EOF), so copying verbatim byte-runs
+    // never splits a char and the assembled buffer is always valid UTF-8.
+    let mut out: Vec<u8> = Vec::with_capacity(text.len());
+    let mut cursor = 0;
+    let bytes = text.as_bytes();
+    'outer: while cursor < bytes.len() {
+        for name in CREDENTIAL_PARAMS {
+            if bytes
+                .get(cursor..cursor + name.len())
+                .is_some_and(|window| window.eq_ignore_ascii_case(name.as_bytes()))
+            {
+                // Boundary check: the preceding char (if any) should be
+                // a query separator or whitespace — `apiKey=` mid-word
+                // (`monKey=`) shouldn't trip.
+                let preceded_by_boundary = cursor == 0
+                    || matches!(
+                        bytes[cursor - 1],
+                        b'?' | b'&' | b' ' | b'\t' | b'\n' | b'\r' | b'"' | b'\''
+                    );
+                if !preceded_by_boundary {
+                    continue;
+                }
+                let val_start = cursor + name.len();
+                let mut end = val_start;
+                while end < bytes.len() {
+                    let b = bytes[end];
+                    if b == b'&' || b == b' ' || b == b'\n' || b == b'\r' || b == b'"' {
+                        break;
+                    }
+                    end += 1;
+                }
+                if end > val_start {
+                    out.extend_from_slice(&bytes[cursor..val_start]);
+                    out.extend_from_slice(b"***");
+                    cursor = end;
+                    continue 'outer;
+                }
+            }
+        }
+        out.push(bytes[cursor]);
+        cursor += 1;
+    }
+    // Valid UTF-8 by construction (see above); lossy is a defensive fallback
+    // that can't be reached for valid-UTF-8 input.
+    let query_masked = String::from_utf8(out)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+    // Second pass: mask any configured secret value appearing VERBATIM. This
+    // closes the gap where a key embedded in a URL *path* (e.g. IPQS
+    // `/api/json/ip/<KEY>/...`) is echoed back by an upstream error body — the
+    // query-param pass above only catches `name=value` shapes, so a path key
+    // would otherwise survive into the persisted `events` table and SSE stream.
+    // Pooled keys too: a key added via `hse keys add` / the Settings page's
+    // pool endpoints lives only in `~/.huntsman/keys.json`, never in the
+    // process environment, yet it is exactly what a module sends once the
+    // pool fills its slot (`merge_pool_into_env`, `ctx.next_pool_key`) — so
+    // the env pass alone let a pooled key echoed by an upstream error body
+    // through verbatim.
+    let pool = crate::util::key_pool::global_pool().snapshot();
+    redact_literal_secrets(
+        &query_masked,
+        env_secret_values().chain(pool_secret_values(&pool)),
+    )
+}
+
+/// Every key value `pool` holds, whatever its status — a revoked or exhausted
+/// key is still a secret. Pure over a snapshot so it is unit-tested over a
+/// local pool, never the process-global one.
+pub(super) fn pool_secret_values(
+    pool: &crate::util::key_pool::PoolData,
+) -> impl Iterator<Item = String> + '_ {
+    pool.services
+        .values()
+        .flatten()
+        .map(|entry| entry.value.clone())
+}
+
+/// `HUNTSMAN_*` values from the process environment — the operator's configured
+/// keys (loaded via dotenvy at startup). Cheap in-memory read, consulted only on
+/// the error path.
+fn env_secret_values() -> impl Iterator<Item = String> {
+    std::env::vars()
+        .filter(|(k, _)| k.starts_with("HUNTSMAN_"))
+        .map(|(_, v)| v)
+}
+
+/// Mask every `secret` wherever it appears in `text`, regardless of position
+/// (path, query, header echo, body). Length-gated (>= 8) so short non-secret
+/// values aren't touched. Split out from [`redact_credentials`] so it is
+/// unit-testable without mutating the process environment (which is `unsafe`
+/// under `#![forbid(unsafe_code)]`).
+pub(super) fn redact_literal_secrets(text: &str, secrets: impl Iterator<Item = String>) -> String {
+    let mut out = text.to_string();
+    for v in secrets {
+        if v.len() >= 8 && out.contains(v.as_str()) {
+            out = out.replace(v.as_str(), "***");
+        }
+    }
+    out
+}

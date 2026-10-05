@@ -1,0 +1,287 @@
+use super::*;
+
+#[test]
+fn accepts_only_domain() {
+    let m = RdapDomain;
+    assert!(m.accepts(&Target::new(TargetKind::Domain, "x.com")));
+    assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+}
+
+#[test]
+fn ldh_name_matches_query_is_permissive_absent_but_rejects_a_present_mismatch() {
+    // Regression: the RDAP response's own `ldhName` (RFC 9083 — which domain
+    // the record is FOR) was never parsed or cross-checked against the
+    // query at all — a redirect/registry glitch could silently attribute
+    // another domain's registrar/nameservers/status/events to the one
+    // queried.
+    assert!(
+        ldh_name_matches_query(None, "example.com"),
+        "absent ldhName (older/minimal responses) must not itself reject"
+    );
+    assert!(ldh_name_matches_query(Some("example.com"), "example.com"));
+    assert!(
+        ldh_name_matches_query(Some("EXAMPLE.COM."), "example.com"),
+        "case and trailing-dot must not matter"
+    );
+    assert!(
+        !ldh_name_matches_query(Some("evil.example"), "example.com"),
+        "a present, mismatched ldhName must be rejected"
+    );
+}
+
+#[test]
+fn query_domain_reduces_subdomains_to_registrable_base() {
+    // The reported flaw: a `www.`-prefixed Domain entity was queried verbatim
+    // (`rdap.org/domain/www.peekyou.com`) and 404'd. RDAP only resolves the
+    // registered domain, so the lookup must use the eTLD+1.
+    assert_eq!(
+        query_domain(&Target::new(TargetKind::Domain, "www.peekyou.com")).as_deref(),
+        Some("peekyou.com")
+    );
+    // A multi-label public suffix is preserved (no over-trim to the bare suffix).
+    assert_eq!(
+        query_domain(&Target::new(TargetKind::Domain, "shop.example.com.au")).as_deref(),
+        Some("example.com.au")
+    );
+    // An apex domain is unchanged.
+    assert_eq!(
+        query_domain(&Target::new(TargetKind::Domain, "peekyou.com")).as_deref(),
+        Some("peekyou.com")
+    );
+    // A URL target reduces its host the same way.
+    assert_eq!(
+        query_domain(&Target::new(TargetKind::Url, "https://www.peekyou.com/foo")).as_deref(),
+        Some("peekyou.com")
+    );
+    // Empty / hostless values yield no query.
+    assert_eq!(query_domain(&Target::new(TargetKind::Domain, "   ")), None);
+}
+
+#[test]
+fn priority_runs_after_whois() {
+    // Whois (priority 32) is the canonical record holder; rdap fills
+    // structured gaps after. Engine sorts highest-first.
+    assert!(RdapDomain.priority() < 32);
+}
+
+#[test]
+fn slugify_collapses_whitespace_and_lowercases() {
+    assert_eq!(
+        slugify("client transfer prohibited"),
+        "client-transfer-prohibited"
+    );
+    assert_eq!(slugify("Active"), "active");
+    assert_eq!(slugify("a  b   c"), "a-b-c");
+    assert_eq!(slugify("no-spaces"), "no-spaces");
+    assert_eq!(slugify(""), "");
+}
+
+fn resp(json: &str) -> RdapResp {
+    serde_json::from_str(json).expect("should succeed")
+}
+
+fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
+    e.evidence[0].attributes.get(k).map(String::as_str)
+}
+
+#[test]
+fn domain_entity_slugs_status_groups_events_and_surfaces_roles() {
+    let body = resp(
+        r#"{
+          "handle":"D-123",
+          "status":["client transfer prohibited","active"],
+          "events":[
+            {"eventAction":"registration","eventDate":"1997-09-15"},
+            {"eventAction":"transfer","eventDate":"2005-01-01"},
+            {"eventAction":"transfer","eventDate":"2019-03-03"},
+            {"eventAction":"last changed","eventDate":"2024-08-01"}
+          ],
+          "entities":[{"roles":["registrant","technical"]},{"roles":["registrant"]}],
+          "nameservers":[{"ldhName":"ns1.example.com"},{"ldhName":"ns2.example.com"}],
+          "secureDNS":{"delegationSigned":true}
+        }"#,
+    );
+    let e = build_domain_entity("example.com", &body, "s");
+    assert_eq!(e.kind, EntityKind::Domain);
+    assert!(e.has_tag("rdap"));
+    // Status phrases slugified into tags.
+    assert!(e.has_tag("status:client-transfer-prohibited") && e.has_tag("status:active"));
+    assert_eq!(attr(&e, "handle"), Some("D-123"));
+    // Repeated `transfer` action → both dates grouped under one attr.
+    assert_eq!(attr(&e, "event_transfer"), Some("2005-01-01,2019-03-03"));
+    assert_eq!(attr(&e, "event_registration"), Some("1997-09-15"));
+    // Slugified multi-word action key.
+    assert_eq!(attr(&e, "event_last-changed"), Some("2024-08-01"));
+    // Roles deduplicated + sorted; raw PII never present.
+    assert_eq!(attr(&e, "contact_roles"), Some("registrant,technical"));
+    // DNSSEC.
+    assert!(e.has_tag("dnssec:signed"));
+    assert_eq!(attr(&e, "dnssec_signed"), Some("true"));
+    assert_eq!(
+        attr(&e, "nameservers"),
+        Some("ns1.example.com,ns2.example.com")
+    );
+}
+
+#[test]
+fn unsigned_dnssec_and_empty_record_degrade_cleanly() {
+    let signed = build_domain_entity(
+        "x.com",
+        &resp(r#"{"secureDNS":{"delegationSigned":false}}"#),
+        "s",
+    );
+    assert!(signed.has_tag("dnssec:unsigned"));
+
+    // Bare record: only the base tag + summary, every optional attr omitted.
+    let bare = build_domain_entity("x.com", &resp("{}"), "s");
+    assert!(bare.has_tag("rdap"));
+    assert_eq!(attr(&bare, "handle"), None);
+    assert_eq!(attr(&bare, "status"), None);
+    assert_eq!(attr(&bare, "contact_roles"), None);
+    assert_eq!(attr(&bare, "nameservers"), None);
+}
+
+#[test]
+fn ns_ip_entities_extracted_from_glue_records() {
+    let body = resp(
+        r#"{
+          "nameservers":[{
+            "ldhName":"ns1.example.net",
+            "ipAddresses":{"v4":["192.0.2.1"],"v6":["2001:db8::1"]}
+          }]
+        }"#,
+    );
+    let ns = &body.nameservers[0];
+    let ips = build_ns_ip_entities("example.com", ns, "s");
+    assert_eq!(ips.len(), 2);
+    assert_eq!(ips[0].kind, EntityKind::IpAddress);
+    assert_eq!(ips[0].value, "192.0.2.1");
+    assert!(ips[0].has_tag("rdap-ns-glue"));
+    assert_eq!(attr(&ips[0], "nameserver"), Some("ns1.example.net"));
+    assert_eq!(ips[1].value, "2001:db8::1");
+}
+
+#[test]
+fn ns_ip_entities_skips_invalid_and_empty() {
+    let body = resp(
+        r#"{"nameservers":[{"ldhName":"ns.example.net","ipAddresses":{"v4":["not-an-ip",""]}}]}"#,
+    );
+    let ips = build_ns_ip_entities("example.com", &body.nameservers[0], "s");
+    assert!(ips.is_empty());
+}
+
+#[test]
+fn ns_ip_entities_absent_yields_empty() {
+    let body = resp(r#"{"nameservers":[{"ldhName":"ns.example.net"}]}"#);
+    let ips = build_ns_ip_entities("example.com", &body.nameservers[0], "s");
+    assert!(ips.is_empty());
+}
+
+#[test]
+fn ns_entity_tags_and_rejects_blank() {
+    let ns = build_ns_entity("example.com", "NS1.Example.COM.", "s").expect("should succeed");
+    assert_eq!(ns.kind, EntityKind::Domain);
+    // Entity::new normalises domains (lowercase, strip trailing dot).
+    assert_eq!(ns.value, "ns1.example.com");
+    assert!(ns.has_tag("rdap-ns") && ns.has_tag("ns"));
+    assert_eq!(attr(&ns, "parent"), Some("example.com"));
+    // Blank / whitespace name → no entity.
+    assert!(build_ns_entity("example.com", "   ", "s").is_none());
+}
+
+// Verbatim shape of the live registrar entity (github.com → MarkMonitor Inc.,
+// IANA #292): a `registrar`-role entity carrying `vcardArray` fn + `publicIds`.
+const REGISTRAR_JSON: &str = r#"{
+  "entities":[{
+    "roles":["registrar"],
+    "handle":"292",
+    "publicIds":[{"type":"IANA Registrar ID","identifier":"292"}],
+    "vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","MarkMonitor Inc."]]],
+    "entities":[{"roles":["abuse"]}]
+  }]
+}"#;
+
+#[test]
+fn registrar_identity_extracts_name_and_iana_id() {
+    let (name, iana) = registrar_identity(&resp(REGISTRAR_JSON));
+    assert_eq!(name.as_deref(), Some("MarkMonitor Inc."));
+    assert_eq!(iana.as_deref(), Some("292"));
+}
+
+#[test]
+fn registrar_identity_never_surfaces_registrant_pii() {
+    // A registrant/admin vCard `fn` can be a natural person's name — it must
+    // NOT be extracted. Only the `registrar` role yields a name.
+    let body = resp(
+        r#"{"entities":[{
+            "roles":["registrant","administrative"],
+            "vcardArray":["vcard",[["fn",{},"text","Jane Q. Public"]]]
+        }]}"#,
+    );
+    let (name, iana) = registrar_identity(&body);
+    assert_eq!(name, None, "registrant vCard fn must never be surfaced");
+    assert_eq!(iana, None);
+}
+
+#[test]
+fn registrar_identity_absent_registrar_is_none() {
+    let (name, iana) = registrar_identity(&resp(r#"{"entities":[{"roles":["technical"]}]}"#));
+    assert_eq!(name, None);
+    assert_eq!(iana, None);
+}
+
+#[test]
+fn domain_entity_surfaces_registrar_and_iana_tag() {
+    let e = build_domain_entity("github.com", &resp(REGISTRAR_JSON), "s");
+    assert_eq!(attr(&e, "registrar"), Some("MarkMonitor Inc."));
+    assert_eq!(attr(&e, "registrar_iana_id"), Some("292"));
+    // The IANA ID also becomes a tag so the correlator can cluster
+    // same-registrar domains without parsing evidence text.
+    assert!(e.has_tag("registrar-id:292"));
+    // The registrar role is still recorded among contact_roles.
+    assert_eq!(attr(&e, "contact_roles"), Some("registrar"));
+}
+
+#[test]
+fn build_registrar_entity_emits_org_with_iana_and_rejects_short_name() {
+    let oe = build_registrar_entity("github.com", "MarkMonitor Inc.", Some("292"), "s").expect("should succeed");
+    assert_eq!(oe.kind, EntityKind::Organisation);
+    assert_eq!(oe.value, "MarkMonitor Inc.");
+    assert!(oe.has_tag("rdap") && oe.has_tag("registrar"));
+    assert_eq!(attr(&oe, "iana_registrar_id"), Some("292"));
+    // Too-short / blank names never mint an Organisation.
+    assert!(build_registrar_entity("x.com", "  a ", None, "s").is_none());
+}
+
+#[test]
+fn registry_hop_follows_the_bootstrap_redirect_only_to_a_vetted_rdap_url() {
+    let origin = url::Url::parse("https://rdap.org/domain/example.com").unwrap();
+    // The live answer (2026-09-26): rdap.org → the .com registry.
+    assert_eq!(
+        registry_hop(&origin, "https://rdap.verisign.com/com/v1/domain/example.com", "example.com")
+            .map(|u| u.to_string()),
+        Some("https://rdap.verisign.com/com/v1/domain/example.com".to_string())
+    );
+    // A relative Location resolves against the origin.
+    assert_eq!(
+        registry_hop(&origin, "/domain/example.com", "example.com").map(|u| u.to_string()),
+        Some("https://rdap.org/domain/example.com".to_string())
+    );
+    for refused in [
+        "http://rdap.verisign.com/com/v1/domain/example.com", // downgrade
+        "https://169.254.169.254/domain/example.com",         // metadata IP
+        "https://127.0.0.1/domain/example.com",               // loopback
+        "https://10.0.0.5/domain/example.com",                // private
+        "https://[::1]/domain/example.com",                   // v6 loopback
+        "https://localhost/domain/example.com",               // local name
+        "https://printer.local/domain/example.com",           // mDNS name
+        "https://evil.example/login",                         // not an RDAP query
+        "https://attacker.example/not-rdap/domain/collect",   // /domain/ mid-path
+        "https://rdap.verisign.com/com/v1/domain/other.com",  // another domain
+        "https://rdap.verisign.com/com/v1/domain/example.com/x", // extra segment
+        "https://rdap.verisign.com/com/v1/domain/example.com?x=1", // query
+        "ftp://rdap.verisign.com/domain/example.com",         // scheme change
+    ] {
+        assert!(registry_hop(&origin, refused, "example.com").is_none(), "{refused}");
+    }
+}

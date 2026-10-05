@@ -1,271 +1,676 @@
-# Huntsman Recon
+# Huntsman Search Engine (HSE)
 
-Huntsman Recon is a Rust command-line toolkit for local search, guarded HTTP
-fetches, Australian identifier validation, geospatial utilities, and an
-append-only evidence ledger. It is designed to make evidence quality and
-uncertainty visible; a lead or verified claim is not an attribution or ATT&CK
-score.
+[![CI](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/actions/workflows/ci.yml/badge.svg)](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/actions/workflows/ci.yml)
+[![License: Proprietary](https://img.shields.io/badge/license-Proprietary%20%C2%B7%20All%20Rights%20Reserved-red.svg)](#licence)
+[![Rust 1.98+](https://img.shields.io/badge/rust-1.98%2B-orange.svg)](https://www.rust-lang.org)
+[![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-> **Status:** this is the `huntsman-recon` reconstruction, not the previous
-> `hse` monolith. `people` provides a subset of the old monolith's person-lookups.
-> Canonical extracted legacy trees are preserved as read-only reconstruction references;
-> the two historical ZIP references remain byte-pinned at the repository root. See
-> [archive provenance](docs/ARCHIVE_PROVENANCE.md) and [architecture and status](ARCHITECTURE.md).
+**All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
+SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-## Install on Termux (Android arm64)
+Pure-Rust OSINT / GEOINT platform with **196 modules** that runs entirely
+inside **Termux on Android aarch64** with no root. Single binary, embedded
+dark-console Web UI, zero native dependencies, keyless-first.
 
-Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the
-[official GitHub releases](https://github.com/termux/termux-app/releases), then
-run this one-line source install:
+### Application architecture
+
+`src/app` is the public application/composition layer shared by the CLI and
+HTTP adapters. It exclusively owns concrete SQLite and engine construction,
+including shared runtime assembly and store-backed audit, benchmark, diff,
+doctor, and gap workflows; `app::update` owns the update lifecycle. CLI and API
+code provide transport and presentation only, and architecture tests prevent
+presentation code from importing CLI internals or concrete storage.
+
+---
+
+## Install (Termux Android aarch64, no root)
+
+### ⭐ The installer — one line, all-in-one
+
+This **single command is the installation** — it always tracks the latest
+`main`, does **absolutely everything**, and is **safe to re-run** (re-running
+upgrades an existing install in place to the newest version):
+
+> **Termux prerequisite:** Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the [GitHub release](https://github.com/termux/termux-app/releases) — **not** the Play Store (abandoned 2020, broken packages). The installer detects and rejects the Play Store build automatically.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
+```
+
+It installs the toolchain (`rust`, `clang`, `binutils`, `git`, …), clones **or
+updates** the source, builds the release binary (retrying on flaky mobile
+networks), installs `hse` to `$PREFIX/bin`, sets up the `hse-bg` background
+wrapper + optional Termux:Boot autostart, writes the keys template, and runs
+`hse doctor` to verify. **Existing installs are fully handled**: it fetches +
+rebuilds, **preserves your `~/.huntsman.env` keys**, auto-rotates the embedded
+keys on first run, swaps the binary **atomically** (safe even while a server is
+live), and **restarts a running `hse-bg` onto the new build** so the upgrade
+takes effect immediately. Idempotent — re-run any time to upgrade.
+
+**No-build fast path:** the installer prefers a prebuilt aarch64 binary over a
+source compile, trying in order: (1) a precompiled `hse` /
+`hse-aarch64-linux-android` in your **Downloads** folder, then (2) the binary
+published on this repo's [GitHub Releases](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest)
+— **downloaded and verified automatically** (size + ELF + `.sha256` + a
+run-test). Either way: no Rust toolchain, no compile. This is also the
+**fallback when the on-device build can't proceed** — e.g. a broken Termux
+`rust` package that ships no static std — so the install still succeeds. After
+a *source* build it caches the binary back to Downloads, so your next install
+(or another aarch64 phone) takes the instant path automatically. Knobs: point
+at a file with `HSE_PREBUILT=/path/to/hse`, pin a release with
+`HSE_PREBUILT_TAG=vX.Y.Z`, skip the download with `HSE_NO_DOWNLOAD=1`, force a
+source build with `HSE_PREFER_BUILD=1`, or keep your own Termux mirror with
+`HSE_KEEP_MIRROR=1`.
+
+Also works on Debian/Ubuntu and macOS. Full log at `~/.cache/hse-install.log`.
+See [`docs/INSTALL.md`](docs/INSTALL.md) for every install path, knobs
+(`HSE_REF`, `HSE_INSTALL_DIR`, …) and Termux quirks.
+
+Then launch the Web UI:
+
+```bash
+hse serve   # binds 127.0.0.1:8080 (loopback only)
+```
+
+Open **Chrome** (or Firefox) on the phone and go to `http://127.0.0.1:8080`.
+You'll get a dark-console UI — **Dashboard · New Scan · Scans ·
+Live · Engines · Settings** — where **New Scan** drives the engine and each
+scan's results page tabs through a sortable entity browser, a D3 force graph,
+severity-tagged correlations, and a real-time (SSE) event log. The **Settings
+page lets you paste & save API keys** straight from the browser (loopback-only,
+so keys never leave the device).
+
+> That's the whole install: **one command, then `hse serve`, then open
+> `http://127.0.0.1:8080` in Chrome.** Everything below is reference detail.
+
+> **Web & API scans are as thorough as the CLI.** A scan launched from the
+> Chrome SPA's **New Scan** wizard, or via `POST /api/v1/scans` with `options`
+> omitted, uses the same comprehensive defaults as `hse scan` — full depth,
+> expansion floor 0.20, entity cap 2500 — so you get the full seed → identifiers
+> → pivots → infrastructure sweep without tuning anything.
+
+> **Value-per-query is maximised by default (v1.14+).** Every scan — CLI, API,
+> and Web wizard — now runs with **convex (optionality / barbell) budget
+> allocation** on: under the device's bounded budget it spends on cheap,
+> high-upside identity leads (an email, a username) before expensive, already-
+> saturated infrastructure fan-out, so a phone scan returns more of what matters
+> per unit of work. The confident identity core keeps its order — only the
+> uncertain tail and the pricey infrastructure are re-sorted. Opt out with
+> `hse scan --no-convex-budget` or `"convex_budget": false` in the API `options`.
+>
+> **Convex ordering now reaches the queries themselves (v1.19+).** The same
+> barbell logic that ranks *which lead to pivot on* now also orders *which
+> modules fire first for a target* — because a module dispatch **is** a query
+> (bounded HTTP, wall-time, battery, and for paid providers real quota). Under
+> the convex flag the engine dispatches by **query value = optionality ÷ cost**:
+> cheap, keyless, identity-/key-unlocking modules run before expensive, terminal
+> ones, so a scan cut short by the phone's budget (an entity cap, a wall-clock
+> limit, a cancel, a dying battery) has already spent it on the queries that
+> compound. Membership is unchanged — every accepting module still runs when the
+> budget allows — only the order differs, and it is precomputed once so the hot
+> path pays nothing. Preview it per seed at **New Scan → Preview plan** (chips
+> ordered by query value, badged high/moderate/terminal) or
+> `GET /api/v1/plan?value=…`.
+
+> **Capability-aware dispatch (v1.18+) — no budget wasted on dead sources.**
+> The same scans also skip any module whose parser has **provably gone dead**
+> across recent runs — persistent failures or silent zero-yield drift, from the
+> cross-scan health signal — so its dispatch slot goes to a source that still
+> works. It only culls the automatic comprehensive fan-out: an explicit
+> `--modules` set or `hse scan --full` still runs everything, and a quarantined
+> module recovers automatically the moment it returns one healthy result. Opt
+> out with `--no-skip-dead-modules` / `"skip_dead_modules": false`. Together with
+> the live capability probe below, HSE now both *sees* a dead capability and
+> *routes around it* — the durability loop, closed.
+
+> **Live capability probe (v1.14+) — know a source works before you rely on it.**
+> A third-party provider can silently change its response shape and a module's
+> parser goes quiet while its unit tests stay green. **Engines → Run live
+> capability probe** (in the Web UI), `hse doctor --live` (CLI), or
+> `GET /api/v1/capabilities/probe` fires one bounded request per keyless module
+> at its real endpoint and reports **alive / empty / unreachable / timed-out /
+> rate-limited / blocked / skipped / drift** per module, flagging a **dead
+> canary** — the proactive complement to the cross-scan *Scraper health* panel.
+> Loopback-only and bounded, so it is Termux-safe.
+
+> **Termux battery & background (required for long scans):** Android → Settings → Apps → Termux → Battery → set to **Unrestricted** and enable "Allow background data". Without this Android kills Termux mid-scan.
+
+### Manual build (advanced — the installer already does this)
+
+The one-line installer above **is** the supported installation — it always
+pulls and builds the latest `main`, and its built-in no-build fast path
+(Downloads cache, above) covers the prebuilt-binary case. If you'd rather drive
+the build by hand:
+
+```bash
+pkg install -y git rust binutils clang && git clone --depth 1 https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
+```
+
+To upgrade a manual clone, either re-run the all-in-one installer above (it
+detects and updates an in-place clone), or:
+
+```bash
+cd ~/hse && git pull origin main && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
+```
+
+> **Seeing a `Username for 'https://github.com':` prompt?** A public repo
+> never asks for credentials — that prompt means the repository is currently
+> **private**. No password is required once it's public; until then, clone
+> over SSH with a key already on your GitHub account (no typed password):
+> ```bash
+> pkg install -y git rust binutils clang openssh && git clone --depth 1 git@github.com:EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
+> ```
+
+> **Seeing "crate `std` required to be available in rlib format, but was not
+> found in this form" (or the same for `core`/`alloc`/…)?** A broken/partial
+> Termux `rust` package shipped libstd as a dynamic library only, missing the
+> static `.rlib` every build script and proc-macro needs to link against —
+> library crates still compile, so only the build step fails. Not an HSE bug.
+> Fix:
+> ```bash
+> pkg reinstall rust
+> ```
+> then retry the build above. The one-line installer already detects and
+> self-heals this automatically before it starts building.
+
+---
+
+## Deploy (Railway)
 
 ```sh
-pkg update && pkg install -y git rust clang && HUNTSMAN_HIBP_NO_EMBED=1 cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git --locked --root "$PREFIX" huntsman-recon
+railway up
 ```
 
-This builds the current `main` source on-device, installs
-`$PREFIX/bin/huntsman-recon`, and prevents accidental build-time embedding of a
-locally configured HIBP key. Rust 1.87 or newer is required. For prebuilt,
-release-pinned installation, Linux development setup, upgrades, and
-troubleshooting, see [`docs/INSTALL.md`](docs/INSTALL.md).
+Railway builds the repo's `Dockerfile` automatically. Before your first
+deploy: attach a **Volume at `/data`** (state doesn't survive a redeploy
+without one) and set `HSE_AUTH_TOKEN` (Railway binds a public, non-loopback
+address, which HSE gates behind a bearer token). See
+[`docs/RAILWAY.md`](docs/RAILWAY.md) for the full walkthrough, what's already
+wired up (health check, `$PORT` binding, volume-ownership handling), and the
+single-instance constraint (local SQLite — do not scale replicas above 1).
 
-## First commands
+---
 
-```sh
-huntsman-recon --help
-huntsman-recon check
-huntsman-recon search "brisbane port"
+## Quick Start
+
+
+```bash
+hse doctor                                                  # verify environment
+hse modules                                                 # list all 196 modules
+hse engines                                                 # search-engine liveness panel
+hse config                                                  # capability toggles (features/engines/modules)
+hse keys status                                             # multi-key pool: what's loaded, per source
+hse query "melbourne coworking spaces"                      # general web search across the free engines
+hse query "acme.example" --dark                             # dark-web EXPOSURE: onion pages mentioning an asset
+hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
+hse scan --kind domain --value example.com --depth 2        # domain recon
+hse scan --kind email --value user@example.com --free-only  # email pivot (free only)
+hse scan --kind ip --value 1.1.1.1                          # IP geolocation
+hse scan --kind domain --value example.com --format json    # machine-readable output
+hse scan                                                    # bare scan: uses HUNTSMAN_DEFAULT_SEED (optional, see docs/INSTALL.md)
+hse serve                                                   # Web UI → http://127.0.0.1:8080
+hse live --kind domain --value example.com --interval 60    # continuous monitoring
 ```
 
-`check` runs offline self-acceptance. `search` and `sources` are offline.
-`fetch`, `hibp`, `recon`, `seeknow` and `people` (two-token names) make HTTP
-requests and use public-only egress by default.
-Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
-before using credentials or network access.
+**Standard acceptance run** — one command exercises the free, keyless pipeline
+end-to-end on a canonical seed and prints every result **in full with complete
+URLs** (liveness + toggles + a scan dossier), against a throwaway `HOME` so it
+never touches your keys/config:
 
-## Repository map
-
-| Path | Contents |
-| --- | --- |
-| `src/` | The crate: library modules plus the `huntsman-recon` binary (`main.rs`). |
-| `tests/` | Acceptance, CLI, local-HTTP and legacy-reference integration tests; `hibp_build.rs` (build-time key embedding rules); `android_ci.rs` (the CI workflow keeps the aarch64 Android cross-build and its artifact); plus `readme.rs` and `dispositions.rs`, which check this README and `docs/DISPOSITIONS.md` against the binary and `legacy/`. |
-| `var/` | Artifacts written by `check` (`ledger.json`, `navigator.json`, `stix-bundle.json`). CI fails if `check` changes them. |
-| `docs/` | `RECONSTRUCTION_2026-10-02.md` (decisions and falsification passes) and `DISPOSITIONS.md` (per-file accounting of every legacy file). |
-| `legacy/` | Canonical extracted historical reference trees. Not part of the build. |
-| `docs/ARCHIVE_PROVENANCE.md` | SHA-256/Git identities and extracted-tree mapping for the pinned root ZIP references. |
-| `.github/` | `workflows/ci.yml` (tests on Rust 1.87 and stable; aarch64 Android cross-build), `workflows/release.yml` (`main-<sha7>` pre-releases of `huntsman-recon`), `scripts/` (`scan-for-keys.sh`, `install-termux.sh`) and `actions/setup-ndk-aarch64` (NDK compiler and linker environment). |
-| `CHANGELOG.md` | Notable changes, Keep a Changelog format. |
-
-## Which binary to use
-
-| | `hse` (legacy v1.41.0 monolith) | `huntsman-recon` (this tree, in progress) |
-| --- | --- | --- |
-| Person lookups | Yes. Provider modules such as `asic_persons`, `asic_director`, `username_search`, `phone_au` and `bluesky_user` (195 `pub mod` entries in `src/modules/mod.rs` at `7dca720b`), plus `hse scan`, `hse investigate` and `hse serve`. Whether each provider works live has not been re-verified. | **Partial.** `people` calls `asic_persons`, `asic_director`, `au_people` and `au_electoral` for names with at least two alphabetic tokens. `sources` classifies an input (a person or organisation name, an email address, an `@username`, a domain, an IP address or coordinates) and only prints curated public search or browser URLs for it, offline and `LeadOnly`; nothing is fetched. `search` reads only local documents; `hibp` provides explicit opt-in HIBP lookups. |
-| Source | Commit `7dca720b`. The closest copy in this tree is `legacy/hse-monolith-v1.41.0/`, which is read-only and not built; it is not byte-identical to `7dca720b`. | `src/` |
-| Where to get it | GitHub pre-release `main-7dca720` (asset `hse-aarch64-linux-android`, built from `7dca720b`) | A GitHub pre-release `main-<sha7>` (asset `huntsman-recon-aarch64-linux-android`), the CI artifact of the same name from a `main` push (see "Downloads"), or a source build |
-
-`huntsman-recon` is the in-progress replacement, with a subset of the legacy person-lookup providers. Since #672, every push to `main` publishes it as a `main-<sha7>` pre-release. There is no rolling `latest` pre-release: the workflow creates or moves `latest` only when the repository variable `PROMOTE_RECON_TO_LATEST` is `true`, and it is unset. GitHub's "Latest release" is the stable legacy `hse` release `v1.41.0`.
-
-Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands; `check` exercises egress, origin, placeholder and URL-redaction rules as gate 11, without a socket). A challenge page is not a hit. No paid source is called automatically; HIBP is explicit opt-in via the CLI or library. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
-
-For contributors: one Rust package (`huntsman-recon`), Rust 1.87+, no workspace.
-The binary's full command list is available with `huntsman-recon --help`;
-run `huntsman-recon COMMAND --help` for command-specific usage.
-
-```
-cargo test
-cargo run -- check                     # self-acceptance; regenerates var/*.json
-cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
-cargo run -- search "brisbane port"    # built-in fixture
-cargo run -- search "brisbane port" docs/
-cargo run -- sources example.com       # classify + build curated routes; no network
-cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
-cargo run -- id "53 004 085 616"        # ABN/ACN/BSB, strict grouping
-cargo run -- geohash -27.4698,153.0251 9
-cargo run -- coarsen -27.4698,153.0251 # one decimal place, ~11 km
-cargo run -- classify 200 "<html>just a moment cloudflare</html>"
-cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
-cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
-cargo run -- hibp help                   # HIBP subcommands; offline
-cargo run -- seeknow --help              # SeekNow subcommands; offline
-cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network
-cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
-cargo run -- recon crtsh https://example.com/
+```bash
+hse-test                         # after install (PATH); canonical seed Kylo4kylo
+hse-test "<seed>"                # any handle/username
+# developers in a clone (same run, prefers ./target then PATH):
+scripts/standard-test.sh
+scripts/standard-test.sh "<seed>"
 ```
 
-`search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
+### General & dark-web-exposure search — `hse query`
 
-Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys file and the process environment. The file is `NAME=value` lines (`export`, quotes, blank lines and `#` comments allowed; placeholder values count as unset) and is parsed by `keys::Keys::parse`, the parser `--keys FILE` and `keys FILE` use through `Keys::load`.
+Distinct from the entity-oriented `hse scan`, `hse query` runs an everyday
+free-text search across the free keyless engines and returns ranked web results
+— corroboration-weighted (how many independent engines surfaced each URL) and
+deduplicated:
 
-- `--keys FILE` loads exactly that file and nothing else. A file accessible by group/others is an error (exit 66, `run chmod 600`).
-- Without `--keys`, `$HOME/.huntsman.env` is parsed with the same parser when it exists. If the file is missing (not found, or a `HOME` path component is not a directory), or `HOME` is unset, nothing changes: only the environment is used and nothing is printed. An empty or relative `HOME` (`HOME=.`, `HOME=relative/dir`, `HOME=`) behaves the same, except that it prints one warning (`HOME is not an absolute path`, without the value), so the default file never depends on the working directory. The path is checked with `lstat` and is never followed. The file is not read, and the run continues with the environment only after one stderr warning naming the path and the reason, if it is:
-  - a symlink, even to a valid mode-600 file (fix: remove the symlink and create a regular file owned by you with mode 600, or pass `--keys`; `chmod` would follow the link);
-  - not a regular file;
-  - owned by a uid other than the process's effective uid (read from `/proc/self/status`; where that is unavailable, the file is refused and `--keys` is the way to supply it);
-  - accessible by group/others (`mode & 0o077 != 0`; fix with `chmod 600 ~/.huntsman.env`).
-
-  The file is read through the descriptor that was opened. That descriptor must be the same device/inode `lstat` saw and must pass the same checks, so a swap between the check and the read is refused rather than followed. `O_NOFOLLOW` is not set: `OpenOptionsExt::custom_flags` is safe Rust, but the flag value differs per architecture and would need the `libc` crate or a hard-coded per-target table. The remaining gap is a regular file swapped for a FIFO between `lstat` and `open`, which would block the open; that requires write access to `$HOME`.
-- Fail-closed cases are separate from the refusals above. They apply only to a default file that passes those checks, and they return an error instead of a warning. A fetch that requests a credential then exits 66, even if the slot is set in the environment:
-  - a malformed line (`keys line N: ...`, line number only);
-  - content that is not UTF-8;
-  - a file over 64 KiB;
-  - any I/O error other than not found / not a directory (for example a mode-`200` file the owner cannot open, or a `$HOME` that cannot be searched).
-- Precedence: a slot present in the loaded file wins over the same environment variable; slots the file lacks fall back to the environment.
-- The file is read only when a credential slot is requested. Values never appear in output, warnings or errors; only slot names, line numbers and fingerprint prefixes do.
-
-`sources` is offline routing, not collection. It classifies the input using the existing Huntsman classifier and renders only compatible, independently curated public/browser search routes from `source_registry`. Generated routes are `LeadOnly`: a URL is never corroborating evidence by itself. External catalogue code or data is not embedded.
-
-Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch` or `recon` or `seeknow` got no usable response or `people` registers were unusable, 74 artifact write failure, 77 `fetch` or `recon` or `seeknow` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal. `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print help and the usage line.
-
-`tests/readme.rs` runs every offline example above, checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`. Network HIBP examples below are exercised through a fake transport by `tests/hibp_cli.rs` rather than against the internet in CI.
-
-`fetch URL` options (defaults in brackets):
-
-| Option | Effect |
-| --- | --- |
-| `--body` | Print the response body after the status line. |
-| `--allow-private` | Lift the egress policy (otherwise only public addresses are reachable; loopback, private, link-local and metadata addresses exit 77). |
-| `--keys FILE` | Read credential slots from a `NAME=value` file (mode 600 or stricter, at most 64 KiB); slots it lacks fall back to the process environment. Without it, `$HOME/.huntsman.env` is loaded when it exists and passes the checks above; otherwise slots come from the environment only. |
-| `--bearer SLOT` | Send slot `SLOT` as `Authorization: Bearer`. |
-| `--header NAME=SLOT` | Send slot `SLOT` in header `NAME`. Only one of `--bearer`/`--header` per fetch. |
-| `--max-redirects N` | Follow at most `N` redirects, 0–20 [5]. A credential is only sent to the origin it was approved for. |
-| `--timeout SECS` | Per-request timeout, 1–600 [20]. |
-
-Slot names are upper-case environment-variable names (`A-Z`, `0-9`, `_`; starting with a letter; at most 64 characters). Keys are read at run time only: from the environment, from a file you name with `--keys` / `keys FILE`, or, without `--keys`, from `$HOME/.huntsman.env` (see above). Blank values and template placeholders (`insert_key_here`, `<your-key>`, `changeme`, `xxxx`) count as not configured. Output shows a 12-hex-digit fingerprint prefix, never a key value.
-
-`classify` also prints the causal outcome and the source-health action (`outcome=bot_waf`, `action=backoff`). A 403 challenge page is a WAF, not a credential failure. A 200 alone is `inconclusive` until rows are parsed.
-
-The refactor-overlay foundations preserved under `legacy/refactor-overlay-feef60a/` are library modules: `source_outcome` (causal fetch outcome), `evidence_ancestry` (mirrors of one dump count once), `identity_resolution` (non-compensatory merge gate over ancestry), `termination` (fixed point vs bounds), `credential_origin` (found credentials are evidence, never authority), and `eval` (deterministic scoring, bootstrap, promote/hold verdict). `check` gate 5 exercises four of them: `source_outcome` (a 403 Cloudflare challenge page is `BotWaf`, and its recommended action is not `RequireCredential`); `evidence_ancestry` with `identity_resolution` (two mirrors of one dump cannot auto-merge two identities, while a mirror plus an independent registry root can); and `termination` (delayed retry work is not a fixed point). Gate 5 does not exercise `credential_origin` or `eval`. The binary uses `credential_origin` in `fetch` (the operator-approved credential authority) and for the fingerprints that `fetch` and `keys` print. `eval` is not used by the binary at all; only its unit tests exercise it.
-
-Rebuilt monolith utilities: `au_id` (ABN, ACN, BSB), `geohash`, `confidence` (corroboration, ancestry-aware), `redact` (coordinate coarsening, secret scrubbing). `check` exercises them as gate 10.
-
-See `docs/RECONSTRUCTION_2026-10-02.md`.
-
-## HIBP (`hibp` command)
-
-`huntsman-recon hibp SUBCOMMAND` exposes the HIBP v3 and Pwned Passwords client in `huntsman_recon::hibp` (blocking, single crate; the async monolith and both legacy snapshots are unchanged). Requests use the guarded `UreqTransport` and existing fetch boundary, with redirects off and only trusted HIBP/Pwned Passwords HTTPS origins accepted. Nothing calls HIBP unless this command is run.
-
-```
-cargo run -- hibp breach Adobe                 # one breach, full model; no key
-cargo run -- hibp breaches --domain adobe.com  # catalogue, optional domain filter; no key
-cargo run -- hibp password-range 21BD1         # Pwned Passwords k-anonymity range; no key
-cargo run -- hibp account user@example.com     # breached account, untruncated; key
-cargo run -- hibp pastes user@example.com      # pastes for an address; key
-cargo run -- hibp subscription                 # plan, rate and entitlements; key
+```bash
+hse query "who owns example.com"                    # general web search, table output
+hse query "site:gov.au grant register" --format json
+hse query "acme.example" --dark                     # dark-web exposure via Ahmia (clearnet)
 ```
 
-Check one password without putting it on the command line or in shell history:
+`--dark` answers a **defensive** question — *is an asset you control (a domain,
+brand, or email) mentioned on Tor-indexed onion pages?* — by querying Ahmia's
+clearnet index. It reports the mention as evidence of exposure and never fetches
+the onion address itself.
 
-```
-read -rs PW && printf '%s\n' "$PW" | huntsman-recon hibp password; unset PW
-```
+### DoRkUS — the meta search engine — `hse dorkus`
 
-`password` reads one line from stdin (at most 4096 bytes after the `\n`/`\r\n` terminator is stripped), SHA-1 hashes it locally and sends only the first 5 hex characters to `GET https://api.pwnedpasswords.com/range/{prefix}` with `Add-Padding: true`. The suffix is matched locally. The password, the full hash and the suffix are never sent, printed, logged or included in an error. The password and hash buffers are overwritten with zeros after use (best effort without `unsafe`; copies in stdin's read buffer are not reached).
+Where `hse query` reaches one surface at a time (clearnet engines, or `--dark`
+for the onion index), **DoRkUS runs both at once** — the clearnet multi-engine
+fan-out and the dark-web (Ahmia) exposure index — concurrently within one time
+budget, and prints one aggregated, source-attributed report. The query is passed
+through verbatim, so search-operator **dorks** (`site:`, `intitle:`, `inurl:`,
+quoted phrases) work as the underlying engines support them:
 
-Output is `key=value` lines. Each run starts with `source=HIBP`, `service=` (`api-v3` or `pwned-passwords`), `source_attribution=` and `results=N`. Breach/account output preserves the complete parsed model; pastes preserve every parsed paste field; `password-range` drops zero-count padding entries; `subscription` reports plan/rate/entitlement fields and `key_source=`, never the key. Results are never intentionally truncated.
-
-For `breach`, `breaches`, `account` and `pastes`, a 404 is `results=0` with exit 0; for `subscription` and `password-range` it is an error (exit 69). HIBP uses the same process exit-code space: 64 usage, 65 invalid input or HTTP 400, 66 no API key for keyed lookups, 69 upstream unavailable/malformed/rate-limited, and 77 HTTP 401/403 or unavailable entitlement.
-
-Not exposed by this command: domain search, subscribed domains, domain verification, email sending, stealer-log searches, k-anonymity account-range search, latest breach, data classes, NTLM mode and OAuth. Domain verification and email-sending endpoints are not implemented at all.
-
-This command is **provider-specific reachability, not the unified people-lookup pipeline**. It does not yet convert HIBP responses into the common `entity::Evidence`/lineage/identity-resolution/saved-result path.
-
-## Recon sources: crt.sh, DNS/mail, and stolen.tax
-
-`recon crtsh TARGET` accepts a domain, URL or email and queries crt.sh with a
-30-second timeout. HTTP 502, 503 and 429 responses are retried at most twice,
-two seconds apart; challenge pages are never retried. Results include distinct
-SAN names and non-public issuing CAs. Wildcard names, role or infrastructure
-mailboxes, and public-CA issuers are filtered; subdomains of the target apex
-carry the `subdomain` tag. Output is
-`kind<TAB>value<TAB>confidence<TAB>tags`, with control characters escaped.
-
-`recon dns TARGET` accepts a domain, URL or email and queries Cloudflare, Quad9
-and Google DNS-over-HTTPS (JSON) for apex A, AAAA, MX, NS and TXT, plus
-`_dmarc` and `_smtp._tls` TXT, through `fetch` with redirects off. One
-record-type failure does not abort the others. A challenge page is `bot_waf`,
-a truncated body is `truncated`, and HTTP 429 is `rate_limited`; none of those
-is parsed as DNS JSON. Quoted TXT presentation is decoded before SPF (RFC 7208),
-DMARC (RFC 7489) and TLSRPT (RFC 8460) parsing. Output is
-`type<TAB>name<TAB>rdata<TAB>resolver` lines, then `spf_all=`, `dmarc_policy=`
-and `tlsrpt_emails=` when those records parse, plus `failed` rows. An invalid
-selector exits 65 before any request; no usable answer exits 69. DoH is
-keyless. There is no live receipt in CI.
-
-`recon stolen-tax QUERY [--keys FILE]` is an explicit paid lookup requiring
-`HUNTSMAN_STOLEN_TAX_KEY`; a missing key exits 66 before any request. The v2
-snusbase, osintcat and hudsonrock paths share one 120-second budget. Requests
-use the key only for `https://stolen.tax:443`; same-site redirects are bounded,
-and the key is not reattached after leaving that origin. HTTP 429 is retried
-on the same key up to three attempts per path, with `Retry-After` capped at
-four seconds. Partial results name failed or skipped paths. The legacy
-persistent multi-key pool is deferred; paid lookups are never automatic.
-Differential fixtures record the legacy output, with blank-name/host placeholder
-markers intentionally suppressed.
-
-## Build and install
-
-Toolchain: the crate's MSRV is Rust 1.87 (`rust-version` in `Cargo.toml`); CI tests Rust 1.87 and current stable. The owner's reference toolchain is Rust 1.98.0. The repository has no `rust-toolchain.toml`, so rustup uses your default toolchain.
-
-On the device, in Termux (unverified on a handset):
-
-```
-pkg install rust clang   # ring (via rustls) needs a C compiler
-cargo build --release --locked
-./target/release/huntsman-recon check
+```bash
+hse dorkus "acme.example"                            # clearnet + dark-web in one pass
+hse dorkus 'site:pastebin.com "acme api key"'        # a dork across both surfaces
+hse dorkus "acme.example" --dark-only --format json  # scope to one surface when you want
 ```
 
-Cross-build for Android aarch64 (what the `android-aarch64` CI job does, API level 24):
+It is a composition over the same verified back-ends — no new provider or API
+key — and inherits their guarantees, including Ahmia's: it reports **where** a
+target is mentioned and never fetches an onion service.
+
+### Manual operator query pack — `hse query-pack`
+
+Some exposure sources are paid, entitlement-gated, or need a human to confirm a
+hit before it's trusted. `hse query-pack <target>` generates the ranked set of
+queries to run **by hand** against those providers — IntelX, OathNet,
+Stolen.tax, DeHashed, XposedOrNot, HIBP — each with its query type, the surface
+to run it on, and the result class to expect:
+
+```bash
+hse query-pack alice@example.com                     # ranked manual queries, table
+hse query-pack acme.example --kind domain --format json
+```
+
+It is **offline and deterministic**: it hands you the queries and where to run
+them and makes no network call itself, so it declares no provider API contract.
+Result classes carry the corroboration caveats that matter — a multi-source
+gateway (Stolen.tax) is flagged as *not an independent source*, and an HIBP
+*miss is not proof of no exposure*. Scope is discovery / exposure verification /
+correlation only.
+
+---
+
+### Bulk manual-provider queries — `hse batch`
+
+When you have a seed (or a finished scan) and want to run it past sites that
+have to be searched **by hand** — breach and stealer-log sites whose API key
+is not an option, or genealogy and vital-records sites whose terms bar
+automation — `hse batch` writes the queries for you, one per line, in the
+exact syntax each site's search or bulk page accepts:
+
+```bash
+hse batch --value jane.doe@example.com                 # every breach provider, from one seed
+hse batch --value "Jane Doe" --site dehashed,intelx    # just these two
+hse batch --value "Jane Doe" --class genealogy         # the genealogy / vital-records sites
+hse batch --scan-id latest --site dehashed --bare      # a whole scan's findings, no headers
+hse batch --value +61412345678 --format json           # structured plan
+hse batch --site help                                  # list the providers, with their class
+```
+
+It fans a seed out into the selectors a site indexes — email, username,
+phone, domain, IP, name — with the same generator `hse oathnet-batch` uses, then
+renders each provider's section: a `#` comment header naming the site and where
+to paste, then the query lines. `--bare` drops the headers for a clean paste;
+`--out FILE` writes a file. Providers come in two classes, each grounded in its
+own documentation or search page (`src/app/batch/sites.rs`):
+
+- **breach** (the default): **OathNet, SeekNow, Stolen (stolen.tax), DeHashed,
+  LeakCheck, Snusbase, Intelligence X, Leak-Lookup, Have I Been Pwned,
+  HackCheck, LeakPeek, OSINTLeak, Pentester.com**. Most take one bare value per
+  search and auto-detect its kind; DeHashed gets its `field:value` syntax
+  (`name:"John Smith"` when a value has a space). A provider only gets the kinds
+  it actually indexes — Intelligence X, for instance, rejects full-text names,
+  so a name seed is skipped for it.
+- **genealogy** (`--class genealogy`): the family-tree, cemetery, obituary,
+  civil-registration and archive sites that forbid or block automated access —
+  Ancestry, FamilySearch, MyHeritage, Find a Grave, Geneanet, Ryerson Index,
+  Australian Cemeteries Index, the NSW / VIC / QLD / NZ registries, NAA
+  RecordSearch, the Australian War Memorial, CWGC, The National Archives (UK),
+  FreeBMD / FreeCEN / FreeREG, Irish Genealogy, Papers Past, Legacy.com, Geni,
+  GEDBAS, the US National Archives catalog, Forebears, Obituaries Australia, the
+  Australian Dictionary of Biography, ScotlandsPeople, Deceased Online, RootsWeb
+  and FamilyTreeNow. They index names, so a name seed (or a scan's Person
+  findings) is what they receive. The genealogy sites HSE *can* query lawfully
+  are modules instead: `wikitree`, `openarch`, `chronicling_america` and the
+  key-gated `europeana` (plus `trove_au`).
+
+`--class all` renders both classes; naming a provider with `--site` always
+includes it whatever its class. The list names providers on purpose — it is
+an operator's working list, not a client deliverable. Over the API the same
+list is an operator-only download at
+`GET /api/v1/scans/{id}/batch.txt?site=a,b&class=genealogy&bare=1`.
+### SpiderFoot-compatible front end — `hse sf`
+
+`hse sf` is SpiderFoot 4.0's `sf.py` command line, on HSE's engine, so an
+operator's habits and scripts carry over unchanged:
+
+```bash
+hse sf -s example.com -u passive -o csv                 # passive scan, csv output
+hse sf -s "Jane Doe" -u footprint -o json               # footprint use case, json
+hse sf -M                                               # list modules (with use cases)
+hse sf -T                                               # list SpiderFoot types → HSE kinds
+hse sf -s 192.0.2.1 -x -t IP_ADDRESS                    # seed only, no expansion
+hse sf -C latest                                        # correlation (HSE's quality report)
+```
+
+The flags are SpiderFoot's, and so are the validation rules, the target-type
+auto-detection (including `sf.py`'s pre-quoting of the seed), and the tab / csv
+/ json row layouts — all read from SpiderFoot's own source at tag `v4.0`. A
+**use case** maps onto HSE's scan options: `passive` runs passive-only modules,
+`footprint` every module bar threat-intel, `investigate` / `all` everything.
+HSE entity kinds print under their SpiderFoot type name where one exists and as
+`HSE_…` types where SpiderFoot has none (see `hse sf -T`). This is not a port of
+SpiderFoot's Python modules — HSE already is that engine, in Rust, with more
+modules — it is SpiderFoot's *command surface and scan model* reproduced on
+HSE's engine.
+
+---
+
+## Seed Types (16 supported)
+
+| Seed | Flag | Example | Modules |
+|------|------|---------|---------|
+| Email | `--kind email` | `user@example.com` | 44 |
+| Username | `--kind username` | `johndoe` | 51 |
+| Phone | `--kind phone` | `+61400000000` | 17 |
+| Full Name | `--kind name` | `Jordan Leigh Meyers` | 28 |
+| IP Address | `--kind ip` | `1.1.1.1` | 41 |
+| Domain | `--kind domain` | `example.com` | 61 |
+| ASN | `--kind asn` | `AS13335` | 3 |
+| CIDR | `--kind cidr` | `1.1.1.0/24` | 2 |
+| Coordinates | `--kind coords` | `-27.47,153.02` | 18 |
+| Address | `--kind address` | `Nundah, QLD 4012` | 5 |
+| URL | `--kind url` | `https://example.com/page` | 25 |
+| Organisation | `--kind org` | `ACME Pty Ltd` | 27 |
+| ABN/ACN | `--kind abn` | `51824753556` | 6 |
+| MAC Address | `--kind mac` | `AA:BB:CC:DD:EE:FF` | 10 |
+| Crypto Address | `--kind crypto` | `bc1q…` | 5 |
+| API Key | `--kind apikey` | `AKIA…` | 1 |
+
+Three further kinds are CLI-parseable (`--kind device_id`/`tower`/`cell`,
+`--kind ssid`/`wifi`, `--kind tracking_id`/`ga`/`gtm`) but are omitted from
+this table on purpose: a cell tower ID, WiFi SSID, or tracking-pixel ID is
+typically something the engine *discovers* mid-scan (from a stealer log or
+breach record) and pivots on next round, not a value most operators type as
+a starting seed. They currently feed 1 module, 1 module, and 2 modules,
+respectively.
+
+---
+
+## Module Overview (196 modules — 147 free, 49 key-gated/paid)
+
+> A curated highlight of the modules below (not the full list). The complete, always-current catalogue
+> with target kinds and output entities lives in the running software — run
+> `hse modules` or open the web UI's module wizard — never a static doc that
+> can drift from the registry.
+
+**API-Free (no keys required) — 93:**
+- **Breach/identity & dark-web exposure**: `ahmia`, `comb_search`, `hudsonrock`, `leakcheck_public`, `pwned_passwords`, `ransomlook`, `ransomware_live`, `xposed_or_not`, `xposed_or_not_domain`
+- **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
+- **People**: `ahpra`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `openarch`, `payid`, `pgp`, `wikidata`, `wikitree`
+- **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `hackertarget`, `mnemonic_pdns`, `rdap_domain`, `subdomain_center`, `subdomain_takeover`, `typosquat`, `whois`
+- **IP/infrastructure**: `greynoise`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
+- **Geolocation**: `beacondb`, `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mylnikov`, `open_meteo_geo`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
+- **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
+- **Phone**: `phone_au`, `phone_intl`
+- **Corporate**: `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`
+- **Search**: `chronicling_america`, `search_engines`
+- **Web analysis**: `api_discovery`, `cloud_storage`, `sitemap`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
+- **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
+- **Other**: `api_key_probe`, `chain_intel`
+
+**Key-gated / Paid — 39:**
+- `abn_lookup`, `abuseipdb`, `breachdirectory`, `censys`, `criminal_ip`, `dehashed`, `domainsdb`, `emailrep`
+- `epieos`, `europeana`, `exa_search`, `fullcontact`, `hibp`, `hlr_cnam`, `hunter_io`, `intelx`, `ipqs`
+- `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `opencorporates`, `osintcat`
+- `securitytrails`, `see_know`, `seon`, `stolen_tax`, `threatfox`, `trove_au`, `urlhaus`, `virustotal`, `whoisxml`
+- `wifi_intel`, `wigle`, `zoomeye`
+
+### MITRE ATT&CK alignment (in the data, not a side report)
+
+The tool carries the **complete** MITRE ATT&CK Enterprise matrix as reference
+vocabulary — all 15 tactics and every current technique/sub-technique (v19.2),
+as pure static data (`src/core/attack/`), so any `Tnnnn[.nnn]` id the tool emits
+resolves to its canonical name and owning tactic. But HSE only *claims coverage*
+of the one tactic it actually performs: **Reconnaissance** (TA0043). Holding the
+whole framework while claiming one tactic is the invariant, not a contradiction —
+reference vocabulary is never a coverage assertion, so the per-scan coverage /
+gap report is computed against Reconnaissance alone and a technique HSE performs
+no collection for (e.g. `T1598` Phishing for Information) surfaces as a real,
+named gap.
+
+Every module is mapped to the Reconnaissance technique(s) it implements, and that
+mapping is **woven into every scan**: as each finding is admitted, the engine
+stamps it inline with its producing module's technique(s) as
+`attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email Addresses"). So the
+technique that collected a datum travels with the datum — visible in the entity's
+`tags` in JSON output, on each entity in the full dossier
+(`hse export --scan-id <id> --format full`) and `hse scan --format dossier`, and in the
+database — with no separate coverage report to reconcile. A finding corroborated
+by several modules carries all of their techniques (merges union the tags).
+
+
+## Web UI (dark-console, zero vendored UI framework)
+
+`hse serve` launches a localhost-only HTTP server with an embedded SPA split
+into native ES modules (`src/web/js/`) on a from-scratch dark-console design
+system (`src/web/css/app.css`). D3 v3 is the one remaining vendored library
+(the force-directed graph rendering engine); Bootstrap, jQuery, tablesorter,
+and alertify — SpiderFoot's original UI-framework stack — have been dropped
+in favour of our own CSS and a small vanilla-JS compatibility layer
+(`src/web/js/ui.js`) for navbar collapse, the About modal, sortable tables,
+and toast/confirm/prompt dialogs. The navigation structure and scan workflow
+still follow SpiderFoot's mental model for operator familiarity; the visual
+design and every dependency underneath it are HSE's own:
+
+- **Dashboard** — stats cards, scan status breakdown, quick actions
+- **New Scan** — target input + module grid with tooltips + depth/throttle
+  controls + use-case presets
+- **Scan Results** — tabbed: Status, Browse (sortable entity table with
+  inline expand), D3 Force Graph (entity relationship visualization, incl.
+  typed relation edges — infrastructure/identity/affiliation — dashed, kind on
+  hover),
+  Correlations (severity-tagged), Event Log (real-time SSE), Info
+- **Settings** — API key management with validation
+- **Dark mode** by default, light mode opt-out toggle
+
+Binds to `127.0.0.1:8080` by default — no LAN exposure, and no authentication
+to configure, since only this device can connect.
+
+`--bind`/`HSE_BIND` accept any address. Binding a **non-loopback** address
+would otherwise expose scan/live/radar **triggering** (not just viewing
+results) to anyone who can reach it, so HSE requires a bearer token on every
+request for such a bind. Supply one with `--auth-token`/`HSE_AUTH_TOKEN`, or
+let HSE mint a 256-bit token and print it once at startup with a
+ready-to-open URL:
 
 ```
-rustup target add aarch64-linux-android
-NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"   # CI sets ANDROID_NDK_LATEST_HOME
-: "${NDK:?set ANDROID_NDK_LATEST_HOME or ANDROID_NDK_HOME to the NDK root}"
-export TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
-export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
-export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
-HUNTSMAN_HIBP_NO_EMBED=1 cargo build --release --locked --target aarch64-linux-android
+hse serve --bind 0.0.0.0:8080
+#   http://0.0.0.0:8080/?t=<token>
 ```
 
-The reference NDK is 27.3.13750724. CI uses the runner's `ANDROID_NDK_LATEST_HOME` and does not pin an NDK version. Set `HUNTSMAN_HIBP_NO_EMBED=1` (CI does) for any binary that leaves your machine, so no key is embedded (see below).
+Opening that link sets an `HttpOnly; SameSite=Strict` session cookie and drops
+the token from the address bar; scripts send `Authorization: Bearer <token>`
+instead. The token is disclosed only on that startup line — never in a log, an
+API response, or an export. `--allow-unauthenticated` restores the old
+open-LAN behaviour for a deliberately public deployment. Key-writing
+(`PUT /settings/keys`) stays loopback-only regardless of bind, as before.
 
-### Downloads
+---
 
-Each push to `main` uploads a CI artifact named `huntsman-recon-aarch64-linux-android`: the binary plus its `.sha256`, kept for 14 days. Download it from the workflow run's page, or with `gh run download <run-id> -n huntsman-recon-aarch64-linux-android`. Check it with `sha256sum -c huntsman-recon-aarch64-linux-android.sha256`, then copy it into Termux's home directory and `chmod +x` it.
+## Geolocation Pipeline
 
-Each push to `main` also publishes a `main-<sha7>` pre-release (`.github/workflows/release.yml`, #672) with the `huntsman-recon-aarch64-linux-android` binary, its `.sha256`, a `.provenance.json` naming the commit, a zero-finding `key-scan-report.txt` and `install-termux.sh`. The `main-<sha7>` pre-releases up to `main-7dca720` predate the reconstruction and ship the legacy `hse` binary. No rolling `latest` pre-release exists (see "Which binary to use"). Release policy: only pre-releases (`main-<sha7>` plus a rolling `latest`); a stable release needs the owner's explicit approval and is never automatic.
+Every seed type has a pathway to geographic coordinates:
 
-## Opt-in HIBP library
+```
+Name/Email/Username → search_engines (16 engines, free)
+                    → discovered emails/phones/addresses
+                    → oathnet_pro (breach IPs)
+                    → ip_geo + ip_whois_geo (free HTTPS)
+                    → Coordinates
+                    → geocode (Nominatim, free) → Address
+                    → wigle (WiFi density + SSID intel + AP MAC addresses)
 
-`huntsman_recon::hibp` ports the HIBP branch onto this single blocking crate; it does not restore the async monolith or modify either legacy snapshot. `HibpClient::production(Auth::ApiKey(key), HibpConfig::default())` uses the guarded `UreqTransport` and the existing fetch boundary without following redirects. An injected `Arc<dyn Transport + Send + Sync>` supports offline tests.
+IP Address → ip_geo (free) + ip_whois_geo (free) → Coordinates + Address
+           → geocode → precise Address
 
-Read endpoints: breach catalogue, individual/latest breach, data classes, breached accounts (including options and local SHA-1 k-anonymity lookup), pastes, verified-domain breaches, subscribed domains, subscription status, all three stealer-log searches, and free SHA-1/NTLM Pwned Passwords ranges with padding. Domain verification and email-sending endpoints are intentionally excluded. Keys never go to public or password endpoints. Entitlements are checked against a cached subscription response; missing flags fail closed. Keyed calls share a 10/minute sliding window (`HIBP_RATE_LIMIT_PER_MINUTE=0` disables local pacing). 429 retries are bounded; a server delay above `max_retry_after` returns immediately instead of retrying sooner than requested. Truncated or malformed bodies are errors. A Pwned Passwords 429 is not retried; it returns a rate-limited outcome with the server retry hint when available.
+Address → geocode (Nominatim, free) → Coordinates
+        → search_engines → name/phone/business associations
 
-Key precedence: `HIBP_API_KEY`, caller's `HUNTSMAN_HIBP_KEY` slot (or that environment variable), private `~/.config/hibp/api_key`, then optional build-time embedding. Blank/placeholders are ignored; files are bounded and symlinks refused. Personal builds can embed a key only into Cargo's `OUT_DIR` (and therefore the binary); do not distribute such binaries. `CI`, `HSE_RELEASE`, or `HUNTSMAN_HIBP_NO_EMBED` being set disables embedding. Runtime keys still work.
+Coordinates → geocode → Address
+            → wigle (adaptive bbox, conserves API quota)
+            → search_engines → map/property associations
+```
 
-`hibp::oauth` implements discovery, public registration, PKCE S256 authorization, code exchange and refresh for the documented MCP resource, **not REST v3 bearer authentication**. The caller must verify the returned state before exchanging a code. Authorization-server URLs must stay on HIBP's HTTPS origin. Linux/Termux randomness comes from `/dev/urandom`. Token stores support memory or bounded, atomic mode-600 files. Debug/errors omit keys, tokens and upstream error bodies.
+Australian-optimised: 70+ QLD/NSW/VIC suburbs in the address extractor,
+postcode detection, court/electoral/property record dorks, ABN/ACN
+extraction from search results.
 
-All CI HIBP integration evidence is offline fake-transport testing. Earlier development smoke tests exercised public HIBP endpoints on an antecedent branch, but they are not a qualifying live receipt tied to this final commit. Termux handset acceptance also remains unverified.
+---
 
-## Opt-in ASIC people-register library
+## Autonomous Expansion
 
-`huntsman_recon::asic_persons::lookup` queries three keyless ASIC registers on
-data.gov.au CKAN (banned and disqualified persons, financial advisers, credit
-representatives) through the shared `fetch` boundary and an injected
-`http::Transport`. A name with fewer than two alphabetic tokens makes no
-request. Challenge pages, truncated bodies, and CKAN `success: false` envelopes
-are not evidence of absence. The binary exposes `people NAME [--save FILE]`
-(unquoted words are joined) through `people_cli`, which also runs
-`asic_director`, `au_people` and `au_electoral` over the same transport and
-feeds emitted evidence through `lineage::resolve_with_lineage`. One source
-`Invalid` or BotWaf does not abort the others. `--save FILE` writes an
-unverified hash-chained ledger of outcomes and entities that `verify FILE`
-reloads byte-identically (`admitted=0`; a register row is not identity
-resolution). Skip (fewer than two alphabetic tokens) makes no request and does
-not write. Tests use a scripted transport; the README examples are the skip
-path. Two-token names query those sources and are not run in CI. There is no
-live receipt. Live ASIC Connect is WAF-blocked.
+```bash
+hse scan --kind name --value "Jordan Leigh Meyers" --depth 2
+```
 
-## Lineage and the automatic-merge rule
+Round 0 (seed): `"Jordan Leigh Meyers"` dispatched to all accepting modules.
+Round 1: Entities above the expansion floor (default C_eff ≥ 0.20) become new targets.
+Round 2: Discovered IPs → geo modules → coordinates → address.
 
-`huntsman_recon::lineage::resolve_with_lineage` takes parsed observations and candidate merge decisions. It derives countable lineage from explicit upstream dataset fields and, where the acquisition path is verified, registry identity; record URLs/ids and collector names do not create independent families. Two collectors relaying one dataset therefore count as one family. It returns every observation and every candidate. A candidate auto-merges only with two independent families and a present, in-range match probability of at least 0.90 (legacy `breach_consensus` parity). Otherwise it is held, with every reason stated. `check` gate 5 runs it, and separately checks a hand-built ancestry graph through `allows_automatic_merge`, the path `resolve::automatic_clusters` uses. See `docs/LINEAGE.md`.
+| Knob | Default | Purpose |
+|------|---------|---------|
+| `--depth N` | `5` | Max expansion rounds (0 = single seed round) |
+| `--min-expand-confidence F` | `0.20` | Min C_eff to expand (0.75 = Verified-only) |
+| `--max-entities N` | `2500` | Stop at N total entities |
+| `--max-wall-time SECS` | none | Stop after SECS wall-time |
+| `--max-concurrent N` | `2` | Parallel module dispatch (0=sequential) |
+| `--expand-all-identities` | off | Expand every discovered username/person, even uncorroborated aliases that don't overlap the subject's handle (lifts the wrong-identity gate; implied by `--full`). Higher recall, more unrelated footprints to prune |
+
+**Nothing is a black box.** Every pivot the engine *declines* to follow — a
+below-confidence entity, a wrong-identity alias, an already-dispatched target, a
+non-pivotable kind — is recorded as an `entity_excluded` event with its reason,
+and every value rejected at intake (a `@gmail`-style fragment, a placeholder, a
+bogus IP) is logged the same way. The scored self-audit
+(`hse audit --scan-id <id>`, or the web **Audit** panel) rolls these up into an
+**expansion ledger** and raises a `recursion-recall` finding — pointing you at
+`--expand-all-identities` — when the wrong-identity gate suppressed enough
+aliases to risk a coverage blind spot.
+
+---
+
+## Name Intelligence (NAMINT-style)
+
+The `name_intel` module is a bounded, offline port of
+[NAMINT](https://seintpl.github.io/NAMINT/). From a full name (plus an
+optional trailing year, e.g. `"Jordan Leigh Meyers 1987"`) it derives — with
+**no network calls and zero native deps** — the identifiers and pivots a human
+analyst would build by hand:
+
+```bash
+hse scan --kind name --value "Jordan Leigh Meyers 1987" --modules name_intel --format json
+```
+
+- **Usernames** (≤24, scored): `first.last`, `flast`, `firstl`, reversed,
+  hyphen/underscore joins, middle-initial blends, year suffixes → feed
+  `username_search`, `social_probe`, `github_user`, `keybase`.
+- **Emails** (≤8): top handle shapes × a provider set (Gmail/Outlook/iCloud/
+  Yahoo/Hotmail/Proton, override with `HUNTSMAN_EMAIL_DOMAINS`) → feed the email
+  pipeline (`hibp`, `hunter_io`, `epieos`, `emailrep`, …). Each email carries its
+  **Gravatar** avatar URL (`MD5(email)`).
+- **Search pivots** (≤18): ready-to-click Google (web/face/email/phone/document/
+  paste) dorks, Bing, DuckDuckGo, Yandex face, LinkedIn, Facebook, X, Instagram,
+  TikTok, GitHub, WhatsMyName, Epieos — surfaced as clickable `Url` entities in
+  the Web UI Browse table.
+
+Permutations are low-confidence *candidates*, so they enrich the graph and the
+correlator without auto-spending API budget. To recurse on them, lower the
+expansion floor:
+
+```bash
+hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confidence 0.35
+```
+
+---
+
+## Architecture
+
+- `#![forbid(unsafe_code)]` — entire codebase
+- **Runtime AI-independence** — zero AI/ML/LLM/inference/vector/embedding deps; every result is deterministic Rust, identical on Termux aarch64 (no root), Linux and CI with no AI available (CI-enforced by `runtime_carries_no_ai_ml_inference_dependency` in `tests/architecture.rs`)
+- rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
+- `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
+- 4,300+ tests (unit + API integration + architecture boundary enforcement)
+- Deterministic correlator: 122 rules (108 entity + 14 graph-aware relation), no LLM/fuzzy matching
+- Typed relation graph — 20 edge kinds across five families, every one derived by
+  pure, reproducible math (no LLM, no free inference) from normalised entity
+  values and recorded evidence:
+  - **infrastructure** — `subdomain_of`, `belongs_to_domain`, `hosted_on`,
+    `resolves_to`, `registered_by`, `same_operator`
+  - **identity** — `identified_by`, `alias_of`, `same_as`, `same_identity`,
+    `shares_secret_with`
+  - **place & people** — `located_at`, `co_located_with`, `associated_with`
+  - **affiliation** — `officer_of` (a companies register's filed directorship),
+    `employed_by`, `member_of`, `controlled_by` (the corporate hierarchy, oriented
+    child → controller), `operated_by` (who runs a wallet or a published business
+    contact point)
+  - **lineage** — `derived_from`
+- 122 correlator rules (AU-001 through AU-124, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), sanctions/debarment/PEP screening (AU-114), personal-WiFi geolocation (AU-115), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster), transitive-infrastructure-closure (AU-116 — a multi-server hosting footprint chained across IPs no single-hop rule sees), paired-hardware-constellation (AU-117 — the operator's own bonded Bluetooth kit as a self-carried tracking fingerprint), look-alike-domain-impersonation (AU-118 — homoglyph/typo phishing domains flagged across every discovered domain, dnstwist at the correlation layer), dating-platform-exposure (AU-119 — a subject's confirmed dating-app profiles surfaced as a location-bearing personal-exposure surface), monetized-creator-exposure (AU-120 — confirmed subscription-creator/webcam/adult profiles as an identity-linked payment/KYC surface), transitive credential-reuse blast-radius (AU-121 — the reuse-chain closure no single secret spans), trackable-RF-device (AU-122 — persistent hardware MACs separated from randomized privacy addresses in a radar/WiGLE sweep), and numeric-variant-handle-persona (AU-123 — links base-handle-plus-number username variants like `jdiegmann`/`jdiegmann92` across ≥2 sources into one persona, the digit-suffix reuse the exact-match handle rules never join), and ransomware-victim-exposure (AU-124 — a domain/org confirmed on a ransomware/extortion leak index by `ransomware_live`/`ransomlook`, elevated to a graded High finding naming the claiming group, the sole consumer of the `ransomware-victim` tag) rules — deterministic, no LLM/fuzzy matching
+- 2 tokio worker threads (tuned for Termux low-power devices)
+- Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
+
+Run `hse selftest` or `hse diagnostics` for a live, self-checked account of
+the module registry, dispatch graph, and core invariants — or pull the
+one-click system debug bundle (Settings → Diagnostics → "Download full
+diagnostic bundle") for the complete engine state in one file.
+
+---
+
+## Documentation
+
+### 🚀 All-In-One Guides (Start Here)
+
+**New to HSE?** Start with these comprehensive integration guides:
+
+- **[`docs/ALL_IN_ONE_SETUP.md`](docs/ALL_IN_ONE_SETUP.md)** — **Complete end-to-end setup** combining HSE, SeekNow authentication (API key or manual browser login), and Web UI. Includes prerequisites, one-line installation, background service setup for Termux, and troubleshooting for all common issues. **This is the recommended starting point.**
+
+- **[`docs/ADVANCED_TECHNIQUES.md`](docs/ADVANCED_TECHNIQUES.md)** — **SeekNow credential & session hygiene** — token rotation, multi-device session isolation, and API key segmentation for your own account.
+
+### Core Reference
+
+| Document | Content |
+|----------|---------|
+| [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks + install/runtime troubleshooting |
+| [`docs/RAILWAY.md`](docs/RAILWAY.md) | Deploying to Railway — Volume setup, `HSE_AUTH_TOKEN`, health check, single-instance constraint |
+| [`docs/AUTONOMY.md`](docs/AUTONOMY.md) | Running HSE unattended: `hse-bg`/`hse-watch`, boot persistence, scheduled sweeps |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | SeekNow API error troubleshooting (connectivity, auth, budget, rate limits) — for install/runtime issues see `docs/INSTALL.md`'s own Troubleshooting section instead |
+| [`docs/OSINT_API_REFERENCE.md`](docs/OSINT_API_REFERENCE.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
+| [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
+| [`docs/SEEKNOW_WEB_AUTOMATION.md`](docs/SEEKNOW_WEB_AUTOMATION.md) | SeekNow web automation, Turnstile analysis, manual login workflow, browser automation framework evaluation |
+| [`docs/OATHNET_API_GUIDE.txt`](docs/OATHNET_API_GUIDE.txt) | OathNet API contract reference |
+| [`docs/OPERATIONAL_CONSTITUTION.md`](docs/OPERATIONAL_CONSTITUTION.md) | Reasoning, evidence, and analysis standards governing HSE work |
+| [`docs/PERSISTENT_INTELLIGENCE.md`](docs/PERSISTENT_INTELLIGENCE.md) | How understanding accumulates across reasoning cycles (constitution companion) |
+
+For everything else — module catalogue, CLI reference, architecture — the
+running software is the source of truth: `hse --help`, `hse modules`, the web
+UI, and `hse selftest`/`hse diagnostics` never drift from the code the way a
+static doc can.
+
+---
+
+## Licence
+
+**Proprietary — © 2026 Huntsman Search Engine. All rights reserved.** See
+[`LICENSE`](LICENSE). The source is published for reference and evaluation
+only; it may **not** be used, copied, modified, redistributed, **resold**, or
+otherwise commercialised — in whole or in part — without the copyright
+holder's prior written permission.
+
+### Commercial use & licensing
+
+A commercial licence — for internal business use, hosted/SaaS deployment,
+OEM/embedding, or redistribution — is available by separate written agreement.
+Contact the repository owner to discuss licensing, support, or a pilot.
+
+### Authorised & lawful use
+
+HSE is built for **authorised** security, fraud-prevention, due-diligence, and
+investigative work only. You are responsible for establishing a lawful basis
+for every scan. Do **not** use it to harass, stalk, or surveil individuals, or
+to process personal data without a lawful basis under the applicable privacy law
+(e.g. the Australian *Privacy Act 1988*, the EU GDPR, or your local equivalent).
+The software is provided for legitimate use; the maintainers disclaim
+responsibility for misuse.

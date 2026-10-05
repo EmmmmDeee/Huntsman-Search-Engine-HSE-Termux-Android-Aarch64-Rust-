@@ -1,0 +1,418 @@
+//! FOFA infrastructure search engine — host/domain/IP reconnaissance.
+//!
+//! FOFA is a specialized search engine for discovering internet-connected
+//! infrastructure, with deep indexes of open ports, banners, technologies,
+//! and TLS certificates. This module queries the FOFA API for Domain/IpAddress
+//! targets and surfaces host facts (ports, technologies, service banners).
+//!
+//! Endpoint: `POST https://fofa.info/api/v1/search`
+//! Query format: base64-encoded filter expression (e.g., `host="example.com"`)
+//! Auth: `key` query parameter
+//!
+//! Output: `IpAddress` and `Domain` entities for the hosting infrastructure;
+//! open ports, observed technologies, service titles, and OS are attached as
+//! evidence attributes on the IP entity rather than emitted as their own
+//! entities — providing lateral-movement and infrastructure-mapping signals.
+
+#[cfg(test)]
+mod tests;
+
+use async_trait::async_trait;
+use serde::Deserialize;
+
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    error::{Error, Result},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::http::RequestBuilderExt;
+
+const SRC: &str = "fofa";
+const KEY_ENV: &str = "HUNTSMAN_FOFA_KEY";
+
+pub struct Fofa;
+
+/// The `v1/search` 200 body.
+///
+/// REQ-FOFA-001: `error` and `results` are **both** `Option`, and a body
+/// carrying neither is refused by [`classify`]. `error` was a bare
+/// `bool` under this struct's `#[serde(default)]`, so a 200 body that is valid
+/// JSON but not a FOFA envelope — `{}`, `{"message":"…"}`, an `{"errmsg":…}`
+/// without the flag — decoded to `error: false, results: []` and was handled as
+/// a SUCCESSFUL SEARCH WITH ZERO RESULTS. Default `false` means "no error": the
+/// module failed OPEN, reporting an upstream failure as
+/// `ProviderOutcome`-visible absence of evidence, which is the one sentence the
+/// envelope handler's own comment forbids ("never 'FOFA has no indexed
+/// infrastructure for this host'").
+///
+/// Why BOTH fields rather than `error` alone, which is what
+/// `chain_intel`/`au_geo` do with their single structural key: this module's
+/// header documents no literal response shape, so nothing in this repository
+/// establishes that a SUCCESSFUL FOFA response carries `error` at all. Refusing
+/// on a missing `error` alone would trade a fail-open for a fail-SHUT, breaking
+/// every real search if the flag is omitted on success. Requiring only that the
+/// body carry *something this module can read* is the weakest condition that
+/// still rejects `{}` — see [`classify`].
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct FofaResp {
+    error: Option<bool>,
+    errmsg: Option<String>,
+    results: Option<Vec<FofaResult>>,
+}
+
+#[derive(Deserialize)]
+struct FofaResult {
+    // Deserialised but not emitted. `host` is FOFA's `host:port` form of the
+    // same record `ip` and `port` already carry separately, so emitting it would
+    // duplicate an entity the pair below already produces in its canonical
+    // shape. Kept rather than dropped because it records the response contract
+    // this struct is asserting against — a future change that needs the
+    // authority (e.g. a URL-shaped host) has the field already mapped.
+    #[serde(default)]
+    #[allow(dead_code)]
+    host: String,
+    #[serde(default)]
+    ip: String,
+    #[serde(default)]
+    port: u16,
+    #[serde(default)]
+    protocol: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    domain: String,
+    #[serde(default)]
+    os: String,
+}
+
+/// Encode a FOFA search filter to base64. FOFA requires base64-encoded queries.
+/// Examples: `host="example.com"`, `ip="1.1.1.1"`, etc.
+pub(super) fn encode_fofa_query(filter: &str) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(filter.as_bytes())
+}
+
+/// Escape a value for embedding inside a double-quoted FOFA filter literal.
+///
+/// # Why this exists
+///
+/// [`fofa_filter`] builds `ip="{value}"` / `host="{value}"` and the whole
+/// filter is base64'd, not JSON- or URL-encoded, so nothing downstream
+/// escapes it — this is the only point that can. `target.value` reaches here
+/// from two different places with two different trust levels:
+///
+/// - **Seed targets** go through [`Target::validate`](crate::core::scan::Target::validate),
+///   which restricts a `Domain` to ASCII alphanumeric/`.`/`-`/`_` and parses an
+///   `IpAddress` through [`std::net::IpAddr`] — neither can contain a `"`.
+/// - **Pivot targets**, built during expansion from an entity's value
+///   (`Target::new(tk, entity.value.clone())` in `core/engine/mod.rs`), do
+///   **not** go through that gate before dispatch. And a Domain/IP entity can
+///   come from this very module: [`build_entities`] mints one straight from
+///   `hit.domain` / `hit.ip` in FOFA's own JSON response — a field describing
+///   whatever the scanned host presents, not something this crate controls.
+///
+/// So an unescaped `"` in a later round's pivot value would close the filter
+/// early and splice arbitrary FOFA query syntax into a search run under the
+/// operator's own paid key. Escaping here removes that path regardless of
+/// which caller the value came from, rather than trusting every caller to
+/// have validated first.
+///
+/// FOFA's own escaping grammar is not verified against live documentation
+/// (unavailable from this environment); this applies the minimal transform
+/// correct for virtually every quoted-string query DSL — backslash-escape `\`
+/// first, then `"` — so a value can never terminate the literal early. Order
+/// matters: escaping the quote before the backslash would double-escape the
+/// backslash just inserted.
+fn escape_fofa_value(v: &str) -> String {
+    v.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Build the FOFA filter for a target. IP → `ip="x.x.x.x"`, Domain → `host="domain.com"`,
+/// Email → fall back to a domain-extraction search (if the email part looks domain-like).
+pub(super) fn fofa_filter(target: &Target) -> Option<String> {
+    match target.kind {
+        TargetKind::IpAddress => Some(format!("ip=\"{}\"", escape_fofa_value(target.value.trim()))),
+        TargetKind::Domain => Some(format!(
+            "host=\"{}\"",
+            escape_fofa_value(target.value.trim())
+        )),
+        _ => None,
+    }
+}
+
+#[async_trait]
+impl Module for Fofa {
+    fn name(&self) -> &'static str {
+        "fofa"
+    }
+
+    fn description(&self) -> &'static str {
+        "FOFA infrastructure search: open ports, technologies, hosting domains, TLS certificates"
+    }
+
+    fn priority(&self) -> u8 {
+        78
+    }
+
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::KeyGated
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::IpAddress | TargetKind::Domain)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        // FOFA is a named example of a "scan database" service in MITRE's T1596.005, and this
+        // module does nothing but query it by IP/domain and mint IpAddress/Domain entities with
+        // attached port/banner/OS evidence from that lookup — it performs no active scanning, DNS
+        // resolution, or WHOIS of its own, so T1596.005 (Scan Databases) plus T1590.005 (IP
+        // Addresses) already characterizes it tightly with no gap or overreach.
+        ModuleCategory::Infrastructure
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        // Exactly the kinds `build_entities` can mint. `Organisation` was listed
+        // here but never emitted: FOFA's response as this module models it
+        // (`FofaResult`) carries no organisation field, and inventing one would
+        // require a live-schema field name this environment cannot verify — so
+        // the honest contract is IP + Domain only. A phantom `produces()` entry
+        // misleads scan planning and the `hse modules` reference into thinking
+        // the module can yield an entity kind it structurally cannot. Pinned by
+        // `produces_lists_exactly_the_kinds_build_entities_emits`.
+        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Domain];
+        KINDS
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        10_000
+    }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        172_800
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let key = ctx.key(KEY_ENV)?;
+
+        let filter = match fofa_filter(target) {
+            Some(f) => f,
+            None => return Ok(ModuleResult::new()),
+        };
+
+        let query = encode_fofa_query(&filter);
+        let url = format!(
+            "https://fofa.info/api/v1/search?key={key}&qbase64={query}&size=100&full=false"
+        );
+
+        let resp = ctx
+            .http
+            .post(&url)
+            .header("Accept", "application/json")
+            .send_tagged(SRC)
+            .await?;
+
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+            return Ok(ModuleResult::new());
+        };
+
+        let body: FofaResp = crate::util::http::json_decode(SRC, resp).await?;
+
+        handle_body(&body, key, ctx)
+    }
+}
+
+/// Everything this module does with a decoded 200 body, in one directly
+/// callable place.
+///
+/// Extracted from `process` for REQ-FOFA-001's sake, under this repository's
+/// own rule from REQ-CI-010: *when a test needs elaborate machinery to observe
+/// a simple property, extract the property instead of hardening the machinery.*
+/// The property is "an uninterpretable body is refused". Observing it inside
+/// `process` would need an HTTP server and an injectable base URL — production
+/// surface widened for a test — because the endpoint here is a literal. Pulling
+/// the decision out instead leaves `process` with a single call this function
+/// fully determines, and lets the guard be tested with a constructed
+/// `ModuleContext` and no socket.
+///
+/// Not pure: an envelope naming a key or quota problem must reach the key pool.
+/// That side effect is the point of the arm, so it belongs on this side of the
+/// seam rather than back in `process` where nothing could test it.
+fn handle_body(body: &FofaResp, key: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
+    match classify(body) {
+        // REQ-FOFA-001. A body carrying neither `error` nor `results` is not a
+        // FOFA search response, and reporting it as one that found nothing is
+        // the single sentence the envelope arm below forbids.
+        BodyVerdict::Uninterpretable => Err(Error::module(
+            SRC,
+            "200 body is not a FOFA search response — it carries neither an \
+             `error` flag nor a `results` array",
+        )),
+        // FOFA reports a dead key, an unpaid plan and an exhausted quota as
+        // HTTP 200 `error: true`, which the status-level cascade in `process`
+        // cannot see (backlog #17). A key/quota-shaped message reaches the pool
+        // so the next scan rotates past the dead key; every error envelope is
+        // the module's error — never "FOFA has no indexed infrastructure for
+        // this host".
+        BodyVerdict::Envelope { msg, key_shaped } => {
+            if key_shaped {
+                crate::util::http::note_keyed_error(401, SRC, key, ctx);
+            }
+            Err(Error::module(SRC, format!("FOFA error envelope: {msg}")))
+        }
+        BodyVerdict::Searchable(hits) => Ok(build_entities(hits, &ctx.scan_id)),
+    }
+}
+
+/// What a 200 body from `v1/search` actually is (REQ-FOFA-001).
+///
+/// Three outcomes, named, in one type. They used to be two booleans read in
+/// sequence — `!body.error`, then an empty `results` — and the third outcome
+/// had no representation at all, so it silently wore the first one's clothes.
+/// That is the shape REQ-SEEKNOW-001 named: several exits sharing one return
+/// type, with the difference discarded. Matching on this in `process` also
+/// means a fourth outcome cannot be added without every caller being made to
+/// handle it.
+/// `Searchable` CARRIES the rows, and `build_entities` takes only those rows —
+/// so the hits a response yields are reachable *through* the verdict and
+/// nowhere else. That is what stops the guard being wired up and then quietly
+/// bypassed: an arm that tried to emit entities for an uninterpretable body has
+/// nothing to emit them from.
+enum BodyVerdict<'a> {
+    /// Carries neither the `error` flag nor a `results` array, so it is not a
+    /// FOFA search response and must not be reported as one that found nothing.
+    Uninterpretable,
+    /// FOFA's own in-body error envelope (`error: true`), with its message and
+    /// whether that message names a key or quota problem the pool must learn
+    /// about rather than a rejected query.
+    Envelope { msg: String, key_shaped: bool },
+    /// A real answer — possibly an honestly empty one — and its rows.
+    Searchable(&'a [FofaResult]),
+}
+
+/// Classify a decoded 200 body. **Pure.**
+///
+/// The `Uninterpretable` test is deliberately the weakest one that works: a
+/// body with EITHER field is taken at face value, so a success that omits the
+/// flag still searches and a present-but-empty `results` still reads as a
+/// genuine empty search. Only a body that answers neither question is refused.
+///
+/// The residual risk is stated rather than hidden: if FOFA can return a
+/// successful EMPTY search carrying neither field, this turns that into a
+/// module error. That direction is the safer one — a loud, named failure the
+/// circuit breaker and the operator both see, against a silent "no
+/// infrastructure found" that corrupts coverage — but it is a real trade, and
+/// the error names exactly which fields were absent so a wrong firing is
+/// diagnosable from one log line rather than from a packet capture.
+///
+/// `Envelope` reads `Some(true)` specifically, not "not false": an ABSENT flag
+/// is `Uninterpretable`'s business, and it is tested first.
+fn classify(body: &FofaResp) -> BodyVerdict<'_> {
+    if body.error.is_none() && body.results.is_none() {
+        return BodyVerdict::Uninterpretable;
+    }
+    if body.error == Some(true) {
+        let msg = body.errmsg.clone().unwrap_or_default();
+        let key_shaped = crate::util::http::is_key_or_quota_message(&msg);
+        return BodyVerdict::Envelope { msg, key_shaped };
+    }
+    // An error envelope legitimately carries no `results`, and a success may
+    // carry none either; both reach here as an empty slice, never as a refusal.
+    BodyVerdict::Searchable(body.results.as_deref().unwrap_or_default())
+}
+
+/// Map a decoded FOFA response to entities. **Pure** (no network/IO).
+/// Emits `IpAddress` and `Domain` entities from each result (ports/technologies/
+/// OS ride as evidence on the IP, not as their own entities).
+fn build_entities(hits: &[FofaResult], scan_id: &str) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    // A host with more than one indexed port comes back as MULTIPLE result
+    // rows sharing the same `ip` (one row per `(ip, port)` pair — see the
+    // `host` field's own doc comment above), and the same `domain` can repeat
+    // the same way. Aggregate onto ONE entity per distinct value instead of
+    // minting a fresh Entity per hit — matching this module's own doc intent
+    // just above ("attached as evidence attributes on THE IP entity",
+    // singular) and the aggregate-once convention `zoomeye`/`shodan` use for
+    // the identical per-port-row shape. Each hit still contributes its own
+    // Evidence record (one per port), so no per-port detail is lost.
+    let mut ip_entities: std::collections::HashMap<String, Entity> =
+        std::collections::HashMap::new();
+    let mut ip_order: Vec<String> = Vec::new();
+    let mut seen_domains: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
+    for hit in hits {
+        if !hit.ip.is_empty() {
+            // An IP FOFA returns for the queried host is a direct, indexed
+            // observation of that host's infrastructure — the provider scanned
+            // it — so it sits a rung above the domain below, which is derived
+            // from the same record rather than observed on its own.
+            //
+            // Keyed on the CANONICAL form (`core::entity::normalise`), not
+            // the raw string: two hits for the same host can report the same
+            // IP in different textual forms (an expanded vs compressed IPv6
+            // spelling), and a raw-string key would mint two `Entity`
+            // objects — each accumulating only ITS OWN hits' evidence —
+            // for what collides on one uid once `Entity::new` constructs it.
+            let canonical_ip = crate::core::entity::normalise(&EntityKind::IpAddress, &hit.ip);
+            let ip_entity = match ip_entities.entry(canonical_ip.clone()) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    ip_order.push(canonical_ip);
+                    let mut new_entity = Entity::new(
+                        EntityKind::IpAddress,
+                        &hit.ip,
+                        confidence::HIGH_PLUSPLUS,
+                        scan_id,
+                    );
+                    new_entity.tag("fofa-host");
+                    e.insert(new_entity)
+                }
+            };
+
+            let mut evidence = Evidence::new(SRC, format!("FOFA intelligence for {}", hit.ip));
+            if !hit.protocol.is_empty() {
+                evidence = evidence.with_attr("protocol", &hit.protocol);
+            }
+            if !hit.title.is_empty() {
+                evidence = evidence.with_attr("service_title", &hit.title);
+            }
+            if !hit.os.is_empty() {
+                evidence = evidence.with_attr("os", &hit.os);
+            }
+            if hit.port > 0 {
+                evidence = evidence.with_attr("open_port", hit.port.to_string());
+            }
+
+            ip_entity.add_evidence(evidence);
+        }
+
+        if !hit.domain.is_empty() && hit.domain != "-" && seen_domains.insert(hit.domain.as_str()) {
+            // A domain read off the same record is the provider's own
+            // association rather than something it scanned directly, so it
+            // stays one rung below the IP.
+            let mut domain_entity = Entity::new(
+                EntityKind::Domain,
+                &hit.domain,
+                confidence::VERY_HIGH,
+                scan_id,
+            );
+            domain_entity.tag("fofa-discovered");
+            domain_entity.add_evidence(Evidence::new(
+                SRC,
+                format!("Domain discovered via FOFA for {}", hit.ip),
+            ));
+            result.push(domain_entity);
+        }
+    }
+
+    for ip in ip_order {
+        if let Some(e) = ip_entities.remove(&ip) {
+            result.push(e);
+        }
+    }
+
+    result
+}

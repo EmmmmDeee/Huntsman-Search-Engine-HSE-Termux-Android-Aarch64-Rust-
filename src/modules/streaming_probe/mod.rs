@@ -1,0 +1,512 @@
+//! Webcam, fan-subscription, and adult-video platform identity discovery.
+//!
+//! Fans out parallel HTTP probes across ~40 platforms that are specific to live
+//! streaming, cam performance, and subscription-content creation — categories
+//! not covered by the general `username_search` module (which targets mainstream
+//! social/dev/gaming/music platforms). The full platform set spans:
+//!
+//! - **cam** — Live webcam / performer streaming (Chaturbate, Stripchat,
+//!   BongaCams, Cam4, CamSoda, MyFreeCams, Streamate, LiveJasmin, ImLive,
+//!   Runetki/Russia, Cherry.tv/Eastern-Europe, …)
+//! - **fans** — Fan-subscription / content-creator platforms (OnlyFans, Fansly,
+//!   ManyVids, FanCentro, Fanvue, Loyalfans, AVN Stars, PocketStars,
+//!   Mym/France-Francophone, Boosty/Russia-CIS, 4Based/Ukraine-Eastern-Europe,
+//!   JustForFans/LGBTQ-intl, OhMyFans/Spanish-LATAM, Unlockd/UK,
+//!   Cam.tv/Italy-Europe, …)
+//! - **adult** — Adult-video profile pages (Pornhub model, xHamster, xVideos,
+//!   SpankBang, Erome, RedTube, MyDirtyHobby/Germany, SuicideGirls/intl,
+//!   Iwara/Japan-3D)
+//!
+//! For every hit, emits one `Url` entity tagged `cam-profile`/`fans-profile`/
+//! `adult-profile` (matching the platform's category bucket) plus
+//! `platform:<name>`. Also emits a summary `Username` entity with exposure
+//! tags (`cam-identity-exposed`, `subscription-platform-found`) so the SPA's
+//! Entities table shows the aggregated picture alongside the per-URL rows.
+//!
+//! No API keys required. Detection uses HEAD (status 200/404) where the
+//! platform cleanly distinguishes present vs absent, and GET + body-not-contains
+//! for JS-rendered platforms (e.g. OnlyFans) that return 200 for all URLs.
+
+use async_trait::async_trait;
+use futures::future::join_all;
+use std::sync::Arc;
+use std::time::Duration;
+
+const MAX_CONCURRENT_PROBES: usize = 16;
+
+use crate::core::confidence;
+use crate::core::{
+    entity::{Entity, EntityKind, Evidence},
+    error::{Error, Result},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::http::urlencode;
+// Shared existence-probe plumbing (browser headers, body cap, outcome enum,
+// per-site adapter, M6 disambiguation), single-sourced in `util::probe` and
+// shared with `username_search`.
+use crate::util::probe::{
+    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, PageVerdict, ProbeResult,
+    classify_non_matching_status, classify_page, control_handle, control_presences,
+    inconclusive_after_control,
+};
+
+const SRC: &str = "streaming_probe";
+
+pub struct StreamingProbe;
+
+mod sites;
+#[cfg(test)]
+use sites::CATEGORIES;
+use sites::{Detect, Method, SITES, Site};
+
+#[async_trait]
+impl Module for StreamingProbe {
+    fn name(&self) -> &'static str {
+        "streaming_probe"
+    }
+
+    fn priority(&self) -> u8 {
+        // Just below username_search (111) so the general sweep runs first;
+        // this specialised sweep runs in the same engine pass without competing.
+        108
+    }
+
+    fn description(&self) -> &'static str {
+        "Webcam, fan-subscription, and adult-video identity sweep across ~40 sites including international platforms: Russia (Runetki, Boosty), France (Mym), Germany (MyDirtyHobby), Eastern Europe (Cherry.tv, 4Based), LGBTQ+ (JustForFans), Spanish LATAM (OhMyFans), Japan (Iwara), and the English-language mainstream (Chaturbate, OnlyFans, Fansly, Pornhub, …)."
+    }
+
+    fn is_passive(&self) -> bool {
+        false
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        // Social → T1593.001 (Search Social Media) + T1589.003 (Employee Names);
+        // T1593.001 is the correct MITRE mapping for platform-presence enumeration.
+        ModuleCategory::Social
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Url, EntityKind::Username];
+        KINDS
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Social default is T1593.001 (Social Media) + T1589.003 (Employee Names),
+        // but this module only searches streaming/cam/adult PLATFORMS for a handle
+        // and emits a profile `Url` + the `Username` — it never resolves a real-name
+        // `Person`, so T1589.003 is over-claimed (same correction as hacker_news /
+        // reddit_user / username_search). Searching those platforms is T1593.001.
+        &["T1593.001"]
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        // ceil(42 sites / 16 concurrent) × 4.5s/probe = 13.5s needed;
+        // 30s envelope gives generous headroom for CloudFlare challenges,
+        // JS-rendered responses (OnlyFans body reads take ~1–2s extra), and
+        // the higher latency of probing non-CDN international platforms.
+        30_000
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let username = target.value.trim();
+        if username.is_empty() || username.len() > 64 {
+            return Ok(ModuleResult::new());
+        }
+
+        let results = sweep(&ctx.http, SITES, username).await;
+        let results_len = results.len();
+
+        let mut hits: Vec<Hit> = Vec::new();
+        let mut inconclusive_probes = 0usize;
+        let mut definitive_absent = 0usize;
+        // Sites that answered "present" for the control handle too: no answer
+        // about the handle at all (`ProbeResult::Indiscriminate`).
+        let mut indiscriminate: Vec<&'static str> = Vec::new();
+        // Status-only presences whose control could not be read: unjudgeable,
+        // never a profile (`ProbeResult::Uncontrolled`, REQ-PROBE-002).
+        let mut uncontrolled_sites: Vec<&'static str> = Vec::new();
+
+        for (site_name, site_cat, outcome) in results {
+            match outcome {
+                ProbeResult::Found {
+                    url,
+                    confidence,
+                    verified,
+                    controlled,
+                } => hits.push(Hit {
+                    site_name,
+                    site_cat,
+                    url,
+                    confidence,
+                    verified,
+                    controlled,
+                }),
+                ProbeResult::NotFound => definitive_absent += 1,
+                ProbeResult::Error => inconclusive_probes += 1,
+                ProbeResult::Indiscriminate { .. } => indiscriminate.push(site_name),
+                ProbeResult::Uncontrolled { .. } => {
+                    uncontrolled_sites.push(site_name);
+                    inconclusive_probes += 1;
+                }
+            }
+        }
+
+        if hits.is_empty() {
+            if inconclusive_after_control(0, inconclusive_probes, indiscriminate.len(), results_len)
+            {
+                return Err(Error::module(
+                    SRC,
+                    format!(
+                        "inconclusive: {inconclusive_probes} of {} platform probes that can tell were \
+                         blocked or unreachable, {} platforms answer \"present\" for any handle — \
+                         not a confirmed absence",
+                        results_len - indiscriminate.len(),
+                        indiscriminate.len()
+                    ),
+                ));
+            }
+            return Ok(ModuleResult::new());
+        }
+
+        Ok(build_entities(
+            username,
+            &ctx.scan_id,
+            &hits,
+            &ProbeTally {
+                definitive_absent,
+                inconclusive_probes,
+                sites_probed: SITES.len(),
+                indiscriminate,
+                uncontrolled_sites,
+            },
+        ))
+    }
+}
+
+/// The per-site budget of a control probe: the site already answered once
+/// within the sweep's own budget, so its second answer is expected sooner.
+const CONTROL_TIMEOUT: Duration = Duration::from_millis(3_000);
+
+/// One site, one handle: the site's answer for `url`, bounded by
+/// `per_site_timeout` under the shared semaphore.
+async fn probe_site(
+    client: reqwest::Client,
+    sem: Arc<tokio::sync::Semaphore>,
+    site: &'static Site,
+    url: String,
+    per_site_timeout: Duration,
+) -> ProbeResult {
+    let _permit = sem.acquire().await;
+    // `per_site_timeout` must bound the WHOLE probe, not just
+    // `send()`. It previously wrapped only the send, leaving
+    // `read_body_capped` below to run unbounded under the semaphore
+    // permit acquired above — a server that answers headers promptly
+    // and then trickles the body held the permit indefinitely. The
+    // module's own 30s envelope (`max_timeout_ms`) then expired and
+    // the engine discarded EVERY already-completed site hit, turning
+    // one slow server into a total loss for the module. This is the
+    // same defect `username_search` already fixed; its probe body is
+    // built as a future and awaited inside a single timeout, and this
+    // now matches.
+    let probe = async {
+        let req = match site.method {
+            Method::Get => client.get(&url),
+            Method::Head => client.head(&url),
+        };
+        let req = req
+            .header("User-Agent", BROWSER_UA)
+            .header("Accept", BROWSER_ACCEPT)
+            .header("Accept-Language", "en-US,en;q=0.9");
+        let Ok(resp) = req.send().await else {
+            return ProbeResult::Error;
+        };
+
+        let status = resp.status().as_u16();
+        let (confidence, verified) = detection_strength(&site.detect);
+        match site.detect {
+            Detect::StatusEq(want) if status == want => ProbeResult::Found {
+                url,
+                confidence,
+                verified,
+                controlled: false,
+            },
+            // Same policy as `username_search`: a status that is not
+            // this site's presence code may be a WAF challenge, a
+            // throttle or an outage, none of which is an absence.
+            Detect::StatusEq(_) => classify_non_matching_status(status),
+            Detect::StatusAndNotBody(want, needle) => {
+                if status != want {
+                    return classify_non_matching_status(status);
+                }
+                // The missing profile carries the marker, so a wall
+                // served with 200 — which carries no marker — used
+                // to read as a verified presence. `classify_page`
+                // judges the wall first.
+                match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
+                    Some(body) => match classify_page(&body, needle, false) {
+                        PageVerdict::Present => ProbeResult::Found {
+                            url,
+                            confidence,
+                            verified,
+                            controlled: false,
+                        },
+                        PageVerdict::Absent => ProbeResult::NotFound,
+                        PageVerdict::Wall => ProbeResult::Error,
+                    },
+                    None => ProbeResult::Error,
+                }
+            }
+        }
+    };
+    match tokio::time::timeout(per_site_timeout, probe).await {
+        Ok(result) => result,
+        Err(_) => ProbeResult::Error,
+    }
+}
+
+/// Sweep every site for the handle, then judge each presence against the
+/// control handle on the same site ([`control_presences`]): a site that
+/// answers "present" for a handle nobody holds cannot tell a held handle
+/// from an unheld one for this client, and its presence for the target is
+/// [`ProbeResult::Indiscriminate`] — never a profile, on these platforms a
+/// sensitive claim. `sites` is a parameter so the real request path is
+/// driven against a loopback.
+async fn sweep(
+    client: &reqwest::Client,
+    sites: &'static [Site],
+    username: &str,
+) -> Vec<(&'static str, &'static str, ProbeResult)> {
+    let encoded = urlencode(username);
+    let per_site_timeout = Duration::from_millis(4_500);
+    let sem = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PROBES));
+    let first: Vec<(&'static Site, ProbeResult)> = join_all(sites.iter().map(|site| {
+        let probe = probe_site(
+            client.clone(),
+            Arc::clone(&sem),
+            site,
+            site.url.replace("{}", &encoded),
+            per_site_timeout,
+        );
+        async move { (site, probe.await) }
+    }))
+    .await;
+    let control_encoded = urlencode(control_handle());
+    let judged = control_presences(first, |site: &'static Site| {
+        let url = site.url.replace("{}", &control_encoded);
+        let probe = probe_site(
+            client.clone(),
+            Arc::clone(&sem),
+            site,
+            url.clone(),
+            CONTROL_TIMEOUT,
+        );
+        (url, probe)
+    })
+    .await;
+    judged
+        .into_iter()
+        .map(|(site, result)| (site.name, site.cat, result))
+        .collect()
+}
+
+/// A confirmed profile hit, carrying the confidence its detection method earns.
+struct Hit {
+    site_name: &'static str,
+    site_cat: &'static str,
+    url: String,
+    confidence: f64,
+    verified: bool,
+    /// The site answered absence for the control handle (see
+    /// [`crate::util::probe::control_handle`]); false when its control could
+    /// not be read.
+    controlled: bool,
+}
+
+/// Non-hit probe tallies, surfaced on the summary so an operator can see how much
+/// of the sweep was definitive vs blocked.
+struct ProbeTally {
+    definitive_absent: usize,
+    inconclusive_probes: usize,
+    sites_probed: usize,
+    /// Sites that answered "present" for the control handle too — no answer
+    /// about the handle, never a profile ([`ProbeResult::Indiscriminate`]).
+    indiscriminate: Vec<&'static str>,
+    /// Status-only presences whose control could not be read — unjudgeable,
+    /// never a profile ([`ProbeResult::Uncontrolled`]).
+    uncontrolled_sites: Vec<&'static str>,
+}
+
+/// Confidence + verified-flag a detection method earns, tiered by rigour — the
+/// same discipline [`crate::modules::username_search`]'s `detection_strength`
+/// applies. A body-verified hit (`StatusAndNotBody`: the profile page rendered and
+/// did NOT carry the platform's "not found" marker) is a real presence signal
+/// (0.92, verified). A bare status match (`StatusEq`: HEAD/GET returned 200) is
+/// weaker — a soft-404, a CloudFlare interstitial, or a catch-all route all answer
+/// 200 for any handle — so it rides as a status-only lead (0.74, unverified), not a
+/// confirmed hit. Emitting a flat 0.92 on a status-only cam/adult match fabricates a
+/// high-confidence, sensitive identity association from an unverified 200.
+fn detection_strength(detect: &Detect) -> (f64, bool) {
+    crate::util::probe_confidence::detection_strength(matches!(
+        detect,
+        Detect::StatusAndNotBody(..)
+    ))
+}
+
+/// Build the per-hit `Url` entities and the summary `Username` entity from the
+/// confirmed hits. Pure (no HTTP), so the confidence tiering and the
+/// verified-gated exposure tags are unit-testable. Returns an empty result when
+/// there are no hits.
+fn build_entities(username: &str, scan_id: &str, hits: &[Hit], tally: &ProbeTally) -> ModuleResult {
+    use std::collections::BTreeMap;
+    let mut module_result = ModuleResult::new();
+    if hits.is_empty() {
+        return module_result;
+    }
+
+    let mut found_names: Vec<&str> = Vec::new();
+    // category -> (total hits, body-verified hits)
+    let mut cat_counts: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    let mut verified_total = 0usize;
+    let mut weak_total = 0usize;
+    let mut uncontrolled_total = 0usize;
+
+    for h in hits {
+        found_names.push(h.site_name);
+        let entry = cat_counts.entry(h.site_cat).or_insert((0, 0));
+        entry.0 += 1;
+        if h.verified {
+            entry.1 += 1;
+            verified_total += 1;
+        } else {
+            weak_total += 1;
+        }
+        if !h.controlled {
+            uncontrolled_total += 1;
+        }
+
+        let profile_tag = match h.site_cat {
+            "cam" => "cam-profile",
+            "fans" => "fans-profile",
+            "adult" => "adult-profile",
+            _ => "streaming-profile",
+        };
+        let detection = if h.verified {
+            "body-verified"
+        } else {
+            "status-only"
+        };
+        let mut e = Entity::new(EntityKind::Url, h.url.as_str(), h.confidence, scan_id);
+        e.tag(profile_tag);
+        e.tag(format!("platform:{}", h.site_name));
+        e.tag(format!("cat:{}", h.site_cat));
+        // Provenance so the correlator / SPA can discount a status-only lead.
+        e.tag(if h.verified {
+            "verified-detection"
+        } else {
+            "weak-detection"
+        });
+        e.add_evidence(
+            Evidence::new(
+                SRC,
+                format!(
+                    "@{username} has a {} profile on {} ({detection})",
+                    h.site_cat, h.site_name
+                ),
+            )
+            .with_attr("platform", h.site_name)
+            .with_attr("category", h.site_cat)
+            .with_attr("username", username)
+            .with_attr("url", h.url.as_str())
+            .with_attr("detection", detection)
+            .with_attr(
+                "control",
+                if h.controlled {
+                    "absent"
+                } else {
+                    "unavailable"
+                },
+            ),
+        );
+        module_result.push(e);
+    }
+
+    let mut summary = Entity::new(
+        EntityKind::Username,
+        username,
+        confidence::VERY_HIGH_PLUSPLUS,
+        scan_id,
+    );
+    summary.tag("streaming-identity");
+    cat_counts
+        .keys()
+        .for_each(|cat| summary.tag(format!("cat:{cat}")));
+
+    // Strong exposure claims require a BODY-VERIFIED hit in the category: a bare
+    // status-only 200 can be a soft-404 / interstitial, so asserting "identity
+    // exposed" from it would fabricate a sensitive claim about a real person.
+    // Weak-only categories still surface their (weak-tagged, 0.74) URLs — the lead
+    // is not lost, only its unearned high-confidence assertion.
+    let cat_verified = |c: &str| cat_counts.get(c).map_or(0, |(_, v)| *v);
+    if cat_verified("cam") > 0 {
+        summary.tag("cam-identity-exposed");
+    }
+    if cat_verified("fans") > 0 {
+        summary.tag("subscription-platform-found");
+    }
+    if cat_verified("adult") > 0 {
+        summary.tag("adult-profile-found");
+    }
+    if verified_total >= 3 {
+        summary.tag("high-streaming-exposure");
+    }
+
+    let cat_summary: Vec<String> = cat_counts
+        .iter()
+        .map(|(c, (n, v))| format!("{c}:{n}({v} verified)"))
+        .collect();
+
+    summary.add_evidence(
+        Evidence::new(
+            SRC,
+            format!(
+                "@{username} found on {n} streaming/cam platform(s): {list}",
+                n = found_names.len(),
+                list = found_names.join(", ")
+            ),
+        )
+        .with_attr("platforms_count", found_names.len().to_string())
+        .with_attr("platforms", found_names.join(", "))
+        .with_attr("categories", cat_summary.join(", "))
+        .with_attr("hits_verified", verified_total.to_string())
+        .with_attr("hits_status_only", weak_total.to_string())
+        .with_attr("sites_probed", tally.sites_probed.to_string())
+        .with_attr("sites_not_found", tally.definitive_absent.to_string())
+        .with_attr("sites_inconclusive", tally.inconclusive_probes.to_string())
+        .with_attr(
+            "sites_indiscriminate",
+            tally.indiscriminate.len().to_string(),
+        )
+        .with_attr("indiscriminate_platforms", tally.indiscriminate.join(", "))
+        .with_attr("hits_uncontrolled", uncontrolled_total.to_string())
+        .with_attr(
+            "sites_uncontrolled",
+            tally.uncontrolled_sites.len().to_string(),
+        )
+        .with_attr(
+            "uncontrolled_platforms",
+            tally.uncontrolled_sites.join(", "),
+        ),
+    );
+    module_result.push(summary);
+    module_result
+}
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
+}

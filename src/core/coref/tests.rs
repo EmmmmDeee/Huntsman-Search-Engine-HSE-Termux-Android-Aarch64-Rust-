@@ -1,0 +1,486 @@
+// Unit tests for `core::coref` — cross-identifier co-reference scoring. Included
+// into the module via `include!` so tests reach private items directly.
+
+use super::*;
+use crate::core::entity::{Entity, EntityKind, Evidence};
+
+/// A username and the email whose local part canonicalises to the same handle
+/// must be a strong co-reference (handle-equivalence), and the candidate must be
+/// oriented and labelled.
+#[test]
+fn handle_equivalence_links_a_username_to_a_matching_email() {
+    let user = Entity::new(EntityKind::Username, "jsmith", 0.7, "s");
+    let email = Entity::new(EntityKind::Email, "jsmith@gmail.com", 0.7, "s");
+    let out = resolve_coreferences(&[user, email], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1, "the username and email co-refer");
+    let c = &out[0];
+    assert!(c.signals.contains(&"handle-equivalence"));
+    assert!(c.score >= 0.80, "exact handle match is strong, got {}", c.score);
+    assert!(c.uid_a <= c.uid_b, "endpoints are oriented by UID");
+}
+
+/// A Person's full name embedded in another selector's handle fires the
+/// name-token tier (not the weaker substring tier).
+#[test]
+fn name_tokens_inside_a_handle_link_a_person() {
+    let person = Entity::new(EntityKind::Person, "John Smith", 0.7, "s");
+    let user = Entity::new(EntityKind::Username, "johnsmith_au", 0.7, "s");
+    let out = resolve_coreferences(&[person, user], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].signals.contains(&"name-token-match"));
+    assert!(out[0].score >= 0.62);
+}
+
+/// Regression: two 2-char name tokens ("vy", "le" — routine for short
+/// Vietnamese/Chinese given/surnames) used to satisfy the name-token tier's
+/// old ≥2-char floor by being nothing more than the literal decomposition of
+/// an unrelated handle's own letter run ("le" + "vy" tiling "levy" inside
+/// "levy2024"), asserting a co-reference between an unrelated Person and
+/// Username with zero corroborating evidence. The tier's per-token floor is
+/// now 3 characters, so this specific pair no longer fires name-token-match;
+/// with no other signal either, the pair emits no coreference at all.
+#[test]
+fn short_two_char_name_tokens_do_not_falsely_link_an_unrelated_handle() {
+    let person = Entity::new(EntityKind::Person, "Vy Le", 0.7, "s");
+    let user = Entity::new(EntityKind::Username, "levy2024", 0.7, "s");
+    let out = resolve_coreferences(&[person, user], DEFAULT_MIN_SCORE, 50);
+    assert!(
+        out.is_empty(),
+        "an unrelated person and handle must not co-refer on 2-char token \
+         coincidence alone: {out:?}"
+    );
+}
+
+/// A single shared first-name token must NOT, alone, link two people — the
+/// name-token tier needs ≥2 tokens, so namesakes don't fuse.
+#[test]
+fn a_single_shared_first_name_does_not_link_strangers() {
+    let a = Entity::new(EntityKind::Person, "John Smith", 0.7, "s");
+    let b = Entity::new(EntityKind::Person, "John Citizen", 0.7, "s");
+    // No shared source, different surnames → below threshold, nothing emitted.
+    let out = resolve_coreferences(&[a, b], DEFAULT_MIN_SCORE, 50);
+    assert!(
+        out.is_empty(),
+        "two unrelated Johns must not be co-referenced: {out:?}"
+    );
+}
+
+/// Independent signals compound under noisy-OR: handle-equivalence plus a shared
+/// source scores strictly higher than handle-equivalence alone.
+#[test]
+fn independent_signals_compound() {
+    // Pair 1: handle-equivalence only.
+    let u1 = Entity::new(EntityKind::Username, "jsmith", 0.7, "s");
+    let e1 = Entity::new(EntityKind::Email, "jsmith@gmail.com", 0.7, "s");
+    let plain = resolve_coreferences(&[u1, e1], DEFAULT_MIN_SCORE, 50)[0].score;
+
+    // Pair 2: same handle-equivalence AND a shared corroborating source.
+    let mut u2 = Entity::new(EntityKind::Username, "jsmith", 0.7, "s");
+    u2.add_evidence(Evidence::new("oathnet_pro", "breach record"));
+    let mut e2 = Entity::new(EntityKind::Email, "jsmith@gmail.com", 0.7, "s");
+    e2.add_evidence(Evidence::new("oathnet_pro", "breach record"));
+    let corro_v = resolve_coreferences(&[u2, e2], DEFAULT_MIN_SCORE, 50);
+    let corro = &corro_v[0];
+
+    assert!(
+        corro.score > plain,
+        "a shared source must lift the score: {} !> {}",
+        corro.score,
+        plain
+    );
+    assert!(corro.signals.contains(&"shared-source"));
+    assert!(corro.signals.contains(&"handle-equivalence"));
+}
+
+/// A single shared source is deliberately sub-threshold on its own — one common
+/// crawl source is weak co-occurrence, not a co-reference.
+#[test]
+fn a_single_shared_source_alone_is_below_threshold() {
+    let mut a = Entity::new(EntityKind::Email, "alice@example.com", 0.7, "s");
+    a.add_evidence(Evidence::new("search_engines", "snippet"));
+    let mut b = Entity::new(EntityKind::Phone, "+61400111222", 0.7, "s");
+    b.add_evidence(Evidence::new("search_engines", "snippet"));
+    let out = resolve_coreferences(&[a, b], DEFAULT_MIN_SCORE, 50);
+    assert!(
+        out.is_empty(),
+        "one shared generic source must not co-refer unrelated selectors: {out:?}"
+    );
+    // But with a low floor it surfaces as weak co-occurrence (and is honest about it).
+    let weak = resolve_coreferences(
+        &[
+            {
+                let mut a = Entity::new(EntityKind::Email, "alice@example.com", 0.7, "s");
+                a.add_evidence(Evidence::new("search_engines", "snippet"));
+                a
+            },
+            {
+                let mut b = Entity::new(EntityKind::Phone, "+61400111222", 0.7, "s");
+                b.add_evidence(Evidence::new("search_engines", "snippet"));
+                b
+            },
+        ],
+        0.0,
+        50,
+    );
+    assert_eq!(weak.len(), 1);
+    assert!(weak[0].score < DEFAULT_MIN_SCORE);
+    assert_eq!(weak[0].signals, vec!["shared-source"]);
+}
+
+/// Multiple shared corroborating sources compound into a real tie even with no
+/// string similarity — the breach-row linkage case (an email and a phone seen
+/// together across several independent breaches).
+#[test]
+fn multiple_shared_sources_link_dissimilar_selectors() {
+    let mut email = Entity::new(EntityKind::Email, "victim@example.com", 0.7, "s");
+    let mut phone = Entity::new(EntityKind::Phone, "+61400999888", 0.7, "s");
+    for src in ["oathnet_pro", "dehashed", "snusbase"] {
+        email.add_evidence(Evidence::new(src, "breach record"));
+        phone.add_evidence(Evidence::new(src, "breach record"));
+    }
+    let out = resolve_coreferences(&[email, phone], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1, "3 shared breaches co-refer email↔phone");
+    assert!(out[0].score >= DEFAULT_MIN_SCORE);
+    assert_eq!(out[0].signals, vec!["shared-source"]);
+}
+
+/// Non-identity kinds (a domain, an address, a coordinate) are never endpoints,
+/// and the output is deterministic regardless of input order.
+#[test]
+fn only_identity_kinds_pair_and_output_is_order_independent() {
+    let mk = || {
+        vec![
+            Entity::new(EntityKind::Username, "jsmith", 0.7, "s"),
+            Entity::new(EntityKind::Email, "jsmith@gmail.com", 0.7, "s"),
+            Entity::new(EntityKind::Domain, "jsmith.com", 0.7, "s"),
+            Entity::new(EntityKind::Address, "1 King St, Sydney NSW 2000", 0.7, "s"),
+        ]
+    };
+    let forward = resolve_coreferences(&mk(), DEFAULT_MIN_SCORE, 50);
+    let mut rev = mk();
+    rev.reverse();
+    let backward = resolve_coreferences(&rev, DEFAULT_MIN_SCORE, 50);
+    assert_eq!(forward, backward, "output must be input-order independent");
+    // The only identity pair is username↔email; the domain/address never pair.
+    assert_eq!(forward.len(), 1);
+    assert!(matches!(forward[0].kind_a, EntityKind::Username | EntityKind::Email));
+    assert!(matches!(forward[0].kind_b, EntityKind::Username | EntityKind::Email));
+}
+
+/// `limit` caps the result to the strongest candidates.
+#[test]
+fn limit_caps_the_strongest_candidates() {
+    // All three canonicalise to "johnsmith", so all three pairs are handle-equivalent.
+    let ents = vec![
+        Entity::new(EntityKind::Username, "johnsmith", 0.7, "s"),
+        Entity::new(EntityKind::Email, "johnsmith@gmail.com", 0.7, "s"),
+        Entity::new(EntityKind::Person, "John Smith", 0.7, "s"),
+    ];
+    let all = resolve_coreferences(&ents, DEFAULT_MIN_SCORE, 50);
+    assert!(all.len() >= 2, "several pairs co-refer among johnsmith/John Smith");
+    let one = resolve_coreferences(&ents, DEFAULT_MIN_SCORE, 1);
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].score, all[0].score, "the kept one is the strongest");
+}
+
+/// `noisy_or` is order-independent, monotone, and bounded in `0.0..=1.0`.
+#[test]
+fn noisy_or_is_bounded_and_order_independent() {
+    assert!((noisy_or([]) - 0.0).abs() < 1e-12);
+    let a = noisy_or([0.5, 0.5]);
+    let b = noisy_or([0.5, 0.5, 0.0]);
+    assert!((a - 0.75).abs() < 1e-12, "two 0.5s → 0.75, got {a}");
+    assert!((a - b).abs() < 1e-12, "a zero-weight signal changes nothing");
+    assert!(noisy_or([0.9, 0.9, 0.9]) <= 1.0);
+    // Adding a signal never lowers the score (monotonic).
+    assert!(noisy_or([0.5, 0.3]) >= noisy_or([0.5]));
+}
+
+// ── Different mailboxes are different accounts ──────────────────────────────
+
+/// The production defect, reproduced exactly.
+///
+/// A real dossier emitted ~200 pairs claiming one named individual held
+/// mailboxes at dozens of unrelated employers, every one scored 0.86 —
+/// `W_HANDLE_EQUIV` (0.80) fused with a single shared source (0.30) — because
+/// `identity_norm` discards the domain and every `jstewart@*` normalises to
+/// `jstewart`. The two are provably different accounts.
+#[test]
+fn a_shared_local_part_across_employers_is_not_the_same_person() {
+    let mut a = Entity::new(EntityKind::Email, "jstewart@blueorigin.com", 0.7, "s");
+    a.add_evidence(Evidence::new("search_engines", "snippet"));
+    let mut b = Entity::new(EntityKind::Email, "jstewart@navy.mil", 0.7, "s");
+    b.add_evidence(Evidence::new("search_engines", "snippet"));
+
+    let out = resolve_coreferences(&[a, b], DEFAULT_MIN_SCORE, 50);
+    assert!(
+        out.is_empty(),
+        "two mailboxes at unrelated domains must not be claimed as one person \
+         on a shared local part alone: {out:?}"
+    );
+}
+
+/// Suppressing only the top tier would have fixed nothing, and this is the test
+/// that proves it: two identical handles ALSO satisfy `identity_overlaps`, so a
+/// demotion to `W_SUBSTRING` (0.45) fused with one shared source (0.30) reaches
+/// 0.615 — still over `DEFAULT_MIN_SCORE`. The whole string ladder must be
+/// suppressed for this pair, not just `handle-equivalence`.
+#[test]
+fn no_string_tier_survives_for_cross_domain_mailboxes() {
+    assert!(
+        string_signal(
+            "jstewart@blueorigin.com",
+            "jstewart@navy.mil",
+            "jstewart",
+            "jstewart",
+            Some(&["jstewart".to_string()]),
+            Some(&["jstewart".to_string()]),
+            false,
+            false,
+        )
+        .is_none(),
+        "no string tier — not handle-equivalence, not substring-overlap"
+    );
+    // The arithmetic the suppression exists to prevent.
+    assert!(
+        noisy_or([W_SUBSTRING, 1.0 - SHARED_SOURCE_BASE]) > DEFAULT_MIN_SCORE,
+        "a mere demotion would still clear the threshold, so it is not a fix"
+    );
+}
+
+/// The suppression must not become a blanket ban on linking mailboxes: real
+/// corroboration still links them. Three independent shared sources reach 0.657
+/// on `shared-source` alone, above the threshold — evidence earned rather than
+/// granted by spelling.
+#[test]
+fn corroboration_still_links_mailboxes_at_different_domains() {
+    let sources = ["oathnet_pro", "dehashed", "intelx"];
+    let mut a = Entity::new(EntityKind::Email, "jstewart@blueorigin.com", 0.7, "s");
+    let mut b = Entity::new(EntityKind::Email, "jstewart@navy.mil", 0.7, "s");
+    for s in sources {
+        a.add_evidence(Evidence::new(s, "breach record"));
+        b.add_evidence(Evidence::new(s, "breach record"));
+    }
+
+    let out = resolve_coreferences(&[a, b], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1, "three shared sources is real evidence");
+    assert!(
+        out[0].signals.contains(&"shared-source"),
+        "and it must be attributed to corroboration, not to the handle"
+    );
+    assert!(!out[0].signals.contains(&"handle-equivalence"));
+}
+
+/// Two addresses at the SAME domain are not the cross-domain case and keep the
+/// full ladder. Where the provider documents the two spellings as ONE mailbox
+/// — Gmail ignores dots — they share an account key and are
+/// handle-equivalent. Elsewhere a dot is part of the mailbox's name
+/// (`canonical_email_mailbox` keeps it for exactly this reason), so
+/// `j.smith@acme.com` and `jsmith@acme.com` are two accounts: still a lead on
+/// the substring tier, never "equivalent" (Copilot review of #649 — this test
+/// used to assert handle-equivalence for that pair, which is the same
+/// separator fold that fused `_ianthorpe_` with `ianthorpe`).
+#[test]
+fn same_domain_mailboxes_keep_the_full_string_ladder() {
+    let a = Entity::new(EntityKind::Email, "j.smith@gmail.com", 0.7, "s");
+    let b = Entity::new(EntityKind::Email, "jsmith@GMAIL.com", 0.7, "s");
+    let out = resolve_coreferences(&[a, b], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1, "one Gmail account's two spellings co-refer");
+    assert!(
+        out[0].signals.contains(&"handle-equivalence"),
+        "domain comparison is case-insensitive: {:?}",
+        out[0].signals
+    );
+
+    let a = Entity::new(EntityKind::Email, "j.smith@acme.com", 0.7, "s");
+    let b = Entity::new(EntityKind::Email, "jsmith@ACME.com", 0.7, "s");
+    let out = resolve_coreferences(&[a, b], 0.0, 50);
+    assert_eq!(
+        out.len(),
+        1,
+        "not suppressed like a cross-domain pair — a lead"
+    );
+    assert_eq!(out[0].signals, vec!["substring-overlap"], "{out:?}");
+}
+
+/// The cross-KIND tie handle-equivalence was designed for is untouched — the
+/// suppression requires BOTH sides to be mailboxes.
+#[test]
+fn the_cross_kind_username_to_email_tie_is_unaffected() {
+    let user = Entity::new(EntityKind::Username, "jsmith", 0.7, "s");
+    let email = Entity::new(EntityKind::Email, "jsmith@gmail.com", 0.7, "s");
+    let out = resolve_coreferences(&[user, email], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].signals.contains(&"handle-equivalence"));
+}
+
+/// `email_domain` must only fire on real mailboxes: a handle that merely
+/// contains `@`, or a domain with no dot, is not an address, and treating it as
+/// one would suppress genuine links.
+#[test]
+fn email_domain_only_recognises_real_addresses() {
+    assert_eq!(email_domain("jstewart@navy.mil"), Some("navy.mil"));
+    assert_eq!(email_domain("  a@b.co  "), Some("b.co"));
+    for not_an_email in ["@handle", "jsmith", "a@b", "a@@b.com", "@", ""] {
+        assert_eq!(
+            email_domain(not_an_email),
+            None,
+            "{not_an_email:?} is not a mailbox"
+        );
+    }
+}
+
+/// Measured effect at the observed scale, as a regression guard on the fix's
+/// magnitude rather than just its direction.
+///
+/// The real dossier carried one common local part across dozens of employer
+/// domains, each pair sharing one crawl source. That is a complete graph: 40
+/// mailboxes produce 40·39/2 = 780 pairs, every one of which formerly scored
+/// 0.86 and cleared the threshold. The report surfaced 200 of them (its display
+/// cap) and buried the genuine links underneath.
+///
+/// The assertion is exact, not approximate: the count must go to ZERO. A
+/// partial reduction would mean the suppression is firing on some pairs and not
+/// others, which for a symmetric property like "different domains" would signal
+/// a subtler bug than the one being fixed.
+#[test]
+fn the_observed_false_positive_cluster_collapses_completely() {
+    const N: usize = 40;
+    let entities: Vec<Entity> = (0..N)
+        .map(|i| {
+            let mut e = Entity::new(
+                EntityKind::Email,
+                format!("jstewart@employer{i}.com"),
+                0.7,
+                "s",
+            );
+            // The single shared crawl source every observed pair had.
+            e.add_evidence(Evidence::new("search_engines", "snippet"));
+            e
+        })
+        .collect();
+
+    // Ask for far more than the complete graph could yield, so the count is the
+    // scorer's own output and not a truncation artefact.
+    let out = resolve_coreferences(&entities, DEFAULT_MIN_SCORE, N * N);
+
+    assert!(
+        out.is_empty(),
+        "{} mailboxes at unrelated domains produced {} co-reference claims; \
+         every one asserts a person's employer on nothing but a shared local \
+         part",
+        N,
+        out.len()
+    );
+
+    // Pin the arithmetic that made them all clear the bar, so the number in the
+    // module docs stays honest if a weight is ever retuned.
+    let former = noisy_or([W_HANDLE_EQUIV, 1.0 - SHARED_SOURCE_BASE]);
+    assert!(
+        (former - 0.86).abs() < 0.005,
+        "the observed 0.86 was handle-equivalence fused with one shared \
+         source; got {former}"
+    );
+    assert!(former > DEFAULT_MIN_SCORE);
+}
+
+/// REQ-IDENTITY-GATE-002 (scan 7258fc07, target "Ian Thorpe"): the name-token
+/// tier was plain containment, so "Ian Thorpe" ↔ `damianthorpe` scored a 0.62
+/// match with no corroboration; the substring tier tied "Ian Thorpe" to
+/// "Megan Thorpe" on `anthorpe`. A shared surname is not a shared identity.
+#[test]
+fn name_token_tier_respects_token_boundaries() {
+    let person = Entity::new(EntityKind::Person, "Ian Thorpe", 0.7, "s");
+    for h in ["damianthorpe", "brianthorpe", "christianthorpe", "aidan_thorpe"] {
+        let user = Entity::new(EntityKind::Username, h, 0.7, "s");
+        let out = resolve_coreferences(&[person.clone(), user], DEFAULT_MIN_SCORE, 50);
+        assert!(out.is_empty(), "{h} does not spell Ian Thorpe: {out:?}");
+    }
+    // Two differently named people get no string tier.
+    assert!(
+        string_signal(
+            "Ian Thorpe",
+            "Megan Thorpe",
+            "ianthorpe",
+            "meganthorpe",
+            None,
+            None,
+            true,
+            true
+        )
+        .is_none()
+    );
+    // A handle that does spell the name keeps its tier.
+    let user = Entity::new(EntityKind::Username, "ian_thorpe_au", 0.7, "s");
+    let out = resolve_coreferences(&[person, user], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].signals.contains(&"name-token-match"));
+}
+
+/// Copilot review of #649: between two account handles, handle-equivalence
+/// compared `identity_norm` forms (alphanumerics only), so Instagram
+/// `_ianthorpe_` and GitHub `ianthorpe` scored 0.80 "equivalent" — exactly the
+/// graph-promotion floor, so `derive_coreferences` asserted `AliasOf` between
+/// two accounts the resolver keeps apart (REQ-RESOLVE-001). The tier now
+/// requires a shared account key; a separator-only difference falls to the
+/// substring tier, still reported as a lead in this read-only view but below
+/// the promotion floor.
+#[test]
+fn separator_variants_are_a_lead_not_handle_equivalent() {
+    const PROMOTE_FLOOR: f64 = 0.80; // relation::builders::COREF_PROMOTE_MIN_SCORE
+    let ig = Entity::new(EntityKind::Username, "_ianthorpe_", 0.8, "s");
+    let gh = Entity::new(EntityKind::Username, "ianthorpe", 0.8, "s");
+    let out = resolve_coreferences(&[ig, gh], 0.0, 50);
+    assert_eq!(out.len(), 1, "still surfaced as a lead: {out:?}");
+    assert_eq!(out[0].signals, vec!["substring-overlap"], "{out:?}");
+    assert!(out[0].score < PROMOTE_FLOOR, "below promotion: {out:?}");
+
+    // A Person keeps `identity_norm` equality — a name has no separators to
+    // preserve — so the subject still reaches their own handle.
+    let person = Entity::new(EntityKind::Person, "Ian Thorpe", 0.8, "s");
+    let handle = Entity::new(EntityKind::Username, "ianthorpe", 0.8, "s");
+    let out = resolve_coreferences(&[person, handle], 0.0, 50);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].signals.contains(&"handle-equivalence"), "{out:?}");
+}
+
+/// The account keys keep the cross-kind links that ARE one account: a mailbox
+/// to the same-spelled username (literal key), and a Gmail mailbox to its
+/// dot-free spelling (Gmail ignores dots) — but not an Outlook one.
+#[test]
+fn mailbox_and_username_are_handle_equivalent_by_account_key() {
+    let signals = |a: (EntityKind, &str), b: (EntityKind, &str)| {
+        let out = resolve_coreferences(
+            &[
+                Entity::new(a.0, a.1, 0.8, "s"),
+                Entity::new(b.0, b.1, 0.8, "s"),
+            ],
+            0.0,
+            50,
+        );
+        out.first().map(|c| c.signals.clone()).unwrap_or_default()
+    };
+    let eq = vec!["handle-equivalence"];
+    assert_eq!(
+        signals(
+            (EntityKind::Email, "ian.thorpe@gmail.com"),
+            (EntityKind::Username, "ian.thorpe")
+        ),
+        eq
+    );
+    assert_eq!(
+        signals(
+            (EntityKind::Email, "ian.thorpe@gmail.com"),
+            (EntityKind::Username, "ianthorpe")
+        ),
+        eq
+    );
+    assert_ne!(
+        signals(
+            (EntityKind::Email, "ian.thorpe@outlook.com"),
+            (EntityKind::Email, "ianthorpe@outlook.com")
+        ),
+        eq,
+        "off Gmail a dot distinguishes two mailboxes"
+    );
+}
