@@ -3,10 +3,9 @@
 //! These serve the SAME evidence-derived data `hse assurance` / `hse bsi` /
 //! `hse attack` print, over the SAME single authorities —
 //! [`crate::core::assurance`] for controls, maturity, severity and the verify
-//! verdict, and [`crate::modules::reconnaissance_coverage`] for ATT&CK reach.
-//! Nothing here computes maturity, severity or coverage of its own, so the
-//! browser can never disagree with the CLI, and a green cell in the Web UI
-//! resolves to exactly the evidence the CLI would print for it.
+//! verdict, and [`crate::modules::reconnaissance_coverage`] for raw ATT&CK reach.
+//! Hierarchy-aware ATT&CK scoring is the shared
+//! [`crate::core::attack_reporting`] projection used by the CLI too.
 //!
 //! No endpoint emits a decorative compliance or ATT&CK score: the only numbers
 //! are raw counts and a coverage fraction derived from real module capability.
@@ -22,6 +21,7 @@ use axum::{
 use serde_json::{Value, json};
 
 use crate::core::assurance::{Profile, continuity, findings, resolve_catalog, summarise, verify};
+use crate::core::attack_reporting::hierarchy_coverage;
 use crate::modules::{reconnaissance_coverage, technique_module_index};
 
 use super::handlers::bad_request;
@@ -70,43 +70,78 @@ pub async fn assurance_verify() -> Json<Value> {
 }
 
 /// `GET /api/v1/attack` — HSE's registry-wide MITRE ATT&CK Reconnaissance
-/// (TA0043) posture: catalogue version, the one tactic in scope, every covered
-/// technique with the registered modules that are its evidence, the honest gaps,
-/// and the coverage fraction. Collection reach, not detection effectiveness.
+/// (TA0043) posture. The scored denominator is the set of independent leaf
+/// capabilities; parent techniques with children are roll-ups and therefore do
+/// not double-count their families. Raw parent + sub-technique claims remain
+/// available as `direct_claims` / `attack_objects_*` for provenance.
 pub async fn attack() -> Json<Value> {
-    let cov = reconnaissance_coverage();
+    let raw = reconnaissance_coverage();
+    let report = hierarchy_coverage(&raw);
     let idx = technique_module_index();
-    let covered: Vec<Value> = cov
-        .covered
+
+    let covered: Vec<Value> = report
+        .covered_leaves
         .iter()
-        .map(|c| {
+        .map(|technique| {
             json!({
-                "id": c.technique.id,
-                "name": c.technique.name,
-                "modules": idx.get(c.technique.id),
+                "id": technique.id,
+                "name": technique.name,
+                "modules": idx.get(technique.id),
             })
         })
         .collect();
-    let gaps: Vec<Value> = cov
-        .uncovered
+    let gaps: Vec<Value> = report
+        .uncovered_leaves
         .iter()
-        .map(|t| json!({ "id": t.id, "name": t.name }))
+        .map(|technique| json!({ "id": technique.id, "name": technique.name }))
         .collect();
+    let capability_gaps: Vec<Value> = report
+        .capability_gaps
+        .iter()
+        .map(|technique| json!({ "id": technique.id, "name": technique.name }))
+        .collect();
+    let intentional_exclusions: Vec<Value> = report
+        .intentional_exclusions
+        .iter()
+        .map(|technique| json!({ "id": technique.id, "name": technique.name }))
+        .collect();
+    let direct_claims: Vec<Value> = raw
+        .covered
+        .iter()
+        .map(|covered| {
+            json!({
+                "id": covered.technique.id,
+                "name": covered.technique.name,
+                "modules": idx.get(covered.technique.id),
+            })
+        })
+        .collect();
+
     Json(json!({
         "attack_version": crate::core::attack::ATTACK_VERSION,
-        "tactic_id": cov.tactic_id,
-        "tactic_name": cov.tactic_name,
-        "techniques_total": cov.covered.len() + cov.uncovered.len(),
-        "techniques_covered": cov.covered.len(),
-        "coverage_fraction": cov.coverage_fraction,
+        "tactic_id": raw.tactic_id,
+        "tactic_name": raw.tactic_name,
+        "coverage_basis": report.coverage_basis,
+        "techniques_total": report.leaf_techniques_total,
+        "techniques_covered": report.leaf_techniques_covered,
+        "leaf_techniques_total": report.leaf_techniques_total,
+        "leaf_techniques_covered": report.leaf_techniques_covered,
+        "coverage_fraction": report.coverage_fraction,
+        "attack_objects_total": report.attack_objects_total,
+        "attack_objects_covered": report.attack_objects_covered,
+        "raw_object_coverage_fraction": raw.coverage_fraction,
         "covered": covered,
         "gaps": gaps,
+        "capability_gaps": capability_gaps,
+        "intentional_exclusions": intentional_exclusions,
+        "parent_rollups": report.parent_rollups,
+        "direct_claims": direct_claims,
     }))
 }
 
-/// `GET /api/v1/attack/navigator` — the same posture as a MITRE ATT&CK
-/// Navigator layer, served as a download (`hse-attack-navigator.json`) so it
-/// drops straight into the official Navigator.
+/// `GET /api/v1/attack/navigator` — raw ATT&CK object claims as a Navigator
+/// layer, served as a download (`hse-attack-navigator.json`). Navigator consumes
+/// canonical ATT&CK IDs directly, so parent/child provenance remains untouched.
 pub async fn attack_navigator() -> Response {
     let layer = crate::core::attack::navigator_layer(
         &reconnaissance_coverage(),
@@ -279,23 +314,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attack_reports_registry_derived_reconnaissance_coverage_honestly() {
+    async fn attack_reports_leaf_coverage_without_double_counting_parent_families() {
         let (st, v) = get_json("/attack").await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(v["attack_version"], crate::core::attack::ATTACK_VERSION);
         assert_eq!(v["tactic_id"], "TA0043");
+        assert_eq!(v["coverage_basis"], "leaf-techniques");
+        assert_eq!(v["techniques_covered"], 27);
+        assert_eq!(v["techniques_total"], 37);
+        assert_eq!(v["attack_objects_covered"], 32);
+        assert_eq!(v["attack_objects_total"], 46);
+
         let covered = v["covered"].as_array().unwrap();
         let gaps = v["gaps"].as_array().unwrap();
-        let total = v["techniques_total"].as_u64().unwrap() as usize;
-        assert!(!covered.is_empty(), "the registry covers real techniques");
-        assert_eq!(
-            covered.len() + gaps.len(),
-            total,
-            "covered + gaps == the whole TA0043 slice"
-        );
+        assert_eq!(covered.len(), 27);
+        assert_eq!(gaps.len(), 10);
+        assert_eq!(covered.len() + gaps.len(), 37);
+        assert_eq!(v["capability_gaps"].as_array().unwrap().len(), 4);
+        assert_eq!(v["intentional_exclusions"].as_array().unwrap().len(), 6);
+
         let f = v["coverage_fraction"].as_f64().unwrap();
-        assert!(f > 0.0 && f <= 1.0, "fraction {f} out of range");
-        // Every covered technique either names its evidence modules or is an
+        assert!((f - 27.0 / 37.0).abs() < 1e-12, "unexpected fraction {f}");
+
+        let gap_ids: Vec<&str> = gaps
+            .iter()
+            .map(|gap| gap["id"].as_str().unwrap())
+            .collect();
+        assert!(!gap_ids.contains(&"T1597"), "covered children make T1597 a roll-up, not a gap");
+        assert!(gap_ids.contains(&"T1681"));
+
+        let t1597 = v["parent_rollups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "T1597")
+            .expect("T1597 roll-up");
+        assert_eq!(t1597["covered_children"], 2);
+        assert_eq!(t1597["total_children"], 2);
+        assert_eq!(t1597["directly_covered"], false);
+
+        // Every covered leaf either names its evidence modules or is an
         // entity/relation mapping (null) — never a fabricated module list.
         for c in covered {
             assert!(
