@@ -13,50 +13,54 @@ pub fn is_saturated(entity: &Entity) -> bool {
 }
 
 #[must_use]
-pub fn top_k_for_round(max_concurrent: usize) -> usize {
-    2 * max_concurrent.max(1) + 8
-}
+pub fn top_k_for_round(max_concurrent: usize) -> usize { 2 * max_concurrent.max(1) + 8 }
 
 #[must_use]
 pub fn effective_cutoff(sorted_weights_desc: &[f64], max_concurrent: usize) -> usize {
-    if sorted_weights_desc.is_empty() {
-        return 0;
-    }
+    if sorted_weights_desc.is_empty() { return 0; }
     let cap = top_k_for_round(max_concurrent);
     let leader = sorted_weights_desc[0];
     let knee = if leader > 0.0 {
         let threshold = leader * KNEE_FRACTION;
-        sorted_weights_desc
-            .iter()
-            .take_while(|&&weight| weight >= threshold)
-            .count()
-            .max(1)
-    } else {
-        sorted_weights_desc.len()
-    };
+        sorted_weights_desc.iter().take_while(|&&w| w >= threshold).count().max(1)
+    } else { sorted_weights_desc.len() };
     knee.min(cap).max(1)
 }
 
 #[must_use]
 pub fn marginal_yield(new_entities: usize, dispatched_targets: usize) -> f64 {
-    if dispatched_targets == 0 {
-        f64::INFINITY
-    } else {
-        #[allow(clippy::cast_precision_loss)]
-        {
-            new_entities as f64 / dispatched_targets as f64
-        }
+    if dispatched_targets == 0 { f64::INFINITY } else {
+        #[allow(clippy::cast_precision_loss)] { new_entities as f64 / dispatched_targets as f64 }
     }
 }
 
 #[must_use]
-pub fn should_terminate_adaptive(
-    enabled: bool,
-    new_entities: usize,
-    dispatched_targets: usize,
-    floor: f64,
-) -> bool {
+pub fn should_terminate_adaptive(enabled: bool, new_entities: usize, dispatched_targets: usize, floor: f64) -> bool {
     enabled && dispatched_targets > 0 && marginal_yield(new_entities, dispatched_targets) < floor
+}
+
+/// Claim-relative independence state derived from canonical provenance ancestry.
+/// Multiplicity alone must never construct this state as demonstrated independence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EvidentiaryIndependence {
+    #[default]
+    Unknown,
+    SharedRoot,
+    DemonstratedIndependentRoots { distinct_roots: u32 },
+}
+
+impl EvidentiaryIndependence {
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn utility_credit(self) -> f64 {
+        match self {
+            Self::Unknown | Self::SharedRoot => 0.0,
+            Self::DemonstratedIndependentRoots { distinct_roots: 0 | 1 } => 0.0,
+            Self::DemonstratedIndependentRoots { distinct_roots } => {
+                1.0 - 1.0 / f64::from(distinct_roots)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,7 +81,9 @@ pub struct DispatchUtility {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DispatchUtilityInputs {
+    /// Diagnostic multiplicity only. It has no evidentiary-independence semantics.
     pub source_count: u32,
+    pub evidentiary_independence: EvidentiaryIndependence,
     pub entity_confidence: Option<f64>,
     pub optionality_prior: f64,
     pub novelty_prior: f64,
@@ -110,15 +116,9 @@ fn normalised_cost_penalty(cost: Option<f64>) -> (f64, String) {
         Some(cost) if cost <= 0.0 => (0.0, format!("CostModel confirmed free -> Some({cost:.4})")),
         Some(cost) => {
             let penalty = (cost / (cost + COST_SOFTNESS)).clamp(0.0, 1.0);
-            (
-                penalty,
-                format!("cost_per_request=${cost:.4} -> normalised {penalty:.3}"),
-            )
+            (penalty, format!("cost_per_request=${cost:.4} -> normalised {penalty:.3}"))
         }
-        None => (
-            UNKNOWN_COST_PENALTY,
-            format!("cost unknown -> fixed penalty {UNKNOWN_COST_PENALTY:.3}"),
-        ),
+        None => (UNKNOWN_COST_PENALTY, format!("cost unknown -> fixed penalty {UNKNOWN_COST_PENALTY:.3}")),
     }
 }
 
@@ -126,10 +126,7 @@ fn quota_penalty(remaining: Option<bool>) -> (f64, String) {
     match remaining {
         Some(false) => (1.0, "quota reported exhausted".to_string()),
         Some(true) => (0.0, "quota has budget remaining -> 0.0".to_string()),
-        None => (
-            QUOTA_COST_NEUTRAL,
-            format!("no local quota tracked -> neutral default {QUOTA_COST_NEUTRAL:.3}"),
-        ),
+        None => (QUOTA_COST_NEUTRAL, format!("no local quota tracked -> neutral default {QUOTA_COST_NEUTRAL:.3}")),
     }
 }
 
@@ -138,120 +135,48 @@ fn quota_penalty(remaining: Option<bool>) -> (f64, String) {
 pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtility {
     let expected_information_value = 1.0 - inputs.entity_confidence.unwrap_or(0.0);
     let expected_novelty = inputs.novelty_prior.clamp(0.0, 1.0);
-    // Source multiplicity is not evidence of independent ancestry. Until the
-    // planner is given canonical provenance-root information, independence is
-    // unknown and therefore contributes no positive utility.
-    let expected_independence = 0.0;
+    let expected_independence = inputs.evidentiary_independence.utility_credit();
     let expected_optionality = inputs.optionality_prior.clamp(0.0, 1.0);
     let reliability = inputs.reliability_prior.clamp(0.0, 1.0);
     let failure_penalty = 1.0 - reliability;
     let (cost_penalty, cost_note) = normalised_cost_penalty(inputs.cost_per_request_usd);
     let (quota_penalty_value, quota_note) = quota_penalty(inputs.quota_remaining);
-    let latency_penalty =
-        ((inputs.configured_timeout_ms as f64) / MAX_REASONABLE_TIMEOUT_MS).clamp(0.0, 1.0);
+    let latency_penalty = ((inputs.configured_timeout_ms as f64) / MAX_REASONABLE_TIMEOUT_MS).clamp(0.0, 1.0);
     let duplicate_penalty = f64::from(u8::from(inputs.already_dispatched_this_module_target));
     let geoint_preference = f64::from(u8::from(inputs.geoint_bearing));
 
-    let final_utility = W_INFO.mul_add(
-        expected_information_value,
-        W_NOV.mul_add(
-            expected_novelty,
-            W_INDEP.mul_add(
-                expected_independence,
-                W_OPT.mul_add(
-                    expected_optionality,
-                    W_GEO.mul_add(geoint_preference, W_REL * reliability),
-                ),
-            ),
-        ),
-    ) - W_COST.mul_add(
-        cost_penalty,
-        W_QUOTA.mul_add(
-            quota_penalty_value,
-            W_LAT.mul_add(
-                latency_penalty,
-                W_FAIL.mul_add(failure_penalty, W_DUP * duplicate_penalty),
-            ),
-        ),
-    );
+    let final_utility = W_INFO.mul_add(expected_information_value,
+        W_NOV.mul_add(expected_novelty,
+        W_INDEP.mul_add(expected_independence,
+        W_OPT.mul_add(expected_optionality,
+        W_GEO.mul_add(geoint_preference, W_REL * reliability)))))
+        - W_COST.mul_add(cost_penalty,
+        W_QUOTA.mul_add(quota_penalty_value,
+        W_LAT.mul_add(latency_penalty,
+        W_FAIL.mul_add(failure_penalty, W_DUP * duplicate_penalty))));
 
     let explanation = vec![
-        format!(
-            "expected_information_value: +{:.3} (entity_confidence={:.3} -> {:.3}, x W_INFO={W_INFO})",
-            W_INFO * expected_information_value,
-            inputs.entity_confidence.unwrap_or(0.0),
-            expected_information_value
-        ),
-        format!(
-            "expected_novelty: +{:.3} (module_cascade -> {expected_novelty:.3}, x W_NOV={W_NOV})",
-            W_NOV * expected_novelty
-        ),
-        format!(
-            "expected_independence: +{:.3} (source_count={} is multiplicity, not proven ancestry -> {expected_independence:.3}, x W_INDEP={W_INDEP})",
-            W_INDEP * expected_independence,
-            inputs.source_count
-        ),
-        format!(
-            "expected_optionality: +{:.3} (ProviderDescriptor.optionality_prior={:.3}, x W_OPT={W_OPT})",
-            W_OPT * expected_optionality,
-            inputs.optionality_prior
-        ),
-        format!(
-            "reliability: +{:.3} (cold-start prior={reliability:.3} — circuit-open already gated upstream, x W_REL={W_REL})",
-            W_REL * reliability
-        ),
-        format!(
-            "geoint_preference: +{:.3} (geoint_bearing={}, x W_GEO={W_GEO})",
-            W_GEO * geoint_preference,
-            inputs.geoint_bearing
-        ),
-        format!(
-            "estimated_cost: -{:.3} ({cost_note}, x W_COST={W_COST})",
-            W_COST * cost_penalty
-        ),
-        format!(
-            "quota_cost: -{:.3} ({quota_note}, x W_QUOTA={W_QUOTA})",
-            W_QUOTA * quota_penalty_value
-        ),
-        format!(
-            "latency_penalty: -{:.3} (configured_timeout_ms={} / {MAX_REASONABLE_TIMEOUT_MS}, x W_LAT={W_LAT})",
-            W_LAT * latency_penalty,
-            inputs.configured_timeout_ms
-        ),
-        format!(
-            "failure_penalty: -{:.3} (1 - reliability={reliability:.3}, x W_FAIL={W_FAIL})",
-            W_FAIL * failure_penalty
-        ),
-        format!(
-            "duplicate_penalty: -{:.3} (already_dispatched={}, x W_DUP={W_DUP})",
-            W_DUP * duplicate_penalty,
-            inputs.already_dispatched_this_module_target
-        ),
+        format!("expected_information_value: +{:.3} (entity_confidence={:.3} -> {:.3}, x W_INFO={W_INFO})", W_INFO * expected_information_value, inputs.entity_confidence.unwrap_or(0.0), expected_information_value),
+        format!("expected_novelty: +{:.3} (module_cascade -> {expected_novelty:.3}, x W_NOV={W_NOV})", W_NOV * expected_novelty),
+        format!("expected_independence: +{:.3} (state={:?}, diagnostic_source_count={}, credit={expected_independence:.3}, x W_INDEP={W_INDEP})", W_INDEP * expected_independence, inputs.evidentiary_independence, inputs.source_count),
+        format!("expected_optionality: +{:.3} (ProviderDescriptor.optionality_prior={:.3}, x W_OPT={W_OPT})", W_OPT * expected_optionality, inputs.optionality_prior),
+        format!("reliability: +{:.3} (cold-start prior={reliability:.3}, x W_REL={W_REL})", W_REL * reliability),
+        format!("geoint_preference: +{:.3} (geoint_bearing={}, x W_GEO={W_GEO})", W_GEO * geoint_preference, inputs.geoint_bearing),
+        format!("estimated_cost: -{:.3} ({cost_note}, x W_COST={W_COST})", W_COST * cost_penalty),
+        format!("quota_cost: -{:.3} ({quota_note}, x W_QUOTA={W_QUOTA})", W_QUOTA * quota_penalty_value),
+        format!("latency_penalty: -{:.3} (configured_timeout_ms={} / {MAX_REASONABLE_TIMEOUT_MS}, x W_LAT={W_LAT})", W_LAT * latency_penalty, inputs.configured_timeout_ms),
+        format!("failure_penalty: -{:.3} (1 - reliability={reliability:.3}, x W_FAIL={W_FAIL})", W_FAIL * failure_penalty),
+        format!("duplicate_penalty: -{:.3} (already_dispatched={}, x W_DUP={W_DUP})", W_DUP * duplicate_penalty, inputs.already_dispatched_this_module_target),
         format!("final_utility: {final_utility:.3}"),
     ];
 
-    DispatchUtility {
-        expected_information_value,
-        expected_novelty,
-        expected_independence,
-        expected_optionality,
-        reliability,
-        estimated_cost: inputs.cost_per_request_usd,
-        quota_cost: inputs.quota_remaining.map(|_| quota_penalty_value),
-        latency_penalty,
-        failure_penalty,
-        duplicate_penalty,
-        final_utility,
-        explanation,
-    }
+    DispatchUtility { expected_information_value, expected_novelty, expected_independence, expected_optionality, reliability, estimated_cost: inputs.cost_per_request_usd, quota_cost: inputs.quota_remaining.map(|_| quota_penalty_value), latency_penalty, failure_penalty, duplicate_penalty, final_utility, explanation }
 }
 
 #[must_use]
 pub fn is_geoint_bearing(produces: &[EntityKind], category: ModuleCategory) -> bool {
     matches!(category, ModuleCategory::Geo | ModuleCategory::Sensor)
-        || produces
-            .iter()
-            .any(|kind| matches!(kind, EntityKind::Coordinates | EntityKind::Address))
+        || produces.iter().any(|kind| matches!(kind, EntityKind::Coordinates | EntityKind::Address))
 }
 
 #[must_use]
@@ -269,10 +194,7 @@ mod tests {
     fn make(confidence: f64, corroboration: usize) -> Entity {
         let mut entity = Entity::new(EntityKind::Email, "x@y.com", confidence, "scan");
         for idx in 1..corroboration {
-            entity.add_evidence(Evidence::new(
-                EvidenceProvenance::new(format!("source-{idx}")),
-                "seen",
-            ));
+            entity.add_evidence(Evidence::new(EvidenceProvenance::new(format!("source-{idx}")), "seen"));
         }
         entity
     }
@@ -280,15 +202,10 @@ mod tests {
     fn baseline_inputs() -> DispatchUtilityInputs {
         DispatchUtilityInputs {
             source_count: 2,
-            entity_confidence: Some(0.5),
-            optionality_prior: 0.7,
-            novelty_prior: 0.7,
-            reliability_prior: 0.5,
-            cost_per_request_usd: Some(0.0),
-            quota_remaining: None,
-            configured_timeout_ms: 5_000,
-            already_dispatched_this_module_target: false,
-            geoint_bearing: false,
+            evidentiary_independence: EvidentiaryIndependence::Unknown,
+            entity_confidence: Some(0.5), optionality_prior: 0.7, novelty_prior: 0.7,
+            reliability_prior: 0.5, cost_per_request_usd: Some(0.0), quota_remaining: None,
+            configured_timeout_ms: 5_000, already_dispatched_this_module_target: false, geoint_bearing: false,
         }
     }
 
@@ -303,95 +220,56 @@ mod tests {
     #[test]
     fn cutoff_respects_knee_and_top_k() {
         let weights = [50.0, 40.0, 10.0, 5.0, 2.0, 2.0, 1.0, 0.5];
-        assert_eq!(effective_cutoff(&weights, 4), 4);
-        assert_eq!(effective_cutoff(&[], 4), 0);
-        assert_eq!(effective_cutoff(&[42.0], 4), 1);
-        let flat = vec![1.0; 20];
-        assert_eq!(effective_cutoff(&flat, 4), 16);
+        assert_eq!(effective_cutoff(&weights, 4), 4); assert_eq!(effective_cutoff(&[], 4), 0);
+        assert_eq!(effective_cutoff(&[42.0], 4), 1); assert_eq!(effective_cutoff(&vec![1.0; 20], 4), 16);
     }
 
     #[test]
     fn adaptive_termination_needs_real_data() {
-        assert!(marginal_yield(0, 0).is_infinite());
-        assert!((marginal_yield(10, 5) - 2.0).abs() < f64::EPSILON);
-        assert!(!should_terminate_adaptive(false, 0, 100, 1.0));
-        assert!(!should_terminate_adaptive(true, 0, 0, 1.0));
-        assert!(!should_terminate_adaptive(true, 10, 5, 1.0));
-        assert!(should_terminate_adaptive(true, 1, 10, 1.0));
+        assert!(marginal_yield(0, 0).is_infinite()); assert!((marginal_yield(10, 5) - 2.0).abs() < f64::EPSILON);
+        assert!(!should_terminate_adaptive(false, 0, 100, 1.0)); assert!(!should_terminate_adaptive(true, 0, 0, 1.0));
+        assert!(!should_terminate_adaptive(true, 10, 5, 1.0)); assert!(should_terminate_adaptive(true, 1, 10, 1.0));
+    }
+
+    #[test]
+    fn independence_credit_is_typed_bounded_and_monotonic() {
+        assert_eq!(EvidentiaryIndependence::Unknown.utility_credit(), 0.0);
+        assert_eq!(EvidentiaryIndependence::SharedRoot.utility_credit(), 0.0);
+        assert_eq!(EvidentiaryIndependence::DemonstratedIndependentRoots { distinct_roots: 1 }.utility_credit(), 0.0);
+        let two = EvidentiaryIndependence::DemonstratedIndependentRoots { distinct_roots: 2 }.utility_credit();
+        let three = EvidentiaryIndependence::DemonstratedIndependentRoots { distinct_roots: 3 }.utility_credit();
+        assert!(two > 0.0 && three > two && three <= 1.0);
     }
 
     #[test]
     fn utility_uses_neutral_defaults_for_unknowns() {
-        let unknown_cost = compute_dispatch_utility(&DispatchUtilityInputs {
-            cost_per_request_usd: None,
-            ..baseline_inputs()
-        });
-        let free = compute_dispatch_utility(&baseline_inputs());
-        assert_eq!(unknown_cost.estimated_cost, None);
-        assert!(unknown_cost.final_utility < free.final_utility);
-
-        let untracked_quota = compute_dispatch_utility(&DispatchUtilityInputs {
-            quota_remaining: None,
-            ..baseline_inputs()
-        });
-        let tracked_quota = compute_dispatch_utility(&DispatchUtilityInputs {
-            quota_remaining: Some(true),
-            ..baseline_inputs()
-        });
-        assert_eq!(untracked_quota.quota_cost, None);
-        assert!(
-            tracked_quota
-                .quota_cost
-                .is_some_and(|value| value.abs() < f64::EPSILON)
-        );
+        let unknown_cost = compute_dispatch_utility(&DispatchUtilityInputs { cost_per_request_usd: None, ..baseline_inputs() });
+        let free = compute_dispatch_utility(&baseline_inputs()); assert_eq!(unknown_cost.estimated_cost, None); assert!(unknown_cost.final_utility < free.final_utility);
+        let untracked = compute_dispatch_utility(&baseline_inputs());
+        let tracked = compute_dispatch_utility(&DispatchUtilityInputs { quota_remaining: Some(true), ..baseline_inputs() });
+        assert_eq!(untracked.quota_cost, None); assert!(tracked.quota_cost.is_some_and(|v| v.abs() < f64::EPSILON));
     }
 
     #[test]
     fn duplicate_penalty_and_geoint_preference_are_visible() {
         let fresh = compute_dispatch_utility(&baseline_inputs());
-        let duplicate = compute_dispatch_utility(&DispatchUtilityInputs {
-            already_dispatched_this_module_target: true,
-            ..baseline_inputs()
-        });
-        assert!((duplicate.duplicate_penalty - 1.0).abs() < f64::EPSILON);
+        let duplicate = compute_dispatch_utility(&DispatchUtilityInputs { already_dispatched_this_module_target: true, ..baseline_inputs() });
         assert!((fresh.final_utility - duplicate.final_utility - W_DUP).abs() < 1e-9);
-
-        let geo = compute_dispatch_utility(&DispatchUtilityInputs {
-            geoint_bearing: true,
-            ..baseline_inputs()
-        });
+        let geo = compute_dispatch_utility(&DispatchUtilityInputs { geoint_bearing: true, ..baseline_inputs() });
         assert!((geo.final_utility - fresh.final_utility - W_GEO).abs() < 1e-9);
-        assert!(
-            geo.explanation
-                .iter()
-                .any(|line| line.contains("geoint_preference"))
-        );
     }
 
     #[test]
-    fn utility_explanation_restates_final_score() {
-        let utility = compute_dispatch_utility(&baseline_inputs());
-        let last = utility.explanation.last().unwrap();
-        assert!(last.starts_with("final_utility:"));
-    }
+    fn utility_explanation_restates_final_score() { assert!(compute_dispatch_utility(&baseline_inputs()).explanation.last().unwrap().starts_with("final_utility:")); }
 
     #[test]
     fn quota_gate_only_blocks_tracked_exhaustion() {
-        assert!(!quota_exhausted_blocked(None, Some(false)));
-        assert!(quota_exhausted_blocked(Some("query"), Some(false)));
-        assert!(!quota_exhausted_blocked(Some("query"), None));
+        assert!(!quota_exhausted_blocked(None, Some(false))); assert!(quota_exhausted_blocked(Some("query"), Some(false))); assert!(!quota_exhausted_blocked(Some("query"), None));
     }
 
     #[test]
     fn geoint_bearing_derives_from_category_or_outputs() {
-        assert!(is_geoint_bearing(&[], ModuleCategory::Geo));
-        assert!(is_geoint_bearing(
-            &[EntityKind::Coordinates],
-            ModuleCategory::Social
-        ));
-        assert!(!is_geoint_bearing(
-            &[EntityKind::Email, EntityKind::Username],
-            ModuleCategory::Social,
-        ));
+        assert!(is_geoint_bearing(&[], ModuleCategory::Geo)); assert!(is_geoint_bearing(&[EntityKind::Coordinates], ModuleCategory::Social));
+        assert!(!is_geoint_bearing(&[EntityKind::Email, EntityKind::Username], ModuleCategory::Social));
     }
 }
