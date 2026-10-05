@@ -24,7 +24,7 @@ RUN status="$(curl --silent --show-error --output /tmp/hibp-invalid-body \
     && test "${status}" = '401'
 
 RUN cargo fmt --check
-RUN cargo check --locked --all-targets
+RUN cargo check --locked --all-targets --all-features
 
 # Live product-path falsification: execute the real production CLI and transport
 # against HIBP. It must classify the same invalid key as EX_NOPERM (77), report
@@ -45,10 +45,10 @@ RUN set +e; \
     fi; \
     rm -f /tmp/hibp-rust-out /tmp/hibp-rust-err
 
-RUN cargo test --locked hibp::tests -- --nocapture
-RUN cargo test --locked --test hibp_cli -- --nocapture
-RUN cargo test --locked --test hibp_build -- --nocapture
-RUN cargo clippy --locked --all-targets -- -D warnings
-RUN cargo test --locked
+RUN cargo test --locked --all-features hibp::tests -- --nocapture
+RUN cargo test --locked --all-features --test hibp_cli -- --nocapture
+RUN cargo test --locked --all-features --test hibp_build -- --nocapture
+RUN cargo clippy --locked --all-targets --all-features -- -D warnings
+RUN cargo test --locked --all-features
 
 CMD ["sh", "-c", "echo HIBP_ROOT_VERIFIER_COMPLETE; sleep 3600"]
