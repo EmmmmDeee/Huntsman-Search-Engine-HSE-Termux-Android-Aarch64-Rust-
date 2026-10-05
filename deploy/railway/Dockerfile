@@ -12,12 +12,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy every compile-time input that the server actually depends on. In
-# particular, hse-core is a path dependency and wasm-ui/pkg is embedded with
-# include_bytes!, so omitting either makes the Docker build deterministically
-# incomplete.
+# Copy every manifest/build input Cargo must see. Cargo validates declared bench
+# targets while parsing the manifest even for `--bin hse`, hse-core is a path
+# dependency, and wasm-ui/pkg is embedded with include_bytes! at compile time.
 COPY legacy/hse-monolith-v1.41.0/Cargo.toml legacy/hse-monolith-v1.41.0/Cargo.lock legacy/hse-monolith-v1.41.0/build.rs ./
 COPY legacy/hse-monolith-v1.41.0/src ./src
+COPY legacy/hse-monolith-v1.41.0/benches ./benches
 COPY legacy/hse-monolith-v1.41.0/hse-core ./hse-core
 COPY legacy/hse-monolith-v1.41.0/wasm-ui/pkg ./wasm-ui/pkg
 
