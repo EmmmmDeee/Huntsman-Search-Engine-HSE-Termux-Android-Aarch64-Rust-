@@ -23,9 +23,7 @@ fn prove(graph: &mut EvidenceAncestryGraph, left: &str, right: &str) {
             basis: IndependenceBasis::ExplicitUpstreamProvenance,
             method_id: "fixture:route-proof".to_owned(),
             method_version: 1,
-            supporting_artifact_ids: BTreeSet::from([ArtifactId::from(format!(
-                "sha256:{left}:{right}"
-            ))]),
+            supporting_artifact_ids: BTreeSet::from([ArtifactId::from("sha256:route-proof")]),
             observed_at_unix: 1,
         })
         .unwrap();
