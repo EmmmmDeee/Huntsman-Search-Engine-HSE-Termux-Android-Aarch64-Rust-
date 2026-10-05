@@ -5,6 +5,7 @@
 
 pub mod assurance;
 pub mod attack;
+pub mod attack_reporting;
 pub mod benchmark;
 pub mod breach_consensus;
 pub mod breach_platforms;
