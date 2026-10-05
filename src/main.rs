@@ -41,6 +41,7 @@ use huntsman_recon::people_save;
 use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
+use huntsman_recon::seeknow_cli::{SEEKNOW_HELP, SEEKNOW_USAGE, SeekNowCliRun};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
 use huntsman_recon::source_outcome::{
     SourceHealthAction, SourceOutcomeKind, classify_fetch, recommended_action,
@@ -52,7 +53,7 @@ use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 use huntsman_recon::textnorm::escape_controls;
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -75,13 +76,14 @@ Commands:
   fetch                 Make a guarded HTTP request (network access)
   hibp                  Have I Been Pwned lookups (opt-in; keyed subcommands need a key)
   recon                 One crt.sh, DNS/mail, or stolen.tax lookup (network access)
+  seeknow               SeekNow/See-Know lookup (opt-in; needs HUNTSMAN_SEEKNOW_KEY)
   keys                  Validate a private keys file; print slots and fingerprints
   verify                Verify a saved evidence ledger
 
 Run `huntsman-recon <COMMAND> --help` for command details.
-Search and sources do not collect remote results. `fetch`, `hibp`, `recon` and
-`people` (two-token names) make HTTP requests; their default egress policy is
-public-only.";
+Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
+`seeknow` and `people` (two-token names) make HTTP requests; their default
+egress policy is public-only.";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -120,6 +122,7 @@ fn main() -> ExitCode {
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
         Some("hibp") => hibp_cmd(&remaining.collect::<Vec<_>>()),
         Some("recon") => recon_cmd(&remaining.collect::<Vec<_>>()),
+        Some("seeknow") => seeknow_cmd(&remaining.collect::<Vec<_>>()),
         Some("keys") => keys_cmd(remaining.next()),
         Some("verify") => verify(remaining.next()),
         Some("check") | None => check(),
@@ -155,6 +158,7 @@ fn print_command_help(command: &str) {
         "fetch" => huntsman_recon::fetch_cli::FETCH_USAGE,
         "hibp" => HIBP_USAGE,
         "recon" => RECON_USAGE,
+        "seeknow" => SEEKNOW_HELP,
         "keys" => {
             "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values."
         }
@@ -286,6 +290,24 @@ fn hibp_cmd(args: &[String]) -> ExitCode {
         &mut std::io::stdout().lock(),
         &mut std::io::stderr().lock(),
     ))
+}
+
+fn seeknow_cmd(args: &[String]) -> ExitCode {
+    let transport = UreqTransport::new(&TransportConfig::default());
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    match huntsman_recon::seeknow_cli::run(&transport, args, env::var_os("HOME").as_deref(), now) {
+        SeekNowCliRun::Usage => fail(EX_USAGE, SEEKNOW_USAGE),
+        SeekNowCliRun::Printed(text) => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        SeekNowCliRun::BadData(msg) => fail(EX_DATAERR, &msg),
+        SeekNowCliRun::Input(msg) => fail(EX_NOINPUT, &msg),
+        SeekNowCliRun::NoPerm(msg) => fail(EX_NOPERM, &msg),
+        SeekNowCliRun::Unavailable(msg) => fail(EX_UNAVAILABLE, &msg),
+    }
 }
 
 fn recon_cmd(args: &[String]) -> ExitCode {

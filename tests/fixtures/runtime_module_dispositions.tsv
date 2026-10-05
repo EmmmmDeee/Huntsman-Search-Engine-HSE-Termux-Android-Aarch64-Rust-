@@ -17,10 +17,13 @@ breach	leaf	breach record parsing utilities
 canonical	runtime	canonicalization for entities and provenance
 circuit	leaf	bounded circuit/cache state
 ckan	adapter	CKAN source adapter
+claim_coverage	leaf	shadow-mode claim coverage accounting
+claim_policy	leaf	provenance-rooted claim verification policy
 classifier	runtime	seed and indicator classification
 classify	runtime	response classification
 classify_module	leaf	module classification utility
 collection	runtime	provider-neutral execution/observation bridge
+collector	adapter	source-agnostic collection boundary
 community	runtime	graph community analysis through intelligence report
 confidence	runtime	entity confidence and verification helpers
 coref	runtime	deterministic coreference clusters in investigation report
@@ -80,6 +83,7 @@ place	leaf	place primitive
 planner	runtime	deterministic dispatch planning
 postcode_au	leaf	Australian postcode lookup/model
 profiles	runtime	entity profiles through intelligence report
+proof	leaf	bounded proof-environment bookkeeping
 radar	leaf	radar model utility
 recon	leaf	host reconnaissance helpers
 redact	leaf	secret and location redaction
@@ -90,9 +94,13 @@ roi	runtime	dispatch utility scoring
 runtime	runtime	high-level investigation composition root
 scraper_health	diagnostic	source drift diagnostics
 search	diagnostic	local search utility
+seeknow	adapter	SeekNow/See-Know source client
+seeknow_cli	diagnostic	SeekNow command front-end
+seeknow_collector	adapter	SeekNow lineage-safe collector
 service_defs	adapter	keyed-provider service registry
 session	exporter	auditable execution session
 sha256	leaf	SHA-256 primitive
+shadow_assessment	leaf	shadow-mode claim assessment reporting
 signals	leaf	signal primitive
 snake_graph	exporter	compact graph rendering
 source_outcome	runtime	causal provider outcome model
@@ -112,4 +120,5 @@ trust	leaf	trust analysis utility
 uid	leaf	identifier utility
 union_find	leaf	deterministic clustering primitive
 validation	runtime	seed/entity validation
+wayback	adapter	Internet Archive Wayback CDX client
 xml	leaf	XML utility

@@ -11,6 +11,17 @@ release yet; pushes to `main` publish `main-<sha7>` pre-releases (#672). Release
 
 ### Added
 
+- `seeknow` command: opt-in SeekNow/See-Know lookups through guarded `fetch`,
+  with typed entitlement/quota outcomes, a generic collector boundary, and
+  lineage-safe L5 collection. Fast/deep duplicates do not manufacture
+  corroboration. Offline fake-transport tests; live keyed receipts remain
+  operator-gated.
+- Wayback CDX client (`wayback`) over guarded `fetch`; captures are archive
+  observations and original URLs are never dereferenced.
+- Shadow-mode provenance-rooted claim verification kernel (`claim_policy`,
+  `claim_coverage`, `proof`, `shadow_assessment`): unknown ancestry cannot
+  create independent corroboration, and legacy recomputation cannot manufacture
+  `Verified` from caller confidence.
 - `recon dns TARGET`: DNS-over-HTTPS lookup of A/AAAA/MX/NS/TXT plus `_dmarc`
   and `_smtp._tls`, through `fetch` (no redirects), parsing SPF/DMARC/TLSRPT
   from TXT. A challenge page is `BotWaf`, not invalid JSON (offline
