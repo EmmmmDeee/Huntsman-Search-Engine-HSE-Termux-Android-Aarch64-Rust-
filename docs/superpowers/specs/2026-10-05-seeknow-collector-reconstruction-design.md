@@ -14,130 +14,130 @@ The implementation must make SeekNow usable through the reconstructed collector/
 
 The first completed slice must:
 
-- use the documented native REST API at `https://see-know.ru/api/v1`;
+- use the documented REST API at `https://see-know.ru/api/v1`;
 - support authenticated `/credits`, `/status`, `POST /search`, and `POST /search/deep`;
-- accept the high-value selector kinds already supported by SeekNow universal search: email, username, phone, IP, domain, and person/name selectors where Huntsman's classifier can represent them;
+- support universal-search planning for email, username, phone, IP, domain, and person/name selectors already representable by Huntsman's entity model;
 - route every request through Huntsman's guarded `fetch` + injected `http::Transport` path;
-- obtain the API key through the reconstructed key system from `HUNTSMAN_SEEKNOW_KEY` or an explicitly supplied keys file;
-- never emit, persist, fingerprint, tail-log, or otherwise expose API-key material;
-- distinguish valid zero, auth failure, entitlement failure, quota exhaustion, transient rate limit, transport failure, challenge/WAF, truncation, schema/parser drift, and positive success;
-- preserve provider-returned source/database/breach/corpus provenance in evidence instead of treating the collector name as the upstream family;
+- obtain the API key through `Keys::resolve`/`Keys::get("HUNTSMAN_SEEKNOW_KEY")`;
+- never print, persist, log, place in evidence, or otherwise expose the key or its fingerprint through SeekNow-facing output;
+- distinguish valid zero, missing/rejected auth, entitlement denial, quota exhaustion, transient rate limit, transport failure, challenge/WAF, truncation, schema/parser drift, and positive success;
+- preserve provider-returned source/database/breach/corpus provenance instead of treating the collector as the upstream family;
 - prevent duplicate rows or provider multiplexing from manufacturing independent corroboration;
-- preserve the old `7dca720` behavior where it is correct, and intentionally tighten behavior where legacy semantics conflict with the reconstructed evidence/security invariants;
-- remain safe Rust with no new runtime LLM or async runtime;
+- preserve `7dca720` behavior where it remains correct and intentionally tighten behavior where it conflicts with reconstructed invariants;
+- remain safe Rust with no runtime LLM or async runtime;
 - remain viable on Termux/Android aarch64.
 
-## 2. Authoritative state and behavioral oracle
+## 2. Authoritative state and oracle
 
-The implementation base is the strongest verified reconstruction branch currently available, `refactor/repository-reconstruction-2026-10-05` at `22be0defe24cdc04daf216cdb2dae358535f5c3c`, not stale `main` and not `legacy/`.
+Implementation starts from `refactor/repository-reconstruction-2026-10-05` at `22be0defe24cdc04daf216cdb2dae358535f5c3c`, the strongest currently verified reconstruction state.
 
-The reconstruction architecture names legacy commit `7dca720` as the capability oracle. The older `legacy/hse-monolith-v1.41.0/` tree is a per-file historical reference only where `7dca720` lacks a path. SeekNow behavior therefore must be captured from `7dca720` when differential fixtures are produced.
+Legacy commit `7dca720` is the behavioral/capability oracle. `legacy/hse-monolith-v1.41.0/` remains a historical per-file reference only where `7dca720` lacks a path.
 
-Useful proven legacy behavior to retain where compatible:
+Retain, where current evidence still supports them:
 
-- universal fast search and deep search are distinct;
-- `limit=500` is used to request the documented maximum rows per universal-search call;
-- fast and deep caches are logically distinct;
-- typed search and auto-detect search are logically distinct;
-- a fast positive hit must not be replaced by a deep-only path;
-- transient rate limits are not equivalent to exhausted daily credits;
-- provider-level error classification must inspect the provider envelope, not arbitrary leaked payload text;
-- the client must not cache a failed or ambiguous empty as durable positive state;
-- selector-specific GET endpoints can be restored later without changing the universal-search collector contract.
+- separate fast and deep universal-search paths;
+- `limit=500` maximum-row requests;
+- typed and auto-detect searches as distinct operations;
+- fast-positive results do not require deep escalation;
+- transient rate limiting is not quota exhaustion;
+- provider failures are classified from the provider envelope, not arbitrary result payload text;
+- failed/ambiguous empties are not cached or treated as clean zeroes.
 
-Legacy behavior deliberately not inherited as an invariant:
+Do not inherit as invariants:
 
 - key fingerprints persisted into evidence;
-- automatic credential-bearing fallback across multiple provider domains;
-- treating non-JSON or truncated provider output as an ordinary clean empty;
-- returning an empty vector when execution was skipped because of key/budget state;
-- any path that makes a failed/unknown provider state observationally indistinguishable from a validated zero-result response.
+- credential-bearing automatic fallback across multiple provider domains;
+- non-JSON/truncated provider output treated as an ordinary empty;
+- budget/key skips returned as `Ok(Vec::new())`;
+- any behavior that makes execution failure indistinguishable from validated zero.
 
-## 3. Relationship to the archive-collector design
+## 3. Collector-boundary compatibility
 
-The repository already has a design-only PR for a reusable collector boundary plus Wayback/Common Crawl. This SeekNow design must not invent a competing collector abstraction.
-
-The shared collector contract is therefore the one already specified in `2026-10-05-archive-collector-design.md`:
+The archive-collector design already specifies the reusable flow:
 
 ```text
 selector
   -> collector planning
   -> guarded fetch
-  -> source-specific response parser
+  -> source parser
   -> normalized observation
   -> provenance-bearing evidence/entity
   -> lineage/resolution
   -> typed pivots
 ```
 
-If the generic `collector.rs` boundary from the archive work lands first, SeekNow consumes it directly. If SeekNow is implemented first, it introduces only the minimal generic contract required by both designs, matching that prior design's semantics and names closely enough that the archive implementation can reuse it without migration churn.
+SeekNow must reuse that contract rather than create a competing abstraction.
 
-`source_registry` remains discovery-only. A registry route is not evidence and is not the execution path for SeekNow.
+If `collector.rs` lands first from archive work, SeekNow consumes it directly. If SeekNow lands first, it introduces only the minimal generic contract already specified by the archive design so the archive implementation can reuse it unchanged or with mechanical naming reconciliation.
+
+`source_registry` remains discovery-only and is not the evidence-producing execution path.
 
 ## 4. Layer placement
 
-No new architecture layer is introduced.
+No new numerical layer.
 
-Add or reuse:
+- **L4 `seeknow`**: request construction, authenticated guarded fetch, provider-envelope parsing, result-row normalization, status/credit interpretation.
+- **L5 `collector`**: shared collector contracts if not already present.
+- **L5 `seeknow_collector`**: selector planning, fast/deep orchestration, row-to-entity/evidence conversion, lineage-ready provenance, typed pivots, aggregate collection outcome.
+- **Binary adapter**: `seeknow` diagnostics/search commands call L5, never L4 directly.
 
-- **L4 `seeknow`** — request construction, guarded authenticated fetch, response-envelope parsing, result-row normalization, provider status/credit interpretation.
-- **L5 `collector`** — shared collector contracts if not already present from the archive implementation.
-- **L5 `seeknow_collector`** — selector-to-query planning; fast/deep orchestration; result-row to `Entity`/`Evidence` conversion; lineage-ready provenance; typed pivots; collection outcome aggregation.
-- **Binary/CLI adapter** — explicit `seeknow` diagnostics and/or integration into the first reconstructed people-selector path, but the binary must not bypass the L5 collector to call L4 directly.
+L4 must not depend on L5 entity types.
 
-The L4 source client must not depend on L5 entity types. It returns source-domain records plus source outcomes. L5 owns evidence/entity interpretation.
+## 5. Network, credential, and redirect boundary
 
-## 5. Network and trust boundary
-
-### 5.1 Only guarded network execution
-
-All HTTP operations use:
+All network execution is:
 
 ```text
-seeknow / seeknow_collector
-  -> fetch::fetch
-  -> injected http::Transport
-  -> UreqTransport only at the real execution boundary
+seeknow_collector -> seeknow -> fetch::fetch -> injected http::Transport
 ```
 
-No direct `ureq`, `TcpStream`, curl subprocess, reqwest client, shell command, browser automation, or WebView path is added.
+No direct `ureq`, `TcpStream`, curl subprocess, reqwest, shell, browser automation, or WebView path is added.
 
-### 5.2 Primary origin
-
-The built-in API base is:
+Built-in API base:
 
 `https://see-know.ru/api/v1`
 
-Credential-bearing automatic rotation to `.xyz`, `.eu`, `.icu`, `.vip`, or other aliases is not performed.
+No automatic credential-bearing rotation to `.xyz`, `.eu`, `.icu`, `.vip`, or other mirrors. A future operator base override must pass the existing endpoint/origin safety policy and then take exclusive effect.
 
-If a base override is restored later, it must pass the existing endpoint/origin safety policy and then take exclusive effect. The API key is never silently retried on a host the operator did not choose.
-
-### 5.3 Authentication
-
-Use one configured credential slot:
+Credential slot:
 
 `HUNTSMAN_SEEKNOW_KEY`
 
-The API accepts `X-API-Key` and current documentation also describes `Authorization: Bearer`. HSE will standardize on `X-API-Key` unless live verification proves it incompatible.
+Authentication uses `X-API-Key` unless live first-party verification proves it incompatible. Build the credential through `AuthenticationAuthority::operator_approved` + `fetch::Credential::new(..., AuthStyle::Header("X-API-Key"))`, using the `Secret` returned by `Keys::get`.
 
-The key must be placed through `fetch::Credential` or the equivalent reconstructed exact-origin credential abstraction, pinned to `https://see-know.ru:443`. It must not be manually interpolated into URLs, bodies, logs, errors, evidence attributes, cache keys, receipts, or diagnostics.
+The existing fetch layer internally derives `CredentialFingerprint` to record whether an approved credential was sent and to classify authenticated 401s. SeekNow must **not** copy that fingerprint into its CLI, evidence, receipts, logs, cache keys, or persisted state. Removing fingerprint derivation globally is outside this slice because it is an existing fetch-boundary contract, not a SeekNow-specific requirement.
 
-### 5.4 Redirects
+SeekNow credential-bearing requests set `FetchOptions { max_redirects: 0 }` in the first implementation. Any later redirect support is security-sensitive and must prove no cross-origin key transfer, HTTP downgrade, userinfo authorization, or key reattachment after leaving the approved origin.
 
-Credential-bearing requests default to zero redirects unless current first-party API behavior requires a same-origin redirect. A redirect policy change is security-relevant and requires explicit tests proving:
+## 6. Generic outcome model extension
 
-- no key crosses origin;
-- no downgrade to HTTP;
-- no userinfo-derived authorization;
-- no key reattachment after leaving the pinned origin.
+The current `SourceOutcomeKind` lacks two causal states required to distinguish SeekNow failures truthfully. Extend it provider-generically with:
 
-## 6. L4 SeekNow client
+```rust
+EntitlementDenied,
+QuotaExhausted,
+```
 
-### 6.1 Core request types
+Semantics:
 
-The source client exposes typed request/response structures rather than loose `serde_json::Value` at the collector boundary.
+- `EntitlementDenied`: credentials were accepted/recognized but the account/plan is not authorized for the requested operation.
+- `QuotaExhausted`: credentials are valid but the account's current credit/daily allowance is exhausted until the provider reset condition.
 
-Proposed shape:
+Update generic helpers:
+
+- both are non-accepted outcomes;
+- `EntitlementDenied` is non-retryable without an account/plan change and maps to an operator/investigate action, not `RequireCredential`;
+- `QuotaExhausted` is non-immediately-retryable and maps to backoff/await-reset semantics;
+- `RateLimited` remains the transient throttle state;
+- architecture and source-outcome tests pin the distinction.
+
+Do not encode entitlement or quota only in free-form `detail`; the type system must preserve the causal distinction.
+
+## 7. L4 SeekNow client
+
+### 7.1 Typed surface
+
+Use typed request/result structures at the collector boundary.
 
 ```rust
 pub const API_BASE: &str = "https://see-know.ru/api/v1";
@@ -158,18 +158,6 @@ pub struct SeekNowSearch<'a> {
     pub limit: u16,
 }
 
-pub struct SeekNowCredits {
-    pub remaining: Option<u64>,
-    pub limit: Option<u64>,
-    pub reset: Option<String>,
-    pub plan: Option<String>,
-}
-
-pub struct SeekNowStatus {
-    pub service_status: Option<String>,
-    pub raw_fields: BTreeMap<String, String>,
-}
-
 pub struct SeekNowResponseMeta {
     pub http_status: u16,
     pub response_sha256: String,
@@ -186,93 +174,77 @@ pub struct SeekNowSearchResult {
 }
 ```
 
-Exact fields may be adjusted to observed current responses, but the types must preserve unknown provider fields where they may carry provenance or entity values without converting the entire system back to untyped JSON.
+`credits` and `status` use typed result structures but may retain bounded unknown scalar fields for forward compatibility.
 
-### 6.2 Endpoints in the first slice
+### 7.2 First-slice endpoints
 
-Implement:
+Implement only:
 
-- `GET /credits` — zero-credit account/plan diagnostic endpoint;
-- `GET /status` — zero-credit service/status diagnostic endpoint;
-- `POST /search` — fast universal search;
-- `POST /search/deep` — deep universal search.
+- `GET /credits`;
+- `GET /status`;
+- `POST /search`;
+- `POST /search/deep`.
 
-Do not implement the full documented endpoint matrix in the first PR. Discord, gaming, social-history, stealer, WHOIS, domain-intel, phone-intel, username-platform fanout, and Enterprise/Kurama endpoints are follow-on slices once the universal-search path is proven.
+Defer Discord, gaming, stealer, social-history, WHOIS/domain-intel, platform fanout, and Enterprise/Kurama endpoints.
 
-### 6.3 Request construction
+### 7.3 Request construction
 
-Universal search JSON is:
+Universal-search JSON is produced with `serde_json`, never manual escaping:
 
 ```json
 {"query":"<value>","type":"<type>","limit":500}
 ```
 
-For `Auto`, omit `type` rather than serializing a fake value.
+For `Auto`, omit `type`.
 
-The body must be generated by `serde_json`, not manual string concatenation. This removes the legacy need for custom JSON escaping and makes malformed UTF-8/escaping behavior explicit through Rust strings and serde.
+Clamp explicit limits to `1..=500`. The production collector requests `500` unless an explicit collection limit is smaller.
 
-`limit` is clamped to `1..=500`; the production collector requests `500` unless an explicit collection limit is lower.
+### 7.4 Response bounds and truncation
 
-### 6.4 Response size and truncation
+The current `http::Response` body cap remains the outer memory bound.
 
-The existing `http::Response` hard body cap remains the outer bound. A truncated response must never be classified as `ValidZero`, even if no complete rows can be parsed.
+A truncated response can never become `ValidZero`.
 
-If a 2xx body is truncated:
+If a truncated 2xx body contains provably complete valid rows, retain those rows as partial evidence and mark truncation. Otherwise report parser/truncation failure. Missing rows from a truncated body never imply absence.
 
-- parse complete records only when the parser can prove they are complete and structurally valid;
-- keep those records as partial evidence;
-- set explicit truncation/partial state;
-- never infer absence from missing rows;
-- never treat parser failure caused by truncation as a clean zero.
+### 7.5 Provider-envelope classification
 
-### 6.5 Provider envelope classification
+Inspect HTTP status plus provider-level `error`, `message`, success/credit fields. Never scan arbitrary result fields for provider-failure strings.
 
-Classify only provider-level envelope/status fields as auth/quota/rate-limit state. Do not search arbitrary result payload values for strings such as `invalid_api_key`, because leaked config data may legitimately contain them.
+Required mapping:
 
-Required distinctions:
-
-- `401` or provider `invalid_api_key` -> `AuthRejected`;
-- `403` entitlement/plan denial -> `EntitlementDenied` unless response is independently classified as WAF/challenge;
-- `429` with zero credit/daily-quota semantics -> `QuotaExhausted`;
-- `429` burst throttle with credits remaining/ordinary rate-limit semantics -> `RateLimited`;
-- `5xx` -> upstream unavailable/transient failure;
-- challenge/WAF body -> `BotWaf`/existing source-outcome classification;
-- malformed JSON or incompatible schema -> parser/schema drift;
+- missing key before request -> command/collector missing-credential state, zero requests;
+- 401 or provider `invalid_api_key` -> `AuthRejected` when a credential was sent;
+- recognized credential + `plan_required`/equivalent -> `EntitlementDenied`;
+- 429 or error envelope proving zero daily/credit allowance -> `QuotaExhausted`;
+- ordinary 429 throttle / `rate_limit` without exhausted credits -> `RateLimited`;
+- 5xx -> `Upstream5xx`;
+- challenge body at any status -> `BotWaf`;
+- malformed JSON -> `ParserDrift`;
+- structurally valid but incompatible envelope -> `SchemaDrift`/`ProtocolDrift` as appropriate;
 - valid parsed zero rows -> `ValidZero`;
-- valid positive rows -> `Success`.
+- positive valid rows -> `Success`.
 
-Do not convert these distinctions into one generic `Error::Invalid` if the current source-outcome types can represent them more precisely.
+A successful response that spent the last credit (`success=true`, positive rows, `credits_remaining=0`) remains `Success`; its evidence is not discarded. Only subsequent exhausted calls classify as `QuotaExhausted`.
 
-### 6.6 Rate-limit headers
+Capture `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` when present. They are execution metadata, never identity evidence.
 
-Capture when present:
+## 8. Fast/deep orchestration
 
-- `X-RateLimit-Limit`;
-- `X-RateLimit-Remaining`;
-- `X-RateLimit-Reset`.
+Fast and deep are separate observations/receipts.
 
-They are execution metadata, not evidence and not identity lineage.
+1. Run `/search`.
+2. Positive fast rows: retain and stop depth escalation.
+3. Authenticated, structurally valid, non-truncated fast `ValidZero`: run `/search/deep` once.
+4. Auth, entitlement, quota, rate-limit exhaustion after bounded retries, transport failure, WAF, parser/schema drift, or truncation: do not reinterpret as zero and do not spend a deep-search credit automatically.
+5. Deep positive/zero retains both fast and deep execution receipts.
+6. Fast valid-zero followed by deep failure is partial/inconclusive, not evidence of absence.
 
-## 7. Fast/deep orchestration
+Do not preserve the legacy fast-empty retry unless a current live/recorded test reproduces the transient-empty behavior. If reproduced, one bounded retry is allowed and must be separately observable in the receipt.
 
-Fast and deep search are separate observations with separate response receipts.
+Transient retries are bounded and cannot silently multiply paid requests beyond the explicit retry contract.
 
-Default algorithm:
-
-1. Run fast `/search`.
-2. If fast returns positive rows, retain them and stop the universal-search depth escalation for that selector.
-3. If fast returns an authenticated, structurally valid, non-truncated `ValidZero`, run `/search/deep` once.
-4. If fast returns auth, entitlement, quota, rate-limit exhaustion after bounded retries, transport failure, challenge, parser drift, schema drift, or truncation, do **not** reinterpret that condition as a zero and do not automatically spend a deep-search credit.
-5. If deep succeeds, retain deep rows and both fast/deep execution receipts.
-6. If fast valid-zero succeeds but deep fails, the overall collector result is partial/inconclusive, not an asserted absence.
-
-A fast empty may be retried once only if a recorded differential/live fixture demonstrates the legacy server-side transient-empty behavior still exists. The retry is not assumed merely because `7dca720` documented it historically.
-
-Transient 429/5xx/transport retries must use a bounded policy compatible with Termux resource limits. Retries reuse the logical operation budget and must not silently multiply paid credits beyond the explicit retry contract.
-
-## 8. Selector planning
-
-The first collector maps Huntsman selector kinds to SeekNow universal-search types:
+## 9. Selector planning
 
 | Huntsman selector | SeekNow type |
 | --- | --- |
@@ -281,17 +253,15 @@ The first collector maps Huntsman selector kinds to SeekNow universal-search typ
 | `Phone` | `phone` |
 | `IpAddress` | `ip` |
 | `Domain` | `domain` |
-| `Person` / name | auto-detect (`type` omitted) |
+| `Person` | auto-detect; omit `type` |
 
-Unsupported selector kinds fail before any network request.
+Unsupported kinds fail before network execution.
 
-Normalize only through existing Huntsman canonicalization functions that do not destroy provider-relevant spelling. The request value and the evidence's raw provider spelling remain distinguishable from canonical entity values.
+Use existing canonicalization to validate/canonicalize selectors, while retaining raw spelling separately where evidence rendering needs it.
 
-## 9. Normalized SeekNow row
+## 10. Normalized result rows
 
-The API is a federation and row schemas differ by upstream source. The L4 parser therefore retains a bounded normalized representation that separates provider metadata from potentially sensitive result fields.
-
-Proposed shape:
+SeekNow federates upstream datasets with heterogeneous schemas. L4 keeps a bounded normalized row representation:
 
 ```rust
 pub struct SeekNowRow {
@@ -301,104 +271,75 @@ pub struct SeekNowRow {
 }
 
 pub struct SeekNowUpstream {
-    pub source: Option<String>,
-    pub database: Option<String>,
-    pub breach: Option<String>,
-    pub corpus: Option<String>,
+    pub dbname: Vec<String>,
+    pub breach: Vec<String>,
+    pub source_db: Vec<String>,
+    pub database_name: Vec<String>,
+    pub dataset: Vec<String>,
+    pub source: Vec<String>,
     pub record_id: Option<String>,
 }
 ```
 
-The parser must enforce bounded field count, bounded string length for persisted attributes, and deterministic ordering. Oversized provider fields may be hashed/truncated for diagnostics but must never cause silent whole-record loss when useful bounded identity fields remain parseable.
+The field names deliberately align with `lineage::LINEAGE_FIELDS`. Preserve multiple values so ambiguity is visible rather than overwritten.
 
-The implementation must not surface plaintext passwords, authentication tokens, session cookies, API keys, or equivalent credential material into general entity pivots or ordinary CLI output. Such values may be represented only by non-secret metadata such as `credential_exposure_present=true`, field class, source corpus, and a cryptographic hash if later use requires stable deduplication. The first PR should prefer omission over inventing a credential-storage subsystem.
+Bound:
 
-## 10. Evidence and provenance mapping
+- number of normalized fields per row;
+- persisted string length;
+- number of rows (`<=500` requested per universal call);
+- diagnostic snippets.
 
-### 10.1 Collector vs upstream source
+Oversized nonessential fields can be omitted with explicit truncation metadata; a useful bounded identity field must not be silently dropped because an unrelated blob is huge.
 
-`seeknow` is the collector/provider aggregator. It is not automatically the independent upstream family for every row.
+Credential-like values returned by breach data—passwords, session tokens, cookies, API keys, authentication headers—are **not** general pivots and are not printed by default. The first slice records only exposure metadata such as credential-field presence/type when useful. It does not create a credential vault.
 
-Evidence provenance must preserve enough fields to reconstruct:
+## 11. Provenance and lineage
 
-- collector: SeekNow;
-- endpoint/mode: fast or deep;
-- provider response receipt/hash/time;
-- upstream source/database/breach/corpus where the API supplies it;
-- query kind without persisting secrets;
-- row locator if provider supplies one;
-- result fields used to create each entity.
+`seeknow` is the collector, not the independent upstream origin.
 
-### 10.2 Lineage family rule
+Each evidence item retains:
 
-Use the strongest explicit upstream identity supplied by the response, in this order unless fixtures show a better provider-native hierarchy:
+- collector `seeknow`;
+- endpoint/mode (`fast`/`deep`);
+- observation time and response hash;
+- provider-returned `dbname`/`breach`/`source_db`/`database_name`/`dataset` values;
+- non-counting `source`, `record_id`, and row locator metadata where useful;
+- bounded source fields that materially support the emitted entity.
 
-1. `dataset` derived from an explicit breach/database/corpus identifier;
-2. explicit independent `source` when no dataset/corpus identifier exists;
-3. unattributed if the row does not expose a defensible upstream identity.
+Do not invent a new lineage precedence rule in `seeknow_collector`; use `Lineage::of` and its existing precedence:
 
-Do not synthesize a lineage family from:
+`dbname -> breach -> source_db -> database_name -> dataset`.
 
-- SeekNow collector name alone;
-- fast vs deep mode;
-- API hostname;
-- record ID;
-- row index;
-- source URL;
-- result count;
-- query type;
-- duplicate observations of the same dataset.
+If the deciding field has multiple distinct families, `Lineage::Ambiguous` is required. If no admissible dataset field is present, the observation is `Unattributed`. Provider `source` alone remains non-counting under the current lineage contract and must not be promoted just to increase corroboration.
 
-Two rows from the same named breach database count as one family even if one came from fast and one from deep. Two distinct upstream databases may count as separate families only when the provider explicitly identifies them as distinct origins and Huntsman's existing lineage rules accept those values.
+Fast/deep mode, API hostname, record ID, row index, source URL, query type, collector name, or duplicate observations never create an independent family.
 
-### 10.3 Ambiguous provenance
+## 12. Entity extraction
 
-If conflicting row fields claim different upstream families, mark lineage ambiguous rather than selecting whichever field yields more corroboration.
+L5 `seeknow_collector` maps normalized safe fields to existing `EntityKind`s.
 
-If provider metadata is absent, evidence remains usable but `Lineage::Unattributed`; it must not increase independent-family count.
-
-## 11. Entity extraction
-
-L5 `seeknow_collector` owns conversion from normalized rows to Huntsman entities.
-
-Initial safe entity classes:
+Initial classes:
 
 - Email;
 - Username;
 - Phone;
 - IpAddress;
 - Domain;
-- Person/name when sufficiently structured;
+- Person when structurally labelled/validated;
 - Organisation when explicitly labelled;
-- Address/location when structurally valid and not merely a free-form leak blob;
-- platform identifiers already represented by an existing `EntityKind`, if any.
+- Address when structurally valid and not merely an unbounded free-form blob;
+- existing platform/device identifiers only when their current `EntityKind` and canonicalizer fit the value.
 
-Do not create password/token/cookie entities in the first slice.
+Do not create Password, Cookie, SessionToken, or arbitrary secret entities in this slice. Existing `Credential`/`ApiKey` entity kinds are not used for raw SeekNow secret values.
 
-Every entity generated from a row carries at least one evidence item with the original upstream family metadata. Deduplication by entity UID may merge entity shells, but evidence items from genuinely distinct upstream roots must remain separable.
+Deduplication may merge entity shells by UID, but evidence observations and distinct upstream roots remain separable.
 
-Confidence values must come from existing HSE evidence/entity conventions or differential fixtures. Do not assign higher confidence merely because SeekNow returns many duplicate rows.
+Confidence comes from existing HSE conventions/differential evidence, never result count.
 
-## 12. Collection result and source outcomes
+## 13. CLI and diagnostics
 
-The collector returns a `CollectionBatch` compatible with the shared collector design.
-
-For SeekNow, the batch contains:
-
-- entities;
-- execution/observation receipts for credits/status only when explicitly requested, not on every search;
-- fast/deep search receipts;
-- source outcomes;
-- typed pivots derived from safe entity fields;
-- partial/truncation state.
-
-Validated zero is an execution fact, not positive evidence. A zero-row result does not create an entity or a corroboration root.
-
-## 13. Diagnostics
-
-A small explicit diagnostic path is required before live evidence collection.
-
-Recommended CLI surface:
+Recommended surface:
 
 ```text
 huntsman-recon seeknow status [--keys FILE]
@@ -406,229 +347,189 @@ huntsman-recon seeknow credits [--keys FILE]
 huntsman-recon seeknow search KIND VALUE [--deep|--fast-only] [--keys FILE]
 ```
 
-The CLI adapter calls the L5 collector/diagnostic adapter; it does not call L4 directly.
+All three call L5 adapters, not L4 directly.
 
-Output rules:
+Output includes outcome, mode, safe result count, truncation, and rate-limit metadata. It never dumps raw rows wholesale and never prints a key or credential fingerprint.
 
-- never print the key or a key fingerprint;
-- print HTTP/source outcome, mode, result count, truncation, and rate-limit metadata;
-- raw result rows are not dumped wholesale;
-- credential-like fields are redacted/omitted;
-- positive entities print through existing stable entity rendering conventions where practical;
-- validated zero must be visibly different from unavailable/auth-failed/partial.
+Validated zero must be visibly different from unavailable/auth-failed/partial.
 
-Exit codes reuse current reconstructed conventions rather than inventing provider-specific codes:
+Reuse current exit classes:
 
 - 64 usage;
 - 65 invalid selector/data;
 - 66 missing/unreadable credential input;
-- 69 upstream unavailable/rate-limited/parser failure;
-- 77 auth/entitlement/egress refusal where current CLI semantics already use that class.
+- 69 upstream unavailable/rate-limited/parser failure/quota exhaustion;
+- 77 auth rejection, entitlement denial, or egress refusal.
 
-Exact mapping must be pinned by CLI tests and architecture documentation.
+Pin exact mapping in CLI tests and README/architecture docs.
 
-## 14. Caching
+## 14. Cache policy
 
-No cross-scan shared positive-result cache is required in the first reconstruction PR.
+Do not add a provider-local cross-scan global cache in the first PR.
 
-Reason:
+Within one collector invocation, deduplicate identical `(mode, query_type, canonical_query)` operations so the same paid call is not issued twice.
 
-- current reconstruction already identifies response cache restoration as a separate partial capability;
-- a new provider-local global cache would recreate the legacy cross-scan attribution hazard;
-- correctness/provenance is higher value than avoiding a small number of paid requests until the shared cache boundary is restored.
+A later shared cache must include source, endpoint/mode, type, normalized query, and appropriate credential authority in its key, and must preserve the original observation identity/time rather than making a cache hit look fresh.
 
-Within one collector invocation, deduplicate identical `(mode, type, normalized-query)` operations so the same paid call is not issued twice.
-
-When the shared response cache is later restored, its cache key must include source, endpoint/mode, query type, normalized query, and credential authority where required, and cache receipts must preserve the original observation time/response identity rather than pretending a cache hit is a fresh source observation.
-
-## 15. Resource discipline
-
-Termux is first-class.
-
-Requirements:
+## 15. Termux/resource requirements
 
 - no async runtime;
-- no background browser;
-- bounded response body through existing transport cap;
-- bounded result rows (`<=500` universal search request);
-- bounded normalized fields per row;
-- bounded persisted attribute length;
+- no browser runtime;
+- existing bounded HTTP body cap;
+- <=500 requested universal rows per call;
+- bounded row fields and attribute lengths;
 - bounded retry count;
-- bounded deep-search escalation (maximum one deep call per universal-search selector in this slice);
-- deterministic record/entity ordering before rendering/tests;
-- preserve valid partial rows when one row is malformed, unless the provider envelope itself is unusable.
-
-No new dependency should be added unless existing serde/HTTP primitives cannot implement the requirement correctly.
-
-No `unsafe` code.
+- at most one deep escalation per selector in this slice;
+- deterministic ordering before rendering and fixture comparison;
+- malformed neighbor rows do not erase valid rows unless the envelope is unusable;
+- no new dependency unless existing serde/HTTP primitives are demonstrably insufficient;
+- no `unsafe`.
 
 ## 16. Differential verification
 
-Before product implementation, capture recorded golden fixtures from legacy commit `7dca720` for at least:
+Capture sanitized golden fixtures from `7dca720` before implementation for the strongest available subset of:
 
-- fast email search positive;
-- fast username positive;
-- fast domain/IP/phone positive where fixtures can be safely synthetic;
+- positive fast email;
+- positive fast username;
+- phone/IP/domain positive cases using synthetic fixture content;
 - auto/person query;
-- fast validated zero;
-- fast-zero -> deep-positive behavior if available in the oracle;
+- valid fast zero;
+- fast-zero/deep-positive if reproducible;
 - transient rate limit;
 - quota exhaustion;
-- invalid key/plan denial;
-- malformed/non-JSON provider output;
-- duplicate rows from one upstream breach/database;
-- rows containing provider-error-looking strings inside the leaked payload, proving they are not envelope failures.
+- invalid key;
+- plan/entitlement denial;
+- malformed/non-JSON response;
+- duplicate rows from one upstream database;
+- payload text containing `invalid_api_key` that is not a provider envelope failure.
 
-Use synthetic/redacted fixtures. Do not commit real credentials, live passwords, tokens, cookies, or unnecessary third-party personal data.
+No fixture may contain a real API key, live password/token/cookie, or unnecessary third-party PII.
 
 Differential acceptance:
 
-- every non-secret entity/value that legacy emitted from the fixture remains available unless a reviewed tightening intentionally removes unsafe credential material;
-- no row gains a stronger lineage family than the response metadata supports;
+- safe non-secret entities legacy emitted remain represented unless a documented tightening removes them;
+- no result gains stronger lineage than response metadata permits;
 - no result is silently truncated;
-- intentional differences are documented beside the fixture.
+- every intentional difference is documented with the fixture.
 
-## 17. Adversarial tests
+## 17. Adversarial falsification
 
-The implementation must attempt to falsify the important claims.
+Tests must prove:
 
-Required tests include:
-
-1. A result payload containing the string `invalid_api_key` does not disable the provider.
-2. Two fast/deep rows from the same `database` remain one lineage family.
-3. Ten duplicate rows do not increase family count or confidence as though ten independent sources existed.
-4. Conflicting `database` and `breach` family values produce ambiguous lineage rather than whichever value maximizes confidence.
-5. A truncated empty HTTP body cannot become `ValidZero`.
-6. A malformed row beside valid rows does not erase the valid rows.
-7. A malformed provider envelope cannot emit evidence.
-8. A 403 challenge page is not mislabelled as an invalid API key.
-9. A 429 burst throttle is not latched as daily quota exhaustion.
-10. A final successful response with `credits_remaining=0` keeps its returned evidence; zero credits affect subsequent calls, not the data already paid for.
-11. Missing key makes zero network requests.
-12. Unsupported selector kind makes zero network requests.
-13. Redirect or origin change never sends the key to another host.
-14. Error text and debug output do not contain the configured key, key prefix/tail fingerprint, Authorization header, X-API-Key value, returned passwords, tokens, or cookies.
-15. Unicode and confusable identity values do not panic and are passed through existing canonicalization rules.
-16. Repeated execution on the same recorded response yields byte-stable normalized entity/evidence ordering.
+1. Payload string `invalid_api_key` does not disable the provider.
+2. Fast/deep rows from one `database` remain one lineage family.
+3. Duplicate rows cannot increase independent-family count as though independent sources existed.
+4. Multiple values in one deciding lineage field become `Ambiguous`.
+5. A truncated empty response cannot become `ValidZero`.
+6. Malformed neighbor rows do not erase valid rows.
+7. Malformed provider envelope emits no evidence.
+8. 403 challenge page is `BotWaf`, not auth rejection.
+9. Transient 429 is not quota exhaustion.
+10. Positive response with `credits_remaining=0` retains evidence.
+11. Missing key sends zero requests.
+12. Unsupported selector sends zero requests.
+13. Redirect/origin change cannot transfer the key.
+14. SeekNow-facing errors/output contain neither key nor credential fingerprint nor returned passwords/tokens/cookies.
+15. Unicode/confusable identity input cannot panic and is handled by existing canonicalizers.
+16. Same recorded input produces deterministic normalized ordering.
+17. `EntitlementDenied`, `QuotaExhausted`, and `RateLimited` remain distinct through serialization and health-action mapping.
 
 ## 18. Live verification
 
-Offline tests prove parsing/contracts; they do not prove current API compatibility.
+Offline tests do not prove current API compatibility.
 
-After offline gates pass and an operator-provided SeekNow API key is available, perform bounded live verification in this order:
+When a valid operator SeekNow key is available, verify in order:
 
-1. `seeknow credits` — prove key acceptance and read current quota/plan metadata.
-2. `seeknow status` — prove the API origin/status path.
-3. Fast search for a neutral controlled identifier such as `example.com`, a synthetic domain if the provider accepts it, or an identifier the operator is authorized to investigate.
-4. Only if fast is a validated zero, optionally run deep search for the same controlled identifier.
+1. `seeknow credits`;
+2. `seeknow status`;
+3. fast search using a neutral/controlled authorized identifier;
+4. deep only if fast is a validated zero or an explicit operator test requests it.
 
-Record a live receipt containing:
+Record a receipt with UTC time, commit SHA, endpoint/mode, query kind (not sensitive value unless needed), outcome, response hash, safe result count, truncation, rate-limit metadata, and exit code.
 
-- UTC time;
-- commit SHA;
-- endpoint/mode;
-- request type but not the sensitive query value where unnecessary;
-- HTTP/source outcome;
-- response hash;
-- result count;
-- truncation flag;
-- rate-limit metadata;
-- CLI exit code.
+Do not commit raw live breach bodies containing sensitive data.
 
-Do not commit raw live response bodies containing breach data unless they are safely synthetic/redacted and explicitly suitable as fixtures.
+CI never depends on live credentials/network availability.
 
-CI must remain independent of live SeekNow availability and credentials.
-
-## 19. Build and platform verification
+## 19. Build/platform gate
 
 Completion requires:
 
 - `cargo fmt --check`;
 - `cargo clippy --all-targets --locked -- -D warnings` on stable;
 - `cargo test --locked` on stable;
-- `cargo test --locked` on MSRV Rust 1.87;
+- `cargo test --locked` on Rust 1.87;
 - `cargo run --locked -- check` with no unintended artifact drift;
 - architecture/documentation tests;
-- secret scan on the branch diff;
-- Android aarch64 release cross-build and ELF/linker verification using the repository's CI contract;
+- branch-diff secret scan;
+- Android aarch64 release cross-build and ELF/linker verification matching repository CI;
 - no new socket-opening path;
 - no `unsafe`.
 
 ## 20. Acceptance criteria
 
-The first SeekNow reconstruction PR is complete only when all are true:
+The first SeekNow reconstruction PR is complete only when:
 
-1. `seeknow` L4 client and `seeknow_collector` L5 adapter compile and are architecture-mapped.
-2. The generic collector boundary is reused or introduced in a form compatible with the archive-collector design; no second competing collector trait exists.
-3. All SeekNow HTTP operations pass through guarded `fetch` over an injected transport.
-4. `HUNTSMAN_SEEKNOW_KEY` is loaded only through the reconstructed key system and is pinned to the intended origin.
-5. `/credits`, `/status`, `/search`, and `/search/deep` have offline request/parser/outcome tests.
-6. Email, username, phone, IP, domain, and person/name universal-search planning is implemented or explicitly rejected before network when Huntsman's current entity model cannot represent the selector.
-7. Fast positive results stop unnecessary deep escalation; only validated fast zero may escalate to deep.
-8. Auth, entitlement, rate-limit, quota, transport, WAF, parser/schema drift, truncation, valid zero, and success remain distinguishable.
-9. Positive safe result fields become provenance-bearing HSE entities without exposing password/token/cookie material.
-10. Explicit breach/database/corpus provenance survives into evidence and lineage; duplicate provider rows cannot manufacture independent corroboration.
-11. A result with no defensible upstream family remains unattributed rather than using `seeknow` as a fabricated dataset.
-12. Differential fixtures against `7dca720` cover the primary search semantics and document intentional tightenings.
-13. Adversarial tests cover false auth markers in payloads, duplicate-family inflation, truncation, partial malformed input, and key leakage.
-14. Full Rust/MSRV/static/architecture/secret-scan gates pass.
-15. Android aarch64 build/ELF verification passes.
-16. Live `/credits` and `/status` plus one bounded controlled search are demonstrated when a valid operator key is available; absent credentials are reported as the only live-verification blocker rather than pretending mocks prove the live API.
+1. `seeknow` L4 and `seeknow_collector` L5 compile and are architecture-mapped.
+2. The shared collector boundary is reused or introduced compatibly with the archive-collector design; no second collector trait exists.
+3. All HTTP operations pass through guarded `fetch` over injected transport.
+4. `HUNTSMAN_SEEKNOW_KEY` comes only from the reconstructed keys system and is origin-bound through `Credential`.
+5. SeekNow output/evidence/logging never exposes the key or its fingerprint.
+6. `EntitlementDenied` and `QuotaExhausted` are added as provider-generic typed outcomes and remain distinct from `AuthRejected` and `RateLimited`.
+7. `/credits`, `/status`, `/search`, and `/search/deep` have offline request/parser/outcome tests.
+8. Email, username, phone, IP, domain, and person universal planning is implemented or rejected before network if unsupported by current canonicalization.
+9. Fast positive stops deep; only validated fast zero automatically escalates.
+10. Auth, entitlement, quota, transient rate limit, transport, WAF, parser/schema drift, truncation, valid zero, and success remain causally distinct.
+11. Safe positive fields become provenance-bearing entities without raw credential material.
+12. Existing `Lineage::of` derives upstream family from explicit dataset fields; duplicates cannot manufacture corroboration; absent dataset provenance stays unattributed.
+13. Differential fixtures against `7dca720` cover primary search semantics and documented tightenings.
+14. Adversarial tests cover false auth markers, duplicate-family inflation, truncation, malformed partial input, redirect credential isolation, and secret/fingerprint leakage.
+15. Full static/test/MSRV/architecture/secret gates pass.
+16. Android aarch64 build/ELF verification passes.
+17. Live `/credits`, `/status`, and one bounded controlled search pass when a valid key is available; absent credentials remain a declared external blocker rather than being hidden by mocks.
 
-## 21. Deliberately deferred work
+## 21. Deferred work
 
-Not required for the first PR:
-
-- full documented SeekNow endpoint matrix;
+- full SeekNow endpoint matrix;
 - stealer-log retrieval;
-- Discord/Kurama Enterprise endpoints;
+- Enterprise/Kurama Discord endpoints;
 - gaming/platform-specific endpoints;
-- direct password/token/cookie storage or display;
+- raw password/token/cookie storage or display;
 - browser/session automation;
 - automatic multi-domain API fallback;
-- global/persistent response cache;
+- global response cache;
 - persistent key-pool rotation;
-- recursive unified `scan` restoration beyond bounded typed pivots;
+- full recursive `scan` orchestration;
 - web UI integration;
-- asynchronous execution/runtime conversion.
+- async runtime conversion.
 
-These are follow-on slices only after the universal-search collector has passed differential, adversarial, platform, and live verification.
+## 22. Alternatives rejected
 
-## 22. Strongest alternatives considered
+**Port the entire legacy SeekNow tree:** rejected because it restores curl subprocesses, async/global-budget/cache assumptions, fallback-domain behavior, and old module-engine coupling.
 
-### A. Port the whole legacy `util/see_know` tree
+**Direct binary-to-L4 SeekNow CLI:** rejected as the final design because it creates another architecture exception instead of restoring the collector boundary.
 
-Rejected. It would restore obsolete curl-subprocess, global-budget/cache, old module-engine, fallback-domain, and async assumptions that conflict with the reconstruction. The legacy tree remains an oracle, not the architecture target.
+**Browser/session automation without API key:** rejected because the documented REST API is lower-fragility, deterministic, and materially safer to test and operate.
 
-### B. Add a direct `seeknow` CLI that calls L4
+**Treat SeekNow as one upstream family:** rejected because it discards provider-reported dataset provenance.
 
-Rejected as the final design. It is faster as a temporary demo but creates the same binary->provider exception the architecture is trying to remove. The CLI should exercise the L5 collector instead.
+**Treat every row/source label as independent:** rejected because it manufactures corroboration.
 
-### C. Browser/session automation when no API key exists
-
-Rejected for the production reconstruction. The first-party REST API now exists and is the stronger, documented, lower-fragility interface. Browser automation would add Turnstile/session state, a heavier runtime, weaker determinism, and a wider credential/cookie boundary.
-
-### D. Treat SeekNow as one independent source family
-
-Rejected. SeekNow federates multiple upstream datasets/services. Collapsing all results to one family discards provenance; treating every returned row as independent manufactures corroboration. Explicit upstream dataset/source metadata must drive lineage where available.
-
-### E. Deep search on every positive fast search
-
-Rejected. It spends another credit and large latency without evidence that it improves the objective for every hit. The first slice escalates only from a validated fast zero.
+**Deep after every fast positive:** rejected because it adds paid latency without demonstrated universal decision value.
 
 ## 23. Invalidation conditions
 
-Revisit this design if implementation/live evidence proves any of the following:
+Revisit the affected mechanism if evidence shows:
 
-- current first-party API authentication no longer accepts `X-API-Key`;
-- `/search` and `/search/deep` response schemas cannot be normalized without losing material provenance;
-- the provider no longer exposes defensible upstream dataset/source identifiers and therefore cannot support dataset-level lineage as designed;
-- the reconstructed `fetch::Credential` abstraction cannot pin the key to the exact origin without a security regression;
-- the shared collector contract from the archive work lands with materially different interfaces that are demonstrably superior;
-- deep search demonstrably adds unique positive data after fast positive hits at a net value high enough to justify the extra credit/latency;
-- the current 4 MiB transport cap routinely truncates useful universal-search responses such that a bounded streaming transport becomes necessary;
-- Android aarch64 resource measurements show the normalized representation is too allocation-heavy;
-- differential tests show an intentional legacy behavior omitted here is necessary for correctness rather than merely historical compatibility;
-- first-party API documentation or live behavior materially changes the current endpoint, rate-limit, or auth contract.
+- `X-API-Key` is no longer accepted;
+- response schemas cannot preserve material provenance in a bounded normalized form;
+- no defensible upstream dataset fields are available;
+- `fetch::Credential` cannot enforce the required origin boundary;
+- the archive collector lands a materially superior shared collector interface;
+- live evidence demonstrates high-value unique deep results after fast positives sufficient to justify changing escalation policy;
+- the 4 MiB transport cap routinely destroys useful responses and bounded streaming becomes necessary;
+- Android aarch64 measurements show the row representation is too allocation-heavy;
+- differential tests demonstrate an omitted legacy behavior is necessary for correctness;
+- first-party API behavior materially changes.
 
-When any invalidation condition fires, preserve the objective, evidence and security invariants and replace the affected mechanism rather than forcing this design.
+Preserve the objective and evidence/security invariants and replace only the invalidated mechanism.
