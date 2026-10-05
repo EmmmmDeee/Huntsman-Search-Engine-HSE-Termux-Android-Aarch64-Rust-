@@ -13,13 +13,13 @@ The design must preserve Huntsman's current architecture and epistemic invariant
 
 - Rust-first, `unsafe_code = "deny"`.
 - Termux/Android aarch64 remains a first-class target.
-- Network access remains confined to the guarded transport boundary.
+- Network access remains confined to the guarded transport/fetch boundary.
 - A generated lead is not evidence.
 - A collector cannot manufacture independent corroboration merely by emitting multiple rows.
-- Upstream dataset/source identity, not UI route count or provider-row count, determines lineage independence.
+- Upstream dataset/source identity, not UI route count, record count, crawl count, or provider-row count, determines lineage independence.
 - No result may be silently dropped, truncated, or misattributed relative to the relevant legacy capability when differential fixtures exist.
 - Pure parsing/normalization remains independently testable without network access.
-- The implementation must be Huntsman-authored. FreeOSINTUI is used only as a competitive/reference capability survey; no FreeOSINTUI source is copied or adapted.
+- The implementation must be Huntsman-authored. FreeOSINTUI is used only as a competitive/reference capability survey; no FreeOSINTUI source, tables, or implementation data are copied or adapted.
 
 This slice intentionally does **not** attempt to restore every OSINT provider. It establishes the reusable collector contract and demonstrates it end-to-end with archive data.
 
@@ -32,11 +32,15 @@ Current useful components already exist and must be reused rather than duplicate
 - L1: `evidence_ancestry`, `confidence`, `identity_resolution`, `resolve`.
 - L2: `http`, `fetch`, `classify`, `source_outcome`, `keys`.
 - L3: canonicalisation and validators.
-- L4: injected-transport source clients.
+- L4: source clients over injected transport/fetch paths.
 - L5: `entity`, `lineage`, `source_registry`, correlation and analysis.
 - L7: ledger/store/export primitives.
 
 `source_registry` remains discovery-only. Its `EvidenceRole::LeadOnly` contract is not weakened by this work.
+
+Current `http::UreqTransport` already reads response bodies under a hard cap (`DEFAULT_MAX_BODY`, currently 4 MiB) and exposes `Response::truncated`. The first archive implementation must build on that bounded-body contract rather than pretending the current transport streams incrementally.
+
+Current `lineage::LINEAGE_FIELDS` already accepts `dataset`; `source_url` and `source_id` are deliberately excluded from independence. The archive design therefore uses `dataset` only for a stable upstream-family identity, never for per-record or per-crawl identifiers.
 
 ## 3. Architectural decision
 
@@ -47,8 +51,8 @@ No new numerical layer is introduced.
 Add:
 
 - **L3** `archive` — pure archive record model, URL normalization, merge rules, archive-interest classification.
-- **L4** `wayback` — request construction and response parsing for Wayback CDX.
-- **L4** `commoncrawl` — Common Crawl collection discovery, index request construction and NDJSON parsing.
+- **L4** `wayback` — Wayback CDX request construction, guarded fetch invocation, response parsing.
+- **L4** `commoncrawl` — Common Crawl collection discovery, guarded fetch invocation, index request construction and NDJSON parsing.
 - **L5** `collector` — generic collector contracts and collection outcomes.
 - **L5** `archive_collector` — domain-selector orchestration using the two L4 clients, converting observations into `Entity` + `Evidence` + ancestry-ready metadata.
 
@@ -56,14 +60,14 @@ This obeys the repository rule that a module may depend only on its own or lower
 
 ### 3.2 Why not one module per complete tool
 
-A FreeOSINTUI-style `footprint` feature combines acquisition, parsing, classification, presentation and pivots. That is appropriate for an interactive browser utility but would blur Huntsman's evidence boundary.
+A browser-style `footprint` feature commonly combines acquisition, parsing, classification, presentation and pivots. That is appropriate for an interactive utility but would blur Huntsman's evidence boundary.
 
 Huntsman instead separates:
 
 ```text
 selector
   -> collector planning
-  -> guarded transport
+  -> guarded fetch
   -> source-specific response parser
   -> normalized observation
   -> provenance-bearing evidence/entity
@@ -77,7 +81,7 @@ Acquisition and analysis remain independently replaceable and testable.
 
 ### 4.1 Core types
 
-`src/collector.rs` defines a small synchronous contract compatible with the existing blocking `ureq` transport model.
+`src/collector.rs` defines a small synchronous contract compatible with the existing blocking transport model.
 
 Proposed shape (illustrative, not a frozen signature):
 
@@ -91,9 +95,12 @@ pub trait Collector {
         selector: &Entity,
         transport: &dyn Transport,
         limits: &CollectionLimits,
+        now_unix: u64,
     ) -> Result<CollectionBatch, CollectorError>;
 }
 ```
+
+The L4 clients receive the injected transport but perform each HTTP operation through `fetch::fetch` with no credential for these public archive sources. This preserves redirect handling, source-outcome classification, redaction and the existing egress-controlled real transport.
 
 `CollectionBatch` contains only material that can be verified or traced:
 
@@ -109,16 +116,17 @@ pub struct CollectionBatch {
 }
 ```
 
-The exact relation/pivot types may reuse existing repository types where that avoids duplication.
+The exact relation/pivot types should reuse existing repository types where that avoids duplication.
 
 ### 4.2 Observation receipts
 
 A collector must distinguish transport success from evidentiary success.
 
-Each source response produces an `ObservationReceipt` containing at minimum:
+Each source request produces an `ObservationReceipt` containing at minimum:
 
 - collector/source identifier;
-- upstream dataset identifier when known;
+- stable upstream dataset family;
+- source-specific non-counting collection/crawl identifier when applicable;
 - request origin/path identity sufficient for audit without embedding secrets;
 - UTC/Unix observation time;
 - response-body hash;
@@ -127,7 +135,7 @@ Each source response produces an `ObservationReceipt` containing at minimum:
 - truncation/pagination status;
 - optional source-provided temporal bounds.
 
-A `200` response with zero parsed records is a successful empty observation, not a failed request and not positive evidence.
+A `200` response with zero parsed records is a successful empty observation, not a failed request and not positive evidence. If `Response::truncated` is true, an empty parse is explicitly **not evidence of absence**.
 
 ### 4.3 Failure locality
 
@@ -137,6 +145,7 @@ Example:
 
 - Wayback succeeds, Common Crawl times out -> retain Wayback entities/evidence; batch outcome marks Common Crawl unavailable.
 - Common Crawl index-list parsing fails -> Common Crawl contributes no evidence; Wayback remains valid.
+- One Common Crawl collection fails -> preserve results from other attempted collections while recording the failed collection receipt.
 - Domain selector is invalid -> fail before any network request; no batch entities.
 
 This prevents one provider from collapsing an otherwise valid investigation.
@@ -151,6 +160,7 @@ A normalized capture record represents one upstream observation before cross-sou
 pub struct ArchiveCapture {
     pub source: ArchiveSource,
     pub dataset: String,
+    pub collection: Option<String>,
     pub original_url: String,
     pub canonical_key: String,
     pub host: String,
@@ -163,10 +173,17 @@ pub struct ArchiveCapture {
 }
 ```
 
-`dataset` must identify the real upstream corpus where possible, for example:
+`dataset` identifies the **countable upstream family**, not an individual crawl/run:
 
-- `internet_archive_wayback`
-- `commoncrawl:CC-MAIN-2026-XX`
+- Wayback: `internet_archive_wayback`
+- Common Crawl: `common_crawl`
+
+`collection` preserves source-specific provenance without becoming a lineage family, for example:
+
+- Common Crawl: `CC-MAIN-2026-XX`
+- Wayback: `None` unless the API exposes a stable non-counting collection identifier that is useful for audit.
+
+This distinction is load-bearing. Different Common Crawl indexes are observations from the same upstream source family and must not inflate corroboration by appearing as separate `dataset` values.
 
 The collector name is **not** substituted for dataset identity.
 
@@ -184,6 +201,8 @@ For archive deduplication only:
 
 The archive dedupe key is logically `host + normalized-port + path + query`.
 
+Reuse existing canonical/HTTP parsing primitives where they satisfy this identity contract; do not create a second incompatible URL canon merely for convenience.
+
 The live URL is never fetched by archive normalization or classification.
 
 ### 5.3 Cross-capture merge
@@ -193,11 +212,12 @@ The live URL is never fetched by archive normalization or classification.
 - first observed capture time;
 - last observed capture time;
 - total capture count;
-- set of upstream datasets/sources;
+- set of upstream dataset families;
+- set of non-counting collection identifiers;
 - latest-known status and MIME, without inventing a value when unknown;
 - one or more archive locator(s) where available.
 
-Important: merge is a presentation/storage operation. It does **not** convert N captures into N corroborating evidence families.
+Important: merge is a presentation/storage operation. It does **not** convert N captures or N crawl indexes into N corroborating evidence families. Evidence from distinct upstream families remains separable after merge.
 
 ### 5.4 Interest classification
 
@@ -214,17 +234,21 @@ Initial groups:
 
 Names such as `.env`, `id_rsa`, `wp-config`, `.git`, `backup`, `sql`, `swagger` may raise an `interest` tag on an archived URL, but the tag means "interesting path pattern" only. It must not assert that a secret, credential or vulnerability exists.
 
+These classifications are derived enrichment and are never allowed to contribute an independent lineage root.
+
 ## 6. Wayback client (L4)
 
-`src/wayback.rs` is a pure request builder + response parser over an injected `http::Transport`.
+`src/wayback.rs` is a request builder + guarded fetch wrapper + response parser over an injected `http::Transport`.
 
 Responsibilities:
 
 - construct a bounded CDX query for a domain and subdomains;
 - request fields needed by `ArchiveCapture` only;
+- call `fetch::fetch` with `credential=None` and explicit module identity;
 - parse successful response rows defensively;
 - reject malformed timestamps/status codes without panicking;
-- expose explicit truncation/limit information when the API signals or local bounds cause it;
+- propagate `Response::truncated` into the client result/receipt;
+- expose explicit row-limit/pagination truncation when local bounds cause it;
 - never follow archive results to the live target;
 - never create `Entity` or `Evidence` directly.
 
@@ -234,18 +258,22 @@ The client must be testable entirely with recorded response bytes and fake trans
 
 `src/commoncrawl.rs` performs two bounded operations:
 
-1. Discover available Common Crawl indexes from the public collection metadata endpoint or consume an explicitly supplied collection in tests.
+1. Discover available Common Crawl indexes from the public collection metadata endpoint or consume explicitly supplied collection metadata in tests.
 2. Query a bounded number of selected indexes for the target domain/subdomains and parse NDJSON records.
+
+Every HTTP operation goes through `fetch::fetch` with `credential=None`.
 
 Resource constraints are mandatory because Termux is a first-class target.
 
 Default policy for the first slice:
 
 - query only the newest small number of collections (configurable, with a conservative default);
-- cap response bytes per request using existing bounded-fetch mechanisms where available;
-- cap parsed rows per collection;
-- surface `truncated = true` whenever a local cap prevents complete consumption;
+- rely on the existing transport body cap and surface `Response::truncated`;
+- cap parsed rows per collection even within a non-truncated body;
+- surface `truncated = true` whenever either transport-byte or parser-row bounds prevent complete consumption;
 - deterministic collection ordering.
+
+The current transport buffers a bounded response body; this slice does **not** require a new streaming transport abstraction. If later evidence shows the 4 MiB cap is too restrictive for useful archive queries, evolve the transport separately rather than introducing an unbounded side path.
 
 A truncated result is valid partial evidence but must remain visibly truncated in receipts and reports.
 
@@ -279,27 +307,30 @@ confidence: observation-level base confidence
 
 Evidence.provenance.source = "wayback" | "commoncrawl"
 Evidence.attributes:
-  dataset = <upstream dataset id>
-  source_url = <archive locator, when available>
+  dataset = "internet_archive_wayback" | "common_crawl"
+  collection = <CC-MAIN-* when applicable; non-counting provenance>
+  source_url = <archive locator, when available; non-counting locator>
   first_seen = <timestamp>
   last_seen = <timestamp>
   mime = <if known>
   http_status = <if known>
-  capture_count = <count within that upstream dataset>
+  capture_count = <count within that source/collection scope>
   archive_interest = <zero or more deterministic tags>
 ```
 
-Dataset naming must be compatible with `lineage::Lineage::of` and its current admissible lineage fields. If the exact attribute key is not already accepted, the implementation must update lineage deliberately with adversarial tests; it must not smuggle independence through `source_url` or `source_id`, which current lineage intentionally excludes.
+`dataset` is already an accepted `lineage::LINEAGE_FIELDS` key and is the only archive field in this design intended to create an upstream family. `collection`, `source_url`, record identifiers and capture timestamps are provenance but are not independence.
 
 ### 8.4 Independence rule
 
 The collector must satisfy all of the following:
 
 1. Ten Wayback captures of one URL do not become ten source families.
-2. Two Common Crawl rows from the same crawl index do not become two source families merely because their record locators differ.
-3. Wayback and Common Crawl may count as independent archive families only when lineage resolves them to genuinely distinct upstream roots.
-4. A merged `ArchiveRecord` containing both sources must retain both roots rather than flattening provenance to `archive_collector`.
-5. Generated classifications/tags (`config`, `admin`, etc.) are derived enrichment and never independent corroboration.
+2. Ten Common Crawl rows from one crawl index do not become ten source families.
+3. Ten distinct `CC-MAIN-*` collections still resolve to **one** `common_crawl` lineage family.
+4. Wayback and Common Crawl resolve to two distinct upstream roots when both actually observed the resource.
+5. A merged `ArchiveRecord` containing both sources retains two separate evidence items/roots rather than flattening provenance to `archive_collector`.
+6. Generated classifications/tags (`config`, `admin`, etc.) are derived enrichment and never independent corroboration.
+7. `source_url`, `source_id`, collection ID or record locator cannot create a root.
 
 ### 8.5 Pivots
 
@@ -309,7 +340,7 @@ The first slice emits bounded typed pivots, not arbitrary recursion:
 - archived absolute URL -> already represented as URL entity;
 - no automatic fetching of archived documents or live endpoints in this slice.
 
-Pivots inherit ancestry from the observation that produced them.
+Pivots inherit ancestry from the observation that produced them. A subdomain seen only in archive data begins as a derived/observed candidate according to the existing entity model; it does not gain additional confidence merely because the same source emitted many captures.
 
 ## 9. Source registry interaction
 
@@ -348,7 +379,7 @@ Required distinctions:
 - unsupported selector kind;
 - internal invariant violation.
 
-No error message may include credentials or secret-bearing headers.
+No error message may include credentials or secret-bearing headers. Archive sources are public in this slice, but the collector contract must not create a future logging bypass around the existing redaction rules.
 
 ## 12. Termux/resource requirements
 
@@ -360,7 +391,7 @@ Preferred order:
 2. existing dependencies;
 3. small, well-maintained Rust crate if implementing the primitive correctly in-tree would be materially worse.
 
-All parsing must be streaming/bounded where responses can be large. Do not collect unbounded Common Crawl or Wayback result sets in memory.
+Responses must remain bounded by the existing transport byte cap. Parsers must additionally enforce row/record limits so a bounded response cannot create pathological allocation growth. Do not add an unbounded archive-fetch path.
 
 No `unsafe` code.
 
@@ -378,7 +409,7 @@ Cover at minimum:
 - invalid/non-HTTP rejection;
 - first/last/capture-count merge behavior;
 - MIME/status unknown handling;
-- deterministic source/dataset ordering;
+- deterministic source/dataset/collection ordering;
 - interest classification positives and near-miss negatives;
 - no interest tag implies a security conclusion.
 
@@ -390,9 +421,10 @@ Recorded/fake responses:
 - empty response;
 - malformed row mixed with valid rows;
 - invalid timestamps/status;
-- response-size/row caps;
+- `Response::truncated` propagation;
+- parser row cap;
 - transport failure;
-- non-2xx outcome.
+- non-2xx/source outcome.
 
 ### 13.4 Common Crawl tests
 
@@ -402,8 +434,8 @@ Cover:
 - bounded newest-N selection;
 - NDJSON parsing;
 - malformed line isolation;
-- deterministic truncation;
-- multi-index dataset identity;
+- transport truncation and parser-row truncation;
+- multiple `CC-MAIN-*` identifiers retain collection provenance but collapse to `dataset=common_crawl`;
 - failure of one collection does not erase successful collections.
 
 ### 13.5 Collector invariants
@@ -412,14 +444,18 @@ Adversarial tests must prove:
 
 - duplicate captures do not inflate corroboration;
 - duplicate record locators do not create lineage independence;
+- multiple Common Crawl collections do not create multiple independent families;
 - tampering with stored `source_family` still cannot create independence (existing entity invariant remains effective);
 - Wayback + Common Crawl roots remain distinguishable;
 - derived subdomain pivots are ancestry-linked and not independent evidence;
-- partial provider failure retains valid evidence from the surviving provider.
+- partial provider failure retains valid evidence from the surviving provider;
+- a truncated empty response is never interpreted as evidence of absence.
 
 ### 13.6 Architecture tests
 
 Update `ARCHITECTURE.md` and `tests/architecture_doc.rs` expectations so every new compiled module is assigned to the correct existing layer and no upward edge is introduced.
+
+Add a boundary test that rejects direct `Transport::send` use in the new archive source clients if the repository's current static checks do not already enforce that they route through `fetch::fetch`.
 
 ### 13.7 Differential verification
 
@@ -452,16 +488,17 @@ Do not make CI depend on live availability.
 The slice is complete only when all are true:
 
 1. `collector`, `archive`, `wayback`, `commoncrawl`, and `archive_collector` are compiled and architecture-mapped.
-2. All network calls use the existing guarded/injected transport boundary; no new socket-opening path exists.
+2. All archive HTTP operations pass through `fetch::fetch` over the injected `Transport`; no new socket-opening or direct-send side path exists.
 3. A domain can be collected from recorded Wayback + Common Crawl responses into provenance-bearing URL entities.
-4. Upstream dataset identity survives into lineage-relevant evidence attributes.
-5. Multiple rows/captures from one upstream root cannot inflate source-family count.
+4. `dataset` survives into lineage-relevant evidence as stable families (`internet_archive_wayback`, `common_crawl`); per-crawl IDs survive separately without counting as families.
+5. Multiple rows, captures or Common Crawl collections cannot inflate source-family count.
 6. Partial source failure retains independent successful-source evidence.
 7. Archive-interest classification is deterministic enrichment only.
-8. Memory/row/byte limits are explicit and tested.
-9. `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and the full test suite pass on the implementation branch.
-10. At least one bounded live receipt per source is captured outside CI, unless the source is externally unavailable; unavailability must be recorded rather than treated as a passing live test.
-11. No FreeOSINTUI implementation code, data tables, or other Commons-Clause-covered material is copied into Huntsman.
+8. Transport-byte and parser-row limits are explicit and tested.
+9. A truncated empty response is not treated as evidence of absence.
+10. `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and the full test suite pass on the implementation branch.
+11. At least one bounded live receipt per source is captured outside CI, unless the source is externally unavailable; unavailability must be recorded rather than treated as a passing live test.
+12. No FreeOSINTUI implementation code, tables, datasets, or other Commons-Clause-covered material is copied into Huntsman.
 
 ## 15. Deliberately deferred work
 
@@ -476,7 +513,8 @@ Not part of the first implementation PR:
 - downloading archived documents;
 - live-target crawling/scanning;
 - UI/report redesign;
-- async runtime conversion.
+- async runtime conversion;
+- streaming HTTP transport redesign.
 
 These become follow-on slices after the collector boundary has passed end-to-end verification.
 
@@ -490,14 +528,19 @@ Alternative: introduce a new L4.5 architecture layer.
 
 Rejected because the existing invariant already permits an L5 collector to consume L4 clients and L5 entity types. Adding a new layer creates documentation/test churn without improving dependency direction.
 
+Alternative: make each Common Crawl collection its own dataset lineage root.
+
+Rejected during design self-review because crawl indexes are repeated observations from the same upstream source, not independent attestations. Per-collection identity is retained for audit but cannot increase evidence-family count.
+
 ## 17. Invalidation conditions
 
 Revisit this design if implementation evidence shows any of the following:
 
-- the existing `Transport` abstraction cannot support bounded streaming without unsafe or unbounded buffering;
-- current lineage attributes cannot represent Common Crawl collection identity without creating a dependency cycle or violating legacy invariants;
+- the existing bounded `Transport`/`fetch` abstraction cannot obtain useful archive responses within its hard body cap;
+- current lineage semantics cannot represent stable archive source families without violating legacy invariants;
 - Wayback/Common Crawl APIs materially changed such that the proposed request/response separation is no longer accurate;
 - a new module placement introduces an upward edge under `tests/architecture_doc.rs`;
-- differential fixtures show that the proposed archive canonical key merges resources legacy/Huntsman must keep distinct.
+- differential fixtures show that the proposed archive canonical key merges resources legacy/Huntsman must keep distinct;
+- live evidence shows Wayback/Common Crawl are not sufficiently independent to justify separate roots for the specific claim type being resolved.
 
 In those cases preserve the objective and evidence invariants, then replace the affected mechanism rather than forcing the design.
