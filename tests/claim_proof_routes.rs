@@ -126,13 +126,7 @@ fn exact_independence_proof_promotes_and_removal_demotes() {
         .unwrap();
 
     let verified = ledger
-        .assess_claim_with_proof_routes(
-            &claim_id,
-            &policy(2),
-            &graph,
-            &bindings,
-            &independence,
-        )
+        .assess_claim_with_proof_routes(&claim_id, &policy(2), &graph, &bindings, &independence)
         .unwrap();
     assert_eq!(verified.proven_independent_routes, 2);
     assert_eq!(verified.epistemic, ClaimState::Verified);
@@ -189,7 +183,10 @@ fn proof_route_search_limit_blocks_verification() {
         )
         .unwrap();
 
-    assert_eq!(assessment.observed_distinct_roots, MAX_PROOF_ROUTE_ROOTS + 1);
+    assert_eq!(
+        assessment.observed_distinct_roots,
+        MAX_PROOF_ROUTE_ROOTS + 1
+    );
     assert_eq!(assessment.proven_independent_routes, 0);
     assert_ne!(assessment.epistemic, ClaimState::Verified);
     assert!(
