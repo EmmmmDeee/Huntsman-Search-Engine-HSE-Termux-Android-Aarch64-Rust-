@@ -13,17 +13,27 @@ pub const REDACTED: &str = "<redacted>";
 #[derive(Clone)]
 pub struct ApiKey(crate::keys::Secret);
 impl ApiKey {
-    pub fn new(raw: &str) -> Option<Self> { crate::keys::Secret::new(raw).ok().map(Self) }
+    pub fn new(raw: &str) -> Option<Self> {
+        crate::keys::Secret::new(raw).ok().map(Self)
+    }
     #[must_use]
-    pub fn expose(&self) -> &str { self.0.expose() }
+    pub fn expose(&self) -> &str {
+        self.0.expose()
+    }
     #[must_use]
-    pub fn redact_in(&self, text: &str) -> String { text.replace(self.expose(), REDACTED) }
+    pub fn redact_in(&self, text: &str) -> String {
+        text.replace(self.expose(), REDACTED)
+    }
 }
 impl fmt::Debug for ApiKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "ApiKey({REDACTED})") }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ApiKey({REDACTED})")
+    }
 }
 impl fmt::Display for ApiKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(REDACTED) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(REDACTED)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,12 +41,14 @@ pub enum KeyOrigin {
     Env(&'static str),
     HuntsmanSlot,
     File(PathBuf),
-    #[cfg(test)]
+    /// Compatibility-only origin. Production key loaders never construct it.
     Embedded,
     Provided,
 }
 
-pub trait KeySource: Send + Sync { fn load(&self) -> Option<(ApiKey, KeyOrigin)>; }
+pub trait KeySource: Send + Sync {
+    fn load(&self) -> Option<(ApiKey, KeyOrigin)>;
+}
 
 pub struct EnvSource(pub &'static str);
 impl KeySource for EnvSource {
@@ -46,10 +58,16 @@ impl KeySource for EnvSource {
     }
 }
 
-pub struct ValueSource { value: Option<String>, origin: KeyOrigin }
+pub struct ValueSource {
+    value: Option<String>,
+    origin: KeyOrigin,
+}
 impl ValueSource {
     pub fn new(value: Option<&str>, origin: KeyOrigin) -> Self {
-        Self { value: value.map(str::to_string), origin }
+        Self {
+            value: value.map(str::to_string),
+            origin,
+        }
     }
 }
 impl KeySource for ValueSource {
@@ -62,7 +80,9 @@ impl KeySource for ValueSource {
 pub struct FileSource(pub PathBuf);
 impl KeySource for FileSource {
     fn load(&self) -> Option<(ApiKey, KeyOrigin)> {
-        if !private_file(&self.0) { return None; }
+        if !private_file(&self.0) {
+            return None;
+        }
         let raw = String::from_utf8(crate::fsio::read_bounded(&self.0, 4096).ok()?).ok()?;
         ApiKey::new(&raw).map(|k| (k, KeyOrigin::File(self.0.clone())))
     }
@@ -73,24 +93,37 @@ impl KeySource for FileSource {
 pub struct EmbeddedSource;
 impl EmbeddedSource {
     #[must_use]
-    pub const fn is_present() -> bool { false }
+    pub const fn is_present() -> bool {
+        false
+    }
 }
 
 #[must_use]
 pub fn default_key_file() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".config").join("hibp").join("api_key"))
+    Some(
+        PathBuf::from(home)
+            .join(".config")
+            .join("hibp")
+            .join("api_key"),
+    )
 }
 
-pub struct KeyLoader { sources: Vec<Box<dyn KeySource>> }
+pub struct KeyLoader {
+    sources: Vec<Box<dyn KeySource>>,
+}
 impl fmt::Debug for KeyLoader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("KeyLoader").field("sources", &self.sources.len()).finish()
+        f.debug_struct("KeyLoader")
+            .field("sources", &self.sources.len())
+            .finish()
     }
 }
 impl KeyLoader {
     #[must_use]
-    pub fn new(sources: Vec<Box<dyn KeySource>>) -> Self { Self { sources } }
+    pub fn new(sources: Vec<Box<dyn KeySource>>) -> Self {
+        Self { sources }
+    }
 
     #[must_use]
     pub fn default_chain(huntsman_slot: Option<&str>) -> Self {
@@ -114,25 +147,38 @@ impl KeyLoader {
         test_embedded: &str,
     ) -> Self {
         let mut sources: Vec<Box<dyn KeySource>> = vec![
-            Box::new(ValueSource { value: env_value, origin: KeyOrigin::Env(HIBP_API_KEY_ENV) }),
+            Box::new(ValueSource {
+                value: env_value,
+                origin: KeyOrigin::Env(HIBP_API_KEY_ENV),
+            }),
             Box::new(ValueSource::new(huntsman_slot, KeyOrigin::HuntsmanSlot)),
         ];
-        if let Some(path) = key_file { sources.push(Box::new(FileSource(path))); }
+        if let Some(path) = key_file {
+            sources.push(Box::new(FileSource(path)));
+        }
         #[cfg(test)]
-        sources.push(Box::new(ValueSource::new(Some(test_embedded), KeyOrigin::Embedded)));
+        sources.push(Box::new(ValueSource::new(
+            Some(test_embedded),
+            KeyOrigin::Embedded,
+        )));
         #[cfg(not(test))]
         let _ = test_embedded;
         Self { sources }
     }
 
     #[must_use]
-    pub fn load(&self) -> Option<(ApiKey, KeyOrigin)> { self.sources.iter().find_map(|s| s.load()) }
+    pub fn load(&self) -> Option<(ApiKey, KeyOrigin)> {
+        self.sources.iter().find_map(|s| s.load())
+    }
 }
 
 #[cfg(unix)]
 fn private_file(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o077 == 0)
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o077 == 0)
 }
 #[cfg(not(unix))]
-fn private_file(_path: &std::path::Path) -> bool { true }
+fn private_file(_path: &std::path::Path) -> bool {
+    true
+}
