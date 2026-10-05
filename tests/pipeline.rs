@@ -35,9 +35,12 @@ fn malformed_and_empty_seeds_are_explicit_rejections() {
     );
     assert!(result.accepted.is_empty());
     assert_eq!(result.rejected.len(), 3);
-    assert!(matches!(result.rejected[0].1, SeedRejection::Empty));
-    assert!(matches!(result.rejected[1].1, SeedRejection::Empty));
-    assert!(matches!(result.rejected[2].1, SeedRejection::Unsupported));
+    assert!(matches!(&result.rejected[0].1, SeedRejection::Empty));
+    assert!(matches!(&result.rejected[1].1, SeedRejection::Empty));
+    assert!(matches!(
+        &result.rejected[2].1,
+        SeedRejection::Unsupported
+    ));
 }
 
 #[test]
