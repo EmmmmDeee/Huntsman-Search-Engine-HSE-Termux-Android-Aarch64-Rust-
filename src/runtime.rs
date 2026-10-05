@@ -10,8 +10,8 @@ use crate::dependency::{Module, Target, TargetKind};
 use crate::error::Error;
 use crate::ledger::LedgerEntry;
 use crate::pipeline::{
-    AnalysisSnapshot, InvestigationInput, PipelineLimits, SeedNormalization, normalize_observations,
-    normalize_seeds,
+    AnalysisSnapshot, InvestigationInput, PipelineLimits, SeedNormalization,
+    normalize_observations, normalize_seeds,
 };
 use crate::planner::{DispatchPlan, PlannerPolicy, build_dispatch_plan};
 use crate::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
