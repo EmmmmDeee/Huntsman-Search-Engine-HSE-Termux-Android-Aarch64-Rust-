@@ -211,14 +211,26 @@ fn append_row(
         if batch.entities.len() >= limits.max_entities {
             return;
         }
-        let mut entity = Entity::new(kind.clone(), value.clone(), ENTITY_CONFIDENCE, &selector.scan_id);
+        let mut entity = Entity::new(
+            kind.clone(),
+            value.clone(),
+            ENTITY_CONFIDENCE,
+            &selector.scan_id,
+        );
         entity.observed_at_unix = now_unix;
         if entity.value.trim().is_empty() {
             continue;
         }
-        entity.add_evidence(evidence_from_row(row, row_index, &selector.scan_id, now_unix));
+        entity.add_evidence(evidence_from_row(
+            row,
+            row_index,
+            &selector.scan_id,
+            now_unix,
+        ));
         insert_entity(batch, entity);
-        if batch.pivots.len() < limits.max_pivots && entity_differs_from_selector(&kind, &value, selector) {
+        if batch.pivots.len() < limits.max_pivots
+            && entity_differs_from_selector(&kind, &value, selector)
+        {
             batch.pivots.push(CollectorPivot {
                 kind,
                 value,
@@ -264,14 +276,20 @@ fn row_entities(row: &SeekNowRow) -> Vec<(EntityKind, String)> {
 fn evidence_from_row(row: &SeekNowRow, row_index: usize, scan_id: &str, now_unix: u64) -> Evidence {
     let mut provenance = EvidenceProvenance::for_scan(COLLECTOR_ID, scan_id);
     provenance.recorded_at_unix = now_unix;
-    let summary = row
-        .upstream
-        .record_id
-        .as_deref()
-        .map_or_else(|| format!("SeekNow response row {row_index}"), |id| format!("SeekNow record {id}"));
+    let summary = row.upstream.record_id.as_deref().map_or_else(
+        || format!("SeekNow response row {row_index}"),
+        |id| format!("SeekNow record {id}"),
+    );
     let mut evidence = Evidence::new(provenance, summary);
 
-    for field in ["dbname", "breach", "source_db", "database_name", "dataset", "source"] {
+    for field in [
+        "dbname",
+        "breach",
+        "source_db",
+        "database_name",
+        "dataset",
+        "source",
+    ] {
         for value in row.upstream.values(field) {
             evidence = evidence.with_attr(field, value);
         }
@@ -282,7 +300,11 @@ fn evidence_from_row(row: &SeekNowRow, row_index: usize, scan_id: &str, now_unix
     if !row.sensitive_fields.is_empty() {
         evidence = evidence.with_attr(
             "sensitive_fields_present",
-            row.sensitive_fields.iter().cloned().collect::<Vec<_>>().join(","),
+            row.sensitive_fields
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(","),
         );
     }
     if row.fields_truncated {
