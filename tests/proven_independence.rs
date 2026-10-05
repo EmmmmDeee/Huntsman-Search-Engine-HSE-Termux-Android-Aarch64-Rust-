@@ -31,9 +31,7 @@ fn evidence(left: &str, right: &str) -> IndependenceEvidence {
 fn disjoint_root_labels_are_unknown_without_explicit_independence() {
     let mut graph = EvidenceAncestryGraph::default();
     graph.insert(node("a", "registry", &[], false)).unwrap();
-    graph
-        .insert(node("b", "court-record", &[], false))
-        .unwrap();
+    graph.insert(node("b", "court-record", &[], false)).unwrap();
 
     assert_eq!(
         graph.independence_state(&"a".into(), &"b".into()).unwrap(),
@@ -64,10 +62,10 @@ fn shared_root_is_known_dependent_even_if_leaf_labels_differ() {
 fn explicit_valid_independence_is_symmetric() {
     let mut graph = EvidenceAncestryGraph::default();
     graph.insert(node("a", "registry", &[], false)).unwrap();
+    graph.insert(node("b", "court-record", &[], false)).unwrap();
     graph
-        .insert(node("b", "court-record", &[], false))
+        .insert_independence_evidence(evidence("b", "a"))
         .unwrap();
-    graph.insert_independence_evidence(evidence("b", "a")).unwrap();
 
     assert_eq!(
         graph.independence_state(&"a".into(), &"b".into()).unwrap(),
@@ -83,18 +81,22 @@ fn explicit_valid_independence_is_symmetric() {
 fn invalid_independence_evidence_is_rejected() {
     let mut graph = EvidenceAncestryGraph::default();
     graph.insert(node("a", "registry", &[], false)).unwrap();
-    graph
-        .insert(node("b", "court-record", &[], false))
-        .unwrap();
-    graph
-        .insert(node("derived", "copy", &["a"], true))
-        .unwrap();
+    graph.insert(node("b", "court-record", &[], false)).unwrap();
+    graph.insert(node("derived", "copy", &["a"], true)).unwrap();
     graph
         .insert(node("same-family", "registry", &[], false))
         .unwrap();
 
-    assert!(graph.insert_independence_evidence(evidence("a", "a")).is_err());
-    assert!(graph.insert_independence_evidence(evidence("a", "missing")).is_err());
+    assert!(
+        graph
+            .insert_independence_evidence(evidence("a", "a"))
+            .is_err()
+    );
+    assert!(
+        graph
+            .insert_independence_evidence(evidence("a", "missing"))
+            .is_err()
+    );
     assert!(
         graph
             .insert_independence_evidence(evidence("a", "derived"))
@@ -127,9 +129,7 @@ fn invalid_independence_evidence_is_rejected() {
 fn conflicting_duplicate_independence_evidence_is_rejected_but_identical_is_idempotent() {
     let mut graph = EvidenceAncestryGraph::default();
     graph.insert(node("a", "registry", &[], false)).unwrap();
-    graph
-        .insert(node("b", "court-record", &[], false))
-        .unwrap();
+    graph.insert(node("b", "court-record", &[], false)).unwrap();
 
     let first = evidence("a", "b");
     graph.insert_independence_evidence(first.clone()).unwrap();
@@ -144,10 +144,10 @@ fn conflicting_duplicate_independence_evidence_is_rejected_but_identical_is_idem
 fn deserialization_cannot_bypass_independence_validation() {
     let mut graph = EvidenceAncestryGraph::default();
     graph.insert(node("a", "registry", &[], false)).unwrap();
+    graph.insert(node("b", "court-record", &[], false)).unwrap();
     graph
-        .insert(node("b", "court-record", &[], false))
+        .insert_independence_evidence(evidence("a", "b"))
         .unwrap();
-    graph.insert_independence_evidence(evidence("a", "b")).unwrap();
 
     let mut value = serde_json::to_value(&graph).unwrap();
     let independence = value
