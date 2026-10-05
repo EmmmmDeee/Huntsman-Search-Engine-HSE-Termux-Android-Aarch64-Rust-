@@ -153,7 +153,8 @@ fn provider_failures_are_classified_from_top_level_envelope_only() {
     ];
 
     for (status, body, expected) in cases {
-        let transport = ScriptedTransport::new(vec![response_with(status, body, Vec::new(), false)]);
+        let transport =
+            ScriptedTransport::new(vec![response_with(status, body, Vec::new(), false)]);
         let result = search_fast(&transport, &credential(), &auto_search(), 9).unwrap();
         assert_eq!(result.outcome.kind, expected, "{body}");
         assert!(result.rows.is_empty());
@@ -171,7 +172,10 @@ fn provider_failures_are_classified_from_top_level_envelope_only() {
     let result = search_fast(&transport, &credential(), &auto_search(), 10).unwrap();
     assert_eq!(result.outcome.kind, SourceOutcomeKind::Success);
     assert_eq!(result.rows.len(), 1);
-    assert_eq!(result.rows[0].fields.get("dbname"), Some(&"Example Breach".into()));
+    assert_eq!(
+        result.rows[0].fields.get("dbname"),
+        Some(&"Example Breach".into())
+    );
 }
 
 #[test]
