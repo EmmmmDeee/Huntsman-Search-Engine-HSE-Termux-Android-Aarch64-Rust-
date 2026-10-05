@@ -5,6 +5,9 @@ on:
     branches:
       - refactor/integration-spine-implementation-2026-10-05
 
+permissions:
+  contents: read
+
 jobs:
   clippy-diagnostic:
     runs-on: ubuntu-latest
