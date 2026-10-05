@@ -111,6 +111,7 @@ stix	exporter	STIX output from admitted claims
 stolen_tax	adapter	key-gated credential exposure source client
 store	exporter	bounded atomic session persistence
 tags	leaf	entity tag constants
+telegram_intel	diagnostic	bounded read-only Telegram intelligence index and local search
 termination	runtime	explicit bounded termination semantics
 textnorm	leaf	text normalization
 timefmt	leaf	timestamp parsing
