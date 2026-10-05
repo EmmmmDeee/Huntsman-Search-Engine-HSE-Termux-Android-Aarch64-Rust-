@@ -124,6 +124,7 @@ pub mod stix;
 pub mod stolen_tax;
 pub mod store;
 pub mod tags;
+pub mod telegram_intel;
 pub mod termination;
 pub mod textnorm;
 pub mod timefmt;
