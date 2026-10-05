@@ -86,7 +86,11 @@ fn proof(
         environments: vec![MinimalProofEnvironment {
             assertions: assertions.iter().cloned().collect(),
             roots: roots.iter().map(|root| (*root).to_owned()).collect(),
-            assumptions: assumptions.iter().copied().map(AssumptionId::from).collect(),
+            assumptions: assumptions
+                .iter()
+                .copied()
+                .map(AssumptionId::from)
+                .collect(),
             ..MinimalProofEnvironment::default()
         }],
         incomplete,
@@ -254,10 +258,8 @@ fn proof_cannot_use_evidence_not_attached_to_the_claim() {
             EvidenceNature::Observed,
         ))
         .unwrap();
-    let (graph, bindings) = root_graph(&[
-        (&attached, "attached-root"),
-        (&detached, "detached-root"),
-    ]);
+    let (graph, bindings) =
+        root_graph(&[(&attached, "attached-root"), (&detached, "detached-root")]);
 
     let assessment = ledger
         .assess_claim_with_ancestry_and_proof(
