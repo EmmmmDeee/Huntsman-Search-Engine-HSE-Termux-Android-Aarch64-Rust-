@@ -66,6 +66,11 @@ trap - EXIT
 
 export HUNTSMAN_HIBP_NO_EMBED="${HUNTSMAN_HIBP_NO_EMBED:-1}"
 
+# Reuse intermediates after an interrupted build or a revision update. Preserve
+# an explicit caller-selected cache. Cargo checks its installation metadata and
+# skips an already installed matching revision without --force.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/huntsman-recon-target}"
+
 cargo_args=(
   install
   --git "$REPO"
@@ -78,7 +83,6 @@ fi
 cargo_args+=(
   --locked
   --root "$TERMUX_PREFIX"
-  --force
   huntsman-recon
 )
 
