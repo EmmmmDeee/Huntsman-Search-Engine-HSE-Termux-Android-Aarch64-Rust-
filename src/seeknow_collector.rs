@@ -1,8 +1,8 @@
-//! L5 SeekNow collector: selector planning, causal fast/deep escalation, entity mapping,
+//! L5 `SeekNow` collector: selector planning, causal fast/deep escalation, entity mapping,
 //! and response-derived evidence. This adapter opens no sockets and never treats the
 //! collector name as an independent evidence family.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::net::IpAddr;
 
 use crate::collector::{
@@ -54,7 +54,7 @@ impl SeekNowCollector {
     }
 }
 
-/// Convert a canonical selector into a bounded SeekNow query without touching transport.
+/// Convert a canonical selector into a bounded `SeekNow` query without touching transport.
 pub fn plan_selector(
     selector: &Entity,
     limits: &CollectionLimits,
@@ -89,7 +89,7 @@ pub fn plan_selector(
     })
 }
 
-/// Execute one keyed SeekNow collection under explicit operator credential authority.
+/// Execute one keyed `SeekNow` collection under explicit operator credential authority.
 pub fn collect_with_credential<T: Transport + ?Sized>(
     selector: &Entity,
     transport: &T,
@@ -103,21 +103,16 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
 
     match mode {
         SeekNowCollectionMode::DeepOnly => {
-            if limits.max_requests < 1 {
-                return Err(CollectorError::Invariant(
-                    "deep collection requires one request".into(),
-                ));
-            }
             let result = search_deep(transport, credential, &search, now_unix)
                 .map_err(|error| CollectorError::Execution(error.to_string()))?;
-            append_result(&mut batch, selector, result, limits, now_unix);
+            append_result(&mut batch, selector, &result, limits, now_unix);
             batch.outcome = outcome_from_single(&batch.receipts[0]);
         }
         SeekNowCollectionMode::FastOnly | SeekNowCollectionMode::Adaptive => {
             let fast = search_fast(transport, credential, &search, now_unix)
                 .map_err(|error| CollectorError::Execution(error.to_string()))?;
             let fast_kind = fast.outcome.kind;
-            append_result(&mut batch, selector, fast, limits, now_unix);
+            append_result(&mut batch, selector, &fast, limits, now_unix);
 
             if mode == SeekNowCollectionMode::Adaptive
                 && fast_kind == SourceOutcomeKind::ValidZero
@@ -126,7 +121,7 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
                 let deep = search_deep(transport, credential, &search, now_unix)
                     .map_err(|error| CollectorError::Execution(error.to_string()))?;
                 let deep_kind = deep.outcome.kind;
-                append_result(&mut batch, selector, deep, limits, now_unix);
+                append_result(&mut batch, selector, &deep, limits, now_unix);
                 batch.outcome = match deep_kind {
                     SourceOutcomeKind::Success => CollectionOutcome::Success,
                     SourceOutcomeKind::ValidZero => CollectionOutcome::ValidZero,
@@ -155,7 +150,7 @@ fn validate_selector(selector: &Entity) -> Result<(), CollectorError> {
         }
         EntityKind::Phone => {
             let digits = value.chars().filter(char::is_ascii_digit).count();
-            digits >= 7 && digits <= 15
+            (7..=15).contains(&digits)
         }
         EntityKind::Username => value.trim_start_matches('@').len() >= 2,
         EntityKind::IpAddress => value.parse::<IpAddr>().is_ok(),
@@ -176,7 +171,7 @@ fn validate_selector(selector: &Entity) -> Result<(), CollectorError> {
 fn append_result(
     batch: &mut CollectionBatch,
     selector: &Entity,
-    result: SeekNowSearchResult,
+    result: &SeekNowSearchResult,
     limits: &CollectionLimits,
     now_unix: u64,
 ) {
@@ -253,7 +248,7 @@ fn insert_entity(batch: &mut CollectionBatch, entity: Entity) {
 }
 
 fn row_entities(row: &SeekNowRow) -> Vec<(EntityKind, String)> {
-    let mut values = BTreeMap::<(EntityKind, String), ()>::new();
+    let mut values = BTreeSet::<(EntityKind, String)>::new();
     for (key, value) in &row.fields {
         let kind = match key.trim().to_ascii_lowercase().as_str() {
             "email" | "email_address" => Some(EntityKind::Email),
@@ -267,10 +262,10 @@ fn row_entities(row: &SeekNowRow) -> Vec<(EntityKind, String)> {
             _ => None,
         };
         if let Some(kind) = kind {
-            values.insert((kind, value.clone()), ());
+            values.insert((kind, value.clone()));
         }
     }
-    values.into_keys().collect()
+    values.into_iter().collect()
 }
 
 fn evidence_from_row(row: &SeekNowRow, row_index: usize, scan_id: &str, now_unix: u64) -> Evidence {
