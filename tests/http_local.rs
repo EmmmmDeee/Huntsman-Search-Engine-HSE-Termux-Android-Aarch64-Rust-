@@ -78,6 +78,55 @@ fn loopback_is_blocked_by_default_and_nothing_is_sent() {
 }
 
 #[test]
+fn public_only_refuses_private_target_with_proxy_environment() {
+    const CHILD: &str = "HSE_PROXY_GUARD_TEST_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let transport = UreqTransport::new(&TransportConfig {
+            timeout: Duration::from_secs(1),
+            ..TransportConfig::default()
+        });
+        let failure = transport
+            .send(&Request::get("http://[::1]:9/"))
+            .expect_err("private destination must be refused");
+        assert!(failure.blocked, "{failure:?}");
+        return;
+    }
+    let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+    proxy.set_nonblocking(true).unwrap();
+    let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args([
+            "--exact",
+            "public_only_refuses_private_target_with_proxy_environment",
+            "--nocapture",
+        ])
+        .env(CHILD, "1");
+    for key in [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        child.env(key, &proxy_url);
+    }
+    child.env("NO_PROXY", "").env("no_proxy", "");
+    let result = child.output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        proxy.accept().is_err(),
+        "private request reached environment proxy"
+    );
+}
+
+#[test]
 fn a_local_server_is_reachable_when_the_operator_allows_it() {
     let (port, server) = serve(vec![ok("hello")]);
     let t = lab_transport(1024);

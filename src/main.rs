@@ -53,7 +53,7 @@ use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 use huntsman_recon::textnorm::escape_controls;
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME | people NAME [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -71,6 +71,7 @@ Commands:
   id                    Classify and validate an Australian ABN, ACN, or BSB
   search                Search the built-in fixture or one local text directory
   sources               Classify an indicator and print curated routes (offline)
+  domain-lifecycle      Analyze imported domain observations (offline)
   people                Look up a name on keyless ASIC people registers
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
@@ -117,6 +118,7 @@ fn main() -> ExitCode {
         Some("id") => id_cmd(remaining.next()),
         Some("search") => search_cmd(remaining.next(), remaining.next()),
         Some("sources") => sources_cmd(remaining.next()),
+        Some("domain-lifecycle") => domain_lifecycle_cmd(&remaining.collect::<Vec<_>>()),
         Some("people") => people_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
@@ -128,6 +130,55 @@ fn main() -> ExitCode {
         Some("check") | None => check(),
         Some(other) => fail(EX_USAGE, &format!("unknown command: {other}\n{USAGE}")),
     }
+}
+
+fn domain_lifecycle_cmd(args: &[String]) -> ExitCode {
+    use huntsman_recon::domain_lifecycle::{Input, MAX_INPUT_BYTES, USAGE, analyze};
+    if args.len() == 2 && args[0] == "analyze" && matches!(args[1].as_str(), "--help" | "-h") {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if !matches!(args.len(), 4 | 6)
+        || args[0] != "analyze"
+        || args[2] != "--as-of"
+        || (args.len() == 6 && args[4] != "--output")
+    {
+        return fail(EX_USAGE, USAGE);
+    }
+    let Ok(as_of) = args[3].parse::<u64>() else {
+        return fail(EX_USAGE, "--as-of requires Unix seconds");
+    };
+    let bytes = match huntsman_recon::fsio::read_bounded(Path::new(&args[1]), MAX_INPUT_BYTES) {
+        Ok(bytes) => bytes,
+        Err(e) => return fail(EX_NOINPUT, &e.to_string()),
+    };
+    let input: Input = match serde_json::from_slice(&bytes) {
+        Ok(input) => input,
+        Err(e) => return fail(EX_DATAERR, &e.to_string()),
+    };
+    let result = analyze(input, as_of).and_then(|report| {
+        serde_json::to_vec_pretty(&report).map_err(|e| Error::Invalid(e.to_string()))
+    });
+    let mut output = match result {
+        Ok(output) => output,
+        Err(e) => return fail(EX_DATAERR, &e.to_string()),
+    };
+    output.push(b'\n');
+    if args.len() == 6 {
+        let same_file = std::fs::canonicalize(&args[1])
+            .ok()
+            .zip(std::fs::canonicalize(&args[5]).ok())
+            .is_some_and(|(input, output)| input == output);
+        if same_file || Path::new(&args[1]) == Path::new(&args[5]) {
+            return fail(EX_USAGE, "output must differ from input");
+        }
+        if let Err(e) = write_atomic(Path::new(&args[5]), &output, 16_777_216) {
+            return fail(EX_IOERR, &e.to_string());
+        }
+    } else if let Err(e) = std::io::Write::write_all(&mut std::io::stdout().lock(), &output) {
+        return fail(EX_IOERR, &e.to_string());
+    }
+    ExitCode::SUCCESS
 }
 
 fn print_command_help(command: &str) {
@@ -151,6 +202,7 @@ fn print_command_help(command: &str) {
         "sources" => {
             "sources QUERY\nClassify an indicator and print curated public/browser search routes. Does not fetch those routes."
         }
+        "domain-lifecycle" => huntsman_recon::domain_lifecycle::USAGE,
         "people" => PEOPLE_HELP,
         "classify" => {
             "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."

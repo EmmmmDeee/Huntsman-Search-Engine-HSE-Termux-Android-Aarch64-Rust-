@@ -52,6 +52,7 @@ pub mod diamond;
 pub mod diff;
 pub mod dmarc;
 pub mod dns;
+pub mod domain_lifecycle;
 pub mod domains;
 pub mod egress;
 pub mod entity;

@@ -39,6 +39,7 @@ diamond	leaf	analysis utility
 diff	leaf	diff analysis utility
 dmarc	leaf	DMARC parser
 dns	adapter	DNS source client
+domain_lifecycle	adapter	Explicit offline domain-lifecycle CLI validates imported observations and emits conservative change reports.
 domains	leaf	domain normalization and classification
 egress	leaf	network egress policy
 entity	runtime	canonical entity and evidence model

@@ -77,6 +77,7 @@ cargo run -- check                     # self-acceptance; regenerates var/*.json
 cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
 cargo run -- search "brisbane port"    # built-in fixture
 cargo run -- search "brisbane port" docs/
+cargo run -- domain-lifecycle analyze docs/domain-lifecycle-example.json --as-of 1000 # synthetic offline timeline
 cargo run -- sources example.com       # classify + build curated routes; no network
 cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
 cargo run -- id "53 004 085 616"        # ABN/ACN/BSB, strict grouping
@@ -269,3 +270,5 @@ live receipt. Live ASIC Connect is WAF-blocked.
 ## Lineage and the automatic-merge rule
 
 `huntsman_recon::lineage::resolve_with_lineage` takes parsed observations and candidate merge decisions. It derives countable lineage from explicit upstream dataset fields and, where the acquisition path is verified, registry identity; record URLs/ids and collector names do not create independent families. Two collectors relaying one dataset therefore count as one family. It returns every observation and every candidate. A candidate auto-merges only with two independent families and a present, in-range match probability of at least 0.90 (legacy `breach_consensus` parity). Otherwise it is held, with every reason stated. `check` gate 5 runs it, and separately checks a hand-built ancestry graph through `allows_automatic_merge`, the path `resolve::automatic_clusters` uses. See `docs/LINEAGE.md`.
+
+Domain lifecycle analysis compares imported observations offline; ownership and availability remain unknown. See [docs/DOMAIN_LIFECYCLE.md](docs/DOMAIN_LIFECYCLE.md). The default PublicOnly HTTP transport disables environment proxies because proxy-side destination resolution can bypass its address guard. Explicit Unrestricted transports retain environment proxy behavior.

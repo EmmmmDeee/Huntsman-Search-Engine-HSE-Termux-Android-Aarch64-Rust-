@@ -1023,7 +1023,7 @@ fn parsers_hold_on_known_inputs() {
 
     let deps: BTreeMap<String, BTreeSet<String>> = [("a", "b"), ("b", "a"), ("c", "a")]
         .iter()
-        .map(|(f, t)| (f.to_string(), BTreeSet::from([t.to_string()])))
+        .map(|(f, t)| ((*f).to_string(), BTreeSet::from([(*t).to_string()])))
         .collect();
     assert_eq!(
         cycles(&deps),
