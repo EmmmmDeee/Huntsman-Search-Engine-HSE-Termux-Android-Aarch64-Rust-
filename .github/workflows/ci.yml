@@ -24,6 +24,12 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
         if: matrix.toolchain == 'stable'
       - run: cargo test --locked
+      - name: Build native locked release binary
+        if: matrix.toolchain == 'stable'
+        run: |
+          set -euo pipefail
+          cargo build --release --locked
+          test -x target/release/huntsman-recon
       - name: check leaves committed artifacts unchanged
         run: |
           cargo run --locked -- check
