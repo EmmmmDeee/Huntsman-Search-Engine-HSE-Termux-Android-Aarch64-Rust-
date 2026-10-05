@@ -16,9 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::evidence_ancestry::{
-    EvidenceAncestryGraph, EvidenceNodeId, IndependenceRouteCount,
-};
+use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceNodeId, IndependenceRouteCount};
 
 /// Bounds the combinatorial proof search used by automatic identity merge.
 /// Exhaustion can only hold a candidate; it can never manufacture corroboration.
@@ -275,9 +273,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::evidence_ancestry::{
-        EvidenceAncestryNode, IndependenceBasis, IndependenceEvidence,
-    };
+    use crate::evidence_ancestry::{EvidenceAncestryNode, IndependenceBasis, IndependenceEvidence};
     use crate::retrieval_artifact::ArtifactId;
 
     fn graph() -> EvidenceAncestryGraph {
