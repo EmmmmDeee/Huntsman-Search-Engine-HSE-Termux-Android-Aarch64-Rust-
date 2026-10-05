@@ -391,21 +391,26 @@ Policy change (network and credentials now allowed):
 | `src/modules/asic_director/tests.rs` | 275 | MERGED | `src/asic_director.rs` tests | Legacy emit, whole-word match, checksum-invalid ACN, request_failed, HTML entity decode and scripted-transport lookup/challenge cases. The ignored wall-clock linearity test is not rebuilt. |
 | `src/modules/au_people/mod.rs` | 495 | REBUILT | `src/au_people.rs` | Keyless True People Search AU HTML scrape. Blocking `fetch` over an injected transport. Challenge pages, truncated bodies and non-success HTTP (other than 404) are never evidence; 404 is ValidZero. Addresses and emails are candidate leads (unattributed line scan). Relatives keep same-surname family only, never tagged `tps-au`. Coordinates use `postcode_au::offline_centroid` (L3), not `geo`. White Pages AU is not queried (retired 404). Library only: not called from `people`. ATT&CK self-labels are not copied. |
 | `src/modules/au_people/tests.rs` | 307 | MERGED | `src/au_people.rs` tests | Legacy relatives, TPS address/email chrome, candidate-lead, split_name, state-tag and dedup oracles plus scripted-transport lookup/challenge/404 cases. The proptest panic-totality tests are replaced by a small adversarial-byte unit test (no `regex`/`proptest` crate). |
+| `src/modules/au_electoral/mod.rs` | 244 | REBUILT | `src/au_electoral.rs` | Keyless NSW/VIC/QLD electoral-commission HTML scrape. Blocking `fetch` over an injected transport. First hit wins. Challenge pages, truncated bodies and non-success HTTP are Unreachable, not "not enrolled". All-unreachable fails closed. No AEC national leg (NameSearch retired). Division centroids are an offline table, not `geo`. Library only: not called from `people`. ATT&CK self-labels are not copied. |
+| `src/modules/au_electoral/parse.rs` | 357 | MERGED | `src/au_electoral.rs` | Division/enrolment markers, nearby-negation window, apostrophe names, suburb hints on standalone postcodes. |
+| `src/modules/au_electoral/entity.rs` | 90 | MERGED | `src/au_electoral.rs` | Address 0.72 with suburb / 0.58 division-only; coordinates only when the offline centroid table has the division. |
+| `src/modules/au_electoral/division_map.rs` | 140 | MERGED | `src/au_electoral.rs` | 67-division centroid table plus Darwin→NT state inference. |
+| `src/modules/au_electoral/tests.rs` | 308 | MERGED | `src/au_electoral.rs` tests | Legacy parse/emit/outage oracles plus scripted-transport first-hit, challenge and all-unreachable cases. The proptest panic-totality tests are replaced by a small adversarial-byte unit test. |
 
 ### Notes
 
 - Live CKAN (`asic_persons_live_finds_a_banned_person`) is not rebuilt: capability row 4 still requires D and L.
 - Live ASIC Connect (`asic_director`) is WAF-blocked (403); the library is tested on a fake transport only.
 - `au_people` is a library tested on a fake transport only; live TPS is not run in CI.
-- `au_electoral` remains unlisted.
+- `au_electoral` is a library tested on a fake transport only; live commissions are not run in CI.
 
 ## Not yet dispositioned
 
-Legacy `src/` files of the monolith that no section above lists yet (889 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
+Legacy `src/` files of the monolith that no section above lists yet (884 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
 
 | Legacy area | Files not listed | Of |
 | --- | ---: | ---: |
-| `src/modules/` (providers) | 536 | 542 |
+| `src/modules/` (providers) | 531 | 542 |
 | `src/util/` | 116 | 213 |
 | `src/core/` | 49 | 203 |
 | `src/app/` | 45 | 45 |
