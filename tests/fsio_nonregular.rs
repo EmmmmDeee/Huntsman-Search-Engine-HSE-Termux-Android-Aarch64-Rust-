@@ -9,7 +9,13 @@ fn verify_refuses_fifo_without_waiting_for_a_writer() {
     let dir = std::env::temp_dir().join(format!("huntsman-fifo-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let fifo = dir.join("ledger.json");
-    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
     let mut child = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
         .arg("verify")
         .arg(&fifo)
