@@ -11,7 +11,9 @@ use crate::module::{
     unknown_cost_paid_provider_blocked,
 };
 use crate::pipeline::{NormalizedSeed, PipelineLimits};
-use crate::roi::{DispatchUtility, DispatchUtilityInputs, compute_dispatch_utility, is_geoint_bearing};
+use crate::roi::{
+    DispatchUtility, DispatchUtilityInputs, compute_dispatch_utility, is_geoint_bearing,
+};
 use crate::service_defs;
 use crate::source_registry;
 
@@ -46,9 +48,16 @@ pub enum DispatchExclusion {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DispatchAction {
-    Module { module_index: usize },
-    Route { source_id: &'static str, url: String },
-    ServiceProbe { service: &'static str },
+    Module {
+        module_index: usize,
+    },
+    Route {
+        source_id: &'static str,
+        url: String,
+    },
+    ServiceProbe {
+        service: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -144,15 +153,20 @@ fn descriptor(module: &dyn Module) -> ProviderDescriptor {
 
 fn action_id(action: &DispatchAction, modules: &[Arc<dyn Module>]) -> String {
     match action {
-        DispatchAction::Module { module_index } => modules
-            .get(*module_index)
-            .map_or_else(|| format!("module:{module_index}"), |module| module.name().to_string()),
+        DispatchAction::Module { module_index } => modules.get(*module_index).map_or_else(
+            || format!("module:{module_index}"),
+            |module| module.name().to_string(),
+        ),
         DispatchAction::Route { source_id, url } => format!("route:{source_id}:{url}"),
         DispatchAction::ServiceProbe { service } => format!("probe:{service}"),
     }
 }
 
-fn utility_cmp(left: &PlannedDispatch, right: &PlannedDispatch, modules: &[Arc<dyn Module>]) -> Ordering {
+fn utility_cmp(
+    left: &PlannedDispatch,
+    right: &PlannedDispatch,
+    modules: &[Arc<dyn Module>],
+) -> Ordering {
     match (&left.utility, &right.utility) {
         (Some(left_utility), Some(right_utility)) => right_utility
             .final_utility
@@ -201,7 +215,8 @@ pub fn build_dispatch_plan(
                     policy.allow_unknown_paid_cost,
                 ) {
                     Some(DispatchExclusion::UnknownPaidCost)
-                } else if let (Some(budget), Some(cost)) = (policy.budget_usd, provider.cost_per_request)
+                } else if let (Some(budget), Some(cost)) =
+                    (policy.budget_usd, provider.cost_per_request)
                     && cost > budget
                 {
                     Some(DispatchExclusion::Budget)
