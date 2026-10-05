@@ -2,6 +2,9 @@
 
 use serde::Serialize;
 
+use crate::coref::{self, CorefCluster};
+use crate::correlation_bridge;
+use crate::correlator::Correlation;
 use crate::coverage::{CoverageVerdict, coverage_verdict};
 use crate::cross_scan::{
     CrossScanCategory, CrossScanOptions, CrossScanRecord, CrossScanStore, build_cross_scan_history,
@@ -24,6 +27,8 @@ pub struct InvestigationReport {
     pub metrics: ScanMetrics,
     pub gaps: GapReport,
     pub pivots: Vec<PivotScore>,
+    pub coreference: Vec<CorefCluster>,
+    pub correlations: Vec<Correlation>,
     pub cross_scan: Option<CrossScanCategory>,
     pub cross_scan_history: Vec<CrossScanRecord>,
     pub coverage: CoverageVerdict,
@@ -45,6 +50,16 @@ fn termination_for(snapshot: &AnalysisSnapshot) -> TerminationReason {
 
 fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
     let graph = Graph::build(&snapshot.entities, &snapshot.relations);
+    let scan_id = snapshot
+        .entities
+        .first()
+        .map_or("analysis", |entity| entity.scan_id.as_str());
+    let now_unix = snapshot
+        .entities
+        .iter()
+        .map(|entity| entity.observed_at_unix)
+        .max()
+        .unwrap_or(0);
     InvestigationReport {
         intelligence: intelligence::build_intelligence_report(
             &snapshot.entities,
@@ -53,6 +68,12 @@ fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
         metrics: metrics::compute(&snapshot.entities, &snapshot.relations),
         gaps: gap::analyze(&snapshot.entities, &snapshot.relations),
         pivots: pivot::rank_pivots(&graph),
+        coreference: coref::cluster_entities(&snapshot.entities),
+        correlations: correlation_bridge::correlate_entities_at(
+            &snapshot.entities,
+            scan_id,
+            now_unix,
+        ),
         cross_scan: None,
         cross_scan_history: build_cross_scan_history(&snapshot.entities),
         coverage: coverage_verdict(&snapshot.coverage),
