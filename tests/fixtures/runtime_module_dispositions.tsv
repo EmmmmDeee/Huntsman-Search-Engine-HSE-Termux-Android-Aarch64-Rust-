@@ -56,7 +56,7 @@ geohash	leaf	geohash codec
 geoint	leaf	GEOINT distance and parsing helpers
 geometry	leaf	geometry helpers
 gexf	exporter	GEXF graph output
-graph	runtime	shared deterministic graph model
+ graph	runtime	shared deterministic graph model
 hibp	adapter	HIBP source adapter
 http	leaf	single socket-opening transport boundary
 identity	leaf	legacy/simple person record resolution helper
@@ -89,6 +89,7 @@ recon	leaf	host reconnaissance helpers
 redact	leaf	secret and location redaction
 relation	runtime	structural relation derivation
 resolve	leaf	conservative automatic merge application for supplied decisions
+retrieval_artifact	leaf	stable retrieval-artifact identity primitive
 rf	leaf	radio-frequency model utility
 roi	runtime	dispatch utility scoring
 runtime	runtime	high-level investigation composition root
