@@ -1,3 +1,15 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ArtifactId(pub String);
+
+impl From<&str> for ArtifactId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ArtifactId;
