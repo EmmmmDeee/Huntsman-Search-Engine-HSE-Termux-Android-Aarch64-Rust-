@@ -44,17 +44,17 @@ fn failure(kind: SourceOutcomeKind) -> Reply {
     })
 }
 
-fn ok_json() -> Reply {
-    Ok(Response {
+fn ok_json() -> Response {
+    Response {
         status: 200,
         headers: Vec::new(),
         body: br#"[{"name_value":"api.example.com"}]"#.to_vec(),
         truncated: false,
-    })
+    }
 }
 
 fn assert_transient_transport_retries(kind: SourceOutcomeKind) {
-    let script = Script::new(vec![failure(kind), ok_json()]);
+    let script = Script::new(vec![failure(kind), Ok(ok_json())]);
     let report = lookup(
         &script,
         ReconTargetKind::Domain,
