@@ -101,9 +101,7 @@ impl Serialize for EvidenceAncestryGraph {
         let independence: BTreeMap<String, &IndependenceEvidence> = self
             .independence
             .iter()
-            .map(|((left, right), evidence)| {
-                (canonical_pair_key(left, right), evidence)
-            })
+            .map(|((left, right), evidence)| (canonical_pair_key(left, right), evidence))
             .collect();
         let mut state = serializer.serialize_struct("EvidenceAncestryGraph", 2)?;
         state.serialize_field("nodes", &self.nodes)?;
@@ -179,10 +177,7 @@ pub fn canonical_family(raw: &str) -> String {
         .join(" ")
 }
 
-fn ordered_pair(
-    a: &EvidenceNodeId,
-    b: &EvidenceNodeId,
-) -> (EvidenceNodeId, EvidenceNodeId) {
+fn ordered_pair(a: &EvidenceNodeId, b: &EvidenceNodeId) -> (EvidenceNodeId, EvidenceNodeId) {
     if a <= b {
         (a.clone(), b.clone())
     } else {
