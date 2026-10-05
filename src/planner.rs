@@ -151,6 +151,13 @@ fn descriptor(module: &dyn Module) -> ProviderDescriptor {
     derive_default_provider_descriptor(&ModuleSpecAdapter { module })
 }
 
+fn exceeds_budget(budget_usd: Option<f64>, cost_per_request: Option<f64>) -> bool {
+    match (budget_usd, cost_per_request) {
+        (Some(budget), Some(cost)) => cost > budget,
+        _ => false,
+    }
+}
+
 fn action_id(action: &DispatchAction, modules: &[Arc<dyn Module>]) -> String {
     match action {
         DispatchAction::Module { module_index } => modules.get(*module_index).map_or_else(
@@ -215,10 +222,7 @@ pub fn build_dispatch_plan(
                     policy.allow_unknown_paid_cost,
                 ) {
                     Some(DispatchExclusion::UnknownPaidCost)
-                } else if let (Some(budget), Some(cost)) =
-                    (policy.budget_usd, provider.cost_per_request)
-                    && cost > budget
-                {
+                } else if exceeds_budget(policy.budget_usd, provider.cost_per_request) {
                     Some(DispatchExclusion::Budget)
                 } else {
                     None
