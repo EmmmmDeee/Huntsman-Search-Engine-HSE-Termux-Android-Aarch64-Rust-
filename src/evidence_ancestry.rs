@@ -131,17 +131,12 @@ pub enum AncestryError {
     DerivedWithoutParent(EvidenceNodeId),
     #[error("invalid independence evidence: {0}")]
     InvalidIndependenceEvidence(String),
-    #[error(
-        "proof-route exact search refused {roots} roots; deterministic maximum is {max_roots}"
-    )]
+    #[error("proof-route exact search refused {roots} roots; deterministic maximum is {max_roots}")]
     ProofRouteSearchLimit { roots: usize, max_roots: usize },
     #[error(
         "proof-route exact search exhausted after {visited} visits; deterministic maximum is {max_visits}"
     )]
-    ProofRouteSearchExhausted {
-        visited: usize,
-        max_visits: usize,
-    },
+    ProofRouteSearchExhausted { visited: usize, max_visits: usize },
 }
 
 /// Canonical family key: whitespace runs collapsed, Unicode lowercase. Conservative:
@@ -527,13 +522,7 @@ fn exact_maximum_clique_size(adjacency: &[u64]) -> Result<usize, AncestryError> 
             best,
             visits,
         )?;
-        visit(
-            adjacency,
-            without_vertex,
-            current_size,
-            best,
-            visits,
-        )
+        visit(adjacency, without_vertex, current_size, best, visits)
     }
 
     if adjacency.is_empty() {
