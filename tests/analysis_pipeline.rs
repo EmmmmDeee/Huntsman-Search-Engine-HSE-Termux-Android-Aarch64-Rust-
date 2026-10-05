@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 
 use huntsman_recon::analysis::{analyze_snapshot, analyze_snapshot_with_cross_scan};
-use huntsman_recon::archive::{
-    ArchiveCapture, ArchiveSource, merge_captures, parse_archive_url,
-};
+use huntsman_recon::archive::{ArchiveCapture, ArchiveSource, merge_captures, parse_archive_url};
 use huntsman_recon::archive_bridge::records_to_observation_batch;
 use huntsman_recon::cross_scan::{CrossScanCategory, CrossScanStore};
 use huntsman_recon::entity::{Entity, EntityKind};
@@ -24,7 +22,11 @@ impl CrossScanStore for HistoryStore {
     }
 
     fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>, Error> {
-        Ok(self.entity_scans.get(entity_uid).cloned().unwrap_or_default())
+        Ok(self
+            .entity_scans
+            .get(entity_uid)
+            .cloned()
+            .unwrap_or_default())
     }
 }
 
