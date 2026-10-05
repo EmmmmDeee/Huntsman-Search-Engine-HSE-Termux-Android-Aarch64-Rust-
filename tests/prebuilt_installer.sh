@@ -66,6 +66,10 @@ SH
     grep -q '^check ' "$CALL_LOG"
     grep -q '^verify ' "$CALL_LOG"
     [ ! -e "$FIXTURE_DIR/work/var" ]
+    before="$(stat -c %i "$PREFIX/bin/huntsman-recon")"
+    (cd "$FIXTURE_DIR/work" && HUNTSMAN_CHANNEL=recon HUNTSMAN_RELEASE_TAG=main-abcdef0 bash "$installer") > "$FIXTURE_DIR/repeat-output" 2>&1
+    after="$(stat -c %i "$PREFIX/bin/huntsman-recon")"
+    [ "$before" = "$after" ] || { echo 'FAIL: identical verified binary was replaced on repeat install'; exit 1; }
   else
     [ "$status" != 0 ] || { echo "FAIL: $name installed a rejected binary"; exit 1; }
     [ "$(cat "$PREFIX/bin/huntsman-recon")" = old-recon ]
