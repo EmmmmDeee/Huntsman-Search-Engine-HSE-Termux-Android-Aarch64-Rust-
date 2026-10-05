@@ -27,6 +27,7 @@ pub mod ckan;
 pub mod classifier;
 pub mod classify;
 pub mod classify_module;
+pub mod collection;
 pub mod community;
 pub mod confidence;
 pub mod coref;
