@@ -620,6 +620,16 @@ impl Tree {
         let mut roots = Vec::new();
         tree.walk(&main_path, 0, "huntsman_recon", &mut roots);
         tree.main_deps = tree.resolve(&roots, "main");
+        let investigate_path = src.join("bin/investigate.rs");
+        let mut investigate_roots = Vec::new();
+        tree.walk(
+            &investigate_path,
+            0,
+            "huntsman_recon",
+            &mut investigate_roots,
+        );
+        tree.main_deps
+            .extend(tree.resolve(&investigate_roots, "investigate"));
         tree
     }
 
@@ -820,8 +830,8 @@ fn module_map_matches_the_compiled_tree() {
     );
     assert_eq!(
         map.binary,
-        ["main"],
-        "the Binary row must be exactly `main`"
+        ["main", "investigate"],
+        "the Binary row must name every executable entry point"
     );
 
     let src = root().join("src");

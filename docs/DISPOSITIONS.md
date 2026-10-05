@@ -2,7 +2,7 @@
 
 Per-file accounting of the HSE monolith (`legacy/hse-monolith-v1.41.0/`) against the current crate, grouped by area. Decisions: REBUILT / REIMPLEMENT (new code, legacy kept as oracle), MERGED (folded into an existing owner or its tests), PARTIAL, PENDING / NOT YET REBUILT, NOT APPLICABLE. Refactor-overlay items are dispositioned in `RECONSTRUCTION_2026-10-02.md` (third pass).
 
-Evidence source: `legacy/` and the two root zip archives. Never delete, edit or move them.
+Evidence source: the canonical extracted trees under `legacy/`. Original archive SHA-256/Git identities and a recoverable commit are recorded in `ARCHIVE_PROVENANCE.md`. Do not mutate legacy oracle content without updating provenance and differential evidence.
 
 ## Contents
 

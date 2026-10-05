@@ -1,6 +1,6 @@
 # Reconstruction decision — 2026-10-02
 
-Passes are recorded in order; a later pass supersedes an earlier one. In particular, the seventh pass reversed the second: the legacy zip archives are back in the repository root and extracted into `legacy/`, and network access is allowed through the guarded `egress`/`http`/`fetch`/`keys` layer.
+Passes are recorded in order; a later pass supersedes an earlier one. The 2026-10-05 repository reconstruction continuation supersedes the seventh-pass ZIP-retention decision: canonical extracted trees remain under `legacy/`, opaque ZIP containers are absent from HEAD but their exact bytes remain recoverable from Git history, and network access remains allowed through the guarded `egress`/`http`/`fetch`/`keys` layer. See `ARCHIVE_PROVENANCE.md`.
 
 Target: an unprivileged Rust core that records an RCVF session, refuses an unsupported claim, resolves identity only on a shared email or handle, computes geodesic distance and co-location, seals claims in a hashed ledger, and emits STIX or an ATT&CK Navigator layer only when this crate implements that technique.
 
@@ -156,3 +156,11 @@ Evidence state of the claims touched in passes eight and nine:
 | Disposition counts | TESTED, CI-enforced | Recomputed from `legacy/` on every test run. |
 | HIBP #662 reconstructed-layout port | OFFLINE-VERIFIED | `src/hibp` exports blocking REST v3, free password ranges and OAuth PKCE; fake-transport tests cover endpoints, plan gating, retry, secret redaction and private persistence. No live API or handset acceptance is claimed. Earlier close-#662 judgement is superseded by the owner's REFACTOR continuation. |
 | No Termux/aarch64 handset run | Unchanged: not CLAIMED | — |
+
+## Repository reconstruction continuation — 2026-10-05
+
+This continuation changes repository representation, not the historical evidence oracle. The two root ZIP containers were removed from HEAD after their extracted trees had become the canonical reviewable references under `legacy/`. Exact archive SHA-256 values, Git blob identities, extracted-tree identities and the pre-removal baseline commit `01089c7e756216a33573cdefdfd7068dfa4e5380` are recorded in `ARCHIVE_PROVENANCE.md`, so byte-for-byte rollback remains possible from Git history.
+
+`tests/legacy_reference.rs` now pins the extracted oracle tree file counts (1314 monolith files and 40 overlay files). `tests/repository_hygiene.rs` rejects opaque root-level project snapshots. This does not claim that archive-member equivalence was independently recomputed during this continuation; it preserves the already-extracted trees as canonical HEAD content while retaining the original containers in Git history.
+
+The archive observation model added during the reconstruction is compiled as L3 normalisation because it is pure model/parser/aggregation logic and depends only on `canonical`. `tests/architecture_doc.rs` enforces that placement and its dependency direction.
