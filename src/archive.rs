@@ -218,10 +218,7 @@ struct RecordBuilder {
 impl RecordBuilder {
     fn new(capture: &ArchiveCapture) -> Self {
         let mut observations = BTreeMap::new();
-        observations.insert(
-            capture.dataset.clone(),
-            ObservationBuilder::new(capture),
-        );
+        observations.insert(capture.dataset.clone(), ObservationBuilder::new(capture));
         Self {
             key: capture.key.clone(),
             representative_url: capture.original_url.clone(),
@@ -241,10 +238,8 @@ impl RecordBuilder {
         if let Some(observation) = self.observations.get_mut(&capture.dataset) {
             observation.absorb(capture);
         } else {
-            self.observations.insert(
-                capture.dataset.clone(),
-                ObservationBuilder::new(capture),
-            );
+            self.observations
+                .insert(capture.dataset.clone(), ObservationBuilder::new(capture));
         }
     }
 
@@ -278,7 +273,10 @@ pub fn merge_captures(captures: Vec<ArchiveCapture>) -> Vec<ArchiveRecord> {
 #[must_use]
 pub fn classify_archive_path(path: &str, query: &str) -> Vec<ArchiveInterest> {
     let lower = path.to_ascii_lowercase();
-    let segments: Vec<&str> = lower.split('/').filter(|segment| !segment.is_empty()).collect();
+    let segments: Vec<&str> = lower
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
     let basename = segments.last().copied().unwrap_or("");
     let extension = basename.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
     let mut interests = BTreeSet::new();
@@ -291,7 +289,18 @@ pub fn classify_archive_path(path: &str, query: &str) -> Vec<ArchiveInterest> {
     }
     if matches!(
         extension,
-        "zip" | "tar" | "gz" | "tgz" | "bz2" | "7z" | "rar" | "sql" | "dump" | "bak" | "backup" | "old"
+        "zip"
+            | "tar"
+            | "gz"
+            | "tgz"
+            | "bz2"
+            | "7z"
+            | "rar"
+            | "sql"
+            | "dump"
+            | "bak"
+            | "backup"
+            | "old"
     ) || segments
         .iter()
         .any(|segment| matches!(*segment, "backup" | "backups" | "database" | "databases"))
@@ -308,7 +317,18 @@ pub fn classify_archive_path(path: &str, query: &str) -> Vec<ArchiveInterest> {
     }
     if matches!(
         extension,
-        "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" | "py" | "rb" | "php" | "sh" | "ps1" | "go" | "rs"
+        "js" | "mjs"
+            | "cjs"
+            | "ts"
+            | "tsx"
+            | "jsx"
+            | "py"
+            | "rb"
+            | "php"
+            | "sh"
+            | "ps1"
+            | "go"
+            | "rs"
     ) {
         interests.insert(ArchiveInterest::ScriptLike);
     }
