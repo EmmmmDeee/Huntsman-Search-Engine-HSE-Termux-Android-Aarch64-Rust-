@@ -1,0 +1,65 @@
+name: phase-a-readme-fix
+
+on:
+  push:
+    branches:
+      - audit/exhaustive-evidence-20261005-head
+
+permissions:
+  contents: write
+
+jobs:
+  fix-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Correct archive provenance wording
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("README.md")
+          text = p.read_text()
+          old_status = (
+              "> Canonical extracted legacy trees are preserved as read-only reconstruction references;\n"
+              "> the two historical ZIP references remain byte-pinned at the repository root. See\n"
+          )
+          new_status = (
+              "> Canonical extracted legacy trees are preserved as read-only reconstruction references;\n"
+              "> the original ZIP containers are intentionally absent from the active tree but remain\n"
+              "> byte-identifiable and recoverable from Git history. See\n"
+          )
+          old_map = (
+              "| `docs/ARCHIVE_PROVENANCE.md` | SHA-256/Git identities and extracted-tree mapping for the pinned root ZIP references. |"
+          )
+          new_map = (
+              "| `docs/ARCHIVE_PROVENANCE.md` | SHA-256/Git identities, extracted-tree mapping, and historical recovery information for the original ZIP containers. |"
+          )
+          for old in (old_status, old_map):
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected exactly one stale README fragment, found {text.count(old)}")
+          text = text.replace(old_status, new_status, 1).replace(old_map, new_map, 1)
+          if "remain byte-pinned at the repository root" in text:
+              raise SystemExit("stale root-ZIP claim survived replacement")
+          p.write_text(text)
+          PY
+          git diff --check
+          git diff -- README.md
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05 (Merge #182)
+        with:
+          toolchain: "1.87"
+      - name: Verify README contract
+        run: cargo test --locked --test readme
+      - name: Commit verified documentation repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git diff --cached --quiet && { echo "::error::README repair produced no diff"; exit 1; }
+          git commit -m "docs: correct historical archive provenance wording"
+          git push origin HEAD:audit/exhaustive-evidence-20261005-head
