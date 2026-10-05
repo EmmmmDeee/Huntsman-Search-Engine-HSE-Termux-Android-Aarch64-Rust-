@@ -9,6 +9,8 @@ fn verified() -> ClaimAssessment {
         epistemic: ClaimState::Verified,
         blockers: BTreeSet::new(),
         proven_roots: 1,
+        distinct_resolved_roots: 1,
+        independence_incomplete: false,
         unresolved_support: 0,
         proof_environment_count: 0,
         proof_incomplete: false,
