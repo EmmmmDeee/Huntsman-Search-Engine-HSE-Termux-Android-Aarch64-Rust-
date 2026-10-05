@@ -167,3 +167,23 @@ PLANNED, differential tests against legacy `7dca720`:
 3. In `cargo test`, feed the same recorded response to the new code through a fake `Transport`, and compare entity sets keyed by kind and canonical value.
 4. Fail on any legacy result that is missing (dropped), shortened (truncated) or attributed to a different source or dataset (misattributed). An intentional difference needs a reviewed allow-list entry with a reason, such as a fixed legacy defect.
 5. CI never builds or runs legacy; it checks the committed goldens.
+
+PLANNED, live receipts: one run per source against the real service, recording the command, UTC time, response hash and exit code, tied to the commit SHA. Not run in CI.
+
+## MIGRATION POLICY
+
+Rules for every reconstruction PR from this one on:
+- Restoration only. NO removals until there is a differential test against legacy `7dca720` covering the capability being replaced.
+- One capability per PR, with its tests, its README example (enforced by `tests/readme.rs`) and its CAPABILITIES row update.
+- Port behaviour, not structure: legacy is the oracle, not a source to copy wholesale. Async code is rewritten as blocking code over `http::Transport`.
+- Every boundary or secrets change gets Security & Secrets Bot review. Every PR needs a non-author cross-review before merge.
+- REFACTOR Bot owns this policy, the lineage and merge rule, and provider migration.
+
+## ORDERED BACKLOG
+
+PLANNED, in this order. "In flight" means work has started on that branch and is not on `main` yet; "Done" names the PR that put it on `main`.
+1. People-lookup pipeline, end to end: CLI command, fetch, provider, parse, evidence, merge decision, saved file, `verify`, output and exit codes. It needs at least one keyless public people source (candidate: `asic_persons` over data.gov.au CKAN) and one live keyless run with a receipt tied to the commit. Done: the lineage and merge rule, as a library (#679, REFACTOR Bot); `asic_persons` plus `people_cli` plus `people --save`/`verify` — skip path, fake-transport lineage, and ledger round-trip tested; no live run yet. Done on this branch: `hibp` CLI (`hibp::cli`).
+2. Port `au_people`, `asic_director` and HIBP first, each with a differential test against legacy output. `asic_persons` emit/name/controller behaviour is covered by fake-transport unit tests; D/L against live CKAN remain open. Done as libraries: `asic_director`, `au_people`, and `au_electoral` (NSW/VIC/QLD first-hit, no retired AEC name-search, outage is not "not enrolled"; coords from an offline division table). Wired into `people` on this branch; one source failure does not abort the others. Live Connect is WAF-blocked (no L). HIBP CLI is done; live D remains open.
+3. stolen.tax and crt.sh. Done on this branch as `stolen_tax` / `crtsh` libraries plus `recon stolen-tax` / `recon crtsh` (differential fixtures from 764ce8e; no live receipt). `recon dns` wires the rebuilt DoH client and SPF/DMARC/TLSRPT parsers (fake-transport tests; no live receipt; not a 7dca720 differential).
+4. Compile the 8 orphan modules (G8). Done: #675.
+5. The rest of CAPABILITIES, ranked by user value.
