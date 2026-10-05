@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::classifier;
-use crate::collection::{ObservationBatch, RawObservation, UpstreamOrigin, bounded_batch, coverage_events};
+use crate::collection::{
+    ObservationBatch, RawObservation, UpstreamOrigin, bounded_batch, coverage_events,
+};
 use crate::coverage::{ProviderCoverage, provider_coverage_from_events};
 use crate::entity::{CANDIDATE_CONF, Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::evidence_ancestry::{
@@ -169,10 +171,7 @@ pub fn normalize_seeds(input: &InvestigationInput, limits: &PipelineLimits) -> S
 }
 
 fn ancestry_id(prefix: &str, material: &str) -> EvidenceNodeId {
-    EvidenceNodeId(format!(
-        "{prefix}:{}",
-        hex32(&sha256(material.as_bytes()))
-    ))
+    EvidenceNodeId(format!("{prefix}:{}", hex32(&sha256(material.as_bytes()))))
 }
 
 fn upstream_family(upstream: Option<&UpstreamOrigin>) -> String {
