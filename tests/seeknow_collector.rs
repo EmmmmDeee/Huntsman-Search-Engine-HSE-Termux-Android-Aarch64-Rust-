@@ -85,7 +85,7 @@ fn selector_planning_is_typed_and_rejects_unsupported_before_transport() {
     for (kind, value, expected_type) in cases {
         let plan = plan_selector(&selector(kind, value), &CollectionLimits::default()).unwrap();
         assert_eq!(plan.query_type.api_value(), expected_type);
-        assert!(!plan.query.trim().is_empty());
+        assert_ne!(plan.query.trim(), "");
     }
 
     assert!(
