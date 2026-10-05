@@ -53,10 +53,13 @@ fn ci_pins_every_external_action_to_an_immutable_commit() {
         if action.starts_with("./") {
             continue;
         }
-        let (name, revision) = action
-            .rsplit_once('@')
-            .unwrap_or_else(|| panic!("external action {action:?} must name an immutable revision"));
-        assert!(!name.is_empty(), "external action name must not be empty: {action:?}");
+        let (name, revision) = action.rsplit_once('@').unwrap_or_else(|| {
+            panic!("external action {action:?} must name an immutable revision")
+        });
+        assert!(
+            !name.is_empty(),
+            "external action name must not be empty: {action:?}"
+        );
         assert!(
             revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit()),
             "external action {action:?} must be pinned to a full 40-hex commit SHA"
