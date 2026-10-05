@@ -138,7 +138,10 @@ fn quota_penalty(remaining: Option<bool>) -> (f64, String) {
 pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtility {
     let expected_information_value = 1.0 - inputs.entity_confidence.unwrap_or(0.0);
     let expected_novelty = inputs.novelty_prior.clamp(0.0, 1.0);
-    let expected_independence = 1.0 - 1.0 / (1.0 + f64::from(inputs.source_count));
+    // Source multiplicity is not evidence of independent ancestry. Until the
+    // planner is given canonical provenance-root information, independence is
+    // unknown and therefore contributes no positive utility.
+    let expected_independence = 0.0;
     let expected_optionality = inputs.optionality_prior.clamp(0.0, 1.0);
     let reliability = inputs.reliability_prior.clamp(0.0, 1.0);
     let failure_penalty = 1.0 - reliability;
@@ -184,7 +187,7 @@ pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtili
             W_NOV * expected_novelty
         ),
         format!(
-            "expected_independence: +{:.3} (source_count={} -> {expected_independence:.3}, x W_INDEP={W_INDEP})",
+            "expected_independence: +{:.3} (source_count={} is multiplicity, not proven ancestry -> {expected_independence:.3}, x W_INDEP={W_INDEP})",
             W_INDEP * expected_independence,
             inputs.source_count
         ),
