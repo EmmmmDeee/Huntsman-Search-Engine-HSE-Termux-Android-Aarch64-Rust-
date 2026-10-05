@@ -12,7 +12,8 @@ Evidence source: the canonical extracted trees under `legacy/`. Original archive
 4. [Parsers and signals](#parsers-and-signals)
 5. [Validation, domains and text](#validation-domains-and-text)
 6. [AU people registers](#au-people-registers)
-7. [Not yet dispositioned](#not-yet-dispositioned)
+7. [Providers restored from 764ce8e](#providers-restored-from-764ce8e)
+8. [Not yet dispositioned](#not-yet-dispositioned)
 
 ## ATT&CK, assurance and analytics
 
@@ -368,7 +369,7 @@ Credentials are allowed, but artifacts/logs still keep fingerprint-only hygiene.
 | util/uid/tests.rs | 24 | MERGED | src/uid.rs tests | Ported the legacy shape/uniqueness assertions. |
 | util/domain_vn/mod.rs | 101 | MERGED | src/domains.rs | Rebuilt the VN registrant classifier with the shared AU category vocabulary. |
 | util/domain_vn/tests.rs | 100 | MERGED | src/domains.rs tests | Ported representative VN suffix cases. |
-| util/dns.rs | 224 | REBUILT | src/dns.rs | Kept the pure label/RNAME helpers and moved the runtime resolver path onto the shared `crate::http::Transport` boundary with ordered DoH failover across Cloudflare/Quad9/Google so the newly in-scope path stays separately unit-testable. |
+| util/dns.rs | 224 | REBUILT | src/dns.rs | Kept the pure label/RNAME helpers and moved the runtime resolver path onto guarded `fetch` over an injected `crate::http::Transport`, with ordered DoH failover across Cloudflare/Quad9/Google. A challenge page is `BotWaf`, not JSON. `recon dns TARGET` is the CLI. Tests use fakes and do not perform live network calls. |
 | core/xml.rs | 53 | REBUILT | src/xml.rs | Rebuilt the one-pass XML escaper that drops XML-illegal controls instead of double-escaping or preserving them. |
 
 ### Notes
@@ -376,7 +377,7 @@ Credentials are allowed, but artifacts/logs still keep fingerprint-only hygiene.
 Policy change (network and credentials now allowed):
 - Newly in scope and rebuilt behind injectable boundaries:
   - `util/postcode_au` online postcode lookup path via `src/postcode_au.rs::localities_with` on `crate::http::Transport`
-  - `util/dns` resolver-pool/failover path via `src/dns.rs::{resolver_config, resolve_with_pool}` on `crate::http::Transport`
+  - `util/dns` resolver-pool/failover path via `src/dns.rs::{resolver_config, resolve_with_pool}` through `fetch` on `crate::http::Transport`
 - Pure parsing, scoring, and policy remain separately unit-testable; tests use fakes and do not perform live network calls.
 - No credential values are logged or embedded in tests/artifacts; these boundaries carry plain request/response data only.
 - Redundancies removed during the shared-HTTP refactor: identity/email/phone canonicalisation now delegates to the shared canonical/validation owners; postcode shape/range checks now live in `src/postcode_au.rs`; DNS label/RNAME helpers now live only in `src/dns.rs`.
@@ -385,21 +386,51 @@ Policy change (network and credentials now allowed):
 
 | Legacy path | Lines | Decision | New module | Defect found / evidence or reason |
 | --- | ---: | --- | --- | --- |
-| `src/modules/asic_persons/mod.rs` | 629 | REBUILT | `src/asic_persons.rs`, `src/people_cli.rs` | Keyless data.gov.au CKAN collector for banned/disqualified persons, financial advisers and credit representatives. Blocking `fetch` over an injected transport; emit oracles ported from legacy fixtures. Coordinates use `postcode_au::offline_centroid` (L3), not `geo` (L6). `people NAME` is the collection front-end (`people_cli`) and runs evidence through `lineage::resolve_with_lineage`. Tests never hit the live portal. |
+| `src/modules/asic_persons/mod.rs` | 629 | REBUILT | `src/asic_persons.rs`, `src/people_cli.rs`, `src/people_save.rs` | Keyless data.gov.au CKAN collector for banned/disqualified persons, financial advisers and credit representatives. Blocking `fetch` over an injected transport; emit oracles ported from legacy fixtures. Coordinates use `postcode_au::offline_centroid` (L3), not `geo` (L6). `people NAME [--save FILE]` is the collection front-end (`people_cli`) over this collector plus `asic_director`, `au_people` and `au_electoral`, and runs evidence through `lineage::resolve_with_lineage`; one source failure does not abort the others; `people_save` writes an unverified ledger `verify` reloads. Tests never hit the live portal. |
 | `src/modules/asic_persons/tests.rs` | 424 | MERGED | `src/asic_persons.rs` tests | Legacy emit, name-match, controller and checksum fixtures plus scripted-transport lookup, envelope-failure and challenge-page cases. |
+| `src/modules/asic_director/mod.rs` | 397 | REBUILT | `src/asic_director.rs` | Keyless ASIC Connect Online HTML scrape of director appointments. Blocking `fetch` over an injected transport. Challenge pages, truncated bodies and non-success HTTP are never evidence. ACN emission requires checksum validation. Coordinates use `postcode_au::offline_centroid` (L3), not `geo`/`city_coords` (L6). Called from `people`; a WAF is `Error::Invalid` so it cannot be read as "no director records", and `people_cli` records that without aborting other sources (live Connect is WAF-blocked). Tests never hit the live portal. ATT&CK self-labels are not copied. |
+| `src/modules/asic_director/tests.rs` | 275 | MERGED | `src/asic_director.rs` tests | Legacy emit, whole-word match, checksum-invalid ACN, request_failed, HTML entity decode and scripted-transport lookup/challenge cases. The ignored wall-clock linearity test is not rebuilt. |
+| `src/modules/au_people/mod.rs` | 495 | REBUILT | `src/au_people.rs` | Keyless True People Search AU HTML scrape. Blocking `fetch` over an injected transport. Challenge pages, truncated bodies and non-success HTTP (other than 404) are never evidence; 404 is ValidZero. Addresses and emails are candidate leads (unattributed line scan). Relatives keep same-surname family only, never tagged `tps-au`. Coordinates use `postcode_au::offline_centroid` (L3), not `geo`. White Pages AU is not queried (retired 404). Called from `people`; a challenged page is `Error::Invalid` and does not abort other sources. ATT&CK self-labels are not copied. |
+| `src/modules/au_people/tests.rs` | 307 | MERGED | `src/au_people.rs` tests | Legacy relatives, TPS address/email chrome, candidate-lead, split_name, state-tag and dedup oracles plus scripted-transport lookup/challenge/404 cases. The proptest panic-totality tests are replaced by a small adversarial-byte unit test (no `regex`/`proptest` crate). |
+| `src/modules/au_electoral/mod.rs` | 244 | REBUILT | `src/au_electoral.rs` | Keyless NSW/VIC/QLD electoral-commission HTML scrape. Blocking `fetch` over an injected transport. First hit wins. Challenge pages, truncated bodies and non-success HTTP are Unreachable, not "not enrolled". All-unreachable fails closed. No AEC national leg (NameSearch retired). Division centroids are an offline table, not `geo`. Called from `people`; all-unreachable is `Error::Invalid` and does not abort other sources. ATT&CK self-labels are not copied. |
+| `src/modules/au_electoral/parse.rs` | 357 | MERGED | `src/au_electoral.rs` | Division/enrolment markers, nearby-negation window, apostrophe names, suburb hints on standalone postcodes. |
+| `src/modules/au_electoral/entity.rs` | 90 | MERGED | `src/au_electoral.rs` | Address 0.72 with suburb / 0.58 division-only; coordinates only when the offline centroid table has the division. |
+| `src/modules/au_electoral/division_map.rs` | 140 | MERGED | `src/au_electoral.rs` | 67-division centroid table plus Darwin→NT state inference. |
+| `src/modules/au_electoral/tests.rs` | 308 | MERGED | `src/au_electoral.rs` tests | Legacy parse/emit/outage oracles plus scripted-transport first-hit, challenge and all-unreachable cases. The proptest panic-totality tests are replaced by a small adversarial-byte unit test. |
 
 ### Notes
 
 - Live CKAN (`asic_persons_live_finds_a_banned_person`) is not rebuilt: capability row 4 still requires D and L.
-- `asic_director`, `au_people` and `au_electoral` remain unlisted.
+- Live ASIC Connect (`asic_director`) is WAF-blocked (403); `people` still calls it and records the failure without aborting other sources. Tested on a fake transport only.
+- `au_people` is called from `people` and tested on a fake transport only; live TPS is not run in CI.
+- `au_electoral` is called from `people` and tested on a fake transport only; live commissions are not run in CI.
+
+## Providers restored from 764ce8e
+
+The v1.41.0 source rows below are accounted against the newer stolen.tax v2 and
+crt.sh implementations ported onto the guarded fetch layer. The differential
+fixtures record legacy outputs; the blank-name/host guard intentionally omits
+placeholder markers and unknown stand-in facts.
+
+| Legacy path | Lines | Decision | New module | Defect found / evidence or reason |
+| --- | ---: | --- | --- | --- |
+| `src/modules/crtsh/mod.rs` | 382 | REIMPLEMENT | `src/crtsh.rs` | 30-second timeout; retries only HTTP 502/503/429, at most three attempts two seconds apart. Challenge, truncated and malformed responses fail closed. Differential fixtures match records, confidence, tags and evidence attributes without a result cap. |
+| `src/modules/crtsh/tests.rs` | 345 | MERGED | `src/crtsh/tests.rs`, `src/crtsh/differential.rs` | Legacy cases use fake transports; query shape, entity kinds, retry bounds, challenge pages, truncation and redirects are covered. |
+| `src/modules/stolen_tax/mod.rs` | 485 | REIMPLEMENT | `src/stolen_tax.rs` | v2 POST cascade with origin-scoped credentials, bounded same-site redirects, one 120-second lookup deadline and same-key 429 retries. Differential tests cover the legacy cascade; persistent key-pool rotation remains deferred. Password and hash fields are never declared. |
+| `src/modules/see_know/mod.rs` | 1006 | PARTIAL | `src/seeknow.rs`, `src/seeknow_collector.rs`, `src/seeknow_cli.rs` | First reconstructed SeekNow slice uses the documented REST API through guarded `fetch` + injected `Transport`. Fast/deep duplicates and federated provider rows cannot manufacture corroboration. Raw password/token/cookie material is excluded. Query-optimizer and geo extract remain deferred. |
+| `src/modules/see_know/endpoints/mod.rs` | 377 | PARTIAL | `src/seeknow.rs` | Status/credits/search endpoints rebuilt as typed L4 requests; entitlement and quota failures are distinct from auth and rate-limit. |
+| `src/modules/see_know/endpoints/tests.rs` | 280 | MERGED | `tests/seeknow_client.rs`, `tests/seeknow_cli.rs` | Fake-transport coverage for request shape, outcome mapping and CLI rendering. |
+| `src/modules/see_know/tests.rs` | 2083 | MERGED | `tests/seeknow_collector.rs`, `tests/seeknow_diagnostics.rs`, `tests/seeknow_outcomes.rs` | Collector lineage, diagnostics and causal-outcome contract tests. |
+| `src/modules/wayback/mod.rs` | 586 | REIMPLEMENT | `src/wayback.rs`, `src/archive.rs` | CDX lookup through `fetch`; original URLs are observations and are never fetched. |
+| `src/modules/wayback/tests.rs` | 323 | MERGED | `tests/wayback_client.rs`, `tests/archive_model.rs` | Fake-transport CDX parsing plus archive identity/aggregation tests. |
 
 ## Not yet dispositioned
 
-Legacy `src/` files of the monolith that no section above lists yet (893 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
+Legacy `src/` files of the monolith that no section above lists yet (875 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
 
 | Legacy area | Files not listed | Of |
 | --- | ---: | ---: |
-| `src/modules/` (providers) | 540 | 542 |
+| `src/modules/` (providers) | 522 | 542 |
 | `src/util/` | 116 | 213 |
 | `src/core/` | 49 | 203 |
 | `src/app/` | 45 | 45 |

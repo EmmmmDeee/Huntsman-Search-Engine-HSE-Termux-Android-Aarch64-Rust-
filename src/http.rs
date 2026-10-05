@@ -63,6 +63,11 @@ pub struct Request {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// Cap for this request, end to end. `None` uses the transport's timeout; a
+    /// value only ever lowers it. Set from a [`crate::deadline::Deadline`] so one
+    /// lookup's requests share a single budget. Kept across redirects the fetch
+    /// layer follows.
+    pub timeout: Option<Duration>,
 }
 
 impl Request {
@@ -73,6 +78,7 @@ impl Request {
             url: url.into(),
             headers: Vec::new(),
             body: Vec::new(),
+            timeout: None,
         }
     }
 
@@ -88,6 +94,13 @@ impl Request {
     #[must_use]
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((name.into(), value.into()));
+        self
+    }
+
+    /// Cap this request at `timeout` (never above the transport's own timeout).
+    #[must_use]
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
 
@@ -119,6 +132,7 @@ impl fmt::Debug for Request {
             .field("url", &redact_url(&self.url))
             .field("headers", &headers)
             .field("body_len", &self.body.len())
+            .field("timeout", &self.timeout)
             .finish()
     }
 }
@@ -358,6 +372,7 @@ impl Resolver for GuardedResolver {
 pub struct UreqTransport {
     agent: ureq::Agent,
     max_body: usize,
+    timeout: Duration,
 }
 
 impl UreqTransport {
@@ -379,6 +394,7 @@ impl UreqTransport {
         Self {
             agent,
             max_body: config.max_body,
+            timeout: config.timeout,
         }
     }
 }
@@ -403,9 +419,18 @@ impl Transport for UreqTransport {
         for (name, value) in &request.headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
-        let built = builder
+        let mut built = builder
             .body(request.body.as_slice())
             .map_err(|e| invalid(format!("request: {e}")))?;
+        if let Some(cap) = request.timeout {
+            // End to end (DNS through the last body byte), like the agent's own
+            // timeout, and never above it.
+            built = self
+                .agent
+                .configure_request(built)
+                .timeout_global(Some(cap.min(self.timeout)))
+                .build();
+        }
         let response = self.agent.run(built).map_err(|e| map_ureq_error(&e))?;
         let status = response.status().as_u16();
         let headers = response
@@ -419,11 +444,7 @@ impl Transport for UreqTransport {
             .collect();
         let (body, truncated) = read_capped(response.into_body().into_reader(), self.max_body)
             .map_err(|e| TransportFailure {
-                kind: if e.kind() == io::ErrorKind::TimedOut {
-                    SourceOutcomeKind::BodyTimeout
-                } else {
-                    SourceOutcomeKind::ConnectFailure
-                },
+                kind: body_read_failure_kind(&e),
                 detail: format!("body read: {e}"),
                 blocked: false,
             })?;
@@ -433,6 +454,26 @@ impl Transport for UreqTransport {
             body,
             truncated,
         })
+    }
+}
+
+/// Classify a failed body read. `ureq` 3's body reader reports its own errors,
+/// including the request's timeout firing mid-body, as an `io::Error` of kind
+/// `Other` wrapping the `ureq::Error` (`ureq::Error::into_io`), so the kind alone
+/// would file a timeout as a connection failure. **Pure.**
+fn body_read_failure_kind(e: &io::Error) -> SourceOutcomeKind {
+    let timed_out = e.kind() == io::ErrorKind::TimedOut
+        || e.get_ref()
+            .and_then(|inner| inner.downcast_ref::<ureq::Error>())
+            .is_some_and(|inner| match inner {
+                ureq::Error::Timeout(_) => true,
+                ureq::Error::Io(io) => io.kind() == io::ErrorKind::TimedOut,
+                _ => false,
+            });
+    if timed_out {
+        SourceOutcomeKind::BodyTimeout
+    } else {
+        SourceOutcomeKind::ConnectFailure
     }
 }
 
@@ -484,6 +525,35 @@ mod tests {
         assert!(!shown.contains("pw@"));
         assert!(shown.contains("text/html"));
         assert!(shown.contains("example.com/p"));
+    }
+
+    #[test]
+    fn a_timeout_inside_a_body_read_is_a_body_timeout() {
+        let wrapped = ureq::Error::Timeout(ureq::Timeout::Global).into_io();
+        assert_eq!(wrapped.kind(), io::ErrorKind::Other);
+        assert_eq!(
+            body_read_failure_kind(&wrapped),
+            SourceOutcomeKind::BodyTimeout
+        );
+        let io_timeout = ureq::Error::Io(io::Error::from(io::ErrorKind::TimedOut)).into_io();
+        assert_eq!(
+            body_read_failure_kind(&io_timeout),
+            SourceOutcomeKind::BodyTimeout
+        );
+        assert_eq!(
+            body_read_failure_kind(&io::Error::from(io::ErrorKind::TimedOut)),
+            SourceOutcomeKind::BodyTimeout
+        );
+        let reset = io::Error::from(io::ErrorKind::ConnectionReset);
+        assert_eq!(
+            body_read_failure_kind(&reset),
+            SourceOutcomeKind::ConnectFailure
+        );
+        let eof = ureq::Error::Io(io::Error::from(io::ErrorKind::UnexpectedEof)).into_io();
+        assert_eq!(
+            body_read_failure_kind(&eof),
+            SourceOutcomeKind::ConnectFailure
+        );
     }
 
     #[test]

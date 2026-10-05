@@ -351,9 +351,7 @@ pub fn build_probe_request(service: &ServiceDef, key: &str) -> Request {
         Method::Get => Request::get(service.test_url),
         Method::Head => Request {
             method: Method::Head,
-            url: service.test_url.to_string(),
-            headers: Vec::new(),
-            body: Vec::new(),
+            ..Request::get(service.test_url)
         },
         Method::Post => Request::post(
             service.test_url,
