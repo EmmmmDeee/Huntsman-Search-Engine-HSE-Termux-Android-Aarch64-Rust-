@@ -12,6 +12,7 @@
 )]
 
 pub mod address_au;
+pub mod analysis;
 pub mod archive;
 pub mod asic_persons;
 pub mod assurance;
