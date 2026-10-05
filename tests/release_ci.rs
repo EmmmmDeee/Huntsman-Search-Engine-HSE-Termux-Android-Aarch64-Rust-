@@ -819,7 +819,15 @@ fn bin_entries(root: &Path) -> Vec<String> {
 
 #[test]
 fn installer_replaces_the_binary_atomically_and_only_after_verification() {
-    let tools = ["sha256sum", "install", "mktemp", "mv", "cut", "cp", "timeout"];
+    let tools = [
+        "sha256sum",
+        "install",
+        "mktemp",
+        "mv",
+        "cut",
+        "cp",
+        "timeout",
+    ];
     if tools.iter().any(|t| tool(t).is_none()) {
         assert!(std::env::var_os("CI").is_none(), "CI must have coreutils");
         eprintln!("skipping: coreutils missing");
