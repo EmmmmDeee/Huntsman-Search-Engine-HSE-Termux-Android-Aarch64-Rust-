@@ -69,7 +69,7 @@ esac
     );
     write_executable(
         &fake_bin.join("cargo"),
-        "#!/bin/sh\nprintf 'hibp=%s cargo %s\\n' \"${HUNTSMAN_HIBP_NO_EMBED:-}\" \"$*\" >> \"$INSTALL_LOG\"\n",
+        "#!/bin/sh\nprintf 'hibp=%s target=%s cargo %s\\n' \"${HUNTSMAN_HIBP_NO_EMBED:-}\" \"${CARGO_TARGET_DIR:-}\" \"$*\" >> \"$INSTALL_LOG\"\n",
     );
 }
 
@@ -98,6 +98,8 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         .env("INSTALL_LOG", &log)
         .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
         .env("HUNTSMAN_REV", rev)
+        .env("HOME", &temp)
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("root installer must execute under bash");
 
@@ -122,14 +124,36 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         calls.contains("dpkg-query -W -f=${Version} rust-std-x86_64-unknown-linux-gnu"),
         "{calls}"
     );
-    assert!(calls.contains("hibp=1 cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git"), "{calls}");
+    assert!(calls.contains("cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git"), "{calls}");
     assert!(calls.contains(&format!("--rev {rev}")), "{calls}");
     assert!(calls.contains("--locked"), "{calls}");
     assert!(
         calls.contains(&format!("--root {}", prefix.display())),
         "{calls}"
     );
-    assert!(calls.contains("--force huntsman-recon"), "{calls}");
+    assert!(!calls.contains("--force"), "repeat installs must not force a rebuild: {calls}");
+    assert!(calls.contains("hibp=1"), "{calls}");
+    assert!(
+        calls.contains(&format!("target={}/.cache/huntsman-recon-target", temp.display())),
+        "default build cache must persist across installer invocations: {calls}"
+    );
+
+    let custom_cache = temp.join("custom-cache");
+    let second = Command::new("bash")
+        .arg(&installer)
+        .env("PATH", format!("{}:{existing_path}", fake_bin.display()))
+        .env("PREFIX", &prefix)
+        .env("INSTALL_LOG", &log)
+        .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
+        .env("CARGO_TARGET_DIR", &custom_cache)
+        .output()
+        .expect("repeat installer must execute");
+    assert!(second.status.success(), "repeat installer failed");
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(
+        calls.contains(&format!("target={}", custom_cache.display())),
+        "caller-selected cache must be preserved: {calls}"
+    );
 
     let _ = fs::remove_dir_all(&temp);
 }
