@@ -65,8 +65,8 @@ fn stix_and_navigator_do_not_invent_admitted_claims() {
         source: "fixture".to_string(),
         component: "tests/artifacts.rs".to_string(),
         technique_id: Some("T1591".to_string()),
-        status: Status::Candidate,
-        evidence_level: EvidenceLevel::Inference,
+        status: Status::Unverified,
+        evidence_level: EvidenceLevel::Assertion,
         does_not_show: "not verified".to_string(),
     });
     let artifacts = render_artifacts(&snapshot, &report, &[entry], &PipelineLimits::default())

@@ -4,7 +4,7 @@
 //! Pure logic stays separate from I/O so every decision can be tested without a network.
 
 #![deny(unsafe_code)]
-#![cfg_attr(test, allow(clippy::assert_is_empty))]
+#![cfg_attr(test, allow(unknown_lints, clippy::assert_is_empty))]
 #![allow(
     clippy::items_after_statements,
     clippy::missing_errors_doc,

@@ -83,9 +83,11 @@ fn cross_scan_analysis_uses_pipeline_limits() {
         .expect("cross-scan report");
     assert!(matches!(
         report.cross_scan,
-        Some(CrossScanCategory::Historical { .. })
-            | Some(CrossScanCategory::Relation { .. })
-            | Some(CrossScanCategory::Transitive { .. })
+        Some(
+            CrossScanCategory::Historical { .. }
+                | CrossScanCategory::Relation { .. }
+                | CrossScanCategory::Transitive { .. },
+        )
     ));
 }
 

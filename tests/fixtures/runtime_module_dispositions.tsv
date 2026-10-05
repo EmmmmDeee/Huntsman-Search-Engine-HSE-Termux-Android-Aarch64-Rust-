@@ -3,12 +3,15 @@ analysis	runtime	shared analysis fan-out
 archive	leaf	pure historical archive model
 archive_bridge	adapter	archive records into collection observations
 artifacts	exporter	bounded shared-state artifact renderer
+asic_director	adapter	ASIC director source client
 asic_persons	adapter	ASIC people source client
 assurance	leaf	assurance analysis utility
 atproto	adapter	ATProto source adapter
 attack	leaf	ATT&CK model utility
 attack_catalog	leaf	ATT&CK catalogue
+au_electoral	adapter	Australian state electoral-roll source client
 au_id	leaf	Australian identifier normalization
+au_people	adapter	Australian people-finder source client
 benchmark	diagnostic	benchmarking support
 breach	leaf	breach record parsing utilities
 canonical	runtime	canonicalization for entities and provenance
@@ -26,6 +29,8 @@ correlator	runtime	correlation rules invoked through correlation_bridge
 coverage	runtime	provider coverage and incompleteness semantics
 credential_origin	leaf	authentication authority boundary
 cross_scan	runtime	bounded historical scan bridge analysis
+crtsh	adapter	Certificate Transparency source client
+deadline	leaf	shared per-lookup request budget
 dependency	runtime	module dependency and dispatch graph
 diamond	leaf	analysis utility
 diff	leaf	diff analysis utility
@@ -68,6 +73,7 @@ oui	leaf	OUI lookup
 oui_ieee	leaf	IEEE OUI data
 path	leaf	path analysis utility
 people_cli	diagnostic	ASIC people command front-end
+people_save	exporter	persists people results as unverified ledger claims
 pipeline	runtime	bounded normalization and evidence composition
 pivot	runtime	graph pivot ranking
 place	leaf	place primitive
@@ -94,6 +100,7 @@ source_registry	runtime	lead-only discovery route registry
 spf	leaf	SPF parser
 stage	leaf	status/evidence-level primitives
 stix	exporter	STIX output from admitted claims
+stolen_tax	adapter	key-gated credential exposure source client
 store	exporter	bounded atomic session persistence
 tags	leaf	entity tag constants
 termination	runtime	explicit bounded termination semantics
