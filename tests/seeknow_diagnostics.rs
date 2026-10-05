@@ -6,7 +6,7 @@ use huntsman_recon::fetch::{AuthStyle, Credential};
 use huntsman_recon::http::{Method, Request, Response, Transport, TransportFailure};
 use huntsman_recon::keys::Secret;
 use huntsman_recon::seeknow::{
-    KEY_SLOT, MAX_FIELDS_PER_ROW, MAX_FIELD_CHARS, SEARCH_LIMIT_MAX, SeekNowQueryType,
+    KEY_SLOT, MAX_FIELD_CHARS, MAX_FIELDS_PER_ROW, SEARCH_LIMIT_MAX, SeekNowQueryType,
     SeekNowSearch, credits, search_fast, status,
 };
 use huntsman_recon::source_outcome::SourceOutcomeKind;
@@ -28,7 +28,11 @@ impl ScriptedTransport {
 impl Transport for ScriptedTransport {
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
         self.seen.borrow_mut().push(request.clone());
-        Ok(self.responses.borrow_mut().pop_front().expect("scripted response"))
+        Ok(self
+            .responses
+            .borrow_mut()
+            .pop_front()
+            .expect("scripted response"))
     }
 }
 
@@ -72,7 +76,10 @@ fn credits_and_status_are_authenticated_zero_redirect_gets() {
 
     let status_result = status(&transport, &credential, 11).unwrap();
     assert_eq!(status_result.outcome.kind, SourceOutcomeKind::Success);
-    assert_eq!(status_result.fields.get("status").map(String::as_str), Some("ok"));
+    assert_eq!(
+        status_result.fields.get("status").map(String::as_str),
+        Some("ok")
+    );
 
     let seen = transport.seen.borrow();
     assert_eq!(seen.len(), 2);
@@ -116,10 +123,16 @@ fn upstream_arrays_survive_as_multiple_values_for_lineage() {
 fn rows_fields_and_strings_are_bounded_with_visible_truncation() {
     let huge = "x".repeat(MAX_FIELD_CHARS + 100);
     let mut row = serde_json::Map::new();
-    row.insert("email".into(), serde_json::Value::String("a@example.com".into()));
+    row.insert(
+        "email".into(),
+        serde_json::Value::String("a@example.com".into()),
+    );
     row.insert("bio".into(), serde_json::Value::String(huge));
     for i in 0..(MAX_FIELDS_PER_ROW + 20) {
-        row.insert(format!("field_{i}"), serde_json::Value::String(format!("v{i}")));
+        row.insert(
+            format!("field_{i}"),
+            serde_json::Value::String(format!("v{i}")),
+        );
     }
     let rows = (0..(SEARCH_LIMIT_MAX as usize + 5))
         .map(|_| serde_json::Value::Object(row.clone()))
