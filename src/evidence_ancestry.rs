@@ -59,6 +59,12 @@ pub struct IndependenceEvidence {
     pub observed_at_unix: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndependenceRouteCount {
+    pub proven: usize,
+    pub incomplete: bool,
+}
+
 /// Deserialisation re-runs validating insertion for every node and every
 /// independence record, so persisted state cannot bypass runtime invariants.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,13 +302,17 @@ impl EvidenceAncestryGraph {
     /// # Errors
     /// A missing node or a cycle anywhere in the ancestry of `id`. Fails closed.
     pub fn root_families(&self, id: &EvidenceNodeId) -> Result<BTreeSet<String>, AncestryError> {
-        self.root_ids(id)?.into_iter().map(|root| {
-            self.nodes
-                .get(&root)
-                .expect("root id came from graph traversal")
-                .source_family
-                .clone()
-        }).collect::<BTreeSet<_>>().pipe(Ok)
+        let mut families = BTreeSet::new();
+        for root in self.root_ids(id)? {
+            families.insert(
+                self.nodes
+                    .get(&root)
+                    .expect("root id came from graph traversal")
+                    .source_family
+                    .clone(),
+            );
+        }
+        Ok(families)
     }
 
     /// Relationship between two proof routes under explicit independence evidence.
@@ -322,12 +332,11 @@ impl EvidenceAncestryGraph {
         if !left_roots.is_disjoint(&right_roots) {
             return Ok(IndependenceState::KnownDependent);
         }
-        let (Some(left), Some(right)) = (
-            (left_roots.len() == 1).then(|| left_roots.iter().next().unwrap()),
-            (right_roots.len() == 1).then(|| right_roots.iter().next().unwrap()),
-        ) else {
+        if left_roots.len() != 1 || right_roots.len() != 1 {
             return Ok(IndependenceState::Unknown);
-        };
+        }
+        let left = left_roots.iter().next().expect("length checked");
+        let right = right_roots.iter().next().expect("length checked");
         let (left, right) = canonical_pair(left, right)?;
         Ok(if self
             .independence_evidence
@@ -340,7 +349,143 @@ impl EvidenceAncestryGraph {
         })
     }
 
-    /// Distinct independent root families across a support set.
+    /// Count a conservative lower bound of mutually proven-independent proof
+    /// routes. The deterministic search is bounded by `max_search_states`.
+    /// Exhaustion marks the result incomplete and never adds an unproven route.
+    ///
+    /// # Errors
+    /// Missing nodes/parents and cycles fail closed while resolving roots.
+    pub fn proven_independent_route_count<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a EvidenceNodeId>,
+        required: usize,
+        max_search_states: usize,
+    ) -> Result<IndependenceRouteCount, AncestryError> {
+        if required == 0 {
+            return Ok(IndependenceRouteCount {
+                proven: 0,
+                incomplete: false,
+            });
+        }
+
+        let mut root_set = BTreeSet::new();
+        for id in ids {
+            root_set.extend(self.root_ids(id)?);
+        }
+        if root_set.is_empty() {
+            return Ok(IndependenceRouteCount {
+                proven: 0,
+                incomplete: false,
+            });
+        }
+        if required == 1 || root_set.len() == 1 {
+            return Ok(IndependenceRouteCount {
+                proven: 1,
+                incomplete: false,
+            });
+        }
+
+        let roots: Vec<EvidenceNodeId> = root_set.into_iter().collect();
+        let mut states = 0usize;
+        let mut best = 1usize;
+        let mut exhausted = false;
+
+        fn search_exact(
+            graph: &EvidenceAncestryGraph,
+            roots: &[EvidenceNodeId],
+            target: usize,
+            start: usize,
+            chosen: &mut Vec<usize>,
+            states: &mut usize,
+            max_search_states: usize,
+            exhausted: &mut bool,
+        ) -> Result<bool, AncestryError> {
+            if chosen.len() == target {
+                return Ok(true);
+            }
+            let need = target - chosen.len();
+            if roots.len().saturating_sub(start) < need {
+                return Ok(false);
+            }
+
+            for index in start..roots.len() {
+                if *states >= max_search_states {
+                    *exhausted = true;
+                    return Ok(false);
+                }
+                *states += 1;
+
+                let mut compatible = true;
+                for &selected in chosen.iter() {
+                    if graph.independence_state(&roots[selected], &roots[index])?
+                        != IndependenceState::ProvenIndependent
+                    {
+                        compatible = false;
+                        break;
+                    }
+                }
+                if !compatible {
+                    continue;
+                }
+
+                chosen.push(index);
+                if search_exact(
+                    graph,
+                    roots,
+                    target,
+                    index + 1,
+                    chosen,
+                    states,
+                    max_search_states,
+                    exhausted,
+                )? {
+                    return Ok(true);
+                }
+                chosen.pop();
+                if *exhausted {
+                    return Ok(false);
+                }
+            }
+            Ok(false)
+        }
+
+        let target_limit = required.min(roots.len());
+        for target in 2..=target_limit {
+            let mut chosen = Vec::with_capacity(target);
+            if search_exact(
+                self,
+                &roots,
+                target,
+                0,
+                &mut chosen,
+                &mut states,
+                max_search_states,
+                &mut exhausted,
+            )? {
+                best = target;
+                if best >= required {
+                    return Ok(IndependenceRouteCount {
+                        proven: best,
+                        incomplete: false,
+                    });
+                }
+            } else if exhausted {
+                return Ok(IndependenceRouteCount {
+                    proven: best,
+                    incomplete: true,
+                });
+            } else {
+                break;
+            }
+        }
+
+        Ok(IndependenceRouteCount {
+            proven: best,
+            incomplete: false,
+        })
+    }
+
+    /// Distinct root-family count across a support set.
     ///
     /// Compatibility/diagnostic API only. Verification-capable paths must use
     /// explicit tri-state independence semantics instead of this cardinality.
@@ -371,13 +516,6 @@ impl EvidenceAncestryGraph {
         Ok(self.root_families(a)?.is_disjoint(&self.root_families(b)?))
     }
 }
-
-trait Pipe: Sized {
-    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
-        f(self)
-    }
-}
-impl<T> Pipe for T {}
 
 #[cfg(test)]
 mod tests {
