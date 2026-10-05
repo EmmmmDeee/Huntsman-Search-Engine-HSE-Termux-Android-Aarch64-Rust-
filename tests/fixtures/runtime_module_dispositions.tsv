@@ -98,7 +98,7 @@ store	exporter	bounded atomic session persistence
 tags	leaf	entity tag constants
 termination	runtime	explicit bounded termination semantics
 textnorm	leaf	text normalization
- timefmt	leaf	timestamp parsing
+timefmt	leaf	timestamp parsing
 timeline	runtime	timeline reconstruction through intelligence report
 tlsrpt	leaf	TLS-RPT parser
 trust	leaf	trust analysis utility
