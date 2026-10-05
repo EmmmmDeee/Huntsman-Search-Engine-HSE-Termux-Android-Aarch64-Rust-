@@ -300,6 +300,11 @@ fn normalized_ascii_alnum_eq(input: &str, expected: &str) -> bool {
         .eq(expected.chars())
 }
 
+#[inline]
+fn is_private_person_placeholder(value: &str) -> bool {
+    normalized_ascii_alnum_eq(value, "privateperson")
+}
+
 #[must_use]
 pub fn is_placeholder_domain(host: &str) -> bool {
     let lowered = host.trim().trim_end_matches('.').to_ascii_lowercase();
@@ -324,6 +329,9 @@ pub fn is_placeholder_domain(host: &str) -> bool {
 
 #[must_use]
 pub fn is_whois_privacy_placeholder(s: &str) -> bool {
+    if is_private_person_placeholder(s) {
+        return true;
+    }
     const MARKERS: &[&str] = &[
         "privacy",
         "redacted",
@@ -362,20 +370,21 @@ pub fn is_username_derived_name(name: &str) -> bool {
 }
 
 fn is_placeholder_person(name: &str) -> bool {
-    matches!(
-        name.trim().to_ascii_lowercase().as_str(),
-        "john doe"
-            | "jane doe"
-            | "john q. public"
-            | "john q public"
-            | "test user"
-            | "first last"
-            | "firstname lastname"
-            | "first name last name"
-            | "full name"
-            | "your name"
-            | "name surname"
-    )
+    is_private_person_placeholder(name)
+        || matches!(
+            name.trim().to_ascii_lowercase().as_str(),
+            "john doe"
+                | "jane doe"
+                | "john q. public"
+                | "john q public"
+                | "test user"
+                | "first last"
+                | "firstname lastname"
+                | "first name last name"
+                | "full name"
+                | "your name"
+                | "name surname"
+        )
 }
 
 fn is_placeholder_email_local(local: &str) -> bool {
