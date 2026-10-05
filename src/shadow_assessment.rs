@@ -17,6 +17,17 @@ use crate::proof::ProofEnvironmentSet;
 pub struct ShadowAssessment {
     pub legacy_state: ClaimState,
     pub policy_state: ClaimState,
+    /// Distinct canonical ancestry roots resolved from supporting evidence.
+    /// Diagnostic only: raw cardinality is not source-independence proof.
+    #[serde(default)]
+    pub distinct_resolved_roots: usize,
+    /// Conservative lower bound of mutually proven-independent support routes.
+    #[serde(default)]
+    pub proven_independent_routes: usize,
+    /// True when bounded independence search ended before the requested cardinality
+    /// was fully decided. Such a result can only weaken verification.
+    #[serde(default)]
+    pub independence_incomplete: bool,
     pub blockers: BTreeSet<VerificationBlocker>,
     pub reason_codes: BTreeSet<String>,
 }
@@ -25,7 +36,8 @@ pub struct ShadowAssessment {
 /// assessment, then applies proof-environment completeness conservatively.
 ///
 /// This function is observational only. It does not alter claim state, evidence,
-/// provenance, coverage, or dispatch decisions.
+/// provenance, coverage, or dispatch decisions. Independence diagnostics are copied
+/// from canonical assessment rather than recomputed here, preserving one authority.
 ///
 /// # Errors
 /// Returns the same missing claim/evidence errors as policy assessment.
@@ -64,6 +76,9 @@ pub fn compare_legacy_and_policy(
     Ok(ShadowAssessment {
         legacy_state,
         policy_state: assessment.epistemic,
+        distinct_resolved_roots: assessment.distinct_resolved_roots,
+        proven_independent_routes: assessment.proven_roots,
+        independence_incomplete: assessment.independence_incomplete,
         blockers: assessment.blockers,
         reason_codes,
     })
