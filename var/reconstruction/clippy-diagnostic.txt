@@ -1,0 +1,123 @@
+[1m[92m    Updating[0m crates.io index
+[1m[92m Downloading[0m crates ...
+[1m[92m  Downloaded[0m adler2 v2.0.1
+[1m[92m  Downloaded[0m cfg-if v1.0.5
+[1m[92m  Downloaded[0m base64 v0.23.1
+[1m[92m  Downloaded[0m bytes v1.12.1
+[1m[92m  Downloaded[0m itoa v1.0.18
+[1m[92m  Downloaded[0m subtle v2.6.1
+[1m[92m  Downloaded[0m shlex v2.0.1
+[1m[92m  Downloaded[0m utf8-zero v0.8.1
+[1m[92m  Downloaded[0m percent-encoding v2.3.2
+[1m[92m  Downloaded[0m quote v1.0.47
+[1m[92m  Downloaded[0m thiserror-impl v2.0.21
+[1m[92m  Downloaded[0m zmij v1.0.23
+[1m[92m  Downloaded[0m find-msvc-tools v0.1.14
+[1m[92m  Downloaded[0m simd-adler32 v0.3.10
+[1m[92m  Downloaded[0m untrusted v0.9.0
+[1m[92m  Downloaded[0m once_cell v1.21.4
+[1m[92m  Downloaded[0m zeroize v1.9.0
+[1m[92m  Downloaded[0m cc v1.5.1
+[1m[92m  Downloaded[0m unicode-ident v1.0.26
+[1m[92m  Downloaded[0m httparse v1.10.1
+[1m[92m  Downloaded[0m rustls-pki-types v1.15.1
+[1m[92m  Downloaded[0m crc32fast v1.5.2
+[1m[92m  Downloaded[0m thiserror v2.0.21
+[1m[92m  Downloaded[0m serde_core v1.0.229
+[1m[92m  Downloaded[0m log v0.4.34
+[1m[92m  Downloaded[0m serde_derive v1.0.229
+[1m[92m  Downloaded[0m getrandom v0.2.17
+[1m[92m  Downloaded[0m miniz_oxide v0.9.1
+[1m[92m  Downloaded[0m proc-macro2 v1.0.107
+[1m[92m  Downloaded[0m rustls-webpki v0.103.15
+[1m[92m  Downloaded[0m ureq-proto v0.6.4
+[1m[92m  Downloaded[0m flate2 v1.1.10
+[1m[92m  Downloaded[0m serde v1.0.229
+[1m[92m  Downloaded[0m memchr v2.8.3
+[1m[92m  Downloaded[0m http v1.5.0
+[1m[92m  Downloaded[0m serde_json v1.0.151
+[1m[92m  Downloaded[0m ureq v3.4.2
+[1m[92m  Downloaded[0m zlib-rs v0.6.8
+[1m[92m  Downloaded[0m webpki-roots v1.0.9
+[1m[92m  Downloaded[0m syn v3.0.6
+[1m[92m  Downloaded[0m rustls v0.23.45
+[1m[92m  Downloaded[0m libc v0.2.189
+[1m[92m  Downloaded[0m ring v0.17.14
+[1m[92m   Compiling[0m proc-macro2 v1.0.107
+[1m[92m   Compiling[0m find-msvc-tools v0.1.14
+[1m[92m   Compiling[0m shlex v2.0.1
+[1m[92m   Compiling[0m libc v0.2.189
+[1m[92m   Compiling[0m cc v1.5.1
+[1m[92m   Compiling[0m quote v1.0.47
+[1m[92m    Checking[0m cfg-if v1.0.5
+[1m[92m   Compiling[0m unicode-ident v1.0.26
+[1m[92m    Checking[0m zeroize v1.9.0
+[1m[92m    Checking[0m rustls-pki-types v1.15.1
+[1m[92m   Compiling[0m crc32fast v1.5.2
+[1m[92m    Checking[0m itoa v1.0.18
+[1m[92m   Compiling[0m syn v3.0.6
+[1m[92m   Compiling[0m serde_core v1.0.229
+[1m[92m    Checking[0m untrusted v0.9.0
+[1m[92m    Checking[0m getrandom v0.2.17
+[1m[92m   Compiling[0m httparse v1.10.1
+[1m[92m    Checking[0m log v0.4.34
+[1m[92m    Checking[0m bytes v1.12.1
+[1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m    Checking[0m simd-adler32 v0.3.10
+[1m[92m   Compiling[0m ring v0.17.14
+[1m[92m    Checking[0m adler2 v2.0.1
+[1m[92m   Compiling[0m rustls v0.23.45
+[1m[92m    Checking[0m http v1.5.0
+[1m[92m    Checking[0m miniz_oxide v0.9.1
+[1m[92m   Compiling[0m serde v1.0.229
+[1m[92m   Compiling[0m serde_json v1.0.151
+[1m[92m    Checking[0m base64 v0.23.1
+[1m[92m   Compiling[0m thiserror v2.0.21
+[1m[92m    Checking[0m once_cell v1.21.4
+[1m[92m    Checking[0m subtle v2.6.1
+[1m[92m    Checking[0m ureq-proto v0.6.4
+[1m[92m   Compiling[0m serde_derive v1.0.229
+[1m[92m   Compiling[0m thiserror-impl v2.0.21
+[1m[92m    Checking[0m flate2 v1.1.10
+[1m[92m    Checking[0m webpki-roots v1.0.9
+[1m[92m   Compiling[0m huntsman-recon v0.2.0 (/home/runner/work/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)
+[1m[92m    Checking[0m percent-encoding v2.3.2
+[1m[92m    Checking[0m memchr v2.8.3
+[1m[92m    Checking[0m utf8-zero v0.8.1
+[1m[92m    Checking[0m rustls-webpki v0.103.15
+[1m[92m    Checking[0m ureq v3.4.2
+[1m[91merror[0m[1m: this function has too many arguments (8/7)[0m
+  [1m[94m--> [0mtests/archive_model.rs:6:1
+   [1m[94m|[0m
+[1m[94m 6[0m [1m[94m|[0m [1m[91m/[0m fn capture(
+[1m[94m 7[0m [1m[94m|[0m [1m[91m|[0m     source: ArchiveSource,
+[1m[94m 8[0m [1m[94m|[0m [1m[91m|[0m     dataset: &str,
+[1m[94m 9[0m [1m[94m|[0m [1m[91m|[0m     collection: Option<&str>,
+[1m[94m...[0m  [1m[91m|[0m
+[1m[94m14[0m [1m[94m|[0m [1m[91m|[0m     source_url: Option<&str>,
+[1m[94m15[0m [1m[94m|[0m [1m[91m|[0m ) -> ArchiveCapture {
+   [1m[94m|[0m [1m[91m|___________________^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#too_many_arguments
+   [1m[94m= [0m[1mnote[0m: `-D clippy::too-many-arguments` implied by `-D warnings`
+   [1m[94m= [0m[1mhelp[0m: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+[1m[91merror[0m[1m: used `assert!` to check that a value is empty[0m
+   [1m[94m--> [0mtests/archive_model.rs:131:5
+    [1m[94m|[0m
+[1m[94m131[0m [1m[94m|[0m     assert!(wayback.collections.is_empty());
+    [1m[94m|[0m     [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#assert_is_empty
+    [1m[94m= [0m[1mnote[0m: `-D clippy::assert-is-empty` implied by `-D warnings`
+    [1m[94m= [0m[1mhelp[0m: to override `-D warnings` add `#[allow(clippy::assert_is_empty)]`
+[1m[96mhelp[0m: use `assert_eq!` to show the value on failure
+    [1m[94m|[0m
+[1m[94m131[0m [91m- [0m    assert!([91mwayback.collections.is_empty()[0m);
+[1m[94m131[0m [92m+ [0m    assert[92m_eq[0m!([92mwayback.collections, [] as [std::string::String; 0][0m);
+    [1m[94m|[0m
+
+[1m[91merror[0m: could not compile `huntsman-recon` (test "archive_model") due to 2 previous errors
+[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
+
+CLIPPY_EXIT_STATUS=101
