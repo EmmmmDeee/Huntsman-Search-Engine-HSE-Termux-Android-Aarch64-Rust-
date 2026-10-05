@@ -358,13 +358,11 @@ fn the_retry_budget_is_bounded() {
 }
 
 #[test]
-fn transient_retry_ignores_non_status_failures() {
-    let script = Script::new(vec![timeout()]);
-    assert_eq!(
-        run(&script, ReconTargetKind::Domain, "example.com").unwrap_err(),
-        CrtShError::NoResponse(SourceOutcomeKind::TtfbTimeout)
-    );
-    assert_eq!(script.sent(), 1);
+fn transient_transport_retries_once_but_other_failures_do_not() {
+    let script = Script::new(vec![timeout(), status(200, "[]")]);
+    let report = run(&script, ReconTargetKind::Domain, "example.com").unwrap();
+    assert_eq!(report.attempts, 2);
+    assert_eq!(script.sent(), 2);
 
     let script = Script::new(vec![status(500, "oops")]);
     assert_eq!(
@@ -374,6 +372,7 @@ fn transient_retry_ignores_non_status_failures() {
             attempts: 1
         }
     );
+    assert_eq!(script.sent(), 1);
 
     let script = Script::new(vec![status(200, "not json")]);
     assert!(matches!(
