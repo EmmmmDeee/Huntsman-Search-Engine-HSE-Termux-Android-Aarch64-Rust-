@@ -11,6 +11,10 @@ release yet; pushes to `main` publish `main-<sha7>` pre-releases (#672). Release
 
 ### Added
 
+- `recon dns TARGET`: DNS-over-HTTPS lookup of A/AAAA/MX/NS/TXT plus `_dmarc`
+  and `_smtp._tls`, through `fetch` (no redirects), parsing SPF/DMARC/TLSRPT
+  from TXT. A challenge page is `BotWaf`, not invalid JSON (offline
+  fake-transport tests; no live receipt).
 - `sources` command: classifies an input and prints curated public search
   routes from `source_registry`, offline and `LeadOnly`; the classifier also
   recognises decimal-degree coordinates (#671).

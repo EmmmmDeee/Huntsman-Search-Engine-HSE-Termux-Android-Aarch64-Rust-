@@ -369,7 +369,7 @@ Credentials are allowed, but artifacts/logs still keep fingerprint-only hygiene.
 | util/uid/tests.rs | 24 | MERGED | src/uid.rs tests | Ported the legacy shape/uniqueness assertions. |
 | util/domain_vn/mod.rs | 101 | MERGED | src/domains.rs | Rebuilt the VN registrant classifier with the shared AU category vocabulary. |
 | util/domain_vn/tests.rs | 100 | MERGED | src/domains.rs tests | Ported representative VN suffix cases. |
-| util/dns.rs | 224 | REBUILT | src/dns.rs | Kept the pure label/RNAME helpers and moved the runtime resolver path onto the shared `crate::http::Transport` boundary with ordered DoH failover across Cloudflare/Quad9/Google so the newly in-scope path stays separately unit-testable. |
+| util/dns.rs | 224 | REBUILT | src/dns.rs | Kept the pure label/RNAME helpers and moved the runtime resolver path onto guarded `fetch` over an injected `crate::http::Transport`, with ordered DoH failover across Cloudflare/Quad9/Google. A challenge page is `BotWaf`, not JSON. `recon dns TARGET` is the CLI. Tests use fakes and do not perform live network calls. |
 | core/xml.rs | 53 | REBUILT | src/xml.rs | Rebuilt the one-pass XML escaper that drops XML-illegal controls instead of double-escaping or preserving them. |
 
 ### Notes
@@ -377,7 +377,7 @@ Credentials are allowed, but artifacts/logs still keep fingerprint-only hygiene.
 Policy change (network and credentials now allowed):
 - Newly in scope and rebuilt behind injectable boundaries:
   - `util/postcode_au` online postcode lookup path via `src/postcode_au.rs::localities_with` on `crate::http::Transport`
-  - `util/dns` resolver-pool/failover path via `src/dns.rs::{resolver_config, resolve_with_pool}` on `crate::http::Transport`
+  - `util/dns` resolver-pool/failover path via `src/dns.rs::{resolver_config, resolve_with_pool}` through `fetch` on `crate::http::Transport`
 - Pure parsing, scoring, and policy remain separately unit-testable; tests use fakes and do not perform live network calls.
 - No credential values are logged or embedded in tests/artifacts; these boundaries carry plain request/response data only.
 - Redundancies removed during the shared-HTTP refactor: identity/email/phone canonicalisation now delegates to the shared canonical/validation owners; postcode shape/range checks now live in `src/postcode_au.rs`; DNS label/RNAME helpers now live only in `src/dns.rs`.

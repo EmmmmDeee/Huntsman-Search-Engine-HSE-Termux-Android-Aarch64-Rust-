@@ -168,7 +168,7 @@ Not exposed by this command: domain search, subscribed domains, domain verificat
 
 This command is **provider-specific reachability, not the unified people-lookup pipeline**. It does not yet convert HIBP responses into the common `entity::Evidence`/lineage/identity-resolution/saved-result path.
 
-## Recon sources: crt.sh and stolen.tax
+## Recon sources: crt.sh, DNS/mail, and stolen.tax
 
 `recon crtsh TARGET` accepts a domain, URL or email and queries crt.sh with a
 30-second timeout. HTTP 502, 503 and 429 responses are retried at most twice,
@@ -177,6 +177,18 @@ SAN names and non-public issuing CAs. Wildcard names, role or infrastructure
 mailboxes, and public-CA issuers are filtered; subdomains of the target apex
 carry the `subdomain` tag. Output is
 `kind<TAB>value<TAB>confidence<TAB>tags`, with control characters escaped.
+
+`recon dns TARGET` accepts a domain, URL or email and queries Cloudflare, Quad9
+and Google DNS-over-HTTPS (JSON) for apex A, AAAA, MX, NS and TXT, plus
+`_dmarc` and `_smtp._tls` TXT, through `fetch` with redirects off. One
+record-type failure does not abort the others. A challenge page is `bot_waf`,
+a truncated body is `truncated`, and HTTP 429 is `rate_limited`; none of those
+is parsed as DNS JSON. Quoted TXT presentation is decoded before SPF (RFC 7208),
+DMARC (RFC 7489) and TLSRPT (RFC 8460) parsing. Output is
+`type<TAB>name<TAB>rdata<TAB>resolver` lines, then `spf_all=`, `dmarc_policy=`
+and `tlsrpt_emails=` when those records parse, plus `failed` rows. An invalid
+selector exits 65 before any request; no usable answer exits 69. DoH is
+keyless. There is no live receipt in CI.
 
 `recon stolen-tax QUERY [--keys FILE]` is an explicit paid lookup requiring
 `HUNTSMAN_STOLEN_TAX_KEY`; a missing key exits 66 before any request. The v2
