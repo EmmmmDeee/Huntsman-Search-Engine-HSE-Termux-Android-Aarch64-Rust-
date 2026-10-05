@@ -11,6 +11,7 @@ use huntsman_recon::classifier::classify as classify_indicator;
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use huntsman_recon::crtsh::{self, CrtShError};
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::entity::{Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
@@ -22,6 +23,7 @@ use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
 use huntsman_recon::fsio::write_atomic;
 use huntsman_recon::geohash;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
+use huntsman_recon::hibp::cli::{HIBP_USAGE, HibpCommand};
 use huntsman_recon::http::{
     Request, TransportConfig, UreqTransport, origin_of, parse_http_uri, redact_url,
 };
@@ -33,7 +35,9 @@ use huntsman_recon::keys::{Keys, is_configured_value};
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage};
 use huntsman_recon::navigator::layer;
-use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleRun};
+use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, PeopleRun};
+use huntsman_recon::people_save;
+use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
@@ -43,9 +47,13 @@ use huntsman_recon::source_outcome::{
 use huntsman_recon::source_registry::routes_for;
 use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
+use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
+use huntsman_recon::textnorm::escape_controls;
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|stolen-tax QUERY [--keys FILE] | keys FILE | verify LEDGER]";
+const RECON_USAGE: &str =
+    "usage: huntsman-recon recon crtsh TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
 
@@ -65,12 +73,15 @@ Commands:
   people                Look up a name on keyless ASIC people registers
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
+  hibp                  Have I Been Pwned lookups (opt-in; keyed subcommands need a key)
+  recon                 One crt.sh or stolen.tax lookup (network access)
   keys                  Validate a private keys file; print slots and fingerprints
   verify                Verify a saved evidence ledger
 
 Run `huntsman-recon <COMMAND> --help` for command details.
-Search and sources do not collect remote results. `fetch` and `people` (two-token
-names) make HTTP requests; their default egress policy is public-only.";
+Search and sources do not collect remote results. `fetch`, `hibp`, `recon` and
+`people` (two-token names) make HTTP requests; their default egress policy is
+public-only.";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -107,6 +118,8 @@ fn main() -> ExitCode {
         Some("people") => people_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
+        Some("hibp") => hibp_cmd(&remaining.collect::<Vec<_>>()),
+        Some("recon") => recon_cmd(&remaining.collect::<Vec<_>>()),
         Some("keys") => keys_cmd(remaining.next()),
         Some("verify") => verify(remaining.next()),
         Some("check") | None => check(),
@@ -140,6 +153,8 @@ fn print_command_help(command: &str) {
             "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
         }
         "fetch" => huntsman_recon::fetch_cli::FETCH_USAGE,
+        "hibp" => HIBP_USAGE,
+        "recon" => RECON_USAGE,
         "keys" => {
             "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values."
         }
@@ -160,15 +175,34 @@ fn fail(code: u8, msg: &str) -> ExitCode {
 }
 
 fn people_cmd(args: &[String]) -> ExitCode {
+    let parsed = match PeopleArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return fail(EX_USAGE, &format!("{e}\n{PEOPLE_USAGE}")),
+    };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let transport = UreqTransport::new(&TransportConfig::default());
-    match people_cli::run(&transport, args, now) {
-        PeopleRun::Usage => fail(EX_USAGE, PEOPLE_USAGE),
-        PeopleRun::Printed(text) => {
+    match people_cli::run(&transport, &parsed.name, now) {
+        PeopleRun::Printed { text, report } => {
             print!("{text}");
-            ExitCode::SUCCESS
+            if let Some(path) = parsed.save {
+                if report.entities.is_empty() && report.outcomes.is_empty() {
+                    return ExitCode::SUCCESS;
+                }
+                match people_save::save(&path, &report.entities, &report.outcomes) {
+                    Ok(entries) => {
+                        println!("saved={}", path.display());
+                        println!("entries={}", entries.len());
+                        println!("tip={}", entries.last().map_or("none", |e| e.hash.as_str()));
+                        ExitCode::SUCCESS
+                    }
+                    Err(Error::Store(msg)) => fail(EX_IOERR, &msg),
+                    Err(e) => fail(EX_DATAERR, &e.to_string()),
+                }
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         PeopleRun::Network(msg) => fail(EX_NOPERM, &msg),
         PeopleRun::Failed(msg) => fail(EX_UNAVAILABLE, &msg),
@@ -245,6 +279,122 @@ fn id_cmd(token: Option<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn hibp_cmd(args: &[String]) -> ExitCode {
+    ExitCode::from(HibpCommand::production().run(
+        args,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    ))
+}
+
+fn recon_cmd(args: &[String]) -> ExitCode {
+    match args {
+        [source, target] if source == "crtsh" => crtsh_cmd(target),
+        [source, query] if source == "stolen-tax" => stolen_tax_cmd(query, None),
+        [source, query, flag, file] if source == "stolen-tax" && flag == "--keys" => {
+            stolen_tax_cmd(query, Some(file))
+        }
+        _ => fail(EX_USAGE, RECON_USAGE),
+    }
+}
+
+fn print_entities(entities: &[huntsman_recon::entity::Entity]) {
+    for e in entities {
+        println!(
+            "{}\t{}\t{:.2}\t{}",
+            serde_json::to_value(&e.kind)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+            escape_controls(&e.value),
+            e.confidence,
+            escape_controls(&e.tags.join(","))
+        );
+    }
+}
+
+fn crtsh_cmd(target: &str) -> ExitCode {
+    let target = target.trim();
+    if target.is_empty() {
+        return fail(EX_USAGE, RECON_USAGE);
+    }
+    let kind = if target.contains("://") {
+        ReconTargetKind::Url
+    } else if target.contains('@') {
+        ReconTargetKind::Email
+    } else {
+        ReconTargetKind::Domain
+    };
+    let transport = UreqTransport::new(&crtsh::transport_config());
+    match crtsh::lookup(&transport, kind, target, "cli") {
+        Ok(report) => {
+            print_entities(&report.entities);
+            println!(
+                "query={} attempts={} entities={}",
+                escape_controls(report.query.as_deref().unwrap_or("none")),
+                report.attempts,
+                report.entities.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e @ CrtShError::Refused(_)) => fail(EX_NOPERM, &e.to_string()),
+        Err(e) => fail(EX_UNAVAILABLE, &e.to_string()),
+    }
+}
+
+fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
+    if query.trim().is_empty() {
+        return fail(EX_USAGE, RECON_USAGE);
+    }
+    let keys = match keys_file {
+        Some(path) => match Keys::load(Path::new(path)) {
+            Ok(keys) => keys,
+            Err(e) => return fail(EX_NOINPUT, &e.to_string()),
+        },
+        None => Keys::from_env(),
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let transport = UreqTransport::new(&stolen_tax::transport_config());
+    match stolen_tax::lookup(&transport, &keys, query, "cli", now) {
+        Ok(report) => {
+            print_entities(&report.entities);
+            for failure in &report.failed_paths {
+                println!(
+                    "failed_path={} reason={}",
+                    failure.path,
+                    escape_controls(&failure.reason)
+                );
+            }
+            for path in &report.skipped_paths {
+                println!(
+                    "skipped_path={path} reason=not sent, {}s lookup budget exhausted",
+                    stolen_tax::LOOKUP_BUDGET.as_secs()
+                );
+            }
+            if let Some(secret) = keys.get(stolen_tax::KEY_SLOT) {
+                println!("credential={}", &secret.fingerprint().as_str()[..12]);
+            }
+            println!(
+                "entities={} partial={}",
+                report.entities.len(),
+                report.truncation.is_some()
+            );
+            if let Some(note) = &report.truncation {
+                println!("truncation={note}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e @ StolenTaxError::MissingKey) => fail(EX_NOINPUT, &e.to_string()),
+        Err(e @ StolenTaxError::Refused(_)) => fail(EX_NOPERM, &e.to_string()),
+        Err(e @ (StolenTaxError::Failed(_) | StolenTaxError::BudgetExhausted { .. })) => {
+            fail(EX_UNAVAILABLE, &e.to_string())
+        }
+    }
+}
+
 fn fetch_cmd(args: &[String]) -> ExitCode {
     let parsed = match FetchArgs::parse(args) {
         Ok(p) => p,
@@ -272,6 +422,7 @@ fn fetch_cmd(args: &[String]) -> ExitCode {
         credential.as_ref(),
         &FetchOptions {
             max_redirects: parsed.max_redirects,
+            ..FetchOptions::default()
         },
         "cli",
         now,

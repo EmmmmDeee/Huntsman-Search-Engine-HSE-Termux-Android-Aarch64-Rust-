@@ -4,8 +4,9 @@
 //! The three registers are queried sequentially through [`crate::fetch::fetch`]
 //! and an injected [`crate::http::Transport`]. Challenge pages, truncated bodies,
 //! and `success: false` CKAN envelopes are never turned into evidence. The binary
-//! exposes `people NAME` through [`crate::people_cli`]. Tests use a fake
-//! transport; the live CKAN path is not run in CI.
+//! exposes `people NAME` through [`crate::people_cli`], which also runs
+//! `asic_director`, `au_people` and `au_electoral`. Tests use a fake transport;
+//! the live CKAN path is not run in CI.
 
 use serde_json::{Map, Value};
 
@@ -65,6 +66,7 @@ pub fn lookup<T: Transport + ?Sized>(
 
     let options = FetchOptions {
         max_redirects: fetch::DEFAULT_MAX_REDIRECTS,
+        ..FetchOptions::default()
     };
     let mut entities = Vec::new();
     let mut outcomes = Vec::new();
@@ -875,7 +877,8 @@ mod tests {
 
         let one = parse_controllers("SOME PARENT PTY LTD");
         assert_eq!(one, vec![("SOME PARENT PTY LTD".to_string(), None)]);
-        assert!(parse_controllers("  ~  ~ AB").is_empty());
+        let none = parse_controllers("  ~  ~ AB");
+        assert!(none.is_empty(), "{none:?}");
     }
 
     #[test]
@@ -1026,8 +1029,10 @@ mod tests {
     fn single_token_name_makes_no_request() {
         let fake = Fake::new(empty_script());
         let report = lookup(&fake, "Madonna", "t", 1).expect("no-op");
-        assert!(report.entities.is_empty());
-        assert!(fake.seen.borrow().is_empty());
+        let entities = &report.entities;
+        assert!(entities.is_empty(), "{entities:?}");
+        let seen = fake.seen.borrow();
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]
