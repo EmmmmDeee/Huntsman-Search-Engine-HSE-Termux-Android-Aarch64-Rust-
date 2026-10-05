@@ -51,12 +51,7 @@ fn missing_or_unknown_arguments_are_usage_and_make_no_request() {
         SeekNowCliRun::Usage
     );
     assert_eq!(
-        run_with_keys(
-            &transport,
-            &["unknown".into()],
-            &configured_keys(),
-            1
-        ),
+        run_with_keys(&transport, &["unknown".into()], &configured_keys(), 1),
         SeekNowCliRun::Usage
     );
     assert_eq!(transport.seen.borrow().len(), 0);
@@ -104,7 +99,10 @@ fn credits_and_status_use_authenticated_diagnostic_endpoints_without_printing_se
     assert_eq!(seen[0].method, Method::Get);
     assert!(seen[0].url.ends_with("/credits"));
     assert!(seen[1].url.ends_with("/status"));
-    assert_eq!(seen[0].header_value("x-api-key"), Some("dummy-seeknow-key-for-tests"));
+    assert_eq!(
+        seen[0].header_value("x-api-key"),
+        Some("dummy-seeknow-key-for-tests")
+    );
 }
 
 #[test]
