@@ -1,6 +1,6 @@
 //! DNS helpers rebuilt from `util/dns`.
-//! DoH queries go through `fetch` over an injected transport so tests use fakes
-//! and a challenge page is a wall, not a JSON parse error.
+//! DNS-over-HTTPS queries go through `fetch` over an injected transport so tests
+//! use fakes and a challenge page is a wall, not a JSON parse error.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
@@ -12,7 +12,7 @@ use crate::{
     dmarc::{self, DmarcPolicy},
     domains,
     fetch::{FetchOptions, Fetched, fetch},
-    http::{Request, Response, Transport, TransportConfig, TransportFailure, append_query_param},
+    http::{Request, Response, Transport, TransportConfig, append_query_param},
     source_outcome::SourceOutcomeKind,
     spf::{self, AllPolicy},
     textnorm::escape_controls,
@@ -184,7 +184,7 @@ pub fn resolve_with_config<T: Transport + ?Sized>(
 ) -> Result<ResolveAnswer, ResolveError> {
     let mut last_error = None;
     for server in &config.name_servers {
-        let request = build_request(server, query);
+        let request = build_request(server, query, Duration::from_secs(config.timeout_secs));
         match fetch(
             transport,
             request,
@@ -222,13 +222,15 @@ pub fn resolve_with_config<T: Transport + ?Sized>(
     }))
 }
 
-fn build_request(server: &ResolverServer, query: &ResolveQuery) -> Request {
+fn build_request(server: &ResolverServer, query: &ResolveQuery, timeout: Duration) -> Request {
     let url = append_query_param(
         &append_query_param(server.doh_url, "name", &query.name),
         "type",
         query.record_type.as_str(),
     );
-    Request::get(url).header("accept", "application/dns-json")
+    Request::get(url)
+        .header("accept", "application/dns-json")
+        .with_timeout(timeout)
 }
 
 fn interpret_fetched(fetched: &Fetched) -> Result<Vec<String>, ResolveError> {
@@ -331,7 +333,6 @@ fn parse_response(response: &Response) -> Result<Vec<String>, ResolveError> {
         Ok(records)
     }
 }
-
 
 #[must_use]
 pub fn unescape_dns_label(s: &str) -> String {
@@ -634,6 +635,7 @@ mod tests {
     use std::{cell::RefCell, collections::VecDeque};
 
     use super::*;
+    use crate::http::TransportFailure;
 
     struct FakeTransport {
         outcomes: RefCell<VecDeque<Result<Response, TransportFailure>>>,
@@ -719,6 +721,9 @@ mod tests {
         assert!(seen[1].url.contains("dns.quad9.net"));
         assert!(seen[2].url.contains("dns.google"));
         assert_eq!(seen[0].header_value("accept"), Some("application/dns-json"));
+        let timeout = seen[0].timeout.expect("DoH request is capped");
+        assert!(timeout <= Duration::from_secs(2), "{timeout:?}");
+        assert!(timeout >= Duration::from_millis(1500), "{timeout:?}");
     }
 
     #[test]
