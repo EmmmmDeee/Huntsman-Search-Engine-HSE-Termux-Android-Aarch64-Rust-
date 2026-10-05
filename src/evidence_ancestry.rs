@@ -7,7 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
 use crate::retrieval_artifact::ArtifactId;
@@ -46,13 +47,17 @@ pub enum IndependenceState {
     Unknown,
 }
 
-/// Accepted classes of evidence that can establish distinct causal origins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Classes of evidence that may establish distinct causal origins.
+///
+/// `OtherVersionedRule` is retained for forward-compatible persisted evidence, but
+/// remains fail-closed until a governing policy explicitly knows that rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IndependenceBasis {
     DistinctAuthenticatedPrimaryOrigins,
     DistinctDirectSensorObservations,
     ExplicitUpstreamProvenance,
+    OtherVersionedRule(String),
 }
 
 /// Explicit, versioned evidence that two canonical provenance roots are distinct
@@ -69,22 +74,42 @@ pub struct IndependenceEvidence {
     pub observed_at_unix: u64,
 }
 
-/// Deserialisation re-runs `insert` and `insert_independence_evidence`, so stored
-/// state cannot carry an empty family, a parentless derivation, a mismatched node
-/// key, or an invalid/conflicting independence assertion.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Sole canonical provenance authority. Independence records are keyed by an ordered
+/// root-id pair so lookup is symmetric and conflicting duplicates cannot coexist.
+///
+/// Deserialisation re-runs `insert` and `insert_independence_evidence`; persisted state
+/// therefore cannot bypass node, pair-key, or independence-evidence validation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "RawGraph")]
 pub struct EvidenceAncestryGraph {
     nodes: BTreeMap<EvidenceNodeId, EvidenceAncestryNode>,
-    #[serde(default)]
-    independence_evidence: Vec<IndependenceEvidence>,
+    independence: BTreeMap<(EvidenceNodeId, EvidenceNodeId), IndependenceEvidence>,
 }
 
 #[derive(Deserialize)]
 struct RawGraph {
     nodes: BTreeMap<EvidenceNodeId, EvidenceAncestryNode>,
     #[serde(default)]
-    independence_evidence: Vec<IndependenceEvidence>,
+    independence: BTreeMap<String, IndependenceEvidence>,
+}
+
+impl Serialize for EvidenceAncestryGraph {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let independence: BTreeMap<String, &IndependenceEvidence> = self
+            .independence
+            .iter()
+            .map(|((left, right), evidence)| {
+                (canonical_pair_key(left, right), evidence)
+            })
+            .collect();
+        let mut state = serializer.serialize_struct("EvidenceAncestryGraph", 2)?;
+        state.serialize_field("nodes", &self.nodes)?;
+        state.serialize_field("independence", &independence)?;
+        state.end()
+    }
 }
 
 impl TryFrom<RawGraph> for EvidenceAncestryGraph {
@@ -98,7 +123,14 @@ impl TryFrom<RawGraph> for EvidenceAncestryGraph {
             }
             graph.insert(node).map_err(|e| e.to_string())?;
         }
-        for evidence in raw.independence_evidence {
+        for (encoded_pair, evidence) in raw.independence {
+            let decoded_pair = decode_pair_key(&encoded_pair)?;
+            let expected_pair = ordered_pair(&evidence.left_root, &evidence.right_root);
+            if decoded_pair != expected_pair {
+                return Err(format!(
+                    "independence key {encoded_pair:?} does not match evidence roots"
+                ));
+            }
             graph
                 .insert_independence_evidence(evidence)
                 .map_err(|e| e.to_string())?;
@@ -123,8 +155,6 @@ pub enum AncestryError {
     IndependenceSameRoot(EvidenceNodeId),
     #[error("independence evidence node {} is not a provenance root", .0.0)]
     IndependenceNodeNotRoot(EvidenceNodeId),
-    #[error("independence evidence roots {} and {} resolve to the same source family", .0.0, .1.0)]
-    IndependenceSameFamily(EvidenceNodeId, EvidenceNodeId),
     #[error("independence evidence method id is empty")]
     EmptyIndependenceMethod,
     #[error("independence evidence method version must be positive")]
@@ -133,6 +163,8 @@ pub enum AncestryError {
     MissingIndependenceArtifact,
     #[error("independence evidence contains an empty supporting artifact id")]
     EmptyIndependenceArtifact,
+    #[error("independence evidence names an empty versioned rule")]
+    EmptyIndependenceRule,
     #[error("conflicting independence evidence for roots {} and {}", .0.0, .1.0)]
     ConflictingIndependenceEvidence(EvidenceNodeId, EvidenceNodeId),
 }
@@ -156,6 +188,24 @@ fn ordered_pair(
     } else {
         (b.clone(), a.clone())
     }
+}
+
+fn canonical_pair_key(left: &EvidenceNodeId, right: &EvidenceNodeId) -> String {
+    serde_json::to_string(&(left, right)).expect("evidence node ids always serialize")
+}
+
+fn decode_pair_key(encoded: &str) -> Result<(EvidenceNodeId, EvidenceNodeId), String> {
+    serde_json::from_str(encoded)
+        .map_err(|error| format!("invalid independence pair key {encoded:?}: {error}"))
+}
+
+fn basis_is_accepted(basis: &IndependenceBasis) -> bool {
+    matches!(
+        basis,
+        IndependenceBasis::DistinctAuthenticatedPrimaryOrigins
+            | IndependenceBasis::DistinctDirectSensorObservations
+            | IndependenceBasis::ExplicitUpstreamProvenance
+    )
 }
 
 impl EvidenceAncestryGraph {
@@ -184,10 +234,13 @@ impl EvidenceAncestryGraph {
     /// idempotent; a different record for the same pair is rejected rather than silently
     /// replacing the previously audited basis.
     ///
+    /// Source-family labels are deliberately not used as proof or disproof here. They are
+    /// compatibility metadata; explicit evidence and actual root ancestry govern this API.
+    ///
     /// # Errors
-    /// Returns an ancestry error when either node is missing or not a root, both ids or
-    /// source families collapse to the same origin, method metadata is invalid, supporting
-    /// artifact identity is missing, or a conflicting record already exists.
+    /// Returns an ancestry error when either node is missing or not a root, both ids are the
+    /// same, method metadata is invalid, supporting artifact identity is missing, a custom
+    /// rule id is blank, or conflicting evidence for the canonical pair already exists.
     pub fn insert_independence_evidence(
         &mut self,
         mut evidence: IndependenceEvidence,
@@ -212,9 +265,6 @@ impl EvidenceAncestryGraph {
         if right_node.derived || !right_node.parents.is_empty() {
             return Err(AncestryError::IndependenceNodeNotRoot(right));
         }
-        if left_node.source_family == right_node.source_family {
-            return Err(AncestryError::IndependenceSameFamily(left, right));
-        }
 
         evidence.method_id = evidence.method_id.trim().to_owned();
         if evidence.method_id.is_empty() {
@@ -233,17 +283,21 @@ impl EvidenceAncestryGraph {
         {
             return Err(AncestryError::EmptyIndependenceArtifact);
         }
+        if let IndependenceBasis::OtherVersionedRule(rule) = &mut evidence.basis {
+            *rule = rule.trim().to_owned();
+            if rule.is_empty() {
+                return Err(AncestryError::EmptyIndependenceRule);
+            }
+        }
 
         evidence.left_root = left.clone();
         evidence.right_root = right.clone();
-        let position = self.independence_evidence.binary_search_by(|current| {
-            (&current.left_root, &current.right_root).cmp(&(&left, &right))
-        });
-        match position {
-            Ok(index) if self.independence_evidence[index] == evidence => Ok(()),
-            Ok(_) => Err(AncestryError::ConflictingIndependenceEvidence(left, right)),
-            Err(index) => {
-                self.independence_evidence.insert(index, evidence);
+        let key = (left.clone(), right.clone());
+        match self.independence.get(&key) {
+            Some(current) if current == &evidence => Ok(()),
+            Some(_) => Err(AncestryError::ConflictingIndependenceEvidence(left, right)),
+            None => {
+                self.independence.insert(key, evidence);
                 Ok(())
             }
         }
@@ -323,9 +377,9 @@ impl EvidenceAncestryGraph {
 
     /// Conservative epistemic relationship between two evidence nodes.
     ///
-    /// Shared root ids or root families are known dependence. Disjoint recorded roots are
-    /// `Unknown` unless both sides resolve to one canonical root and an explicit, validated
-    /// independence record exists for that pair.
+    /// A shared provenance root is known dependence. Merely equal or disjoint source-family
+    /// labels do not decide the relationship. Distinct singleton roots become
+    /// `ProvenIndependent` only through accepted explicit evidence for their canonical pair.
     ///
     /// # Errors
     /// Missing nodes, missing parents, or cycles fail closed as ancestry errors.
@@ -340,31 +394,17 @@ impl EvidenceAncestryGraph {
             return Ok(IndependenceState::KnownDependent);
         }
 
-        let left_families: BTreeSet<&str> = left_roots
-            .iter()
-            .map(|root| self.nodes[root].source_family.as_str())
-            .collect();
-        let right_families: BTreeSet<&str> = right_roots
-            .iter()
-            .map(|root| self.nodes[root].source_family.as_str())
-            .collect();
-        if !left_families.is_disjoint(&right_families) {
-            return Ok(IndependenceState::KnownDependent);
-        }
-
         if left_roots.len() != 1 || right_roots.len() != 1 {
             return Ok(IndependenceState::Unknown);
         }
         let left = left_roots.iter().next().expect("length checked");
         let right = right_roots.iter().next().expect("length checked");
-        let (left, right) = ordered_pair(left, right);
-        let found = self
-            .independence_evidence
-            .binary_search_by(|current| {
-                (&current.left_root, &current.right_root).cmp(&(&left, &right))
-            })
-            .is_ok();
-        Ok(if found {
+        let key = ordered_pair(left, right);
+        let accepted = self
+            .independence
+            .get(&key)
+            .is_some_and(|evidence| basis_is_accepted(&evidence.basis));
+        Ok(if accepted {
             IndependenceState::ProvenIndependent
         } else {
             IndependenceState::Unknown
