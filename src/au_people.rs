@@ -10,7 +10,8 @@
 //! Addresses and emails from the results page are candidate leads: the scan
 //! cannot attribute a line to the subject. Coordinates use
 //! [`crate::postcode_au::offline_centroid`] (L3), not `geo` (L6). ATT&CK
-//! self-labels from the legacy module are not copied. Not called from `people`.
+//! self-labels from the legacy module are not copied. `people` calls it; a
+//! challenged page is [`Error::Invalid`] and does not abort other sources.
 
 use std::collections::HashSet;
 

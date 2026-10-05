@@ -153,13 +153,16 @@ representatives) through the shared `fetch` boundary and an injected
 `http::Transport`. A name with fewer than two alphabetic tokens makes no
 request. Challenge pages, truncated bodies, and CKAN `success: false` envelopes
 are not evidence of absence. The binary exposes `people NAME [--save FILE]`
-(unquoted words are joined) through `people_cli`, which feeds emitted evidence
-through `lineage::resolve_with_lineage`. `--save FILE` writes an unverified
-hash-chained ledger of outcomes and entities that `verify FILE` reloads
-byte-identically (`admitted=0`; a register row is not identity resolution).
-Skip (fewer than two alphabetic tokens) makes no request and does not write.
-Tests use a scripted transport; the README examples are the skip path.
-Two-token names query CKAN and are not run in CI. There is no live receipt.
+(unquoted words are joined) through `people_cli`, which also runs
+`asic_director`, `au_people` and `au_electoral` over the same transport and
+feeds emitted evidence through `lineage::resolve_with_lineage`. One source
+`Invalid` or BotWaf does not abort the others. `--save FILE` writes an
+unverified hash-chained ledger of outcomes and entities that `verify FILE`
+reloads byte-identically (`admitted=0`; a register row is not identity
+resolution). Skip (fewer than two alphabetic tokens) makes no request and does
+not write. Tests use a scripted transport; the README examples are the skip
+path. Two-token names query those sources and are not run in CI. There is no
+live receipt. Live ASIC Connect is WAF-blocked.
 
 ## Lineage and the automatic-merge rule
 

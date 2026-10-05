@@ -5,7 +5,9 @@
 //! truncated bodies, and non-success HTTP statuses are never turned into evidence.
 //!
 //! Live Connect has returned an immediate 403 WAF since 2026-08-04; this module is
-//! a library with fake-transport tests. It is not called from `people`. Coordinates
+//! a library with fake-transport tests. `people` calls it; a WAF is [`Error::Invalid`]
+//! so it cannot be read as "no director records", and `people_cli` records that
+//! without aborting other sources. Coordinates
 //! use [`crate::postcode_au::offline_centroid`] (L3), not `geo` (L6). ATT&CK
 //! self-labels from the legacy module are not copied.
 
