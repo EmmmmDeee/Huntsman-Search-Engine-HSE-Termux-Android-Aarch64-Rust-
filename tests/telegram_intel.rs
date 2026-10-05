@@ -7,10 +7,7 @@ fn record(peer_id: i64, message_id: i32, text: &str) -> TelegramRecord {
 }
 
 fn scratch(tag: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "huntsman-telegram-{tag}-{}",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("huntsman-telegram-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&path);
     fs::create_dir_all(&path).expect("scratch dir");
     path
@@ -72,7 +69,11 @@ fn load_is_strict_and_load_or_new_only_defaults_missing_files() {
     let path = root.join("telegram-index.json");
 
     assert!(TelegramIndex::load(&path).is_err());
-    assert!(TelegramIndex::load_or_new(&path).expect("new index").is_empty());
+    assert!(
+        TelegramIndex::load_or_new(&path)
+            .expect("new index")
+            .is_empty()
+    );
 
     fs::write(&path, b"{not-json").expect("corrupt fixture");
     assert!(TelegramIndex::load(&path).is_err());

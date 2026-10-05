@@ -249,7 +249,9 @@ impl TelegramIndex {
         let snapshot: TelegramIndexSnapshot = serde_json::from_slice(&body)
             .map_err(|error| TelegramIntelError::InvalidSnapshot(error.to_string()))?;
         if snapshot.schema_version != TELEGRAM_INDEX_SCHEMA_VERSION {
-            return Err(TelegramIntelError::UnsupportedSchema(snapshot.schema_version));
+            return Err(TelegramIntelError::UnsupportedSchema(
+                snapshot.schema_version,
+            ));
         }
         let mut index = Self::with_capacity(snapshot.capacity)?;
         if snapshot.records.len() > snapshot.capacity {
