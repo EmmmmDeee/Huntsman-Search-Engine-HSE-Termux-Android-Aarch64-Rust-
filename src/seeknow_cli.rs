@@ -235,7 +235,6 @@ fn permission_outcome(kind: SourceOutcomeKind) -> bool {
         SourceOutcomeKind::AuthRequired
             | SourceOutcomeKind::AuthRejected
             | SourceOutcomeKind::EntitlementDenied
-            | SourceOutcomeKind::QuotaExhausted
     )
 }
 
