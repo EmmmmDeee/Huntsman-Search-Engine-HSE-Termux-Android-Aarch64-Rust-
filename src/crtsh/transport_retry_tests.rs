@@ -38,13 +38,13 @@ fn failure(kind: SourceOutcomeKind) -> Reply {
     })
 }
 
-fn success() -> Reply {
-    Ok(Response {
+fn success() -> Response {
+    Response {
         status: 200,
         headers: Vec::new(),
         body: br#"[{"name_value":"api.example.com"}]"#.to_vec(),
         truncated: false,
-    })
+    }
 }
 
 fn run(script: &Script, pauses: &Cell<u32>) -> Result<CrtShReport, CrtShError> {
@@ -67,7 +67,7 @@ fn transient_transport_classes_pause_once_retry_once_and_succeed() {
         SourceOutcomeKind::TtfbTimeout,
         SourceOutcomeKind::BodyTimeout,
     ] {
-        let script = Script::new(vec![failure(kind), success()]);
+        let script = Script::new(vec![failure(kind), Ok(success())]);
         let pauses = Cell::new(0);
         let report = run(&script, &pauses).unwrap();
 
@@ -100,7 +100,10 @@ fn dns_and_tls_failures_remain_non_retryable() {
         let script = Script::new(vec![failure(kind)]);
         let pauses = Cell::new(0);
 
-        assert_eq!(run(&script, &pauses).unwrap_err(), CrtShError::NoResponse(kind));
+        assert_eq!(
+            run(&script, &pauses).unwrap_err(),
+            CrtShError::NoResponse(kind)
+        );
         assert_eq!(script.sent.get(), 1, "{kind:?}");
         assert_eq!(pauses.get(), 0, "{kind:?}");
     }
@@ -121,7 +124,7 @@ fn status_retry_budget_remains_three_attempts() {
             body: b"Service Unavailable".to_vec(),
             truncated: false,
         }),
-        success(),
+        Ok(success()),
     ]);
     let pauses = Cell::new(0);
     let report = run(&script, &pauses).unwrap();
