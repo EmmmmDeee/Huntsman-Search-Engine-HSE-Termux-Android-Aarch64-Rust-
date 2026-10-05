@@ -157,7 +157,7 @@ PLANNED: a source failure is recorded per source with its outcome and does not a
 CURRENT gates (CI `ci.yml`, toolchains 1.87 and stable, owned by Fix This Bullshit Bot):
 - `cargo fmt --check` and `cargo clippy --all-targets --locked -- -D warnings` (stable).
 - `cargo test --locked`: unit tests plus integration suites including `accept.rs`, `cli.rs`, `http_local.rs` (loopback sockets only), `legacy_reference.rs`, `readme.rs`, `dispositions.rs`, `android_ci.rs`, `hibp_build.rs`, `hibp_cli.rs`, `architecture_doc.rs`, `corroboration_key.rs`, `lineage_merge_rule.rs`, `lineage_legacy.rs`, `lineage_independence_adversarial.rs`, `release_ci.rs`, `env_autoload.rs`, `source_registry_cli.rs` and `source_registry_metadata.rs`.
-- `cargo run --locked -- check`, then `git diff --exit-code -- var/`.
+- `cargo run -- check`, then `git diff --exit-code -- var/`.
 - The Android aarch64 cross-build.
 - `.github/workflows/release.yml`, not `ci.yml` (#672): before any `main-<sha7>` pre-release is published, the build-time HIBP key embed must be empty, the binary must contain the `huntsman-recon` usage line, and `.github/scripts/scan-for-keys.sh` must report zero findings. PRs that touch the release path get the same checks as a dry run.
 
