@@ -1,21 +1,28 @@
 //! Evidence-backed, reversible identity-resolution decisions. From refactor overlay feef60a (P3).
 //!
-//! Support is counted in independent root families from `evidence_ancestry`, never in
-//! caller-supplied labels: two mirrors of one dump are one source however they are named.
-//! Any contradiction blocks an automatic merge; support cannot compensate for it.
+//! Support is counted only when the canonical ancestry graph can prove independent
+//! causal routes. Different providers, root ids, or family labels are diagnostic
+//! diversity, not corroboration by themselves. Two mirrors of one dump remain one
+//! route however they are named. Any contradiction blocks an automatic merge;
+//! support cannot compensate for it.
 //! `identity::resolve` stays the deterministic exact-key linker; this is the gate for
 //! probabilistic links above it.
 //!
 //! The merge rule has one authority, [`IdentityResolutionDecision::hold_reasons`]:
 //! an automatic merge needs a `Match` state, no contradiction or conflict, a present
 //! match probability in `[0, 1]` at or above the policy floor, and at least
-//! `min_independent_support_families` independent root families. Anything short of
+//! `min_independent_support_families` proven-independent routes. Anything short of
 //! that is a held candidate with every reason stated, never a silent drop.
-//! `crate::lineage` derives those families from response data, not collector names.
 
 use serde::{Deserialize, Serialize};
 
-use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceNodeId};
+use crate::evidence_ancestry::{
+    EvidenceAncestryGraph, EvidenceNodeId, IndependenceRouteCount,
+};
+
+/// Bounds the combinatorial proof search used by automatic identity merge.
+/// Exhaustion can only hold a candidate; it can never manufacture corroboration.
+const MAX_IDENTITY_INDEPENDENCE_SEARCH_STATES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,7 +41,7 @@ pub struct IdentityResolutionDecision {
     pub right_entity_uid: String,
     pub state: ResolutionState,
     pub probability: Option<f64>,
-    /// Ancestry node ids. Families are derived from the graph, not declared here.
+    /// Ancestry node ids. Independence is proven by the graph, not declared here.
     pub supporting: Vec<EvidenceNodeId>,
     pub contradicting: Vec<EvidenceNodeId>,
     pub temporal_conflict: bool,
@@ -42,11 +49,8 @@ pub struct IdentityResolutionDecision {
     pub decided_at_unix: u64,
 }
 
-/// Default gate. Legacy parity (`hse` 7dca720, `core::breach_consensus`): a finding is
-/// corroborated only when at least two distinct corpora attest it
-/// (`ConsensusResult::is_corroborated`, `source_count() >= 2`), and two corpora are
-/// the first count whose `supported_ceiling` reaches 0.90. One corpus caps at 0.70,
-/// below `Classification::VERIFIED_MIN`.
+/// Default gate. The field name is retained for serialized compatibility, but the
+/// value now means the minimum number of mutually proven-independent support routes.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AutoMergePolicy {
     pub min_independent_support_families: usize,
@@ -95,6 +99,12 @@ pub enum HoldReason {
     UnknownAncestry {
         detail: String,
     },
+    /// The bounded independence search stopped before it could decide the requested
+    /// cardinality. The reported count is only the proven lower bound.
+    IncompleteIndependenceProof {
+        found: usize,
+        required: usize,
+    },
     InsufficientIndependentFamilies {
         found: usize,
         required: usize,
@@ -117,16 +127,28 @@ impl IdentityResolutionDecision {
                 .all(|e| !e.0.trim().is_empty())
     }
 
-    /// Independent root families behind the support. `None` when any supporting
-    /// node is missing or sits on a cycle: unknown ancestry is not independence.
+    /// Number of mutually proven-independent support routes.
+    ///
+    /// Returns `None` for missing/cyclic ancestry or when the bounded search cannot
+    /// complete. Raw family diversity is deliberately not returned as independence.
     #[must_use]
     pub fn independent_support_families(&self, graph: &EvidenceAncestryGraph) -> Option<usize> {
-        graph.independent_support_count(&self.supporting).ok()
+        let required = self.supporting.len().max(1);
+        graph
+            .proven_independent_route_count(
+                self.supporting.iter(),
+                required,
+                MAX_IDENTITY_INDEPENDENCE_SEARCH_STATES,
+            )
+            .ok()
+            .filter(|count| !count.incomplete)
+            .map(|count| count.proven)
     }
 
     /// Automatic merge is stricter than "probable". A probable link stays a hypothesis
     /// unless an operator promotes it. Non-compensatory: one contradiction, one conflict,
-    /// missing calibrated probability, or unknown ancestry blocks regardless of support count.
+    /// missing calibrated probability, unknown ancestry, or incomplete independence proof
+    /// blocks regardless of apparent source diversity.
     #[must_use]
     pub fn allows_automatic_merge(
         &self,
@@ -145,19 +167,37 @@ impl IdentityResolutionDecision {
         graph: &EvidenceAncestryGraph,
         policy: AutoMergePolicy,
     ) -> Vec<HoldReason> {
-        let families = graph
-            .independent_support_count(&self.supporting)
+        let required = policy.min_independent_support_families.max(1);
+        let routes = graph
+            .proven_independent_route_count(
+                self.supporting.iter(),
+                required,
+                MAX_IDENTITY_INDEPENDENCE_SEARCH_STATES,
+            )
             .map_err(|e| e.to_string());
-        self.hold_reasons_given(families, policy)
+        self.hold_reasons_with_routes(routes, policy)
     }
 
-    /// The rule itself, with the independent-family count already worked out
-    /// (`Err` is unknown ancestry). Every other condition is checked on `self` as
-    /// given, so a caller that counts families its own way (`crate::lineage`)
-    /// still gets the same validation and the same reason order.
+    /// Compatibility rule core for callers that only have a legacy family count.
+    ///
+    /// A raw count can establish at most one route: multiple labels are not proof of
+    /// causal independence. This preserves validation/reason ordering without allowing
+    /// compatibility metadata to bypass the canonical ancestry authority.
     pub(crate) fn hold_reasons_given(
         &self,
         families: Result<usize, String>,
+        policy: AutoMergePolicy,
+    ) -> Vec<HoldReason> {
+        let routes = families.map(|found| IndependenceRouteCount {
+            proven: usize::from(found > 0),
+            incomplete: false,
+        });
+        self.hold_reasons_with_routes(routes, policy)
+    }
+
+    fn hold_reasons_with_routes(
+        &self,
+        routes: Result<IndependenceRouteCount, String>,
         policy: AutoMergePolicy,
     ) -> Vec<HoldReason> {
         let mut reasons = Vec::new();
@@ -209,12 +249,22 @@ impl IdentityResolutionDecision {
             reasons.push(HoldReason::GeographicConflict);
         }
         let required = policy.min_independent_support_families.max(1);
-        match families {
+        match routes {
             Err(detail) => reasons.push(HoldReason::UnknownAncestry { detail }),
-            Ok(found) if found < required => {
-                reasons.push(HoldReason::InsufficientIndependentFamilies { found, required });
+            Ok(count) => {
+                if count.incomplete {
+                    reasons.push(HoldReason::IncompleteIndependenceProof {
+                        found: count.proven,
+                        required,
+                    });
+                }
+                if count.proven < required {
+                    reasons.push(HoldReason::InsufficientIndependentFamilies {
+                        found: count.proven,
+                        required,
+                    });
+                }
             }
-            Ok(_) => {}
         }
         reasons
     }
@@ -225,7 +275,10 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::evidence_ancestry::EvidenceAncestryNode;
+    use crate::evidence_ancestry::{
+        EvidenceAncestryNode, IndependenceBasis, IndependenceEvidence,
+    };
+    use crate::retrieval_artifact::ArtifactId;
 
     fn graph() -> EvidenceAncestryGraph {
         let mut g = EvidenceAncestryGraph::default();
@@ -248,6 +301,16 @@ mod tests {
         add("registry", "company registry", &[]);
         add("first-party", "profile page", &[]);
         add("court", "court record", &[]);
+        g.insert_independence_evidence(IndependenceEvidence {
+            left_root: "registry".into(),
+            right_root: "first-party".into(),
+            basis: IndependenceBasis::ExplicitUpstreamProvenance,
+            method_id: "fixture:identity-independent".into(),
+            method_version: 1,
+            supporting_artifact_ids: BTreeSet::from([ArtifactId::from("sha256:identity-proof")]),
+            observed_at_unix: 1,
+        })
+        .unwrap();
         g
     }
 
@@ -278,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn two_independent_roots_merge() {
+    fn two_proven_independent_roots_merge() {
         assert!(
             decision(ResolutionState::Match, &["registry", "first-party"], &[])
                 .allows_automatic_merge(&graph(), AutoMergePolicy::default())
@@ -427,7 +490,7 @@ mod tests {
         let strong = ["registry", "first-party"];
         assert!(
             case(m, Some(0.99), &strong, &[]),
-            "strong independent match"
+            "strong proven-independent match"
         );
         assert!(!case(m, None, &strong, &[]), "missing probability");
         assert!(
