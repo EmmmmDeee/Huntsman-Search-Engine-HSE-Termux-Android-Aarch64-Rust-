@@ -34,6 +34,7 @@ pub mod collection;
 pub mod community;
 pub mod confidence;
 pub mod coref;
+pub mod correlation_bridge;
 pub mod correlator;
 pub mod coverage;
 pub mod credential_origin;
