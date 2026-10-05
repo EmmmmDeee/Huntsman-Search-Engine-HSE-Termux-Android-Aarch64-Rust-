@@ -103,7 +103,10 @@ fn coverage_conversion_is_deterministic() {
         truncated: false,
     };
     assert_eq!(coverage_events(&batch), coverage_events(&batch));
-    assert!(matches!(coverage_events(&batch)[0].kind, EventKind::ModuleDone { .. }));
+    assert!(matches!(
+        coverage_events(&batch)[0].kind,
+        EventKind::ModuleDone { .. }
+    ));
 }
 
 #[test]
