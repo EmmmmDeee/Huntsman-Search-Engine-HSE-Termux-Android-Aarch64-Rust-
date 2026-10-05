@@ -12,7 +12,6 @@ use crate::graph::{EntityRelation, Graph};
 use crate::leads::{Lead, rank_leads};
 use crate::profiles::{EntityProfile, build_profiles};
 use crate::timeline::{TimelineEvent, reconstruct};
-use crate::union_find::UnionFind;
 
 macro_rules! string_id {
     ($name:ident) => {
@@ -138,9 +137,23 @@ impl SourceLineage {
             .unwrap_or_else(|| self.source_id.clone())
     }
 
+    /// Returns a provenance root only when ancestry is actually known.
+    /// Unknown ancestry must never be promoted into independence by falling
+    /// back to a provider or retrieval label.
+    #[must_use]
+    pub fn known_origin_key(&self) -> Option<&str> {
+        self.origin_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+    }
+
     #[must_use]
     pub fn is_independent_of(&self, other: &Self) -> bool {
-        self.independence_key() != other.independence_key()
+        matches!(
+            (self.known_origin_key(), other.known_origin_key()),
+            (Some(left), Some(right)) if left != right
+        )
     }
 }
 
@@ -251,6 +264,31 @@ pub enum ClaimState {
     Rejected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DefeatKind {
+    Rebut,
+    Undermine,
+    Undercut,
+    Supersede,
+    Compatible,
+    UnknownRelation,
+}
+
+impl DefeatKind {
+    #[must_use]
+    pub fn blocks_verification(self) -> bool {
+        matches!(self, Self::Rebut | Self::Undermine | Self::Undercut)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Defeat {
+    pub evidence_id: EvidenceId,
+    pub kind: DefeatKind,
+    pub temporal_overlap: Option<bool>,
+    pub rationale: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Claim {
     pub id: ClaimId,
@@ -262,6 +300,8 @@ pub struct Claim {
     pub support: BTreeSet<EvidenceId>,
     #[serde(default)]
     pub contradictions: BTreeSet<EvidenceId>,
+    #[serde(default)]
+    pub defeats: Vec<Defeat>,
     #[serde(default)]
     pub provider_ids: BTreeSet<String>,
     #[serde(default)]
@@ -279,6 +319,7 @@ impl Claim {
             confidence: ConfidenceDimensions::default(),
             support: BTreeSet::new(),
             contradictions: BTreeSet::new(),
+            defeats: Vec::new(),
             provider_ids: BTreeSet::new(),
             notes: Vec::new(),
         }
@@ -444,6 +485,26 @@ impl IntelligenceLedger {
         self.recompute_claim_state(claim_id)
     }
 
+    /// Attaches a structured defeater without mutating the legacy claim state.
+    ///
+    /// # Errors
+    /// Returns [`LedgerError::MissingClaim`], [`LedgerError::MissingEvidence`],
+    /// or [`LedgerError::InvalidClaim`] for an empty rationale.
+    pub fn attach_defeat(&mut self, claim_id: &ClaimId, defeat: Defeat) -> Result<(), LedgerError> {
+        self.ensure_evidence(&defeat.evidence_id)?;
+        if defeat.rationale.trim().is_empty() {
+            return Err(LedgerError::InvalidClaim);
+        }
+        let claim = self
+            .claims
+            .get_mut(claim_id)
+            .ok_or_else(|| LedgerError::MissingClaim(claim_id.clone()))?;
+        if !claim.defeats.contains(&defeat) {
+            claim.defeats.push(defeat);
+        }
+        Ok(())
+    }
+
     /// Records an inference trail for an existing claim.
     ///
     /// # Errors
@@ -532,7 +593,11 @@ impl IntelligenceLedger {
         Ok(())
     }
 
-    /// Recomputes the conservative claim state from support and contradictions.
+    /// Recomputes the legacy support state from proven independent roots.
+    ///
+    /// This compatibility path deliberately cannot produce `Verified`:
+    /// verification requires an explicit claim-specific policy rather than a
+    /// caller-supplied confidence threshold.
     ///
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
@@ -549,8 +614,6 @@ impl IntelligenceLedger {
         }
         claim.state = match independent_sources {
             0 | 1 => ClaimState::Candidate,
-            2 => ClaimState::Supported,
-            _ if claim.confidence.conclusion >= 0.8 => ClaimState::Verified,
             _ => ClaimState::Supported,
         };
         Ok(())
@@ -600,7 +663,9 @@ impl IntelligenceLedger {
         }
     }
 
-    /// Counts distinct independent supporting lineages for a claim.
+    /// Counts proven independent supporting origins for a claim.
+    /// Unknown ancestry contributes zero proven roots; different provider/source
+    /// labels are not evidence of independent origin.
     ///
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
@@ -610,65 +675,17 @@ impl IntelligenceLedger {
             .claims
             .get(claim_id)
             .ok_or_else(|| LedgerError::MissingClaim(claim_id.clone()))?;
-        if claim.support.is_empty() {
-            return Ok(0);
-        }
-
-        let mut lineage_ids = Vec::new();
-        let mut by_evidence = BTreeMap::new();
+        let mut proven_roots = BTreeSet::new();
         for evidence_id in &claim.support {
             let evidence = self
                 .evidence
                 .get(evidence_id)
                 .ok_or_else(|| LedgerError::MissingEvidence(evidence_id.clone()))?;
-            let key = evidence.lineage.independence_key();
-            by_evidence.insert(evidence_id.clone(), key.clone());
-            lineage_ids.push(key);
-        }
-        lineage_ids.sort();
-        lineage_ids.dedup();
-        let mut union_find = UnionFind::new(lineage_ids.len());
-        let index_by_key = lineage_ids
-            .iter()
-            .enumerate()
-            .map(|(index, key)| (key.clone(), index))
-            .collect::<BTreeMap<_, _>>();
-
-        let support = claim.support.iter().collect::<Vec<_>>();
-        for left in 0..support.len() {
-            for right in (left + 1)..support.len() {
-                let lhs = self
-                    .evidence
-                    .get(support[left])
-                    .ok_or_else(|| LedgerError::MissingEvidence((*support[left]).clone()))?;
-                let rhs = self
-                    .evidence
-                    .get(support[right])
-                    .ok_or_else(|| LedgerError::MissingEvidence((*support[right]).clone()))?;
-                if !lhs.lineage.is_independent_of(&rhs.lineage) {
-                    let lhs_key = by_evidence
-                        .get(support[left])
-                        .ok_or_else(|| LedgerError::MissingEvidence((*support[left]).clone()))?;
-                    let rhs_key = by_evidence
-                        .get(support[right])
-                        .ok_or_else(|| LedgerError::MissingEvidence((*support[right]).clone()))?;
-                    let lhs_index = *index_by_key
-                        .get(lhs_key)
-                        .ok_or_else(|| LedgerError::MissingEvidence((*support[left]).clone()))?;
-                    let rhs_index = *index_by_key
-                        .get(rhs_key)
-                        .ok_or_else(|| LedgerError::MissingEvidence((*support[right]).clone()))?;
-                    union_find.union(lhs_index, rhs_index);
-                }
+            if let Some(origin) = evidence.lineage.known_origin_key() {
+                proven_roots.insert(origin.to_string());
             }
         }
-
-        let clusters = lineage_ids
-            .iter()
-            .enumerate()
-            .map(|(index, _)| union_find.find(index))
-            .collect::<BTreeSet<_>>();
-        Ok(clusters.len())
+        Ok(proven_roots.len())
     }
 
     fn ensure_evidence(&self, evidence_id: &EvidenceId) -> Result<(), LedgerError> {
@@ -776,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_promotes_only_on_independent_support() {
+    fn claim_support_never_auto_verifies() {
         let mut ledger = IntelligenceLedger::default();
         let claim_id = ClaimId::from("claim-1");
         let mut claim = Claim::new(
@@ -811,7 +828,7 @@ mod tests {
         assert_eq!(ledger.claims[&claim_id].state, ClaimState::Supported);
 
         ledger.attach_support(&claim_id, &ev4).unwrap();
-        assert_eq!(ledger.claims[&claim_id].state, ClaimState::Verified);
+        assert_eq!(ledger.claims[&claim_id].state, ClaimState::Supported);
     }
 
     #[test]
