@@ -96,12 +96,8 @@ fn credential_from_keys(keys: &Keys, now_unix: u64) -> Result<Credential, String
         approval_provenance: "huntsman-recon seeknow command".into(),
     })
     .map_err(|error| error.to_string())?;
-    Credential::new(
-        authority,
-        secret,
-        AuthStyle::Header("X-API-Key".into()),
-    )
-    .map_err(|error| error.to_string())
+    Credential::new(authority, secret, AuthStyle::Header("X-API-Key".into()))
+        .map_err(|error| error.to_string())
 }
 
 fn run_search<T: Transport + ?Sized>(
@@ -142,23 +138,17 @@ fn run_search<T: Transport + ?Sized>(
     let scan_id = uid::scan_id(&kind.to_string(), &value);
     let selector = Entity::new(kind, value, 1.0, scan_id);
     let limits = CollectionLimits::default();
-    let batch = match collect_with_credential(
-        &selector,
-        transport,
-        credential,
-        &limits,
-        mode,
-        now_unix,
-    ) {
-        Ok(batch) => batch,
-        Err(crate::collector::CollectorError::InvalidSelector(message)) => {
-            return SeekNowCliRun::BadData(message);
-        }
-        Err(crate::collector::CollectorError::UnsupportedSelector(_)) => {
-            return SeekNowCliRun::Usage;
-        }
-        Err(error) => return SeekNowCliRun::Unavailable(error.to_string()),
-    };
+    let batch =
+        match collect_with_credential(&selector, transport, credential, &limits, mode, now_unix) {
+            Ok(batch) => batch,
+            Err(crate::collector::CollectorError::InvalidSelector(message)) => {
+                return SeekNowCliRun::BadData(message);
+            }
+            Err(crate::collector::CollectorError::UnsupportedSelector(_)) => {
+                return SeekNowCliRun::Usage;
+            }
+            Err(error) => return SeekNowCliRun::Unavailable(error.to_string()),
+        };
 
     match batch.outcome {
         CollectionOutcome::Success | CollectionOutcome::ValidZero => {
