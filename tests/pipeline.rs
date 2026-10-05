@@ -13,8 +13,10 @@ fn input(seeds: &[&str]) -> InvestigationInput {
 
 #[test]
 fn normalize_seeds_is_deterministic_and_bounded() {
-    let mut limits = PipelineLimits::default();
-    limits.max_targets = 2;
+    let limits = PipelineLimits {
+        max_targets: 2,
+        ..PipelineLimits::default()
+    };
     let result = normalize_seeds(
         &input(&["Example.COM", "ada@example.com", "8.8.8.8"]),
         &limits,
@@ -33,7 +35,7 @@ fn malformed_and_empty_seeds_are_explicit_rejections() {
         &input(&["", "   ", "not-a-supported-single-token"]),
         &PipelineLimits::default(),
     );
-    assert!(result.accepted.is_empty());
+    assert_eq!(result.accepted.len(), 0);
     assert_eq!(result.rejected.len(), 3);
     assert!(matches!(&result.rejected[0].1, SeedRejection::Empty));
     assert!(matches!(&result.rejected[1].1, SeedRejection::Empty));
