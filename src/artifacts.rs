@@ -92,7 +92,7 @@ pub fn render_artifacts(
         || report.truncated
         || [&report_json, &gexf, &snake_graph, &stix, &navigator]
             .into_iter()
-            .any(|payload| omitted(payload));
+            .any(omitted);
     Ok(PipelineArtifacts {
         report_json,
         gexf,
