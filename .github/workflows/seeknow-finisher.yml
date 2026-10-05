@@ -1,0 +1,186 @@
+name: seeknow-finisher
+
+on:
+  push:
+    branches:
+      - feat/seeknow-collector-reconstruction
+
+permissions:
+  contents: write
+
+jobs:
+  finish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feat/seeknow-collector-reconstruction
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - name: Patch binary, architecture, and README
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              if text.count(old) != 1:
+                  raise SystemExit(f"{label}: expected one match, found {text.count(old)}")
+              return text.replace(old, new, 1)
+
+          main = Path("src/main.rs")
+          text = main.read_text()
+          text = replace_once(
+              text,
+              "use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleRun};\n",
+              "use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleRun};\nuse huntsman_recon::seeknow_cli::{self, SEEKNOW_HELP, SEEKNOW_USAGE, SeekNowCliRun};\n",
+              "main import",
+          )
+          text = replace_once(
+              text,
+              " | people NAME | classify STATUS BODY |",
+              " | people NAME | seeknow [status | credits | search KIND VALUE [--deep | --fast-only]] [--keys FILE] | classify STATUS BODY |",
+              "usage command",
+          )
+          text = replace_once(
+              text,
+              "  people                Look up a name on keyless ASIC people registers\n  classify",
+              "  people                Look up a name on keyless ASIC people registers\n  seeknow               Query keyed SeekNow diagnostics or universal search\n  classify",
+              "help command",
+          )
+          text = replace_once(
+              text,
+              "Search and sources do not collect remote results. `fetch` and `people` (two-token\nnames) make HTTP requests; their default egress policy is public-only.",
+              "Search and sources do not collect remote results. `fetch`, `people` (two-token\nnames), and `seeknow` make HTTP requests; their default egress policy is public-only.",
+              "help network note",
+          )
+          text = replace_once(
+              text,
+              "        Some(\"people\") => people_cmd(&remaining.collect::<Vec<_>>()),\n        Some(\"classify\")",
+              "        Some(\"people\") => people_cmd(&remaining.collect::<Vec<_>>()),\n        Some(\"seeknow\") => seeknow_cmd(&remaining.collect::<Vec<_>>()),\n        Some(\"classify\")",
+              "dispatch",
+          )
+          text = replace_once(
+              text,
+              "        \"people\" => PEOPLE_HELP,\n        \"classify\"",
+              "        \"people\" => PEOPLE_HELP,\n        \"seeknow\" => SEEKNOW_HELP,\n        \"classify\"",
+              "command help",
+          )
+          seeknow_fn = r'''
+fn seeknow_cmd(args: &[String]) -> ExitCode {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let transport = UreqTransport::new(&TransportConfig::default());
+    match seeknow_cli::run(&transport, args, env::var_os("HOME").as_deref(), now) {
+        SeekNowCliRun::Usage => fail(EX_USAGE, SEEKNOW_USAGE),
+        SeekNowCliRun::Printed(text) => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        SeekNowCliRun::BadData(message) => fail(EX_DATAERR, &message),
+        SeekNowCliRun::Input(message) => fail(EX_NOINPUT, &message),
+        SeekNowCliRun::Unavailable(message) => fail(EX_UNAVAILABLE, &message),
+        SeekNowCliRun::NoPerm(message) => fail(EX_NOPERM, &message),
+    }
+}
+
+'''
+          text = replace_once(text, "\nfn geo(", "\n" + seeknow_fn + "fn geo(", "seeknow command function")
+          main.write_text(text)
+
+          arch = Path("ARCHITECTURE.md")
+          text = arch.read_text()
+          lines = text.splitlines()
+          l5_seen = binary_seen = False
+          for i, line in enumerate(lines):
+              if line.startswith("| L5 entity model and analysis |"):
+                  if "`seeknow_collector`" in line or "`seeknow_cli`" in line:
+                      raise SystemExit("architecture L5 already contains SeekNow adapters")
+                  line = line.replace(
+                      "`collector`, `asic_persons`, `people_cli`",
+                      "`collector`, `seeknow_collector`, `seeknow_cli`, `asic_persons`, `people_cli`",
+                  )
+                  line = line.replace(
+                      "reusable bounded collection contracts (`collector`);",
+                      "reusable bounded collection contracts (`collector`); keyed SeekNow collection and CLI adapters (`seeknow_collector`, `seeknow_cli`);",
+                  )
+                  lines[i] = line
+                  l5_seen = True
+              elif line.startswith("| Binary |"):
+                  lines[i] = line.replace("Dispatch for the 12 commands", "Dispatch for the 13 commands")
+                  binary_seen = True
+          if not l5_seen or not binary_seen:
+              raise SystemExit(f"architecture rows missing: l5={l5_seen} binary={binary_seen}")
+          text = "\n".join(lines) + "\n"
+          old = "PLANNED: source-specific collectors progressively route reconstructed providers through this boundary; the binary reaches L4 only through those L5 adapters."
+          new = "CURRENT: `seeknow_collector` is the first keyed source-specific L5 adapter and `seeknow_cli` is its CLI front-end; the binary reaches the L4 SeekNow client only through these L5 modules. PLANNED: additional reconstructed providers progressively route through the same boundary."
+          text = replace_once(text, old, new, "collector architecture state")
+          arch.write_text(text)
+
+          readme = Path("README.md")
+          text = readme.read_text()
+          text = replace_once(
+              text,
+              "> `hse` monolith. It does not yet provide the old monolith's person-lookups.\n",
+              "> `hse` monolith. It does not yet provide the old monolith's full person-lookup surface;\n> keyed SeekNow diagnostics and universal search are reconstructed below.\n",
+              "readme status",
+          )
+          text = replace_once(
+              text,
+              "cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network\n",
+              "cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network\ncargo run -- seeknow --help              # keyed SeekNow command surface; help makes no request\n",
+              "readme example",
+          )
+          text = replace_once(
+              text,
+              "`fetch` and `people` (two-token names) make HTTP requests and use public-only\negress by default.",
+              "`fetch`, `people` (two-token names), and `seeknow` make HTTP requests and use public-only\negress by default.",
+              "readme network note",
+          )
+          text = replace_once(
+              text,
+              "Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input, 69 `fetch` got no response or `people` registers were unusable, 74 artifact write failure, 77 egress policy refused the destination. `check` uses 2–11 for its individual gates.",
+              "Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input, 69 a network/provider/rate/quota/parser path was unavailable, 74 artifact write failure, 77 a credential/entitlement or egress permission was refused. `check` uses 2–11 for its individual gates.",
+              "readme exits",
+          )
+          section = r'''
+## Opt-in SeekNow collector
+
+`huntsman-recon seeknow` is the reconstructed keyed SeekNow/See-Know REST surface. It uses
+`HUNTSMAN_SEEKNOW_KEY` from `--keys FILE`, the secure default `~/.huntsman.env`, or the
+environment through the same `Keys::resolve` path as guarded fetch. The key is sent only as
+`X-API-Key` to `https://see-know.ru/api/v1` with redirects disabled and is never printed,
+fingerprinted into output, or persisted as evidence.
+
+`seeknow status` and `seeknow credits` provide authenticated diagnostics. `seeknow search`
+accepts `email`, `username`, `phone`, `ip`, `domain`, or `person`. Adaptive search runs the
+fast endpoint first and spends one deep request only after a structurally valid fast zero;
+`--fast-only` and `--deep` make the policy explicit. Auth, entitlement, quota, rate-limit,
+challenge, malformed, truncated, transport, or parser failures never become `ValidZero`.
+Response dataset names drive lineage; `seeknow` itself does not count as an independent
+upstream family. Password/token/cookie/API-key values found in exposure rows are discarded
+before entity/evidence rendering.
+
+'''
+          text = replace_once(text, "## Opt-in HIBP library\n", section + "## Opt-in HIBP library\n", "readme SeekNow section")
+          readme.write_text(text)
+          PY
+      - name: Format
+        run: cargo fmt --all
+      - name: Strict lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Focused integration tests
+        run: cargo test --locked --test seeknow_cli --test architecture_doc --test readme
+      - name: Commit final integration patch and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/seeknow-finisher.yml
+          git add src/main.rs ARCHITECTURE.md README.md src/seeknow_cli.rs
+          git commit -m "feat: wire SeekNow collector through the binary"
+          git push origin HEAD:feat/seeknow-collector-reconstruction
