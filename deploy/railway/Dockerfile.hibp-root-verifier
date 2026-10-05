@@ -1,0 +1,33 @@
+FROM rust:1.99.0-bookworm
+
+WORKDIR /work
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . /work/
+
+ENV CARGO_TERM_COLOR=never
+
+# Live contract discriminator: this endpoint must authenticate the supplied key.
+# Do not print or persist the response body; only the HTTP status is evidence here.
+RUN status="$(curl --silent --show-error --output /tmp/hibp-invalid-body \
+        --write-out '%{http_code}' --max-time 20 \
+        --header 'Accept: application/json' \
+        --header 'User-Agent: huntsman-hibp-verifier/2026-10-05' \
+        --header 'hibp-api-key: huntsman-intentionally-invalid-verifier-key' \
+        'https://haveibeenpwned.com/api/v3/subscription/status')" \
+    && rm -f /tmp/hibp-invalid-body \
+    && echo "HIBP_INVALID_KEY_HTTP_STATUS=${status}" \
+    && test "${status}" = '401'
+
+RUN cargo fmt --check
+RUN cargo check --locked --all-targets
+RUN cargo test --locked hibp::tests -- --nocapture
+RUN cargo test --locked --test hibp_cli -- --nocapture
+RUN cargo test --locked --test hibp_build -- --nocapture
+RUN cargo clippy --locked --all-targets -- -D warnings
+RUN cargo test --locked
+
+CMD ["sh", "-c", "echo HIBP_ROOT_VERIFIER_COMPLETE; sleep 3600"]
