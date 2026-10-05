@@ -18,9 +18,21 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 pub const API_BASE: &str = "https://see-know.ru/api/v1";
 pub const KEY_SLOT: &str = "HUNTSMAN_SEEKNOW_KEY";
 pub const SEARCH_LIMIT_MAX: u16 = 500;
+pub const MAX_FIELDS_PER_ROW: usize = 64;
+pub const MAX_FIELD_CHARS: usize = 4096;
 
 const FAST_MODULE: &str = "seeknow_search";
 const DEEP_MODULE: &str = "seeknow_search_deep";
+const CREDITS_MODULE: &str = "seeknow_credits";
+const STATUS_MODULE: &str = "seeknow_status";
+const UPSTREAM_FIELDS: &[&str] = &[
+    "dbname",
+    "breach",
+    "source_db",
+    "database_name",
+    "dataset",
+    "source",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -55,11 +67,50 @@ pub struct SeekNowSearch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SeekNowUpstream {
+    #[serde(default)]
+    pub dbname: Vec<String>,
+    #[serde(default)]
+    pub breach: Vec<String>,
+    #[serde(default)]
+    pub source_db: Vec<String>,
+    #[serde(default)]
+    pub database_name: Vec<String>,
+    #[serde(default)]
+    pub dataset: Vec<String>,
+    #[serde(default)]
+    pub source: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_id: Option<String>,
+}
+
+impl SeekNowUpstream {
+    #[must_use]
+    pub fn values(&self, field: &str) -> &[String] {
+        match field {
+            "dbname" => &self.dbname,
+            "breach" => &self.breach,
+            "source_db" => &self.source_db,
+            "database_name" => &self.database_name,
+            "dataset" => &self.dataset,
+            "source" => &self.source,
+            _ => &[],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SeekNowRow {
-    /// Non-sensitive scalar fields retained from one provider row.
+    /// Non-sensitive bounded scalar fields retained from one provider row.
     pub fields: BTreeMap<String, String>,
+    /// Structured upstream aliases retained separately so array-valued lineage survives.
+    pub upstream: SeekNowUpstream,
     /// Sensitive field names that were present. Values are deliberately discarded.
     pub sensitive_fields: BTreeSet<String>,
+    /// Oversized scalar fields discarded rather than shortened ambiguously.
+    pub truncated_fields: BTreeSet<String>,
+    /// True when field-count or field-length bounds removed data from this normalized row.
+    pub fields_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -67,6 +118,7 @@ pub struct SeekNowResponseMeta {
     pub http_status: Option<u16>,
     pub response_sha256: Option<String>,
     pub truncated: bool,
+    pub normalized_rows_truncated: bool,
     pub rate_limit_limit: Option<u64>,
     pub rate_limit_remaining: Option<u64>,
     pub rate_limit_reset: Option<String>,
@@ -79,9 +131,72 @@ pub struct SeekNowSearchResult {
     pub outcome: SourceExecutionOutcome,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeekNowCredits {
+    pub remaining: Option<u64>,
+    pub limit: Option<u64>,
+    pub meta: SeekNowResponseMeta,
+    pub outcome: SourceExecutionOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeekNowStatus {
+    pub fields: BTreeMap<String, String>,
+    pub meta: SeekNowResponseMeta,
+    pub outcome: SourceExecutionOutcome,
+}
+
+#[derive(Debug)]
+struct JsonEndpointResult {
+    value: Option<Value>,
+    meta: SeekNowResponseMeta,
+    outcome: SourceExecutionOutcome,
+}
+
 #[must_use]
 pub fn effective_limit(limit: u16) -> u16 {
     limit.clamp(1, SEARCH_LIMIT_MAX)
+}
+
+pub fn credits<T: Transport + ?Sized>(
+    transport: &T,
+    credential: &Credential,
+    now_unix: u64,
+) -> Result<SeekNowCredits, Error> {
+    let result = execute_json_get(transport, credential, "/credits", CREDITS_MODULE, now_unix)?;
+    let remaining = result
+        .value
+        .as_ref()
+        .and_then(|value| first_u64(value, &["credits_remaining", "remaining", "credits"]));
+    let limit = result
+        .value
+        .as_ref()
+        .and_then(|value| first_u64(value, &["daily_limit", "limit", "credits_limit"]));
+    Ok(SeekNowCredits {
+        remaining,
+        limit,
+        meta: result.meta,
+        outcome: result.outcome,
+    })
+}
+
+pub fn status<T: Transport + ?Sized>(
+    transport: &T,
+    credential: &Credential,
+    now_unix: u64,
+) -> Result<SeekNowStatus, Error> {
+    let result = execute_json_get(transport, credential, "/status", STATUS_MODULE, now_unix)?;
+    let fields = result
+        .value
+        .as_ref()
+        .and_then(Value::as_object)
+        .map(bounded_top_level_fields)
+        .unwrap_or_default();
+    Ok(SeekNowStatus {
+        fields,
+        meta: result.meta,
+        outcome: result.outcome,
+    })
 }
 
 pub fn search_fast<T: Transport + ?Sized>(
@@ -116,6 +231,113 @@ pub fn search_deep<T: Transport + ?Sized>(
     )
 }
 
+fn execute_json_get<T: Transport + ?Sized>(
+    transport: &T,
+    credential: &Credential,
+    path: &str,
+    module: &str,
+    now_unix: u64,
+) -> Result<JsonEndpointResult, Error> {
+    let fetched = fetch(
+        transport,
+        Request::get(format!("{API_BASE}{path}")),
+        Some(credential),
+        &FetchOptions { max_redirects: 0 },
+        module,
+        now_unix,
+    )?;
+    let Some(response) = fetched.response else {
+        return Ok(JsonEndpointResult {
+            value: None,
+            meta: SeekNowResponseMeta::default(),
+            outcome: fetched.outcome,
+        });
+    };
+    Ok(parse_json_endpoint(
+        response,
+        fetched.outcome,
+        module,
+        now_unix,
+    ))
+}
+
+fn parse_json_endpoint(
+    response: Response,
+    fetched_outcome: SourceExecutionOutcome,
+    module: &str,
+    now_unix: u64,
+) -> JsonEndpointResult {
+    let meta = response_meta(&response);
+    if response.truncated {
+        return JsonEndpointResult {
+            value: None,
+            meta,
+            outcome: outcome_with(
+                module,
+                SourceOutcomeKind::ParserDrift,
+                now_unix,
+                response.status,
+                None,
+                "truncated response body",
+            ),
+        };
+    }
+    if !response_body_may_refine(fetched_outcome.kind) {
+        return JsonEndpointResult {
+            value: None,
+            meta,
+            outcome: fetched_outcome,
+        };
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(&response.body) else {
+        let outcome = if fetched_outcome.kind == SourceOutcomeKind::Inconclusive {
+            outcome_with(
+                module,
+                SourceOutcomeKind::ParserDrift,
+                now_unix,
+                response.status,
+                None,
+                "response body is not valid JSON",
+            )
+        } else {
+            fetched_outcome
+        };
+        return JsonEndpointResult {
+            value: None,
+            meta,
+            outcome,
+        };
+    };
+    if let Some(kind) = provider_failure_kind(&value, response.status) {
+        return JsonEndpointResult {
+            value: None,
+            meta,
+            outcome: outcome_with(
+                module,
+                kind,
+                now_unix,
+                response.status,
+                Some(0),
+                "provider reported request failure",
+            ),
+        };
+    }
+    if fetched_outcome.kind != SourceOutcomeKind::Inconclusive {
+        return JsonEndpointResult {
+            value: None,
+            meta,
+            outcome: fetched_outcome,
+        };
+    }
+    let mut outcome = SourceExecutionOutcome::success(module, now_unix, 1);
+    outcome.http_status = Some(response.status);
+    JsonEndpointResult {
+        value: Some(value),
+        meta,
+        outcome,
+    }
+}
+
 fn execute_search<T: Transport + ?Sized>(
     transport: &T,
     credential: &Credential,
@@ -148,6 +370,7 @@ fn execute_search<T: Transport + ?Sized>(
         fetched.outcome,
         module,
         now_unix,
+        usize::from(effective_limit(search.limit)),
     ))
 }
 
@@ -156,8 +379,9 @@ fn parse_search_response(
     fetched_outcome: SourceExecutionOutcome,
     module: &str,
     now_unix: u64,
+    row_limit: usize,
 ) -> SeekNowSearchResult {
-    let meta = response_meta(&response);
+    let mut meta = response_meta(&response);
     if response.truncated {
         return result_with_outcome(
             meta,
@@ -234,7 +458,12 @@ fn parse_search_response(
         return result_with_outcome(meta, outcome);
     }
 
-    let rows = items.iter().filter_map(minimal_row).collect::<Vec<_>>();
+    meta.normalized_rows_truncated = items.len() > row_limit;
+    let rows = items
+        .iter()
+        .take(row_limit)
+        .filter_map(normalize_row)
+        .collect::<Vec<_>>();
     let mut outcome = SourceExecutionOutcome::success(module, now_unix, rows.len());
     outcome.http_status = Some(response.status);
     if rows.is_empty() {
@@ -385,23 +614,94 @@ fn recognized_items(value: &Value) -> Option<&Vec<Value>> {
         .and_then(Value::as_array)
 }
 
-fn minimal_row(value: &Value) -> Option<SeekNowRow> {
+fn normalize_row(value: &Value) -> Option<SeekNowRow> {
     let object = value.as_object()?;
+    let upstream = extract_upstream(object);
     let mut fields = BTreeMap::new();
     let mut sensitive_fields = BTreeSet::new();
+    let mut truncated_fields = BTreeSet::new();
+    let mut fields_truncated = false;
+
     for (key, value) in object {
         if is_sensitive_result_field(key) {
             sensitive_fields.insert(key.clone());
             continue;
         }
-        if let Some(value) = scalar_string(value) {
-            fields.insert(key.clone(), value);
+        let Some(value) = scalar_string(value) else {
+            continue;
+        };
+        if value.chars().count() > MAX_FIELD_CHARS {
+            truncated_fields.insert(key.clone());
+            fields_truncated = true;
+            continue;
         }
+        if fields.len() >= MAX_FIELDS_PER_ROW {
+            fields_truncated = true;
+            continue;
+        }
+        fields.insert(key.clone(), value);
     }
+
     Some(SeekNowRow {
         fields,
+        upstream,
         sensitive_fields,
+        truncated_fields,
+        fields_truncated,
     })
+}
+
+fn extract_upstream(object: &serde_json::Map<String, Value>) -> SeekNowUpstream {
+    let mut upstream = SeekNowUpstream::default();
+    upstream.dbname = upstream_values(object.get("dbname"));
+    upstream.breach = upstream_values(object.get("breach"));
+    upstream.source_db = upstream_values(object.get("source_db"));
+    upstream.database_name = upstream_values(object.get("database_name"));
+    upstream.dataset = upstream_values(object.get("dataset"));
+    upstream.source = upstream_values(object.get("source"));
+    upstream.record_id = ["record_id", "id", "_id"]
+        .iter()
+        .find_map(|key| object.get(*key).and_then(bounded_scalar_string));
+    upstream
+}
+
+fn upstream_values(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(bounded_scalar_string)
+            .take(MAX_FIELDS_PER_ROW)
+            .collect(),
+        Some(value) => bounded_scalar_string(value).into_iter().collect(),
+        None => Vec::new(),
+    }
+}
+
+fn bounded_top_level_fields(object: &serde_json::Map<String, Value>) -> BTreeMap<String, String> {
+    object
+        .iter()
+        .filter(|(key, _)| key.as_str() != "success" && !is_sensitive_result_field(key))
+        .filter_map(|(key, value)| bounded_scalar_string(value).map(|value| (key.clone(), value)))
+        .take(MAX_FIELDS_PER_ROW)
+        .collect()
+}
+
+fn first_u64(value: &Value, keys: &[&str]) -> Option<u64> {
+    let object = value.as_object()?;
+    for key in keys {
+        if let Some(number) = object.get(*key).and_then(value_as_u64) {
+            return Some(number);
+        }
+    }
+    let data = object.get("data")?.as_object()?;
+    keys.iter()
+        .find_map(|key| data.get(*key).and_then(value_as_u64))
+}
+
+fn value_as_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str()?.trim().parse::<u64>().ok())
 }
 
 fn is_sensitive_result_field(key: &str) -> bool {
@@ -433,6 +733,11 @@ fn is_sensitive_result_field(key: &str) -> bool {
         || normalized.ends_with("_api_key")
 }
 
+fn bounded_scalar_string(value: &Value) -> Option<String> {
+    let value = scalar_string(value)?;
+    (value.chars().count() <= MAX_FIELD_CHARS).then_some(value)
+}
+
 fn scalar_string(value: &Value) -> Option<String> {
     match value {
         Value::String(value) => Some(value.clone()),
@@ -447,6 +752,7 @@ fn response_meta(response: &Response) -> SeekNowResponseMeta {
         http_status: Some(response.status),
         response_sha256: Some(hex32(&sha256(&response.body))),
         truncated: response.truncated,
+        normalized_rows_truncated: false,
         rate_limit_limit: parse_u64_header(response, "x-ratelimit-limit"),
         rate_limit_remaining: parse_u64_header(response, "x-ratelimit-remaining"),
         rate_limit_reset: response
