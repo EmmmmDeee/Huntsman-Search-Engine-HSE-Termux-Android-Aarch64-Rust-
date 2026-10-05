@@ -2,7 +2,7 @@
 
 Per-file accounting of the HSE monolith (`legacy/hse-monolith-v1.41.0/`) against the current crate, grouped by area. Decisions: REBUILT / REIMPLEMENT (new code, legacy kept as oracle), MERGED (folded into an existing owner or its tests), PARTIAL, PENDING / NOT YET REBUILT, NOT APPLICABLE. Refactor-overlay items are dispositioned in `RECONSTRUCTION_2026-10-02.md` (third pass).
 
-Evidence source: `legacy/` and the two root zip archives. Never delete, edit or move them.
+Evidence source: the canonical extracted trees under `legacy/`. Original archive SHA-256/Git identities and a recoverable commit are recorded in `ARCHIVE_PROVENANCE.md`. Do not mutate legacy oracle content without updating provenance and differential evidence.
 
 ## Contents
 
@@ -11,7 +11,9 @@ Evidence source: `legacy/` and the two root zip archives. Never delete, edit or 
 3. [Geo, geometry and RF](#geo-geometry-and-rf)
 4. [Parsers and signals](#parsers-and-signals)
 5. [Validation, domains and text](#validation-domains-and-text)
-6. [Not yet dispositioned](#not-yet-dispositioned)
+6. [AU people registers](#au-people-registers)
+7. [Providers restored from 764ce8e](#providers-restored-from-764ce8e)
+8. [Not yet dispositioned](#not-yet-dispositioned)
 
 ## ATT&CK, assurance and analytics
 
@@ -19,35 +21,36 @@ Evidence source: `legacy/` and the two root zip archives. Never delete, edit or 
 | --- | ---: | --- | --- | --- |
 | `src/core/attack/mod.rs` | 4833 | REBUILT | `src/attack.rs`, `src/attack_catalog.rs`, `src/navigator.rs` | ATT&CK catalog and recon mappings were rebuilt for the current crate; the large catalog was mechanically extracted from legacy and pinned with uniqueness, id-shape, sort-order, tactic-reference, and TA0043 slice tests so no binding is inferred from vocabulary alone. |
 | `src/core/attack/tests.rs` | 702 | MERGED | `src/attack.rs`, `src/navigator.rs` tests | Legacy ATT&CK and Navigator expectations were folded into current unit tests instead of kept as a parallel test module. |
-| `src/core/diamond.rs` | 259 | REBUILT | `src/diamond.rs` | Pure Diamond Model classification/grouping fit the crate contract and was rebuilt against current `recon` entities and relations. |
+| `src/core/diamond.rs` | 259 | REBUILT | `src/diamond.rs` | Pure Diamond Model classification/grouping fit the crate contract and was rebuilt against current `entity` kinds. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
 | `src/core/dependency/mod.rs` | 442 | REBUILT | `src/dependency.rs` | Module graph, producer/consumer indexing, summaries, and human-seed wiring checks were rebuilt as pure graph logic. |
 | `src/core/dependency/reachability.rs` | 227 | REBUILT | `src/dependency.rs` | Reachability and dead-module analysis were merged into the rebuilt dependency graph instead of kept as a split submodule. |
 | `src/core/dependency/tests.rs` | 600 | MERGED | `src/dependency.rs` tests | Legacy dependency expectations were ported as in-module tests for the rebuilt graph and reachability helpers. |
-| `src/core/assurance/catalog.rs` | 375 | REBUILT | `src/assurance.rs` | Assurance catalog/profile data is pure and was consolidated into one assurance module. |
-| `src/core/assurance/continuity.rs` | 512 | REBUILT | `src/assurance.rs` | Continuity objectives, state derivation, summary logic, and the newly in-scope source-tree scan were rebuilt; recovery-test verification is now split into pure missing-test detection plus a `SourceTree`/`FsSourceTree` I/O boundary that scans current `src/` and `tests/`. |
-| `src/core/assurance/derive.rs` | 129 | REBUILT | `src/assurance.rs` | Assurance level/state derivation was rebuilt and exercised with differential ladder tests. |
-| `src/core/assurance/gap.rs` | 160 | REBUILT | `src/assurance.rs` | Assurance gap severity and warnings were folded into the rebuilt assurance model. |
-| `src/core/assurance/mod.rs` | 272 | REBUILT | `src/assurance.rs` | Public assurance API was reconstructed as one crate-local module. |
-| `src/core/assurance/model.rs` | 423 | REBUILT | `src/assurance.rs` | Assurance enums, evidence model, applicability, verification, and summaries were rebuilt for the current crate. |
-| `src/core/assurance/tests.rs` | 531 | MERGED | `src/assurance.rs` tests | Legacy assurance examples were carried over as current unit tests and continuity checks. |
-| `src/core/benchmark/mod.rs` | 228 | REBUILT | `src/benchmark.rs` | Benchmark reporting was rebuilt over current metrics, coverage, graph, and scan-record primitives. |
-| `src/core/benchmark/tests.rs` | 203 | MERGED | `src/benchmark.rs` tests | Legacy benchmark expectations were ported into in-module tests. |
-| `src/core/roi/mod.rs` | 146 | REBUILT | `src/roi.rs` | Saturation, cutoff, and adaptive termination logic were rebuilt as pure scoring helpers. |
-| `src/core/roi/tests.rs` | 103 | MERGED | `src/roi.rs` tests | Legacy ROI examples were folded into current unit tests. |
-| `src/core/roi/utility.rs` | 406 | REBUILT | `src/roi.rs` | Dispatch-utility scoring and rationale emission were rebuilt in one module. |
-| `src/core/roi/utility_tests.rs` | 327 | MERGED | `src/roi.rs` tests | Utility expectations were ported as current tests instead of kept as a parallel file. |
-| `src/core/gap/mod.rs` | 233 | REBUILT | `src/gap.rs` | Gap/orphan/null-state analysis was rebuilt over current entity/relation graph types. |
-| `src/core/gap/tests.rs` | 126 | MERGED | `src/gap.rs` tests | Legacy gap cases were merged into in-module tests. |
-| `src/core/coverage.rs` | 571 | REBUILT | `src/coverage.rs`, `src/benchmark.rs` | Provider coverage/event rollups were rebuilt and benchmark comparability caveats now derive from current event coverage verdicts. |
-| `src/core/metrics/mod.rs` | 476 | REBUILT | `src/metrics.rs` | Scan metrics, density, degeneracy/core size, corroboration, and seed reach were rebuilt for current graph/entity types. |
-| `src/core/metrics/tests.rs` | 349 | MERGED | `src/metrics.rs` tests | Legacy metrics expectations were ported and extended with order-independence checks. |
-| `src/core/trust/mod.rs` | 276 | REBUILT | `src/trust.rs` | Damped trust propagation was rebuilt as deterministic graph logic. |
-| `src/core/trust/tests.rs` | 271 | MERGED | `src/trust.rs` tests | Legacy trust cases were folded into current unit tests. |
+| `src/core/assurance/catalog.rs` | 375 | REBUILT | `src/assurance.rs` | Assurance catalog/profile data is pure and was consolidated into one assurance module. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/assurance/continuity.rs` | 512 | REBUILT | `src/assurance.rs` | Continuity objectives, state derivation, summary logic, and the newly in-scope source-tree scan were rebuilt; recovery-test verification is now split into pure missing-test detection plus a `SourceTree`/`FsSourceTree` I/O boundary that scans current `src/` and `tests/`. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/assurance/derive.rs` | 129 | REBUILT | `src/assurance.rs` | Assurance level/state derivation was rebuilt and exercised with differential ladder tests. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/assurance/gap.rs` | 160 | REBUILT | `src/assurance.rs` | Assurance gap severity and warnings were folded into the rebuilt assurance model. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/assurance/mod.rs` | 272 | REBUILT | `src/assurance.rs` | Public assurance API was reconstructed as one crate-local module. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/assurance/model.rs` | 423 | REBUILT | `src/assurance.rs` | Assurance enums, evidence model, applicability, verification, and summaries were rebuilt for the current crate. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/assurance/tests.rs` | 531 | MERGED | `src/assurance.rs` tests | Legacy assurance examples were carried over as current unit tests and continuity checks. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/benchmark/mod.rs` | 228 | REBUILT | `src/benchmark.rs` | Benchmark reporting was rebuilt over current metrics, coverage, graph, and scan-record primitives. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/benchmark/tests.rs` | 203 | MERGED | `src/benchmark.rs` tests | Legacy benchmark expectations were ported into in-module tests. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/roi/mod.rs` | 146 | REBUILT | `src/roi.rs` | Saturation, cutoff, and adaptive termination logic were rebuilt as pure scoring helpers. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/roi/tests.rs` | 103 | MERGED | `src/roi.rs` tests | Legacy ROI examples were folded into current unit tests. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/roi/utility.rs` | 406 | REBUILT | `src/roi.rs` | Dispatch-utility scoring and rationale emission were rebuilt in one module. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/roi/utility_tests.rs` | 327 | MERGED | `src/roi.rs` tests | Utility expectations were ported as current tests instead of kept as a parallel file. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/gap/mod.rs` | 233 | REBUILT | `src/gap.rs` | Gap/orphan/null-state analysis was rebuilt over current entity/relation graph types. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/gap/tests.rs` | 126 | MERGED | `src/gap.rs` tests | Legacy gap cases were merged into in-module tests. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/coverage.rs` | 571 | REBUILT | `src/coverage.rs`, `src/benchmark.rs` | Provider coverage/event rollups were rebuilt and benchmark comparability caveats now derive from current event coverage verdicts. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/metrics/mod.rs` | 476 | REBUILT | `src/metrics.rs` | Scan metrics, density, degeneracy/core size, corroboration, and seed reach were rebuilt for current graph/entity types. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/metrics/tests.rs` | 349 | MERGED | `src/metrics.rs` tests | Legacy metrics expectations were ported and extended with order-independence checks. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/trust/mod.rs` | 276 | REBUILT | `src/trust.rs` | Damped trust propagation was rebuilt as deterministic graph logic. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
+| `src/core/trust/tests.rs` | 271 | MERGED | `src/trust.rs` tests | Legacy trust cases were folded into current unit tests. Compiled and unit-tested (G8); not yet wired to a CLI caller (G1). |
 
 ### Notes
 
 - ATT&CK bindings live only in `src/ledger.rs` (`BINDINGS`) and must be added there explicitly; nothing in the rebuilt catalog infers evidence.
 - `src/stix.rs` and `src/eval/*` were reviewed for overlap. No code change was required in this pass.
+- Until G8, `src/{assurance,benchmark,coverage,diamond,gap,metrics,roi,trust}.rs` had no `mod` line in `src/lib.rs`, so they were never compiled and their 45 unit tests never ran, although the rows above already said REBUILT/MERGED. They are now declared in `src/lib.rs` and their tests run in `cargo test`. No CLI command or recon path calls them yet; wiring is G1. `tests/dispositions.rs` now fails if a REBUILT, REIMPLEMENT, MERGED or PARTIAL row names a `src/` file that is not in the module tree reached from `src/lib.rs`/`src/main.rs`, or if any `src/**/*.rs` is outside that tree. A `mod` gated by a `cfg` other than `cfg(test)`, or relocated with `path` (including through `cfg_attr`), fails the check rather than counting as compiled.
 - `src/attack_catalog.rs` was generated mechanically from legacy `src/core/attack/mod.rs` and validated by tests. It was not hand-retyped.
 - Policy-change review: no legacy file in this area had been marked NOT APPLICABLE solely because of network or credentials. The one omitted I/O-bound legacy behavior was `assurance/continuity.rs` source-tree scanning; it is now rebuilt behind `SourceTree`/`FsSourceTree`, with unit tests using a fake tree and no live network added in this area.
 
@@ -93,7 +96,8 @@ Evidence source: `legacy/` and the two root zip archives. Never delete, edit or 
 | `core/classify_module.rs` | REBUILT | `src/classify_module.rs` | Module-level classification/actionability rebuilt. |
 | `src/confidence.rs` (current owner) | MERGED OWNER | `src/confidence.rs` | Extended with legacy confidence/verification vocabulary and kept as the single owner. |
 | `src/evidence_ancestry.rs` (current owner) | MERGED OWNER | `src/evidence_ancestry.rs` | Kept as the single owner for independent-root support counting. |
-| `src/identity_resolution.rs` (current owner) | MERGED OWNER | `src/identity_resolution.rs` | Kept as the single owner for reversible, ancestry-aware merge decisions. |
+| `src/identity_resolution.rs` (current owner) | MERGED OWNER | `src/identity_resolution.rs` | Kept as the single owner for reversible, ancestry-aware merge decisions. `hold_reasons` is the one merge rule: it requires a present, in-range probability (a036d76e) and states every reason a candidate is held. |
+| `src/lineage.rs` (current owner) | MERGED OWNER | `src/lineage.rs` | Single owner for lineage read from response data (never the collector name) and for `resolve_with_lineage`, the observation → merge-outcome contract that `check` gate 5 runs (alongside a hand-built `EvidenceAncestryGraph` checked through `allows_automatic_merge`). The registry gate recomputes the collector family from `provenance.source` (ASCII only) and never trusts the stored `source_family`. |
 
 ### Relation rebuild accounting
 
@@ -122,7 +126,7 @@ These legacy files are now represented primarily by `src/correlator.rs`, but man
 | `core/correlator/rules/tests.rs` | 502 | PARTIAL ORACLE | Representative helper/rule oracles were ported into `src/correlator.rs` tests; the full legacy oracle set is not yet ported. |
 | `core/correlator/rules/assoc.rs` | 608 | NOT YET REBUILT | Accounted for; full association rule family still outstanding. |
 | `core/correlator/rules/breach.rs` | 1385 | PARTIAL | `AU-001`, `AU-019`, and `AU-021` style breach/exposure subsets are rebuilt; the rest of the family remains outstanding. |
-| `core/correlator/rules/breach_pii.rs` | 1744 | NOT YET REBUILT | Accounted for; full breach-PII rule family still outstanding. |
+| `core/correlator/rules/breach_pii.rs` | 1744 | PARTIAL | `breach_corpus_key` field precedence (`dbname`, `breach`, `source_db`) is rebuilt as `src/lineage.rs` `LINEAGE_FIELDS`, without the fallback to the collector name; checked against the 7dca720 oracle by `tests/lineage_legacy.rs`. The rest of the breach-PII rule family is still outstanding. |
 | `core/correlator/rules/broker.rs` | 204 | PARTIAL | Connection-broker logic subset rebuilt as `AU-070`; full parity still outstanding. |
 | `core/correlator/rules/creator_exposure.rs` | 204 | NOT YET REBUILT | Accounted for; rule family still outstanding. |
 | `core/correlator/rules/crypto.rs` | 175 | NOT YET REBUILT | Accounted for; rule family still outstanding. |
@@ -288,7 +292,7 @@ Credentials are allowed, but artifacts/logs still keep fingerprint-only hygiene.
 | `util/response_cache/tests.rs` | `src/circuit.rs` tests | MERGED | Cache behaviour folded into grouped tests. |
 | `util/breach_sector/mod.rs` | `src/breach.rs` | REIMPLEMENT | Rebuilt pure sector classifier and token parsing. |
 | `util/breach_sector/tests.rs` | `src/breach.rs` tests | MERGED | Legacy examples preserved as tests. |
-| `core/breach_consensus.rs` | — | NOT APPLICABLE | Still depends on monolith-only graph/entity orchestration. |
+| `core/breach_consensus.rs` | `src/lineage.rs`, `src/identity_resolution.rs` | PARTIAL | Distinct-corpus counting (`breach_sources_of`, `is_corroborated`) is rebuilt as lineage families from response fields; the two-corpus threshold and the 0.90 two-corpus `supported_ceiling` are the `AutoMergePolicy` default. Legacy outcomes on 9 fixtures are recorded in `tests/fixtures/legacy_7dca720_breach_consensus.json`, and intentional differences are listed in `docs/LINEAGE.md`. Audit flags, the consensus evidence record and the sweep tag are not rebuilt. |
 | `core/breach_platforms.rs` | `src/breach.rs` | REIMPLEMENT | Rebuilt shared breach platform helpers/constants. |
 | `core/breach_sweep.rs` | — | NOT APPLICABLE | Still depends on monolith planner/runtime graph. |
 | `core/stealer_row/mod.rs` | `src/breach.rs` | REIMPLEMENT | Rebuilt row shape and password/combo classification. |
@@ -378,13 +382,49 @@ Policy change (network and credentials now allowed):
 - No credential values are logged or embedded in tests/artifacts; these boundaries carry plain request/response data only.
 - Redundancies removed during the shared-HTTP refactor: identity/email/phone canonicalisation now delegates to the shared canonical/validation owners; postcode shape/range checks now live in `src/postcode_au.rs`; DNS label/RNAME helpers now live only in `src/dns.rs`.
 
+## AU people registers
+
+| Legacy path | Lines | Decision | New module | Defect found / evidence or reason |
+| --- | ---: | --- | --- | --- |
+| `src/modules/asic_persons/mod.rs` | 629 | REBUILT | `src/asic_persons.rs`, `src/people_cli.rs`, `src/people_save.rs` | Keyless data.gov.au CKAN collector for banned/disqualified persons, financial advisers and credit representatives. Blocking `fetch` over an injected transport; emit oracles ported from legacy fixtures. Coordinates use `postcode_au::offline_centroid` (L3), not `geo` (L6). `people NAME [--save FILE]` is the collection front-end (`people_cli`) over this collector plus `asic_director`, `au_people` and `au_electoral`, and runs evidence through `lineage::resolve_with_lineage`; one source failure does not abort the others; `people_save` writes an unverified ledger `verify` reloads. Tests never hit the live portal. |
+| `src/modules/asic_persons/tests.rs` | 424 | MERGED | `src/asic_persons.rs` tests | Legacy emit, name-match, controller and checksum fixtures plus scripted-transport lookup, envelope-failure and challenge-page cases. |
+| `src/modules/asic_director/mod.rs` | 397 | REBUILT | `src/asic_director.rs` | Keyless ASIC Connect Online HTML scrape of director appointments. Blocking `fetch` over an injected transport. Challenge pages, truncated bodies and non-success HTTP are never evidence. ACN emission requires checksum validation. Coordinates use `postcode_au::offline_centroid` (L3), not `geo`/`city_coords` (L6). Called from `people`; a WAF is `Error::Invalid` so it cannot be read as "no director records", and `people_cli` records that without aborting other sources (live Connect is WAF-blocked). Tests never hit the live portal. ATT&CK self-labels are not copied. |
+| `src/modules/asic_director/tests.rs` | 275 | MERGED | `src/asic_director.rs` tests | Legacy emit, whole-word match, checksum-invalid ACN, request_failed, HTML entity decode and scripted-transport lookup/challenge cases. The ignored wall-clock linearity test is not rebuilt. |
+| `src/modules/au_people/mod.rs` | 495 | REBUILT | `src/au_people.rs` | Keyless True People Search AU HTML scrape. Blocking `fetch` over an injected transport. Challenge pages, truncated bodies and non-success HTTP (other than 404) are never evidence; 404 is ValidZero. Addresses and emails are candidate leads (unattributed line scan). Relatives keep same-surname family only, never tagged `tps-au`. Coordinates use `postcode_au::offline_centroid` (L3), not `geo`. White Pages AU is not queried (retired 404). Called from `people`; a challenged page is `Error::Invalid` and does not abort other sources. ATT&CK self-labels are not copied. |
+| `src/modules/au_people/tests.rs` | 307 | MERGED | `src/au_people.rs` tests | Legacy relatives, TPS address/email chrome, candidate-lead, split_name, state-tag and dedup oracles plus scripted-transport lookup/challenge/404 cases. The proptest panic-totality tests are replaced by a small adversarial-byte unit test (no `regex`/`proptest` crate). |
+| `src/modules/au_electoral/mod.rs` | 244 | REBUILT | `src/au_electoral.rs` | Keyless NSW/VIC/QLD electoral-commission HTML scrape. Blocking `fetch` over an injected transport. First hit wins. Challenge pages, truncated bodies and non-success HTTP are Unreachable, not "not enrolled". All-unreachable fails closed. No AEC national leg (NameSearch retired). Division centroids are an offline table, not `geo`. Called from `people`; all-unreachable is `Error::Invalid` and does not abort other sources. ATT&CK self-labels are not copied. |
+| `src/modules/au_electoral/parse.rs` | 357 | MERGED | `src/au_electoral.rs` | Division/enrolment markers, nearby-negation window, apostrophe names, suburb hints on standalone postcodes. |
+| `src/modules/au_electoral/entity.rs` | 90 | MERGED | `src/au_electoral.rs` | Address 0.72 with suburb / 0.58 division-only; coordinates only when the offline centroid table has the division. |
+| `src/modules/au_electoral/division_map.rs` | 140 | MERGED | `src/au_electoral.rs` | 67-division centroid table plus Darwin→NT state inference. |
+| `src/modules/au_electoral/tests.rs` | 308 | MERGED | `src/au_electoral.rs` tests | Legacy parse/emit/outage oracles plus scripted-transport first-hit, challenge and all-unreachable cases. The proptest panic-totality tests are replaced by a small adversarial-byte unit test. |
+
+### Notes
+
+- Live CKAN (`asic_persons_live_finds_a_banned_person`) is not rebuilt: capability row 4 still requires D and L.
+- Live ASIC Connect (`asic_director`) is WAF-blocked (403); `people` still calls it and records the failure without aborting other sources. Tested on a fake transport only.
+- `au_people` is called from `people` and tested on a fake transport only; live TPS is not run in CI.
+- `au_electoral` is called from `people` and tested on a fake transport only; live commissions are not run in CI.
+
+## Providers restored from 764ce8e
+
+The v1.41.0 source rows below are accounted against the newer stolen.tax v2 and
+crt.sh implementations ported onto the guarded fetch layer. The differential
+fixtures record legacy outputs; the blank-name/host guard intentionally omits
+placeholder markers and unknown stand-in facts.
+
+| Legacy path | Lines | Decision | New module | Defect found / evidence or reason |
+| --- | ---: | --- | --- | --- |
+| `src/modules/crtsh/mod.rs` | 382 | REIMPLEMENT | `src/crtsh.rs` | 30-second timeout; retries only HTTP 502/503/429, at most three attempts two seconds apart. Challenge, truncated and malformed responses fail closed. Differential fixtures match records, confidence, tags and evidence attributes without a result cap. |
+| `src/modules/crtsh/tests.rs` | 345 | MERGED | `src/crtsh/tests.rs`, `src/crtsh/differential.rs` | Legacy cases use fake transports; query shape, entity kinds, retry bounds, challenge pages, truncation and redirects are covered. |
+| `src/modules/stolen_tax/mod.rs` | 485 | REIMPLEMENT | `src/stolen_tax.rs` | v2 POST cascade with origin-scoped credentials, bounded same-site redirects, one 120-second lookup deadline and same-key 429 retries. Differential tests cover the legacy cascade; persistent key-pool rotation remains deferred. Password and hash fields are never declared. |
+
 ## Not yet dispositioned
 
-Legacy `src/` files of the monolith that no section above lists yet (895 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
+Legacy `src/` files of the monolith that no section above lists yet (881 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
 
 | Legacy area | Files not listed | Of |
 | --- | ---: | ---: |
-| `src/modules/` (providers) | 542 | 542 |
+| `src/modules/` (providers) | 528 | 542 |
 | `src/util/` | 116 | 213 |
 | `src/core/` | 49 | 203 |
 | `src/app/` | 45 | 45 |

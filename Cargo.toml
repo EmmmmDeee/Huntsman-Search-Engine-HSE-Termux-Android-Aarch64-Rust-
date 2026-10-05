@@ -4,6 +4,7 @@
 
 [package]
 name = "huntsman-recon"
+default-run = "huntsman-recon"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.87"

@@ -7,10 +7,13 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
+use huntsman_recon::classifier::classify as classify_indicator;
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use huntsman_recon::crtsh::{self, CrtShError};
 use huntsman_recon::egress::EgressPolicy;
+use huntsman_recon::entity::{Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
 use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
@@ -20,27 +23,65 @@ use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
 use huntsman_recon::fsio::write_atomic;
 use huntsman_recon::geohash;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
+use huntsman_recon::hibp::cli::{HIBP_USAGE, HibpCommand};
 use huntsman_recon::http::{
     Request, TransportConfig, UreqTransport, origin_of, parse_http_uri, redact_url,
 };
 use huntsman_recon::identity::{PersonRecord, resolve};
 use huntsman_recon::identity_resolution::{
-    AutoMergePolicy, IdentityResolutionDecision, ResolutionState,
+    AutoMergePolicy, HoldReason, IdentityResolutionDecision, ResolutionState,
 };
 use huntsman_recon::keys::{Keys, is_configured_value};
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
+use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage};
 use huntsman_recon::navigator::layer;
+use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, PeopleRun};
+use huntsman_recon::people_save;
+use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
 use huntsman_recon::source_outcome::{
     SourceHealthAction, SourceOutcomeKind, classify_fetch, recommended_action,
 };
+use huntsman_recon::source_registry::routes_for;
 use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
+use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
+use huntsman_recon::textnorm::escape_controls;
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|stolen-tax QUERY [--keys FILE] | keys FILE | verify LEDGER]";
+const RECON_USAGE: &str =
+    "usage: huntsman-recon recon crtsh TARGET | recon stolen-tax QUERY [--keys FILE]";
+const HELP: &str = "\
+Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
+
+Usage:
+  huntsman-recon <COMMAND> [ARGS]
+  huntsman-recon --help
+  huntsman-recon --version
+
+Commands:
+  check                 Run offline self-acceptance and regenerate var/*.json
+  geo                   Distance between two LAT,LON coordinates in metres
+  geohash               Encode LAT,LON (default precision: 7)
+  coarsen               Round LAT,LON to one decimal place
+  id                    Classify and validate an Australian ABN, ACN, or BSB
+  search                Search the built-in fixture or one local text directory
+  sources               Classify an indicator and print curated routes (offline)
+  people                Look up a name on keyless ASIC people registers
+  classify              Classify an HTTP status and response body
+  fetch                 Make a guarded HTTP request (network access)
+  hibp                  Have I Been Pwned lookups (opt-in; keyed subcommands need a key)
+  recon                 One crt.sh or stolen.tax lookup (network access)
+  keys                  Validate a private keys file; print slots and fingerprints
+  verify                Verify a saved evidence ledger
+
+Run `huntsman-recon <COMMAND> --help` for command details.
+Search and sources do not collect remote results. `fetch`, `hibp`, `recon` and
+`people` (two-token names) make HTTP requests; their default egress policy is
+public-only.";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
@@ -50,29 +91,122 @@ const EX_IOERR: u8 = 74;
 const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
 
 fn main() -> ExitCode {
-    let mut args = env::args().skip(1);
-    match args.next().as_deref() {
-        Some("geo") => geo(args.next(), args.next()),
-        Some("geohash") => geohash_cmd(args.next(), args.next().as_deref()),
-        Some("coarsen") => coarsen_cmd(args.next()),
-        Some("id") => id_cmd(args.next()),
-        Some("search") => search_cmd(args.next(), args.next()),
-        Some("classify") => classify(args.next(), args.next()),
-        Some("fetch") => fetch_cmd(&args.collect::<Vec<_>>()),
-        Some("keys") => keys_cmd(args.next()),
-        Some("verify") => verify(args.next()),
+    let argv: Vec<String> = env::args().skip(1).collect();
+    if argv.is_empty() {
+        return check();
+    }
+    if matches!(argv[0].as_str(), "help" | "-h" | "--help") {
+        println!("{HELP}\n{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if matches!(argv[0].as_str(), "-V" | "--version") {
+        println!("huntsman-recon {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+    if argv.len() == 2 && matches!(argv[1].as_str(), "-h" | "--help") {
+        print_command_help(&argv[0]);
+        return ExitCode::SUCCESS;
+    }
+    let mut remaining = argv.into_iter();
+    match remaining.next().as_deref() {
+        Some("geo") => geo(remaining.next(), remaining.next()),
+        Some("geohash") => geohash_cmd(remaining.next(), remaining.next().as_deref()),
+        Some("coarsen") => coarsen_cmd(remaining.next()),
+        Some("id") => id_cmd(remaining.next()),
+        Some("search") => search_cmd(remaining.next(), remaining.next()),
+        Some("sources") => sources_cmd(remaining.next()),
+        Some("people") => people_cmd(&remaining.collect::<Vec<_>>()),
+        Some("classify") => classify(remaining.next(), remaining.next()),
+        Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
+        Some("hibp") => hibp_cmd(&remaining.collect::<Vec<_>>()),
+        Some("recon") => recon_cmd(&remaining.collect::<Vec<_>>()),
+        Some("keys") => keys_cmd(remaining.next()),
+        Some("verify") => verify(remaining.next()),
         Some("check") | None => check(),
-        Some("help" | "-h" | "--help") => {
-            println!("{USAGE}");
-            ExitCode::SUCCESS
-        }
         Some(other) => fail(EX_USAGE, &format!("unknown command: {other}\n{USAGE}")),
     }
+}
+
+fn print_command_help(command: &str) {
+    let help = match command {
+        "check" => {
+            "check\nRun offline self-acceptance and regenerate var/ledger.json, var/navigator.json, and var/stix-bundle.json."
+        }
+        "geo" => {
+            "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres."
+        }
+        "geohash" => {
+            "geohash LAT,LON [PRECISION]\nEncode coordinates as a geohash. Precision defaults to 7."
+        }
+        "coarsen" => {
+            "coarsen LAT,LON\nRound coordinates to one decimal place for approximate location sharing."
+        }
+        "id" => "id TOKEN\nClassify and validate an Australian ABN, ACN, or BSB.",
+        "search" => {
+            "search QUERY [DIR]\nSearch built-in examples, or .txt/.md files in one directory. Challenge pages and unsafe/oversized inputs are skipped."
+        }
+        "sources" => {
+            "sources QUERY\nClassify an indicator and print curated public/browser search routes. Does not fetch those routes."
+        }
+        "people" => PEOPLE_HELP,
+        "classify" => {
+            "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
+        }
+        "fetch" => huntsman_recon::fetch_cli::FETCH_USAGE,
+        "hibp" => HIBP_USAGE,
+        "recon" => RECON_USAGE,
+        "keys" => {
+            "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values."
+        }
+        "verify" => {
+            "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
+        }
+        _ => {
+            println!("{HELP}\n{USAGE}");
+            return;
+        }
+    };
+    println!("{help}\n  -h, --help  Show this help");
 }
 
 fn fail(code: u8, msg: &str) -> ExitCode {
     eprintln!("{msg}");
     ExitCode::from(code)
+}
+
+fn people_cmd(args: &[String]) -> ExitCode {
+    let parsed = match PeopleArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return fail(EX_USAGE, &format!("{e}\n{PEOPLE_USAGE}")),
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let transport = UreqTransport::new(&TransportConfig::default());
+    match people_cli::run(&transport, &parsed.name, now) {
+        PeopleRun::Printed { text, report } => {
+            print!("{text}");
+            if let Some(path) = parsed.save {
+                if report.entities.is_empty() && report.outcomes.is_empty() {
+                    return ExitCode::SUCCESS;
+                }
+                match people_save::save(&path, &report.entities, &report.outcomes) {
+                    Ok(entries) => {
+                        println!("saved={}", path.display());
+                        println!("entries={}", entries.len());
+                        println!("tip={}", entries.last().map_or("none", |e| e.hash.as_str()));
+                        ExitCode::SUCCESS
+                    }
+                    Err(Error::Store(msg)) => fail(EX_IOERR, &msg),
+                    Err(e) => fail(EX_DATAERR, &e.to_string()),
+                }
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        PeopleRun::Network(msg) => fail(EX_NOPERM, &msg),
+        PeopleRun::Failed(msg) => fail(EX_UNAVAILABLE, &msg),
+    }
 }
 
 fn geo(a: Option<String>, b: Option<String>) -> ExitCode {
@@ -145,6 +279,122 @@ fn id_cmd(token: Option<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn hibp_cmd(args: &[String]) -> ExitCode {
+    ExitCode::from(HibpCommand::production().run(
+        args,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    ))
+}
+
+fn recon_cmd(args: &[String]) -> ExitCode {
+    match args {
+        [source, target] if source == "crtsh" => crtsh_cmd(target),
+        [source, query] if source == "stolen-tax" => stolen_tax_cmd(query, None),
+        [source, query, flag, file] if source == "stolen-tax" && flag == "--keys" => {
+            stolen_tax_cmd(query, Some(file))
+        }
+        _ => fail(EX_USAGE, RECON_USAGE),
+    }
+}
+
+fn print_entities(entities: &[huntsman_recon::entity::Entity]) {
+    for e in entities {
+        println!(
+            "{}\t{}\t{:.2}\t{}",
+            serde_json::to_value(&e.kind)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+            escape_controls(&e.value),
+            e.confidence,
+            escape_controls(&e.tags.join(","))
+        );
+    }
+}
+
+fn crtsh_cmd(target: &str) -> ExitCode {
+    let target = target.trim();
+    if target.is_empty() {
+        return fail(EX_USAGE, RECON_USAGE);
+    }
+    let kind = if target.contains("://") {
+        ReconTargetKind::Url
+    } else if target.contains('@') {
+        ReconTargetKind::Email
+    } else {
+        ReconTargetKind::Domain
+    };
+    let transport = UreqTransport::new(&crtsh::transport_config());
+    match crtsh::lookup(&transport, kind, target, "cli") {
+        Ok(report) => {
+            print_entities(&report.entities);
+            println!(
+                "query={} attempts={} entities={}",
+                escape_controls(report.query.as_deref().unwrap_or("none")),
+                report.attempts,
+                report.entities.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e @ CrtShError::Refused(_)) => fail(EX_NOPERM, &e.to_string()),
+        Err(e) => fail(EX_UNAVAILABLE, &e.to_string()),
+    }
+}
+
+fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
+    if query.trim().is_empty() {
+        return fail(EX_USAGE, RECON_USAGE);
+    }
+    let keys = match keys_file {
+        Some(path) => match Keys::load(Path::new(path)) {
+            Ok(keys) => keys,
+            Err(e) => return fail(EX_NOINPUT, &e.to_string()),
+        },
+        None => Keys::from_env(),
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let transport = UreqTransport::new(&stolen_tax::transport_config());
+    match stolen_tax::lookup(&transport, &keys, query, "cli", now) {
+        Ok(report) => {
+            print_entities(&report.entities);
+            for failure in &report.failed_paths {
+                println!(
+                    "failed_path={} reason={}",
+                    failure.path,
+                    escape_controls(&failure.reason)
+                );
+            }
+            for path in &report.skipped_paths {
+                println!(
+                    "skipped_path={path} reason=not sent, {}s lookup budget exhausted",
+                    stolen_tax::LOOKUP_BUDGET.as_secs()
+                );
+            }
+            if let Some(secret) = keys.get(stolen_tax::KEY_SLOT) {
+                println!("credential={}", &secret.fingerprint().as_str()[..12]);
+            }
+            println!(
+                "entities={} partial={}",
+                report.entities.len(),
+                report.truncation.is_some()
+            );
+            if let Some(note) = &report.truncation {
+                println!("truncation={note}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e @ StolenTaxError::MissingKey) => fail(EX_NOINPUT, &e.to_string()),
+        Err(e @ StolenTaxError::Refused(_)) => fail(EX_NOPERM, &e.to_string()),
+        Err(e @ (StolenTaxError::Failed(_) | StolenTaxError::BudgetExhausted { .. })) => {
+            fail(EX_UNAVAILABLE, &e.to_string())
+        }
+    }
+}
+
 fn fetch_cmd(args: &[String]) -> ExitCode {
     let parsed = match FetchArgs::parse(args) {
         Ok(p) => p,
@@ -172,6 +422,7 @@ fn fetch_cmd(args: &[String]) -> ExitCode {
         credential.as_ref(),
         &FetchOptions {
             max_redirects: parsed.max_redirects,
+            ..FetchOptions::default()
         },
         "cli",
         now,
@@ -218,10 +469,11 @@ fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
     let Some((slot, style)) = &args.auth else {
         return Ok(None);
     };
-    let keys = match &args.keys_file {
-        Some(path) => Keys::load(path)?,
-        None => Keys::from_env(),
-    };
+    let resolved = Keys::resolve(args.keys_file.as_deref(), env::var_os("HOME").as_deref())?;
+    if let Some(warning) = &resolved.warning {
+        eprintln!("{warning}");
+    }
+    let keys = resolved.keys;
     let secret = keys
         .get(slot)
         .ok_or_else(|| Error::Invalid(format!("credential {slot} is not configured")))?;
@@ -300,6 +552,36 @@ fn search_cmd(query: Option<String>, dir: Option<String>) -> ExitCode {
     }
     for hit in &hits {
         println!("{}\t{}\t{}", hit.score, hit.id, hit.source);
+    }
+    ExitCode::SUCCESS
+}
+
+fn sources_cmd(query: Option<String>) -> ExitCode {
+    let Some(query) = query else {
+        return fail(EX_USAGE, "usage: huntsman-recon sources QUERY");
+    };
+    let classified = classify_indicator(&query);
+    // Residual and unsupported kinds have no descriptors, so the empty-route check
+    // is the gate. A confidence floor here would drop low-confidence but routable
+    // kinds such as `@handle` usernames.
+    let routes = routes_for(&classified.kind, &classified.value);
+    if routes.is_empty() {
+        return fail(EX_DATAERR, "no actionable source routes");
+    }
+    println!(
+        "kind={} confidence={:.3} routes={}",
+        classified.kind.as_str(),
+        classified.confidence,
+        routes.len()
+    );
+    for route in routes {
+        println!(
+            "source={} execution={} access={} url={}",
+            route.source_id,
+            route.execution.as_str(),
+            route.access.as_str(),
+            route.url
+        );
     }
     ExitCode::SUCCESS
 }
@@ -560,6 +842,102 @@ fn check_overlay_gates() -> Gate {
         "WAF demanded credentials",
     )?;
 
+    check_lineage_gate()?;
+    check_ancestry_graph_gate()?;
+
+    let delayed = FrontierState {
+        delayed_retry_work: 1,
+        ..FrontierState::default()
+    };
+    gate(
+        5,
+        decide_termination(delayed, TerminationSignals::default()).is_none(),
+        "delayed work called a fixed point",
+    )?;
+    Ok(())
+}
+
+/// Gate 5, lineage half: families come from the response fields, not the collector.
+/// Two collectors relaying one dump are one family and cannot auto-merge; a dump plus
+/// an independent registry can, but only with a present, in-range probability.
+/// Every observation and candidate comes back.
+fn check_lineage_gate() -> Gate {
+    let record = |id: &str, collector: &str, field: &str, value: &str| Observation {
+        id: id.into(),
+        evidence: Evidence::new(EvidenceProvenance::new(collector), "fixture record")
+            .with_attr(field, value),
+    };
+    let observations = vec![
+        record("hibp-1", "hibp", "breach", "Adobe 2013"),
+        record("dehashed-1", "dehashed", "dbname", "ADOBE  2013"),
+        record("abr-1", "abn_lookup", "registry", "company registry"),
+    ];
+    let mirrors = IdentityResolutionDecision {
+        left_entity_uid: "a".into(),
+        right_entity_uid: "b".into(),
+        state: ResolutionState::Match,
+        probability: Some(0.99),
+        supporting: vec!["hibp-1".into(), "dehashed-1".into()],
+        contradicting: vec![],
+        temporal_conflict: false,
+        geographic_conflict: false,
+        decided_at_unix: 0,
+    };
+    let independent = IdentityResolutionDecision {
+        supporting: vec!["dehashed-1".into(), "abr-1".into()],
+        ..mirrors.clone()
+    };
+    let unscored = IdentityResolutionDecision {
+        probability: None,
+        ..independent.clone()
+    };
+    let nan = IdentityResolutionDecision {
+        probability: Some(f64::NAN),
+        ..independent.clone()
+    };
+    let resolution = resolve_with_lineage(
+        observations.clone(),
+        vec![mirrors, independent, unscored, nan],
+        AutoMergePolicy::default(),
+    )
+    .map_err(|e| (5, e.to_string()))?;
+    let [mirrors, independent, unscored, nan] = resolution.candidates.as_slice() else {
+        return Err((5, "a merge candidate was dropped".into()));
+    };
+    gate(
+        5,
+        mirrors.independent_families.len() == 1 && mirrors.outcome != MergeOutcome::AutoMerge,
+        "mirrors manufactured corroboration",
+    )?;
+    gate(
+        5,
+        independent.outcome == MergeOutcome::AutoMerge,
+        "independent roots refused",
+    )?;
+    let held_for = |c: &CandidateOutcome, want: fn(&HoldReason) -> bool| matches!(&c.outcome, MergeOutcome::Held { reasons } if reasons.iter().any(want));
+    gate(
+        5,
+        held_for(unscored, |r| *r == HoldReason::ProbabilityMissing)
+            && held_for(nan, |r| matches!(r, HoldReason::ProbabilityInvalid { .. })),
+        "merge without a valid probability",
+    )?;
+    gate(
+        5,
+        resolution
+            .observations
+            .iter()
+            .map(|o| &o.observation)
+            .eq(&observations),
+        "observation dropped or re-attributed",
+    )
+}
+
+/// Gate 5, graph half: the hand-built ancestry graph and `allows_automatic_merge`, the
+/// exact path `resolve::automatic_clusters` takes in production. Unlike the lineage
+/// graph (one root plus relay nodes), it has an explicit parent chain and a root that
+/// supports a candidate directly. Two mirrors of one dump are one family; a mirror plus
+/// an independent registry root are two.
+fn check_ancestry_graph_gate() -> Gate {
     let mut graph = EvidenceAncestryGraph::default();
     let nodes: [(&str, &str, &[&str]); 4] = [
         ("dump", "Adobe 2013", &[]),
@@ -591,7 +969,7 @@ fn check_overlay_gates() -> Gate {
     gate(
         5,
         !mirrors.allows_automatic_merge(&graph, AutoMergePolicy::default()),
-        "mirrors manufactured corroboration",
+        "mirrors manufactured corroboration (ancestry graph)",
     )?;
     let independent = IdentityResolutionDecision {
         supporting: vec!["mirror-a".into(), "registry".into()],
@@ -600,19 +978,8 @@ fn check_overlay_gates() -> Gate {
     gate(
         5,
         independent.allows_automatic_merge(&graph, AutoMergePolicy::default()),
-        "independent roots refused",
-    )?;
-
-    let delayed = FrontierState {
-        delayed_retry_work: 1,
-        ..FrontierState::default()
-    };
-    gate(
-        5,
-        decide_termination(delayed, TerminationSignals::default()).is_none(),
-        "delayed work called a fixed point",
-    )?;
-    Ok(())
+        "independent roots refused (ancestry graph)",
+    )
 }
 
 /// RCVF recorder gate: full terminate refuses an empty tip and binds to the real one.
