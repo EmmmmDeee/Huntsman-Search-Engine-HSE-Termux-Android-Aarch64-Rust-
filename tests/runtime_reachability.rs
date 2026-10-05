@@ -54,11 +54,20 @@ fn dispositions() -> BTreeMap<String, String> {
             continue;
         }
         let fields = line.split('\t').collect::<Vec<_>>();
-        assert_eq!(fields.len(), 3, "line {} must have three TSV fields", line_number + 1);
+        assert_eq!(
+            fields.len(),
+            3,
+            "line {} must have three TSV fields",
+            line_number + 1
+        );
         let module = fields[0].trim();
         let class = fields[1].trim();
         let rationale = fields[2].trim();
-        assert!(!module.is_empty(), "line {} has empty module", line_number + 1);
+        assert!(
+            !module.is_empty(),
+            "line {} has empty module",
+            line_number + 1
+        );
         assert!(ALLOWED.contains(&class), "{module}: unknown class {class}");
         assert!(!rationale.is_empty(), "{module}: missing rationale");
         assert!(
