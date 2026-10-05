@@ -49,9 +49,9 @@ Still unresolved: no Termux handset run. The ATT&CK binding table is still empty
 
 Both archives were extracted from `91f2533` and judged item by item.
 
-**`Huntsman-Search-Engine-HSE-…-main.zip`** is the HSE v1.41.0 monolith (1727 files, network providers, credential handling, Rust 1.98). It is not restored. It conflicts with this crate's contract of no paid source, and the overlay's own `VERIFICATION.json` says it was never compiled against it.
+**`Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust--main (10).zip`** is the HSE v1.41.0 monolith (1727 zip entries, of which 1314 are files; network providers, credential handling, Rust 1.98). It is not restored. It conflicts with this crate's contract of no paid source, and the overlay's own `VERIFICATION.json` says it was never compiled against it.
 
-**`Huntsman-HSE-EndToEnd-Refactor-feef60a.zip`** is the refactor overlay. Its `VERIFICATION.json` reported cargo, fmt, clippy, and tests as BLOCKED, so none of it had been compiled before this pass. It was imported verbatim first (21 tests passed), then attacked.
+**`Huntsman-HSE-EndToEnd-Refactor-Overlay-feef60a.zip`** is the refactor overlay. Its `VERIFICATION.json` reported cargo, fmt, clippy, and tests as BLOCKED, so none of it had been compiled before this pass. It was imported verbatim first (21 tests passed), then attacked.
 
 | Overlay item | Disposition | Falsification evidence (test failed on the overlay code, passes now) |
 | --- | --- | --- |

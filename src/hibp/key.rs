@@ -9,10 +9,12 @@
 //! tries them in this order and uses the first that yields a key:
 //!
 //! 1. the `HIBP_API_KEY` environment variable;
-//! 2. the existing `HUNTSMAN_HIBP_KEY` slot (process env or `~/.huntsman.env`,
-//!    as loaded into the scan's `ModuleContext`), so existing installs keep
-//!    working;
-//! 3. the key file `~/.config/hibp/api_key` (trimmed; should be mode 600);
+//! 2. the `HUNTSMAN_HIBP_KEY` slot: the value the caller passes in (for
+//!    example from a keys file it loaded with `keys::Keys::load`), else the
+//!    `HUNTSMAN_HIBP_KEY` environment variable. Nothing here reads a keys file
+//!    implicitly;
+//! 3. the key file `~/.config/hibp/api_key` (trimmed; ignored unless it has no
+//!    group or other permission bits, i.e. mode 600 or stricter);
 //! 4. the key embedded at build time by `build.rs` (see [`EmbeddedSource`]).
 //!
 //! Runtime sources therefore always override the embedded default. Each value
@@ -104,7 +106,7 @@ impl KeySource for EnvSource {
 }
 
 /// A value the caller already holds (for example the `HUNTSMAN_HIBP_KEY` slot
-/// from a `ModuleContext`).
+/// from a keys file the caller loaded).
 pub struct ValueSource {
     value: Option<String>,
     origin: KeyOrigin,
