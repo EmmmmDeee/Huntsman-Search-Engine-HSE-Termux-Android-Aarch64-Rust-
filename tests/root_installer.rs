@@ -26,13 +26,58 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
     let temp = scratch();
     let prefix = temp.join("prefix");
     let fake_bin = temp.join("fake-bin");
+    let fake_target_libdir = temp.join("rustlib");
     let log = temp.join("install.log");
     fs::create_dir_all(prefix.join("bin")).unwrap();
+    fs::create_dir_all(prefix.join("tmp")).unwrap();
     fs::create_dir_all(&fake_bin).unwrap();
+    fs::create_dir_all(&fake_target_libdir).unwrap();
+    fs::write(fake_target_libdir.join("libstd-test.rlib"), b"fixture").unwrap();
 
     write_executable(
         &fake_bin.join("pkg"),
         "#!/bin/sh\nprintf 'pkg %s\\n' \"$*\" >> \"$INSTALL_LOG\"\n",
+    );
+    write_executable(
+        &fake_bin.join("dpkg-query"),
+        "#!/bin/sh\nprintf 'dpkg-query %s\\n' \"$*\" >> \"$INSTALL_LOG\"\nprintf '%s' '1.98.0-1'\n",
+    );
+    write_executable(
+        &fake_bin.join("rustc"),
+        r#"#!/bin/sh
+case "$1" in
+  -vV)
+    printf '%s\n' 'rustc 1.98.0 (fixture)' 'binary: rustc' 'commit-hash: fixture' 'commit-date: 2026-10-05' 'host: x86_64-unknown-linux-gnu' 'release: 1.98.0'
+    ;;
+  --print)
+    if [ "${2:-}" = "target-libdir" ]; then
+      printf '%s\n' "$FAKE_RUST_TARGET_LIBDIR"
+    else
+      exit 2
+    fi
+    ;;
+  --version)
+    printf '%s\n' 'rustc 1.98.0 (fixture)'
+    ;;
+  *)
+    out=''
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = '-o' ]; then
+        shift
+        out="${1:-}"
+        break
+      fi
+      shift
+    done
+    [ -n "$out" ] || exit 2
+    cat > "$out" <<'PROBE'
+#!/bin/sh
+printf '%s\n' 'huntsman-rust-toolchain-ok'
+PROBE
+    chmod +x "$out"
+    ;;
+esac
+"#,
     );
     write_executable(
         &fake_bin.join("cargo"),
@@ -47,6 +92,7 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         .env("PATH", path)
         .env("PREFIX", &prefix)
         .env("INSTALL_LOG", &log)
+        .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
         .env("HUNTSMAN_REV", rev)
         .output()
         .expect("root installer must execute under bash");
@@ -60,6 +106,15 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
 
     let calls = fs::read_to_string(&log).expect("fake installer log");
     assert!(calls.contains("pkg install -y git rust clang"), "{calls}");
+    assert!(
+        calls.contains("pkg install -y rust rust-std-x86_64-unknown-linux-gnu"),
+        "{calls}"
+    );
+    assert!(calls.contains("dpkg-query -W -f=${Version} rust"), "{calls}");
+    assert!(
+        calls.contains("dpkg-query -W -f=${Version} rust-std-x86_64-unknown-linux-gnu"),
+        "{calls}"
+    );
     assert!(calls.contains("hibp=1 cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git"), "{calls}");
     assert!(calls.contains(&format!("--rev {rev}")), "{calls}");
     assert!(calls.contains("--locked"), "{calls}");
