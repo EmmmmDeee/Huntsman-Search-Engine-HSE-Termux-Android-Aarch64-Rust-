@@ -3,27 +3,32 @@ use huntsman_recon::archive::{
     parse_archive_url,
 };
 
+#[derive(Clone, Copy, Default)]
+struct CaptureMeta<'a> {
+    collection: Option<&'a str>,
+    status: Option<u16>,
+    mime: Option<&'a str>,
+    source_url: Option<&'a str>,
+}
+
 fn capture(
     source: ArchiveSource,
     dataset: &str,
-    collection: Option<&str>,
     url: &str,
     captured_at: &str,
-    status: Option<u16>,
-    mime: Option<&str>,
-    source_url: Option<&str>,
+    meta: CaptureMeta<'_>,
 ) -> ArchiveCapture {
     ArchiveCapture {
         source,
         dataset: dataset.to_owned(),
-        collection: collection.map(str::to_owned),
+        collection: meta.collection.map(str::to_owned),
         original_url: url.to_owned(),
         key: parse_archive_url(url).expect("valid archive URL"),
         captured_at: captured_at.to_owned(),
-        status,
-        mime: mime.map(str::to_owned),
+        status: meta.status,
+        mime: meta.mime.map(str::to_owned),
         digest: None,
-        source_url: source_url.map(str::to_owned),
+        source_url: meta.source_url.map(str::to_owned),
     }
 }
 
@@ -76,36 +81,40 @@ fn merge_keeps_first_last_count_and_per_dataset_observations() {
         capture(
             ArchiveSource::Wayback,
             "internet_archive_wayback",
-            None,
             url,
             "20240101000000",
-            Some(200),
-            Some("text/html"),
-            Some(
-                "https://web.archive.org/web/20240101000000/https://example.com/admin/login?next=%2F",
-            ),
+            CaptureMeta {
+                status: Some(200),
+                mime: Some("text/html"),
+                source_url: Some(
+                    "https://web.archive.org/web/20240101000000/https://example.com/admin/login?next=%2F",
+                ),
+                ..CaptureMeta::default()
+            },
         ),
         capture(
             ArchiveSource::Wayback,
             "internet_archive_wayback",
-            None,
             "http://EXAMPLE.com:80/admin/login?next=%2F",
             "20240201000000",
-            None,
-            None,
-            Some(
-                "https://web.archive.org/web/20240201000000/http://example.com/admin/login?next=%2F",
-            ),
+            CaptureMeta {
+                source_url: Some(
+                    "https://web.archive.org/web/20240201000000/http://example.com/admin/login?next=%2F",
+                ),
+                ..CaptureMeta::default()
+            },
         ),
         capture(
             ArchiveSource::CommonCrawl,
             "common_crawl",
-            Some("CC-MAIN-2026-30"),
             url,
             "20240301000000",
-            Some(301),
-            Some("text/html"),
-            None,
+            CaptureMeta {
+                collection: Some("CC-MAIN-2026-30"),
+                status: Some(301),
+                mime: Some("text/html"),
+                source_url: None,
+            },
         ),
     ]);
 
@@ -128,7 +137,7 @@ fn merge_keeps_first_last_count_and_per_dataset_observations() {
         .find(|observation| observation.dataset == "internet_archive_wayback")
         .expect("Wayback observation");
     assert_eq!(wayback.capture_count, 2);
-    assert!(wayback.collections.is_empty());
+    assert_eq!(wayback.collections, Vec::<String>::new());
     assert_eq!(wayback.first_seen, "20240101000000");
     assert_eq!(wayback.last_seen, "20240201000000");
     assert_eq!(wayback.status, Some(200));
@@ -142,22 +151,26 @@ fn same_dataset_multiple_captures_remain_one_dataset_observation() {
         capture(
             ArchiveSource::CommonCrawl,
             "common_crawl",
-            Some("CC-MAIN-2026-26"),
             "https://example.com/a",
             "20240101000000",
-            Some(200),
-            Some("text/html"),
-            None,
+            CaptureMeta {
+                collection: Some("CC-MAIN-2026-26"),
+                status: Some(200),
+                mime: Some("text/html"),
+                source_url: None,
+            },
         ),
         capture(
             ArchiveSource::CommonCrawl,
             "common_crawl",
-            Some("CC-MAIN-2026-30"),
             "https://example.com/a",
             "20240201000000",
-            Some(200),
-            Some("text/html"),
-            None,
+            CaptureMeta {
+                collection: Some("CC-MAIN-2026-30"),
+                status: Some(200),
+                mime: Some("text/html"),
+                source_url: None,
+            },
         ),
     ]);
 
@@ -176,12 +189,9 @@ fn unknown_status_or_mime_is_not_invented() {
     let records = merge_captures(vec![capture(
         ArchiveSource::Wayback,
         "internet_archive_wayback",
-        None,
         "https://example.com/unknown",
         "20240101000000",
-        None,
-        None,
-        None,
+        CaptureMeta::default(),
     )]);
 
     let observation = &records[0].observations[0];
