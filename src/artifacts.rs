@@ -66,7 +66,8 @@ pub fn render_artifacts(
     ledger: &[LedgerEntry],
     limits: &PipelineLimits,
 ) -> Result<PipelineArtifacts, Error> {
-    let report_value = serde_json::to_value(report).map_err(|error| Error::Store(error.to_string()))?;
+    let report_value =
+        serde_json::to_value(report).map_err(|error| Error::Store(error.to_string()))?;
     let report_json = bounded(canonical_json(&report_value)?, limits.max_export_bytes);
     let gexf = bounded(
         gexf::to_gexf(&snapshot.entities, &snapshot.relations).into_bytes(),
@@ -79,7 +80,10 @@ pub fn render_artifacts(
         .map_or(ArtifactPayload::NotApplicable, |text| {
             bounded(text.into_bytes(), limits.max_export_bytes)
         });
-    let stix = bounded(canonical_json(&stix::bundle(ledger))?, limits.max_export_bytes);
+    let stix = bounded(
+        canonical_json(&stix::bundle(ledger))?,
+        limits.max_export_bytes,
+    );
     let navigator = bounded(
         canonical_json(&navigator::layer(ledger))?,
         limits.max_export_bytes,
