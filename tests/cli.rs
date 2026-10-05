@@ -239,12 +239,22 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
         &["recon"][..],
         &["recon", "nope", "x"],
         &["recon", "crtsh", " "],
+        &["recon", "dns", " "],
         &["recon", "stolen-tax", "  "],
         &["recon", "stolen-tax", "a@example.com", "--bogus", "f"],
     ] {
         let out = bin().args(args).output().unwrap();
         assert_eq!(out.status.code(), Some(64), "{args:?}");
     }
+
+    let bad_domain = bin().args(["recon", "dns", "localhost"]).output().unwrap();
+    assert_eq!(bad_domain.status.code(), Some(65));
+    assert!(
+        String::from_utf8_lossy(&bad_domain.stderr).contains("bad domain"),
+        "{:?}",
+        String::from_utf8_lossy(&bad_domain.stderr)
+    );
+    assert_eq!(bad_domain.stdout.len(), 0);
 
     let out = bin()
         .args(["recon", "stolen-tax", "a@example.com"])

@@ -114,6 +114,8 @@ const fn kind_label(kind: SourceOutcomeKind) -> &'static str {
         SourceOutcomeKind::ValidZero => "valid_zero",
         SourceOutcomeKind::AuthRequired => "auth_required",
         SourceOutcomeKind::AuthRejected => "auth_rejected",
+        SourceOutcomeKind::EntitlementDenied => "entitlement_denied",
+        SourceOutcomeKind::QuotaExhausted => "quota_exhausted",
         SourceOutcomeKind::RateLimited => "rate_limited",
         SourceOutcomeKind::BotWaf => "bot_waf",
         SourceOutcomeKind::DnsFailure => "dns_failure",

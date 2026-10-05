@@ -37,8 +37,8 @@ huntsman-recon search "brisbane port"
 ```
 
 `check` runs offline self-acceptance. `search` and `sources` are offline.
-`fetch`, `hibp`, `recon` and `people` (two-token names) make HTTP requests and
-use public-only egress by default.
+`fetch`, `hibp`, `recon`, `seeknow` and `people` (two-token names) make HTTP
+requests and use public-only egress by default.
 Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
 before using credentials or network access.
 
@@ -86,6 +86,7 @@ cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
 cargo run -- hibp help                   # HIBP subcommands; offline
+cargo run -- seeknow --help              # SeekNow subcommands; offline
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
 cargo run -- recon crtsh https://example.com/
@@ -113,7 +114,7 @@ Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys fi
 
 `sources` is offline routing, not collection. It classifies the input using the existing Huntsman classifier and renders only compatible, independently curated public/browser search routes from `source_registry`. Generated routes are `LeadOnly`: a URL is never corroborating evidence by itself. External catalogue code or data is not embedded.
 
-Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch` or `recon` got no usable response or `people` registers were unusable, 74 artifact write failure, 77 `fetch` or `recon` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal. `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print help and the usage line.
+Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch` or `recon` or `seeknow` got no usable response or `people` registers were unusable, 74 artifact write failure, 77 `fetch` or `recon` or `seeknow` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal. `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print help and the usage line.
 
 `tests/readme.rs` runs every offline example above, checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`. Network HIBP examples below are exercised through a fake transport by `tests/hibp_cli.rs` rather than against the internet in CI.
 
@@ -168,7 +169,7 @@ Not exposed by this command: domain search, subscribed domains, domain verificat
 
 This command is **provider-specific reachability, not the unified people-lookup pipeline**. It does not yet convert HIBP responses into the common `entity::Evidence`/lineage/identity-resolution/saved-result path.
 
-## Recon sources: crt.sh and stolen.tax
+## Recon sources: crt.sh, DNS/mail, and stolen.tax
 
 `recon crtsh TARGET` accepts a domain, URL or email and queries crt.sh with a
 30-second timeout. HTTP 502, 503 and 429 responses are retried at most twice,
@@ -177,6 +178,18 @@ SAN names and non-public issuing CAs. Wildcard names, role or infrastructure
 mailboxes, and public-CA issuers are filtered; subdomains of the target apex
 carry the `subdomain` tag. Output is
 `kind<TAB>value<TAB>confidence<TAB>tags`, with control characters escaped.
+
+`recon dns TARGET` accepts a domain, URL or email and queries Cloudflare, Quad9
+and Google DNS-over-HTTPS (JSON) for apex A, AAAA, MX, NS and TXT, plus
+`_dmarc` and `_smtp._tls` TXT, through `fetch` with redirects off. One
+record-type failure does not abort the others. A challenge page is `bot_waf`,
+a truncated body is `truncated`, and HTTP 429 is `rate_limited`; none of those
+is parsed as DNS JSON. Quoted TXT presentation is decoded before SPF (RFC 7208),
+DMARC (RFC 7489) and TLSRPT (RFC 8460) parsing. Output is
+`type<TAB>name<TAB>rdata<TAB>resolver` lines, then `spf_all=`, `dmarc_policy=`
+and `tlsrpt_emails=` when those records parse, plus `failed` rows. An invalid
+selector exits 65 before any request; no usable answer exits 69. DoH is
+keyless. There is no live receipt in CI.
 
 `recon stolen-tax QUERY [--keys FILE]` is an explicit paid lookup requiring
 `HUNTSMAN_STOLEN_TAX_KEY`; a missing key exits 66 before any request. The v2
