@@ -3,6 +3,8 @@
 //! The client queries only the CDX endpoint through [`crate::fetch::fetch`]. Returned
 //! original URLs are observations; this module never dereferences them.
 
+use std::fmt::Write as _;
+
 use serde_json::Value;
 
 use crate::archive::{ArchiveCapture, ArchiveSource, parse_archive_url};
@@ -124,7 +126,7 @@ pub fn wayback_lookup<T: Transport + ?Sized>(
     } else {
         let mut detail = format!("parsed_rows={}", captures.len());
         if malformed_rows > 0 {
-            detail.push_str(&format!(" malformed_rows={malformed_rows}"));
+            let _ = write!(detail, " malformed_rows={malformed_rows}");
         }
         if bounded {
             detail.push_str(" row_limit_reached");
