@@ -31,3 +31,25 @@ fn repository_root_contains_no_opaque_snapshot_archives() {
         "opaque project snapshots belong in extracted, reviewable form; raw source archives remain recoverable from Git history"
     );
 }
+
+#[test]
+fn archive_documentation_tracks_the_canonical_extracted_state() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let readme = fs::read_to_string(root.join("README.md")).expect("README.md");
+    let architecture =
+        fs::read_to_string(root.join("ARCHITECTURE.md")).expect("ARCHITECTURE.md");
+    let dispositions = fs::read_to_string(root.join("docs/DISPOSITIONS.md"))
+        .expect("docs/DISPOSITIONS.md");
+    let reconstruction = fs::read_to_string(root.join("docs/RECONSTRUCTION_2026-10-02.md"))
+        .expect("docs/RECONSTRUCTION_2026-10-02.md");
+
+    assert!(readme.contains("docs/ARCHIVE_PROVENANCE.md"));
+    assert!(architecture.contains("docs/ARCHIVE_PROVENANCE.md"));
+    assert!(dispositions.contains("ARCHIVE_PROVENANCE.md"));
+    assert!(reconstruction.contains("ARCHIVE_PROVENANCE.md"));
+
+    assert!(!readme.contains("`*.zip` (root)"));
+    assert!(!architecture.contains("two root zip archives are pinned"));
+    assert!(!dispositions.contains("two root zip archives"));
+    assert!(!reconstruction.contains("legacy zip archives are back in the repository root"));
+}
