@@ -4,6 +4,7 @@
 //! Pure logic stays separate from I/O so every decision can be tested without a network.
 
 #![deny(unsafe_code)]
+#![cfg_attr(test, allow(unknown_lints, clippy::assert_is_empty))]
 #![allow(
     clippy::items_after_statements,
     clippy::missing_errors_doc,
@@ -11,11 +12,19 @@
 )]
 
 pub mod address_au;
+pub mod analysis;
+pub mod archive;
+pub mod archive_bridge;
+pub mod artifacts;
+pub mod asic_director;
+pub mod asic_persons;
 pub mod assurance;
 pub mod atproto;
 pub mod attack;
 pub mod attack_catalog;
+pub mod au_electoral;
 pub mod au_id;
+pub mod au_people;
 pub mod benchmark;
 pub mod breach;
 pub mod canonical;
@@ -24,9 +33,11 @@ pub mod ckan;
 pub mod classifier;
 pub mod classify;
 pub mod classify_module;
+pub mod collection;
 pub mod community;
 pub mod confidence;
 pub mod coref;
+pub mod correlation_bridge;
 pub mod correlator;
 pub mod coverage;
 pub mod credential_origin;
@@ -74,8 +85,12 @@ pub mod navigator;
 pub mod oui;
 pub mod oui_ieee;
 pub mod path;
+pub mod people_cli;
+pub mod people_save;
+pub mod pipeline;
 pub mod pivot;
 pub mod place;
+pub mod planner;
 pub mod postcode_au;
 pub mod profiles;
 pub mod radar;
@@ -85,6 +100,7 @@ pub mod relation;
 pub mod resolve;
 pub mod rf;
 pub mod roi;
+pub mod runtime;
 pub mod scraper_health;
 pub mod search;
 pub mod service_defs;
@@ -93,6 +109,7 @@ pub mod sha256;
 pub mod signals;
 pub mod snake_graph;
 pub mod source_outcome;
+pub mod source_registry;
 pub mod spf;
 pub mod stage;
 pub mod stix;

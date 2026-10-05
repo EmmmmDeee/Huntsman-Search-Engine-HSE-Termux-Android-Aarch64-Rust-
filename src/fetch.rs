@@ -709,7 +709,8 @@ mod tests {
         for u in ["file:///etc/passwd", "ftp://a/", "/relative", ""] {
             assert!(run(&f, u, None, 0).is_err(), "{u}");
         }
-        assert!(f.seen.borrow().is_empty());
+        let seen = f.seen.borrow();
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]

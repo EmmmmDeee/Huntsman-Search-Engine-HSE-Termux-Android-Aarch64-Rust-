@@ -1,1 +1,13 @@
 target/
+
+# Repository snapshots must be extracted into reviewable source trees instead of
+# committed as opaque root-level archive containers.
+/*.zip
+/*.7z
+/*.rar
+/*.tar
+/*.tar.gz
+/*.tgz
+/*.tar.bz2
+/*.tar.xz
+/*.tar.zst

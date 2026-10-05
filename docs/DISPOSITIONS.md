@@ -2,7 +2,7 @@
 
 Per-file accounting of the HSE monolith (`legacy/hse-monolith-v1.41.0/`) against the current crate, grouped by area. Decisions: REBUILT / REIMPLEMENT (new code, legacy kept as oracle), MERGED (folded into an existing owner or its tests), PARTIAL, PENDING / NOT YET REBUILT, NOT APPLICABLE. Refactor-overlay items are dispositioned in `RECONSTRUCTION_2026-10-02.md` (third pass).
 
-Evidence source: `legacy/` and the two root zip archives. Never delete, edit or move them.
+Evidence source: the canonical extracted trees under `legacy/`. Original archive SHA-256/Git identities and a recoverable commit are recorded in `ARCHIVE_PROVENANCE.md`. Do not mutate legacy oracle content without updating provenance and differential evidence.
 
 ## Contents
 
@@ -11,8 +11,9 @@ Evidence source: `legacy/` and the two root zip archives. Never delete, edit or 
 3. [Geo, geometry and RF](#geo-geometry-and-rf)
 4. [Parsers and signals](#parsers-and-signals)
 5. [Validation, domains and text](#validation-domains-and-text)
-6. [Providers restored from 764ce8e](#providers-restored-from-764ce8e)
-7. [Not yet dispositioned](#not-yet-dispositioned)
+6. [AU people registers](#au-people-registers)
+7. [Providers restored from 764ce8e](#providers-restored-from-764ce8e)
+8. [Not yet dispositioned](#not-yet-dispositioned)
 
 ## ATT&CK, assurance and analytics
 
@@ -381,23 +382,49 @@ Policy change (network and credentials now allowed):
 - No credential values are logged or embedded in tests/artifacts; these boundaries carry plain request/response data only.
 - Redundancies removed during the shared-HTTP refactor: identity/email/phone canonicalisation now delegates to the shared canonical/validation owners; postcode shape/range checks now live in `src/postcode_au.rs`; DNS label/RNAME helpers now live only in `src/dns.rs`.
 
-## Providers restored from 764ce8e
-
-The rows name the v1.41.0 files under `legacy/`, but the port source is newer: M D's lost local commit 764ce8e, restored on the old tree as `1dfb5c9d` (base `98c77fd`), plus M D's uncommitted blank-name/host guard. The v1 copies in `legacy/` (stolen.tax v1 `GET api.stolen.tax` with an `Api-Key` header; crt.sh with an 8 s budget and no transient retry) are stale and were not ported. Evidence for both rows: `tests/fixtures/legacy_764ce8e/*_expected.json` was recorded by running the old-tree code on the committed `*_cases.json` inputs, and `src/crtsh/differential.rs` and `src/stolen_tax/differential.rs` check that the port reproduces it.
+## AU people registers
 
 | Legacy path | Lines | Decision | New module | Defect found / evidence or reason |
 | --- | ---: | --- | --- | --- |
-| `src/modules/crtsh/mod.rs` | 382 | REIMPLEMENT | `src/crtsh.rs` | Migrated from 764ce8e onto the guarded `fetch` layer: 30 s timeout, at most 3 attempts 2 s apart for HTTP 502/503/429 only, no redirects, typed `CrtShError` for challenge pages, truncated and malformed bodies. Reuses `recon::ReconTargetKind` (the prior crt.sh equivalent in `src/recon.rs`), `domains::{host_from_url, classify_domain_candidate, is_infrastructure_email}` and `canonical::canonical_email` instead of copying them. The differential test matches every legacy record, value, confidence, tag and evidence attribute, with nothing capped. |
-| `src/modules/crtsh/tests.rs` | 345 | MERGED | `src/crtsh/tests.rs`, `src/crtsh/differential.rs` | All 23 legacy cases ported as fake-transport tests. Module-trait metadata cases (`accepts`, `cost`, `description`, `produces`) have no equivalent in this crate and became query-shape and entity-kind assertions. Added cases for retry bounds, challenge pages, truncation and redirects. |
-| `src/modules/stolen_tax/mod.rs` | 485 | REIMPLEMENT | `src/stolen_tax.rs` | Migrated from 764ce8e plus the guard: v2 `POST https://stolen.tax/api/v2/index.php?path=…` to the snusbase, osintcat and hudsonrock paths with `Authorization: Bearer`, bound to that origin by `fetch::Credential`. Password, hash and `top_passwords` fields are never declared. A partial cascade is declared, and an empty cascade with any path failure is an error. The differential test matches the legacy output except for the guard: no `breach:osintcat` or `stealer:unknown` placeholder markers, and no `unknown` stand-in facts. Restored with one key: a 429 is retried on the same key, at most 3 attempts per path (`stolen_tax::ATTEMPTS_PER_PATH`, the monolith's `attempt_with_key` with `retries = 2`), pausing for `Retry-After` as delta-seconds, 4 s when absent or unparseable and never more than 4 s (`RETRY_PAUSE_CAP`, the monolith's `retry_after_secs(headers, 4, 4)`); after the third 429 the path fails. 401, 403, an auth-shaped 400, an in-body key or quota error, 5xx and transport failures get one attempt, as the monolith did with no other key to rotate to. `src/stolen_tax/differential.rs` checks the attempts path by path against `tests/fixtures/legacy_764ce8e/stolen_tax_single_key_expected.json`, derived from a legacy capture (see `CAPTURE.md` there). Deferred to its own PR: the persistent key pool (storage, rotation across keys, selection rank). Security's requirements for that PR: the pool file is created mode 0600; a pool file that is a symlink or is owned by another user is refused (the symlink half is the same `lstat` check the HIBP key file gets through `fsio::read_bounded`; the HIBP key file has no owner check, but `keys::load_default_file` for `~/.huntsman.env` (#674) does both on `lstat`, plus the same-inode check after opening); the file stores key IDs and their state only, never a key. Not carried over: a `SERVICE_DEFS` entry (its probe would spend a paid lookup). The 120 s module budget is kept as one deadline over the whole cascade (`stolen_tax::LOOKUP_BUDGET`): each request, each redirect hop and each 429 pause gets only what is left of it (`fetch::fetch_within`), and a path the budget did not reach is reported in `skipped_paths`, never dropped. Two differences from the monolith, pending sign-off: when its budget ran out the monolith's engine (`run_module_guarded`, a `tokio::time::timeout` around `process`) discarded the whole module result, while this keeps the evidence from paths that finished and names the rest; and the monolith's engine lowered the budget to 45 s on a resource-constrained device (`CONSTRAINED_MODULE_TIMEOUT_CAP_MS`) or to `--module-timeout`, neither of which exists here. Also pending sign-off: a 429 pause that would end past the budget is not taken (the path fails and says so; the monolith slept and was killed mid-pause by the engine, losing the whole result); the port's 429 failure text is `HTTP 429 (RateLimited) after 3 attempts`, never the response body the monolith quoted; the monolith's per-key health reports (`report_key_exhausted` on 429, 401, 403, auth-400 and in-body key errors) belong to the deferred pool and are not made. Also differences: the monolith's 429 `tracing::warn!` that logged the key tail (`key_tail(key)`) is not carried over, and there is no per-attempt cancel check (the monolith checked `ctx.cancel.is_cancelled()` before each attempt). Redirects, decided by Chief: the monolith's same-site rule is restored (`ssrf.rs` `redirect_verdict`: at most 9 redirects, a hop to a private address, to another site or from https to http is not followed and the 3xx is the path's answer; same site is `stolen.tax` or a subdomain of it, any port), through `fetch::RedirectPolicy::SameSite`. Tightening: the key is sent only to the exact origin `https://stolen.tax:443` (`Credential::only_for_origin`), stripped from every other hop (a subdomain, another port) and never re-attached after a hop leaves that origin, and userinfo in a redirect target is dropped so it cannot mint an `Authorization` header. Tightening of the failure text (Security ruling): a decode failure names only the `serde_json` category (syntax, data, eof, io) and line and column, never the error's display text or the body; a provider's in-body `error` words are scrubbed of the key first, then cut to 120 characters on a character boundary, then control characters are replaced. |
+| `src/modules/asic_persons/mod.rs` | 629 | REBUILT | `src/asic_persons.rs`, `src/people_cli.rs`, `src/people_save.rs` | Keyless data.gov.au CKAN collector for banned/disqualified persons, financial advisers and credit representatives. Blocking `fetch` over an injected transport; emit oracles ported from legacy fixtures. Coordinates use `postcode_au::offline_centroid` (L3), not `geo` (L6). `people NAME [--save FILE]` is the collection front-end (`people_cli`) over this collector plus `asic_director`, `au_people` and `au_electoral`, and runs evidence through `lineage::resolve_with_lineage`; one source failure does not abort the others; `people_save` writes an unverified ledger `verify` reloads. Tests never hit the live portal. |
+| `src/modules/asic_persons/tests.rs` | 424 | MERGED | `src/asic_persons.rs` tests | Legacy emit, name-match, controller and checksum fixtures plus scripted-transport lookup, envelope-failure and challenge-page cases. |
+| `src/modules/asic_director/mod.rs` | 397 | REBUILT | `src/asic_director.rs` | Keyless ASIC Connect Online HTML scrape of director appointments. Blocking `fetch` over an injected transport. Challenge pages, truncated bodies and non-success HTTP are never evidence. ACN emission requires checksum validation. Coordinates use `postcode_au::offline_centroid` (L3), not `geo`/`city_coords` (L6). Called from `people`; a WAF is `Error::Invalid` so it cannot be read as "no director records", and `people_cli` records that without aborting other sources (live Connect is WAF-blocked). Tests never hit the live portal. ATT&CK self-labels are not copied. |
+| `src/modules/asic_director/tests.rs` | 275 | MERGED | `src/asic_director.rs` tests | Legacy emit, whole-word match, checksum-invalid ACN, request_failed, HTML entity decode and scripted-transport lookup/challenge cases. The ignored wall-clock linearity test is not rebuilt. |
+| `src/modules/au_people/mod.rs` | 495 | REBUILT | `src/au_people.rs` | Keyless True People Search AU HTML scrape. Blocking `fetch` over an injected transport. Challenge pages, truncated bodies and non-success HTTP (other than 404) are never evidence; 404 is ValidZero. Addresses and emails are candidate leads (unattributed line scan). Relatives keep same-surname family only, never tagged `tps-au`. Coordinates use `postcode_au::offline_centroid` (L3), not `geo`. White Pages AU is not queried (retired 404). Called from `people`; a challenged page is `Error::Invalid` and does not abort other sources. ATT&CK self-labels are not copied. |
+| `src/modules/au_people/tests.rs` | 307 | MERGED | `src/au_people.rs` tests | Legacy relatives, TPS address/email chrome, candidate-lead, split_name, state-tag and dedup oracles plus scripted-transport lookup/challenge/404 cases. The proptest panic-totality tests are replaced by a small adversarial-byte unit test (no `regex`/`proptest` crate). |
+| `src/modules/au_electoral/mod.rs` | 244 | REBUILT | `src/au_electoral.rs` | Keyless NSW/VIC/QLD electoral-commission HTML scrape. Blocking `fetch` over an injected transport. First hit wins. Challenge pages, truncated bodies and non-success HTTP are Unreachable, not "not enrolled". All-unreachable fails closed. No AEC national leg (NameSearch retired). Division centroids are an offline table, not `geo`. Called from `people`; all-unreachable is `Error::Invalid` and does not abort other sources. ATT&CK self-labels are not copied. |
+| `src/modules/au_electoral/parse.rs` | 357 | MERGED | `src/au_electoral.rs` | Division/enrolment markers, nearby-negation window, apostrophe names, suburb hints on standalone postcodes. |
+| `src/modules/au_electoral/entity.rs` | 90 | MERGED | `src/au_electoral.rs` | Address 0.72 with suburb / 0.58 division-only; coordinates only when the offline centroid table has the division. |
+| `src/modules/au_electoral/division_map.rs` | 140 | MERGED | `src/au_electoral.rs` | 67-division centroid table plus Darwin→NT state inference. |
+| `src/modules/au_electoral/tests.rs` | 308 | MERGED | `src/au_electoral.rs` tests | Legacy parse/emit/outage oracles plus scripted-transport first-hit, challenge and all-unreachable cases. The proptest panic-totality tests are replaced by a small adversarial-byte unit test. |
+
+### Notes
+
+- Live CKAN (`asic_persons_live_finds_a_banned_person`) is not rebuilt: capability row 4 still requires D and L.
+- Live ASIC Connect (`asic_director`) is WAF-blocked (403); `people` still calls it and records the failure without aborting other sources. Tested on a fake transport only.
+- `au_people` is called from `people` and tested on a fake transport only; live TPS is not run in CI.
+- `au_electoral` is called from `people` and tested on a fake transport only; live commissions are not run in CI.
+
+## Providers restored from 764ce8e
+
+The v1.41.0 source rows below are accounted against the newer stolen.tax v2 and
+crt.sh implementations ported onto the guarded fetch layer. The differential
+fixtures record legacy outputs; the blank-name/host guard intentionally omits
+placeholder markers and unknown stand-in facts.
+
+| Legacy path | Lines | Decision | New module | Defect found / evidence or reason |
+| --- | ---: | --- | --- | --- |
+| `src/modules/crtsh/mod.rs` | 382 | REIMPLEMENT | `src/crtsh.rs` | 30-second timeout; retries only HTTP 502/503/429, at most three attempts two seconds apart. Challenge, truncated and malformed responses fail closed. Differential fixtures match records, confidence, tags and evidence attributes without a result cap. |
+| `src/modules/crtsh/tests.rs` | 345 | MERGED | `src/crtsh/tests.rs`, `src/crtsh/differential.rs` | Legacy cases use fake transports; query shape, entity kinds, retry bounds, challenge pages, truncation and redirects are covered. |
+| `src/modules/stolen_tax/mod.rs` | 485 | REIMPLEMENT | `src/stolen_tax.rs` | v2 POST cascade with origin-scoped credentials, bounded same-site redirects, one 120-second lookup deadline and same-key 429 retries. Differential tests cover the legacy cascade; persistent key-pool rotation remains deferred. Password and hash fields are never declared. |
 
 ## Not yet dispositioned
 
-Legacy `src/` files of the monolith that no section above lists yet (892 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
+Legacy `src/` files of the monolith that no section above lists yet (881 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
 
 | Legacy area | Files not listed | Of |
 | --- | ---: | ---: |
-| `src/modules/` (providers) | 539 | 542 |
+| `src/modules/` (providers) | 528 | 542 |
 | `src/util/` | 116 | 213 |
 | `src/core/` | 49 | 203 |
 | `src/app/` | 45 | 45 |

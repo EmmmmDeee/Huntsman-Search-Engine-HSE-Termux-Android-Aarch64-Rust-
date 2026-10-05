@@ -1,18 +1,75 @@
-# huntsman
+# Huntsman Recon
 
-One crate, `huntsman-recon`. The current version lives in `src/`; the two legacy zip archives in the repository root and their extracted copies in `legacy/` are permanent read-only reference (see below).
-Target design, module map and per-capability status against legacy `7dca720`: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Huntsman Recon is a Rust command-line toolkit for local search, guarded HTTP
+fetches, Australian identifier validation, geospatial utilities, and an
+append-only evidence ledger. It is designed to make evidence quality and
+uncertainty visible; a lead or verified claim is not an attribution or ATT&CK
+score.
+
+> **Status:** this is the `huntsman-recon` reconstruction, not the previous
+> `hse` monolith. `people` provides a subset of the old monolith's person-lookups.
+> Canonical extracted legacy trees are preserved as read-only reconstruction references;
+> the original archive bytes remain recoverable from Git history. See
+> [archive provenance](docs/ARCHIVE_PROVENANCE.md) and [architecture and status](ARCHITECTURE.md).
+
+## Install on Termux (Android arm64)
+
+Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the
+[official GitHub releases](https://github.com/termux/termux-app/releases), then
+run this one-line source install:
+
+```sh
+pkg update && pkg install -y git rust clang && HUNTSMAN_HIBP_NO_EMBED=1 cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git --locked --root "$PREFIX" huntsman-recon
+```
+
+This builds the current `main` source on-device, installs
+`$PREFIX/bin/huntsman-recon`, and prevents accidental build-time embedding of a
+locally configured HIBP key. Rust 1.87 or newer is required. For prebuilt,
+release-pinned installation, Linux development setup, upgrades, and
+troubleshooting, see [`docs/INSTALL.md`](docs/INSTALL.md).
+
+## First commands
+
+```sh
+huntsman-recon --help
+huntsman-recon check
+huntsman-recon search "brisbane port"
+```
+
+`check` runs offline self-acceptance. `search` and `sources` are offline.
+`fetch`, `hibp`, `recon` and `people` (two-token names) make HTTP requests and
+use public-only egress by default.
+Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
+before using credentials or network access.
+
+## Repository map
 
 | Path | Contents |
 | --- | --- |
 | `src/` | The crate: library modules plus the `huntsman-recon` binary (`main.rs`). |
-| `tests/` | Acceptance, CLI, local-HTTP and legacy-reference integration tests, plus `readme.rs` and `dispositions.rs`, which check this README and `docs/DISPOSITIONS.md` against the binary and `legacy/`. |
+| `tests/` | Acceptance, CLI, local-HTTP and legacy-reference integration tests; `hibp_build.rs` (build-time key embedding rules); `android_ci.rs` (the CI workflow keeps the aarch64 Android cross-build and its artifact); plus `readme.rs` and `dispositions.rs`, which check this README and `docs/DISPOSITIONS.md` against the binary and `legacy/`. |
 | `var/` | Artifacts written by `check` (`ledger.json`, `navigator.json`, `stix-bundle.json`). CI fails if `check` changes them. |
 | `docs/` | `RECONSTRUCTION_2026-10-02.md` (decisions and falsification passes) and `DISPOSITIONS.md` (per-file accounting of every legacy file). |
-| `legacy/` | Byte-identical extraction of both archives. Not part of the build. |
-| `*.zip` (root) | The two legacy archives. Pinned by hash in `tests/legacy_reference.rs`; never delete, edit or move them. |
+| `legacy/` | Canonical extracted historical reference trees. Not part of the build. |
+| `docs/ARCHIVE_PROVENANCE.md` | SHA-256/Git identities and recovery commit for the removed root ZIP snapshots. |
+| `.github/` | `workflows/ci.yml` (tests on Rust 1.87 and stable; aarch64 Android cross-build), `workflows/release.yml` (`main-<sha7>` pre-releases of `huntsman-recon`), `scripts/` (`scan-for-keys.sh`, `install-termux.sh`) and `actions/setup-ndk-aarch64` (NDK compiler and linker environment). |
+| `CHANGELOG.md` | Notable changes, Keep a Changelog format. |
 
-Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands; `check` exercises egress, origin, placeholder and URL-redaction rules as gate 11, without a socket). A challenge page is not a hit. No paid source is called automatically; HIBP is an explicit opt-in library client, and stolen.tax runs only from an explicit `recon stolen-tax` command. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
+## Which binary to use
+
+| | `hse` (legacy v1.41.0 monolith) | `huntsman-recon` (this tree, in progress) |
+| --- | --- | --- |
+| Person lookups | Yes. Provider modules such as `asic_persons`, `asic_director`, `username_search`, `phone_au` and `bluesky_user` (195 `pub mod` entries in `src/modules/mod.rs` at `7dca720b`), plus `hse scan`, `hse investigate` and `hse serve`. Whether each provider works live has not been re-verified. | **Partial.** `people` calls `asic_persons`, `asic_director`, `au_people` and `au_electoral` for names with at least two alphabetic tokens. `sources` classifies an input (a person or organisation name, an email address, an `@username`, a domain, an IP address or coordinates) and only prints curated public search or browser URLs for it, offline and `LeadOnly`; nothing is fetched. `search` reads only local documents; `hibp` provides explicit opt-in HIBP lookups. |
+| Source | Commit `7dca720b`. The closest copy in this tree is `legacy/hse-monolith-v1.41.0/`, which is read-only and not built; it is not byte-identical to `7dca720b`. | `src/` |
+| Where to get it | GitHub pre-release `main-7dca720` (asset `hse-aarch64-linux-android`, built from `7dca720b`) | A GitHub pre-release `main-<sha7>` (asset `huntsman-recon-aarch64-linux-android`), the CI artifact of the same name from a `main` push (see "Downloads"), or a source build |
+
+`huntsman-recon` is the in-progress replacement, with a subset of the legacy person-lookup providers. Since #672, every push to `main` publishes it as a `main-<sha7>` pre-release. There is no rolling `latest` pre-release: the workflow creates or moves `latest` only when the repository variable `PROMOTE_RECON_TO_LATEST` is `true`, and it is unset. GitHub's "Latest release" is the stable legacy `hse` release `v1.41.0`.
+
+Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands; `check` exercises egress, origin, placeholder and URL-redaction rules as gate 11, without a socket). A challenge page is not a hit. No paid source is called automatically; HIBP is explicit opt-in via the CLI or library. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
+
+For contributors: one Rust package (`huntsman-recon`), Rust 1.87+, no workspace.
+The binary's full command list is available with `huntsman-recon --help`;
+run `huntsman-recon COMMAND --help` for command-specific usage.
 
 ```
 cargo test
@@ -20,6 +77,7 @@ cargo run -- check                     # self-acceptance; regenerates var/*.json
 cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
 cargo run -- search "brisbane port"    # built-in fixture
 cargo run -- search "brisbane port" docs/
+cargo run -- sources example.com       # classify + build curated routes; no network
 cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
 cargo run -- id "53 004 085 616"        # ABN/ACN/BSB, strict grouping
 cargo run -- geohash -27.4698,153.0251 9
@@ -27,7 +85,10 @@ cargo run -- coarsen -27.4698,153.0251 # one decimal place, ~11 km
 cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
-cargo run -- recon crtsh https://example.com/  # crt.sh CT names for the URL's host (network)
+cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network
+cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
+cargo run -- hibp help
+cargo run -- recon crtsh https://example.com/
 ```
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
@@ -50,13 +111,29 @@ Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys fi
 - Precedence: a slot present in the loaded file wins over the same environment variable; slots the file lacks fall back to the environment.
 - The file is read only when a credential slot is requested. Values never appear in output, warnings or errors; only slot names, line numbers and fingerprint prefixes do.
 
-Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or missing source key, 69 `fetch` or `recon` got no usable response, 74 artifact write failure, 77 egress policy refused the destination. `check` uses 2–11 for its individual gates.
+`sources` is offline routing, not collection. It classifies the input using the existing Huntsman classifier and renders only compatible, independently curated public/browser search routes from `source_registry`. Generated routes are `LeadOnly`: a URL is never corroborating evidence by itself. External catalogue code or data is not embedded.
 
-`tests/readme.rs` runs every example above (except the internet `fetch` and `recon crtsh`), checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`.
+Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch` or `recon` got no usable response or `people` registers were unusable, 74 artifact write failure, 77 `fetch` or `recon` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal. `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print help and the usage line.
+
+`tests/readme.rs` runs every example above (except the internet `fetch`), checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`.
+
+`fetch URL` options (defaults in brackets):
+
+| Option | Effect |
+| --- | --- |
+| `--body` | Print the response body after the status line. |
+| `--allow-private` | Lift the egress policy (otherwise only public addresses are reachable; loopback, private, link-local and metadata addresses exit 77). |
+| `--keys FILE` | Read credential slots from a `NAME=value` file (mode 600 or stricter, at most 64 KiB); slots it lacks fall back to the process environment. Without it, `$HOME/.huntsman.env` is loaded when it exists and passes the checks above; otherwise slots come from the environment only. |
+| `--bearer SLOT` | Send slot `SLOT` as `Authorization: Bearer`. |
+| `--header NAME=SLOT` | Send slot `SLOT` in header `NAME`. Only one of `--bearer`/`--header` per fetch. |
+| `--max-redirects N` | Follow at most `N` redirects, 0–20 [5]. A credential is only sent to the origin it was approved for. |
+| `--timeout SECS` | Per-request timeout, 1–600 [20]. |
+
+Slot names are upper-case environment-variable names (`A-Z`, `0-9`, `_`; starting with a letter; at most 64 characters). Keys are read at run time only: from the environment, from a file you name with `--keys` / `keys FILE`, or, without `--keys`, from `$HOME/.huntsman.env` (see above). Blank values and template placeholders (`insert_key_here`, `<your-key>`, `changeme`, `xxxx`) count as not configured. Output shows a 12-hex-digit fingerprint prefix, never a key value.
 
 `classify` also prints the causal outcome and the source-health action (`outcome=bot_waf`, `action=backoff`). A 403 challenge page is a WAF, not a credential failure. A 200 alone is `inconclusive` until rows are parsed.
 
-The refactor-overlay foundations from the uploaded zip are library modules: `source_outcome` (causal fetch outcome), `evidence_ancestry` (mirrors of one dump count once), `identity_resolution` (non-compensatory merge gate over ancestry), `termination` (fixed point vs bounds), `credential_origin` (found credentials are evidence, never authority), and `eval` (deterministic scoring, bootstrap, promote/hold verdict). `check` exercises them as gate 5.
+The refactor-overlay foundations preserved under `legacy/refactor-overlay-feef60a/` are library modules: `source_outcome` (causal fetch outcome), `evidence_ancestry` (mirrors of one dump count once), `identity_resolution` (non-compensatory merge gate over ancestry), `termination` (fixed point vs bounds), `credential_origin` (found credentials are evidence, never authority), and `eval` (deterministic scoring, bootstrap, promote/hold verdict). `check` gate 5 exercises four of them: `source_outcome` (a 403 Cloudflare challenge page is `BotWaf`, and its recommended action is not `RequireCredential`); `evidence_ancestry` with `identity_resolution` (two mirrors of one dump cannot auto-merge two identities, while a mirror plus an independent registry root can); and `termination` (delayed retry work is not a fixed point). Gate 5 does not exercise `credential_origin` or `eval`. The binary uses `credential_origin` in `fetch` (the operator-approved credential authority) and for the fingerprints that `fetch` and `keys` print. `eval` is not used by the binary at all; only its unit tests exercise it.
 
 Rebuilt monolith utilities: `au_id` (ABN, ACN, BSB), `geohash`, `confidence` (corroboration, ancestry-aware), `redact` (coordinate coarsening, secret scrubbing). `check` exercises them as gate 10.
 
@@ -64,39 +141,57 @@ See `docs/RECONSTRUCTION_2026-10-02.md`.
 
 ## Recon sources: crt.sh and stolen.tax
 
-`huntsman_recon::crtsh` and `huntsman_recon::stolen_tax` restore M D's lost local
-commit 764ce8e on the guarded fetch layer (port source: the restore commit on the
-old tree, not the stale v1 copies in `legacy/`). Both are blocking, sync and
-fake-transport tested; `recon` is their command-line caller.
-
-`recon crtsh TARGET` takes a domain, URL or email, queries
-`https://crt.sh/?q=…&output=json` with a 30 s timeout, and retries only HTTP 502, 503
-and 429, at most three attempts two seconds apart (never a challenge page). It prints
-every distinct SAN name and every non-public issuing CA, and caps nothing. Three
-filters apply, as in the monolith: wildcard SANs (`*.…`), role or infrastructure
-mailboxes (`hostmaster@`, `noreply@`, …), and public-CA issuers (Let's Encrypt,
-DigiCert, …). Subdomains of the target's apex are tagged `subdomain`. Output is
+`recon crtsh TARGET` accepts a domain, URL or email and queries crt.sh with a
+30-second timeout. HTTP 502, 503 and 429 responses are retried at most twice,
+two seconds apart; challenge pages are never retried. Results include distinct
+SAN names and non-public issuing CAs. Wildcard names, role or infrastructure
+mailboxes, and public-CA issuers are filtered; subdomains of the target apex
+carry the `subdomain` tag. Output is
 `kind<TAB>value<TAB>confidence<TAB>tags`, with control characters escaped.
 
-`recon stolen-tax QUERY [--keys FILE]` needs `HUNTSMAN_STOLEN_TAX_KEY` (keys file or
-environment; exit 66 without it, before any request). It POSTs the query to the v2
-snusbase, osintcat and hudsonrock paths with a Bearer key sent only to
-`https://stolen.tax:443`. Redirects follow the monolith's same-site rule (up to 9
-hops within `stolen.tax` and its subdomains, never from https to http); a hop off
-that exact origin is sent without the key, and the key is never re-attached after
-it. The whole lookup (all three paths) has one 120 s budget, the
-monolith's module budget: each request gets only what is left of it, so the worst
-case is 120 s, not 3 x 120 s. A path the budget did not reach is not sent and is
-printed as `skipped_path=PATH`. A 429 is retried on the same key, at most three attempts per path, pausing for `Retry-After` (4 s when absent, never more than 4 s) only when the pause fits in the budget; any other failure is not retried. There is one key per slot: the monolith's key pool (rotation across several keys) is deferred to its own PR (see `docs/DISPOSITIONS.md`). (The monolith's engine instead dropped the whole result when the budget ran out, and cut it to 45 s on a resource-constrained device; see `docs/DISPOSITIONS.md`.) It prints emails, usernames and
-`breach:`/`stealer:` markers, and never passwords, hashes or `top_passwords`. A path
-failure or skip alongside evidence prints `partial=true` and the path. Every path
-failing or skipped with nothing collected exits 69. Each run spends paid lookups, so
-it is not in the examples above.
+`recon stolen-tax QUERY [--keys FILE]` is an explicit paid lookup requiring
+`HUNTSMAN_STOLEN_TAX_KEY`; a missing key exits 66 before any request. The v2
+snusbase, osintcat and hudsonrock paths share one 120-second budget. Requests
+use the key only for `https://stolen.tax:443`; same-site redirects are bounded,
+and the key is not reattached after leaving that origin. HTTP 429 is retried
+on the same key up to three attempts per path, with `Retry-After` capped at
+four seconds. Partial results name failed or skipped paths. The legacy
+persistent multi-key pool is deferred; paid lookups are never automatic.
+Differential fixtures record the legacy output, with blank-name/host placeholder
+markers intentionally suppressed.
 
-`tests/fixtures/legacy_764ce8e/` holds the old-tree output recorded on the committed
-inputs. The differential tests require the port to reproduce it. The one intended
-difference is the blank-name/host guard: no `breach:osintcat`/`stealer:unknown`
-placeholder markers and no `unknown` stand-in facts.
+## Build and install
+
+Toolchain: the crate's MSRV is Rust 1.87 (`rust-version` in `Cargo.toml`); CI tests Rust 1.87 and current stable. The owner's reference toolchain is Rust 1.98.0. The repository has no `rust-toolchain.toml`, so rustup uses your default toolchain.
+
+On the device, in Termux (unverified on a handset):
+
+```
+pkg install rust clang   # ring (via rustls) needs a C compiler
+cargo build --release --locked
+./target/release/huntsman-recon check
+```
+
+Cross-build for Android aarch64 (what the `android-aarch64` CI job does, API level 24):
+
+```
+rustup target add aarch64-linux-android
+NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"   # CI sets ANDROID_NDK_LATEST_HOME
+: "${NDK:?set ANDROID_NDK_LATEST_HOME or ANDROID_NDK_HOME to the NDK root}"
+export TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
+export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+HUNTSMAN_HIBP_NO_EMBED=1 cargo build --release --locked --target aarch64-linux-android
+```
+
+The reference NDK is 27.3.13750724. CI uses the runner's `ANDROID_NDK_LATEST_HOME` and does not pin an NDK version. Set `HUNTSMAN_HIBP_NO_EMBED=1` (CI does) for any binary that leaves your machine, so no key is embedded (see below).
+
+### Downloads
+
+Each push to `main` uploads a CI artifact named `huntsman-recon-aarch64-linux-android`: the binary plus its `.sha256`, kept for 14 days. Download it from the workflow run's page, or with `gh run download <run-id> -n huntsman-recon-aarch64-linux-android`. Check it with `sha256sum -c huntsman-recon-aarch64-linux-android.sha256`, then copy it into Termux's home directory and `chmod +x` it.
+
+Each push to `main` also publishes a `main-<sha7>` pre-release (`.github/workflows/release.yml`, #672) with the `huntsman-recon-aarch64-linux-android` binary, its `.sha256`, a `.provenance.json` naming the commit, a zero-finding `key-scan-report.txt` and `install-termux.sh`. The `main-<sha7>` pre-releases up to `main-7dca720` predate the reconstruction and ship the legacy `hse` binary. No rolling `latest` pre-release exists (see "Which binary to use"). Release policy: only pre-releases (`main-<sha7>` plus a rolling `latest`); a stable release needs the owner's explicit approval and is never automatic.
 
 ## Opt-in HIBP library
 
@@ -132,6 +227,25 @@ randomness comes from `/dev/urandom`. Token stores support memory or bounded,
 atomic mode-600 files. Debug/errors omit keys, tokens and upstream error bodies.
 All integration evidence here is offline fake-transport testing; live HIBP and
 Termux handset acceptance remain unverified.
+
+## Opt-in ASIC people-register library
+
+`huntsman_recon::asic_persons::lookup` queries three keyless ASIC registers on
+data.gov.au CKAN (banned and disqualified persons, financial advisers, credit
+representatives) through the shared `fetch` boundary and an injected
+`http::Transport`. A name with fewer than two alphabetic tokens makes no
+request. Challenge pages, truncated bodies, and CKAN `success: false` envelopes
+are not evidence of absence. The binary exposes `people NAME [--save FILE]`
+(unquoted words are joined) through `people_cli`, which also runs
+`asic_director`, `au_people` and `au_electoral` over the same transport and
+feeds emitted evidence through `lineage::resolve_with_lineage`. One source
+`Invalid` or BotWaf does not abort the others. `--save FILE` writes an
+unverified hash-chained ledger of outcomes and entities that `verify FILE`
+reloads byte-identically (`admitted=0`; a register row is not identity
+resolution). Skip (fewer than two alphabetic tokens) makes no request and does
+not write. Tests use a scripted transport; the README examples are the skip
+path. Two-token names query those sources and are not run in CI. There is no
+live receipt. Live ASIC Connect is WAF-blocked.
 
 ## Lineage and the automatic-merge rule
 
