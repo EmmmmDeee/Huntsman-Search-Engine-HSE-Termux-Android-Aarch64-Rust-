@@ -33,6 +33,8 @@ pub enum VerificationBlocker {
     UndefeatedDefeater,
     MissingProofEnvironment,
     IncompleteProof,
+    InvalidProofEnvironment,
+    UnresolvedProofAssumption,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,9 +53,11 @@ impl ClaimAssessment {
     /// Adds bounded proof-environment status without allowing proof bookkeeping
     /// to strengthen the evidence-derived assessment.
     ///
-    /// An empty or truncated proof set blocks `Verified`. A complete, non-empty
-    /// proof set can preserve an already-verified assessment but cannot promote
-    /// a weaker one. This keeps resource limits epistemically conservative.
+    /// This compatibility helper deliberately cannot validate proof membership
+    /// or roots because it lacks the claim and ancestry graph. It therefore may
+    /// only preserve or weaken an assessment. Use
+    /// [`IntelligenceLedger::assess_claim_with_ancestry_and_proof`] for the only
+    /// proof path capable of producing `Verified`.
     #[must_use]
     pub fn with_proof_environments(mut self, proof: &ProofEnvironmentSet) -> Self {
         self.proof_environment_count = proof.environments.len();
@@ -138,8 +142,7 @@ impl IntelligenceLedger {
     ///
     /// This path is diagnostic only: it can report support and blockers but can
     /// never produce `Verified`, because flat lineage metadata is not the
-    /// canonical ancestry authority. Use [`Self::assess_claim_with_ancestry`]
-    /// for canonical ancestry diagnostics.
+    /// canonical ancestry authority.
     ///
     /// Confidence dimensions and provider count are intentionally excluded from
     /// this decision.
@@ -188,17 +191,8 @@ impl IntelligenceLedger {
         ))
     }
 
-    /// Evaluates one claim using [`EvidenceAncestryGraph`] as the sole ancestry
-    /// authority, but does not certify `Verified` without an auditable proof
-    /// environment. The binding map projects ledger evidence ids to graph nodes;
-    /// legacy `source_id`, `origin_id`, and cached family labels do not contribute
-    /// proof in this path.
-    ///
-    /// A missing binding, missing graph node, missing parent, cycle, or empty
-    /// root result is unresolved ancestry. Even when ancestry and policy gates
-    /// otherwise pass, this diagnostic method adds `MissingProofEnvironment` and
-    /// caps the result at `Supported`. Verification requires a separate
-    /// proof-validating path so proof bookkeeping cannot become a bypass.
+    /// Evaluates canonical ancestry but deliberately cannot certify `Verified`
+    /// without an auditable proof environment.
     ///
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
@@ -248,5 +242,149 @@ impl IntelligenceLedger {
             true,
         )
         .with_proof_environments(&ProofEnvironmentSet::default()))
+    }
+
+    /// Evaluates a claim through the only verification-capable path.
+    ///
+    /// A proof environment is admissible only when every assertion belongs to
+    /// this claim's support set and its declared root set exactly equals the
+    /// canonical ancestry roots of those assertions. An incomplete proof set,
+    /// malformed environment, or unresolved assumption cannot authorize
+    /// `Verified`. Each sufficient environment must independently satisfy the
+    /// policy's root and evidence-nature obligations.
+    ///
+    /// # Errors
+    /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
+    /// when the ledger itself references absent support records.
+    pub fn assess_claim_with_ancestry_and_proof(
+        &self,
+        claim_id: &ClaimId,
+        policy: &VerificationPolicy,
+        graph: &EvidenceAncestryGraph,
+        bindings: &BTreeMap<EvidenceId, EvidenceNodeId>,
+        proof: &ProofEnvironmentSet,
+    ) -> Result<ClaimAssessment, LedgerError> {
+        let claim = self
+            .claims
+            .get(claim_id)
+            .ok_or_else(|| LedgerError::MissingClaim(claim_id.clone()))?;
+        let mut assessment = self.assess_claim_with_ancestry(claim_id, policy, graph, bindings)?;
+        assessment.proof_environment_count = proof.environments.len();
+        assessment.proof_incomplete = proof.incomplete;
+
+        if proof.incomplete {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::IncompleteProof);
+        }
+        if proof.environments.is_empty() {
+            assessment.epistemic = if claim.support.is_empty() {
+                ClaimState::Candidate
+            } else {
+                ClaimState::Supported
+            };
+            return Ok(assessment);
+        }
+
+        let mut malformed = false;
+        let mut saw_structurally_valid = false;
+        let mut saw_sufficient_roots = false;
+        let mut saw_sufficient_natures = false;
+        let mut saw_unresolved_assumption = false;
+        let mut valid_environment = false;
+
+        for environment in &proof.environments {
+            if environment.assertions.is_empty() {
+                malformed = true;
+                continue;
+            }
+
+            let mut canonical_roots = BTreeSet::new();
+            let mut environment_natures = Vec::new();
+            let mut environment_valid = true;
+
+            for assertion_id in &environment.assertions {
+                if !claim.support.contains(assertion_id) {
+                    environment_valid = false;
+                    break;
+                }
+                let Some(evidence) = self.evidence.get(assertion_id) else {
+                    environment_valid = false;
+                    break;
+                };
+                if !environment_natures.contains(&evidence.nature) {
+                    environment_natures.push(evidence.nature.clone());
+                }
+                let roots = bindings
+                    .get(assertion_id)
+                    .and_then(|node_id| graph.root_families(node_id).ok());
+                match roots {
+                    Some(roots) if !roots.is_empty() => canonical_roots.extend(roots),
+                    _ => {
+                        environment_valid = false;
+                        break;
+                    }
+                }
+            }
+
+            if !environment_valid || canonical_roots != environment.roots {
+                malformed = true;
+                continue;
+            }
+
+            saw_structurally_valid = true;
+            let roots_sufficient = canonical_roots.len() >= policy.min_proven_roots;
+            let natures_sufficient = policy
+                .required_natures
+                .iter()
+                .all(|required| environment_natures.contains(required));
+            saw_sufficient_roots |= roots_sufficient;
+            saw_sufficient_natures |= natures_sufficient;
+
+            if !environment.assumptions.is_empty() {
+                saw_unresolved_assumption = true;
+                continue;
+            }
+
+            if roots_sufficient && natures_sufficient {
+                valid_environment = true;
+            }
+        }
+
+        if malformed {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::InvalidProofEnvironment);
+        }
+        if saw_unresolved_assumption && !valid_environment {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::UnresolvedProofAssumption);
+        }
+        if saw_structurally_valid && !saw_sufficient_roots {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::InsufficientIndependentSupport);
+        }
+        if saw_structurally_valid && !saw_sufficient_natures {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::MissingRequiredEvidenceNature);
+        }
+
+        if valid_environment && !malformed {
+            assessment
+                .blockers
+                .remove(&VerificationBlocker::MissingProofEnvironment);
+        }
+
+        assessment.epistemic = if claim.support.is_empty() {
+            ClaimState::Candidate
+        } else if assessment.blockers.is_empty() {
+            ClaimState::Verified
+        } else {
+            ClaimState::Supported
+        };
+        Ok(assessment)
     }
 }
