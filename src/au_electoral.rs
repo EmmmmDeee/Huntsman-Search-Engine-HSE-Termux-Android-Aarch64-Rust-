@@ -14,8 +14,8 @@
 //!
 //! No AEC national leg: `electorate.aec.gov.au/NameSearch.aspx` is retired.
 //! Coordinates come from an offline division-centroid table, not `geo` (L6).
-//! ATT&CK self-labels from the legacy module are not copied. Not called from
-//! `people`.
+//! ATT&CK self-labels from the legacy module are not copied. `people` calls it;
+//! all-unreachable is [`Error::Invalid`] and does not abort other sources.
 
 use crate::address_au;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
