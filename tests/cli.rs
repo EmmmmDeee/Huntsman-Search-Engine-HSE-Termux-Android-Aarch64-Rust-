@@ -80,6 +80,88 @@ fn failures_exit_nonzero() {
 }
 
 #[test]
+fn help_and_version_are_available() {
+    let help = bin().arg("--help").output().unwrap();
+    assert!(help.status.success());
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("Commands:"));
+    assert!(help.contains("fetch                 Make a guarded HTTP request"));
+    assert!(help.contains("public-only"));
+
+    for (command, usage) in [
+        ("geo", "geo LAT,LON LAT,LON"),
+        ("search", "search QUERY [DIR]"),
+        ("people", "people NAME [--save FILE]"),
+        ("fetch", "fetch URL [--body]"),
+        ("hibp", "hibp [breach NAME"),
+        ("recon", "recon crtsh TARGET"),
+    ] {
+        let out = bin().args([command, "--help"]).output().unwrap();
+        assert!(out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains(usage),
+            "{command} help should include {usage:?}"
+        );
+    }
+
+    let positional_help = bin().args(["classify", "200", "--help"]).output().unwrap();
+    assert!(positional_help.status.success());
+    assert!(
+        String::from_utf8_lossy(&positional_help.stdout).contains("outcome=inconclusive"),
+        "a positional response body equal to --help must reach classify"
+    );
+
+    let version = bin().arg("--version").output().unwrap();
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8(version.stdout).unwrap(),
+        format!("huntsman-recon {}\n", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
+fn people_skips_single_token_without_network() {
+    let out = bin().args(["people", "Madonna"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("skipped"),
+        "skip path must print a skip line: {stdout:?}"
+    );
+}
+
+#[test]
+fn people_missing_name_is_usage() {
+    let out = bin().arg("people").output().unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty(), "{:?}", out.stdout);
+}
+
+#[test]
+fn people_skip_does_not_write_save_file() {
+    let dir = scratch("people-skip-save");
+    let path = dir.join("skipped.json");
+    let out = bin()
+        .args(["people", "Madonna", "--save"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("skipped"), "{stdout:?}");
+    assert!(!stdout.contains("saved="), "{stdout:?}");
+    assert!(!path.exists(), "skip must not create {}", path.display());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn people_save_without_path_is_usage() {
+    let out = bin().args(["people", "--save"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty(), "{:?}", out.stdout);
+}
+
+#[test]
 fn classify_reports_causal_outcome_and_action() {
     let run = |status: &str, body: &str| {
         let out = bin().args(["classify", status, body]).output().unwrap();
@@ -149,4 +231,60 @@ fn identifier_geohash_and_coarsen_commands() {
         (Some(0), "-27.5,153.0\n".into())
     );
     assert_eq!(run(&["coarsen", "999,999"]).0, Some(65));
+}
+
+#[test]
+fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
+    for args in [
+        &["recon"][..],
+        &["recon", "nope", "x"],
+        &["recon", "crtsh", " "],
+        &["recon", "dns", " "],
+        &["recon", "stolen-tax", "  "],
+        &["recon", "stolen-tax", "a@example.com", "--bogus", "f"],
+    ] {
+        let out = bin().args(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(64), "{args:?}");
+    }
+
+    let bad_domain = bin().args(["recon", "dns", "localhost"]).output().unwrap();
+    assert_eq!(bad_domain.status.code(), Some(65));
+    assert!(
+        String::from_utf8_lossy(&bad_domain.stderr).contains("bad domain"),
+        "{:?}",
+        String::from_utf8_lossy(&bad_domain.stderr)
+    );
+    assert_eq!(bad_domain.stdout.len(), 0);
+
+    let out = bin()
+        .args(["recon", "stolen-tax", "a@example.com"])
+        .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(66));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("HUNTSMAN_STOLEN_TAX_KEY"));
+    assert_eq!(out.stdout.len(), 0);
+
+    let dir = scratch("recon");
+    let keys = dir.join("keys.env");
+    fs::write(
+        &keys,
+        "OTHER_KEY=k3y-8f2a91\nHUNTSMAN_STOLEN_TAX_KEY=changeme\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&keys, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    for file in [keys.clone(), dir.join("absent.env")] {
+        let out = bin()
+            .args(["recon", "stolen-tax", "a@example.com", "--keys"])
+            .arg(&file)
+            .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(66), "{}", file.display());
+    }
+    let _ = fs::remove_dir_all(&dir);
 }

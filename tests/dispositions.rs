@@ -1,9 +1,9 @@
 //! `docs/DISPOSITIONS.md` claims to account for the legacy monolith. This test recomputes
 //! that accounting from `legacy/`, so a row for a file that does not exist, or a stale
 //! "Not yet dispositioned" count, fails the build. It also recomputes the crate's module
-//! tree from `src/lib.rs` and `src/main.rs`, so a row that says code was rebuilt into a
-//! `src/` file outside that tree, or any `src/` file outside it, fails too. A `mod` gated
-//! by a `cfg` other than `cfg(test)`, or moved with `path`, fails rather than counting.
+//! tree from the crate roots, so a row that says code was rebuilt into a `src/` file
+//! outside that tree, or any `src/` file outside it, fails too. A `mod` gated by a `cfg`
+//! other than `cfg(test)`, or moved with `path`, fails rather than counting.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -370,13 +370,17 @@ fn child_dir(file: &str) -> String {
     }
 }
 
-/// The module tree reached from both crate roots (every `src/` file `cargo test`
+/// The module trees reached from all crate roots (every `src/` file `cargo test`
 /// compiles), plus every declaration the scan could not prove compiled.
 fn module_tree() -> (BTreeSet<String>, Vec<String>) {
     let root = crate_root();
     let mut seen = BTreeSet::new();
     let mut problems = Vec::new();
-    let mut queue = vec!["src/lib.rs".to_owned(), "src/main.rs".to_owned()];
+    let mut queue = vec![
+        "src/lib.rs".to_owned(),
+        "src/main.rs".to_owned(),
+        "src/bin/investigate.rs".to_owned(),
+    ];
     while let Some(file) = queue.pop() {
         if !seen.insert(file.clone()) {
             continue;
