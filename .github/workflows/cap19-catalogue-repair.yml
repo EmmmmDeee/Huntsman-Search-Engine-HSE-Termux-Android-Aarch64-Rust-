@@ -1,0 +1,114 @@
+name: cap19-catalogue-repair
+
+on:
+  push:
+    branches:
+      - audit/exhaustive-evidence-20261005-head
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - name: Restore complete v19.2 Enterprise vocabulary from primary oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e 7dca720^{commit}
+          git show 7dca720:src/core/attack/mod.rs > "$RUNNER_TEMP/oracle-attack.rs"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          oracle = Path(__import__('os').environ['RUNNER_TEMP']) / 'oracle-attack.rs'
+          source = oracle.read_text()
+
+          def const_block(signature: str) -> str:
+              start = source.index(signature)
+              end = source.index('\n];', start) + len('\n];')
+              return source[start:end]
+
+          tactics = const_block('pub const TACTICS: &[Tactic] = &[')
+          enterprise = const_block('pub const ENTERPRISE: &[Technique] = &[')
+          catalog = Path('src/attack_catalog.rs')
+          catalog.write_text(
+              '//! MITRE ATT&CK Enterprise v19.2 static vocabulary.\n'
+              '//!\n'
+              '//! Deterministically restored from the primary HSE capability oracle\n'
+              '//! git commit `7dca720`, whose source records MITRE/CTI tag\n'
+              '//! `ATT&CK-v19.2` and enterprise STIX SHA-256\n'
+              '//! `f7eaf37fe53b50404084fe1fe67237278f7317e61c11ad550295722d13ede259`.\n'
+              '//! Catalogue presence is reference metadata, never capability evidence.\n\n'
+              'use crate::attack::{Tactic, Technique};\n\n'
+              + tactics + '\n\n' + enterprise + '\n'
+          )
+
+          attack = Path('src/attack.rs')
+          text = attack.read_text()
+          start = text.index('/// Version of the broad static Enterprise catalogue')
+          end = text.index('const INTENTIONAL_EXCLUSION_IDS')
+          replacement = '''/// MITRE ATT&CK Enterprise release used by the complete static vocabulary.\n/// Source provenance is pinned in `attack_catalog.rs`.\npub const ATTACK_VERSION: &str = "19.2";\n/// TA0043 uses the same current Enterprise release.\npub const RECONNAISSANCE_VERSION: &str = ATTACK_VERSION;\npub const TACTIC_ID: &str = "TA0043";\npub const TACTIC_NAME: &str = "Reconnaissance";\n\n'''
+          text = text[:start] + replacement + text[end:]
+
+          old = '''pub fn technique(id: &str) -> Option<&'static Technique> {\n    ENTERPRISE\n        .iter()\n        .chain(RECONNAISSANCE_V19_2_ADDITIONS.iter())\n        .find(|item| item.id == id)\n}'''
+          new = '''pub fn technique(id: &str) -> Option<&'static Technique> {\n    ENTERPRISE.iter().find(|item| item.id == id)\n}'''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected technique() shape')
+          text = text.replace(old, new, 1)
+
+          old = '''pub fn techniques_for_tactic(shortname: &str) -> Vec<&'static Technique> {\n    ENTERPRISE\n        .iter()\n        .chain(RECONNAISSANCE_V19_2_ADDITIONS.iter())\n        .filter(|item| item.tactics.contains(&shortname))\n        .collect()\n}'''
+          new = '''pub fn techniques_for_tactic(shortname: &str) -> Vec<&'static Technique> {\n    ENTERPRISE\n        .iter()\n        .filter(|item| item.tactics.contains(&shortname))\n        .collect()\n}'''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected techniques_for_tactic() shape')
+          text = text.replace(old, new, 1)
+
+          if text.count('ModuleCategory::Threat => &[],') != 1 or text.count('ModuleCategory::Other => &[],') != 1:
+              raise SystemExit('unexpected empty category arms')
+          text = text.replace('ModuleCategory::Threat => &[],', 'ModuleCategory::Threat | ModuleCategory::Other => &[],', 1)
+          text = text.replace('        ModuleCategory::Other => &[],\n', '', 1)
+
+          if text.count('assert_eq!(ATTACK_VERSION, "17.1");') != 1:
+              raise SystemExit('old catalogue-version test not found')
+          text = text.replace('assert_eq!(ATTACK_VERSION, "17.1");', 'assert_eq!(ATTACK_VERSION, "19.2");', 1)
+          if text.count('assert_eq!(TACTICS.len(), 14);') != 1:
+              raise SystemExit('old tactic-count test not found')
+          text = text.replace('assert_eq!(TACTICS.len(), 14);', 'assert_eq!(TACTICS.len(), 15);', 1)
+          attack.write_text(text)
+
+          test = Path('tests/attack_recon_v19.rs')
+          t = test.read_text()
+          marker = 'fn reconnaissance_v19_2_has_twelve_families_and_thirty_seven_leaves() {'
+          if t.count(marker) != 1:
+              raise SystemExit('v19.2 integration-test marker not found')
+          insertion = '''#[test]\nfn broad_enterprise_catalogue_matches_primary_oracle_release() {\n    assert_eq!(attack::ATTACK_VERSION, "19.2");\n    assert_eq!(attack::TACTICS.len(), 15);\n    assert!(attack::ENTERPRISE.iter().any(|item| item.id == "T1681"));\n    assert!(attack::ENTERPRISE.iter().any(|item| item.id == "T1682"));\n}\n\n'''
+          t = t.replace('#[test]\n' + marker, insertion + '#[test]\n' + marker, 1)
+          test.write_text(t)
+          PY
+          cargo fmt --all
+          git diff --check
+      - name: Verify catalogue and CAP19 semantics
+        run: |
+          set -euo pipefail
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked --test attack_recon_v19
+          cargo test --locked --lib attack::tests
+          cargo test --locked --lib navigator::tests
+          cargo test --locked --lib continuity_test_names_exist_in_current_sources
+      - name: Commit verified catalogue repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/attack.rs src/attack_catalog.rs tests/attack_recon_v19.rs
+          git diff --cached --quiet && { echo "::error::catalogue repair produced no diff"; exit 1; }
+          git commit -m "fix(attack): restore complete Enterprise v19.2 catalogue"
+          git push origin HEAD:audit/exhaustive-evidence-20261005-head
