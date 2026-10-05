@@ -496,10 +496,10 @@ mod tests {
         let mut radar = BtRadarState::default();
         let d1 = radar.apply_tick(&[obs(RND)], BtReadOutcome::Read);
         assert_eq!(d1.randomized_seen, 1);
-        assert!(radar.is_empty());
+        assert!(radar.is_empty(), "randomized MAC must not create a track");
         let d2 = radar.apply_tick(&[bonded(HW1)], BtReadOutcome::Read);
         assert_eq!(d2.bonded_seen, 1);
-        assert!(radar.is_empty());
+        assert!(radar.is_empty(), "bonded device must not create a track");
     }
 
     #[test]

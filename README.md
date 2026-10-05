@@ -36,8 +36,8 @@ huntsman-recon search "brisbane port"
 ```
 
 `check` runs offline self-acceptance. `search` and `sources` are offline.
-`fetch` and `people` (two-token names) make HTTP requests and use public-only
-egress by default.
+`fetch`, `hibp`, `recon` and `people` (two-token names) make HTTP requests and
+use public-only egress by default.
 Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
 before using credentials or network access.
 
@@ -72,6 +72,8 @@ cargo run -- keys keys.env               # mode 600; prints slot + fingerprint p
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
+cargo run -- hibp help
+cargo run -- recon crtsh https://example.com/
 ```
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.

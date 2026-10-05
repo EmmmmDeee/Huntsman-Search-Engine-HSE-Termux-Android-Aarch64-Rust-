@@ -66,6 +66,7 @@ pub fn lookup<T: Transport + ?Sized>(
 
     let options = FetchOptions {
         max_redirects: fetch::DEFAULT_MAX_REDIRECTS,
+        ..FetchOptions::default()
     };
     let url = search_url(name);
     let request = Request::get(url)

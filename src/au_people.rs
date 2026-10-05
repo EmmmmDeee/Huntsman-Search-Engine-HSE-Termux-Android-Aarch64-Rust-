@@ -142,6 +142,7 @@ pub fn lookup<T: Transport + ?Sized>(
 
     let options = FetchOptions {
         max_redirects: fetch::DEFAULT_MAX_REDIRECTS,
+        ..FetchOptions::default()
     };
     let url = http::append_query_param(SEARCH_BASE, "name", full_name);
     let request = Request::get(url)
