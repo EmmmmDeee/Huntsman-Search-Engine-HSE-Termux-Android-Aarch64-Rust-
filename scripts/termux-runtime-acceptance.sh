@@ -2,6 +2,8 @@
 set -euo pipefail
 
 # Huntsman real-device Termux acceptance harness.
+# Canonical invocation (does not depend on the Git executable bit):
+#   bash scripts/termux-runtime-acceptance.sh
 # Run after installing/upgrading hse. This verifies runtime facts that cross-build CI cannot prove.
 
 HSE_BIN="${HSE_BIN:-$(command -v hse || true)}"
@@ -23,6 +25,9 @@ note "prefix=${PREFIX:-unknown}"
 [ -n "$HSE_BIN" ] || fail 'hse binary not found in PATH'
 [ -x "$HSE_BIN" ] || fail "hse is not executable: $HSE_BIN"
 pass "binary executable: $HSE_BIN"
+
+command -v timeout >/dev/null 2>&1 || fail 'required Termux coreutils command not found: timeout'
+pass 'timeout command available'
 
 case "$(uname -m)" in
   aarch64|arm64) pass 'runtime architecture is ARM64' ;;
