@@ -173,13 +173,25 @@ impl IdentityResolutionDecision {
     ) -> Vec<HoldReason> {
         let required = policy.min_independent_support_families.max(1);
         let routes = self.proven_independent_support_routes(graph, required);
-        self.hold_reasons_given(routes, policy)
+        self.hold_reasons_with_routes(routes, policy)
     }
 
-    /// The rule itself, with the proven-route result already worked out (`Err` is
-    /// unknown ancestry). Crate-internal callers must not substitute provider or
-    /// family-label cardinality for a proven route count.
+    /// Compatibility path for callers that only know a distinct-family count.
+    /// A label count can prove at most one route, regardless of how many different
+    /// labels it contains. This prevents older callers from manufacturing independence.
     pub(crate) fn hold_reasons_given(
+        &self,
+        families: Result<usize, String>,
+        policy: AutoMergePolicy,
+    ) -> Vec<HoldReason> {
+        let routes = families.map(|found| IndependenceRouteCount {
+            proven: usize::from(found > 0),
+            incomplete: false,
+        });
+        self.hold_reasons_with_routes(routes, policy)
+    }
+
+    fn hold_reasons_with_routes(
         &self,
         routes: Result<IndependenceRouteCount, String>,
         policy: AutoMergePolicy,
