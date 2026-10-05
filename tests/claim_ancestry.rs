@@ -71,6 +71,30 @@ fn ledger_with_support(ids: &[(&str, &str)]) -> (IntelligenceLedger, ClaimId, Ve
 }
 
 #[test]
+fn disjoint_root_labels_do_not_satisfy_two_route_policy_without_independence_evidence() {
+    let (ledger, claim_id, ids) = ledger_with_support(&[("a", "legacy-a"), ("b", "legacy-b")]);
+    let mut graph = EvidenceAncestryGraph::default();
+    graph.insert(node("root-a", "registry", &[])).unwrap();
+    graph.insert(node("root-b", "court", &[])).unwrap();
+    let bindings = BTreeMap::from([
+        (ids[0].clone(), EvidenceNodeId::from("root-a")),
+        (ids[1].clone(), EvidenceNodeId::from("root-b")),
+    ]);
+
+    let assessment = ledger
+        .assess_claim_with_ancestry(&claim_id, &policy(2), &graph, &bindings)
+        .unwrap();
+
+    assert_eq!(assessment.proven_roots, 1);
+    assert_eq!(assessment.epistemic, ClaimState::Supported);
+    assert!(
+        assessment
+            .blockers
+            .contains(&VerificationBlocker::InsufficientIndependentSupport)
+    );
+}
+
+#[test]
 fn ancestry_graph_collapses_provider_mirrors_even_when_legacy_labels_differ() {
     let (ledger, claim_id, ids) =
         ledger_with_support(&[("mirror-a", "legacy-a"), ("mirror-b", "legacy-b")]);
