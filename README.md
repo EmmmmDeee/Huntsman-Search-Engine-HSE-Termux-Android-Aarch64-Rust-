@@ -7,9 +7,10 @@ uncertainty visible; a lead or verified claim is not an attribution or ATT&CK
 score.
 
 > **Status:** this is the `huntsman-recon` reconstruction, not the previous
-> `hse` monolith. It does not yet provide the old monolith's person-lookups.
-> Legacy archives and extracted files are preserved as read-only references,
-> not installable/current source. See [architecture and status](ARCHITECTURE.md).
+> `hse` monolith. `people NAME` looks up keyless ASIC people registers; email,
+> username and phone lookups are not restored yet. Legacy archives and extracted
+> files are preserved as read-only references, not installable/current source.
+> See [architecture and status](ARCHITECTURE.md).
 
 ## Install on Termux (Android arm64)
 
@@ -71,9 +72,12 @@ cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network
+cargo run -- people Madonna --save skipped.json  # skip path does not write skipped.json
 ```
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
+
+`people NAME --save FILE` writes an unverified huntsman-ledger-v2 chain after a completed lookup; the skip path does not write. `verify FILE` then reports `admitted=0`.
 
 Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys file and the process environment. The file is `NAME=value` lines (`export`, quotes, blank lines and `#` comments allowed; placeholder values count as unset) and is parsed by `keys::Keys::parse`, the parser `--keys FILE` and `keys FILE` use through `Keys::load`.
 

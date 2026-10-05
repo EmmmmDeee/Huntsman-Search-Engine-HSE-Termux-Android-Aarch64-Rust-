@@ -136,6 +136,36 @@ fn people_missing_name_is_usage() {
 }
 
 #[test]
+fn people_save_without_file_is_usage() {
+    let out = bin()
+        .args(["people", "Madonna", "--save"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty(), "{:?}", out.stdout);
+}
+
+#[test]
+fn people_skip_with_save_does_not_write() {
+    let dir = scratch("people-save-skip");
+    let path = dir.join("ledger.json");
+    let out = bin()
+        .args(["people", "Madonna", "--save"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("skipped"), "{stdout:?}");
+    assert!(
+        !path.exists(),
+        "skip path must not write {}",
+        path.display()
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn classify_reports_causal_outcome_and_action() {
     let run = |status: &str, body: &str| {
         let out = bin().args(["classify", status, body]).output().unwrap();

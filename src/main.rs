@@ -34,6 +34,7 @@ use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, 
 use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage};
 use huntsman_recon::navigator::layer;
 use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleRun};
+use huntsman_recon::people_save;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
@@ -45,7 +46,7 @@ use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | classify STATUS BODY | fetch URL [options] | keys FILE | verify LEDGER]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
 
@@ -160,14 +161,28 @@ fn fail(code: u8, msg: &str) -> ExitCode {
 }
 
 fn people_cmd(args: &[String]) -> ExitCode {
+    let Some(parsed) = people_cli::parse_args(args) else {
+        return fail(EX_USAGE, PEOPLE_USAGE);
+    };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let transport = UreqTransport::new(&TransportConfig::default());
-    match people_cli::run(&transport, args, now) {
+    match people_cli::run(&transport, &parsed.name, now) {
         PeopleRun::Usage => fail(EX_USAGE, PEOPLE_USAGE),
-        PeopleRun::Printed(text) => {
+        PeopleRun::Printed {
+            text,
+            entities,
+            skipped,
+        } => {
             print!("{text}");
+            if let Some(path) = parsed.save {
+                if !skipped {
+                    if let Err(e) = people_save::write(Path::new(&path), &entities) {
+                        return fail(EX_IOERR, &e.to_string());
+                    }
+                }
+            }
             ExitCode::SUCCESS
         }
         PeopleRun::Network(msg) => fail(EX_NOPERM, &msg),
