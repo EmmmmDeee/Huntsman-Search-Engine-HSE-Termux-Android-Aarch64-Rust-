@@ -67,7 +67,9 @@ fn explicit_valid_independence_is_symmetric() {
     let mut graph = EvidenceAncestryGraph::default();
     graph.insert(node("a", "registry-a", &[], false)).unwrap();
     graph.insert(node("b", "registry-b", &[], false)).unwrap();
-    graph.insert_independence_evidence(evidence("a", "b")).unwrap();
+    graph
+        .insert_independence_evidence(evidence("a", "b"))
+        .unwrap();
 
     assert_eq!(
         graph.independence_state(&"a".into(), &"b".into()).unwrap(),
@@ -86,9 +88,21 @@ fn invalid_independence_evidence_is_rejected() {
     graph.insert(node("b", "registry-b", &[], false)).unwrap();
     graph.insert(node("derived", "copy", &["a"], true)).unwrap();
 
-    assert!(graph.insert_independence_evidence(evidence("a", "a")).is_err());
-    assert!(graph.insert_independence_evidence(evidence("a", "missing")).is_err());
-    assert!(graph.insert_independence_evidence(evidence("a", "derived")).is_err());
+    assert!(
+        graph
+            .insert_independence_evidence(evidence("a", "a"))
+            .is_err()
+    );
+    assert!(
+        graph
+            .insert_independence_evidence(evidence("a", "missing"))
+            .is_err()
+    );
+    assert!(
+        graph
+            .insert_independence_evidence(evidence("a", "derived"))
+            .is_err()
+    );
 
     let mut blank_method = evidence("a", "b");
     blank_method.method_id = "   ".to_owned();
@@ -133,7 +147,9 @@ fn deserialization_cannot_bypass_independence_validation() {
     let mut graph = EvidenceAncestryGraph::default();
     graph.insert(node("a", "registry-a", &[], false)).unwrap();
     graph.insert(node("b", "registry-b", &[], false)).unwrap();
-    graph.insert_independence_evidence(evidence("a", "b")).unwrap();
+    graph
+        .insert_independence_evidence(evidence("a", "b"))
+        .unwrap();
     let json = serde_json::to_string(&graph).unwrap();
     let round_trip: EvidenceAncestryGraph = serde_json::from_str(&json).unwrap();
     assert_eq!(round_trip, graph);
