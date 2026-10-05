@@ -88,8 +88,20 @@ fn selector_planning_is_typed_and_rejects_unsupported_before_transport() {
         assert!(!plan.query.trim().is_empty());
     }
 
-    assert!(plan_selector(&selector(EntityKind::Url, "https://example.com"), &CollectionLimits::default()).is_err());
-    assert!(plan_selector(&selector(EntityKind::Person, "A"), &CollectionLimits::default()).is_err());
+    assert!(
+        plan_selector(
+            &selector(EntityKind::Url, "https://example.com"),
+            &CollectionLimits::default()
+        )
+        .is_err()
+    );
+    assert!(
+        plan_selector(
+            &selector(EntityKind::Person, "A"),
+            &CollectionLimits::default()
+        )
+        .is_err()
+    );
     assert!(SeekNowCollector.accepts(&EntityKind::Email));
     assert!(!SeekNowCollector.accepts(&EntityKind::Url));
 }
@@ -128,7 +140,10 @@ fn fast_positive_stops_and_fast_failure_never_spends_deep_credit() {
     .unwrap();
     assert_eq!(batch.outcome, CollectionOutcome::Failed);
     assert_eq!(failed.request_count(), 1);
-    assert_eq!(batch.receipts[0].outcome.kind, SourceOutcomeKind::AuthRejected);
+    assert_eq!(
+        batch.receipts[0].outcome.kind,
+        SourceOutcomeKind::AuthRejected
+    );
 }
 
 #[test]
@@ -200,7 +215,12 @@ fn evidence_is_deduped_and_lineage_comes_from_response_dataset_not_seeknow() {
     assert_eq!(emails.len(), 1);
     let entity = emails[0];
     assert_eq!(entity.value, "alice@example.com");
-    assert!(entity.evidence.iter().all(|e| e.provenance.source == "seeknow"));
+    assert!(
+        entity
+            .evidence
+            .iter()
+            .all(|e| e.provenance.source == "seeknow")
+    );
     assert_eq!(entity.evidence.len(), 2);
     for evidence in &entity.evidence {
         assert_eq!(Lineage::of(evidence).family(), Some("dataset a"));
