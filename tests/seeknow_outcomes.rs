@@ -1,6 +1,4 @@
-use huntsman_recon::source_outcome::{
-    SourceHealthAction, SourceOutcomeKind, recommended_action,
-};
+use huntsman_recon::source_outcome::{SourceHealthAction, SourceOutcomeKind, recommended_action};
 
 #[test]
 fn entitlement_and_quota_are_distinct_causal_states() {
@@ -12,7 +10,10 @@ fn entitlement_and_quota_are_distinct_causal_states() {
     assert!(!entitlement.normally_retryable());
     assert!(!quota.normally_retryable());
 
-    assert_eq!(recommended_action(entitlement), SourceHealthAction::Investigate);
+    assert_eq!(
+        recommended_action(entitlement),
+        SourceHealthAction::Investigate
+    );
     assert_eq!(recommended_action(quota), SourceHealthAction::Backoff);
     assert_eq!(
         recommended_action(SourceOutcomeKind::RateLimited),
