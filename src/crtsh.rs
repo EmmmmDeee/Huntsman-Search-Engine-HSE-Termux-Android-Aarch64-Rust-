@@ -7,10 +7,10 @@
 //! an `Organisation`. Nothing is capped: every distinct name is a pivot.
 //!
 //! crt.sh is slow and flaps: healthy JSON was measured at ~5–11 s, so requests get a
-//! 30 s timeout, and HTTP 502 / 503 / 429 are retried a bounded number of times with a
-//! fixed pause, unless the body is a challenge page. Every other outcome
-//! (transport failure, challenge page at any status, 404, 500, a truncated or
-//! malformed 2xx body) fails once, typed.
+//! 30 s timeout. HTTP 502 / 503 / 429 keep their bounded retry budget; one transient
+//! transport failure (connect, TTFB timeout, or body timeout) is also retried once with
+//! the same fixed pause. Challenge pages, DNS/TLS failures, 404/500, truncated or
+//! malformed 2xx bodies still fail once, typed.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -37,6 +37,8 @@ pub const MAX_BODY: usize = 16 * 1024 * 1024;
 
 /// Attempts (first try included) for a crt.sh gateway flap.
 const TRANSIENT_ATTEMPTS: u32 = 3;
+/// One retry for a transient no-response transport failure.
+const TRANSIENT_TRANSPORT_RETRIES: u32 = 1;
 /// Fixed pause between transient retries. The overload clears in seconds; this is
 /// not a paid rate-limit client, so exponential backoff is the wrong shape.
 const TRANSIENT_PAUSE: Duration = Duration::from_secs(2);
@@ -191,11 +193,20 @@ const fn is_transient_crt_status(status: u16) -> bool {
     matches!(status, 429 | 502 | 503)
 }
 
-/// One guarded GET with a bounded retry for crt.sh's transient gateway flaps:
-/// at most [`TRANSIENT_ATTEMPTS`] attempts, [`TRANSIENT_PAUSE`] apart, and only for
-/// [`is_transient_crt_status`] with a body that is not a challenge page (as in the
-/// monolith, a bot challenge is never retried). The last failure is returned
-/// unchanged.
+/// True only for no-response failures that are plausibly transient at crt.sh.
+const fn is_transient_crt_transport(kind: SourceOutcomeKind) -> bool {
+    matches!(
+        kind,
+        SourceOutcomeKind::ConnectFailure
+            | SourceOutcomeKind::TtfbTimeout
+            | SourceOutcomeKind::BodyTimeout
+    )
+}
+
+/// One guarded GET with bounded retries for crt.sh's transient gateway and transport flaps.
+/// HTTP [`is_transient_crt_status`] responses keep [`TRANSIENT_ATTEMPTS`] as their own
+/// budget. A transient connect/TTFB/body failure gets one retry. All retries pause for
+/// [`TRANSIENT_PAUSE`]. Bot challenges are never retried.
 fn fetch_crt_json_with_transient_retry<T, D>(
     transport: &T,
     url: &str,
@@ -205,8 +216,11 @@ where
     T: Transport + ?Sized,
     D: DeserializeOwned,
 {
-    let mut attempt = 1;
+    let mut attempts = 0;
+    let mut status_retries = 0;
+    let mut transport_retries = 0;
     loop {
+        attempts += 1;
         let fetched = fetch(
             transport,
             Request::get(url).header("Accept", "application/json"),
@@ -217,7 +231,15 @@ where
         )
         .map_err(|e| CrtShError::Refused(e.to_string()))?;
         let Some(response) = fetched.response else {
-            return Err(CrtShError::NoResponse(fetched.outcome.kind));
+            let kind = fetched.outcome.kind;
+            if transport_retries < TRANSIENT_TRANSPORT_RETRIES
+                && is_transient_crt_transport(kind)
+            {
+                transport_retries += 1;
+                pause(TRANSIENT_PAUSE);
+                continue;
+            }
+            return Err(CrtShError::NoResponse(kind));
         };
         // A challenge page is a wall at any status, 429/502/503 included, and is
         // never retried. The body is inspected directly: the shared classifier
@@ -226,14 +248,15 @@ where
             return Err(CrtShError::NotAnAnswer(SourceOutcomeKind::BotWaf));
         }
         if !(200..300).contains(&response.status) {
-            if attempt < TRANSIENT_ATTEMPTS && is_transient_crt_status(response.status) {
-                attempt += 1;
+            if status_retries + 1 < TRANSIENT_ATTEMPTS && is_transient_crt_status(response.status)
+            {
+                status_retries += 1;
                 pause(TRANSIENT_PAUSE);
                 continue;
             }
             return Err(CrtShError::Status {
                 status: response.status,
-                attempts: attempt,
+                attempts,
             });
         }
         if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
@@ -244,7 +267,7 @@ where
         }
         let parsed = crate::http::parse_json_body(&response)
             .map_err(|e| CrtShError::Decode(e.to_string()))?;
-        return Ok((parsed, attempt));
+        return Ok((parsed, attempts));
     }
 }
 
@@ -403,3 +426,5 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
 mod differential;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transport_retry_tests;
