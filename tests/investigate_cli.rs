@@ -20,7 +20,11 @@ fn offline_cli_executes_shared_runtime() {
         .args(["ada@example.com", "example.com"])
         .output()
         .expect("run investigation");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("accepted=2"));
     assert!(stdout.contains("entities=2"));

@@ -18,7 +18,9 @@ fn main() -> ExitCode {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.len() == 1 && matches!(args[0].as_str(), "-h" | "--help" | "help") {
         println!("{USAGE}");
-        println!("Runs the bounded offline Huntsman integration spine; planned external routes are not fetched.");
+        println!(
+            "Runs the bounded offline Huntsman integration spine; planned external routes are not fetched."
+        );
         return ExitCode::SUCCESS;
     }
     if args.is_empty() {
