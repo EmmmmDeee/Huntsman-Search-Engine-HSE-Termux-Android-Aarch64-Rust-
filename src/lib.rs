@@ -91,6 +91,7 @@ pub mod roi;
 pub mod scraper_health;
 pub mod search;
 pub mod seeknow;
+pub mod seeknow_collector;
 pub mod service_defs;
 pub mod session;
 pub mod sha256;
