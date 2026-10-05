@@ -49,7 +49,7 @@ fn ci_pins_every_external_action_to_an_immutable_commit() {
         let Some(action) = line.strip_prefix("- uses:") else {
             continue;
         };
-        let action = action.trim().split_whitespace().next().unwrap_or_default();
+        let action = action.split_whitespace().next().unwrap_or_default();
         if action.starts_with("./") {
             continue;
         }
