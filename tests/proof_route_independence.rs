@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use huntsman_recon::evidence_ancestry::{
-    AncestryError, EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
-    IndependenceBasis, IndependenceEvidence, IndependenceEvidenceSet, IndependenceState,
-    METHOD_EXPLICIT_UPSTREAM_PROVENANCE_V1, MAX_PROOF_ROUTE_ROOTS,
+    AncestryError, EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
+    IndependenceEvidence, IndependenceEvidenceSet, IndependenceState, MAX_PROOF_ROUTE_ROOTS,
+    METHOD_EXPLICIT_UPSTREAM_PROVENANCE_V1,
 };
 
 fn node(id: &str, family: &str, parents: &[&str]) -> EvidenceAncestryNode {
