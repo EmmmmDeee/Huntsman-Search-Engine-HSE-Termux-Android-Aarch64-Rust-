@@ -302,7 +302,12 @@ fn provider_failure_kind(value: &Value, http_status: u16) -> Option<SourceOutcom
 
     if contains_any(
         &signal,
-        &["invalid_api_key", "invalid api key", "unauthorized", "bad api key"],
+        &[
+            "invalid_api_key",
+            "invalid api key",
+            "unauthorized",
+            "bad api key",
+        ],
     ) {
         return Some(SourceOutcomeKind::AuthRejected);
     }
@@ -394,10 +399,7 @@ fn minimal_row(value: &Value) -> Option<SeekNowRow> {
 }
 
 fn is_sensitive_result_field(key: &str) -> bool {
-    let normalized = key
-        .trim()
-        .to_ascii_lowercase()
-        .replace(['-', ' '], "_");
+    let normalized = key.trim().to_ascii_lowercase().replace(['-', ' '], "_");
     matches!(
         normalized.as_str(),
         "password"
