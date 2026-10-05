@@ -25,14 +25,6 @@ const FAST_MODULE: &str = "seeknow_search";
 const DEEP_MODULE: &str = "seeknow_search_deep";
 const CREDITS_MODULE: &str = "seeknow_credits";
 const STATUS_MODULE: &str = "seeknow_status";
-const UPSTREAM_FIELDS: &[&str] = &[
-    "dbname",
-    "breach",
-    "source_db",
-    "database_name",
-    "dataset",
-    "source",
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -254,7 +246,7 @@ fn execute_json_get<T: Transport + ?Sized>(
         });
     };
     Ok(parse_json_endpoint(
-        response,
+        &response,
         fetched.outcome,
         module,
         now_unix,
@@ -262,12 +254,12 @@ fn execute_json_get<T: Transport + ?Sized>(
 }
 
 fn parse_json_endpoint(
-    response: Response,
+    response: &Response,
     fetched_outcome: SourceExecutionOutcome,
     module: &str,
     now_unix: u64,
 ) -> JsonEndpointResult {
-    let meta = response_meta(&response);
+    let meta = response_meta(response);
     if response.truncated {
         return JsonEndpointResult {
             value: None,
@@ -366,7 +358,7 @@ fn execute_search<T: Transport + ?Sized>(
         });
     };
     Ok(parse_search_response(
-        response,
+        &response,
         fetched.outcome,
         module,
         now_unix,
@@ -375,13 +367,13 @@ fn execute_search<T: Transport + ?Sized>(
 }
 
 fn parse_search_response(
-    response: Response,
+    response: &Response,
     fetched_outcome: SourceExecutionOutcome,
     module: &str,
     now_unix: u64,
     row_limit: usize,
 ) -> SeekNowSearchResult {
-    let mut meta = response_meta(&response);
+    let mut meta = response_meta(response);
     if response.truncated {
         return result_with_outcome(
             meta,
@@ -652,17 +644,17 @@ fn normalize_row(value: &Value) -> Option<SeekNowRow> {
 }
 
 fn extract_upstream(object: &serde_json::Map<String, Value>) -> SeekNowUpstream {
-    let mut upstream = SeekNowUpstream::default();
-    upstream.dbname = upstream_values(object.get("dbname"));
-    upstream.breach = upstream_values(object.get("breach"));
-    upstream.source_db = upstream_values(object.get("source_db"));
-    upstream.database_name = upstream_values(object.get("database_name"));
-    upstream.dataset = upstream_values(object.get("dataset"));
-    upstream.source = upstream_values(object.get("source"));
-    upstream.record_id = ["record_id", "id", "_id"]
-        .iter()
-        .find_map(|key| object.get(*key).and_then(bounded_scalar_string));
-    upstream
+    SeekNowUpstream {
+        dbname: upstream_values(object.get("dbname")),
+        breach: upstream_values(object.get("breach")),
+        source_db: upstream_values(object.get("source_db")),
+        database_name: upstream_values(object.get("database_name")),
+        dataset: upstream_values(object.get("dataset")),
+        source: upstream_values(object.get("source")),
+        record_id: ["record_id", "id", "_id"]
+            .iter()
+            .find_map(|key| object.get(*key).and_then(bounded_scalar_string)),
+    }
 }
 
 fn upstream_values(value: Option<&Value>) -> Vec<String> {
