@@ -58,9 +58,15 @@ pub fn automatic_clusters(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
-    use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId};
+    use crate::evidence_ancestry::{
+        EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
+        IndependenceEvidence,
+    };
     use crate::identity_resolution::{IdentityResolutionDecision, ResolutionState};
+    use crate::retrieval_artifact::ArtifactId;
 
     fn graph() -> EvidenceAncestryGraph {
         let mut graph = EvidenceAncestryGraph::default();
@@ -68,7 +74,7 @@ mod tests {
             .insert(EvidenceAncestryNode {
                 id: "registry".into(),
                 source_family: "registry".into(),
-                parents: std::collections::BTreeSet::default(),
+                parents: BTreeSet::default(),
                 derived: false,
             })
             .unwrap();
@@ -76,8 +82,21 @@ mod tests {
             .insert(EvidenceAncestryNode {
                 id: "profile".into(),
                 source_family: "profile".into(),
-                parents: std::collections::BTreeSet::default(),
+                parents: BTreeSet::default(),
                 derived: false,
+            })
+            .unwrap();
+        graph
+            .insert_independence_evidence(IndependenceEvidence {
+                left_root: "registry".into(),
+                right_root: "profile".into(),
+                basis: IndependenceBasis::ExplicitUpstreamProvenance,
+                method_id: "fixture:resolver-independence".into(),
+                method_version: 1,
+                supporting_artifact_ids: BTreeSet::from([ArtifactId::from(
+                    "sha256:resolver-proof",
+                )]),
+                observed_at_unix: 1,
             })
             .unwrap();
         graph
