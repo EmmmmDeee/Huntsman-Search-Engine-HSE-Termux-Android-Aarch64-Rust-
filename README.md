@@ -85,9 +85,9 @@ cargo run -- coarsen -27.4698,153.0251 # one decimal place, ~11 km
 cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
+cargo run -- hibp help                   # HIBP subcommands; offline
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
-cargo run -- hibp help
 cargo run -- recon crtsh https://example.com/
 ```
 
@@ -115,7 +115,7 @@ Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys fi
 
 Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch` or `recon` got no usable response or `people` registers were unusable, 74 artifact write failure, 77 `fetch` or `recon` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal. `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print help and the usage line.
 
-`tests/readme.rs` runs every example above (except the internet `fetch`), checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`.
+`tests/readme.rs` runs every offline example above, checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`. Network HIBP examples below are exercised through a fake transport by `tests/hibp_cli.rs` rather than against the internet in CI.
 
 `fetch URL` options (defaults in brackets):
 
@@ -138,6 +138,35 @@ The refactor-overlay foundations preserved under `legacy/refactor-overlay-feef60
 Rebuilt monolith utilities: `au_id` (ABN, ACN, BSB), `geohash`, `confidence` (corroboration, ancestry-aware), `redact` (coordinate coarsening, secret scrubbing). `check` exercises them as gate 10.
 
 See `docs/RECONSTRUCTION_2026-10-02.md`.
+
+## HIBP (`hibp` command)
+
+`huntsman-recon hibp SUBCOMMAND` exposes the HIBP v3 and Pwned Passwords client in `huntsman_recon::hibp` (blocking, single crate; the async monolith and both legacy snapshots are unchanged). Requests use the guarded `UreqTransport` and existing fetch boundary, with redirects off and only trusted HIBP/Pwned Passwords HTTPS origins accepted. Nothing calls HIBP unless this command is run.
+
+```
+cargo run -- hibp breach Adobe                 # one breach, full model; no key
+cargo run -- hibp breaches --domain adobe.com  # catalogue, optional domain filter; no key
+cargo run -- hibp password-range 21BD1         # Pwned Passwords k-anonymity range; no key
+cargo run -- hibp account user@example.com     # breached account, untruncated; key
+cargo run -- hibp pastes user@example.com      # pastes for an address; key
+cargo run -- hibp subscription                 # plan, rate and entitlements; key
+```
+
+Check one password without putting it on the command line or in shell history:
+
+```
+read -rs PW && printf '%s\n' "$PW" | huntsman-recon hibp password; unset PW
+```
+
+`password` reads one line from stdin (at most 4096 bytes after the `\n`/`\r\n` terminator is stripped), SHA-1 hashes it locally and sends only the first 5 hex characters to `GET https://api.pwnedpasswords.com/range/{prefix}` with `Add-Padding: true`. The suffix is matched locally. The password, the full hash and the suffix are never sent, printed, logged or included in an error. The password and hash buffers are overwritten with zeros after use (best effort without `unsafe`; copies in stdin's read buffer are not reached).
+
+Output is `key=value` lines. Each run starts with `source=HIBP`, `service=` (`api-v3` or `pwned-passwords`), `source_attribution=` and `results=N`. Breach/account output preserves the complete parsed model; pastes preserve every parsed paste field; `password-range` drops zero-count padding entries; `subscription` reports plan/rate/entitlement fields and `key_source=`, never the key. Results are never intentionally truncated.
+
+For `breach`, `breaches`, `account` and `pastes`, a 404 is `results=0` with exit 0; for `subscription` and `password-range` it is an error (exit 69). HIBP uses the same process exit-code space: 64 usage, 65 invalid input or HTTP 400, 66 no API key for keyed lookups, 69 upstream unavailable/malformed/rate-limited, and 77 HTTP 401/403 or unavailable entitlement.
+
+Not exposed by this command: domain search, subscribed domains, domain verification, email sending, stealer-log searches, k-anonymity account-range search, latest breach, data classes, NTLM mode and OAuth. Domain verification and email-sending endpoints are not implemented at all.
+
+This command is **provider-specific reachability, not the unified people-lookup pipeline**. It does not yet convert HIBP responses into the common `entity::Evidence`/lineage/identity-resolution/saved-result path.
 
 ## Recon sources: crt.sh and stolen.tax
 
@@ -195,38 +224,15 @@ Each push to `main` also publishes a `main-<sha7>` pre-release (`.github/workflo
 
 ## Opt-in HIBP library
 
-`huntsman_recon::hibp` ports the HIBP branch onto this single blocking crate;
-it does not restore the async monolith or modify either legacy snapshot.
-`HibpClient::production(Auth::ApiKey(key), HibpConfig::default())` uses the
-guarded `UreqTransport` and the existing fetch boundary without following redirects.
-An injected `Arc<dyn Transport + Send + Sync>` supports offline tests.
+`huntsman_recon::hibp` ports the HIBP branch onto this single blocking crate; it does not restore the async monolith or modify either legacy snapshot. `HibpClient::production(Auth::ApiKey(key), HibpConfig::default())` uses the guarded `UreqTransport` and the existing fetch boundary without following redirects. An injected `Arc<dyn Transport + Send + Sync>` supports offline tests.
 
-Read endpoints: breach catalogue, individual/latest breach, data classes,
-breached accounts (including options and local SHA-1 k-anonymity lookup), pastes,
-verified-domain breaches, subscribed domains, subscription status, all three
-stealer-log searches, and free SHA-1/NTLM Pwned Passwords ranges with padding.
-Domain verification and email-sending endpoints are intentionally excluded.
-Keys never go to public or password endpoints. Entitlements are checked against a
-cached subscription response; missing flags fail closed. Keyed calls share a
-10/minute sliding window (`HIBP_RATE_LIMIT_PER_MINUTE=0` disables local pacing).
-429 retries are bounded; a server delay above `max_retry_after` returns immediately
-instead of retrying sooner than requested. Truncated or malformed bodies are errors.
+Read endpoints: breach catalogue, individual/latest breach, data classes, breached accounts (including options and local SHA-1 k-anonymity lookup), pastes, verified-domain breaches, subscribed domains, subscription status, all three stealer-log searches, and free SHA-1/NTLM Pwned Passwords ranges with padding. Domain verification and email-sending endpoints are intentionally excluded. Keys never go to public or password endpoints. Entitlements are checked against a cached subscription response; missing flags fail closed. Keyed calls share a 10/minute sliding window (`HIBP_RATE_LIMIT_PER_MINUTE=0` disables local pacing). 429 retries are bounded; a server delay above `max_retry_after` returns immediately instead of retrying sooner than requested. Truncated or malformed bodies are errors. A Pwned Passwords 429 is not retried; it returns a rate-limited outcome with the server retry hint when available.
 
-Key precedence: `HIBP_API_KEY`, caller's `HUNTSMAN_HIBP_KEY` slot (or that environment
-variable), private `~/.config/hibp/api_key`, then optional build-time embedding.
-Blank/placeholders are ignored; files are bounded and symlinks refused.
-Personal builds can embed a key only into Cargo's `OUT_DIR` (and therefore the
-binary); do not distribute such binaries. `CI`, `HSE_RELEASE`, or
-`HUNTSMAN_HIBP_NO_EMBED` being set disables embedding. Runtime keys still work.
+Key precedence: `HIBP_API_KEY`, caller's `HUNTSMAN_HIBP_KEY` slot (or that environment variable), private `~/.config/hibp/api_key`, then optional build-time embedding. Blank/placeholders are ignored; files are bounded and symlinks refused. Personal builds can embed a key only into Cargo's `OUT_DIR` (and therefore the binary); do not distribute such binaries. `CI`, `HSE_RELEASE`, or `HUNTSMAN_HIBP_NO_EMBED` being set disables embedding. Runtime keys still work.
 
-`hibp::oauth` implements discovery, public registration, PKCE S256 authorization,
-code exchange and refresh for the documented MCP resource, **not REST v3 bearer
-authentication**. The caller must verify the returned state before exchanging a
-code. Authorization-server URLs must stay on HIBP's HTTPS origin. Linux/Termux
-randomness comes from `/dev/urandom`. Token stores support memory or bounded,
-atomic mode-600 files. Debug/errors omit keys, tokens and upstream error bodies.
-All integration evidence here is offline fake-transport testing; live HIBP and
-Termux handset acceptance remain unverified.
+`hibp::oauth` implements discovery, public registration, PKCE S256 authorization, code exchange and refresh for the documented MCP resource, **not REST v3 bearer authentication**. The caller must verify the returned state before exchanging a code. Authorization-server URLs must stay on HIBP's HTTPS origin. Linux/Termux randomness comes from `/dev/urandom`. Token stores support memory or bounded, atomic mode-600 files. Debug/errors omit keys, tokens and upstream error bodies.
+
+All CI HIBP integration evidence is offline fake-transport testing. Earlier development smoke tests exercised public HIBP endpoints on an antecedent branch, but they are not a qualifying live receipt tied to this final commit. Termux handset acceptance also remains unverified.
 
 ## Opt-in ASIC people-register library
 
