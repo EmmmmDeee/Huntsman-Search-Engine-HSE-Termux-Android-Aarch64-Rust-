@@ -27,8 +27,9 @@ jobs:
           git show 7dca720:src/core/attack/mod.rs > "$RUNNER_TEMP/oracle-attack.rs"
           python3 - <<'PY'
           from pathlib import Path
+          import os
 
-          oracle = Path(__import__('os').environ['RUNNER_TEMP']) / 'oracle-attack.rs'
+          oracle = Path(os.environ['RUNNER_TEMP']) / 'oracle-attack.rs'
           source = oracle.read_text()
 
           def const_block(signature: str) -> str:
@@ -55,7 +56,7 @@ jobs:
           text = attack.read_text()
           start = text.index('/// Version of the broad static Enterprise catalogue')
           end = text.index('const INTENTIONAL_EXCLUSION_IDS')
-          replacement = '''/// MITRE ATT&CK Enterprise release used by the complete static vocabulary.\n/// Source provenance is pinned in `attack_catalog.rs`.\npub const ATTACK_VERSION: &str = "19.2";\n/// TA0043 uses the same current Enterprise release.\npub const RECONNAISSANCE_VERSION: &str = ATTACK_VERSION;\npub const TACTIC_ID: &str = "TA0043";\npub const TACTIC_NAME: &str = "Reconnaissance";\n\n'''
+          replacement = '''/// MITRE ATT&CK Enterprise release used by the complete static vocabulary.\n/// Source provenance is pinned in `attack_catalog.rs`.\npub const ATTACK_VERSION: &str = "19.2";\n/// TA0043 uses the same current Enterprise release.\npub const RECONNAISSANCE_VERSION: &str = ATTACK_VERSION;\npub const TACTIC_ID: &str = "TA0043";\npub const TACTIC_NAME: &str = "Reconnaissance";\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]\npub struct Tactic {\n    pub id: &'static str,\n    pub shortname: &'static str,\n    pub name: &'static str,\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]\npub struct Technique {\n    pub id: &'static str,\n    pub name: &'static str,\n    pub is_subtechnique: bool,\n    pub tactics: &'static [&'static str],\n}\n\n'''
           text = text[:start] + replacement + text[end:]
 
           old = '''pub fn technique(id: &str) -> Option<&'static Technique> {\n    ENTERPRISE\n        .iter()\n        .chain(RECONNAISSANCE_V19_2_ADDITIONS.iter())\n        .find(|item| item.id == id)\n}'''
