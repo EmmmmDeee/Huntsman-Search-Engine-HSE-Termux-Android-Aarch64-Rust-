@@ -1,8 +1,6 @@
 //! Deterministic adapter over the existing correlation rule registry.
 
-use crate::correlator::{
-    Correlation, RuleContext, confirmed_only, rank_and_sort, registry,
-};
+use crate::correlator::{Correlation, RuleContext, confirmed_only, rank_and_sort, registry};
 use crate::entity::Entity;
 
 /// Run the existing entity-only correlators at an explicit timestamp.
