@@ -158,6 +158,70 @@ fn exceeds_budget(budget_usd: Option<f64>, cost_per_request: Option<f64>) -> boo
     }
 }
 
+fn module_exclusion(
+    module: &dyn Module,
+    kind: TargetKind,
+    value: &str,
+    policy: &PlannerPolicy,
+) -> Option<DispatchExclusion> {
+    let provider_id = module.name();
+    let key = DispatchKey::new(provider_id, kind, value);
+    if policy.prior_dispatches.contains(&key) {
+        return Some(DispatchExclusion::Duplicate);
+    }
+    if policy.quota_remaining.get(provider_id) == Some(&false) {
+        return Some(DispatchExclusion::QuotaExhausted);
+    }
+    let provider = descriptor(module);
+    if provider.requires_key && !policy.configured_providers.contains(provider_id) {
+        return Some(DispatchExclusion::CredentialUnavailable);
+    }
+    if unknown_cost_paid_provider_blocked(
+        &provider,
+        policy.budget_usd,
+        policy.allow_unknown_paid_cost,
+    ) {
+        return Some(DispatchExclusion::UnknownPaidCost);
+    }
+    exceeds_budget(policy.budget_usd, provider.cost_per_request)
+        .then_some(DispatchExclusion::Budget)
+}
+
+fn planned_module(
+    module: &dyn Module,
+    module_index: usize,
+    seed: &NormalizedSeed,
+    target: &Target,
+    policy: &PlannerPolicy,
+) -> PlannedDispatch {
+    let provider_id = module.name();
+    let provider = descriptor(module);
+    let classified = classifier::classify(&seed.value);
+    let utility = compute_dispatch_utility(&DispatchUtilityInputs {
+        source_count: 0,
+        entity_confidence: Some(classified.confidence),
+        optionality_prior: provider.optionality_prior,
+        novelty_prior: provider.uniqueness_prior,
+        reliability_prior: provider.reliability_prior,
+        cost_per_request_usd: provider.cost_per_request,
+        quota_remaining: policy.quota_remaining.get(provider_id).copied(),
+        configured_timeout_ms: u64::try_from(crate::http::DEFAULT_TIMEOUT.as_millis())
+            .unwrap_or(u64::MAX),
+        already_dispatched_this_module_target: false,
+        geoint_bearing: is_geoint_bearing(&module.produces(), module.category()),
+    });
+    let mut rationale = utility.explanation.clone();
+    if service_defs::find_service(provider_id).is_some() {
+        rationale.push("provider has keyed service definition".to_string());
+    }
+    PlannedDispatch {
+        target: target.clone(),
+        action: DispatchAction::Module { module_index },
+        utility: Some(utility),
+        rationale,
+    }
+}
+
 fn action_id(action: &DispatchAction, modules: &[Arc<dyn Module>]) -> String {
     match action {
         DispatchAction::Module { module_index } => modules.get(*module_index).map_or_else(
@@ -201,70 +265,26 @@ pub fn build_dispatch_plan(
             continue;
         };
         let target = Target::new(kind, seed.value.clone());
-        let module_indices = graph.dispatch_order_for(kind, policy.convex_budget);
-        for &module_index in module_indices {
+        for &module_index in graph.dispatch_order_for(kind, policy.convex_budget) {
             let Some(module) = modules.get(module_index) else {
                 continue;
             };
-            let provider_id = module.name();
-            let key = DispatchKey::new(provider_id, kind, &seed.value);
-            let exclude = if policy.prior_dispatches.contains(&key) {
-                Some(DispatchExclusion::Duplicate)
-            } else if policy.quota_remaining.get(provider_id) == Some(&false) {
-                Some(DispatchExclusion::QuotaExhausted)
-            } else {
-                let provider = descriptor(module.as_ref());
-                if provider.requires_key && !policy.configured_providers.contains(provider_id) {
-                    Some(DispatchExclusion::CredentialUnavailable)
-                } else if unknown_cost_paid_provider_blocked(
-                    &provider,
-                    policy.budget_usd,
-                    policy.allow_unknown_paid_cost,
-                ) {
-                    Some(DispatchExclusion::UnknownPaidCost)
-                } else if exceeds_budget(policy.budget_usd, provider.cost_per_request) {
-                    Some(DispatchExclusion::Budget)
-                } else {
-                    None
-                }
-            };
-            if let Some(reason) = exclude {
+            if let Some(reason) = module_exclusion(module.as_ref(), kind, &seed.value, policy) {
                 excluded.push(ExcludedDispatch {
                     target: target.clone(),
-                    provider_id: provider_id.to_string(),
+                    provider_id: module.name().to_string(),
                     reason,
                 });
-                continue;
+            } else {
+                selected.push(planned_module(
+                    module.as_ref(),
+                    module_index,
+                    seed,
+                    &target,
+                    policy,
+                ));
             }
-
-            let provider = descriptor(module.as_ref());
-            let classified = classifier::classify(&seed.value);
-            let quota = policy.quota_remaining.get(provider_id).copied();
-            let utility = compute_dispatch_utility(&DispatchUtilityInputs {
-                source_count: 0,
-                entity_confidence: Some(classified.confidence),
-                optionality_prior: provider.optionality_prior,
-                novelty_prior: provider.uniqueness_prior,
-                reliability_prior: provider.reliability_prior,
-                cost_per_request_usd: provider.cost_per_request,
-                quota_remaining: quota,
-                configured_timeout_ms: u64::try_from(crate::http::DEFAULT_TIMEOUT.as_millis())
-                    .unwrap_or(u64::MAX),
-                already_dispatched_this_module_target: false,
-                geoint_bearing: is_geoint_bearing(&module.produces(), module.category()),
-            });
-            let mut rationale = utility.explanation.clone();
-            if service_defs::find_service(provider_id).is_some() {
-                rationale.push("provider has keyed service definition".to_string());
-            }
-            selected.push(PlannedDispatch {
-                target: target.clone(),
-                action: DispatchAction::Module { module_index },
-                utility: Some(utility),
-                rationale,
-            });
         }
-
         for route in source_registry::routes_for(&seed.kind, &seed.value) {
             selected.push(PlannedDispatch {
                 target: target.clone(),
