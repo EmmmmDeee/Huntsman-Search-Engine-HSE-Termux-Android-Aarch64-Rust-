@@ -84,7 +84,7 @@ fn explicit_independence_can_unlock_auto_merge() {
 #[test]
 fn bounded_independence_search_never_strengthens_auto_merge() {
     let mut graph = EvidenceAncestryGraph::default();
-    let ids: Vec<String> = (0..100).map(|index| format!("root-{index}")) .collect();
+    let ids: Vec<String> = (0..100).map(|index| format!("root-{index}")).collect();
     for id in &ids {
         graph.insert(root(id)).unwrap();
     }
@@ -92,7 +92,9 @@ fn bounded_independence_search_never_strengthens_auto_merge() {
     let d = decision(&refs);
 
     assert!(!d.allows_automatic_merge(&graph, AutoMergePolicy::default()));
-    assert!(d.hold_reasons(&graph, AutoMergePolicy::default()).iter().any(
-        |reason| matches!(reason, HoldReason::IncompleteIndependenceProof)
-    ));
+    assert!(
+        d.hold_reasons(&graph, AutoMergePolicy::default())
+            .iter()
+            .any(|reason| matches!(reason, HoldReason::IncompleteIndependenceProof))
+    );
 }
