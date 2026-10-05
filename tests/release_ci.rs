@@ -819,14 +819,20 @@ fn bin_entries(root: &Path) -> Vec<String> {
 
 #[test]
 fn installer_replaces_the_binary_atomically_and_only_after_verification() {
-    let tools = ["sha256sum", "install", "mktemp", "mv", "cut", "cp"];
+    let tools = ["sha256sum", "install", "mktemp", "mv", "cut", "cp", "timeout"];
     if tools.iter().any(|t| tool(t).is_none()) {
         assert!(std::env::var_os("CI").is_none(), "CI must have coreutils");
         eprintln!("skipping: coreutils missing");
         return;
     }
     let asset = "huntsman-recon-aarch64-linux-android";
-    let new_build = b"\x7fELF new recon build\n";
+    let new_build = br#"#!/bin/sh
+case "$1" in
+  check) mkdir -p var; printf 'fixture-ledger\n' > var/ledger.json ;;
+  verify) [ "$2" = var/ledger.json ] && [ -f "$2" ] ;;
+  *) exit 64 ;;
+esac
+"#;
     let probe = scratch("install-probe");
     fs::write(probe.join("b"), new_build).unwrap();
     let good = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
