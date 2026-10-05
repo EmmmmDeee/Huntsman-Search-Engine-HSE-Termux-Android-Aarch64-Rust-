@@ -50,13 +50,8 @@ const RECONNAISSANCE_V19_2_ADDITIONS: &[Technique] = &[
     },
 ];
 
-const INTENTIONAL_EXCLUSION_IDS: &[&str] = &[
-    "T1598.001",
-    "T1598.002",
-    "T1598.003",
-    "T1598.004",
-    "T1682",
-];
+const INTENTIONAL_EXCLUSION_IDS: &[&str] =
+    &["T1598.001", "T1598.002", "T1598.003", "T1598.004", "T1682"];
 
 fn major(version: &'static str) -> &'static str {
     match version.split_once('.') {
@@ -361,6 +356,7 @@ pub fn coverage(exercised: &BTreeMap<String, usize>) -> Coverage {
     }
 }
 
+#[cfg(test)]
 const MAPPED_ENTITY_KINDS: &[EntityKind] = &[
     EntityKind::Person,
     EntityKind::Email,
@@ -384,6 +380,7 @@ const MAPPED_ENTITY_KINDS: &[EntityKind] = &[
     EntityKind::Document,
 ];
 
+#[cfg(test)]
 const ALL_RELATION_KINDS: &[RelationKind] = &[
     RelationKind::AliasOf,
     RelationKind::LocatedAt,
@@ -612,7 +609,10 @@ mod tests {
 
         let cov = static_reconnaissance_coverage(["T1595.001", "T1596.002", "T1589.001"]);
         let covered: BTreeSet<&str> = cov.covered.iter().map(|item| item.technique.id).collect();
-        assert_eq!(covered, BTreeSet::from(["T1589.001", "T1595.001", "T1596.002"]));
+        assert_eq!(
+            covered,
+            BTreeSet::from(["T1589.001", "T1595.001", "T1596.002"])
+        );
         assert_eq!(cov.coverage_fraction, 3.0 / 32.0);
     }
 

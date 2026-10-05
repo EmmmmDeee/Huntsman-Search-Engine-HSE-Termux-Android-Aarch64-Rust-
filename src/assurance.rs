@@ -824,7 +824,7 @@ pub fn objectives() -> Vec<ContinuityObjective> {
             recovery_procedure: "Regenerate artifacts from the current ledger and coverage sets.",
             recovery_tests: &[
                 "bound_entry_exports_a_well_formed_indicator",
-                "coverage_layer_emits_covered_and_gap_techniques",
+                "coverage_layer_emits_exactly_actionable_leaves",
             ],
             observed: None,
         },
@@ -1200,7 +1200,7 @@ mod tests {
                 },
                 MissingRecoveryTest {
                     capability: "attack_exports",
-                    test_name: "coverage_layer_emits_covered_and_gap_techniques",
+                    test_name: "coverage_layer_emits_exactly_actionable_leaves",
                 },
             ]
         );

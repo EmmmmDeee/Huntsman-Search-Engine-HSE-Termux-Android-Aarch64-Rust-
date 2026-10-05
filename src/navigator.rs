@@ -183,18 +183,22 @@ mod tests {
             .unwrap();
         assert_eq!(phishing["score"], 0);
         assert_eq!(phishing["enabled"], false);
-        assert!(phishing["comment"]
-            .as_str()
-            .unwrap()
-            .contains("intentional product-scope exclusion"));
+        assert!(
+            phishing["comment"]
+                .as_str()
+                .unwrap()
+                .contains("intentional product-scope exclusion")
+        );
         let threat_vendor = techniques
             .iter()
             .find(|item| item["techniqueID"] == "T1681")
             .unwrap();
-        assert!(threat_vendor["comment"]
-            .as_str()
-            .unwrap()
-            .contains("capability gap"));
+        assert!(
+            threat_vendor["comment"]
+                .as_str()
+                .unwrap()
+                .contains("capability gap")
+        );
         assert_eq!(value["gradient"]["maxValue"], 5);
     }
 }

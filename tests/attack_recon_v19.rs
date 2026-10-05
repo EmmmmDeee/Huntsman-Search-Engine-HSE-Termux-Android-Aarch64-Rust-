@@ -7,7 +7,11 @@ fn reconnaissance_v19_2_has_twelve_families_and_thirty_seven_leaves() {
     assert_eq!(attack::RECONNAISSANCE_VERSION, "19.2");
 
     let all = attack::reconnaissance();
-    assert_eq!(all.len(), 46, "TA0043 v19.2 has 12 parents + 34 sub-techniques");
+    assert_eq!(
+        all.len(),
+        46,
+        "TA0043 v19.2 has 12 parents + 34 sub-techniques"
+    );
     assert!(all.iter().any(|item| item.id == "T1681"));
     assert!(all.iter().any(|item| item.id == "T1682"));
 
@@ -16,13 +20,22 @@ fn reconnaissance_v19_2_has_twelve_families_and_thirty_seven_leaves() {
     assert!(families.iter().all(|item| !item.is_subtechnique));
 
     let leaves = attack::reconnaissance_leaves();
-    assert_eq!(leaves.len(), 37, "34 sub-techniques + 3 standalone techniques");
+    assert_eq!(
+        leaves.len(),
+        37,
+        "34 sub-techniques + 3 standalone techniques"
+    );
     let leaf_ids: BTreeSet<_> = leaves.iter().map(|item| item.id).collect();
     for id in ["T1594", "T1681", "T1682"] {
         assert!(leaf_ids.contains(id), "standalone leaf {id} missing");
     }
-    for id in ["T1589", "T1590", "T1591", "T1592", "T1593", "T1595", "T1596", "T1597", "T1598"] {
-        assert!(!leaf_ids.contains(id), "parent {id} must be a roll-up, not a scored leaf");
+    for id in [
+        "T1589", "T1590", "T1591", "T1592", "T1593", "T1595", "T1596", "T1597", "T1598",
+    ] {
+        assert!(
+            !leaf_ids.contains(id),
+            "parent {id} must be a roll-up, not a scored leaf"
+        );
     }
 }
 
@@ -45,7 +58,11 @@ fn deliberate_product_exclusions_are_not_reported_as_engineering_gaps() {
     assert_eq!(cov.applicable_leaf_count, 32);
     assert_eq!(cov.coverage_fraction, 0.0);
     assert!(cov.uncovered.iter().any(|item| item.id == "T1681"));
-    assert!(!cov.uncovered.iter().any(|item| item.id.starts_with("T1598.")));
+    assert!(
+        !cov.uncovered
+            .iter()
+            .any(|item| item.id.starts_with("T1598."))
+    );
     assert!(!cov.uncovered.iter().any(|item| item.id == "T1682"));
 }
 
@@ -80,7 +97,10 @@ fn parent_evidence_rolls_up_but_does_not_score_as_a_leaf() {
 #[test]
 fn ontology_mappings_do_not_manufacture_structural_capability() {
     let cov = attack::static_reconnaissance_coverage(std::iter::empty::<&str>());
-    assert!(cov.covered.is_empty(), "metadata-only mappings are not implementation evidence");
+    assert!(
+        cov.covered.is_empty(),
+        "metadata-only mappings are not implementation evidence"
+    );
     assert_eq!(cov.uncovered.len(), 32);
     assert_eq!(cov.intentional_exclusions.len(), 5);
 }
