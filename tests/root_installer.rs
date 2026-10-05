@@ -110,7 +110,10 @@ esac
         calls.contains("pkg install -y rust rust-std-x86_64-unknown-linux-gnu"),
         "{calls}"
     );
-    assert!(calls.contains("dpkg-query -W -f=${Version} rust"), "{calls}");
+    assert!(
+        calls.contains("dpkg-query -W -f=${Version} rust"),
+        "{calls}"
+    );
     assert!(
         calls.contains("dpkg-query -W -f=${Version} rust-std-x86_64-unknown-linux-gnu"),
         "{calls}"
