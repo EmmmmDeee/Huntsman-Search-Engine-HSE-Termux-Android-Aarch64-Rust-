@@ -882,7 +882,7 @@ esac
 
     let src = fs::read_to_string(INSTALL).unwrap();
     for required in [
-        "stage=\"$PREFIX/bin/.${DEST_NAME}.install.$$\"",
+        "stage_dir=\"$(mktemp -d \"$PREFIX/bin/.${DEST_NAME}.install.XXXXXX\")\"",
         "install -m 0755 \"$tmp/$ASSET\" \"$stage\"",
         "mv -f \"$stage\" \"$dest\"",
     ] {
