@@ -4,7 +4,7 @@
 
 **Goal:** Add a Rust-native collector boundary and a bounded Wayback + Common Crawl archive-intelligence vertical slice that emits provenance-bearing URL entities without manufacturing lineage independence.
 
-**Architecture:** Pure archive normalization/merge logic lives in L3; Wayback/Common Crawl guarded fetch clients live in L4; the generic collector contract and archive orchestration live in L5. All network traffic uses the existing `fetch::fetch` + injected `http::Transport` path; `dataset` carries only stable upstream-family identity while per-crawl/per-record identifiers remain non-counting provenance.
+**Architecture:** Pure archive normalization and per-dataset merge logic lives in L3; Wayback/Common Crawl guarded-fetch clients live in L4; the generic collector contract and archive orchestration live in L5. All network traffic uses the existing `fetch::fetch` + injected `http::Transport` path. `dataset` carries stable upstream-family identity; per-crawl, per-record and presentation locators remain non-counting provenance.
 
 **Tech Stack:** Rust 2024, MSRV 1.87, existing `serde`, `serde_json`, `thiserror`, `ureq`; no async runtime; `#![deny(unsafe_code)]`.
 
@@ -12,28 +12,30 @@
 
 ## Global Constraints
 
-- Rust-first; no copied/adapted FreeOSINTUI implementation or tables.
+- Rust-first; no copied/adapted FreeOSINTUI implementation, tables, or implementation data.
 - `unsafe_code = "deny"` remains true.
 - Termux/Android aarch64 remains first-class.
 - No new socket-opening path; archive clients use `fetch::fetch` over injected `http::Transport`.
 - Current transport body cap (`http::DEFAULT_MAX_BODY`, 4 MiB) remains the hard outer bound; parser row limits add an inner bound.
 - `source_registry::EvidenceRole::LeadOnly` remains unchanged.
-- `dataset` is a stable countable upstream family: `internet_archive_wayback` or `common_crawl`; `collection`, `source_url`, row locators, and capture counts never create independence.
+- Countable archive datasets are exactly stable upstream roots: `internet_archive_wayback` and `common_crawl`. A Common Crawl `CC-MAIN-*` ID is `collection`, never `dataset`.
+- `source_url`, collection IDs, row locators, capture counts, classifications and generated pivots never create independent families.
 - Partial source failure preserves valid results from successful sources.
+- Zero limits are deterministic no-work states, not invented validation failures; resulting truncation/no-work state must remain explicit.
 - No live network dependency in CI.
-- No result is silently dropped/truncated/misattributed; local caps set an explicit truncation flag.
+- No result is silently dropped, truncated or misattributed; local caps propagate explicit truncation state.
 
 ## Review Focus
 
-1. **Archive URL ambiguity:** explicit default ports, host case/trailing dot, query preservation, invalid/non-http schemes must normalize deterministically without changing path/query identity.
-2. **False corroboration:** repeated Wayback captures and multiple Common Crawl collections/rows must not produce additional independent families.
-3. **Partial/truncated bodies:** `Response::truncated` and row caps must propagate into receipts and must never be interpreted as evidence of absence.
-4. **Malformed mixed input:** one malformed archive row/NDJSON line must not erase valid rows unless the provider envelope itself is unusable.
-5. **Provider asymmetry:** Wayback success + Common Crawl failure (and reverse where practical) must retain successful entities/evidence with failed-source outcome visible.
+1. **Archive URL ambiguity:** default ports, scheme differences, host case/trailing dot, query preservation, invalid/non-http schemes.
+2. **False corroboration:** repeated Wayback captures and multiple Common Crawl collections/rows must not create additional independent families.
+3. **Partial/truncated bodies:** `Response::truncated`, row caps and entity caps must propagate and never imply absence.
+4. **Malformed mixed input:** one malformed row/NDJSON line must not erase valid neighbors unless the provider envelope itself is unusable.
+5. **Provider asymmetry:** Wayback success + Common Crawl failure, and the reverse, must retain successful evidence and expose the failed source outcome.
 
 ---
 
-### Task 1: Pure archive record model and normalization
+### Task 1: Pure archive model, normalization and per-dataset aggregation
 
 **Files:**
 - Create: `src/archive.rs`
@@ -41,57 +43,63 @@
 - Test: unit tests inside `src/archive.rs`
 
 **Interfaces:**
-- Produces: `ArchiveSource`, `ArchiveCapture`, `ArchiveRecord`, `ArchiveInterest`, `parse_archive_url(&str) -> Option<ArchiveUrlKey>`, `merge_captures(Vec<ArchiveCapture>) -> Vec<ArchiveRecord>`, `classify_archive_path(&str, &str) -> Vec<ArchiveInterest>`.
-- Consumes later: Tasks 2, 3, and 5 use these exact normalized types; no network or entity dependencies.
+- Produces: `ArchiveSource`, `ArchiveUrlKey`, `ArchiveCapture`, `ArchiveDatasetObservation`, `ArchiveRecord`, `ArchiveInterest`.
+- Produces functions: `parse_archive_url`, `merge_captures`, `classify_archive_path`.
+- Consumed by Tasks 2, 3 and 5. No network/entity dependencies.
 
-- [ ] **Step 1: Write failing normalization tests**
+- [ ] **Step 1: Write failing URL-normalization tests**
 
-Add tests named:
-- `archive_url_key_ignores_http_https_host_case_trailing_dot_and_default_port`
+Add:
+- `archive_url_key_ignores_scheme_host_case_trailing_dot_and_default_port`
 - `archive_url_key_preserves_non_default_port_path_and_query`
 - `archive_url_rejects_non_http_invalid_and_hostless_values`
 
-Assertions must prove `HTTP://Example.COM.:80/a?x=1` and `https://example.com/a?x=1` share the intended archive key, while `https://example.com:8443/a?x=1`, `/b`, or a different query do not.
+Pin that `http://Example.COM.:80/a?x=1` and `https://example.com/a?x=1` have the same archive key; `:8443`, a different path, or a different query does not.
 
 - [ ] **Step 2: Run RED**
 
 Run: `cargo test --locked archive::tests::archive_url -- --nocapture`
-Expected: FAIL because `archive` module/types/functions do not exist.
+Expected: FAIL because module/API is absent.
 
-- [ ] **Step 3: Implement minimal archive URL model**
-
-Implement in `src/archive.rs`:
+- [ ] **Step 3: Implement the minimal URL model**
 
 ```rust
 pub enum ArchiveSource { Wayback, CommonCrawl }
-pub struct ArchiveUrlKey { pub host: String, pub port: Option<u16>, pub path: String, pub query: String }
+
+pub struct ArchiveUrlKey {
+    pub host: String,
+    pub port: Option<u16>,
+    pub path: String,
+    pub query: String,
+}
+
 pub fn parse_archive_url(raw: &str) -> Option<ArchiveUrlKey>;
 ```
 
-Use existing URL/HTTP parsing primitives where possible; do not add a URL crate unless the current parser cannot correctly satisfy the tests.
+Reuse existing HTTP parsing where sufficient. Add no URL crate unless tests demonstrate the current primitives cannot implement the required semantics correctly.
 
-- [ ] **Step 4: Run GREEN for URL normalization**
+- [ ] **Step 4: Run GREEN**
 
 Run: `cargo test --locked archive::tests::archive_url -- --nocapture`
 Expected: PASS.
 
-- [ ] **Step 5: Write failing merge/classification tests**
+- [ ] **Step 5: Write failing aggregation/classification tests**
 
-Add tests named:
-- `merge_keeps_first_last_count_and_deterministic_datasets`
+Add:
+- `merge_retains_one_observation_per_dataset_family`
+- `merge_keeps_first_last_count_and_deterministic_collection_order_per_dataset`
 - `unknown_status_or_mime_is_not_invented`
-- `same_dataset_multiple_captures_remain_one_dataset`
+- `same_dataset_multiple_captures_remain_one_dataset_observation`
+- `wayback_and_commoncrawl_remain_separate_dataset_observations`
 - `interest_classification_marks_patterns_without_asserting_security_facts`
 - `interest_classification_has_near_miss_negatives`
 
-- [ ] **Step 6: Run RED for merge/classification**
+- [ ] **Step 6: Run RED**
 
 Run: `cargo test --locked archive::tests -- --nocapture`
-Expected: new tests FAIL because merge/classification are missing.
+Expected: the new tests FAIL because aggregation/classification are absent.
 
-- [ ] **Step 7: Implement minimal capture/record/interest logic**
-
-Define:
+- [ ] **Step 7: Implement minimal capture/aggregate/record types**
 
 ```rust
 pub struct ArchiveCapture {
@@ -107,15 +115,42 @@ pub struct ArchiveCapture {
     pub source_url: Option<String>,
 }
 
-pub struct ArchiveRecord { /* first/last/count + ordered unique datasets/collections and latest-known metadata */ }
-pub enum ArchiveInterest { Document, ArchiveOrBackup, ConfigurationLike, ScriptLike, AdminAuthApiLike, Parameterized }
+pub struct ArchiveDatasetObservation {
+    pub source: ArchiveSource,
+    pub dataset: String,
+    pub collections: Vec<String>,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub capture_count: usize,
+    pub status: Option<u16>,
+    pub mime: Option<String>,
+    pub digest: Option<String>,
+    pub source_urls: Vec<String>,
+}
+
+pub struct ArchiveRecord {
+    pub key: ArchiveUrlKey,
+    pub representative_url: String,
+    pub observations: Vec<ArchiveDatasetObservation>,
+    pub interests: Vec<ArchiveInterest>,
+}
+
+pub enum ArchiveInterest {
+    Document,
+    ArchiveOrBackup,
+    ConfigurationLike,
+    ScriptLike,
+    AdminAuthApiLike,
+    Parameterized,
+}
+
 pub fn merge_captures(captures: Vec<ArchiveCapture>) -> Vec<ArchiveRecord>;
 pub fn classify_archive_path(path: &str, query: &str) -> Vec<ArchiveInterest>;
 ```
 
-Keep classification tables Huntsman-authored and minimal; tests define behavior rather than copying another project's lists.
+One `ArchiveRecord` may contain multiple dataset observations; never flatten them into one synthetic archive source.
 
-- [ ] **Step 8: Run Task 1 tests + format**
+- [ ] **Step 8: Verify Task 1**
 
 Run: `cargo test --locked archive::tests -- --nocapture && cargo fmt --check`
 Expected: PASS.
@@ -135,49 +170,60 @@ git commit -m "feat(archive): add normalized archive record model"
 - Test: unit tests inside `src/wayback.rs`
 
 **Interfaces:**
-- Consumes: `archive::{ArchiveCapture, ArchiveSource, parse_archive_url}`, `fetch::fetch`, `http::{Request, Transport}`, `source_outcome::SourceExecutionOutcome`.
-- Produces: `WaybackQuery`, `ArchiveFetchResult { captures: Vec<ArchiveCapture>, outcome: SourceExecutionOutcome, truncated: bool }`, `wayback_lookup<T: Transport + ?Sized>(...) -> Result<ArchiveFetchResult, Error>`.
+- Consumes: Task 1 archive types, `fetch::fetch`, `http::{Request, Transport}`, `source_outcome::{SourceExecutionOutcome, SourceOutcomeKind}`.
+- Produces: `WaybackQuery`, `WaybackResult`, `wayback_lookup`.
 
-- [ ] **Step 1: Write failing request-construction/parser tests**
+- [ ] **Step 1: Write failing request/parser tests**
 
-Tests:
+Add:
 - `wayback_request_is_https_domain_scoped_and_bounded`
-- `wayback_parser_accepts_valid_rows_and_skips_malformed_rows`
+- `wayback_parser_accepts_valid_rows_and_isolates_malformed_rows`
 - `wayback_empty_valid_response_is_valid_zero`
-- `wayback_response_truncation_propagates`
+- `wayback_body_truncation_propagates`
 
-Pin the request to required CDX fields only, wildcard subdomain scope, deterministic row limit, and no live-target fetch.
+Pin required CDX fields, wildcard subdomain scope and row limit. Assert no request is ever made to a returned live URL.
 
 - [ ] **Step 2: Run RED**
 
 Run: `cargo test --locked wayback::tests -- --nocapture`
-Expected: FAIL because module/client is absent.
+Expected: FAIL because module/API is absent.
 
-- [ ] **Step 3: Implement minimal request builder and parser**
-
-Define:
+- [ ] **Step 3: Implement minimal client**
 
 ```rust
-pub struct WaybackQuery<'a> { pub domain: &'a str, pub row_limit: usize }
-pub struct ArchiveFetchResult { pub captures: Vec<ArchiveCapture>, pub outcome: SourceExecutionOutcome, pub truncated: bool }
-pub fn wayback_lookup<T: Transport + ?Sized>(transport: &T, query: &WaybackQuery<'_>, now_unix: u64) -> Result<ArchiveFetchResult, Error>;
+pub struct WaybackQuery<'a> {
+    pub domain: &'a str,
+    pub row_limit: usize,
+}
+
+pub struct WaybackResult {
+    pub captures: Vec<ArchiveCapture>,
+    pub outcome: SourceExecutionOutcome,
+    pub response_sha256: Option<String>,
+    pub truncated: bool,
+}
+
+pub fn wayback_lookup<T: Transport + ?Sized>(
+    transport: &T,
+    query: &WaybackQuery<'_>,
+    now_unix: u64,
+) -> Result<WaybackResult, Error>;
 ```
 
-Call `fetch::fetch(..., credential=None, ...)`; after provider-contract validation, refine 2xx/parsed outcomes to `Success` or `ValidZero`. Preserve transport/body truncation.
+Call `fetch::fetch` with no credential. Refine a validated 2xx parse to `Success` or `ValidZero`; never treat HTTP 200 alone as evidence.
 
-- [ ] **Step 4: Add failing transport/outcome tests**
+- [ ] **Step 4: Write failing causal-outcome tests**
 
-Tests:
-- `wayback_transport_failure_stays_a_causal_outcome`
-- `wayback_non_2xx_never_becomes_evidence`
-- `wayback_malformed_envelope_is_parser_drift`
+Add:
+- `wayback_transport_failure_stays_transport_outcome`
+- `wayback_non_2xx_never_emits_capture_evidence`
+- `wayback_unusable_envelope_is_parser_drift`
+- `wayback_zero_row_limit_is_explicit_no_work_and_sends_nothing`
 
-Use a small fake `Transport`; assert on real `Request` and returned outcomes, not mock call counts alone.
-
-- [ ] **Step 5: Run RED then implement outcome mapping**
+- [ ] **Step 5: Run RED, implement outcome mapping, rerun GREEN**
 
 Run: `cargo test --locked wayback::tests -- --nocapture`
-Expected before implementation: FAIL on the new outcome assertions; after minimal mapping: PASS.
+Expected after implementation: PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -186,7 +232,7 @@ git add src/wayback.rs src/lib.rs
 git commit -m "feat(archive): add guarded Wayback CDX client"
 ```
 
-### Task 3: Common Crawl guarded client with stable lineage root
+### Task 3: Common Crawl guarded client with one stable lineage root
 
 **Files:**
 - Create: `src/commoncrawl.rs`
@@ -194,47 +240,59 @@ git commit -m "feat(archive): add guarded Wayback CDX client"
 - Test: unit tests inside `src/commoncrawl.rs`
 
 **Interfaces:**
-- Consumes: Task 1 archive model, `fetch::fetch`, injected `Transport`.
-- Produces: `CommonCrawlLimits`, `CommonCrawlResult`, `commoncrawl_lookup<T: Transport + ?Sized>(...)`.
-- Invariant: every capture has `dataset == "common_crawl"`; specific `CC-MAIN-*` identifier is stored only in `collection`.
+- Consumes: Task 1 archive types, `fetch::fetch`, injected `Transport`.
+- Produces: `CommonCrawlLimits`, `CommonCrawlResult`, `commoncrawl_lookup`.
+- Invariant: every emitted capture has `dataset == "common_crawl"`; `CC-MAIN-*` lives only in `collection`.
 
-- [ ] **Step 1: Write failing collection-selection tests**
+- [ ] **Step 1: Write failing metadata-selection tests**
 
-Tests:
+Add:
 - `collection_metadata_selects_newest_n_deterministically`
 - `zero_collection_limit_sends_no_index_query`
 - `crawl_id_is_collection_not_dataset`
 
-Pin a conservative default `max_collections` and explicit per-collection row cap in `CommonCrawlLimits`.
-
 - [ ] **Step 2: Run RED**
 
 Run: `cargo test --locked commoncrawl::tests -- --nocapture`
-Expected: FAIL because module/types are absent.
+Expected: FAIL.
 
-- [ ] **Step 3: Implement metadata parse + deterministic selection**
-
-Define:
+- [ ] **Step 3: Implement metadata selection contract**
 
 ```rust
-pub struct CommonCrawlLimits { pub max_collections: usize, pub rows_per_collection: usize }
-pub struct CommonCrawlResult { pub captures: Vec<ArchiveCapture>, pub outcomes: Vec<SourceExecutionOutcome>, pub truncated: bool }
-pub fn commoncrawl_lookup<T: Transport + ?Sized>(transport: &T, domain: &str, limits: &CommonCrawlLimits, now_unix: u64) -> Result<CommonCrawlResult, Error>;
+pub struct CommonCrawlLimits {
+    pub max_collections: usize,
+    pub rows_per_collection: usize,
+}
+
+pub struct CommonCrawlResult {
+    pub captures: Vec<ArchiveCapture>,
+    pub outcomes: Vec<SourceExecutionOutcome>,
+    pub response_sha256: Vec<String>,
+    pub truncated: bool,
+}
+
+pub fn commoncrawl_lookup<T: Transport + ?Sized>(
+    transport: &T,
+    domain: &str,
+    limits: &CommonCrawlLimits,
+    now_unix: u64,
+) -> Result<CommonCrawlResult, Error>;
 ```
 
 - [ ] **Step 4: Write failing NDJSON/failure-locality tests**
 
-Tests:
+Add:
 - `ndjson_valid_lines_survive_malformed_neighbors`
 - `row_cap_marks_truncated_and_stops_materialization`
 - `one_failed_collection_does_not_erase_successful_collections`
 - `multiple_crawl_collections_keep_one_countable_dataset_family`
 - `truncated_http_body_marks_result_truncated`
+- `zero_rows_per_collection_sends_no_index_query_and_marks_no_work`
 
-- [ ] **Step 5: Run RED then implement minimal index loop/parser**
+- [ ] **Step 5: Run RED then implement bounded index loop/parser**
 
 Run: `cargo test --locked commoncrawl::tests -- --nocapture`
-Expected before code: FAIL; after implementation: PASS.
+Expected after implementation: PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -251,36 +309,79 @@ git commit -m "feat(archive): add bounded Common Crawl client"
 - Test: unit tests inside `src/collector.rs`
 
 **Interfaces:**
-- Consumes: `entity::{Entity, EntityKind}`, `graph::EntityRelation`, `http::Transport`, `source_outcome::SourceExecutionOutcome`.
-- Produces: `CollectionLimits`, `ObservationReceipt`, `CollectorPivot`, `CollectionBatch`, `CollectorError`, `Collector` trait.
+- Consumes: `entity::{Entity, EntityKind}`, `evidence_ancestry::EvidenceNodeId`, `graph::EntityRelation`, `http::Transport`, `source_outcome::SourceExecutionOutcome`.
+- Produces: `CollectionLimits`, `ObservationReceipt`, `CollectorPivot`, `CollectionBatch`, `CollectorError`, `Collector`.
 
 - [ ] **Step 1: Write failing contract tests**
 
-Tests:
-- `collection_limits_reject_zero_global_caps_that_make_execution_ambiguous`
-- `receipt_distinguishes_success_zero_failure_and_truncation`
+Add:
+- `zero_collection_limits_are_representable_without_panicking`
+- `receipt_distinguishes_valid_zero_failure_and_truncation`
 - `batch_can_retain_entities_when_one_receipt_failed`
+- `pivot_parent_is_typed_evidence_node_id`
 
 - [ ] **Step 2: Run RED**
 
 Run: `cargo test --locked collector::tests -- --nocapture`
-Expected: FAIL because contract is absent.
+Expected: FAIL.
 
 - [ ] **Step 3: Implement minimal contract types**
 
-Use:
-
 ```rust
-pub struct CollectionLimits { pub max_entities: usize, pub max_requests: usize, pub max_rows_per_source: usize }
-pub struct ObservationReceipt { pub source: String, pub dataset: Option<String>, pub collection: Option<String>, pub observed_at_unix: u64, pub response_sha256: Option<String>, pub parsed_rows: usize, pub truncated: bool, pub outcome: SourceExecutionOutcome }
-pub struct CollectorPivot { pub entity: Entity, pub parent_observation: Option<String> }
-pub struct CollectionBatch { pub collector_id: &'static str, pub selector_uid: String, pub receipts: Vec<ObservationReceipt>, pub entities: Vec<Entity>, pub relations: Vec<EntityRelation>, pub pivots: Vec<CollectorPivot> }
-pub trait Collector { fn id(&self) -> &'static str; fn accepts(&self, kind: &EntityKind) -> bool; fn collect<T: Transport + ?Sized>(&self, selector: &Entity, transport: &T, limits: &CollectionLimits, now_unix: u64) -> Result<CollectionBatch, CollectorError>; }
+pub struct CollectionLimits {
+    pub max_entities: usize,
+    pub max_requests: usize,
+    pub max_rows_per_source: usize,
+}
+
+pub struct ObservationReceipt {
+    pub source: String,
+    pub dataset: Option<String>,
+    pub collection: Option<String>,
+    pub observed_at_unix: u64,
+    pub response_sha256: Option<String>,
+    pub parsed_rows: usize,
+    pub truncated: bool,
+    pub outcome: SourceExecutionOutcome,
+}
+
+pub struct CollectorPivot {
+    pub entity: Entity,
+    pub parent_observation: Option<EvidenceNodeId>,
+}
+
+pub struct CollectionBatch {
+    pub collector_id: &'static str,
+    pub selector_uid: String,
+    pub receipts: Vec<ObservationReceipt>,
+    pub entities: Vec<Entity>,
+    pub relations: Vec<EntityRelation>,
+    pub pivots: Vec<CollectorPivot>,
+    pub truncated: bool,
+}
+
+pub enum CollectorError {
+    UnsupportedKind(EntityKind),
+    InvalidSelector(String),
+    Internal(String),
+}
+
+pub trait Collector {
+    fn id(&self) -> &'static str;
+    fn accepts(&self, kind: &EntityKind) -> bool;
+    fn collect<T: Transport + ?Sized>(
+        &self,
+        selector: &Entity,
+        transport: &T,
+        limits: &CollectionLimits,
+        now_unix: u64,
+    ) -> Result<CollectionBatch, CollectorError>;
+}
 ```
 
-If object safety becomes necessary later, change the transport method to `&dyn Transport`; do not introduce dynamic dispatch without a demonstrated need in this slice.
+Do not introduce trait-object machinery unless this slice demonstrates a need.
 
-- [ ] **Step 4: Run GREEN + clippy on module**
+- [ ] **Step 4: Verify Task 4**
 
 Run: `cargo test --locked collector::tests -- --nocapture && cargo clippy --all-targets --locked -- -D warnings`
 Expected: PASS.
@@ -292,7 +393,7 @@ git add src/collector.rs src/lib.rs
 git commit -m "feat(collector): add provenance-aware collection contract"
 ```
 
-### Task 5: Archive collector converts observations into evidence, lineage, and pivots
+### Task 5: Archive collector -> evidence, lineage and typed pivots
 
 **Files:**
 - Create: `src/archive_collector.rs`
@@ -300,60 +401,66 @@ git commit -m "feat(collector): add provenance-aware collection contract"
 - Test: unit tests inside `src/archive_collector.rs`
 
 **Interfaces:**
-- Consumes: Tasks 1-4 plus `entity::{Evidence, EvidenceProvenance}`, `lineage::{Lineage, Observation}`, `sha256`, canonical domain handling.
-- Produces: `ArchiveCollector`, implementing `Collector` for `EntityKind::Domain`.
+- Consumes: Tasks 1-4, `entity::{Evidence, EvidenceProvenance}`, `lineage::{Lineage, Observation}`, `evidence_ancestry::EvidenceNodeId`, existing canonical domain logic and in-tree SHA-256.
+- Produces: `ArchiveCollector` implementing `Collector` for `EntityKind::Domain`.
 
 - [ ] **Step 1: Write failing evidence-shape tests**
 
-Tests:
+Add:
 - `archive_collector_rejects_non_domain_before_transport`
 - `wayback_evidence_uses_stable_wayback_dataset`
 - `commoncrawl_evidence_uses_common_crawl_dataset_and_noncounting_collection`
-- `source_url_and_collection_do_not_replace_dataset_lineage`
+- `source_url_collection_and_record_locator_do_not_replace_dataset_lineage`
 
-Assert `Lineage::of(&evidence).family()` is exactly `internet_archive_wayback` or `common_crawl` as appropriate.
+Assert `Lineage::of(&evidence).family()` is exactly `internet_archive_wayback` or `common_crawl`.
 
 - [ ] **Step 2: Run RED**
 
 Run: `cargo test --locked archive_collector::tests -- --nocapture`
-Expected: FAIL because collector is absent.
+Expected: FAIL.
 
 - [ ] **Step 3: Implement minimal entity/evidence conversion**
 
-For each normalized URL record:
-- emit/merge `EntityKind::Url`;
-- attach one evidence item per upstream dataset family represented;
-- attributes include `dataset`, optional `collection`, `source_url`, first/last seen, MIME/status, capture count, and deterministic interest tags;
-- use `EvidenceProvenance::for_scan` or equivalent existing constructor; never use `archive_collector` as the countable family.
+For every `ArchiveRecord`, emit/merge an `EntityKind::Url`. For every `ArchiveDatasetObservation` inside it, attach a separate evidence record whose attributes include:
+- `dataset` stable root;
+- optional non-counting `collection` values;
+- archive locator(s) as `source_url`;
+- first/last seen;
+- MIME/status when known;
+- capture count;
+- deterministic interest tags as derived metadata.
 
-- [ ] **Step 4: Write failing independence/adversarial tests**
+The evidence collector name may identify `wayback` or `commoncrawl`; independence comes from `dataset`, never `archive_collector`.
 
-Tests:
+- [ ] **Step 4: Write failing adversarial independence tests**
+
+Add:
 - `ten_wayback_captures_are_one_independent_family`
 - `two_commoncrawl_collections_are_one_independent_family`
 - `wayback_plus_commoncrawl_are_two_distinct_roots`
 - `tampered_stored_source_family_cannot_inflate_archive_independence`
 - `interest_tags_are_derived_and_do_not_add_families`
 
-Use `lineage::resolve_with_lineage` or `Entity::source_count` only where each exactly matches the claim being tested; prefer ancestry-aware lineage for independence claims.
+Use ancestry-aware `lineage::resolve_with_lineage` for family-independence claims; use `Entity::source_count` only for claims about its specific legacy-compatible counting behavior.
 
-- [ ] **Step 5: Run RED then implement merge/ancestry wiring**
+- [ ] **Step 5: Run RED then implement ancestry/evidence wiring**
 
 Run: `cargo test --locked archive_collector::tests -- --nocapture`
-Expected before final wiring: FAIL on independence cases; after implementation: PASS.
+Expected after implementation: PASS.
 
-- [ ] **Step 6: Write failing partial-provider and pivot tests**
+- [ ] **Step 6: Write failing partial-provider/pivot/bounds tests**
 
-Tests:
+Add:
 - `wayback_success_commoncrawl_failure_keeps_wayback_entities`
 - `commoncrawl_success_wayback_failure_keeps_commoncrawl_entities`
-- `discovered_subdomain_is_candidate_pivot_with_parent_observation`
-- `entity_limit_sets_truncation_without_silent_drop`
+- `discovered_subdomain_is_candidate_pivot_with_parent_observation_id`
+- `entity_cap_sets_batch_truncated_without_silent_claim_of_completeness`
+- `zero_request_limit_sends_nothing_and_returns_explicit_truncated_no_work_batch`
 
 - [ ] **Step 7: Run RED then implement bounded orchestration**
 
 Run: `cargo test --locked archive_collector::tests -- --nocapture`
-Expected after implementation: PASS with receipts identifying failed/truncated sources.
+Expected after implementation: PASS.
 
 - [ ] **Step 8: Commit**
 
@@ -362,34 +469,34 @@ git add src/archive_collector.rs src/lib.rs
 git commit -m "feat(collector): collect passive archive evidence for domains"
 ```
 
-### Task 6: Architecture map, invariants, and regression gates
+### Task 6: Architecture map and invariant documentation
 
 **Files:**
 - Modify: `ARCHITECTURE.md`
 - Modify: `tests/architecture_doc.rs`
-- Modify only if required by compile truth: `docs/LINEAGE.md`
+- Modify if compile truth requires lineage documentation: `docs/LINEAGE.md`
 
 **Interfaces:**
-- Adds layer placement: `archive` L3; `wayback`, `commoncrawl` L4; `collector`, `archive_collector` L5.
-- Adds no upward dependency edge.
+- Layer placement: `archive` L3; `wayback`, `commoncrawl` L4; `collector`, `archive_collector` L5.
+- Required architecture result: no new upward edge.
 
-- [ ] **Step 1: Write/update architecture assertions before doc claims**
+- [ ] **Step 1: Pin the compiled modules in the architecture test before changing the doc**
 
-Update `PINNED_LAYERS` only after modules exist, pinning the five new modules to their approved layers. Add targeted assertions if existing generic checks cannot prove that archive source clients use the guarded fetch path and that L4 does not depend on L5.
+Add the five modules to `PINNED_LAYERS` at their approved indices. Add a targeted source-boundary assertion only if the existing dependency/socket checks cannot prove the claim.
 
-- [ ] **Step 2: Run RED against stale architecture doc**
+- [ ] **Step 2: Run RED against the stale document**
 
 Run: `cargo test --locked --test architecture_doc -- --nocapture`
-Expected: FAIL because compiled modules are not yet represented/pinned in `ARCHITECTURE.md`.
+Expected: FAIL because `ARCHITECTURE.md` does not yet map the newly compiled modules.
 
 - [ ] **Step 3: Update `ARCHITECTURE.md` to compiled truth**
 
-Update module map and CURRENT text only for demonstrated behavior. Do not mark domain recon or recursive scan fully restored merely because archive collection exists.
+Update module rows and current-state prose only for demonstrated behavior. Do not mark recursive scan, full domain recon, persistence/export or web UI restored by this slice.
 
 - [ ] **Step 4: Run GREEN**
 
 Run: `cargo test --locked --test architecture_doc -- --nocapture`
-Expected: PASS with `Upward edges: none.` still true unless the dependency scanner proves otherwise; if an upward edge appears, fix code rather than documenting the regression unless architecture review explicitly approves it.
+Expected: PASS and `Upward edges: none.` remains true. If an upward edge appears, fix code rather than normalizing the regression into documentation unless architecture review explicitly approves it.
 
 - [ ] **Step 5: Commit**
 
@@ -401,69 +508,59 @@ git commit -m "docs(architecture): map archive collector boundary"
 ### Task 7: Whole-slice verification and falsification
 
 **Files:**
-- No production changes unless a gate exposes a defect.
-- Add regression tests only when a failing gate reveals an unpinned behavior.
+- No production changes unless a verification gate exposes a defect.
+- Add a regression test only when a failing gate reveals an unpinned behavior.
 
-**Interfaces:**
-- Consumes the complete slice.
-- Produces verification evidence only; no claim of live-source success without a live receipt.
+- [ ] **Step 1: Formatting + strict lint**
 
-- [ ] **Step 1: Run formatting and strict lint**
-
-Run:
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 ```
 Expected: both exit 0.
 
-- [ ] **Step 2: Run full test suite**
+- [ ] **Step 2: Full test suite**
 
 Run: `cargo test --locked`
-Expected: 0 failures. Report every failure by name if not zero.
+Expected: zero failures. Any failure must be reported by test name and localized before completion.
 
-- [ ] **Step 3: Run built-in verification path**
+- [ ] **Step 3: Built-in verification path**
 
 Run: `cargo run --locked -- check`
 Expected: exit 0 and no unintended `var/` drift.
 
-- [ ] **Step 4: Falsify lineage independence explicitly**
+- [ ] **Step 4: Explicit lineage falsification**
 
-Re-run the archive collector adversarial tests plus existing lineage/corroboration suites:
 ```bash
 cargo test --locked archive_collector::tests
 cargo test --locked lineage
 cargo test --locked corroboration
 ```
-Expected: all pass; no duplicate-row/crawl path can inflate family count.
+Expected: all applicable suites pass; no duplicate row, collection ID, locator or derived tag inflates an independent-family count.
 
-- [ ] **Step 5: Verify no new network boundary**
+- [ ] **Step 5: Prove no new network boundary**
 
-Use repository search/static checks to prove no new `ureq`, `TcpStream`, `UdpSocket`, or socket-opening code appears outside the existing HTTP boundary. Any finding must be investigated before completion.
+Search compiled source for new imports/usages of `ureq`, `TcpStream`, `UdpSocket` and direct socket creation outside the existing HTTP boundary. Investigate every hit before claiming the boundary is preserved.
 
-- [ ] **Step 6: Verify Android/Termux build path**
+- [ ] **Step 6: Android aarch64 gate**
 
-Run the repository's existing Android aarch64 cross-build/ELF gate or let CI run the same pinned gate on the PR head. Do not claim handset execution from cross-build alone.
+Run the repository's existing Android aarch64 cross-build/ELF verification locally if available or require the equivalent CI gate on the final PR head. Do not equate cross-build success with real handset execution.
 
-- [ ] **Step 7: Optional bounded live receipt after offline gates**
+- [ ] **Step 7: Optional bounded live receipt after all offline gates**
 
-Only after all offline gates pass, run one neutral-domain Wayback and Common Crawl lookup with conservative limits. Record commit SHA, UTC, response hash, result count, truncation flag, and exit/outcome. Do not make CI depend on it.
+Run one neutral-domain lookup per public archive source with conservative limits. Record commit SHA, UTC, response hash, parsed count, truncation flag and causal outcome. CI must remain offline.
 
 - [ ] **Step 8: Final branch review**
 
-Compare the implementation branch against its base and verify:
-- no FreeOSINTUI source/table copied;
-- no new dependency unless separately justified;
+Compare branch vs base and verify:
+- no FreeOSINTUI code/table copied;
+- no unjustified dependency added;
 - no architecture upward edge;
 - no source/collection/record locator can manufacture corroboration;
 - partial failures remain visible;
-- truncation remains visible;
-- source-registry LeadOnly semantics unchanged.
+- all truncation remains visible;
+- source-registry `LeadOnly` semantics remain unchanged.
 
-- [ ] **Step 9: Commit any verification-only fixture/doc corrections**
+- [ ] **Step 9: Commit only actual verification-driven corrections**
 
-Use a narrowly scoped message such as:
-```bash
-git commit -m "test(archive): pin collector lineage and truncation invariants"
-```
-Only if files actually changed.
+Use a narrow commit message such as `test(archive): pin collector lineage and truncation invariants` only if files changed.
