@@ -389,20 +389,23 @@ Policy change (network and credentials now allowed):
 | `src/modules/asic_persons/tests.rs` | 424 | MERGED | `src/asic_persons.rs` tests | Legacy emit, name-match, controller and checksum fixtures plus scripted-transport lookup, envelope-failure and challenge-page cases. |
 | `src/modules/asic_director/mod.rs` | 397 | REBUILT | `src/asic_director.rs` | Keyless ASIC Connect Online HTML scrape of director appointments. Blocking `fetch` over an injected transport. Challenge pages, truncated bodies and non-success HTTP are never evidence. ACN emission requires checksum validation. Coordinates use `postcode_au::offline_centroid` (L3), not `geo`/`city_coords` (L6). Library only: not called from `people` (live Connect is WAF-blocked). Tests never hit the live portal. ATT&CK self-labels are not copied. |
 | `src/modules/asic_director/tests.rs` | 275 | MERGED | `src/asic_director.rs` tests | Legacy emit, whole-word match, checksum-invalid ACN, request_failed, HTML entity decode and scripted-transport lookup/challenge cases. The ignored wall-clock linearity test is not rebuilt. |
+| `src/modules/au_people/mod.rs` | 495 | REBUILT | `src/au_people.rs` | Keyless True People Search AU HTML scrape. Blocking `fetch` over an injected transport. Challenge pages, truncated bodies and non-success HTTP (other than 404) are never evidence; 404 is ValidZero. Addresses and emails are candidate leads (unattributed line scan). Relatives keep same-surname family only, never tagged `tps-au`. Coordinates use `postcode_au::offline_centroid` (L3), not `geo`. White Pages AU is not queried (retired 404). Library only: not called from `people`. ATT&CK self-labels are not copied. |
+| `src/modules/au_people/tests.rs` | 307 | MERGED | `src/au_people.rs` tests | Legacy relatives, TPS address/email chrome, candidate-lead, split_name, state-tag and dedup oracles plus scripted-transport lookup/challenge/404 cases. The proptest panic-totality tests are replaced by a small adversarial-byte unit test (no `regex`/`proptest` crate). |
 
 ### Notes
 
 - Live CKAN (`asic_persons_live_finds_a_banned_person`) is not rebuilt: capability row 4 still requires D and L.
 - Live ASIC Connect (`asic_director`) is WAF-blocked (403); the library is tested on a fake transport only.
-- `au_people` and `au_electoral` remain unlisted.
+- `au_people` is a library tested on a fake transport only; live TPS is not run in CI.
+- `au_electoral` remains unlisted.
 
 ## Not yet dispositioned
 
-Legacy `src/` files of the monolith that no section above lists yet (891 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
+Legacy `src/` files of the monolith that no section above lists yet (889 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
 
 | Legacy area | Files not listed | Of |
 | --- | ---: | ---: |
-| `src/modules/` (providers) | 538 | 542 |
+| `src/modules/` (providers) | 536 | 542 |
 | `src/util/` | 116 | 213 |
 | `src/core/` | 49 | 203 |
 | `src/app/` | 45 | 45 |
