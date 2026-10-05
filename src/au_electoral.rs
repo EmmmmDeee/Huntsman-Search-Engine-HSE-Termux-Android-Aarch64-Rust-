@@ -342,12 +342,7 @@ fn build_electoral_entities(
         )
     } else {
         let state = infer_state_from_division(division).unwrap_or("AU");
-        (
-            state,
-            suburb_hint.unwrap_or("").to_string(),
-            None,
-            None,
-        )
+        (state, suburb_hint.unwrap_or("").to_string(), None, None)
     };
 
     let (addr_value, addr_conf) = if suburb.is_empty() {
@@ -386,20 +381,21 @@ fn build_electoral_entities(
 
 fn extract_division(html: &str) -> Option<(String, Option<String>)> {
     let text = strip_electoral_html(html);
-    if let Some((start, end)) = find_ascii_ci_range(&text, DIVISION_MARKER)
-        && !has_nearby_negation(&text, start, end)
-    {
-        if let Some(name) = take_division_name(&text[end..]) {
-            let suburb = extract_suburb_hint(&text[end..]);
-            return Some((name, suburb));
+    match find_ascii_ci_range(&text, DIVISION_MARKER) {
+        Some((start, end)) if !has_nearby_negation(&text, start, end) => {
+            if let Some(name) = take_division_name(&text[end..]) {
+                return Some((name, extract_suburb_hint(&text[end..])));
+            }
         }
+        _ => {}
     }
-    if let Some((start, end)) = first_enrolled_marker(&text)
-        && !has_nearby_negation(&text, start, end)
-    {
-        if let Some(name) = take_division_name(&text[end..]) {
-            return Some((name, extract_suburb_hint(&text[end..])));
+    match first_enrolled_marker(&text) {
+        Some((start, end)) if !has_nearby_negation(&text, start, end) => {
+            if let Some(name) = take_division_name(&text[end..]) {
+                return Some((name, extract_suburb_hint(&text[end..])));
+            }
         }
+        _ => {}
     }
     None
 }
@@ -542,7 +538,8 @@ mod tests {
     fn empty_name_makes_no_request() {
         let fake = Fake::new(vec![Ok(html_ok("unused"))]);
         let report = lookup(&fake, "  ", "t", 1).expect("no-op");
-        assert!(report.entities.is_empty());
+        let entities = &report.entities;
+        assert!(entities.is_empty(), "{entities:?}");
         let seen = fake.seen.borrow();
         assert!(seen.is_empty(), "{seen:?}");
     }
@@ -583,10 +580,7 @@ mod tests {
         assert_eq!(seen.len(), 2, "{seen:?}");
         assert!(seen[1].url.contains("vec.vic.gov.au"), "{}", seen[1].url);
         assert!(
-            report
-                .entities
-                .iter()
-                .any(|e| e.has_tag("au-state:VIC")),
+            report.entities.iter().any(|e| e.has_tag("au-state:VIC")),
             "{:?}",
             report.entities
         );
@@ -680,7 +674,10 @@ mod tests {
     #[test]
     fn extract_division_parses_aec_pattern() {
         let cases: &[(&str, &str)] = &[
-            ("<p>You are enrolled for the Division of Sydney, NSW.</p>", "Sydney"),
+            (
+                "<p>You are enrolled for the Division of Sydney, NSW.</p>",
+                "Sydney",
+            ),
             (
                 "<div>enrolled for Melbourne (VIC) 3000 Southbank</div>",
                 "Melbourne",
@@ -689,7 +686,10 @@ mod tests {
                 "<span>You are enrolled in the Division of Brisbane</span>",
                 "Brisbane",
             ),
-            ("Division of North Sydney – electorate details", "North Sydney"),
+            (
+                "Division of North Sydney – electorate details",
+                "North Sydney",
+            ),
         ];
         for (html, expected_div) in cases {
             let result = extract_division(html);
@@ -769,7 +769,7 @@ mod tests {
             .find(|e| e.kind == EntityKind::Address)
             .expect("should succeed");
         assert!(
-            addr.value.contains("Newtown"),
+            addr.value.contains("newtown"),
             "suburb hint should override centroid suburb: {}",
             addr.value
         );

@@ -211,9 +211,12 @@ fn decode_entities(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while !rest.is_empty() {
-        if rest.as_bytes()[0] == b'&'
-            && let Some((ch, consumed)) = decode_one_entity(rest)
-        {
+        let decoded = if rest.as_bytes()[0] == b'&' {
+            decode_one_entity(rest)
+        } else {
+            None
+        };
+        if let Some((ch, consumed)) = decoded {
             out.push(ch);
             rest = &rest[consumed..];
         } else {
@@ -327,8 +330,7 @@ fn build_director_entities(
         }
         ae.add_evidence(ev_base.clone().with_attr("registered_office", addr));
         out.push(ae);
-        if let Some(pcode) = postcode_in_address(addr)
-            && let Some((lat, lon)) = postcode_au::offline_centroid(pcode)
+        if let Some((lat, lon)) = postcode_in_address(addr).and_then(postcode_au::offline_centroid)
         {
             let coord_val = format!("{lat:.4},{lon:.4}");
             let mut c = Entity::new(EntityKind::Coordinates, &coord_val, CONF_COORDS, scan_id);
@@ -467,7 +469,8 @@ mod tests {
     fn single_token_name_makes_no_request() {
         let fake = Fake::new(vec![Ok(html_ok("unused"))]);
         let report = lookup(&fake, "Haigen", "t", 1).expect("no-op");
-        assert!(report.entities.is_empty());
+        let entities = &report.entities;
+        assert!(entities.is_empty(), "{entities:?}");
         let seen = fake.seen.borrow();
         assert!(seen.is_empty(), "{seen:?}");
     }

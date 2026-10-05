@@ -15,13 +15,12 @@
 use std::collections::HashSet;
 
 use crate::address_au;
-use crate::entity::{self, Entity, EntityKind, Evidence, EvidenceProvenance};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::error::Error;
 use crate::fetch::{self, FetchOptions, Fetched};
 use crate::http::{self, Request, Transport};
 use crate::postcode_au;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
-use crate::tags;
 use crate::textnorm::{find_ascii_ci, title_case};
 
 const SRC: &str = "au_people";
@@ -98,6 +97,14 @@ const NAME_CHROME: &[&str] = &[
     "and",
     "the",
     "with",
+    "nsw",
+    "vic",
+    "qld",
+    "sa",
+    "wa",
+    "tas",
+    "act",
+    "nt",
 ];
 
 /// One name lookup against True People Search AU.
@@ -145,12 +152,14 @@ pub fn lookup<T: Transport + ?Sized>(
     let html_read_ok = outcome.kind.is_accepted();
     let found_any = !entities.is_empty();
     if request_failed(html_read_ok, found_any) {
-        return Err(Error::Invalid(outcome.detail.clone().unwrap_or_else(|| {
-            "True People Search AU request failed at the transport level, returned a \
+        return Err(Error::Invalid(outcome.detail.clone().unwrap_or_else(
+            || {
+                "True People Search AU request failed at the transport level, returned a \
              non-success HTTP status, was truncated, or was a challenge page — not \
              \"no directory records for this name\""
-                .into()
-        })));
+                    .into()
+            },
+        )));
     }
     merge_by_uid(&mut entities);
     Ok(Report {
@@ -286,7 +295,8 @@ fn tps_display_postcode(value: &str) -> bool {
 }
 
 fn postcode_in_line(line: &str) -> Option<&str> {
-    line.split_whitespace().find(|tok| tps_display_postcode(tok))
+    line.split_whitespace()
+        .find(|tok| tps_display_postcode(tok))
 }
 
 fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
@@ -398,7 +408,11 @@ fn parse_relatives(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
                 continue;
             }
             given.reverse();
-            let raw = format!("{} {}", given.join(" "), w.trim_matches(|c: char| !c.is_alphabetic()));
+            let raw = format!(
+                "{} {}",
+                given.join(" "),
+                w.trim_matches(|c: char| !c.is_alphabetic())
+            );
             let name = title_case(&raw);
             let name_lc = name.to_lowercase();
             if name.len() < 5 || name_lc == subject_lc || !seen.insert(name_lc) {
@@ -483,7 +497,7 @@ fn is_word_bounded(hay: &str, start: usize, needle_len: usize) -> bool {
 }
 
 fn strip_html(html: &str) -> String {
-    decode_entities(&replace_tags_with_space(drop_script_and_style(html)))
+    decode_entities(&replace_tags_with_space(&drop_script_and_style(html)))
 }
 
 fn drop_script_and_style(html: &str) -> String {
@@ -517,14 +531,44 @@ fn drop_script_and_style(html: &str) -> String {
 fn replace_tags_with_space(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_tag = false;
+    let mut tag = String::new();
     for c in s.chars() {
         if in_tag {
             if c == '>' {
                 in_tag = false;
-                out.push(' ');
+                let name = tag
+                    .trim_start_matches('/')
+                    .split(|ch: char| ch.is_whitespace() || ch == '/')
+                    .next()
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if matches!(
+                    name.as_str(),
+                    "p" | "div"
+                        | "li"
+                        | "tr"
+                        | "br"
+                        | "h1"
+                        | "h2"
+                        | "h3"
+                        | "h4"
+                        | "h5"
+                        | "ul"
+                        | "ol"
+                        | "table"
+                        | "section"
+                ) {
+                    out.push('\n');
+                } else {
+                    out.push(' ');
+                }
+                tag.clear();
+            } else {
+                tag.push(c);
             }
         } else if c == '<' {
             in_tag = true;
+            tag.clear();
         } else {
             out.push(c);
         }
@@ -536,9 +580,12 @@ fn decode_entities(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while !rest.is_empty() {
-        if rest.as_bytes()[0] == b'&'
-            && let Some((ch, consumed)) = decode_one_entity(rest)
-        {
+        let decoded = if rest.as_bytes()[0] == b'&' {
+            decode_one_entity(rest)
+        } else {
+            None
+        };
+        if let Some((ch, consumed)) = decoded {
             out.push(ch);
             rest = &rest[consumed..];
         } else {
@@ -624,10 +671,10 @@ fn page_emails(text: &str) -> Vec<String> {
             let local_lower = &email[..i - local_start];
             let is_asset = email.contains("@2x.")
                 || email.contains("@3x.")
-                || email.ends_with(".png")
-                || email.ends_with(".jpg")
-                || email.ends_with(".gif")
-                || email.ends_with(".webp");
+                || matches!(
+                    email.rsplit_once('.').map(|(_, ext)| ext),
+                    Some("png" | "jpg" | "gif" | "webp")
+                );
             let is_script = local_lower.contains(".php") || local_lower.contains(".html");
             if !is_asset && !is_script && seen.insert(email.clone()) {
                 out.push(email);
@@ -661,7 +708,9 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
+    use crate::entity;
     use crate::http::{Response, TransportFailure};
+    use crate::tags;
 
     struct Fake {
         script: RefCell<VecDeque<Result<Response, TransportFailure>>>,
@@ -732,7 +781,11 @@ mod tests {
         );
         let seen = fake.seen.borrow();
         assert_eq!(seen.len(), 1);
-        assert!(seen[0].url.contains("truepeoplesearch.com.au"), "{}", seen[0].url);
+        assert!(
+            seen[0].url.contains("truepeoplesearch.com.au"),
+            "{}",
+            seen[0].url
+        );
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
     }
 
@@ -776,19 +829,27 @@ mod tests {
       <p>Jane Smith and Bob Jones also appear.</p>
     ";
         let rel = parse_relatives(html, "Fletcher Moreau", "s");
-        let names: std::collections::BTreeSet<&str> = rel.iter().map(|e| e.value.as_str()).collect();
+        let names: std::collections::BTreeSet<&str> =
+            rel.iter().map(|e| e.value.as_str()).collect();
 
         assert!(
-            names.contains("Stephen R Moreau"),
-            "title-case + middle initial: {names:?}"
+            names.contains("stephen r moreau"),
+            "title-case + middle initial, then Entity canonical_name: {names:?}"
         );
-        assert!(names.contains("Helene Moreau"), "UPPER-case normalised: {names:?}");
-        assert!(names.contains("Marianne Moreau"), "{names:?}");
         assert!(
-            !names.contains("Fletcher Moreau"),
-            "the subject is never their own relative"
+            names.contains("helene moreau"),
+            "UPPER-case normalised, then Entity canonical_name: {names:?}"
         );
-        assert!(!names.iter().any(|n| n.contains("Smith") || n.contains("Jones")));
+        assert!(names.contains("marianne moreau"), "{names:?}");
+        assert!(
+            !names.contains("fletcher moreau"),
+            "the subject is never their own relative: {names:?}"
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.contains("Smith") || n.contains("Jones"))
+        );
 
         for e in &rel {
             assert_eq!(e.kind, EntityKind::Person);
@@ -841,11 +902,12 @@ mod tests {
 
     #[test]
     fn parse_tps_html_extracts_au_address() {
-        let html = "<div>Results for Test Person</div><p>Bondi Beach, NSW 2026</p><p>Other line</p>";
+        let html =
+            "<div>Results for Test Person</div><p>Bondi Beach, NSW 2026</p><p>Other line</p>";
         let ents = parse_tps_html(html, "Test Person", "s");
         assert!(
             ents.iter().any(|e| e.kind == EntityKind::Address
-                && e.value.contains("NSW")
+                && e.value.contains("nsw")
                 && e.has_tag("au-state:NSW")),
             "should extract NSW address: {ents:?}"
         );
@@ -928,19 +990,13 @@ mod tests {
     fn dedup_greatest_merges_duplicates_preserving_both_sources() {
         let mut wp = Entity::new(EntityKind::Address, "Sydney NSW 2000", 0.5, "s");
         wp.add_evidence(
-            Evidence::new(
-                provenance("s"),
-                "White Pages AU listing",
-            )
-            .with_attr("source", "whitepages_au"),
+            Evidence::new(provenance("s"), "White Pages AU listing")
+                .with_attr("source", "whitepages_au"),
         );
         let mut tps = Entity::new(EntityKind::Address, "Sydney NSW 2000", 0.7, "s");
         tps.add_evidence(
-            Evidence::new(
-                provenance("s"),
-                "True People Search AU listing",
-            )
-            .with_attr("source", "tps_au"),
+            Evidence::new(provenance("s"), "True People Search AU listing")
+                .with_attr("source", "tps_au"),
         );
 
         let mut ents = vec![wp, tps];
@@ -1010,7 +1066,14 @@ mod tests {
 
     #[test]
     fn parse_tps_html_never_panics_on_adversarial_bytes() {
-        for s in ["", "<", "&&&&", "<script>x</script>", "é<html>", &"<p>".repeat(64)] {
+        for s in [
+            "",
+            "<",
+            "&&&&",
+            "<script>x</script>",
+            "é<html>",
+            &"<p>".repeat(64),
+        ] {
             let _ = parse_tps_html(s, "Jordan Avery", "s");
             let _ = parse_relatives(s, "Jordan Avery", "s");
         }
