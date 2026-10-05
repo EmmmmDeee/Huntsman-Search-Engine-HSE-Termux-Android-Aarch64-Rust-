@@ -335,6 +335,9 @@ pub fn normalize_observations(
             CANDIDATE_CONF,
             scan_id,
         );
+        if let Some(observed_at) = observation.observed_at_unix {
+            candidate.observed_at_unix = observed_at;
+        }
         let evidence = evidence_for(&batch, observation, ancestry_node);
         if let Some(existing) = entities.get_mut(&candidate.uid) {
             existing.add_evidence(evidence);
