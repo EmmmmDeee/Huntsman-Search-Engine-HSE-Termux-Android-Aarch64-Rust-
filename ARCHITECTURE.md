@@ -62,7 +62,7 @@ CURRENT. One package and library (`src/lib.rs`), with command dispatch in `src/m
 | Layer | Modules | Role |
 | --- | --- | --- |
 | L0 primitives | `error`, `sha256`, `json`, `timefmt`, `union_find`, `tags`, `xml`, `uid`, `stage`, `event`, `fsio`, `signals`, `place`, `geohash`, `redact`, `termination`, `circuit`, `oui_ieee`, `oui`, `radar` | Pure helpers, bounded file I/O (`fsio`), retry and cache state (`circuit`) |
-| L1 evidence core | `evidence_ancestry`, `confidence`, `identity_resolution`, `resolve`, `eval` | Ancestry graph, independent-family counting, merge gate, scoring |
+| L1 evidence core | `evidence_ancestry`, `retrieval_artifact`, `confidence`, `identity_resolution`, `resolve`, `eval` | Ancestry graph, stable retrieval-artifact identity, independent-family counting, merge gate, scoring |
 | L2 network boundary | `classify`, `source_outcome`, `egress`, `credential_origin`, `http`, `keys`, `fetch`, `fetch_cli`, `deadline` | The only network path (see BOUNDARIES); `deadline` provides one time budget across several requests |
 | L3 normalisation | `textnorm`, `canonical`, `validation`, `domains`, `address_au`, `postcode_au`, `au_id`, `breach`, `archive`, `spf`, `dmarc`, `tlsrpt` | Canonical forms, validators and record parsers; `archive` models archive-URL identity and deterministic capture aggregation over `canonical`; `postcode_au` also has one postcode lookup over an injected `http::Transport` (its only crate dependency is `http`), and `au_id` re-exports it (`src/au_id.rs:13`) |
 | L4 source clients | `ckan`, `mediawiki`, `atproto`, `dns`, `hibp`, `service_defs`, `key_health`, `scraper_health`, `recon`, `seeknow`, `wayback` | Request builders and response parsers. `dns` queries DoH through `fetch` over an injected transport; `seeknow` and `wayback` send only through `fetch` over an injected transport with redirects disabled; `hibp` and `service_defs` send, each over a transport passed in, except `hibp::HibpClient::production`, which builds its own `UreqTransport` (see BOUNDARIES) |
@@ -157,7 +157,7 @@ PLANNED: a source failure is recorded per source with its outcome and does not a
 CURRENT gates (CI `ci.yml`, toolchains 1.87 and stable, owned by Fix This Bullshit Bot):
 - `cargo fmt --check` and `cargo clippy --all-targets --locked -- -D warnings` (stable).
 - `cargo test --locked`: unit tests plus integration suites including `accept.rs`, `cli.rs`, `http_local.rs` (loopback sockets only), `legacy_reference.rs`, `readme.rs`, `dispositions.rs`, `android_ci.rs`, `hibp_build.rs`, `hibp_cli.rs`, `architecture_doc.rs`, `corroboration_key.rs`, `lineage_merge_rule.rs`, `lineage_legacy.rs`, `lineage_independence_adversarial.rs`, `release_ci.rs`, `env_autoload.rs`, `source_registry_cli.rs` and `source_registry_metadata.rs`.
-- `cargo run -- check`, then `git diff --exit-code -- var/`.
+- `cargo run --locked -- check`, then `git diff --exit-code -- var/`.
 - The Android aarch64 cross-build.
 - `.github/workflows/release.yml`, not `ci.yml` (#672): before any `main-<sha7>` pre-release is published, the build-time HIBP key embed must be empty, the binary must contain the `huntsman-recon` usage line, and `.github/scripts/scan-for-keys.sh` must report zero findings. PRs that touch the release path get the same checks as a dry run.
 
