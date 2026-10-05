@@ -74,7 +74,6 @@ pub mod hibp;
 pub mod http;
 pub mod identity;
 pub mod identity_resolution;
-pub mod independence_route_count;
 pub mod intelligence;
 pub mod json;
 pub mod key_health;
@@ -141,7 +140,6 @@ pub mod xml;
 pub use entity::{Entity, EntityKind, EntityRef, Evidence, EvidenceProvenance};
 pub use error::Error;
 pub use graph::{EntityRelation, RelationKind};
-pub use independence_route_count::IndependenceRouteCount;
 pub use ledger::{
     Claim, LedgerEntry, admitted, append, chain_intact, load_chain, save_chain, seal,
 };
