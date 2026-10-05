@@ -79,6 +79,7 @@ pub mod people_cli;
 pub mod pipeline;
 pub mod pivot;
 pub mod place;
+pub mod planner;
 pub mod postcode_au;
 pub mod profiles;
 pub mod radar;
