@@ -27,7 +27,11 @@ impl ScriptedTransport {
 impl Transport for ScriptedTransport {
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
         self.seen.borrow_mut().push(request.clone());
-        Ok(self.responses.borrow_mut().pop_front().expect("scripted response"))
+        Ok(self
+            .responses
+            .borrow_mut()
+            .pop_front()
+            .expect("scripted response"))
     }
 }
 
@@ -73,7 +77,10 @@ fn fast_auto_search_omits_type_clamps_limit_and_sends_key_only_at_transport() {
     let request = &seen[0];
     assert_eq!(request.method, Method::Post);
     assert_eq!(request.url, "https://see-know.ru/api/v1/search");
-    assert_eq!(request.header_value("content-type"), Some("application/json"));
+    assert_eq!(
+        request.header_value("content-type"),
+        Some("application/json")
+    );
     assert_eq!(request.header_value("x-api-key"), Some("seek-test-secret"));
     assert!(!format!("{request:?}").contains("seek-test-secret"));
 
