@@ -173,14 +173,11 @@ impl KeyLoader {
 }
 
 #[cfg(unix)]
+#[allow(clippy::verbose_bit_mask)]
 fn private_file(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|meta| {
-        meta.is_file()
-            // Keep the security invariant readable: no group/other permission bit may be set.
-            #[allow(clippy::verbose_bit_mask)]
-            && meta.permissions().mode() & 0o077 == 0
-    })
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o077 == 0)
 }
 #[cfg(not(unix))]
 fn private_file(_path: &std::path::Path) -> bool {
