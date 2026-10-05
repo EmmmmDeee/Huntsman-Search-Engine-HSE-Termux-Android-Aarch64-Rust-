@@ -3,8 +3,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
 use crate::analysis::{InvestigationReport, analyze_snapshot};
 use crate::artifacts::{PipelineArtifacts, render_artifacts};
 use crate::collection::{CollectionEvent, ObservationBatch, RawObservation, UpstreamOrigin};
@@ -21,12 +19,10 @@ use crate::source_outcome::SourceOutcomeKind;
 use crate::stage::{EvidenceLevel, Status};
 use crate::store::Store;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PipelineOutcome {
     pub normalization: SeedNormalization,
-    #[serde(skip)]
     pub plan: DispatchPlan,
-    #[serde(skip)]
     pub snapshot: AnalysisSnapshot,
     pub report: InvestigationReport,
     pub artifacts: PipelineArtifacts,
