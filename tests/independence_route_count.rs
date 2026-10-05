@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 
+use huntsman_recon::IndependenceRouteCount;
 use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
     IndependenceEvidence,
 };
 use huntsman_recon::retrieval_artifact::ArtifactId;
-use huntsman_recon::IndependenceRouteCount;
 
 fn node(id: &str, family: &str, parents: &[&str], derived: bool) -> EvidenceAncestryNode {
     EvidenceAncestryNode {
