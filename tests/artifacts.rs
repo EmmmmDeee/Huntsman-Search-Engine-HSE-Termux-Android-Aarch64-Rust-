@@ -53,7 +53,7 @@ fn all_graph_artifacts_come_from_the_same_snapshot() {
     let ArtifactPayload::Ready(snake) = &artifacts.snake_graph else {
         panic!("snake omitted")
     };
-    assert!(!snake.is_empty());
+    assert!(!snake.is_empty(), "{snake:?}");
 }
 
 #[test]
