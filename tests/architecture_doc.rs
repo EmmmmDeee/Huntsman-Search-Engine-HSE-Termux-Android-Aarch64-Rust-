@@ -622,7 +622,12 @@ impl Tree {
         tree.main_deps = tree.resolve(&roots, "main");
         let investigate_path = src.join("bin/investigate.rs");
         let mut investigate_roots = Vec::new();
-        tree.walk(&investigate_path, 0, "huntsman_recon", &mut investigate_roots);
+        tree.walk(
+            &investigate_path,
+            0,
+            "huntsman_recon",
+            &mut investigate_roots,
+        );
         tree.main_deps
             .extend(tree.resolve(&investigate_roots, "investigate"));
         tree
