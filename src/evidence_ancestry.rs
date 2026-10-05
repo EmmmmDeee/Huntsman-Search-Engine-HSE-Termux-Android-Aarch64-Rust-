@@ -1,24 +1,21 @@
 //! Evidence ancestry and proof-route independence.
 //!
 //! Module count, provider diversity, and source-family labels are diagnostic signals,
-//! not proof of independent origins. The graph is the canonical provenance authority:
-//! copies and derivations retain their upstream roots, while consequential independence
+//! not proof of independent origins. This graph is the canonical provenance authority:
+//! copies and derivations retain upstream roots, while consequential independence
 //! requires explicit, admissible evidence for the exact canonical root pair.
 //!
-//! Legacy family-based APIs remain available for exploration and differential tests,
-//! but they must not authorize claim verification or automatic identity merges.
+//! Legacy family-based APIs remain for exploration and differential tests only. They
+//! must not authorize claim verification or automatic identity merges.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Maximum unique canonical roots evaluated by the exact proof-route search.
-///
-/// Claim-local proof sets are expected to be small. Larger sets fail closed rather
-/// than returning a partial or heuristic strengthening result.
-pub const MAX_PROOF_ROUTE_ROOTS: usize = 32;
-const MAX_PROOF_ROUTE_SEARCH_VISITS: usize = 1_000_000;
+use crate::retrieval_artifact::ArtifactId;
+
+const MAX_ROUTE_SEARCH_DEPTH: usize = 64;
 
 pub const METHOD_DISTINCT_AUTHENTICATED_PRIMARY_ORIGINS_V1: &str =
     "distinct_authenticated_primary_origins";
@@ -39,9 +36,7 @@ impl From<&str> for EvidenceNodeId {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceAncestryNode {
     pub id: EvidenceNodeId,
-    /// Family, corpus, or provider-origin label. Canonicalised on insert
-    /// (whitespace collapsed, lowercased), so `"  Adobe   2013 "` and
-    /// `"ADOBE 2013"` are one family.
+    /// Family, corpus, or provider-origin label. Canonicalised on insert.
     pub source_family: String,
     /// Direct evidence parents. Empty means an observed root.
     pub parents: BTreeSet<EvidenceNodeId>,
@@ -49,8 +44,7 @@ pub struct EvidenceAncestryNode {
     pub derived: bool,
 }
 
-/// Proof-route state. `Unknown` is deliberately distinct from independence:
-/// absence of a known shared cause does not establish distinct origins.
+/// Relationship between two proof routes. `Unknown` is not independence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IndependenceState {
@@ -75,31 +69,35 @@ pub struct IndependenceEvidence {
     pub basis: IndependenceBasis,
     pub method_id: String,
     pub method_version: u32,
-    pub supporting_artifact_ids: BTreeSet<String>,
+    pub supporting_artifact_ids: BTreeSet<ArtifactId>,
     pub observed_at_unix: u64,
 }
 
-/// Deterministic exact-pair index for proof of distinct canonical origins.
+/// Conservative lower bound on proven pairwise-independent routes.
 ///
-/// The map shape serializes cleanly to JSON because both index levels use the
-/// transparent string-backed [`EvidenceNodeId`] as map keys.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IndependenceEvidenceSet {
-    pairs: BTreeMap<EvidenceNodeId, BTreeMap<EvidenceNodeId, IndependenceEvidence>>,
+/// `incomplete` means the deterministic search budget or safety depth was reached.
+/// A truncated search may under-credit evidence; it can never strengthen it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndependenceRouteCount {
+    pub proven: usize,
+    pub incomplete: bool,
 }
 
-/// Deserialisation re-runs `insert` on every node, so a stored graph cannot carry
-/// what `insert` refuses: an empty family, a parentless derivation, or a key that
-/// is not the node's id.
+/// Deserialisation re-runs graph and independence insertion, so persisted state cannot
+/// bypass the same invariants enforced for live data.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RawGraph")]
 pub struct EvidenceAncestryGraph {
     nodes: BTreeMap<EvidenceNodeId, EvidenceAncestryNode>,
+    #[serde(default)]
+    independence: BTreeMap<EvidenceNodeId, BTreeMap<EvidenceNodeId, IndependenceEvidence>>,
 }
 
 #[derive(Deserialize)]
 struct RawGraph {
     nodes: BTreeMap<EvidenceNodeId, EvidenceAncestryNode>,
+    #[serde(default)]
+    independence: BTreeMap<EvidenceNodeId, BTreeMap<EvidenceNodeId, IndependenceEvidence>>,
 }
 
 impl TryFrom<RawGraph> for EvidenceAncestryGraph {
@@ -111,7 +109,22 @@ impl TryFrom<RawGraph> for EvidenceAncestryGraph {
             if key != node.id {
                 return Err(format!("graph key {} holds node {}", key.0, node.id.0));
             }
-            graph.insert(node).map_err(|e| e.to_string())?;
+            graph.insert(node).map_err(|error| error.to_string())?;
+        }
+
+        for (stored_left, pairs) in raw.independence {
+            for (stored_right, evidence) in pairs {
+                let (left, right) = canonical_pair(&evidence.left_root, &evidence.right_root);
+                if stored_left != left || stored_right != right {
+                    return Err(format!(
+                        "independence index ({}, {}) does not match canonical evidence pair ({}, {})",
+                        stored_left.0, stored_right.0, left.0, right.0
+                    ));
+                }
+                graph
+                    .insert_independence_evidence(evidence)
+                    .map_err(|error| error.to_string())?;
+            }
         }
         Ok(graph)
     }
@@ -131,12 +144,11 @@ pub enum AncestryError {
     DerivedWithoutParent(EvidenceNodeId),
     #[error("invalid independence evidence: {0}")]
     InvalidIndependenceEvidence(String),
-    #[error("proof-route exact search refused {roots} roots; deterministic maximum is {max_roots}")]
-    ProofRouteSearchLimit { roots: usize, max_roots: usize },
-    #[error(
-        "proof-route exact search exhausted after {visited} visits; deterministic maximum is {max_visits}"
-    )]
-    ProofRouteSearchExhausted { visited: usize, max_visits: usize },
+    #[error("conflicting independence evidence for roots {} and {}", .left_root.0, .right_root.0)]
+    ConflictingIndependenceEvidence {
+        left_root: EvidenceNodeId,
+        right_root: EvidenceNodeId,
+    },
 }
 
 /// Canonical family key: whitespace runs collapsed, Unicode lowercase. Conservative:
@@ -161,7 +173,10 @@ fn canonical_pair(
 }
 
 fn method_is_admissible(evidence: &IndependenceEvidence) -> bool {
-    if evidence.method_version != 1 || evidence.method_id.trim() != evidence.method_id {
+    if evidence.method_version != 1
+        || evidence.method_id.is_empty()
+        || evidence.method_id.trim() != evidence.method_id
+    {
         return false;
     }
     match &evidence.basis {
@@ -178,101 +193,8 @@ fn method_is_admissible(evidence: &IndependenceEvidence) -> bool {
     }
 }
 
-impl IndependenceEvidenceSet {
-    /// Insert proof for one exact canonical root pair.
-    ///
-    /// # Errors
-    /// Fails closed for unknown methods/versions, empty proof references, self-pairs,
-    /// missing endpoints, or endpoints that are not canonical graph roots.
-    pub fn insert(
-        &mut self,
-        graph: &EvidenceAncestryGraph,
-        mut evidence: IndependenceEvidence,
-    ) -> Result<(), AncestryError> {
-        if evidence.left_root.0.trim().is_empty() || evidence.right_root.0.trim().is_empty() {
-            return Err(AncestryError::InvalidIndependenceEvidence(
-                "root ids must be non-empty".to_owned(),
-            ));
-        }
-        if evidence.left_root == evidence.right_root {
-            return Err(AncestryError::InvalidIndependenceEvidence(
-                "self-pairs cannot prove independence".to_owned(),
-            ));
-        }
-        if evidence.method_id.is_empty() || !method_is_admissible(&evidence) {
-            return Err(AncestryError::InvalidIndependenceEvidence(
-                "unknown or incompatible method id/version/basis".to_owned(),
-            ));
-        }
-        if evidence.supporting_artifact_ids.is_empty()
-            || evidence
-                .supporting_artifact_ids
-                .iter()
-                .any(|id| id.trim().is_empty())
-        {
-            return Err(AncestryError::InvalidIndependenceEvidence(
-                "supporting proof references must be non-empty".to_owned(),
-            ));
-        }
-
-        for endpoint in [&evidence.left_root, &evidence.right_root] {
-            let node = graph
-                .get(endpoint)
-                .ok_or_else(|| AncestryError::MissingNode(endpoint.clone()))?;
-            if !node.parents.is_empty() {
-                return Err(AncestryError::InvalidIndependenceEvidence(format!(
-                    "{} is not a canonical provenance root",
-                    endpoint.0
-                )));
-            }
-        }
-
-        let (left, right) = canonical_pair(&evidence.left_root, &evidence.right_root);
-        evidence.left_root = left.clone();
-        evidence.right_root = right.clone();
-        self.pairs.entry(left).or_default().insert(right, evidence);
-        Ok(())
-    }
-
-    fn proves_pair(
-        &self,
-        graph: &EvidenceAncestryGraph,
-        left: &EvidenceNodeId,
-        right: &EvidenceNodeId,
-    ) -> bool {
-        if left == right {
-            return false;
-        }
-        let (left, right) = canonical_pair(left, right);
-        let Some(evidence) = self.pairs.get(&left).and_then(|pairs| pairs.get(&right)) else {
-            return false;
-        };
-
-        if evidence.left_root != left
-            || evidence.right_root != right
-            || !method_is_admissible(evidence)
-            || evidence.supporting_artifact_ids.is_empty()
-            || evidence
-                .supporting_artifact_ids
-                .iter()
-                .any(|id| id.trim().is_empty())
-        {
-            return false;
-        }
-
-        [left, right].iter().all(|root| {
-            graph
-                .get(root)
-                .is_some_and(|node| node.parents.is_empty() && !root.0.trim().is_empty())
-        })
-    }
-}
-
 impl EvidenceAncestryGraph {
     /// Insert one node. Parents may be inserted later; a missing parent fails at query time.
-    ///
-    /// # Errors
-    /// Empty family, duplicate id, or a parentless derivation.
     pub fn insert(&mut self, mut node: EvidenceAncestryNode) -> Result<(), AncestryError> {
         node.source_family = canonical_family(&node.source_family);
         if node.source_family.is_empty() {
@@ -307,9 +229,6 @@ impl EvidenceAncestryGraph {
     ///
     /// Iterative three-colour DFS expands each node once, so shared ancestry is
     /// linear and deep chains cannot overflow the call stack.
-    ///
-    /// # Errors
-    /// A missing node or cycle anywhere in the ancestry of `id`.
     pub fn root_ids(&self, id: &EvidenceNodeId) -> Result<BTreeSet<EvidenceNodeId>, AncestryError> {
         let mut roots = BTreeSet::new();
         let mut done: BTreeSet<&EvidenceNodeId> = BTreeSet::new();
@@ -353,17 +272,12 @@ impl EvidenceAncestryGraph {
                 }
             }
         }
-
         Ok(roots)
     }
 
     /// Root-family labels reachable from `id`.
     ///
-    /// This is a compatibility/diagnostic API. Distinct labels are not proof of
-    /// independent origins and must not authorize verification or auto-merge.
-    ///
-    /// # Errors
-    /// A missing node or cycle anywhere in the ancestry of `id`.
+    /// Diagnostic compatibility only. Distinct labels do not prove independence.
     pub fn root_families(&self, id: &EvidenceNodeId) -> Result<BTreeSet<String>, AncestryError> {
         self.root_ids(id)?
             .into_iter()
@@ -378,29 +292,20 @@ impl EvidenceAncestryGraph {
 
     /// Count distinct root-family labels across a support set.
     ///
-    /// Diagnostic compatibility only. This does **not** establish proof-route
-    /// independence and must not authorize verification or automatic merge.
-    ///
-    /// # Errors
-    /// As [`Self::root_families`].
+    /// Diagnostic compatibility only; this value must not authorize verification
+    /// or automatic identity merge.
     pub fn independent_support_count<'a>(
         &self,
         ids: impl IntoIterator<Item = &'a EvidenceNodeId>,
     ) -> Result<usize, AncestryError> {
-        let mut roots = BTreeSet::new();
+        let mut families = BTreeSet::new();
         for id in ids {
-            roots.extend(self.root_families(id)?);
+            families.extend(self.root_families(id)?);
         }
-        Ok(roots.len())
+        Ok(families.len())
     }
 
-    /// Legacy label-diversity predicate.
-    ///
-    /// Diagnostic compatibility only. `true` means no recorded root-family label
-    /// overlaps; it does **not** mean the routes are proven independent.
-    ///
-    /// # Errors
-    /// As [`Self::root_families`].
+    /// Legacy label-diversity predicate. `true` is not proof of independence.
     pub fn are_independent(
         &self,
         a: &EvidenceNodeId,
@@ -409,18 +314,102 @@ impl EvidenceAncestryGraph {
         Ok(self.root_families(a)?.is_disjoint(&self.root_families(b)?))
     }
 
-    /// Evaluate the relationship between two evidence routes.
+    /// Insert auditable evidence that two exact canonical roots are distinct proof routes.
     ///
-    /// Shared canonical ancestry is known dependence. Merely disjoint ancestry is
-    /// `Unknown` unless every cross-root pair is backed by exact admissible proof.
+    /// Identical duplicate records are idempotent. A different record for the same
+    /// canonical pair is rejected rather than silently replacing provenance.
+    pub fn insert_independence_evidence(
+        &mut self,
+        mut evidence: IndependenceEvidence,
+    ) -> Result<(), AncestryError> {
+        if evidence.left_root.0.trim().is_empty() || evidence.right_root.0.trim().is_empty() {
+            return Err(AncestryError::InvalidIndependenceEvidence(
+                "root ids must be non-empty".to_owned(),
+            ));
+        }
+        if evidence.left_root == evidence.right_root {
+            return Err(AncestryError::InvalidIndependenceEvidence(
+                "self-pairs cannot prove independence".to_owned(),
+            ));
+        }
+        if !method_is_admissible(&evidence) {
+            return Err(AncestryError::InvalidIndependenceEvidence(
+                "unknown or incompatible method id/version/basis".to_owned(),
+            ));
+        }
+        if evidence.supporting_artifact_ids.is_empty()
+            || evidence
+                .supporting_artifact_ids
+                .iter()
+                .any(|id| id.0.trim().is_empty())
+        {
+            return Err(AncestryError::InvalidIndependenceEvidence(
+                "supporting artifact ids must be non-empty".to_owned(),
+            ));
+        }
+
+        for endpoint in [&evidence.left_root, &evidence.right_root] {
+            let node = self
+                .get(endpoint)
+                .ok_or_else(|| AncestryError::MissingNode(endpoint.clone()))?;
+            if !node.parents.is_empty() {
+                return Err(AncestryError::InvalidIndependenceEvidence(format!(
+                    "{} is not a canonical provenance root",
+                    endpoint.0
+                )));
+            }
+        }
+
+        let (left, right) = canonical_pair(&evidence.left_root, &evidence.right_root);
+        evidence.left_root = left.clone();
+        evidence.right_root = right.clone();
+
+        if let Some(existing) = self.independence.get(&left).and_then(|pairs| pairs.get(&right)) {
+            if existing == &evidence {
+                return Ok(());
+            }
+            return Err(AncestryError::ConflictingIndependenceEvidence {
+                left_root: left,
+                right_root: right,
+            });
+        }
+
+        self.independence
+            .entry(left)
+            .or_default()
+            .insert(right, evidence);
+        Ok(())
+    }
+
+    fn pair_is_proven(&self, left: &EvidenceNodeId, right: &EvidenceNodeId) -> bool {
+        if left == right {
+            return false;
+        }
+        let (left, right) = canonical_pair(left, right);
+        self.independence
+            .get(&left)
+            .and_then(|pairs| pairs.get(&right))
+            .is_some_and(|evidence| {
+                evidence.left_root == left
+                    && evidence.right_root == right
+                    && method_is_admissible(evidence)
+                    && !evidence.supporting_artifact_ids.is_empty()
+                    && evidence
+                        .supporting_artifact_ids
+                        .iter()
+                        .all(|id| !id.0.trim().is_empty())
+            })
+    }
+
+    /// Evaluate whether two evidence nodes trace to proven-distinct proof routes.
     ///
-    /// # Errors
-    /// Missing/cyclic ancestry fails closed.
-    pub fn proof_route_relationship(
+    /// Shared roots are known dependence. Merely disjoint roots remain unknown.
+    /// Phase 1 proves a relationship only when each side resolves to exactly one
+    /// canonical root and that exact pair carries admissible independence evidence.
+    pub fn independence_state(
         &self,
         a: &EvidenceNodeId,
         b: &EvidenceNodeId,
-        independence: &IndependenceEvidenceSet,
     ) -> Result<IndependenceState, AncestryError> {
         let left = self.root_ids(a)?;
         let right = self.root_ids(b)?;
@@ -429,115 +418,140 @@ impl EvidenceAncestryGraph {
             return Ok(IndependenceState::KnownDependent);
         }
 
-        let all_pairs_proven = left.iter().all(|left_root| {
-            right
-                .iter()
-                .all(|right_root| independence.proves_pair(self, left_root, right_root))
-        });
-
-        Ok(if all_pairs_proven {
-            IndependenceState::ProvenIndependent
-        } else {
-            IndependenceState::Unknown
-        })
+        if left.len() == 1 && right.len() == 1 {
+            let left_root = left.iter().next().expect("length checked");
+            let right_root = right.iter().next().expect("length checked");
+            if self.pair_is_proven(left_root, right_root) {
+                return Ok(IndependenceState::ProvenIndependent);
+            }
+        }
+        Ok(IndependenceState::Unknown)
     }
 
-    /// Exact maximum number of pairwise-proven-independent canonical roots behind
-    /// the supplied evidence nodes.
+    /// Return a conservative lower bound on pairwise-proven-independent roots.
     ///
-    /// Unknown relationships are absent edges. Search bounds fail closed rather
-    /// than returning a partial count.
-    ///
-    /// # Errors
-    /// Missing/cyclic ancestry or deterministic search bounds.
-    pub fn proven_independent_support_count<'a>(
+    /// Search stops as soon as `required` routes are proved. If the deterministic
+    /// state budget or depth safety bound is exhausted first, `incomplete` is set
+    /// and the best already-proven lower bound is returned. Truncation never raises
+    /// the result beyond what was explicitly demonstrated.
+    pub fn proven_independent_route_count<'a>(
         &self,
         ids: impl IntoIterator<Item = &'a EvidenceNodeId>,
-        independence: &IndependenceEvidenceSet,
-    ) -> Result<usize, AncestryError> {
+        required: usize,
+        max_search_states: usize,
+    ) -> Result<IndependenceRouteCount, AncestryError> {
         let mut root_set = BTreeSet::new();
         for id in ids {
             root_set.extend(self.root_ids(id)?);
         }
+        let roots = root_set.into_iter().collect::<Vec<_>>();
 
-        if root_set.len() > MAX_PROOF_ROUTE_ROOTS {
-            return Err(AncestryError::ProofRouteSearchLimit {
-                roots: root_set.len(),
-                max_roots: MAX_PROOF_ROUTE_ROOTS,
+        if required == 0 || roots.is_empty() {
+            return Ok(IndependenceRouteCount {
+                proven: 0,
+                incomplete: false,
             });
         }
-        if root_set.len() <= 1 {
-            return Ok(root_set.len());
+        if required == 1 {
+            return Ok(IndependenceRouteCount {
+                proven: 1,
+                incomplete: false,
+            });
         }
 
-        let roots: Vec<_> = root_set.into_iter().collect();
-        let mut adjacency = vec![0_u64; roots.len()];
-        for left in 0..roots.len() {
-            for right in (left + 1)..roots.len() {
-                if independence.proves_pair(self, &roots[left], &roots[right]) {
-                    adjacency[left] |= 1_u64 << right;
-                    adjacency[right] |= 1_u64 << left;
-                }
-            }
+        let target = required.min(roots.len());
+        if target <= 1 {
+            return Ok(IndependenceRouteCount {
+                proven: roots.len().min(1),
+                incomplete: false,
+            });
+        }
+        if max_search_states == 0 {
+            return Ok(IndependenceRouteCount {
+                proven: 1,
+                incomplete: true,
+            });
         }
 
-        exact_maximum_clique_size(&adjacency)
+        let search_target = target.min(MAX_ROUTE_SEARCH_DEPTH);
+        let forced_incomplete = target > MAX_ROUTE_SEARCH_DEPTH;
+        let mut best = 1;
+        let mut visited = 0;
+        let mut chosen = Vec::with_capacity(search_target);
+        let outcome = search_proven_cliques(
+            self,
+            &roots,
+            0,
+            &mut chosen,
+            search_target,
+            max_search_states,
+            &mut visited,
+            &mut best,
+        );
+
+        let threshold_proven = !forced_incomplete && best >= target;
+        Ok(IndependenceRouteCount {
+            proven: best.min(target),
+            incomplete: !threshold_proven
+                && (forced_incomplete || matches!(outcome, SearchOutcome::Exhausted)),
+        })
     }
 }
 
-fn exact_maximum_clique_size(adjacency: &[u64]) -> Result<usize, AncestryError> {
-    fn visit(
-        adjacency: &[u64],
-        candidates: u64,
-        current_size: usize,
-        best: &mut usize,
-        visits: &mut usize,
-    ) -> Result<(), AncestryError> {
-        *visits = visits.saturating_add(1);
-        if *visits > MAX_PROOF_ROUTE_SEARCH_VISITS {
-            return Err(AncestryError::ProofRouteSearchExhausted {
-                visited: *visits,
-                max_visits: MAX_PROOF_ROUTE_SEARCH_VISITS,
-            });
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchOutcome {
+    Complete,
+    ThresholdProven,
+    Exhausted,
+}
 
-        if candidates == 0 {
-            *best = (*best).max(current_size);
-            return Ok(());
-        }
-
-        let remaining = candidates.count_ones() as usize;
-        if current_size + remaining <= *best {
-            return Ok(());
-        }
-
-        let vertex = candidates.trailing_zeros() as usize;
-        let bit = 1_u64 << vertex;
-        let without_vertex = candidates & !bit;
-
-        visit(
-            adjacency,
-            without_vertex & adjacency[vertex],
-            current_size + 1,
-            best,
-            visits,
-        )?;
-        visit(adjacency, without_vertex, current_size, best, visits)
+#[allow(clippy::too_many_arguments)]
+fn search_proven_cliques(
+    graph: &EvidenceAncestryGraph,
+    roots: &[EvidenceNodeId],
+    start: usize,
+    chosen: &mut Vec<usize>,
+    target: usize,
+    max_states: usize,
+    visited: &mut usize,
+    best: &mut usize,
+) -> SearchOutcome {
+    *best = (*best).max(chosen.len());
+    if *best >= target {
+        return SearchOutcome::ThresholdProven;
+    }
+    if start >= roots.len() || chosen.len() + (roots.len() - start) <= *best {
+        return SearchOutcome::Complete;
     }
 
-    if adjacency.is_empty() {
-        return Ok(0);
-    }
+    for candidate in start..roots.len() {
+        if *visited >= max_states {
+            return SearchOutcome::Exhausted;
+        }
+        *visited += 1;
 
-    let candidates = if adjacency.len() == 64 {
-        u64::MAX
-    } else {
-        (1_u64 << adjacency.len()) - 1
-    };
-    let mut best = 0;
-    let mut visits = 0;
-    visit(adjacency, candidates, 0, &mut best, &mut visits)?;
-    Ok(best)
+        if chosen
+            .iter()
+            .all(|selected| graph.pair_is_proven(&roots[*selected], &roots[candidate]))
+        {
+            chosen.push(candidate);
+            let outcome = search_proven_cliques(
+                graph,
+                roots,
+                candidate + 1,
+                chosen,
+                target,
+                max_states,
+                visited,
+                best,
+            );
+            chosen.pop();
+            if outcome != SearchOutcome::Complete {
+                return outcome;
+            }
+        }
+    }
+    SearchOutcome::Complete
 }
 
 #[cfg(test)]
@@ -600,11 +614,7 @@ mod tests {
         );
         assert_eq!(
             graph
-                .proof_route_relationship(
-                    &"mirror-a".into(),
-                    &"mirror-b".into(),
-                    &IndependenceEvidenceSet::default(),
-                )
+                .independence_state(&"mirror-a".into(), &"mirror-b".into())
                 .unwrap(),
             IndependenceState::KnownDependent
         );
@@ -617,13 +627,7 @@ mod tests {
         graph.insert(node("b", "court-record", &[], false)).unwrap();
         assert!(graph.are_independent(&"a".into(), &"b".into()).unwrap());
         assert_eq!(
-            graph
-                .proof_route_relationship(
-                    &"a".into(),
-                    &"b".into(),
-                    &IndependenceEvidenceSet::default(),
-                )
-                .unwrap(),
+            graph.independence_state(&"a".into(), &"b".into()).unwrap(),
             IndependenceState::Unknown
         );
     }
