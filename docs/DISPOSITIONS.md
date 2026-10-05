@@ -417,14 +417,20 @@ placeholder markers and unknown stand-in facts.
 | `src/modules/crtsh/mod.rs` | 382 | REIMPLEMENT | `src/crtsh.rs` | 30-second timeout; retries only HTTP 502/503/429, at most three attempts two seconds apart. Challenge, truncated and malformed responses fail closed. Differential fixtures match records, confidence, tags and evidence attributes without a result cap. |
 | `src/modules/crtsh/tests.rs` | 345 | MERGED | `src/crtsh/tests.rs`, `src/crtsh/differential.rs` | Legacy cases use fake transports; query shape, entity kinds, retry bounds, challenge pages, truncation and redirects are covered. |
 | `src/modules/stolen_tax/mod.rs` | 485 | REIMPLEMENT | `src/stolen_tax.rs` | v2 POST cascade with origin-scoped credentials, bounded same-site redirects, one 120-second lookup deadline and same-key 429 retries. Differential tests cover the legacy cascade; persistent key-pool rotation remains deferred. Password and hash fields are never declared. |
+| `src/modules/see_know/mod.rs` | 1006 | PARTIAL | `src/seeknow.rs`, `src/seeknow_collector.rs`, `src/seeknow_cli.rs` | First reconstructed SeekNow slice uses the documented REST API through guarded `fetch` + injected `Transport`. Fast/deep duplicates and federated provider rows cannot manufacture corroboration. Raw password/token/cookie material is excluded. Query-optimizer and geo extract remain deferred. |
+| `src/modules/see_know/endpoints/mod.rs` | 377 | PARTIAL | `src/seeknow.rs` | Status/credits/search endpoints rebuilt as typed L4 requests; entitlement and quota failures are distinct from auth and rate-limit. |
+| `src/modules/see_know/endpoints/tests.rs` | 280 | MERGED | `tests/seeknow_client.rs`, `tests/seeknow_cli.rs` | Fake-transport coverage for request shape, outcome mapping and CLI rendering. |
+| `src/modules/see_know/tests.rs` | 2083 | MERGED | `tests/seeknow_collector.rs`, `tests/seeknow_diagnostics.rs`, `tests/seeknow_outcomes.rs` | Collector lineage, diagnostics and causal-outcome contract tests. |
+| `src/modules/wayback/mod.rs` | 586 | REIMPLEMENT | `src/wayback.rs`, `src/archive.rs` | CDX lookup through `fetch`; original URLs are observations and are never fetched. |
+| `src/modules/wayback/tests.rs` | 323 | MERGED | `tests/wayback_client.rs`, `tests/archive_model.rs` | Fake-transport CDX parsing plus archive identity/aggregation tests. |
 
 ## Not yet dispositioned
 
-Legacy `src/` files of the monolith that no section above lists yet (881 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
+Legacy `src/` files of the monolith that no section above lists yet (875 of 1146). They are neither rebuilt nor rejected; most need network providers, credentials, a runtime, or a UI that the crate does not have.
 
 | Legacy area | Files not listed | Of |
 | --- | ---: | ---: |
-| `src/modules/` (providers) | 528 | 542 |
+| `src/modules/` (providers) | 522 | 542 |
 | `src/util/` | 116 | 213 |
 | `src/core/` | 49 | 203 |
 | `src/app/` | 45 | 45 |
