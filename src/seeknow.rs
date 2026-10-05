@@ -160,7 +160,16 @@ fn execute_search<T: Transport + ?Sized>(
         });
     }
 
-    if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
+    // Body-independent causal states remain authoritative. Auth/plan and rate/quota
+    // states are the exception: SeekNow's top-level JSON envelope refines those.
+    if !matches!(
+        fetched.outcome.kind,
+        SourceOutcomeKind::Inconclusive
+            | SourceOutcomeKind::AuthRejected
+            | SourceOutcomeKind::AuthRequired
+            | SourceOutcomeKind::RateLimited
+            | SourceOutcomeKind::Upstream4xx
+    ) {
         return Ok(SeekNowSearchResult {
             rows: Vec::new(),
             meta,
@@ -170,6 +179,13 @@ fn execute_search<T: Transport + ?Sized>(
 
     let value: Value = match serde_json::from_slice(&response.body) {
         Ok(value) => value,
+        Err(_) if fetched.outcome.kind != SourceOutcomeKind::Inconclusive => {
+            return Ok(SeekNowSearchResult {
+                rows: Vec::new(),
+                meta,
+                outcome: fetched.outcome,
+            });
+        }
         Err(_) => {
             return Ok(SeekNowSearchResult {
                 rows: Vec::new(),
@@ -185,6 +201,29 @@ fn execute_search<T: Transport + ?Sized>(
             });
         }
     };
+
+    if let Some(kind) = provider_failure_kind(&value, response.status) {
+        return Ok(SeekNowSearchResult {
+            rows: Vec::new(),
+            meta,
+            outcome: outcome_with(
+                module,
+                kind,
+                now_unix,
+                response.status,
+                Some(0),
+                "provider reported request failure",
+            ),
+        });
+    }
+
+    if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
+        return Ok(SeekNowSearchResult {
+            rows: Vec::new(),
+            meta,
+            outcome: fetched.outcome,
+        });
+    }
 
     let Some(items) = recognized_items(&value) else {
         return Ok(SeekNowSearchResult {
@@ -239,6 +278,87 @@ fn build_search_body(search: &SeekNowSearch) -> Result<Vec<u8>, Error> {
         .map_err(|error| Error::Invalid(format!("cannot serialize SeekNow request: {error}")))
 }
 
+/// Refine only from provider-level envelope fields. Values inside result rows are
+/// deliberately unreachable from this function, so breach payload text such as
+/// `invalid_api_key` can never disable authentication for the provider.
+fn provider_failure_kind(value: &Value, http_status: u16) -> Option<SourceOutcomeKind> {
+    let object = value.as_object()?;
+    let failed = object.get("success").and_then(Value::as_bool) == Some(false);
+    let error = top_level_text(object, "error");
+    let code = top_level_text(object, "code");
+    let status = top_level_text(object, "status");
+    let message = top_level_text(object, "message");
+    let signal = [error, code, status, message]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+
+    let has_failure_signal = failed || object.contains_key("error");
+    if !has_failure_signal && !matches!(http_status, 401 | 403 | 429) {
+        return None;
+    }
+
+    if contains_any(
+        &signal,
+        &["invalid_api_key", "invalid api key", "unauthorized", "bad api key"],
+    ) {
+        return Some(SourceOutcomeKind::AuthRejected);
+    }
+
+    if contains_any(
+        &signal,
+        &[
+            "plan_required",
+            "plan required",
+            "upgrade plan",
+            "entitlement",
+            "not entitled",
+            "subscription required",
+        ],
+    ) {
+        return Some(SourceOutcomeKind::EntitlementDenied);
+    }
+
+    if http_status == 429 {
+        let credits_zero = object
+            .get("credits_remaining")
+            .and_then(Value::as_u64)
+            .is_some_and(|remaining| remaining == 0);
+        if contains_any(
+            &signal,
+            &[
+                "quota_exhausted",
+                "quota exhausted",
+                "credits exhausted",
+                "daily limit",
+                "no credits",
+            ],
+        ) || (failed && credits_zero)
+        {
+            return Some(SourceOutcomeKind::QuotaExhausted);
+        }
+        return Some(SourceOutcomeKind::RateLimited);
+    }
+
+    if http_status == 401 {
+        return Some(SourceOutcomeKind::AuthRejected);
+    }
+    if http_status == 403 && failed {
+        return Some(SourceOutcomeKind::AuthRejected);
+    }
+    None
+}
+
+fn top_level_text<'a>(object: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'a str> {
+    object.get(key)?.as_str()
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
 fn recognized_items(value: &Value) -> Option<&Vec<Value>> {
     let object = value.as_object()?;
     if let Some(items) = object.get("results").and_then(Value::as_array) {
@@ -256,14 +376,53 @@ fn recognized_items(value: &Value) -> Option<&Vec<Value>> {
 
 fn minimal_row(value: &Value) -> Option<SeekNowRow> {
     let object = value.as_object()?;
-    let fields = object
-        .iter()
-        .filter_map(|(key, value)| scalar_string(value).map(|value| (key.clone(), value)))
-        .collect();
+    let mut fields = BTreeMap::new();
+    let mut sensitive_fields = BTreeSet::new();
+    for (key, value) in object {
+        if is_sensitive_result_field(key) {
+            sensitive_fields.insert(key.clone());
+            continue;
+        }
+        if let Some(value) = scalar_string(value) {
+            fields.insert(key.clone(), value);
+        }
+    }
     Some(SeekNowRow {
         fields,
-        sensitive_fields: BTreeSet::new(),
+        sensitive_fields,
     })
+}
+
+fn is_sensitive_result_field(key: &str) -> bool {
+    let normalized = key
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' '], "_");
+    matches!(
+        normalized.as_str(),
+        "password"
+            | "passwd"
+            | "pwd"
+            | "pass"
+            | "secret"
+            | "token"
+            | "access_token"
+            | "refresh_token"
+            | "auth_token"
+            | "api_key"
+            | "apikey"
+            | "cookie"
+            | "cookies"
+            | "session"
+            | "session_id"
+            | "session_token"
+            | "authorization"
+    ) || normalized.ends_with("_password")
+        || normalized.ends_with("_passwd")
+        || normalized.ends_with("_token")
+        || normalized.ends_with("_secret")
+        || normalized.ends_with("_cookie")
+        || normalized.ends_with("_api_key")
 }
 
 fn scalar_string(value: &Value) -> Option<String> {
