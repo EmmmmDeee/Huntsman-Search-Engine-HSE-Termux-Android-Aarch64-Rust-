@@ -66,7 +66,7 @@ pub fn run_with_keys<T: Transport + ?Sized>(
                 if let Some(limit) = result.limit {
                     let _ = writeln!(text, "limit={limit}");
                 }
-                finish_diagnostic(result.outcome, text)
+                finish_diagnostic(&result.outcome, text)
             }
             Err(error) => map_error(error),
         },
@@ -76,7 +76,7 @@ pub fn run_with_keys<T: Transport + ?Sized>(
                 for (key, value) in result.fields {
                     let _ = writeln!(text, "{key}={value}");
                 }
-                finish_diagnostic(result.outcome, text)
+                finish_diagnostic(&result.outcome, text)
             }
             Err(error) => map_error(error),
         },
@@ -212,7 +212,7 @@ fn render_batch(batch: &crate::collector::CollectionBatch) -> String {
     text
 }
 
-fn finish_diagnostic(outcome: SourceExecutionOutcome, text: String) -> SeekNowCliRun {
+fn finish_diagnostic(outcome: &SourceExecutionOutcome, text: String) -> SeekNowCliRun {
     match outcome.kind {
         SourceOutcomeKind::Success | SourceOutcomeKind::ValidZero => SeekNowCliRun::Printed(text),
         kind if permission_outcome(kind) => {
