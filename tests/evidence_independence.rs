@@ -154,3 +154,115 @@ fn deserialization_cannot_bypass_independence_validation() {
     let round_trip: EvidenceAncestryGraph = serde_json::from_str(&json).unwrap();
     assert_eq!(round_trip, graph);
 }
+
+#[test]
+fn two_disjoint_unproven_roots_count_as_one_route() {
+    let mut graph = EvidenceAncestryGraph::default();
+    graph.insert(node("a", "registry-a", &[], false)).unwrap();
+    graph.insert(node("b", "registry-b", &[], false)).unwrap();
+    let a = EvidenceNodeId::from("a");
+    let b = EvidenceNodeId::from("b");
+
+    let count = graph
+        .proven_independent_route_count([&a, &b], 2, 64)
+        .unwrap();
+    assert_eq!(count.proven, 1);
+    assert!(!count.incomplete);
+}
+
+#[test]
+fn two_explicitly_independent_roots_count_as_two_routes() {
+    let mut graph = EvidenceAncestryGraph::default();
+    graph.insert(node("a", "registry-a", &[], false)).unwrap();
+    graph.insert(node("b", "registry-b", &[], false)).unwrap();
+    graph
+        .insert_independence_evidence(evidence("a", "b"))
+        .unwrap();
+    let a = EvidenceNodeId::from("a");
+    let b = EvidenceNodeId::from("b");
+
+    let count = graph
+        .proven_independent_route_count([&a, &b], 2, 64)
+        .unwrap();
+    assert_eq!(count.proven, 2);
+    assert!(!count.incomplete);
+}
+
+#[test]
+fn mirror_nodes_over_one_root_count_as_one_route() {
+    let mut graph = EvidenceAncestryGraph::default();
+    graph.insert(node("root", "primary", &[], false)).unwrap();
+    graph
+        .insert(node("mirror-a", "provider-a", &["root"], true))
+        .unwrap();
+    graph
+        .insert(node("mirror-b", "provider-b", &["root"], true))
+        .unwrap();
+    let a = EvidenceNodeId::from("mirror-a");
+    let b = EvidenceNodeId::from("mirror-b");
+
+    let count = graph
+        .proven_independent_route_count([&a, &b], 2, 64)
+        .unwrap();
+    assert_eq!(count.proven, 1);
+    assert!(!count.incomplete);
+}
+
+#[test]
+fn three_roots_can_satisfy_two_when_one_proven_pair_exists() {
+    let mut graph = EvidenceAncestryGraph::default();
+    for id in ["a", "b", "c"] {
+        graph.insert(node(id, id, &[], false)).unwrap();
+    }
+    graph
+        .insert_independence_evidence(evidence("a", "c"))
+        .unwrap();
+    let a = EvidenceNodeId::from("a");
+    let b = EvidenceNodeId::from("b");
+    let c = EvidenceNodeId::from("c");
+
+    let count = graph
+        .proven_independent_route_count([&a, &b, &c], 2, 64)
+        .unwrap();
+    assert_eq!(count.proven, 2);
+    assert!(!count.incomplete);
+}
+
+#[test]
+fn search_budget_exhaustion_is_incomplete_and_never_strengthens() {
+    let mut graph = EvidenceAncestryGraph::default();
+    for id in ["a", "b", "c"] {
+        graph.insert(node(id, id, &[], false)).unwrap();
+    }
+    let a = EvidenceNodeId::from("a");
+    let b = EvidenceNodeId::from("b");
+    let c = EvidenceNodeId::from("c");
+
+    let count = graph
+        .proven_independent_route_count([&a, &b, &c], 3, 0)
+        .unwrap();
+    assert_eq!(count.proven, 1);
+    assert!(count.incomplete);
+}
+
+#[test]
+fn required_zero_and_one_have_bounded_semantics() {
+    let graph = EvidenceAncestryGraph::default();
+    let none: Vec<&EvidenceNodeId> = Vec::new();
+    let zero = graph
+        .proven_independent_route_count(none, 0, 0)
+        .unwrap();
+    assert_eq!(zero.proven, 0);
+    assert!(!zero.incomplete);
+
+    let mut graph = EvidenceAncestryGraph::default();
+    graph.insert(node("a", "a", &[], false)).unwrap();
+    graph.insert(node("b", "b", &[], false)).unwrap();
+    let a = EvidenceNodeId::from("a");
+    let b = EvidenceNodeId::from("b");
+    let one = graph
+        .proven_independent_route_count([&a, &b], 1, 0)
+        .unwrap();
+    assert_eq!(one.proven, 1);
+    assert!(!one.incomplete);
+}
