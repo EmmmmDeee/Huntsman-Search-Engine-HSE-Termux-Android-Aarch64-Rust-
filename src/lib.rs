@@ -15,6 +15,7 @@ pub mod address_au;
 pub mod analysis;
 pub mod archive;
 pub mod archive_bridge;
+pub mod artifacts;
 pub mod asic_persons;
 pub mod assurance;
 pub mod atproto;
