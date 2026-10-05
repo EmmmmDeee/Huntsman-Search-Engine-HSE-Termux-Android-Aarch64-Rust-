@@ -11,8 +11,8 @@ COPY . /work/
 
 ENV CARGO_TERM_COLOR=never
 
-# Live contract discriminator: this endpoint must authenticate the supplied key.
-# Do not print or persist the response body; only the HTTP status is evidence here.
+# Live provider discriminator: the authenticated subscription endpoint must
+# reject an intentionally invalid key. The response body is never printed.
 RUN status="$(curl --silent --show-error --output /tmp/hibp-invalid-body \
         --write-out '%{http_code}' --max-time 20 \
         --header 'Accept: application/json' \
@@ -25,6 +25,26 @@ RUN status="$(curl --silent --show-error --output /tmp/hibp-invalid-body \
 
 RUN cargo fmt --check
 RUN cargo check --locked --all-targets
+
+# Live product-path falsification: execute the real production CLI and transport
+# against HIBP. It must classify the same invalid key as EX_NOPERM (77), report
+# HTTP 401, emit no stdout, and never echo the key in stderr.
+RUN set +e; \
+    HIBP_API_KEY='huntsman-intentionally-invalid-verifier-key' \
+        cargo run --locked --quiet -- hibp subscription \
+        >/tmp/hibp-rust-out 2>/tmp/hibp-rust-err; \
+    code="$?"; \
+    set -e; \
+    echo "HIBP_RUST_INVALID_KEY_EXIT=${code}"; \
+    test "${code}" = '77'; \
+    test ! -s /tmp/hibp-rust-out; \
+    grep -Fq 'HTTP 401' /tmp/hibp-rust-err; \
+    if grep -Fq 'huntsman-intentionally-invalid-verifier-key' /tmp/hibp-rust-err; then \
+        echo 'HIBP verifier detected credential leakage' >&2; \
+        exit 1; \
+    fi; \
+    rm -f /tmp/hibp-rust-out /tmp/hibp-rust-err
+
 RUN cargo test --locked hibp::tests -- --nocapture
 RUN cargo test --locked --test hibp_cli -- --nocapture
 RUN cargo test --locked --test hibp_build -- --nocapture
