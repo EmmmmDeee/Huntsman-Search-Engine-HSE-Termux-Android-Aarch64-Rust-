@@ -337,11 +337,12 @@ fn phone_cmd(args: &[String]) -> ExitCode {
         Ok(parsed) => parsed,
         Err(error) => {
             let message = error.to_string();
-            let code = if message.contains("phone must") || message.contains("unknown international") {
-                EX_DATAERR
-            } else {
-                EX_USAGE
-            };
+            let code =
+                if message.contains("phone must") || message.contains("unknown international") {
+                    EX_DATAERR
+                } else {
+                    EX_USAGE
+                };
             return fail(code, &format!("{message}\n{PHONE_USAGE}"));
         }
     };
