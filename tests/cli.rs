@@ -99,6 +99,7 @@ fn help_and_version_are_available() {
         ("scan", "scan SELECTOR [-k people|email|username|phone]"),
         ("investigate", "investigate TEXT..."),
         ("modules", "modules [--json]"),
+        ("query", "query QUERY..."),
         ("fetch", "fetch URL [--body]"),
         ("hibp", "hibp [breach NAME"),
         ("recon", "recon crtsh TARGET"),
@@ -267,6 +268,14 @@ fn investigate_reads_one_bounded_local_file() {
     assert!(stdout.contains("email\tada@example.com"), "{stdout:?}");
     assert!(stdout.contains("url\thttps://example.org"), "{stdout:?}");
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_missing_terms_is_usage() {
+    let out = bin().arg("query").output().unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    assert_eq!(out.stdout, Vec::<u8>::new());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("query QUERY"));
 }
 
 #[test]

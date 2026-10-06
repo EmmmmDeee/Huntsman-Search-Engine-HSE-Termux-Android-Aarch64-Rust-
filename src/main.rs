@@ -63,8 +63,9 @@ use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::uid;
 use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, UsernameRun};
 use huntsman_recon::username_save;
+use huntsman_recon::web_query;
 
-const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | investigate TEXT...|--file FILE | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | investigate TEXT...|--file FILE | query QUERY... | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -89,6 +90,7 @@ Commands:
   phone                 Canonicalise and classify a phone number offline
   scan                  Route one selector into a rebuilt lookup front-end
   investigate           Extract actionable entities from local text or one bounded file
+  query                 Query the rebuilt keyless web-search subset
   modules               List only currently reachable rebuilt modules
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
@@ -100,7 +102,7 @@ Commands:
 
 Run `huntsman-recon <COMMAND> --help` for command details.
 Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
-`seeknow`, `people`, `email`, and `username` make HTTP requests; their default
+`seeknow`, `people`, `email`, `username`, and `query` make HTTP requests; their default
 egress policy is public-only.";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
@@ -142,6 +144,7 @@ fn main() -> ExitCode {
         Some("phone") => phone_cmd(&remaining.collect::<Vec<_>>()),
         Some("scan") => scan_cmd(&remaining.collect::<Vec<_>>()),
         Some("investigate") => investigate_cmd(&remaining.collect::<Vec<_>>()),
+        Some("query") => query_cmd(&remaining.collect::<Vec<_>>()),
         Some("modules") => modules_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
@@ -188,6 +191,9 @@ fn print_command_help(command: &str) {
         }
         "investigate" => {
             "investigate TEXT... | investigate --file FILE\nExtract actionable entities from local text. --file refuses symlinks and files over 1 MiB."
+        }
+        "query" => {
+            "query QUERY...\nQuery the rebuilt keyless Bing, Brave, and Mojeek subset through the shared fetch boundary; provider failures remain independent."
         }
         "modules" => {
             "modules [--json]\nList only rebuilt modules that are currently reachable through a huntsman-recon command."
@@ -507,6 +513,48 @@ fn investigate_cmd(args: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+fn query_cmd(args: &[String]) -> ExitCode {
+    if args.is_empty() {
+        return fail(EX_USAGE, "usage: huntsman-recon query QUERY...");
+    }
+    let query = args.join(" ");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let transport = UreqTransport::new(&TransportConfig::default());
+
+    match web_query::search(&transport, &query, now) {
+        Ok(report) => {
+            for outcome in &report.outcomes {
+                let kind = serde_json::to_value(outcome.kind)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "unknown".into());
+                println!(
+                    "engine={}\toutcome={}\tfound={}",
+                    outcome.module,
+                    kind,
+                    outcome
+                        .found
+                        .map_or_else(|| "none".to_owned(), |count| count.to_string())
+                );
+            }
+            for hit in &report.hits {
+                println!("{}\t{}", hit.engine, hit.url);
+            }
+            println!("hits={}", report.hits.len());
+            if report.hits.is_empty() {
+                ExitCode::from(EX_UNAVAILABLE)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(Error::Invalid(message)) => fail(EX_USAGE, &message),
+        Err(Error::Network(message)) => fail(EX_NOPERM, &message),
+        Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
+    }
 }
 
 fn modules_cmd(args: &[String]) -> ExitCode {

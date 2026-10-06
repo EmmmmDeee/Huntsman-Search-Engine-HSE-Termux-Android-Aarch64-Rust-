@@ -134,4 +134,5 @@ username_save	exporter	persists username results as unverified ledger claims
 username_variants	leaf	deterministic handle normalization variants
 validation	runtime	seed/entity validation
 wayback	adapter	Internet Archive Wayback CDX client
+web_query	adapter	keyless web meta-search subset
 xml	leaf	XML utility
