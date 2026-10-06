@@ -86,13 +86,14 @@ fn usage_subcommands() -> BTreeSet<String> {
         .collect()
 }
 
-/// Internet examples: a URL argument, any `email`/`username` lookup, or any `hibp`
+/// Internet examples: a URL argument, any `email`/`username`/`query` lookup, or any `hibp`
 /// lookup (`hibp help` is offline). Provider-specific tests cover these with fake transports.
 fn is_network(args: &[String]) -> bool {
     args.iter()
         .any(|a| a.starts_with("https://") || a.starts_with("http://"))
         || args.first().is_some_and(|a| a == "email")
         || args.first().is_some_and(|a| a == "username")
+        || args.first().is_some_and(|a| a == "query")
         || (args.first().is_some_and(|a| a == "hibp") && args.get(1).is_some_and(|a| a != "help"))
 }
 
