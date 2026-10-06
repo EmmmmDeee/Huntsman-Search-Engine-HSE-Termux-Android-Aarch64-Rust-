@@ -52,7 +52,6 @@ fn provenance(source: &str) -> (&str, &'static str) {
     match source {
         "github_user" => ("github_user", "src/github_user.rs"),
         "bluesky_user" => ("bluesky_user", "src/bluesky_user.rs"),
-        "username_variants" | "seed" => (source, "src/username_cli.rs"),
         _ => (source, "src/username_cli.rs"),
     }
 }
