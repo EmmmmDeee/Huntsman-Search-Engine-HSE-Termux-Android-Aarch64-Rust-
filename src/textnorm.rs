@@ -101,7 +101,7 @@ pub fn is_handle(s: &str, min: usize, max: usize) -> bool {
 /// True when `s` is a dotted domain-style handle.
 #[must_use]
 pub fn is_domain_handle(s: &str) -> bool {
-    crate::canonical::canonical_domain(s).is_some()
+    crate::value_syntax::canonical_domain(s).is_some()
 }
 
 /// Floor an index to a UTF-8 character boundary.
@@ -417,7 +417,14 @@ mod tests {
     #[test]
     fn dotted_handles_use_domain_policy() {
         assert!(is_domain_handle("alice.dev"));
+        assert!(is_domain_handle(" Example.COM. "));
+        assert!(is_domain_handle("a-b.example"));
         assert!(!is_domain_handle("alice"));
+        assert!(!is_domain_handle("-bad.example"));
+        assert!(!is_domain_handle("bad-.example"));
+        assert!(!is_domain_handle("bad..example"));
+        assert!(!is_domain_handle("bad_example.com"));
+        assert!(!is_domain_handle("example.café"));
     }
 
     #[test]
