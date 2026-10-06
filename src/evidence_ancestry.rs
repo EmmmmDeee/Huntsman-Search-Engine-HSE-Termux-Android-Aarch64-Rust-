@@ -79,8 +79,7 @@ pub struct EvidenceAncestryGraph {
 struct RawGraph {
     nodes: BTreeMap<EvidenceNodeId, EvidenceAncestryNode>,
     #[serde(default)]
-    independence_evidence:
-        BTreeMap<EvidenceNodeId, BTreeMap<EvidenceNodeId, IndependenceEvidence>>,
+    independence_evidence: BTreeMap<EvidenceNodeId, BTreeMap<EvidenceNodeId, IndependenceEvidence>>,
 }
 
 impl TryFrom<RawGraph> for EvidenceAncestryGraph {
