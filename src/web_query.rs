@@ -417,11 +417,26 @@ mod tests {
     }
 
     fn response(status: u16, body: &str) -> Response {
+        response_with_headers(status, &[("content-type", "text/html")], body)
+    }
+
+    fn response_with_headers(status: u16, headers: &[(&str, &str)], body: &str) -> Response {
         Response {
             status,
-            headers: vec![("content-type".into(), "text/html".into())],
+            headers: headers
+                .iter()
+                .map(|(name, value)| ((*name).into(), (*value).into()))
+                .collect(),
             body: body.as_bytes().to_vec(),
             truncated: false,
+        }
+    }
+
+    fn transport_failure(kind: SourceOutcomeKind) -> TransportFailure {
+        TransportFailure {
+            kind,
+            detail: "transient test failure".into(),
+            blocked: false,
         }
     }
 
@@ -468,6 +483,118 @@ mod tests {
         ]);
         let report = search(&fake, "alice", 1).unwrap();
         assert_eq!(report.hits.len(), 1);
+    }
+
+    #[test]
+    fn cache_hit_reuses_identical_parsed_result_without_second_send() {
+        let engine = EngineSpec {
+            name: "cache_test",
+            base_url: "https://cache-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![Ok(response(
+            200,
+            r#"<a href="https://example.org/cached">cached</a>"#,
+        ))]);
+
+        let first = search_engine(&fake, engine, "cache-key-unique", 100).unwrap();
+        let second = search_engine(&fake, engine, "cache-key-unique", 101).unwrap();
+
+        assert_eq!(first.hits, second.hits);
+        assert_eq!(first.outcome.kind, second.outcome.kind);
+        assert_eq!(first.hits[0].url, "https://example.org/cached");
+    }
+
+    #[test]
+    fn stale_cache_entry_is_replaced_after_ttl() {
+        let engine = EngineSpec {
+            name: "cache_ttl_test",
+            base_url: "https://cache-ttl-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/first">first</a>"#,
+            )),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/second">second</a>"#,
+            )),
+        ]);
+
+        let first = search_engine(&fake, engine, "ttl-key-unique", 100).unwrap();
+        let second =
+            search_engine(&fake, engine, "ttl-key-unique", 100 + CACHE_TTL_SECS + 1).unwrap();
+
+        assert_eq!(first.hits[0].url, "https://example.org/first");
+        assert_eq!(second.hits[0].url, "https://example.org/second");
+    }
+
+    #[test]
+    fn no_store_response_is_never_reused() {
+        let engine = EngineSpec {
+            name: "no_store_test",
+            base_url: "https://no-store-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Ok(response_with_headers(
+                200,
+                &[("cache-control", "no-store")],
+                r#"<a href="https://example.org/first">first</a>"#,
+            )),
+            Ok(response_with_headers(
+                200,
+                &[("cache-control", "no-store")],
+                r#"<a href="https://example.org/second">second</a>"#,
+            )),
+        ]);
+
+        let first = search_engine(&fake, engine, "no-store-key-unique", 200).unwrap();
+        let second = search_engine(&fake, engine, "no-store-key-unique", 201).unwrap();
+
+        assert_eq!(first.hits[0].url, "https://example.org/first");
+        assert_eq!(second.hits[0].url, "https://example.org/second");
+    }
+
+    #[test]
+    fn transient_transport_failure_retries_once_then_recovers() {
+        let engine = EngineSpec {
+            name: "retry_test",
+            base_url: "https://retry-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Err(transport_failure(SourceOutcomeKind::ConnectFailure)),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/recovered">recovered</a>"#,
+            )),
+        ]);
+
+        let report = search_engine(&fake, engine, "retry-key-unique", 300).unwrap();
+
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(report.hits[0].url, "https://example.org/recovered");
+    }
+
+    #[test]
+    fn open_source_pacing_circuit_suppresses_request() {
+        let engine = EngineSpec {
+            name: "circuit_test",
+            base_url: "https://circuit-web-query.invalid/search",
+        };
+        circuit::record_rate_limited("circuit-web-query.invalid", 400, 60);
+        let fake = Fake::new(Vec::new());
+
+        let report = search_engine(&fake, engine, "circuit-key-unique", 401).unwrap();
+
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Inconclusive);
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("circuit is open"))
+        );
+        assert!(report.hits.is_empty());
     }
 
     #[test]
