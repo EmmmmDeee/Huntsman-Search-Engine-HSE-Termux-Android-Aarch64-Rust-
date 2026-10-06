@@ -84,6 +84,8 @@ oui_ieee	leaf	IEEE OUI data
 path	leaf	path analysis utility
 people_cli	diagnostic	ASIC people command front-end
 people_save	exporter	persists people results as unverified ledger claims
+phone_cli	diagnostic	offline phone canonicalization and AU numbering-plan enrichment
+phone_save	exporter	persists phone results as unverified ledger claims
 pipeline	runtime	bounded normalization and evidence composition
 pivot	runtime	graph pivot ranking
 place	leaf	place primitive
