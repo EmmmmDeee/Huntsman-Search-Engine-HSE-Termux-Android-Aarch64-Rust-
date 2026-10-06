@@ -1370,9 +1370,7 @@ fn check_lineage_gate() -> Gate {
         mirrors.independent_families.len() == 1 && mirrors.outcome != MergeOutcome::AutoMerge,
         "mirrors manufactured corroboration",
     )?;
-    let held_for = |candidate: &CandidateOutcome, want: fn(&HoldReason) -> bool| {
-        matches!(&candidate.outcome, MergeOutcome::Held { reasons } if reasons.iter().any(want))
-    };
+    let held_for = |candidate: &CandidateOutcome, want: fn(&HoldReason) -> bool| matches!(&candidate.outcome, MergeOutcome::Held { reasons } if reasons.iter().any(want));
     gate(
         5,
         disjoint_labels.independent_families.len() == 2
