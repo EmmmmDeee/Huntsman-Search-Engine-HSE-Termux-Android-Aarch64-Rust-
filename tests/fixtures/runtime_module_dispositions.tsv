@@ -43,6 +43,7 @@ domains	leaf	domain normalization and classification
 egress	leaf	network egress policy
 email_cli	diagnostic	email enrichment command front-end
 email_save	exporter	persists email results as unverified ledger claims
+engineering_command	diagnostic	executable engineering command hierarchy and capability ownership
 entity	runtime	canonical entity and evidence model
 error	leaf	shared error type
 eval	leaf	evaluation statistics and helpers

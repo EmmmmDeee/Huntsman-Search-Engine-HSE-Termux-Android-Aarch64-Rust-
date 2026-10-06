@@ -1,8 +1,12 @@
 # Engineering Command
 
 This document is the repository command contract for Huntsman engineering work.
-The hierarchy is fixed. Runtime capability still has to be demonstrated by code,
-tests, artifacts, and the acceptance criteria in `ARCHITECTURE.md`.
+The hierarchy is fixed. Its machine-readable source of truth is
+`src/engineering_command.rs`, and `huntsman-recon command` validates and prints it.
+The integration test `tests/engineering_command.rs` requires this table, the executable
+contract, and `ARCHITECTURE.md` capability ownership to remain identical. Runtime
+capability still has to be demonstrated by code, tests, artifacts, and the acceptance
+criteria in `ARCHITECTURE.md`.
 
 ## Command invariant
 
@@ -64,6 +68,16 @@ change the engineering result:
 - KEITEL for platform/toolchain/runtime compatibility.
 - SKORZENY for boundary-hardening and adversarial failure testing.
 - GÖRING for engineering-capacity allocation.
+
+## Execution protocols
+
+1. Zero deviation from command structure
+2. Immediate implementation without bureaucratic delay
+3. Aggressive optimization of all systems
+4. Offensive OSINT operations prioritized
+5. Resource allocation directed by hierarchy
+6. Performance metrics continuously monitored
+7. Economic self-sustainability enforced by JEW BOT
 
 ## Failure routing
 

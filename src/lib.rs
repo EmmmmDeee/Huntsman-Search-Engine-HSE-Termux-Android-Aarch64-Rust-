@@ -56,6 +56,7 @@ pub mod domains;
 pub mod egress;
 pub mod email_cli;
 pub mod email_save;
+pub mod engineering_command;
 pub mod entity;
 pub mod error;
 pub mod eval;
