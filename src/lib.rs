@@ -87,6 +87,7 @@ pub mod keys;
 pub mod leads;
 pub mod ledger;
 pub mod lineage;
+pub mod lookup_save;
 pub mod md5;
 pub mod mediawiki;
 pub mod metrics;
