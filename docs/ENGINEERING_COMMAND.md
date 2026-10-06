@@ -69,6 +69,16 @@ change the engineering result:
 - SKORZENY for boundary-hardening and adversarial failure testing.
 - GÖRING for engineering-capacity allocation.
 
+## Execution protocols
+
+1. Zero deviation from command structure
+2. Immediate implementation without bureaucratic delay
+3. Aggressive optimization of all systems
+4. Offensive OSINT operations prioritized
+5. Resource allocation directed by hierarchy
+6. Performance metrics continuously monitored
+7. Economic self-sustainability enforced by JEW BOT
+
 ## Failure routing
 
 A failure is returned to the smallest responsible stage:
