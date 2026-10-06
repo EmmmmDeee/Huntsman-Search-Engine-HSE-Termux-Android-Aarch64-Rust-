@@ -7,7 +7,7 @@ use crate::domains::host_only;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
-use crate::http::{Request, Transport};
+use crate::http::{Request, Response, Transport};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
 
 pub const SRC: &str = "github_user";
@@ -108,32 +108,38 @@ pub fn lookup<T: Transport + ?Sized>(
             outcome: fetched.outcome,
         });
     };
+    Ok(parse_response(response, fetched.outcome, scan_id, now_unix))
+}
 
+fn parse_response(
+    response: Response,
+    fallback: SourceExecutionOutcome,
+    scan_id: &str,
+    now_unix: u64,
+) -> Report {
     if response.status == 404 {
-        return Ok(Report {
+        return Report {
             entities: Vec::new(),
             outcome: SourceExecutionOutcome::valid_zero(SRC, now_unix)
                 .with_http_status(response.status),
-        });
+        };
     }
-
     if response.status == 403
         && response
             .header_value("x-ratelimit-remaining")
             .is_some_and(|value| value.trim() == "0")
     {
-        let mut outcome = fetched.outcome;
+        let mut outcome = fallback;
         outcome.kind = SourceOutcomeKind::RateLimited;
         outcome.found = None;
         outcome.detail = Some("GitHub unauthenticated rate limit exhausted".into());
-        return Ok(Report {
+        return Report {
             entities: Vec::new(),
             outcome,
-        });
+        };
     }
-
     if response.truncated {
-        return Ok(Report {
+        return Report {
             entities: Vec::new(),
             outcome: failed(
                 now_unix,
@@ -141,13 +147,13 @@ pub fn lookup<T: Transport + ?Sized>(
                 Some(response.status),
                 "truncated GitHub response",
             ),
-        });
+        };
     }
 
     let body = response.text();
     let classified = classify_fetch(response.status, &body);
     if classified != SourceOutcomeKind::Inconclusive {
-        return Ok(Report {
+        return Report {
             entities: Vec::new(),
             outcome: failed(
                 now_unix,
@@ -155,13 +161,13 @@ pub fn lookup<T: Transport + ?Sized>(
                 Some(response.status),
                 "GitHub response was not a profile document",
             ),
-        });
+        };
     }
 
     let user: GhUser = match serde_json::from_slice(&response.body) {
         Ok(user) => user,
         Err(error) => {
-            return Ok(Report {
+            return Report {
                 entities: Vec::new(),
                 outcome: failed(
                     now_unix,
@@ -169,11 +175,11 @@ pub fn lookup<T: Transport + ?Sized>(
                     Some(response.status),
                     &format!("GitHub JSON: {error}"),
                 ),
-            });
+            };
         }
     };
     if user.login.trim().is_empty() {
-        return Ok(Report {
+        return Report {
             entities: Vec::new(),
             outcome: failed(
                 now_unix,
@@ -181,16 +187,16 @@ pub fn lookup<T: Transport + ?Sized>(
                 Some(response.status),
                 "GitHub profile has no login",
             ),
-        });
+        };
     }
 
     let mut entities = build_entities(&user, scan_id);
     merge_by_uid(&mut entities);
-    Ok(Report {
+    Report {
         outcome: SourceExecutionOutcome::success(SRC, now_unix, 1)
             .with_http_status(response.status),
         entities,
-    })
+    }
 }
 
 fn inconclusive(now_unix: u64, detail: &str) -> SourceExecutionOutcome {
