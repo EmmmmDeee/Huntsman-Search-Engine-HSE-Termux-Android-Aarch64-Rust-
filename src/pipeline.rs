@@ -321,7 +321,7 @@ pub fn normalize_observations(
     batch: ObservationBatch,
     limits: &PipelineLimits,
 ) -> Result<AnalysisSnapshot, AncestryError> {
-    let batch = bounded_batch(batch, limits);
+    let batch = bounded_batch(batch, limits.max_entities, limits.max_dispatches);
     let coverage = provider_coverage_from_events(&coverage_events(&batch));
     let mut ancestry = EvidenceAncestryGraph::default();
     let mut entities = BTreeMap::<String, Entity>::new();
