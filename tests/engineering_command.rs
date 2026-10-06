@@ -65,7 +65,10 @@ fn command_document_matches_executable_contract() {
         "documentation must name the executable source of truth"
     );
     for protocol in EXECUTION_PROTOCOLS {
-        assert!(text.contains(protocol), "execution protocol missing: {protocol}");
+        assert!(
+            text.contains(protocol),
+            "execution protocol missing: {protocol}"
+        );
     }
 }
 
