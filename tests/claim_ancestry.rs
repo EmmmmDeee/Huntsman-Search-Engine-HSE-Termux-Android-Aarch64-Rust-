@@ -145,6 +145,29 @@ fn disjoint_root_labels_do_not_satisfy_two_route_policy_without_independence_evi
 }
 
 #[test]
+fn same_family_distinct_roots_remain_distinct_for_audit() {
+    let (ledger, claim_id, ids) = ledger_with_support(&[("a", "legacy-a"), ("b", "legacy-b")]);
+    let mut graph = EvidenceAncestryGraph::default();
+    graph.insert(node("root-a", "shared-label", &[])).unwrap();
+    graph.insert(node("root-b", "shared-label", &[])).unwrap();
+    graph
+        .insert_independence_evidence(independence("root-a", "root-b"))
+        .unwrap();
+    let bindings = BTreeMap::from([
+        (ids[0].clone(), EvidenceNodeId::from("root-a")),
+        (ids[1].clone(), EvidenceNodeId::from("root-b")),
+    ]);
+
+    let assessment = ledger
+        .assess_claim_with_ancestry(&claim_id, &policy(2), &graph, &bindings)
+        .unwrap();
+
+    assert_eq!(assessment.distinct_resolved_roots, 2);
+    assert_eq!(assessment.proven_roots, 2);
+    assert_eq!(assessment.epistemic, ClaimState::Verified);
+}
+
+#[test]
 fn explicit_independence_can_satisfy_two_route_policy() {
     let (ledger, claim_id, ids) = ledger_with_support(&[("a", "legacy-a"), ("b", "legacy-b")]);
     let mut graph = EvidenceAncestryGraph::default();
