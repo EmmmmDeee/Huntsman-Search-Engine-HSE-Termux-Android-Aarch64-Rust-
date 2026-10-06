@@ -352,6 +352,20 @@ impl EvidenceAncestryGraph {
         Ok(roots)
     }
 
+    /// Canonical ancestry-root identifiers reachable from `id`.
+    ///
+    /// Unlike `root_families`, this preserves distinct roots even when they carry
+    /// the same human-readable family label.
+    ///
+    /// # Errors
+    /// A missing node/parent or ancestry cycle.
+    pub fn resolved_root_ids(
+        &self,
+        id: &EvidenceNodeId,
+    ) -> Result<BTreeSet<EvidenceNodeId>, AncestryError> {
+        self.root_ids(id)
+    }
+
     /// Root families reachable from `id`. Iterative three-colour DFS: each node is
     /// expanded once, so shared ancestry is linear and depth cannot overflow the stack.
     ///
