@@ -1,8 +1,12 @@
 # Engineering Command
 
 This document is the repository command contract for Huntsman engineering work.
-The hierarchy is fixed. Runtime capability still has to be demonstrated by code,
-tests, artifacts, and the acceptance criteria in `ARCHITECTURE.md`.
+The hierarchy is fixed. Its machine-readable source of truth is
+`src/engineering_command.rs`, and `huntsman-recon command` validates and prints it.
+The integration test `tests/engineering_command.rs` requires this table, the executable
+contract, and `ARCHITECTURE.md` capability ownership to remain identical. Runtime
+capability still has to be demonstrated by code, tests, artifacts, and the acceptance
+criteria in `ARCHITECTURE.md`.
 
 ## Command invariant
 
