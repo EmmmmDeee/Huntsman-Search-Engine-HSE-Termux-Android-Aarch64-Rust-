@@ -273,7 +273,7 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
             || format!("https://github.com/{}", user.login),
             str::to_owned,
         );
-    let base = evidence(user, &profile_url, scan_id);
+    let profile_evidence = evidence(user, &profile_url, scan_id);
     let mut entities = Vec::new();
 
     add(
@@ -282,7 +282,7 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
         &user.login,
         USERNAME_CONF,
         scan_id,
-        base.clone(),
+        profile_evidence.clone(),
         &["github", "public-profile"],
     );
     add(
@@ -291,10 +291,21 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
         &profile_url,
         URL_CONF,
         scan_id,
-        base.clone(),
+        profile_evidence.clone(),
         &["github", "public-profile"],
     );
+    add_identity_fields(user, scan_id, &profile_evidence, &mut entities);
+    add_social_fields(user, scan_id, &profile_evidence, &mut entities);
+    add_blog(user, scan_id, &profile_evidence, &mut entities);
+    entities
+}
 
+fn add_identity_fields(
+    user: &GhUser,
+    scan_id: &str,
+    profile_evidence: &Evidence,
+    entities: &mut Vec<Entity>,
+) {
     if let Some(name) = user
         .name
         .as_deref()
@@ -302,16 +313,15 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
         .filter(|name| name.split_whitespace().count() >= 2)
     {
         add(
-            &mut entities,
+            entities,
             EntityKind::Person,
             name,
             PERSON_CONF,
             scan_id,
-            base.clone(),
+            profile_evidence.clone(),
             &["github", "public-profile"],
         );
     }
-
     if let Some(email) = user
         .email
         .as_deref()
@@ -319,16 +329,15 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
         .filter(|email| canonical_email(email).is_some())
     {
         add(
-            &mut entities,
+            entities,
             EntityKind::Email,
             email,
             EMAIL_CONF,
             scan_id,
-            base.clone(),
+            profile_evidence.clone(),
             &["github", "public-profile"],
         );
     }
-
     if let Some(company) = user
         .company
         .as_deref()
@@ -337,16 +346,15 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
         .filter(|company| company.len() >= 2)
     {
         add(
-            &mut entities,
+            entities,
             EntityKind::Organisation,
             company,
             ORG_CONF,
             scan_id,
-            base.clone(),
+            profile_evidence.clone(),
             &["github", "self-reported"],
         );
     }
-
     if let Some(location) = user
         .location
         .as_deref()
@@ -354,64 +362,78 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
         .filter(|location| location.len() >= 3)
     {
         add(
-            &mut entities,
+            entities,
             EntityKind::Address,
             location,
             ADDRESS_CONF,
             scan_id,
-            base.clone(),
+            profile_evidence.clone(),
             &["github", "self-reported"],
         );
     }
+}
 
-    if let Some(twitter) = user
+fn add_social_fields(
+    user: &GhUser,
+    scan_id: &str,
+    profile_evidence: &Evidence,
+    entities: &mut Vec<Entity>,
+) {
+    let Some(twitter) = user
         .twitter_username
         .as_deref()
         .map(str::trim)
         .map(|value| value.trim_start_matches('@'))
         .filter(|value| !value.is_empty())
-    {
-        add(
-            &mut entities,
-            EntityKind::Username,
-            twitter,
-            SOCIAL_CONF,
-            scan_id,
-            base.clone().with_attr("platform", "twitter"),
-            &["twitter", "social-profile"],
-        );
-    }
+    else {
+        return;
+    };
+    add(
+        entities,
+        EntityKind::Username,
+        twitter,
+        SOCIAL_CONF,
+        scan_id,
+        profile_evidence.clone().with_attr("platform", "twitter"),
+        &["twitter", "social-profile"],
+    );
+}
 
-    if let Some(blog) = user
+fn add_blog(
+    user: &GhUser,
+    scan_id: &str,
+    profile_evidence: &Evidence,
+    entities: &mut Vec<Entity>,
+) {
+    let Some(blog) = user
         .blog
         .as_deref()
         .map(str::trim)
         .filter(|blog| canonical_url(blog).is_some())
-    {
+    else {
+        return;
+    };
+    add(
+        entities,
+        EntityKind::Url,
+        blog,
+        URL_CONF,
+        scan_id,
+        profile_evidence.clone(),
+        &["personal-site", "github"],
+    );
+    let host = host_only(blog).to_ascii_lowercase();
+    if host.contains('.') && !matches!(host.as_str(), "github.com" | "github.io") {
         add(
-            &mut entities,
-            EntityKind::Url,
-            blog,
-            URL_CONF,
+            entities,
+            EntityKind::Domain,
+            &host,
+            DOMAIN_CONF,
             scan_id,
-            base.clone(),
-            &["personal-site", "github"],
+            profile_evidence.clone().with_attr("blog_url", blog),
+            &["personal-site", "derived"],
         );
-        let host = host_only(blog).to_ascii_lowercase();
-        if host.contains('.') && !matches!(host.as_str(), "github.com" | "github.io") {
-            add(
-                &mut entities,
-                EntityKind::Domain,
-                &host,
-                DOMAIN_CONF,
-                scan_id,
-                base.clone().with_attr("blog_url", blog),
-                &["personal-site", "derived"],
-            );
-        }
     }
-
-    entities
 }
 
 fn add(
