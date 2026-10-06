@@ -297,3 +297,8 @@ live receipt. Live ASIC Connect is WAF-blocked.
 ### Offline investigate
 
 `investigate TEXT... | investigate --file FILE` extracts actionable entities through the rebuilt classifier without network access. File input uses the bounded reader, refuses symlinks, and is capped at 1 MiB. The `modules` catalogue includes this path as `classify_module` only because it is now reachable from the binary.
+
+
+### Web meta-search
+
+`query QUERY...` restores a bounded keyless subset of the legacy multi-engine search path. It currently queries Bing, Brave, and Mojeek independently through the shared fetch boundary, extracts external HTTP(S) result URLs, deduplicates them, and reports each provider outcome separately. One blocked or drifting engine does not erase results from another. The broader legacy engine set, dork packs, pagination, ranking, snippets, and live differential receipts remain outstanding.
