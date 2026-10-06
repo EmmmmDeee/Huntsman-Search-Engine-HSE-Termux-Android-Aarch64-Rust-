@@ -217,17 +217,17 @@ fn evidence(profile: &Profile, scan_id: &str) -> Evidence {
 }
 
 fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
-    let base = evidence(profile, scan_id);
+    let profile_evidence = evidence(profile, scan_id);
     let mut entities = Vec::new();
-    let bare = bare_handle(&profile.handle);
+    let username = bare_handle(&profile.handle);
 
     add(
         &mut entities,
         EntityKind::Username,
-        bare,
+        username,
         USERNAME_CONF,
         scan_id,
-        base.clone(),
+        profile_evidence.clone(),
         &["bluesky", "public-profile"],
     );
 
@@ -238,7 +238,7 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
         &profile_url,
         URL_CONF,
         scan_id,
-        base.clone(),
+        profile_evidence.clone(),
         &["bluesky", "public-profile"],
     );
 
@@ -254,7 +254,7 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
             name,
             PERSON_CONF,
             scan_id,
-            base.clone(),
+            profile_evidence.clone(),
             &["bluesky", "public-profile"],
         );
     }
@@ -267,7 +267,7 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
             domain,
             handle_domain_confidence(true, domain),
             scan_id,
-            base.clone(),
+            profile_evidence.clone(),
             &["bluesky", "custom-handle", "verified-control"],
         );
     }
@@ -284,7 +284,7 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
             did,
             DID_CONF,
             scan_id,
-            base.clone(),
+            profile_evidence.clone(),
             &["bluesky", "did"],
         );
     }
@@ -300,7 +300,7 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
                 &classified.value,
                 classified.confidence.min(BIO_CONF_CAP),
                 scan_id,
-                base.clone().with_attr("source_field", "description"),
+                profile_evidence.clone().with_attr("source_field", "description"),
                 &["bluesky", "public-profile"],
             );
         }
