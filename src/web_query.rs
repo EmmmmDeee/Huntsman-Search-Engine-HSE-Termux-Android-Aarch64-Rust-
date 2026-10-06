@@ -182,7 +182,14 @@ fn response_is_cacheable(response: &Response) -> bool {
 }
 
 fn retryable_fetch(kind: SourceOutcomeKind) -> bool {
-    kind.is_transport_failure() || kind == SourceOutcomeKind::Upstream5xx
+    matches!(
+        kind,
+        SourceOutcomeKind::DnsFailure
+            | SourceOutcomeKind::ConnectFailure
+            | SourceOutcomeKind::TtfbTimeout
+            | SourceOutcomeKind::BodyTimeout
+            | SourceOutcomeKind::Upstream5xx
+    )
 }
 
 fn record_source_health(host: &str, outcome: &SourceExecutionOutcome, now_unix: u64) {
