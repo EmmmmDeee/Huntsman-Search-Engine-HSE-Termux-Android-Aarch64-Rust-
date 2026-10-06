@@ -143,11 +143,7 @@ pub fn normalise_au_phone(raw: &str) -> Option<String> {
         .chars()
         .filter(|character| character.is_ascii_digit() || *character == '+')
         .collect();
-    let valid = |candidate: String| {
-        phone_e164_error(&candidate)
-            .is_none()
-            .then_some(candidate)
-    };
+    let valid = |candidate: String| phone_e164_error(&candidate).is_none().then_some(candidate);
 
     if compact.starts_with("+61") {
         return valid(compact);
@@ -290,10 +286,7 @@ mod tests {
             phone_e164_error("+0123456789"),
             Some(PhoneE164Error::CountryCodeLeadingZero)
         );
-        assert_eq!(
-            phone_e164_error("+123"),
-            Some(PhoneE164Error::Length(3))
-        );
+        assert_eq!(phone_e164_error("+123"), Some(PhoneE164Error::Length(3)));
         assert_eq!(phone_e164_error("+61412345678"), None);
     }
 
@@ -312,10 +305,7 @@ mod tests {
             canonical_phone("+1 415 555 2671"),
             Some("+14155552671".into())
         );
-        assert_eq!(
-            canonical_phone("0412 345 678"),
-            Some("+61412345678".into())
-        );
+        assert_eq!(canonical_phone("0412 345 678"), Some("+61412345678".into()));
     }
 
     #[test]
@@ -324,7 +314,10 @@ mod tests {
             canonical_domain_host(" WWW.Example.COM. "),
             Some("example.com".into())
         );
-        assert_eq!(canonical_domain("sub.example.org"), Some("sub.example.org".into()));
+        assert_eq!(
+            canonical_domain("sub.example.org"),
+            Some("sub.example.org".into())
+        );
         assert!(canonical_domain("-bad.example").is_none());
         assert_eq!(host_only("https://Example.org:443/a"), "Example.org");
         assert_eq!(
