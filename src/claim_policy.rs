@@ -142,10 +142,7 @@ struct AssessmentInputs<'a> {
     canonical_ancestry: bool,
 }
 
-fn finish_assessment(
-    policy: &VerificationPolicy,
-    input: AssessmentInputs<'_>,
-) -> ClaimAssessment {
+fn finish_assessment(policy: &VerificationPolicy, input: AssessmentInputs<'_>) -> ClaimAssessment {
     let mut blockers = BTreeSet::new();
     if policy.require_resolved_ancestry && input.unresolved_support > 0 {
         blockers.insert(VerificationBlocker::UnknownAncestry);
