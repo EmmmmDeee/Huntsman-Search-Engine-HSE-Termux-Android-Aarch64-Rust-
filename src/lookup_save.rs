@@ -180,7 +180,11 @@ mod tests {
         assert_eq!(entries[0].claim.evidence_level, EvidenceLevel::Assertion);
         assert_eq!(entries[1].claim.claim, "email a@example.com");
         assert_eq!(entries[1].claim.source, "source");
-        assert!(entries.iter().all(|entry| entry.claim.status == Status::Unverified));
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.claim.status == Status::Unverified)
+        );
     }
 
     #[test]
