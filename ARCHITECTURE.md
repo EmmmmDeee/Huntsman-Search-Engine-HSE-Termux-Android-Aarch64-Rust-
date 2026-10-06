@@ -59,7 +59,7 @@ Status counts: REIMPLEMENTED 2, PARTIAL 21, NOT YET REBUILT 0 (21 of 23 rows are
 
 CURRENT. One package and library (`src/lib.rs`), with command dispatch in `src/main.rs` and offline investigation in `src/bin/investigate.rs` (no CLI framework). The table is the module map: every module `src/lib.rs` declares appears in exactly one layer row. A module may use modules in its own layer or a lower one, never a higher one. Dependencies are the `crate::` paths (`use`, `pub use`, groups and inline paths, plus `super::` paths that reach the crate root) in compiled code outside `#[cfg(test)]`; `tests/architecture_doc.rs` recomputes them and fails if either line below is wrong:
 - Upward edges: none.
-- Dependency cycles: `address_au`–`canonical`–`domains`–`textnorm`–`validation` (L3); `attack`–`attack_catalog` (L5); `collection`–`pipeline` (L5).
+- Dependency cycles: `address_au`–`canonical`–`domains`–`textnorm`–`validation` (L3).
 
 | Layer | Modules | Role |
 | --- | --- | --- |
