@@ -172,9 +172,7 @@ pub fn depth_decayed(c_eff: f64, base: f64, generation: u32) -> Option<f64> {
 #[allow(clippy::float_cmp)] // exact 0.0/1.0 sentinels are the contract under test
 mod tests {
     use super::*;
-    use crate::evidence_ancestry::{
-        EvidenceAncestryNode, IndependenceBasis, IndependenceEvidence,
-    };
+    use crate::evidence_ancestry::{EvidenceAncestryNode, IndependenceBasis, IndependenceEvidence};
     use crate::retrieval_artifact::ArtifactId;
 
     #[test]
