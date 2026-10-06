@@ -433,15 +433,24 @@ mod tests {
     #[test]
     fn derivation_matches_legacy_high_value_shapes() {
         let entities = derive_entities("jane.doe@acme.example", "scan");
-        let values: BTreeSet<(EntityKind, String)> = entities
-            .iter()
-            .map(|entity| (entity.kind.clone(), entity.value.clone()))
-            .collect();
-        assert!(values.contains(&(EntityKind::Domain, "acme.example".into())));
-        assert!(values.contains(&(EntityKind::Username, "janedoe".into())));
-        assert!(values.contains(&(EntityKind::Username, "jdoe".into())));
-        assert!(values.contains(&(EntityKind::Username, "jane_doe".into())));
-        assert!(values.contains(&(EntityKind::Person, "jane doe".into())));
+        assert!(
+            entities
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Domain && entity.value == "acme.example")
+        );
+        for expected in ["janedoe", "jdoe", "jane_doe"] {
+            assert!(
+                entities.iter().any(|entity| {
+                    entity.kind == EntityKind::Username && entity.raw_value == expected
+                }),
+                "missing raw username variant {expected}"
+            );
+        }
+        assert!(
+            entities
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Person && entity.value == "jane doe")
+        );
     }
 
     #[test]
