@@ -48,6 +48,7 @@ pub fn save(
     lookup_save::save(path, entities, outcomes, POLICY)
 }
 
+#[cfg(test)]
 fn chain(
     entities: &[Entity],
     outcomes: &[SourceExecutionOutcome],
