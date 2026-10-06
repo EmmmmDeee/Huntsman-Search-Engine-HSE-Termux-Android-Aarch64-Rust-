@@ -51,6 +51,7 @@ use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::seeknow_cli::{SEEKNOW_HELP, SEEKNOW_USAGE, SeekNowCliRun};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
+use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
 use huntsman_recon::source_outcome::{
     SourceHealthAction, SourceOutcomeKind, classify_fetch, recommended_action,
 };
@@ -65,7 +66,7 @@ use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, 
 use huntsman_recon::username_save;
 use huntsman_recon::web_query;
 
-const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | investigate TEXT...|--file FILE | query QUERY... | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -91,6 +92,7 @@ Commands:
   scan                  Route one selector into a rebuilt lookup front-end
   investigate           Extract actionable entities from local text or one bounded file
   query                 Query the rebuilt keyless web-search subset
+  sf                    SpiderFoot-compatible front end over rebuilt lookup paths
   modules               List only currently reachable rebuilt modules
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
@@ -102,7 +104,7 @@ Commands:
 
 Run `huntsman-recon <COMMAND> --help` for command details.
 Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
-`seeknow`, `people`, `email`, `username`, and `query` make HTTP requests; their default
+`seeknow`, `people`, `email`, `username`, `query`, and networked `sf -s` lookups make HTTP requests; their default
 egress policy is public-only.";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
@@ -145,6 +147,7 @@ fn main() -> ExitCode {
         Some("scan") => scan_cmd(&remaining.collect::<Vec<_>>()),
         Some("investigate") => investigate_cmd(&remaining.collect::<Vec<_>>()),
         Some("query") => query_cmd(&remaining.collect::<Vec<_>>()),
+        Some("sf") => sf_cmd(&remaining.collect::<Vec<_>>()),
         Some("modules") => modules_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
@@ -195,6 +198,7 @@ fn print_command_help(command: &str) {
         "query" => {
             "query QUERY...\nQuery the rebuilt keyless Bing, Brave, and Mojeek subset through the shared fetch boundary; provider failures remain independent."
         }
+        "sf" => SF_USAGE,
         "modules" => {
             "modules [--json]\nList only rebuilt modules that are currently reachable through a huntsman-recon command."
         }
@@ -554,6 +558,38 @@ fn query_cmd(args: &[String]) -> ExitCode {
         Err(Error::Invalid(message)) => fail(EX_USAGE, &message),
         Err(Error::Network(message)) => fail(EX_NOPERM, &message),
         Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
+    }
+}
+
+fn sf_cmd(args: &[String]) -> ExitCode {
+    let parsed = match SfArgs::parse(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return fail(EX_USAGE, &format!("{error}\n{SF_USAGE}")),
+    };
+    let action = match sf_compat::action(&parsed) {
+        Ok(action) => action,
+        Err(error) => return fail(EX_DATAERR, &error.to_string()),
+    };
+    match action {
+        SfAction::Text(body) => {
+            print!("{body}");
+            ExitCode::SUCCESS
+        }
+        SfAction::Scan(scan) => {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_secs());
+            let transport = UreqTransport::new(&TransportConfig::default());
+            match sf_compat::run_scan(&transport, &scan, now) {
+                Ok(body) => {
+                    print!("{body}");
+                    ExitCode::SUCCESS
+                }
+                Err(Error::Network(message)) => fail(EX_UNAVAILABLE, &message),
+                Err(Error::Invalid(message)) => fail(EX_DATAERR, &message),
+                Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
+            }
+        }
     }
 }
 
