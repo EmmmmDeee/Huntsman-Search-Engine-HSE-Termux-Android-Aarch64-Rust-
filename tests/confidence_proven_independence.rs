@@ -52,7 +52,10 @@ fn explicit_independence_unlocks_confidence_boost() {
     let support = [EvidenceNodeId::from("a"), EvidenceNodeId::from("b")];
 
     let boosted = effective_from_ancestry(0.6, &graph, &support).unwrap();
-    assert!(boosted > 0.7, "proven independence did not boost: {boosted}");
+    assert!(
+        boosted > 0.7,
+        "proven independence did not boost: {boosted}"
+    );
 }
 
 #[test]
@@ -66,5 +69,8 @@ fn large_unproven_support_set_is_non_strengthening() {
     }
 
     let boosted = effective_from_ancestry(0.6, &graph, &support).unwrap();
-    assert!((boosted - 0.6).abs() < 1e-12, "budget uncertainty boosted: {boosted}");
+    assert!(
+        (boosted - 0.6).abs() < 1e-12,
+        "budget uncertainty boosted: {boosted}"
+    );
 }
