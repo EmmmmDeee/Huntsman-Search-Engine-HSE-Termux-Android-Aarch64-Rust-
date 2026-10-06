@@ -274,7 +274,11 @@ fn host_of(url: &str) -> Option<String> {
     let (_, rest) = url.split_once("://")?;
     let authority = rest.split(['/', '?', '#']).next()?;
     let host = authority.rsplit('@').next()?;
-    let host = host.split(':').next()?.trim_matches('.').to_ascii_lowercase();
+    let host = host
+        .split(':')
+        .next()?
+        .trim_matches('.')
+        .to_ascii_lowercase();
     (!host.is_empty()).then_some(host)
 }
 
@@ -330,7 +334,10 @@ mod tests {
         "#;
         let hits = parse_hits(html, "bing");
         assert_eq!(hits.len(), 2);
-        assert!(hits.iter().any(|hit| hit.url == "https://example.org/a?x=1&y=2"));
+        assert!(
+            hits.iter()
+                .any(|hit| hit.url == "https://example.org/a?x=1&y=2")
+        );
         assert!(
             hits.iter()
                 .any(|hit| hit.url == "https://sub.example.net/profile")
@@ -347,10 +354,7 @@ mod tests {
         let report = search(&fake, "alice citizen", 1).unwrap();
         assert_eq!(report.hits.len(), 2);
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
-        assert_eq!(
-            report.outcomes[1].kind,
-            SourceOutcomeKind::ZeroYieldAnomaly
-        );
+        assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::ZeroYieldAnomaly);
         assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::Success);
     }
 
