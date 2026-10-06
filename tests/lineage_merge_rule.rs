@@ -83,7 +83,10 @@ fn same_dataset_through_two_collectors_is_one_family_and_no_auto_merge() {
 fn missing_probability_and_unproven_independence_are_both_reported() {
     let out = one(corpus(), candidate(&["hibp-1", "dehashed-2"], None));
     assert_eq!(out.independent_families, ["adobe", "linkedin"]);
-    assert_eq!(reasons(&out), [HoldReason::ProbabilityMissing, insufficient_one()]);
+    assert_eq!(
+        reasons(&out),
+        [HoldReason::ProbabilityMissing, insufficient_one()]
+    );
     assert_eq!(out.decision.probability, None);
 }
 
@@ -96,7 +99,10 @@ fn invalid_probability_does_not_hide_unproven_independence() {
                 reasons(&out),
                 [
                     HoldReason::ProbabilityInvalid { .. },
-                    HoldReason::InsufficientIndependentFamilies { found: 1, required: 2 }
+                    HoldReason::InsufficientIndependentFamilies {
+                        found: 1,
+                        required: 2
+                    }
                 ]
             ),
             "{p}: {:?}",
@@ -108,7 +114,10 @@ fn invalid_probability_does_not_hide_unproven_independence() {
         reasons(&low),
         [
             HoldReason::ProbabilityBelowThreshold { .. },
-            HoldReason::InsufficientIndependentFamilies { found: 1, required: 2 }
+            HoldReason::InsufficientIndependentFamilies {
+                found: 1,
+                required: 2
+            }
         ]
     ));
 }
