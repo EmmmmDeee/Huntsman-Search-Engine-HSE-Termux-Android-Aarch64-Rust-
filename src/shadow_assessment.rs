@@ -92,6 +92,7 @@ const fn blocker_code(blocker: VerificationBlocker) -> &'static str {
         VerificationBlocker::UnknownAncestry => "unknown_ancestry",
         VerificationBlocker::CanonicalAncestryRequired => "canonical_ancestry_required",
         VerificationBlocker::MissingRequiredEvidenceNature => "missing_required_evidence_nature",
+        VerificationBlocker::MissingRequiredEvidenceAttribute => "missing_required_evidence_attribute",
         VerificationBlocker::InsufficientIndependentSupport => "insufficient_independent_support",
         VerificationBlocker::IncompleteIndependenceProof => "incomplete_independence_proof",
         VerificationBlocker::UndefeatedDefeater => "undefeated_defeater",
