@@ -18,7 +18,7 @@ use crate::gravatar;
 use crate::http::Transport;
 use crate::identity_resolution::AutoMergePolicy;
 use crate::lineage::{Lineage, Observation, ObservedLineage, UpstreamKind, resolve_with_lineage};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::SourceExecutionOutcome;
 use crate::textnorm::upper_first;
 use crate::uid;
 
@@ -383,6 +383,7 @@ mod tests {
     use std::cell::RefCell;
 
     use crate::http::{Request, Response, TransportFailure};
+    use crate::source_outcome::SourceOutcomeKind;
 
     struct Fake {
         response: RefCell<Option<Result<Response, TransportFailure>>>,
@@ -469,7 +470,8 @@ mod tests {
         assert!(
             entities
                 .iter()
-                .any(|entity| entity.kind == EntityKind::Person && entity.confidence == 0.45)
+                .any(|entity| entity.kind == EntityKind::Person
+                        && (entity.confidence - CONF_PERSON_FREEMAIL).abs() < f64::EPSILON)
         );
     }
 
