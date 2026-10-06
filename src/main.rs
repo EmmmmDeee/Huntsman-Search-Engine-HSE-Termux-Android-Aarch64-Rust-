@@ -788,6 +788,7 @@ fn verify(path: Option<String>) -> ExitCode {
 fn check() -> ExitCode {
     match run_check() {
         Ok(meters) => {
+            println!("command_hierarchy=accepted");
             println!("accepted techniques=0");
             println!("brisbane_sydney_m={meters:.0}");
             ExitCode::SUCCESS
@@ -807,6 +808,7 @@ fn gate(code: u8, ok: bool, msg: &str) -> Gate {
 }
 
 fn run_check() -> Result<f64, (u8, String)> {
+    engineering_command::validate().map_err(|message| (12, message.to_owned()))?;
     let (blat, blon) = parse_latlon("-27.4698,153.0251").map_err(|e| (2, e.to_string()))?;
     let (slat, slon) = parse_latlon("-33.8688,151.2093").map_err(|e| (2, e.to_string()))?;
     let meters = haversine_m(blat, blon, slat, slon);
