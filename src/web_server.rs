@@ -42,10 +42,7 @@ impl ServeConfig {
             ));
         }
 
-        Ok(Self {
-            bind,
-            bearer_token,
-        })
+        Ok(Self { bind, bearer_token })
     }
 }
 
@@ -151,9 +148,7 @@ fn read_request(stream: &mut TcpStream) -> Result<String, Error> {
         }
     }
 
-    if bytes.len() >= MAX_REQUEST_BYTES
-        && !bytes.windows(4).any(|window| window == b"\r\n\r\n")
-    {
+    if bytes.len() >= MAX_REQUEST_BYTES && !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
         return Ok("REQUEST_TOO_LARGE".into());
     }
 
@@ -212,7 +207,12 @@ struct Health<'a> {
 
 fn response_for_request(request: &str, bearer_token: Option<&str>) -> String {
     if request == "REQUEST_TOO_LARGE" {
-        return response(413, "text/plain; charset=utf-8", "request too large\n", false);
+        return response(
+            413,
+            "text/plain; charset=utf-8",
+            "request too large\n",
+            false,
+        );
     }
 
     let Some(parsed) = parse_request(request) else {
@@ -371,9 +371,7 @@ mod tests {
         let local = ServeConfig::parse(DEFAULT_BIND, None).unwrap();
         assert!(local.bind.ip().is_loopback());
         assert!(ServeConfig::parse("0.0.0.0:8080", None).is_err());
-        assert!(
-            ServeConfig::parse("0.0.0.0:8080", Some("token".into())).is_ok()
-        );
+        assert!(ServeConfig::parse("0.0.0.0:8080", Some("token".into())).is_ok());
         assert_eq!(
             ServeConfig::parse("localhost:9000", None).unwrap().bind,
             "127.0.0.1:9000".parse::<SocketAddr>().unwrap()
@@ -386,8 +384,7 @@ mod tests {
         assert!(health.starts_with("HTTP/1.1 200"));
         assert!(health.contains("\"status\": \"ok\""));
 
-        let denied =
-            response_for_request("GET /api/modules HTTP/1.1\r\n\r\n", Some("secret"));
+        let denied = response_for_request("GET /api/modules HTTP/1.1\r\n\r\n", Some("secret"));
         assert!(denied.starts_with("HTTP/1.1 401"));
 
         let allowed = response_for_request(
@@ -416,10 +413,7 @@ mod tests {
 
     #[test]
     fn loopback_server_handles_one_real_request() {
-        let server = Server::bind(
-            ServeConfig::parse("127.0.0.1:0", None).unwrap(),
-        )
-        .unwrap();
+        let server = Server::bind(ServeConfig::parse("127.0.0.1:0", None).unwrap()).unwrap();
         let addr = server.local_addr().unwrap();
         let handle = thread::spawn(move || server.run_n(1).unwrap());
 
