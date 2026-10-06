@@ -168,6 +168,92 @@ fn scan_auto_routes_recognised_phone_syntax() {
 }
 
 #[test]
+fn scan_input_file_runs_every_unique_offline_seed() {
+    let dir = scratch("scan-input-file");
+    let path = dir.join("seeds.txt");
+    fs::write(
+        &path,
+        "# phones\n0412 345 678\n\n+44 20 7183 8750\n0412 345 678\n",
+    )
+    .unwrap();
+
+    let out = bin()
+        .arg("scan")
+        .arg("--input-file")
+        .arg(&path)
+        .args(["-k", "phone"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stdout.contains("+61412345678"), "{stdout:?}");
+    assert!(stdout.contains("+442071838750"), "{stdout:?}");
+    assert!(stderr.contains("batch: scanning 2 seed(s)"), "{stderr:?}");
+    assert!(
+        stderr.contains("batch complete: 2 succeeded, 0 failed, 2 total"),
+        "{stderr:?}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn scan_input_file_attempts_remaining_seeds_after_failure() {
+    let dir = scratch("scan-input-file-failure");
+    let path = dir.join("seeds.txt");
+    fs::write(&path, "not-a-phone\n0412 345 678\n").unwrap();
+
+    let out = bin()
+        .arg("scan")
+        .arg("--input-file")
+        .arg(&path)
+        .args(["-k", "phone"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(65));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stdout.contains("+61412345678"),
+        "later valid seed was not attempted: {stdout:?}"
+    );
+    assert!(
+        stderr.contains("batch complete: 1 succeeded, 1 failed, 2 total"),
+        "{stderr:?}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn scan_input_file_refuses_ambiguous_save_or_selector_mix() {
+    let dir = scratch("scan-input-file-usage");
+    let path = dir.join("seeds.txt");
+    fs::write(&path, "0412 345 678\n").unwrap();
+
+    let save = bin()
+        .arg("scan")
+        .arg("--input-file")
+        .arg(&path)
+        .args(["--save", "out.json"])
+        .output()
+        .unwrap();
+    assert_eq!(save.status.code(), Some(64));
+
+    let selector = bin()
+        .arg("scan")
+        .arg("0412 345 678")
+        .arg("--input-file")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(selector.status.code(), Some(64));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn modules_lists_only_reachable_catalog_entries() {
     let text = bin().arg("modules").output().unwrap();
     assert_eq!(text.status.code(), Some(0));

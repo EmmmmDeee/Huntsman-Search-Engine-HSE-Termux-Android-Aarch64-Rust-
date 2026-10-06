@@ -117,6 +117,7 @@ pub mod retrieval_artifact;
 pub mod rf;
 pub mod roi;
 pub mod runtime;
+pub mod scan_batch;
 pub mod scraper_health;
 pub mod search;
 pub mod seeknow;
