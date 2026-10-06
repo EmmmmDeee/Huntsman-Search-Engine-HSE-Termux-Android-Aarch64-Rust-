@@ -100,6 +100,7 @@ fn help_and_version_are_available() {
         ("investigate", "investigate TEXT..."),
         ("modules", "modules [--json]"),
         ("query", "query QUERY..."),
+        ("sf", "sf [-M|-T|-V]"),
         ("fetch", "fetch URL [--body]"),
         ("hibp", "hibp [breach NAME"),
         ("recon", "recon crtsh TARGET"),
@@ -175,6 +176,7 @@ fn modules_lists_only_reachable_catalog_entries() {
         "github_user",
         "gravatar",
         "classify_module",
+        "sf_compat",
         "crtsh",
     ] {
         assert!(stdout.contains(name), "missing reachable module {name}");
@@ -194,6 +196,48 @@ fn modules_lists_only_reachable_catalog_entries() {
 
     let bad = bin().args(["modules", "--all"]).output().unwrap();
     assert_eq!(bad.status.code(), Some(64));
+}
+
+#[test]
+fn sf_metadata_and_offline_phone_path_work() {
+    let modules = bin().args(["sf", "-M"]).output().unwrap();
+    assert_eq!(modules.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&modules.stdout);
+    assert!(stdout.contains("phone_intl"), "{stdout:?}");
+    assert!(stdout.contains("github_user"), "{stdout:?}");
+
+    let types = bin().args(["sf", "-T"]).output().unwrap();
+    assert_eq!(types.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&types.stdout);
+    assert!(stdout.contains("EMAILADDR"), "{stdout:?}");
+    assert!(stdout.contains("PHONE_NUMBER"), "{stdout:?}");
+
+    let scan = bin()
+        .args([
+            "sf",
+            "-s",
+            "+61412345678",
+            "-u",
+            "passive",
+            "-o",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(scan.status.code(), Some(0));
+    let value: serde_json::Value = serde_json::from_slice(&scan.stdout).unwrap();
+    assert_eq!(value[0]["event_type"], "PHONE_NUMBER");
+    assert_eq!(value[0]["data"], "+61412345678");
+}
+
+#[test]
+fn sf_rejects_unrebuilt_target_classes_explicitly() {
+    let out = bin()
+        .args(["sf", "-s", "example.org", "-u", "all"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not available yet"));
 }
 
 #[test]
