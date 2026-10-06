@@ -399,12 +399,7 @@ fn add_social_fields(
     );
 }
 
-fn add_blog(
-    user: &GhUser,
-    scan_id: &str,
-    profile_evidence: &Evidence,
-    entities: &mut Vec<Entity>,
-) {
+fn add_blog(user: &GhUser, scan_id: &str, profile_evidence: &Evidence, entities: &mut Vec<Entity>) {
     let Some(blog) = user
         .blog
         .as_deref()
