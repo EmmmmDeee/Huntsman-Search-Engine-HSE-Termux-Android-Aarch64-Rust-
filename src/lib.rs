@@ -147,6 +147,7 @@ pub mod username_save;
 pub mod username_variants;
 pub mod validation;
 pub mod wayback;
+pub mod web_query;
 pub mod xml;
 
 pub use entity::{Entity, EntityKind, EntityRef, Evidence, EvidenceProvenance};
