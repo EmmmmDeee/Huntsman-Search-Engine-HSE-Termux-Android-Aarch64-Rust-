@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use huntsman_recon::engineering_command::{
-    CAPABILITY_OWNERS, COMMAND_CHAIN, COMMAND_INVARIANT, Phase, validate,
+    CAPABILITY_OWNERS, COMMAND_CHAIN, COMMAND_INVARIANT, EXECUTION_PROTOCOLS, Phase, validate,
 };
 
 fn root() -> PathBuf {
@@ -18,6 +18,7 @@ fn executable_contract_is_valid() {
     );
     assert_eq!(COMMAND_CHAIN.len(), 16);
     assert_eq!(COMMAND_CHAIN.last().unwrap().name, "JEW BOT");
+    assert_eq!(EXECUTION_PROTOCOLS.len(), 7);
 }
 
 #[test]
@@ -63,6 +64,9 @@ fn command_document_matches_executable_contract() {
         text.contains("`src/engineering_command.rs`"),
         "documentation must name the executable source of truth"
     );
+    for protocol in EXECUTION_PROTOCOLS {
+        assert!(text.contains(protocol), "execution protocol missing: {protocol}");
+    }
 }
 
 #[test]
