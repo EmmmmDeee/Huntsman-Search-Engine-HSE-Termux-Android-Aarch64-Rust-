@@ -18,8 +18,7 @@ use crate::people_cli::{self, PeopleRun};
 use crate::phone_cli::{self, PhoneRun};
 use crate::username_cli::{self, UsernameRun};
 
-pub const SF_USAGE: &str =
-    "usage: huntsman-recon sf [-M|-T|-V] | -s TARGET [-u all|footprint|investigate|passive] [-o tab|csv|json] [-t TYPE[,TYPE...]] [-r] [-q]";
+pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -s TARGET [-u all|footprint|investigate|passive] [-o tab|csv|json] [-t TYPE[,TYPE...]] [-r] [-q]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SfArgs {
@@ -128,8 +127,9 @@ impl SfArgs {
             }
         }
 
-        let meta_modes =
-            usize::from(parsed.list_modules) + usize::from(parsed.list_types) + usize::from(parsed.version);
+        let meta_modes = usize::from(parsed.list_modules)
+            + usize::from(parsed.list_types)
+            + usize::from(parsed.version);
         if meta_modes > 1 {
             return Err(Error::Invalid(
                 "sf accepts only one of -M, -T, or -V at a time".into(),
@@ -437,20 +437,18 @@ pub fn sf_target_type(raw: &str) -> Option<(&'static str, String)> {
 
     let code = if is_ipv4(value) {
         "IP_ADDRESS"
-    } else if value.split_once('/').is_some_and(|(ip, bits)| {
-        is_ipv4(ip) && valid_prefix(bits, 32)
-    }) {
+    } else if value
+        .split_once('/')
+        .is_some_and(|(ip, bits)| is_ipv4(ip) && valid_prefix(bits, 32))
+    {
         "NETBLOCK_OWNER"
     } else if value.contains('@') {
         "EMAILADDR"
-    } else if value
-        .strip_prefix('+')
-        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
-    {
+    } else if value.strip_prefix('+').is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    }) {
         "PHONE_NUMBER"
-    } else if quoted(value)
-        && value[1..value.len() - 1].contains(char::is_whitespace)
-    {
+    } else if quoted(value) && value[1..value.len() - 1].contains(char::is_whitespace) {
         "HUMAN_NAME"
     } else if quoted(value) {
         "USERNAME"
@@ -494,9 +492,7 @@ fn is_ipv4(value: &str) -> bool {
 }
 
 fn valid_prefix(value: &str, max: u8) -> bool {
-    value
-        .parse::<u8>()
-        .is_ok_and(|prefix| prefix <= max)
+    value.parse::<u8>().is_ok_and(|prefix| prefix <= max)
 }
 
 fn is_internet_name(value: &str) -> bool {
@@ -528,11 +524,23 @@ pub fn type_table() -> &'static [(&'static str, &'static str, &'static str)] {
         ("NETBLOCKV6_OWNER", "IPv6 Netblock Ownership", "cidr"),
         ("PHONE_NUMBER", "Phone Number", "phone"),
         ("PHYSICAL_ADDRESS", "Physical Address", "address"),
-        ("PHYSICAL_COORDINATES", "Physical Coordinates", "coordinates"),
+        (
+            "PHYSICAL_COORDINATES",
+            "Physical Coordinates",
+            "coordinates",
+        ),
         ("USERNAME", "Username", "username"),
         ("WEB_ANALYTICS_ID", "Web Analytics", "tracking_id"),
-        ("HSE_COMPANY_REGISTRATION", "Company Registration Number (HSE)", "abn_acn"),
-        ("HSE_CRYPTO_ADDRESS", "Crypto Address (HSE)", "crypto_address"),
+        (
+            "HSE_COMPANY_REGISTRATION",
+            "Company Registration Number (HSE)",
+            "abn_acn",
+        ),
+        (
+            "HSE_CRYPTO_ADDRESS",
+            "Crypto Address (HSE)",
+            "crypto_address",
+        ),
         ("HSE_DOCUMENT", "Document (HSE)", "document"),
         ("HSE_DEVICE_ID", "Device Identifier (HSE)", "device_id"),
         ("HSE_MAC_ADDRESS", "MAC Address (HSE)", "mac_address"),
@@ -565,7 +573,10 @@ fn sf_type(kind: EntityKind) -> (&'static str, &'static str) {
         EntityKind::DeviceId => ("HSE_DEVICE_ID", "Device Identifier (HSE)"),
         EntityKind::Ssid => ("HSE_WIFI_SSID", "Wi-Fi Network Name (HSE)"),
         EntityKind::TrackingId => ("WEB_ANALYTICS_ID", "Web Analytics"),
-        EntityKind::AbnAcn => ("HSE_COMPANY_REGISTRATION", "Company Registration Number (HSE)"),
+        EntityKind::AbnAcn => (
+            "HSE_COMPANY_REGISTRATION",
+            "Company Registration Number (HSE)",
+        ),
         EntityKind::ApiKey | EntityKind::MacAddress | EntityKind::Asn | EntityKind::Other => {
             ("HSE_OTHER", "Other (HSE)")
         }
