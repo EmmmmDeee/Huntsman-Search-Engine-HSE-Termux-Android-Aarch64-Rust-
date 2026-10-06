@@ -122,6 +122,7 @@ pub mod seeknow_cli;
 pub mod seeknow_collector;
 pub mod service_defs;
 pub mod session;
+pub mod sf_compat;
 pub mod sha256;
 pub mod shadow_assessment;
 pub mod signals;

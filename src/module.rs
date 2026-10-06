@@ -281,6 +281,13 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "curated lead-only source routing",
     },
     ReachableModule {
+        name: "sf_compat",
+        command: "sf [-M|-T|-V] | -s TARGET [options]",
+        access: "mixed",
+        network: true,
+        description: "SpiderFoot-compatible front end over rebuilt lookup paths",
+    },
+    ReachableModule {
         name: "classify_module",
         command: "investigate TEXT... | --file FILE",
         access: "offline",

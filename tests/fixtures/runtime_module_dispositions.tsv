@@ -109,6 +109,7 @@ seeknow_cli	diagnostic	SeekNow command front-end
 seeknow_collector	adapter	SeekNow lineage-safe collector
 service_defs	adapter	keyed-provider service registry
 session	exporter	auditable execution session
+sf_compat	diagnostic	SpiderFoot-compatible front end over rebuilt lookup paths
 sha256	leaf	SHA-256 primitive
 shadow_assessment	leaf	shadow-mode claim assessment reporting
 signals	leaf	signal primitive
