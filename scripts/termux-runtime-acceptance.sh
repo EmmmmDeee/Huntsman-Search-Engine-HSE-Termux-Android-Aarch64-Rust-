@@ -38,7 +38,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-for cmd in timeout curl date grep mktemp rm tee tail; do
+for cmd in timeout curl date grep mktemp rm tee tail sleep uname; do
   command -v "$cmd" >/dev/null 2>&1 || fail "required Termux command not found: $cmd"
 done
 
