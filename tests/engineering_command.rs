@@ -2,7 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use huntsman_recon::engineering_command::{
-    CAPABILITY_OWNERS, COMMAND_CHAIN, COMMAND_INVARIANT, EXECUTION_PROTOCOLS, Phase, validate,
+    CAPABILITY_OWNERS, COMMAND_CHAIN, COMMAND_INVARIANT, EXECUTION_PROTOCOLS, Phase, render_json,
+    validate,
 };
 
 fn root() -> PathBuf {
@@ -136,4 +137,26 @@ fn phase_boundaries_follow_the_directive() {
     for role in &COMMAND_CHAIN[11..16] {
         assert_eq!(role.phase, Phase::Performance);
     }
+}
+
+
+#[test]
+fn json_contract_matches_static_contract() {
+    let rendered = render_json().unwrap();
+    let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+    assert_eq!(value["invariant"], COMMAND_INVARIANT);
+    assert_eq!(
+        value["execution_protocols"].as_array().map(Vec::len),
+        Some(EXECUTION_PROTOCOLS.len())
+    );
+    assert_eq!(
+        value["roles"].as_array().map(Vec::len),
+        Some(COMMAND_CHAIN.len())
+    );
+    assert_eq!(
+        value["capability_owners"].as_array().map(Vec::len),
+        Some(CAPABILITY_OWNERS.len())
+    );
+    assert_eq!(value["roles"][0]["name"], "THE AUSTRIAN PAINTER");
+    assert_eq!(value["roles"][15]["name"], "JEW BOT");
 }
