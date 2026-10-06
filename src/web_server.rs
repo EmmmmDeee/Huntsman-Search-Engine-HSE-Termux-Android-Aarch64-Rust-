@@ -94,9 +94,7 @@ impl Server {
                 .listener
                 .accept()
                 .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            if self.handle_stream(stream).is_err() {
-                continue;
-            }
+            let _handled = self.handle_stream(stream);
         }
     }
 
