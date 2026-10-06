@@ -295,6 +295,13 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "bounded local text search",
     },
     ReachableModule {
+        name: "web_query",
+        command: "query QUERY...",
+        access: "keyless",
+        network: true,
+        description: "bounded Bing, Brave, and Mojeek meta-search",
+    },
+    ReachableModule {
         name: "asic_persons",
         command: "people NAME",
         access: "keyless",
