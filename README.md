@@ -98,6 +98,7 @@ cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone fr
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
 cargo run -- query "OpenAI research"          # network: Bing/Brave/Mojeek subset
 cargo run -- sf -M                         # SpiderFoot-style reachable-module listing; offline
+cargo run -- serve --help                    # embedded UI/API command options; does not start a listener
 cargo run -- modules --json               # only modules currently reachable from the binary
 cargo run -- recon crtsh https://example.com/
 ```
