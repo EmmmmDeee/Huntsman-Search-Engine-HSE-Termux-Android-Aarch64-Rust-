@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn mailbox_and_privacy_markers_are_centralized() {
         assert!(is_role_localpart("support+case"));
-        assert!(is_role_localpart("billing-team"));
+        assert!(is_role_localpart("hostmaster-team"));
         assert!(!is_role_localpart("alice"));
         assert!(is_whois_privacy_placeholder("Domains By Proxy, LLC"));
         assert!(!is_whois_privacy_placeholder("Ada Lovelace"));
