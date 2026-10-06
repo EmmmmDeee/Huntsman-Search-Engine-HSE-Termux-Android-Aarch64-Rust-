@@ -272,6 +272,9 @@ fn stated_edges(value: &str) -> BTreeSet<(String, String)> {
 
 /// `` `a`–`b`–`c` (L3); … `` as module sets, each checked to sit in the stated layer.
 fn stated_cycles(value: &str, map: &ModuleMap) -> BTreeSet<BTreeSet<String>> {
+    if value == "none." {
+        return BTreeSet::new();
+    }
     let value = value.strip_suffix('.').expect("list ends with `.`");
     value
         .split("; ")
