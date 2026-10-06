@@ -213,15 +213,7 @@ fn sf_metadata_and_offline_phone_path_work() {
     assert!(stdout.contains("PHONE_NUMBER"), "{stdout:?}");
 
     let scan = bin()
-        .args([
-            "sf",
-            "-s",
-            "+61412345678",
-            "-u",
-            "passive",
-            "-o",
-            "json",
-        ])
+        .args(["sf", "-s", "+61412345678", "-u", "passive", "-o", "json"])
         .output()
         .unwrap();
     assert_eq!(scan.status.code(), Some(0));
