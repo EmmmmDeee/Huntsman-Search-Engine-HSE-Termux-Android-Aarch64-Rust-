@@ -137,4 +137,5 @@ username_variants	leaf	deterministic handle normalization variants
 validation	runtime	seed/entity validation
 wayback	adapter	Internet Archive Wayback CDX client
 web_query	adapter	keyless web meta-search subset
+web_server	runtime	embedded Web UI and read-only HTTP API
 xml	leaf	XML utility
