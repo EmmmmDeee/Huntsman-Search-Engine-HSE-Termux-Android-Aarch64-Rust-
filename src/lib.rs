@@ -112,6 +112,7 @@ pub mod recon;
 pub mod redact;
 pub mod relation;
 pub mod resolve;
+pub mod retrieval_artifact;
 pub mod rf;
 pub mod roi;
 pub mod runtime;
