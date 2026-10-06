@@ -10,6 +10,7 @@ use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
 use huntsman_recon::canonical::canonical_email;
 use huntsman_recon::classifier::classify as classify_indicator;
 use huntsman_recon::classify::classify_response;
+use huntsman_recon::classify_module::ClassifyModule;
 use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::crtsh::{self, CrtShError};
@@ -25,7 +26,7 @@ use huntsman_recon::evidence_ancestry::{
 };
 use huntsman_recon::fetch::{Credential, FetchOptions, fetch};
 use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
-use huntsman_recon::fsio::write_atomic;
+use huntsman_recon::fsio::{read_bounded, write_atomic};
 use huntsman_recon::geohash;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
 use huntsman_recon::hibp::cli::{HIBP_USAGE, HibpCommand};
@@ -59,10 +60,11 @@ use huntsman_recon::stix::bundle;
 use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 use huntsman_recon::textnorm::escape_controls;
+use huntsman_recon::uid;
 use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, UsernameRun};
 use huntsman_recon::username_save;
 
-const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | investigate TEXT...|--file FILE | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -86,6 +88,7 @@ Commands:
   username              Enrich a username through public GitHub and Bluesky profiles
   phone                 Canonicalise and classify a phone number offline
   scan                  Route one selector into a rebuilt lookup front-end
+  investigate           Extract actionable entities from local text or one bounded file
   modules               List only currently reachable rebuilt modules
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
@@ -138,6 +141,7 @@ fn main() -> ExitCode {
         Some("username") => username_cmd(&remaining.collect::<Vec<_>>()),
         Some("phone") => phone_cmd(&remaining.collect::<Vec<_>>()),
         Some("scan") => scan_cmd(&remaining.collect::<Vec<_>>()),
+        Some("investigate") => investigate_cmd(&remaining.collect::<Vec<_>>()),
         Some("modules") => modules_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
@@ -181,6 +185,9 @@ fn print_command_help(command: &str) {
         "phone" => PHONE_HELP,
         "scan" => {
             "scan SELECTOR [-k people|email|username|phone] [--save FILE]\nRoute one selector into a rebuilt lookup front-end. Without -k, canonical email routes to email, @handle routes to username, recognised phone syntax routes to phone, and other selectors route to people."
+        }
+        "investigate" => {
+            "investigate TEXT... | investigate --file FILE\nExtract actionable entities from local text. --file refuses symlinks and files over 1 MiB."
         }
         "modules" => {
             "modules [--json]\nList only rebuilt modules that are currently reachable through a huntsman-recon command."
@@ -439,6 +446,56 @@ fn scan_cmd(args: &[String]) -> ExitCode {
         "phone" => phone_cmd(&forwarded),
         _ => people_cmd(&forwarded),
     }
+}
+
+fn investigate_cmd(args: &[String]) -> ExitCode {
+    if args.is_empty() {
+        return fail(
+            EX_USAGE,
+            "usage: huntsman-recon investigate TEXT... | investigate --file FILE",
+        );
+    }
+
+    let text = if args.first().is_some_and(|arg| arg == "--file") {
+        if args.len() != 2 {
+            return fail(EX_USAGE, "investigate --file needs exactly one FILE");
+        }
+        let path = Path::new(&args[1]);
+        let bytes = match read_bounded(path, MAX_ARTIFACT_BYTES) {
+            Ok(bytes) => bytes,
+            Err(Error::Store(message)) => return fail(EX_NOINPUT, &message),
+            Err(error) => return fail(EX_DATAERR, &error.to_string()),
+        };
+        match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => return fail(EX_DATAERR, "investigate input is not UTF-8"),
+        }
+    } else {
+        if args.iter().any(|arg| arg == "--file") {
+            return fail(EX_USAGE, "--file must be the first investigate argument");
+        }
+        args.join(" ")
+    };
+
+    let scan_id = uid::scan_id("investigate", &text);
+    let entities = ClassifyModule.process_text(&text, &scan_id);
+    println!("entities={}", entities.len());
+    for entity in entities {
+        println!(
+            "{}\t{}\t{:.2}\t{}",
+            entity.kind,
+            entity.raw_value,
+            entity.confidence,
+            entity.tags.join(",")
+        );
+        for evidence in entity.evidence {
+            println!(
+                "evidence\t{}\t{}",
+                evidence.provenance.source, evidence.summary
+            );
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 fn modules_cmd(args: &[String]) -> ExitCode {

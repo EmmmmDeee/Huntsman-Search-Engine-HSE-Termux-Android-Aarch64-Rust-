@@ -97,6 +97,7 @@ fn help_and_version_are_available() {
         ("people", "people NAME [--save FILE]"),
         ("phone", "phone NUMBER [--save FILE]"),
         ("scan", "scan SELECTOR [-k people|email|username|phone]"),
+        ("investigate", "investigate TEXT..."),
         ("modules", "modules [--json]"),
         ("fetch", "fetch URL [--body]"),
         ("hibp", "hibp [breach NAME"),
@@ -217,6 +218,49 @@ fn people_save_without_path_is_usage() {
     let out = bin().args(["people", "--save"]).output().unwrap();
     assert_eq!(out.status.code(), Some(64));
     assert!(out.stdout.is_empty(), "{:?}", out.stdout);
+}
+
+#[test]
+fn investigate_extracts_actionable_entities_without_network() {
+    let out = bin()
+        .args([
+            "investigate",
+            "mail",
+            "ada@example.com",
+            "visit",
+            "https://example.com",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("entities=2"), "{stdout:?}");
+    assert!(stdout.contains("email\tada@example.com"), "{stdout:?}");
+    assert!(stdout.contains("url\thttps://example.com"), "{stdout:?}");
+    assert!(stdout.contains("evidence\tclassifier"), "{stdout:?}");
+}
+
+#[test]
+fn investigate_reads_one_bounded_local_file() {
+    let dir = scratch("investigate-file");
+    let path = dir.join("input.txt");
+    fs::write(
+        &path,
+        "contact ada@example.com and visit https://example.org",
+    )
+    .unwrap();
+    let out = bin()
+        .arg("investigate")
+        .arg("--file")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("entities=2"), "{stdout:?}");
+    assert!(stdout.contains("email\tada@example.com"), "{stdout:?}");
+    assert!(stdout.contains("url\thttps://example.org"), "{stdout:?}");
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
