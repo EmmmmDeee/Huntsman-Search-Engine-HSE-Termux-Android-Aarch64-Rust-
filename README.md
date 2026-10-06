@@ -7,7 +7,7 @@ uncertainty visible; a lead or verified claim is not an attribution or ATT&CK
 score.
 
 > **Status:** this is the `huntsman-recon` reconstruction, not the previous
-> `hse` monolith. `people` and `email` provide subsets of the old monolith's person-lookups.
+> `hse` monolith. `people`, `email`, and `username` provide subsets of the old monolith's person-lookups.
 > Canonical extracted legacy trees are preserved as read-only reconstruction references;
 > the two historical ZIP references remain byte-pinned at the repository root. See
 > [archive provenance](docs/ARCHIVE_PROVENANCE.md) and [architecture and status](ARCHITECTURE.md).
@@ -38,7 +38,7 @@ huntsman-recon search "brisbane port"
 ```
 
 `check` runs offline self-acceptance. `command` validates and prints the fixed engineering hierarchy. `search` and `sources` are offline.
-`fetch`, `hibp`, `recon`, `seeknow`, `email`, and `people` (two-token names) make HTTP
+`fetch`, `hibp`, `recon`, `seeknow`, `email`, `username`, and `people` make HTTP
 requests and use public-only egress by default.
 Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
 before using credentials or network access.
@@ -60,7 +60,7 @@ before using credentials or network access.
 
 | | `hse` (legacy v1.41.0 monolith) | `huntsman-recon` (this tree, in progress) |
 | --- | --- | --- |
-| Person lookups | Yes. Provider modules such as `asic_persons`, `asic_director`, `username_search`, `phone_au` and `bluesky_user` (195 `pub mod` entries in `src/modules/mod.rs` at `7dca720b`), plus `hse scan`, `hse investigate` and `hse serve`. Whether each provider works live has not been re-verified. | **Partial.** `people` calls `asic_persons`, `asic_director`, `au_people` and `au_electoral` for names with at least two alphabetic tokens. `email ADDR` canonicalises an address, derives deterministic email pivots, queries the public Gravatar profile, renders evidence lineage, and can save a ledger for `verify`. `sources` classifies an input (a person or organisation name, an email address, an `@username`, a domain, an IP address or coordinates) and only prints curated public search or browser URLs for it, offline and `LeadOnly`; nothing is fetched. `search` reads only local documents; `hibp` provides explicit opt-in HIBP lookups. |
+| Person lookups | Yes. Provider modules such as `asic_persons`, `asic_director`, `username_search`, `phone_au` and `bluesky_user` (195 `pub mod` entries in `src/modules/mod.rs` at `7dca720b`), plus `hse scan`, `hse investigate` and `hse serve`. Whether each provider works live has not been re-verified. | **Partial.** `people` calls `asic_persons`, `asic_director`, `au_people` and `au_electoral` for names with at least two alphabetic tokens. `email ADDR` canonicalises an address, derives deterministic email pivots, queries the public Gravatar profile, renders evidence lineage, and can save a ledger for `verify`. `username HANDLE` derives bounded normalization variants, queries the public GitHub and Bluesky profiles independently, renders lineage, and can save a ledger for `verify`. `sources` classifies an input (a person or organisation name, an email address, an `@username`, a domain, an IP address or coordinates) and only prints curated public search or browser URLs for it, offline and `LeadOnly`; nothing is fetched. `search` reads only local documents; `hibp` provides explicit opt-in HIBP lookups. |
 | Source | Commit `7dca720b`. The closest copy in this tree is `legacy/hse-monolith-v1.41.0/`, which is read-only and not built; it is not byte-identical to `7dca720b`. | `src/` |
 | Where to get it | GitHub pre-release `main-7dca720` (asset `hse-aarch64-linux-android`, built from `7dca720b`) | A GitHub pre-release `main-<sha7>` (asset `huntsman-recon-aarch64-linux-android`), the CI artifact of the same name from a `main` push (see "Downloads"), or a source build |
 
@@ -92,6 +92,7 @@ cargo run -- seeknow --help              # SeekNow subcommands; offline
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
 cargo run -- email nobody@example.com     # deterministic pivots + public Gravatar lookup
+cargo run -- username octocat             # variants + public GitHub/Bluesky lookups
 cargo run -- recon crtsh https://example.com/
 ```
 
@@ -277,3 +278,4 @@ live receipt. Live ASIC Connect is WAF-blocked.
 ### Email lookup
 
 `email ADDR [--save FILE]` canonicalises the selector, derives deterministic non-network email pivots, queries the public Gravatar profile, renders lineage, and optionally writes an unverified ledger that `verify` can reload. A missing Gravatar profile is a validated zero result; malformed or incomplete responses are not treated as absence.
+\n\n### Username lookup\n\n`username HANDLE [--save FILE]` keeps the operator selector, derives bounded separator/de-decoration variants at candidate confidence, and performs keyless public-profile lookups against GitHub and Bluesky. Provider absence, rate limits, malformed responses, and unsupported handle shapes remain distinct outcomes. `--save` writes an unverified ledger that `verify` can reload.\n
