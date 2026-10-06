@@ -97,6 +97,7 @@ fn help_and_version_are_available() {
         ("people", "people NAME [--save FILE]"),
         ("phone", "phone NUMBER [--save FILE]"),
         ("scan", "scan SELECTOR [-k people|email|username|phone]"),
+        ("modules", "modules [--json]"),
         ("fetch", "fetch URL [--body]"),
         ("hibp", "hibp [breach NAME"),
         ("recon", "recon crtsh TARGET"),
@@ -160,6 +161,31 @@ fn scan_auto_routes_recognised_phone_syntax() {
     assert_eq!(out.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&out.stderr).contains("scan_route=phone"));
     assert!(String::from_utf8_lossy(&out.stdout).contains("country:GB"));
+}
+
+#[test]
+fn modules_lists_only_reachable_catalog_entries() {
+    let text = bin().arg("modules").output().unwrap();
+    assert_eq!(text.status.code(), Some(0));
+    let stdout = String::from_utf8(text.stdout).unwrap();
+    for name in ["phone_intl", "github_user", "gravatar", "crtsh"] {
+        assert!(stdout.contains(name), "missing reachable module {name}");
+    }
+    assert!(
+        !stdout.contains("netlas"),
+        "registered-but-unwired services must not appear as reachable modules"
+    );
+
+    let json = bin().args(["modules", "--json"]).output().unwrap();
+    assert_eq!(json.status.code(), Some(0));
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(
+        value["count"].as_u64(),
+        value["modules"].as_array().map(|items| items.len() as u64)
+    );
+
+    let bad = bin().args(["modules", "--all"]).output().unwrap();
+    assert_eq!(bad.status.code(), Some(64));
 }
 
 #[test]

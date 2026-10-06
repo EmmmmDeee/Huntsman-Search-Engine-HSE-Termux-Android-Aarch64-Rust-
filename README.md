@@ -95,6 +95,7 @@ cargo run -- email nobody@example.com     # deterministic pivots + public Gravat
 cargo run -- username octocat             # variants + public GitHub/Bluesky lookups
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
+cargo run -- modules --json               # only modules currently reachable from the binary
 cargo run -- recon crtsh https://example.com/
 ```
 
@@ -285,3 +286,8 @@ live receipt. Live ASIC Connect is WAF-blocked.
 ### Phone lookup
 
 `phone NUMBER [--save FILE]` is offline. It canonicalises explicit international syntax and recognised Australian local numbers to E.164, resolves the international dialling prefix from the embedded legacy-compatible table, and enriches Australian numbers with numbering-plan line type plus coarse fixed-line allocation region. It does not guess the country of an ambiguous bare foreign national number and does not infer a mobile carrier. `--save` writes an unverified ledger that `verify` can reload.
+
+
+### Reachable module catalogue
+
+`modules [--json]` is offline and intentionally conservative: it lists only rebuilt modules that have a current `huntsman-recon` command path. A provider definition or compiled helper is not advertised merely because it exists in the source tree. This avoids presenting unconnected modules as operational capability.
