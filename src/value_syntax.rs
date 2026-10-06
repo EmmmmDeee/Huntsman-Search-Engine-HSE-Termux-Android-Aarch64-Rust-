@@ -138,6 +138,57 @@ fn valid_domain_label(label: &str) -> bool {
 }
 
 #[must_use]
+pub fn normalise_au_phone(raw: &str) -> Option<String> {
+    let compact: String = raw
+        .chars()
+        .filter(|character| character.is_ascii_digit() || *character == '+')
+        .collect();
+    let valid = |candidate: String| {
+        phone_e164_error(&candidate)
+            .is_none()
+            .then_some(candidate)
+    };
+
+    if compact.starts_with("+61") {
+        return valid(compact);
+    }
+    if compact.starts_with("0061") {
+        return valid(format!("+{}", &compact[2..]));
+    }
+    if let Some(national) = compact.strip_prefix("61").filter(|national| {
+        national.len() == 9
+            && matches!(
+                national.as_bytes()[0],
+                b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
+            )
+    }) {
+        return valid(format!("+61{national}"));
+    }
+    if compact.starts_with('0')
+        && compact.len() == 10
+        && matches!(
+            compact.as_bytes()[1],
+            b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
+        )
+    {
+        return valid(format!("+61{}", &compact[1..]));
+    }
+    None
+}
+
+#[must_use]
+pub fn canonical_phone(raw: &str) -> Option<String> {
+    let compact: String = raw
+        .chars()
+        .filter(|character| character.is_ascii_digit() || *character == '+')
+        .collect();
+    if compact.starts_with('+') {
+        return phone_e164_error(&compact).is_none().then_some(compact);
+    }
+    normalise_au_phone(&compact)
+}
+
+#[must_use]
 pub fn canonical_domain(raw: &str) -> Option<String> {
     let domain = raw.trim().trim_matches('.').to_ascii_lowercase();
     if domain.is_empty() || domain.len() > 253 {
@@ -244,6 +295,27 @@ mod tests {
             Some(PhoneE164Error::Length(3))
         );
         assert_eq!(phone_e164_error("+61412345678"), None);
+    }
+
+    #[test]
+    fn shared_phone_rules_match_existing_contract() {
+        assert_eq!(
+            normalise_au_phone("0412 345 678"),
+            Some("+61412345678".into())
+        );
+        assert_eq!(
+            normalise_au_phone("0061 412 345 678"),
+            Some("+61412345678".into())
+        );
+        assert_eq!(normalise_au_phone("+1 415 555 2671"), None);
+        assert_eq!(
+            canonical_phone("+1 415 555 2671"),
+            Some("+14155552671".into())
+        );
+        assert_eq!(
+            canonical_phone("0412 345 678"),
+            Some("+61412345678".into())
+        );
     }
 
     #[test]
