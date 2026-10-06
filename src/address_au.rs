@@ -351,8 +351,8 @@ pub fn single_state_code(text: &str) -> Option<&'static str> {
 pub fn normalise_phone(s: &str) -> Option<String> {
     let digits = textnorm::ascii_digits_and_plus(s);
     let validated = |candidate: String| {
-        crate::validation::validate_phone_e164(&candidate)
-            .valid
+        crate::value_syntax::phone_e164_error(&candidate)
+            .is_none()
             .then_some(candidate)
     };
     if digits.starts_with("+61") {
