@@ -171,7 +171,7 @@ fn print_command_help(command: &str) {
         "people" => PEOPLE_HELP,
         "email" => EMAIL_HELP,
         "username" => USERNAME_HELP,
-        "scan" => "scan SELECTOR [-k people|email|username] [--save FILE]\nRoute one selector into the rebuilt lookup front-ends. Without -k, email addresses route to email, @handles route to username, and other selectors route to people.",
+        "scan" => {\n            "scan SELECTOR [-k people|email|username] [--save FILE]\\nRoute one selector into the rebuilt lookup front-ends. Without -k, email addresses route to email, @handles route to username, and other selectors route to people."\n        }
         "classify" => {
             "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
         }
@@ -370,7 +370,7 @@ fn scan_cmd(args: &[String]) -> ExitCode {
         Some("email") => "email",
         Some("username" | "handle") => "username",
         Some("phone") => {
-            return fail(EX_UNAVAILABLE, "scan kind phone is recognized but not rebuilt yet");
+            return fail(\n                EX_UNAVAILABLE,\n                "scan kind phone is recognized but not rebuilt yet",\n            );
         }
         Some(other) => return fail(EX_USAGE, &format!("unsupported scan kind: {other}")),
         None if canonical_email(selector).is_some() => "email",
