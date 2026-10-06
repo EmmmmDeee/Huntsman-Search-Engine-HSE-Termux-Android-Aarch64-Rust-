@@ -362,9 +362,9 @@ mod tests {
     fn duplicate_url_across_engines_is_returned_once() {
         let body = r#"<a href="https://example.org/a">A</a>"#;
         let fake = Fake::new(vec![
-            Ok(Ok(response(200, body)),
-            Ok(Ok(response(200, body)),
-            Ok(Ok(response(200, body)),
+            Ok(response(200, body)),
+            Ok(response(200, body)),
+            Ok(response(200, body)),
         ]);
         let report = search(&fake, "alice", 1).unwrap();
         assert_eq!(report.hits.len(), 1);
@@ -374,7 +374,7 @@ mod tests {
     fn challenge_page_remains_a_typed_provider_outcome() {
         let challenge = "<html><title>Just a moment</title>Cloudflare</html>";
         let fake = Fake::new(vec![
-            Ok(Ok(response(403, challenge)),
+            Ok(response(403, challenge)),
             Ok(response(200, r#"<a href="https://example.org/a">A</a>"#)),
             Ok(response(200, r#"<a href="https://example.net/b">B</a>"#)),
         ]);
