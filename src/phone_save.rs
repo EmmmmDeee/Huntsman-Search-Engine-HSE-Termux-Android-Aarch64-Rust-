@@ -4,43 +4,12 @@ use std::path::Path;
 
 use crate::entity::Entity;
 use crate::error::Error;
-use crate::ledger::{self, Claim, LedgerEntry};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
-use crate::stage::{EvidenceLevel, Status};
+use crate::ledger::LedgerEntry;
+use crate::lookup_save::{self, SavePolicy};
+use crate::source_outcome::SourceExecutionOutcome;
 
 const DOES_NOT_SHOW: &str =
     "a phone-format or numbering-plan classification is not an identity-resolution verdict";
-
-/// Write one phone lookup report as a fresh chain.
-///
-/// # Errors
-/// Invalid empty report or storage failure.
-pub fn save(
-    path: &Path,
-    entities: &[Entity],
-    outcomes: &[SourceExecutionOutcome],
-) -> Result<Vec<LedgerEntry>, Error> {
-    if entities.is_empty() && outcomes.is_empty() {
-        return Err(Error::Invalid("nothing to save".into()));
-    }
-
-    let mut previous = ledger::GENESIS.to_owned();
-    let mut entries = Vec::new();
-
-    for outcome in outcomes {
-        let entry = ledger::append(&previous, &outcome_claim(outcome));
-        previous.clone_from(&entry.hash);
-        entries.push(entry);
-    }
-    for entity in entities {
-        let entry = ledger::append(&previous, &entity_claim(entity));
-        previous.clone_from(&entry.hash);
-        entries.push(entry);
-    }
-
-    ledger::save_chain(path, &entries)?;
-    Ok(entries)
-}
 
 fn provenance(source: &str) -> (&str, &'static str) {
     match source {
@@ -50,76 +19,23 @@ fn provenance(source: &str) -> (&str, &'static str) {
     }
 }
 
-fn outcome_claim(outcome: &SourceExecutionOutcome) -> Claim {
-    let found = outcome
-        .found
-        .map_or_else(|| "none".to_owned(), |count| count.to_string());
-    let (source, component) = provenance(&outcome.module);
-    Claim {
-        claim: format!(
-            "{} {} found={found}",
-            outcome.module,
-            kind_label(outcome.kind)
-        ),
-        source: source.into(),
-        component: component.into(),
-        technique_id: None,
-        status: Status::Unverified,
-        evidence_level: if outcome.kind.is_accepted() {
-            EvidenceLevel::PrimaryEvidence
-        } else {
-            EvidenceLevel::Assertion
-        },
-        does_not_show: DOES_NOT_SHOW.into(),
-    }
-}
+const POLICY: SavePolicy = SavePolicy {
+    default_source: "phone_intl",
+    does_not_show: DOES_NOT_SHOW,
+    outcome_provenance: provenance,
+    entity_provenance: provenance,
+};
 
-fn entity_claim(entity: &Entity) -> Claim {
-    let source = entity
-        .evidence
-        .first()
-        .map(|evidence| evidence.provenance.source.as_str())
-        .filter(|source| !source.is_empty())
-        .unwrap_or("phone_intl");
-    let (source, component) = provenance(source);
-    Claim {
-        claim: format!("{} {}", entity.kind, entity.raw_value),
-        source: source.into(),
-        component: component.into(),
-        technique_id: None,
-        status: Status::Unverified,
-        evidence_level: EvidenceLevel::PrimaryEvidence,
-        does_not_show: DOES_NOT_SHOW.into(),
-    }
-}
-
-const fn kind_label(kind: SourceOutcomeKind) -> &'static str {
-    match kind {
-        SourceOutcomeKind::Success => "success",
-        SourceOutcomeKind::ValidZero => "valid_zero",
-        SourceOutcomeKind::AuthRequired => "auth_required",
-        SourceOutcomeKind::AuthRejected => "auth_rejected",
-        SourceOutcomeKind::EntitlementDenied => "entitlement_denied",
-        SourceOutcomeKind::QuotaExhausted => "quota_exhausted",
-        SourceOutcomeKind::RateLimited => "rate_limited",
-        SourceOutcomeKind::BotWaf => "bot_waf",
-        SourceOutcomeKind::DnsFailure => "dns_failure",
-        SourceOutcomeKind::ConnectFailure => "connect_failure",
-        SourceOutcomeKind::TlsFailure => "tls_failure",
-        SourceOutcomeKind::TtfbTimeout => "ttfb_timeout",
-        SourceOutcomeKind::BodyTimeout => "body_timeout",
-        SourceOutcomeKind::Upstream4xx => "upstream_4xx",
-        SourceOutcomeKind::Upstream5xx => "upstream_5xx",
-        SourceOutcomeKind::RedirectChanged => "redirect_changed",
-        SourceOutcomeKind::ProtocolDrift => "protocol_drift",
-        SourceOutcomeKind::InteractionDrift => "interaction_drift",
-        SourceOutcomeKind::SchemaDrift => "schema_drift",
-        SourceOutcomeKind::ParserDrift => "parser_drift",
-        SourceOutcomeKind::SemanticDrift => "semantic_drift",
-        SourceOutcomeKind::ZeroYieldAnomaly => "zero_yield_anomaly",
-        SourceOutcomeKind::ConfirmedDead => "confirmed_dead",
-        SourceOutcomeKind::Inconclusive => "inconclusive",
-    }
+/// Write one phone lookup report as a fresh chain.
+///
+/// # Errors
+/// Refuses an empty report and propagates bounded ledger-write failures.
+pub fn save(
+    path: &Path,
+    entities: &[Entity],
+    outcomes: &[SourceExecutionOutcome],
+) -> Result<Vec<LedgerEntry>, Error> {
+    lookup_save::save(path, entities, outcomes, POLICY)
 }
 
 #[cfg(test)]
