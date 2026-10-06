@@ -1,4 +1,4 @@
-//! Partial SpiderFoot 4.0 command-line compatibility over rebuilt Huntsman paths.
+//! Partial `SpiderFoot` 4.0 command-line compatibility over rebuilt Huntsman paths.
 //!
 //! The compatibility layer is deliberately narrow: it implements the legacy target
 //! classifier, `-M` / `-T` / `-V`, use-case validation, tab/csv/json rows, type
@@ -20,6 +20,14 @@ use crate::username_cli::{self, UsernameRun};
 
 pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -s TARGET [-u all|footprint|investigate|passive] [-o tab|csv|json] [-t TYPE[,TYPE...]] [-r] [-q]";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SfMode {
+    Scan,
+    ListModules,
+    ListTypes,
+    Version,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SfArgs {
     pub target: Option<String>,
@@ -28,9 +36,7 @@ pub struct SfArgs {
     pub types: Vec<String>,
     pub include_source: bool,
     pub quiet: bool,
-    pub list_modules: bool,
-    pub list_types: bool,
-    pub version: bool,
+    pub mode: SfMode,
 }
 
 impl Default for SfArgs {
@@ -42,9 +48,7 @@ impl Default for SfArgs {
             types: Vec::new(),
             include_source: false,
             quiet: false,
-            list_modules: false,
-            list_types: false,
-            version: false,
+            mode: SfMode::Scan,
         }
     }
 }
@@ -77,7 +81,7 @@ impl SfArgs {
                         value(args, index, "-t/-F")?
                             .split(',')
                             .filter(|item| !item.is_empty())
-                            .map(|item| item.to_ascii_uppercase()),
+                            .map(str::to_ascii_uppercase),
                     );
                     index += 2;
                 }
@@ -90,15 +94,15 @@ impl SfArgs {
                     index += 1;
                 }
                 "-M" | "--list-modules" => {
-                    parsed.list_modules = true;
+                    set_mode(&mut parsed, SfMode::ListModules)?;
                     index += 1;
                 }
                 "-T" | "--list-types" => {
-                    parsed.list_types = true;
+                    set_mode(&mut parsed, SfMode::ListTypes)?;
                     index += 1;
                 }
                 "-V" | "--sf-version" => {
-                    parsed.version = true;
+                    set_mode(&mut parsed, SfMode::Version)?;
                     index += 1;
                 }
                 flag if flag.starts_with('-') => {
@@ -127,24 +131,26 @@ impl SfArgs {
             }
         }
 
-        let meta_modes = usize::from(parsed.list_modules)
-            + usize::from(parsed.list_types)
-            + usize::from(parsed.version);
-        if meta_modes > 1 {
-            return Err(Error::Invalid(
-                "sf accepts only one of -M, -T, or -V at a time".into(),
-            ));
-        }
-        if meta_modes > 0 && parsed.target.is_some() {
+        if parsed.mode != SfMode::Scan && parsed.target.is_some() {
             return Err(Error::Invalid(
                 "sf listing/version modes do not accept -s".into(),
             ));
         }
-        if meta_modes == 0 && parsed.target.is_none() {
+        if parsed.mode == SfMode::Scan && parsed.target.is_none() {
             return Err(Error::Invalid("sf needs -s TARGET, -M, -T, or -V".into()));
         }
         Ok(parsed)
     }
+}
+
+fn set_mode(args: &mut SfArgs, mode: SfMode) -> Result<(), Error> {
+    if args.mode != SfMode::Scan {
+        return Err(Error::Invalid(
+            "sf accepts only one of -M, -T, or -V at a time".into(),
+        ));
+    }
+    args.mode = mode;
+    Ok(())
 }
 
 fn value<'a>(args: &'a [String], index: usize, flag: &str) -> Result<&'a str, Error> {
@@ -182,17 +188,16 @@ pub struct SfScan {
 
 /// Resolve parsed flags to a metadata action or one supported scan.
 pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
-    if args.version {
-        return Ok(SfAction::Text(format!(
-            "Huntsman Recon {} — SpiderFoot 4.0-compatible subset.\n",
-            env!("CARGO_PKG_VERSION")
-        )));
-    }
-    if args.list_modules {
-        return Ok(SfAction::Text(module_listing(args.quiet)));
-    }
-    if args.list_types {
-        return Ok(SfAction::Text(type_listing(args.quiet)));
+    match args.mode {
+        SfMode::Version => {
+            return Ok(SfAction::Text(format!(
+                "Huntsman Recon {} — SpiderFoot 4.0-compatible subset.\n",
+                env!("CARGO_PKG_VERSION")
+            )));
+        }
+        SfMode::ListModules => return Ok(SfAction::Text(module_listing(args.quiet))),
+        SfMode::ListTypes => return Ok(SfAction::Text(type_listing(args.quiet))),
+        SfMode::Scan => {}
     }
     let target = args.target.as_deref().unwrap_or_default();
     let (target_type, normalized) = sf_target_type(target).ok_or_else(|| {
@@ -244,7 +249,6 @@ pub fn type_listing(quiet: bool) -> String {
 }
 
 /// Execute one supported sf target over the already-rebuilt lookup front-ends.
-#[must_use]
 pub fn run_scan<T: Transport + ?Sized>(
     transport: &T,
     scan: &SfScan,
@@ -305,7 +309,7 @@ struct Row {
 
 impl Row {
     fn from_entity(entity: &Entity) -> Self {
-        let (event_type, type_description) = sf_type(entity.kind.clone());
+        let (event_type, type_description) = sf_type(&entity.kind);
         let evidence = entity.evidence.first();
         Self {
             source: evidence
@@ -555,7 +559,7 @@ fn known_type(value: &str) -> bool {
         .any(|(code, _, _)| code.eq_ignore_ascii_case(value))
 }
 
-fn sf_type(kind: EntityKind) -> (&'static str, &'static str) {
+fn sf_type(kind: &EntityKind) -> (&'static str, &'static str) {
     match kind {
         EntityKind::Person => ("HUMAN_NAME", "Human Name"),
         EntityKind::Organisation => ("COMPANY_NAME", "Company Name"),
@@ -567,7 +571,9 @@ fn sf_type(kind: EntityKind) -> (&'static str, &'static str) {
         EntityKind::IpAddress => ("IP_ADDRESS", "IP Address"),
         EntityKind::Coordinates => ("PHYSICAL_COORDINATES", "Physical Coordinates"),
         EntityKind::Address => ("PHYSICAL_ADDRESS", "Physical Address"),
-        EntityKind::Credential => ("HSE_OTHER", "Other (HSE)"),
+        EntityKind::Credential | EntityKind::ApiKey | EntityKind::Other => {
+            ("HSE_OTHER", "Other (HSE)")
+        }
         EntityKind::Document => ("HSE_DOCUMENT", "Document (HSE)"),
         EntityKind::CryptoAddress => ("HSE_CRYPTO_ADDRESS", "Crypto Address (HSE)"),
         EntityKind::DeviceId => ("HSE_DEVICE_ID", "Device Identifier (HSE)"),
@@ -577,9 +583,8 @@ fn sf_type(kind: EntityKind) -> (&'static str, &'static str) {
             "HSE_COMPANY_REGISTRATION",
             "Company Registration Number (HSE)",
         ),
-        EntityKind::ApiKey | EntityKind::MacAddress | EntityKind::Asn | EntityKind::Other => {
-            ("HSE_OTHER", "Other (HSE)")
-        }
+        EntityKind::MacAddress => ("HSE_MAC_ADDRESS", "MAC Address (HSE)"),
+        EntityKind::Asn => ("BGP_AS_OWNER", "BGP AS Ownership"),
     }
 }
 
