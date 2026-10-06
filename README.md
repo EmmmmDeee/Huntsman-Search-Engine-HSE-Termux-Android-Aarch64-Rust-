@@ -96,6 +96,7 @@ cargo run -- username octocat             # variants + public GitHub/Bluesky loo
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
+cargo run -- query "OpenAI research"          # network: Bing/Brave/Mojeek subset
 cargo run -- modules --json               # only modules currently reachable from the binary
 cargo run -- recon crtsh https://example.com/
 ```
