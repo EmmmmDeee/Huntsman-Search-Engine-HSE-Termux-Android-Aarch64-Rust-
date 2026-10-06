@@ -56,10 +56,7 @@ mod tests {
             ",
         )
         .unwrap();
-        assert_eq!(
-            got,
-            ["0412 345 678", "+44 20 7183 8750", "@alice"]
-        );
+        assert_eq!(got, ["0412 345 678", "+44 20 7183 8750", "@alice"]);
     }
 
     #[test]
