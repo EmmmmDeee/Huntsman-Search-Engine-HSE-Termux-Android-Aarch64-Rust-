@@ -6,10 +6,7 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn verify_refuses_fifo_without_waiting_for_a_writer() {
-    let dir = std::env::temp_dir().join(format!(
-        "huntsman-fifo-read-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("huntsman-fifo-read-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let fifo = dir.join("ledger.json");
