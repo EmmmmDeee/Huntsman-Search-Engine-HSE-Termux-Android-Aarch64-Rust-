@@ -8,9 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::evidence_ancestry::{
-    EvidenceAncestryGraph, EvidenceNodeId, IndependenceRouteCount,
-};
+use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceNodeId, IndependenceRouteCount};
 use crate::intelligence::{
     ClaimId, ClaimState, Defeat, DefeatKind, EvidenceId, EvidenceNature, IntelligenceLedger,
     LedgerError,
