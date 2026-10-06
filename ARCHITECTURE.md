@@ -140,7 +140,7 @@ CURRENT:
 - Target: Termux on Android aarch64, no root. CI cross-builds `aarch64-linux-android` (API 24, NDK) with MSRV 1.87, checks the ELF is AArch64 with interpreter `/system/bin/linker64`, and uploads a 14-day artifact on main pushes.
 - No async runtime: `ureq` is blocking, and no module depends on `tokio` or `async fn`. Dependencies are `serde`, `serde_json`, `thiserror` and `ureq`.
 - Paths are relative to the working directory (`var/`); there is no hard-coded workspace path.
-- Not verified: a handset run of the `huntsman-recon` binary. Since #672 every `main` push publishes a `main-<sha7>` pre-release of `huntsman-recon` (`.github/workflows/release.yml`), whose release notes claim no handset run. `.github/scripts/install-termux.sh` installs the legacy `hse` from `main-7dca720` by default and `huntsman-recon` only with `HUNTSMAN_CHANNEL=recon`.
+- Not verified by CI: a handset run of the `huntsman-recon` binary. Since #672 every `main` push publishes a `main-<sha7>` pre-release of `huntsman-recon` (`.github/workflows/release.yml`), whose release notes claim no handset run. `scripts/termux-runtime-acceptance.sh` is the explicit real-device proof path: it checks metadata, offline `check`/ledger verification, and two loopback server lifecycles against the current `/api/health`, `/api/modules`, and `/api/command` endpoints. `.github/scripts/install-termux.sh` installs the legacy `hse` from `main-7dca720` by default and `huntsman-recon` only with `HUNTSMAN_CHANNEL=recon`.
 
 PLANNED: sources run sequentially, or on bounded `std::thread` workers if measured to be necessary, with pacing from `circuit`. No async runtime is added.
 
