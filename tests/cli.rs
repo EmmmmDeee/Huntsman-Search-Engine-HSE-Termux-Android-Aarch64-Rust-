@@ -169,7 +169,13 @@ fn modules_lists_only_reachable_catalog_entries() {
     let text = bin().arg("modules").output().unwrap();
     assert_eq!(text.status.code(), Some(0));
     let stdout = String::from_utf8(text.stdout).unwrap();
-    for name in ["phone_intl", "github_user", "gravatar", "crtsh"] {
+    for name in [
+        "phone_intl",
+        "github_user",
+        "gravatar",
+        "classify_module",
+        "crtsh",
+    ] {
         assert!(stdout.contains(name), "missing reachable module {name}");
     }
     assert!(
