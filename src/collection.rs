@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use crate::coverage::{Event, EventKind};
 use crate::dependency::Target;
 use crate::entity::EntityKind;
-use crate::pipeline::PipelineLimits;
 use crate::source_outcome::SourceOutcomeKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,11 +50,15 @@ pub struct ObservationBatch {
 }
 
 #[must_use]
-pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> ObservationBatch {
-    let overflow = batch.observations.len() > limits.max_entities
-        || batch.events.len() > limits.max_dispatches;
-    batch.observations.truncate(limits.max_entities);
-    batch.events.truncate(limits.max_dispatches);
+pub fn bounded_batch(
+    mut batch: ObservationBatch,
+    max_entities: usize,
+    max_dispatches: usize,
+) -> ObservationBatch {
+    let overflow =
+        batch.observations.len() > max_entities || batch.events.len() > max_dispatches;
+    batch.observations.truncate(max_entities);
+    batch.events.truncate(max_dispatches);
     if overflow {
         batch.truncated = true;
         for event in &mut batch.events {
