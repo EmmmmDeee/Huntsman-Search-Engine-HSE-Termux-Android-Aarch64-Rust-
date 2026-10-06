@@ -141,10 +141,7 @@ fn scan_routes_name_and_phone_offline() {
     assert!(String::from_utf8_lossy(&person.stderr).contains("scan_route=people"));
     assert!(String::from_utf8_lossy(&person.stdout).contains("skipped"));
 
-    let phone = bin()
-        .args(["scan", "0412 345 678"])
-        .output()
-        .unwrap();
+    let phone = bin().args(["scan", "0412 345 678"]).output().unwrap();
     assert_eq!(phone.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&phone.stderr).contains("scan_route=phone"));
     assert!(String::from_utf8_lossy(&phone.stdout).contains("+61412345678"));
