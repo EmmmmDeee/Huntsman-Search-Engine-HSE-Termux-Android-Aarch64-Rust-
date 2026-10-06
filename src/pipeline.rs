@@ -33,7 +33,6 @@ pub struct InvestigationInput {
     pub mode: InvestigationMode,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizedSeed {
     pub raw: String,
