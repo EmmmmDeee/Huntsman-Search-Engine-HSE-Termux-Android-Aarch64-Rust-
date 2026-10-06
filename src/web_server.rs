@@ -32,9 +32,16 @@ impl ServeConfig {
     /// non-loopback binds without a token.
     pub fn parse(bind: &str, bearer_token: Option<String>) -> Result<Self, Error> {
         let bind = normalize_bind(bind)?;
-        let bearer_token = bearer_token
-            .map(|token| token.trim().to_owned())
-            .filter(|token| !token.is_empty());
+        let bearer_token = match bearer_token {
+            Some(token) => {
+                let token = token.trim().to_owned();
+                if token.is_empty() {
+                    return Err(Error::Invalid("HSE_AUTH_TOKEN must not be empty".into()));
+                }
+                Some(token)
+            }
+            None => None,
+        };
 
         if !bind.ip().is_loopback() && bearer_token.is_none() {
             return Err(Error::Invalid(
@@ -288,9 +295,19 @@ fn response_for_request(request: &str, bearer_token: Option<&str>) -> String {
 }
 
 fn bearer_matches(header: Option<&str>, expected: &str) -> bool {
-    let Some(actual) = header.and_then(|value| value.strip_prefix("Bearer ")) else {
+    let Some(header) = header else {
         return false;
     };
+    let mut parts = header.split_whitespace();
+    let Some(scheme) = parts.next() else {
+        return false;
+    };
+    let Some(actual) = parts.next() else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("bearer") || parts.next().is_some() {
+        return false;
+    }
     fixed_time_eq(actual.as_bytes(), expected.as_bytes())
 }
 
@@ -369,6 +386,7 @@ mod tests {
         let local = ServeConfig::parse(DEFAULT_BIND, None).unwrap();
         assert!(local.bind.ip().is_loopback());
         assert!(ServeConfig::parse("0.0.0.0:8080", None).is_err());
+        assert!(ServeConfig::parse(DEFAULT_BIND, Some("   ".into())).is_err());
         assert!(ServeConfig::parse("0.0.0.0:8080", Some("token".into())).is_ok());
         assert_eq!(
             ServeConfig::parse("localhost:9000", None).unwrap().bind,
@@ -386,7 +404,7 @@ mod tests {
         assert!(denied.starts_with("HTTP/1.1 401"));
 
         let allowed = response_for_request(
-            "GET /api/modules HTTP/1.1\r\nAuthorization: Bearer secret\r\n\r\n",
+            "GET /api/modules HTTP/1.1\r\nAuthorization: bearer secret\r\n\r\n",
             Some("secret"),
         );
         assert!(allowed.starts_with("HTTP/1.1 200"));
