@@ -281,6 +281,13 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "curated lead-only source routing",
     },
     ReachableModule {
+        name: "classify_module",
+        command: "investigate TEXT... | --file FILE",
+        access: "offline",
+        network: false,
+        description: "bounded offline entity extraction from local text",
+    },
+    ReachableModule {
         name: "local_search",
         command: "search QUERY [DIR]",
         access: "offline",
