@@ -55,8 +55,10 @@ use huntsman_recon::stix::bundle;
 use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 use huntsman_recon::textnorm::escape_controls;
+use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, UsernameRun};
+use huntsman_recon::username_save;
 
-const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -77,6 +79,7 @@ Commands:
   sources               Classify an indicator and print curated routes (offline)
   people                Look up a name on keyless ASIC people registers
   email                 Enrich an email and query its public Gravatar profile
+  username              Enrich a username through public GitHub and Bluesky profiles
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
   hibp                  Have I Been Pwned lookups (opt-in; keyed subcommands need a key)
@@ -87,7 +90,7 @@ Commands:
 
 Run `huntsman-recon <COMMAND> --help` for command details.
 Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
-`seeknow` and `people` (two-token names) make HTTP requests; their default
+`seeknow`, `people`, `email`, and `username` make HTTP requests; their default
 egress policy is public-only.";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
@@ -125,6 +128,7 @@ fn main() -> ExitCode {
         Some("sources") => sources_cmd(remaining.next()),
         Some("people") => people_cmd(&remaining.collect::<Vec<_>>()),
         Some("email") => email_cmd(&remaining.collect::<Vec<_>>()),
+        Some("username") => username_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
         Some("hibp") => hibp_cmd(&remaining.collect::<Vec<_>>()),
@@ -163,6 +167,7 @@ fn print_command_help(command: &str) {
         }
         "people" => PEOPLE_HELP,
         "email" => EMAIL_HELP,
+        "username" => USERNAME_HELP,
         "classify" => {
             "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
         }
@@ -277,6 +282,48 @@ fn email_cmd(args: &[String]) -> ExitCode {
         }
         EmailRun::Network(message) => fail(EX_NOPERM, &message),
         EmailRun::Failed(message) => fail(EX_UNAVAILABLE, &message),
+    }
+}
+
+fn username_cmd(args: &[String]) -> ExitCode {
+    let parsed = match UsernameArgs::parse(args) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let message = error.to_string();
+            let code = if message.contains("username selector") {
+                EX_DATAERR
+            } else {
+                EX_USAGE
+            };
+            return fail(code, &format!("{message}\n{USERNAME_USAGE}"));
+        }
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let transport = UreqTransport::new(&TransportConfig::default());
+    match huntsman_recon::username_cli::run(&transport, &parsed.username, now) {
+        UsernameRun::Printed { text, report } => {
+            print!("{text}");
+            if let Some(path) = parsed.save {
+                match username_save::save(&path, &report.entities, &report.outcomes) {
+                    Ok(entries) => {
+                        println!("saved={}", path.display());
+                        println!("entries={}", entries.len());
+                        println!(
+                            "tip={}",
+                            entries.last().map_or("none", |entry| entry.hash.as_str())
+                        );
+                        ExitCode::SUCCESS
+                    }
+                    Err(Error::Store(message)) => fail(EX_IOERR, &message),
+                    Err(error) => fail(EX_DATAERR, &error.to_string()),
+                }
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        UsernameRun::Failed(message) => fail(EX_UNAVAILABLE, &message),
     }
 }
 
