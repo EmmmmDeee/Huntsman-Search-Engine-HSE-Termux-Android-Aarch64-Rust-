@@ -6,8 +6,7 @@
 
 use std::fmt::Write as _;
 
-pub const COMMAND_INVARIANT: &str =
-    "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER SYSTEMS";
+pub const COMMAND_INVARIANT: &str = "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER SYSTEMS";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -229,8 +228,7 @@ pub fn validate() -> Result<(), &'static str> {
 pub fn render() -> Result<String, &'static str> {
     validate()?;
     let mut out = String::new();
-    writeln!(&mut out, "invariant={COMMAND_INVARIANT}")
-        .expect("writing to a String cannot fail");
+    writeln!(&mut out, "invariant={COMMAND_INVARIANT}").expect("writing to a String cannot fail");
 
     let mut active_phase = None;
     for role in COMMAND_CHAIN {
