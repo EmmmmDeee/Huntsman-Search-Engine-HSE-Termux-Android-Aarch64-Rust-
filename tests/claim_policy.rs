@@ -46,6 +46,7 @@ fn observed_policy(min_proven_roots: usize, require_resolved_ancestry: bool) -> 
         min_proven_roots,
         require_resolved_ancestry,
         required_natures: vec![EvidenceNature::Observed],
+        required_attributes: BTreeMap::new(),
     }
 }
 
