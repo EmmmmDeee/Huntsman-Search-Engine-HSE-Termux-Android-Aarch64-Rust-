@@ -76,9 +76,9 @@ fn explicit_independence_can_unlock_auto_merge() {
     let d = decision(&["registry-a", "registry-b"]);
 
     assert!(d.allows_automatic_merge(&graph, AutoMergePolicy::default()));
-    assert!(
-        d.hold_reasons(&graph, AutoMergePolicy::default())
-            .is_empty()
+    assert_eq!(
+        d.hold_reasons(&graph, AutoMergePolicy::default()),
+        Vec::<HoldReason>::new()
     );
 }
 
