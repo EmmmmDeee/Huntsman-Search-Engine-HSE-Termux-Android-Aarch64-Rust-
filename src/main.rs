@@ -161,7 +161,7 @@ fn print_command_help(command: &str) {
             "check\nRun offline self-acceptance and regenerate var/ledger.json, var/navigator.json, and var/stix-bundle.json."
         }
         "command" => {
-            "command\nValidate and print the fixed engineering command invariant, four phases, ranks, names, and titles."
+            "command [--json]\nValidate and print the fixed engineering command invariant, phases, roles, execution protocols, and capability owners."
         }
         "geo" => {
             "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres."
@@ -219,12 +219,23 @@ fn fail(code: u8, msg: &str) -> ExitCode {
 }
 
 fn command_cmd(args: &[String]) -> ExitCode {
-    if !args.is_empty() {
-        return fail(EX_USAGE, "usage: huntsman-recon command");
-    }
-    match engineering_command::render() {
+    let json = match args {
+        [] => false,
+        [flag] if flag == "--json" => true,
+        _ => return fail(EX_USAGE, "usage: huntsman-recon command [--json]"),
+    };
+    let rendered = if json {
+        engineering_command::render_json()
+    } else {
+        engineering_command::render()
+    };
+    match rendered {
         Ok(rendered) => {
-            print!("{rendered}");
+            if json {
+                println!("{rendered}");
+            } else {
+                print!("{rendered}");
+            }
             ExitCode::SUCCESS
         }
         Err(message) => fail(EX_DATAERR, message),
