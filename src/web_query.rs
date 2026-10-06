@@ -207,11 +207,7 @@ fn record_source_health(host: &str, outcome: &SourceExecutionOutcome, now_unix: 
     }
 }
 
-fn parse_engine_response(
-    engine: EngineSpec,
-    response: &Response,
-    now_unix: u64,
-) -> EngineReport {
+fn parse_engine_response(engine: EngineSpec, response: &Response, now_unix: u64) -> EngineReport {
     if response.truncated {
         return EngineReport {
             hits: Vec::new(),
