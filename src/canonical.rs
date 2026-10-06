@@ -1,7 +1,6 @@
 //! Canonical forms for entity values and provenance labels.
 
 use crate::evidence_ancestry::canonical_family;
-use crate::validation;
 
 const TRACKING_PARAMS: &[&str] = &[
     "gclid",
@@ -96,7 +95,7 @@ pub fn canonical_email(raw: &str) -> Option<String> {
 
 #[must_use]
 pub fn canonical_phone(raw: &str) -> Option<String> {
-    validation::to_e164_au(raw)
+    crate::value_syntax::canonical_phone(raw)
 }
 
 #[must_use]
