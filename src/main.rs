@@ -14,6 +14,8 @@ use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredent
 use huntsman_recon::crtsh::{self, CrtShError};
 use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
+use huntsman_recon::email_cli::{EMAIL_HELP, EMAIL_USAGE, EmailArgs, EmailRun};
+use huntsman_recon::email_save;
 use huntsman_recon::entity::{Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
 use huntsman_recon::evidence_ancestry::{
@@ -53,7 +55,7 @@ use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 use huntsman_recon::textnorm::escape_controls;
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -72,6 +74,7 @@ Commands:
   search                Search the built-in fixture or one local text directory
   sources               Classify an indicator and print curated routes (offline)
   people                Look up a name on keyless ASIC people registers
+  email                 Enrich an email and query its public Gravatar profile
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
   hibp                  Have I Been Pwned lookups (opt-in; keyed subcommands need a key)
@@ -118,6 +121,7 @@ fn main() -> ExitCode {
         Some("search") => search_cmd(remaining.next(), remaining.next()),
         Some("sources") => sources_cmd(remaining.next()),
         Some("people") => people_cmd(&remaining.collect::<Vec<_>>()),
+        Some("email") => email_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
         Some("hibp") => hibp_cmd(&remaining.collect::<Vec<_>>()),
@@ -152,6 +156,7 @@ fn print_command_help(command: &str) {
             "sources QUERY\nClassify an indicator and print curated public/browser search routes. Does not fetch those routes."
         }
         "people" => PEOPLE_HELP,
+        "email" => EMAIL_HELP,
         "classify" => {
             "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
         }
@@ -210,6 +215,49 @@ fn people_cmd(args: &[String]) -> ExitCode {
         }
         PeopleRun::Network(msg) => fail(EX_NOPERM, &msg),
         PeopleRun::Failed(msg) => fail(EX_UNAVAILABLE, &msg),
+    }
+}
+
+fn email_cmd(args: &[String]) -> ExitCode {
+    let parsed = match EmailArgs::parse(args) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            let message = err.to_string();
+            let code = if message.contains("invalid email address") {
+                EX_DATAERR
+            } else {
+                EX_USAGE
+            };
+            return fail(code, &format!("{message}\n{EMAIL_USAGE}"));
+        }
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let transport = UreqTransport::new(&TransportConfig::default());
+    match huntsman_recon::email_cli::run(&transport, &parsed.email, now) {
+        EmailRun::Printed { text, report } => {
+            print!("{text}");
+            if let Some(path) = parsed.save {
+                match email_save::save(&path, &report.entities, &report.outcomes) {
+                    Ok(entries) => {
+                        println!("saved={}", path.display());
+                        println!("entries={}", entries.len());
+                        println!(
+                            "tip={}",
+                            entries.last().map_or("none", |entry| entry.hash.as_str())
+                        );
+                        ExitCode::SUCCESS
+                    }
+                    Err(Error::Store(message)) => fail(EX_IOERR, &message),
+                    Err(err) => fail(EX_DATAERR, &err.to_string()),
+                }
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        EmailRun::Network(message) => fail(EX_NOPERM, &message),
+        EmailRun::Failed(message) => fail(EX_UNAVAILABLE, &message),
     }
 }
 
