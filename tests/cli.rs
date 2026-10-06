@@ -274,7 +274,7 @@ fn investigate_reads_one_bounded_local_file() {
 fn query_missing_terms_is_usage() {
     let out = bin().arg("query").output().unwrap();
     assert_eq!(out.status.code(), Some(64));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, Vec::<u8>::new());
     assert!(String::from_utf8_lossy(&out.stderr).contains("query QUERY"));
 }
 
