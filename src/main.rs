@@ -480,9 +480,8 @@ fn scan_batch_file(path: &str, kind: Option<&str>) -> ExitCode {
         Err(Error::Store(message)) => return fail(EX_NOINPUT, &message),
         Err(error) => return fail(EX_DATAERR, &error.to_string()),
     };
-    let body = match String::from_utf8(bytes) {
-        Ok(body) => body,
-        Err(_) => return fail(EX_DATAERR, "scan --input-file is not UTF-8"),
+    let Ok(body) = String::from_utf8(bytes) else {
+        return fail(EX_DATAERR, "scan --input-file is not UTF-8");
     };
     let seeds = match parse_seed_list(&body) {
         Ok(seeds) => seeds,
