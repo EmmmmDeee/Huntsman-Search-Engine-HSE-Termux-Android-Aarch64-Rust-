@@ -104,6 +104,7 @@ retrieval_artifact	leaf	stable retrieval artifact identifier for provenance evid
 rf	leaf	radio-frequency model utility
 roi	runtime	dispatch utility scoring
 runtime	runtime	high-level investigation composition root
+scan_batch	leaf	bounded ordered scan seed-list parsing
 scraper_health	diagnostic	source drift diagnostics
 search	diagnostic	local search utility
 seeknow	adapter	SeekNow/See-Know source client
