@@ -101,6 +101,7 @@ fn help_and_version_are_available() {
         ("modules", "modules [--json]"),
         ("query", "query QUERY..."),
         ("sf", "sf [-M|-T|-V]"),
+        ("serve", "serve [--bind ADDR]"),
         ("fetch", "fetch URL [--body]"),
         ("hibp", "hibp [breach NAME"),
         ("recon", "recon crtsh TARGET"),
@@ -177,6 +178,7 @@ fn modules_lists_only_reachable_catalog_entries() {
         "gravatar",
         "classify_module",
         "sf_compat",
+        "web_server",
         "crtsh",
     ] {
         assert!(stdout.contains(name), "missing reachable module {name}");
@@ -230,6 +232,24 @@ fn sf_rejects_unrebuilt_target_classes_explicitly() {
         .unwrap();
     assert_eq!(out.status.code(), Some(65));
     assert!(String::from_utf8_lossy(&out.stderr).contains("not available yet"));
+}
+
+#[test]
+fn serve_rejects_invalid_or_unconfigured_public_bind_before_listening() {
+    let invalid = bin()
+        .args(["serve", "--bind", "not-a-socket"])
+        .output()
+        .unwrap();
+    assert_eq!(invalid.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid serve bind"));
+
+    let public = bin()
+        .args(["serve", "--bind", "0.0.0.0:8080"])
+        .env_remove("HSE_AUTH_TOKEN")
+        .output()
+        .unwrap();
+    assert_eq!(public.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&public.stderr).contains("HSE_AUTH_TOKEN"));
 }
 
 #[test]
