@@ -148,10 +148,8 @@ mod tests {
             "selector",
         ));
         let outcomes = [SourceExecutionOutcome::valid_zero("github_user", 1)];
-        let dir = std::env::temp_dir().join(format!(
-            "huntsman-username-save-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("huntsman-username-save-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("username.json");
