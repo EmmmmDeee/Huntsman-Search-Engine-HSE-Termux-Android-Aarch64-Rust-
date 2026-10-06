@@ -41,6 +41,8 @@ dmarc	leaf	DMARC parser
 dns	adapter	DNS source client
 domains	leaf	domain normalization and classification
 egress	leaf	network egress policy
+email_cli	diagnostic	email enrichment command front-end
+email_save	exporter	persists email results as unverified ledger claims
 entity	runtime	canonical entity and evidence model
 error	leaf	shared error type
 eval	leaf	evaluation statistics and helpers
@@ -57,6 +59,7 @@ geoint	leaf	GEOINT distance and parsing helpers
 geometry	leaf	geometry helpers
 gexf	exporter	GEXF graph output
 graph	runtime	shared deterministic graph model
+gravatar	adapter	public Gravatar profile source client
 hibp	adapter	HIBP source adapter
 http	leaf	single socket-opening transport boundary
 identity	leaf	legacy/simple person record resolution helper
@@ -68,6 +71,7 @@ keys	leaf	credential file handling
 leads	runtime	lead ranking through intelligence report
 ledger	exporter	hash-chained verified-claim ledger
 lineage	leaf	lineage-aware candidate resolution helper
+md5	leaf	MD5 primitive for protocols that require public MD5 identifiers
 mediawiki	adapter	MediaWiki source adapter
 metrics	runtime	shared scan metrics
 module	runtime	provider economics metadata
