@@ -138,9 +138,7 @@ fn people_skips_single_token_without_network() {
 fn scan_routes_single_token_to_people_without_network() {
     let out = bin().args(["scan", "Madonna"]).output().unwrap();
     assert_eq!(out.status.code(), Some(0));
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("scan_route=people")
-    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("scan_route=people"));
     assert!(String::from_utf8_lossy(&out.stdout).contains("skipped"));
 }
 
@@ -160,9 +158,7 @@ fn scan_kind_override_and_unavailable_phone_are_explicit() {
         .output()
         .unwrap();
     assert_eq!(phone.status.code(), Some(69));
-    assert!(
-        String::from_utf8_lossy(&phone.stderr).contains("recognized but not rebuilt")
-    );
+    assert!(String::from_utf8_lossy(&phone.stderr).contains("recognized but not rebuilt"));
 }
 
 #[test]
