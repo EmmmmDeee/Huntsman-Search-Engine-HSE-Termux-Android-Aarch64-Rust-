@@ -264,12 +264,7 @@ fn build_entities(profile: &Profile, hash: &str, scan_id: &str, entities: &mut V
     add_contacts(profile, scan_id, &evidence, entities);
 }
 
-fn add_identity(
-    profile: &Profile,
-    scan_id: &str,
-    evidence: &Evidence,
-    entities: &mut Vec<Entity>,
-) {
+fn add_identity(profile: &Profile, scan_id: &str, evidence: &Evidence, entities: &mut Vec<Entity>) {
     let name = profile
         .name
         .as_ref()
@@ -327,7 +322,12 @@ fn add_identity(
 
     if let Some(company) = profile.company.as_deref() {
         let mut company_evidence = evidence.clone();
-        if let Some(title) = profile.job_title.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        if let Some(title) = profile
+            .job_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
             company_evidence = company_evidence.with_attr("job_title", title);
         }
         add_entity(
@@ -368,12 +368,7 @@ fn add_profile_urls(
     }
 }
 
-fn add_accounts(
-    profile: &Profile,
-    scan_id: &str,
-    evidence: &Evidence,
-    entities: &mut Vec<Entity>,
-) {
+fn add_accounts(profile: &Profile, scan_id: &str, evidence: &Evidence, entities: &mut Vec<Entity>) {
     for account in &profile.accounts {
         let platform = account
             .shortname
@@ -411,13 +406,12 @@ fn add_accounts(
     }
 }
 
-fn add_contacts(
-    profile: &Profile,
-    scan_id: &str,
-    evidence: &Evidence,
-    entities: &mut Vec<Entity>,
-) {
-    for email in profile.emails.iter().filter_map(|item| item.value.as_deref()) {
+fn add_contacts(profile: &Profile, scan_id: &str, evidence: &Evidence, entities: &mut Vec<Entity>) {
+    for email in profile
+        .emails
+        .iter()
+        .filter_map(|item| item.value.as_deref())
+    {
         if canonical_email(email).is_some() {
             add_entity(
                 entities,
@@ -499,18 +493,27 @@ mod tests {
             "emails":[{"value":"jane.work@example.org"}]
           }]
         }"#;
-        let report = lookup(
-            &Fake::response(200, body),
-            "Jane@example.com",
-            "scan",
-            1,
-        )
-        .unwrap();
+        let report = lookup(&Fake::response(200, body), "Jane@example.com", "scan", 1).unwrap();
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
         assert!(report.entities.iter().any(|e| e.kind == EntityKind::Person));
-        assert!(report.entities.iter().any(|e| e.kind == EntityKind::Username));
-        assert!(report.entities.iter().any(|e| e.kind == EntityKind::Address));
-        assert!(report.entities.iter().any(|e| e.kind == EntityKind::Organisation));
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username)
+        );
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Address)
+        );
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Organisation)
+        );
         assert!(
             report
                 .entities
