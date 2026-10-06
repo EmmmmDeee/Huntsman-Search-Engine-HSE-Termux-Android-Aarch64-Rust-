@@ -37,8 +37,8 @@ struct Envelope {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Profile {
-    #[serde(default)]
-    profile_url: Option<String>,
+    #[serde(default, rename = "profileUrl")]
+    public_url: Option<String>,
     #[serde(default)]
     display_name: Option<String>,
     #[serde(default)]
@@ -66,10 +66,10 @@ struct Profile {
 struct Name {
     #[serde(default)]
     formatted: Option<String>,
-    #[serde(default)]
-    given_name: Option<String>,
-    #[serde(default)]
-    family_name: Option<String>,
+    #[serde(default, rename = "givenName")]
+    given: Option<String>,
+    #[serde(default, rename = "familyName")]
+    family: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -271,8 +271,8 @@ fn add_identity(profile: &Profile, scan_id: &str, evidence: &Evidence, entities:
         .and_then(|name| {
             name.formatted.clone().or_else(|| {
                 match (
-                    name.given_name.as_deref().map(str::trim),
-                    name.family_name.as_deref().map(str::trim),
+                    name.given.as_deref().map(str::trim),
+                    name.family.as_deref().map(str::trim),
                 ) {
                     (Some(given), Some(family)) if !given.is_empty() && !family.is_empty() => {
                         Some(format!("{given} {family}"))
@@ -348,7 +348,7 @@ fn add_profile_urls(
     entities: &mut Vec<Entity>,
 ) {
     for value in [
-        profile.profile_url.as_deref(),
+        profile.public_url.as_deref(),
         profile.thumbnail_url.as_deref(),
     ]
     .into_iter()
