@@ -39,6 +39,7 @@ use huntsman_recon::identity_resolution::{
 use huntsman_recon::keys::{Keys, is_configured_value};
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage};
+use huntsman_recon::module::reachable_modules;
 use huntsman_recon::navigator::layer;
 use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::people_save;
@@ -61,7 +62,7 @@ use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, UsernameRun};
 use huntsman_recon::username_save;
 
-const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -85,6 +86,7 @@ Commands:
   username              Enrich a username through public GitHub and Bluesky profiles
   phone                 Canonicalise and classify a phone number offline
   scan                  Route one selector into a rebuilt lookup front-end
+  modules               List only currently reachable rebuilt modules
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
   hibp                  Have I Been Pwned lookups (opt-in; keyed subcommands need a key)
@@ -136,6 +138,7 @@ fn main() -> ExitCode {
         Some("username") => username_cmd(&remaining.collect::<Vec<_>>()),
         Some("phone") => phone_cmd(&remaining.collect::<Vec<_>>()),
         Some("scan") => scan_cmd(&remaining.collect::<Vec<_>>()),
+        Some("modules") => modules_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
         Some("hibp") => hibp_cmd(&remaining.collect::<Vec<_>>()),
@@ -178,6 +181,9 @@ fn print_command_help(command: &str) {
         "phone" => PHONE_HELP,
         "scan" => {
             "scan SELECTOR [-k people|email|username|phone] [--save FILE]\nRoute one selector into a rebuilt lookup front-end. Without -k, canonical email routes to email, @handle routes to username, recognised phone syntax routes to phone, and other selectors route to people."
+        }
+        "modules" => {
+            "modules [--json]\nList only rebuilt modules that are currently reachable through a huntsman-recon command."
         }
         "classify" => {
             "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
@@ -432,6 +438,41 @@ fn scan_cmd(args: &[String]) -> ExitCode {
         "username" => username_cmd(&forwarded),
         "phone" => phone_cmd(&forwarded),
         _ => people_cmd(&forwarded),
+    }
+}
+
+fn modules_cmd(args: &[String]) -> ExitCode {
+    let json = match args {
+        [] => false,
+        [flag] if flag == "--json" => true,
+        _ => return fail(EX_USAGE, "usage: huntsman-recon modules [--json]"),
+    };
+    let modules = reachable_modules();
+    if json {
+        match serde_json::to_string_pretty(&serde_json::json!({
+            "count": modules.len(),
+            "modules": modules,
+        })) {
+            Ok(body) => {
+                println!("{body}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail(EX_DATAERR, &format!("json: {error}")),
+        }
+    } else {
+        println!("MODULE\tACCESS\tNETWORK\tCOMMAND\tDESCRIPTION");
+        for module in modules {
+            println!(
+                "{}\t{}\t{}\t{}\t{}",
+                module.name,
+                module.access,
+                if module.network { "yes" } else { "no" },
+                module.command,
+                module.description
+            );
+        }
+        println!("count={}", modules.len());
+        ExitCode::SUCCESS
     }
 }
 
