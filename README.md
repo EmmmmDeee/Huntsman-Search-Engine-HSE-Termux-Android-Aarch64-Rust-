@@ -292,3 +292,8 @@ live receipt. Live ASIC Connect is WAF-blocked.
 ### Reachable module catalogue
 
 `modules [--json]` is offline and intentionally conservative: it lists only rebuilt modules that have a current `huntsman-recon` command path. A provider definition or compiled helper is not advertised merely because it exists in the source tree. This avoids presenting unconnected modules as operational capability.
+
+
+### Offline investigate
+
+`investigate TEXT... | investigate --file FILE` extracts actionable entities through the rebuilt classifier without network access. File input uses the bounded reader, refuses symlinks, and is capped at 1 MiB. The `modules` catalogue includes this path as `classify_module` only because it is now reachable from the binary.
