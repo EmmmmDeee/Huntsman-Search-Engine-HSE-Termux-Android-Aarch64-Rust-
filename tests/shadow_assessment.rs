@@ -111,6 +111,9 @@ fn direct_primary_evidence_exposes_candidate_to_verified_semantic_difference() {
 
     assert_eq!(shadow.legacy_state, ClaimState::Candidate);
     assert_eq!(shadow.policy_state, ClaimState::Verified);
+    assert_eq!(shadow.distinct_resolved_roots, 1);
+    assert_eq!(shadow.proven_independent_routes, 1);
+    assert!(!shadow.independence_incomplete);
     assert!(shadow.reason_codes.contains("state:candidate->verified"));
 }
 
@@ -131,6 +134,8 @@ fn collapsed_mirrors_surface_the_independence_blocker_even_when_state_matches() 
 
     assert_eq!(shadow.legacy_state, ClaimState::Supported);
     assert_eq!(shadow.policy_state, ClaimState::Supported);
+    assert_eq!(shadow.distinct_resolved_roots, 1);
+    assert_eq!(shadow.proven_independent_routes, 1);
     assert!(
         shadow
             .blockers
@@ -140,6 +145,82 @@ fn collapsed_mirrors_surface_the_independence_blocker_even_when_state_matches() 
         shadow
             .reason_codes
             .contains("blocker:insufficient_independent_support")
+    );
+}
+
+#[test]
+fn legacy_verified_with_unproven_disjoint_roots_is_demoted_and_explained() {
+    let (mut ledger, claim_id, ids) = ledger_with(&[("a", "legacy-a"), ("b", "legacy-b")]);
+    ledger.claims.get_mut(&claim_id).unwrap().state = ClaimState::Verified;
+    let (graph, bindings) = root_graph(&[(&ids[0], "source-a"), (&ids[1], "source-b")]);
+
+    let shadow = compare_legacy_and_policy(
+        &ledger,
+        &claim_id,
+        &policy(2),
+        &graph,
+        &bindings,
+        &proof(&ids, &["source-a", "source-b"], false),
+    )
+    .unwrap();
+
+    assert_eq!(shadow.legacy_state, ClaimState::Verified);
+    assert_eq!(shadow.policy_state, ClaimState::Supported);
+    assert_eq!(shadow.distinct_resolved_roots, 2);
+    assert_eq!(shadow.proven_independent_routes, 1);
+    assert!(!shadow.independence_incomplete);
+    assert!(
+        shadow
+            .reason_codes
+            .contains("blocker:insufficient_independent_support")
+    );
+    assert!(shadow.reason_codes.contains("state:verified->supported"));
+}
+
+#[test]
+fn bounded_independence_search_exhaustion_is_visible_and_non_strengthening() {
+    let pairs: Vec<(String, String)> = (0..100)
+        .map(|index| (format!("e{index}"), format!("source-{index}")))
+        .collect();
+    let refs: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(id, origin)| (id.as_str(), origin.as_str()))
+        .collect();
+    let (mut ledger, claim_id, ids) = ledger_with(&refs);
+    ledger.claims.get_mut(&claim_id).unwrap().state = ClaimState::Verified;
+
+    let binding_pairs: Vec<(&EvidenceId, &str)> = ids
+        .iter()
+        .zip(pairs.iter())
+        .map(|(id, (_, origin))| (id, origin.as_str()))
+        .collect();
+    let (graph, bindings) = root_graph(&binding_pairs);
+    let root_names: Vec<String> = pairs.iter().map(|(_, origin)| origin.clone()).collect();
+    let root_refs: Vec<&str> = root_names.iter().map(String::as_str).collect();
+
+    let shadow = compare_legacy_and_policy(
+        &ledger,
+        &claim_id,
+        &policy(2),
+        &graph,
+        &bindings,
+        &proof(&ids, &root_refs, false),
+    )
+    .unwrap();
+
+    assert_eq!(shadow.policy_state, ClaimState::Supported);
+    assert_eq!(shadow.distinct_resolved_roots, 100);
+    assert_eq!(shadow.proven_independent_routes, 1);
+    assert!(shadow.independence_incomplete);
+    assert!(
+        shadow
+            .blockers
+            .contains(&VerificationBlocker::IncompleteIndependenceProof)
+    );
+    assert!(
+        shadow
+            .reason_codes
+            .contains("blocker:incomplete_independence_proof")
     );
 }
 
