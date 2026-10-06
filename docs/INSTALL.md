@@ -31,9 +31,12 @@ huntsman-recon check
 huntsman-recon search "brisbane port"
 ```
 
-Upgrade by running the same `cargo install` command again. To build a specific
-commit instead of the moving default branch, append `--rev COMMIT` immediately
-after the repository URL.
+Upgrade by running the same `cargo install` command again. The repository's
+`install.sh` wrapper keeps Cargo intermediates under
+`$HOME/.cache/huntsman-recon-target` by default and does not force-rebuild an
+already matching install; set `CARGO_TARGET_DIR` to override that cache path.
+To build a specific commit instead of the moving default branch, append
+`--rev COMMIT` immediately after the repository URL.
 
 ## Prebuilt Termux release
 
