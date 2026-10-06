@@ -231,7 +231,7 @@ fn profile_evidence(hash: &str, profile: &Profile, scan_id: &str) -> Evidence {
     .with_attr(
         "profile_url",
         profile
-            .profile_url
+            .public_url
             .as_deref()
             .unwrap_or("https://gravatar.com/"),
     )
