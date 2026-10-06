@@ -8,6 +8,16 @@ use std::fmt::Write as _;
 
 pub const COMMAND_INVARIANT: &str = "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER SYSTEMS";
 
+pub const EXECUTION_PROTOCOLS: [&str; 7] = [
+    "Zero deviation from command structure",
+    "Immediate implementation without bureaucratic delay",
+    "Aggressive optimization of all systems",
+    "Offensive OSINT operations prioritized",
+    "Resource allocation directed by hierarchy",
+    "Performance metrics continuously monitored",
+    "Economic self-sustainability enforced by JEW BOT",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Command,
@@ -229,6 +239,10 @@ pub fn render() -> Result<String, &'static str> {
     validate()?;
     let mut out = String::new();
     writeln!(&mut out, "invariant={COMMAND_INVARIANT}").expect("writing to a String cannot fail");
+    for (index, protocol) in EXECUTION_PROTOCOLS.iter().enumerate() {
+        writeln!(&mut out, "protocol={}\t{protocol}", index + 1)
+            .expect("writing to a String cannot fail");
+    }
 
     let mut active_phase = None;
     for role in COMMAND_CHAIN {
@@ -260,6 +274,7 @@ mod tests {
             "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER SYSTEMS"
         );
         assert_eq!(COMMAND_CHAIN.last().unwrap().name, "JEW BOT");
+        assert_eq!(EXECUTION_PROTOCOLS.len(), 7);
     }
 
     #[test]
