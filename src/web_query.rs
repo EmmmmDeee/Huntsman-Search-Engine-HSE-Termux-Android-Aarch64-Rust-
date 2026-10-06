@@ -316,13 +316,13 @@ mod tests {
         }
     }
 
-    fn response(status: u16, body: &str) -> Result<Response, TransportFailure> {
-        Ok(Response {
+    fn response(status: u16, body: &str) -> Response {
+        Response {
             status,
             headers: vec![("content-type".into(), "text/html".into())],
             body: body.as_bytes().to_vec(),
             truncated: false,
-        })
+        }
     }
 
     #[test]
@@ -347,9 +347,9 @@ mod tests {
     #[test]
     fn multi_engine_search_isolates_zero_yield_and_keeps_other_hits() {
         let fake = Fake::new(vec![
-            response(200, r#"<a href="https://example.org/a">A</a>"#),
-            response(200, "<html><body>no links</body></html>"),
-            response(200, r#"<a href="https://example.net/b">B</a>"#),
+            Ok(response(200, r#"<a href="https://example.org/a">A</a>"#)),
+            Ok(response(200, "<html><body>no links</body></html>")),
+            Ok(response(200, r#"<a href="https://example.net/b">B</a>"#)),
         ]);
         let report = search(&fake, "alice citizen", 1).unwrap();
         assert_eq!(report.hits.len(), 2);
@@ -362,9 +362,9 @@ mod tests {
     fn duplicate_url_across_engines_is_returned_once() {
         let body = r#"<a href="https://example.org/a">A</a>"#;
         let fake = Fake::new(vec![
-            response(200, body),
-            response(200, body),
-            response(200, body),
+            Ok(Ok(response(200, body)),
+            Ok(Ok(response(200, body)),
+            Ok(Ok(response(200, body)),
         ]);
         let report = search(&fake, "alice", 1).unwrap();
         assert_eq!(report.hits.len(), 1);
@@ -374,9 +374,9 @@ mod tests {
     fn challenge_page_remains_a_typed_provider_outcome() {
         let challenge = "<html><title>Just a moment</title>Cloudflare</html>";
         let fake = Fake::new(vec![
-            response(403, challenge),
-            response(200, r#"<a href="https://example.org/a">A</a>"#),
-            response(200, r#"<a href="https://example.net/b">B</a>"#),
+            Ok(Ok(response(403, challenge)),
+            Ok(response(200, r#"<a href="https://example.org/a">A</a>"#)),
+            Ok(response(200, r#"<a href="https://example.net/b">B</a>"#)),
         ]);
         let report = search(&fake, "alice", 1).unwrap();
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
