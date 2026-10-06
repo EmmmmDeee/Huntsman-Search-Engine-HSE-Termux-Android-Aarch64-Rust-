@@ -50,7 +50,6 @@ fn chain(
 fn provenance(source: &str) -> (&str, &'static str) {
     match source {
         "gravatar" => ("gravatar", "src/gravatar.rs"),
-        "email_parse" | "seed" => (source, "src/email_cli.rs"),
         _ => (source, "src/email_cli.rs"),
     }
 }
