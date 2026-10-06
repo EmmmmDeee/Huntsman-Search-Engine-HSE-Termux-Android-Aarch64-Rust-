@@ -156,6 +156,58 @@ fn canonical_pair(
     })
 }
 
+struct IndependenceSearch<'a> {
+    graph: &'a EvidenceAncestryGraph,
+    roots: &'a [EvidenceNodeId],
+    states: usize,
+    max_states: usize,
+    exhausted: bool,
+}
+
+impl IndependenceSearch<'_> {
+    fn search_exact(
+        &mut self,
+        target: usize,
+        start: usize,
+        chosen: &mut Vec<usize>,
+    ) -> Result<bool, AncestryError> {
+        if chosen.len() == target {
+            return Ok(true);
+        }
+        let need = target - chosen.len();
+        if self.roots.len().saturating_sub(start) < need {
+            return Ok(false);
+        }
+
+        for index in start..self.roots.len() {
+            if self.states >= self.max_states {
+                self.exhausted = true;
+                return Ok(false);
+            }
+            self.states += 1;
+
+            let compatible = chosen.iter().copied().all(|selected| {
+                self.graph
+                    .independence_state(&self.roots[selected], &self.roots[index])
+                    .is_ok_and(|state| state == IndependenceState::ProvenIndependent)
+            });
+            if !compatible {
+                continue;
+            }
+
+            chosen.push(index);
+            if self.search_exact(target, index + 1, chosen)? {
+                return Ok(true);
+            }
+            chosen.pop();
+            if self.exhausted {
+                return Ok(false);
+            }
+        }
+        Ok(false)
+    }
+}
+
 impl EvidenceAncestryGraph {
     /// Insert one node. Parents may be inserted later; a missing parent fails at query time.
     ///
@@ -223,7 +275,7 @@ impl EvidenceAncestryGraph {
 
         evidence.left_root = left.clone();
         evidence.right_root = right.clone();
-        evidence.method_id = method_id.to_owned();
+        method_id.clone_into(&mut evidence.method_id);
 
         let records = self.independence_evidence.entry(left.clone()).or_default();
         match records.get(&right) {
@@ -386,82 +438,19 @@ impl EvidenceAncestryGraph {
         }
 
         let roots: Vec<EvidenceNodeId> = root_set.into_iter().collect();
-        let mut states = 0usize;
+        let mut search = IndependenceSearch {
+            graph: self,
+            roots: &roots,
+            states: 0,
+            max_states: max_search_states,
+            exhausted: false,
+        };
         let mut best = 1usize;
-        let mut exhausted = false;
-
-        fn search_exact(
-            graph: &EvidenceAncestryGraph,
-            roots: &[EvidenceNodeId],
-            target: usize,
-            start: usize,
-            chosen: &mut Vec<usize>,
-            states: &mut usize,
-            max_search_states: usize,
-            exhausted: &mut bool,
-        ) -> Result<bool, AncestryError> {
-            if chosen.len() == target {
-                return Ok(true);
-            }
-            let need = target - chosen.len();
-            if roots.len().saturating_sub(start) < need {
-                return Ok(false);
-            }
-
-            for index in start..roots.len() {
-                if *states >= max_search_states {
-                    *exhausted = true;
-                    return Ok(false);
-                }
-                *states += 1;
-
-                let mut compatible = true;
-                for &selected in chosen.iter() {
-                    if graph.independence_state(&roots[selected], &roots[index])?
-                        != IndependenceState::ProvenIndependent
-                    {
-                        compatible = false;
-                        break;
-                    }
-                }
-                if !compatible {
-                    continue;
-                }
-
-                chosen.push(index);
-                if search_exact(
-                    graph,
-                    roots,
-                    target,
-                    index + 1,
-                    chosen,
-                    states,
-                    max_search_states,
-                    exhausted,
-                )? {
-                    return Ok(true);
-                }
-                chosen.pop();
-                if *exhausted {
-                    return Ok(false);
-                }
-            }
-            Ok(false)
-        }
-
         let target_limit = required.min(roots.len());
+
         for target in 2..=target_limit {
             let mut chosen = Vec::with_capacity(target);
-            if search_exact(
-                self,
-                &roots,
-                target,
-                0,
-                &mut chosen,
-                &mut states,
-                max_search_states,
-                &mut exhausted,
-            )? {
+            if search.search_exact(target, 0, &mut chosen)? {
                 best = target;
                 if best >= required {
                     return Ok(IndependenceRouteCount {
@@ -469,7 +458,7 @@ impl EvidenceAncestryGraph {
                         incomplete: false,
                     });
                 }
-            } else if exhausted {
+            } else if search.exhausted {
                 return Ok(IndependenceRouteCount {
                     proven: best,
                     incomplete: true,
