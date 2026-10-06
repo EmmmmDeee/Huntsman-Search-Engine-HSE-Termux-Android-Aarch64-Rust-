@@ -300,7 +300,9 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
                 &classified.value,
                 classified.confidence.min(BIO_CONF_CAP),
                 scan_id,
-                profile_evidence.clone().with_attr("source_field", "description"),
+                profile_evidence
+                    .clone()
+                    .with_attr("source_field", "description"),
                 &["bluesky", "public-profile"],
             );
         }
