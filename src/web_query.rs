@@ -5,16 +5,29 @@
 //! provider never erases results from another.
 
 use std::collections::BTreeSet;
+use std::thread;
 
 use serde::Serialize;
 
 use crate::canonical::canonical_url;
+use crate::circuit::{self, BackoffPolicy, ResponseCache};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
-use crate::http::{Request, Transport, append_query_param};
+use crate::http::{Request, Response, Transport, append_query_param};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
 
 const MAX_RESULTS_PER_ENGINE: usize = 20;
+const CACHE_TTL_SECS: u64 = 300;
+const CACHE_CAPACITY: usize = 256;
+const RETRY_POLICY: BackoffPolicy = BackoffPolicy::new(2, 100, 500, true);
+
+#[derive(Debug, Clone)]
+struct CachedResponse {
+    response: Response,
+    stored_at_unix: u64,
+}
+
+static RESPONSE_CACHE: ResponseCache<CachedResponse> = ResponseCache::new(CACHE_CAPACITY);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EngineSpec {
@@ -87,26 +100,113 @@ fn search_engine<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<EngineReport, Error> {
     let url = append_query_param(engine.base_url, "q", query);
-    let fetched = fetch(
-        transport,
-        Request::get(url)
-            .header("accept", "text/html,application/xhtml+xml")
-            .header("user-agent", crate::http::DEFAULT_USER_AGENT),
-        None,
-        &FetchOptions::default(),
-        engine.name,
-        now_unix,
-    )?;
+    if let Some(cached) = cached_response(&url, now_unix) {
+        return Ok(parse_engine_response(engine, &cached, now_unix));
+    }
 
-    let Some(response) = fetched.response else {
+    let host = circuit::host_of(&url).unwrap_or_else(|| engine.name.to_owned());
+    if !circuit::allow_host(&host, now_unix) {
         return Ok(EngineReport {
             hits: Vec::new(),
-            outcome: fetched.outcome,
+            outcome: outcome(
+                engine.name,
+                SourceOutcomeKind::Inconclusive,
+                now_unix,
+                None,
+                None,
+                "source pacing circuit is open; request not sent",
+            ),
         });
-    };
+    }
 
+    let request = Request::get(&url)
+        .header("accept", "text/html,application/xhtml+xml")
+        .header("user-agent", crate::http::DEFAULT_USER_AGENT);
+    let mut attempt = 0u32;
+
+    loop {
+        let fetched = fetch(
+            transport,
+            request.clone(),
+            None,
+            &FetchOptions::default(),
+            engine.name,
+            now_unix,
+        )?;
+        record_source_health(&host, &fetched.outcome, now_unix);
+
+        if retryable_fetch(fetched.outcome.kind) && RETRY_POLICY.should_retry(attempt) {
+            thread::sleep(RETRY_POLICY.delay(attempt));
+            attempt = attempt.saturating_add(1);
+            continue;
+        }
+
+        let Some(response) = fetched.response else {
+            return Ok(EngineReport {
+                hits: Vec::new(),
+                outcome: fetched.outcome,
+            });
+        };
+
+        if response_is_cacheable(&response) {
+            RESPONSE_CACHE.put(
+                url.clone(),
+                CachedResponse {
+                    response: response.clone(),
+                    stored_at_unix: now_unix,
+                },
+            );
+        }
+        return Ok(parse_engine_response(engine, &response, now_unix));
+    }
+}
+
+fn cached_response(url: &str, now_unix: u64) -> Option<Response> {
+    let cached = RESPONSE_CACHE.get(url)?;
+    (now_unix.saturating_sub(cached.stored_at_unix) <= CACHE_TTL_SECS).then_some(cached.response)
+}
+
+fn response_is_cacheable(response: &Response) -> bool {
+    if response.truncated || !(200..300).contains(&response.status) {
+        return false;
+    }
+    let cache_control = response
+        .header_value("cache-control")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !cache_control
+        .split(',')
+        .map(str::trim)
+        .any(|directive| directive == "no-store")
+        && classify_fetch(response.status, &response.text()) == SourceOutcomeKind::Inconclusive
+}
+
+fn retryable_fetch(kind: SourceOutcomeKind) -> bool {
+    kind.is_transport_failure() || kind == SourceOutcomeKind::Upstream5xx
+}
+
+fn record_source_health(host: &str, outcome: &SourceExecutionOutcome, now_unix: u64) {
+    match outcome.kind {
+        SourceOutcomeKind::RateLimited => circuit::record_rate_limited(
+            host,
+            now_unix,
+            outcome.retry_after_secs.unwrap_or(circuit::COOLDOWN_SECS),
+        ),
+        SourceOutcomeKind::BotWaf | SourceOutcomeKind::Upstream5xx => {
+            circuit::record_failure(host, now_unix);
+        }
+        kind if kind.is_transport_failure() => circuit::record_failure(host, now_unix),
+        _ => circuit::record_success(host),
+    }
+}
+
+fn parse_engine_response(
+    engine: EngineSpec,
+    response: &Response,
+    now_unix: u64,
+) -> EngineReport {
     if response.truncated {
-        return Ok(EngineReport {
+        return EngineReport {
             hits: Vec::new(),
             outcome: outcome(
                 engine.name,
@@ -116,13 +216,13 @@ fn search_engine<T: Transport + ?Sized>(
                 None,
                 "truncated search response",
             ),
-        });
+        };
     }
 
     let body = response.text();
     let classified = classify_fetch(response.status, &body);
     if classified != SourceOutcomeKind::Inconclusive {
-        return Ok(EngineReport {
+        return EngineReport {
             hits: Vec::new(),
             outcome: outcome(
                 engine.name,
@@ -132,7 +232,7 @@ fn search_engine<T: Transport + ?Sized>(
                 None,
                 "search provider did not return a parseable result page",
             ),
-        });
+        };
     }
 
     let hits = parse_hits(&body, engine.name);
@@ -149,7 +249,7 @@ fn search_engine<T: Transport + ?Sized>(
         SourceExecutionOutcome::success(engine.name, now_unix, hits.len())
             .with_http_status(response.status)
     };
-    Ok(EngineReport { hits, outcome })
+    EngineReport { hits, outcome }
 }
 
 fn outcome(
