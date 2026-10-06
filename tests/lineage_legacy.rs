@@ -96,7 +96,10 @@ fn recon_reproduces_legacy_grouping_but_not_unproven_corroboration() {
             assert!(
                 reasons.iter().any(|reason| matches!(
                     reason,
-                    HoldReason::InsufficientIndependentFamilies { found: 1, required: 2 }
+                    HoldReason::InsufficientIndependentFamilies {
+                        found: 1,
+                        required: 2
+                    }
                 )),
                 "{name}: legacy corroboration was not explicitly demoted"
             );
