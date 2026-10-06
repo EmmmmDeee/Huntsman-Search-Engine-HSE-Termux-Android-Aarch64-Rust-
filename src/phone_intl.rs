@@ -1,6 +1,6 @@
 //! Offline phone canonicalisation and international dialling-prefix lookup.
 //!
-//! The country table is ported from the legacy Huntsman phone_intl module.
+//! The country table is ported from the legacy Huntsman `phone_intl` module.
 //! This module performs no network I/O.
 
 use crate::address_au;
