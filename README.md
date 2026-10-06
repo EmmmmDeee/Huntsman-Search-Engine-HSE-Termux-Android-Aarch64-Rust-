@@ -304,7 +304,7 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 ### Web meta-search
 
-`query QUERY...` restores a bounded keyless subset of the legacy multi-engine search path. It currently queries Bing, Brave, and Mojeek independently through the shared fetch boundary, extracts external HTTP(S) result URLs, deduplicates them, and reports each provider outcome separately. One blocked or drifting engine does not erase results from another. The broader legacy engine set, dork packs, pagination, ranking, snippets, and live differential receipts remain outstanding.
+`query QUERY...` restores a bounded keyless subset of the legacy multi-engine search path. It currently queries Bing, Brave, and Mojeek independently through the shared fetch boundary, extracts external HTTP(S) result URLs, deduplicates them, and reports each provider outcome separately. One blocked or drifting engine does not erase results from another. Repeated anonymous queries reuse bounded in-process responses for up to five minutes; `no-store` responses are never cached, transient transport/5xx failures get one bounded backoff retry, and a provider circuit suppresses repeated calls while it is cooling down. The broader legacy engine set, dork packs, pagination, ranking, snippets, and live differential receipts remain outstanding.
 
 
 ### SpiderFoot-compatible front end
