@@ -225,10 +225,8 @@ fn href_values(html: &str) -> Vec<&str> {
         while index < bytes.len() && bytes[index] != quote {
             index += 1;
         }
-        if index <= bytes.len() {
-            if let Some(value) = html.get(start..index) {
-                out.push(value);
-            }
+        if let Some(value) = html.get(start..index) {
+            out.push(value);
         }
         index = index.saturating_add(1);
     }
@@ -264,9 +262,12 @@ fn is_engine_or_navigation_url(url: &str) -> bool {
         "microsoft.com",
         "msn.com",
     ];
-    ENGINE_HOSTS
-        .iter()
-        .any(|known| host == *known || host.ends_with(&format!(".{known}")))
+    ENGINE_HOSTS.iter().any(|known| {
+        host == *known
+            || host
+                .strip_suffix(known)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    })
 }
 
 fn host_of(url: &str) -> Option<String> {
