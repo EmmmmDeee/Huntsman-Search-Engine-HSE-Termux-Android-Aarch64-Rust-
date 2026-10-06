@@ -42,6 +42,7 @@ use huntsman_recon::navigator::layer;
 use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::people_save;
 use huntsman_recon::phone_cli::{PHONE_HELP, PHONE_USAGE, PhoneArgs, PhoneRun};
+use huntsman_recon::phone_intl;
 use huntsman_recon::phone_save;
 use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
@@ -60,7 +61,7 @@ use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, UsernameRun};
 use huntsman_recon::username_save;
 
-const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k KIND] [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -83,6 +84,7 @@ Commands:
   email                 Enrich an email and query its public Gravatar profile
   username              Enrich a username through public GitHub and Bluesky profiles
   phone                 Canonicalise and classify a phone number offline
+  scan                  Route one selector into a rebuilt person-lookup front-end
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
   hibp                  Have I Been Pwned lookups (opt-in; keyed subcommands need a key)
@@ -133,6 +135,7 @@ fn main() -> ExitCode {
         Some("email") => email_cmd(&remaining.collect::<Vec<_>>()),
         Some("username") => username_cmd(&remaining.collect::<Vec<_>>()),
         Some("phone") => phone_cmd(&remaining.collect::<Vec<_>>()),
+        Some("scan") => scan_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
         Some("hibp") => hibp_cmd(&remaining.collect::<Vec<_>>()),
@@ -173,6 +176,9 @@ fn print_command_help(command: &str) {
         "email" => EMAIL_HELP,
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
+        "scan" => {
+            "scan SELECTOR [-k people|email|username|phone] [--save FILE]\nRoute one selector into the rebuilt people, email, username, or phone front-end. Without -k, email, @handle, and recognised phone syntax are detected; other selectors route to people."
+        }
         "classify" => {
             "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
         }
@@ -371,6 +377,61 @@ fn phone_cmd(args: &[String]) -> ExitCode {
             }
         }
         PhoneRun::Failed(message) => fail(EX_DATAERR, &message),
+    }
+}
+
+fn scan_cmd(args: &[String]) -> ExitCode {
+    let mut kind: Option<&str> = None;
+    let mut forwarded = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "-k" | "--kind" => {
+                if kind.is_some() {
+                    return fail(EX_USAGE, "scan accepts only one -k/--kind");
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return fail(EX_USAGE, "scan -k/--kind needs a value");
+                };
+                kind = Some(value.as_str());
+                index += 2;
+            }
+            value => {
+                forwarded.push(value.to_owned());
+                index += 1;
+            }
+        }
+    }
+
+    let Some(selector) = forwarded.first() else {
+        return fail(
+            EX_USAGE,
+            "usage: huntsman-recon scan SELECTOR [-k people|email|username|phone] [--save FILE]",
+        );
+    };
+    if selector.starts_with("--") {
+        return fail(EX_USAGE, "scan needs SELECTOR before options");
+    }
+
+    let route = match kind {
+        Some("people" | "name") => "people",
+        Some("email") => "email",
+        Some("username" | "handle") => "username",
+        Some("phone") => "phone",
+        Some(other) => return fail(EX_USAGE, &format!("unsupported scan kind: {other}")),
+        None if huntsman_recon::canonical::canonical_email(selector).is_some() => "email",
+        None if selector.starts_with('@') => "username",
+        None if phone_intl::canonicalize(selector).is_some() => "phone",
+        None => "people",
+    };
+
+    eprintln!("scan_route={route}");
+    match route {
+        "email" => email_cmd(&forwarded),
+        "username" => username_cmd(&forwarded),
+        "phone" => phone_cmd(&forwarded),
+        _ => people_cmd(&forwarded),
     }
 }
 
