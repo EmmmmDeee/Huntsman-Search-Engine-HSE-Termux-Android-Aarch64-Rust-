@@ -5,7 +5,6 @@ use std::{
     net::{IpAddr, Ipv6Addr},
 };
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ValidationReport {
     pub valid: bool,
