@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
+pub use crate::attack_types::{Tactic, Technique};
 pub use crate::attack_catalog::{ENTERPRISE, TACTICS};
 use crate::dependency::ModuleCategory;
 use crate::entity::{Entity, EntityKind};
@@ -10,21 +11,6 @@ use crate::graph::{EntityRelation, RelationKind};
 pub const ATTACK_VERSION: &str = "17.1";
 pub const TACTIC_ID: &str = "TA0043";
 pub const TACTIC_NAME: &str = "Reconnaissance";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Tactic {
-    pub id: &'static str,
-    pub shortname: &'static str,
-    pub name: &'static str,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Technique {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub is_subtechnique: bool,
-    pub tactics: &'static [&'static str],
-}
 
 #[must_use]
 pub fn attack_spec_major() -> &'static str {
