@@ -108,7 +108,12 @@ pub fn lookup<T: Transport + ?Sized>(
             outcome: fetched.outcome,
         });
     };
-    Ok(parse_response(&response, fetched.outcome, scan_id, now_unix))
+    Ok(parse_response(
+        &response,
+        fetched.outcome,
+        scan_id,
+        now_unix,
+    ))
 }
 
 fn parse_response(
