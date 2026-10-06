@@ -471,7 +471,7 @@ mod tests {
             entities
                 .iter()
                 .any(|entity| entity.kind == EntityKind::Person
-                        && (entity.confidence - CONF_PERSON_FREEMAIL).abs() < f64::EPSILON)
+                    && (entity.confidence - CONF_PERSON_FREEMAIL).abs() < f64::EPSILON)
         );
     }
 
