@@ -819,14 +819,29 @@ fn bin_entries(root: &Path) -> Vec<String> {
 
 #[test]
 fn installer_replaces_the_binary_atomically_and_only_after_verification() {
-    let tools = ["sha256sum", "install", "mktemp", "mv", "cut", "cp"];
+    let tools = [
+        "sha256sum",
+        "install",
+        "mktemp",
+        "mv",
+        "cut",
+        "cmp",
+        "cp",
+        "timeout",
+    ];
     if tools.iter().any(|t| tool(t).is_none()) {
         assert!(std::env::var_os("CI").is_none(), "CI must have coreutils");
         eprintln!("skipping: coreutils missing");
         return;
     }
     let asset = "huntsman-recon-aarch64-linux-android";
-    let new_build = b"\x7fELF new recon build\n";
+    let new_build = br#"#!/bin/sh
+case "$1" in
+  check) mkdir -p var; printf 'fixture-ledger\n' > var/ledger.json ;;
+  verify) [ "$2" = var/ledger.json ] && [ -f "$2" ] ;;
+  *) exit 64 ;;
+esac
+"#;
     let probe = scratch("install-probe");
     fs::write(probe.join("b"), new_build).unwrap();
     let good = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
@@ -866,10 +881,47 @@ fn installer_replaces_the_binary_atomically_and_only_after_verification() {
     );
     let _ = fs::remove_dir_all(&root);
 
+    // Matching bytes that cannot pass the binary's own offline acceptance must
+    // never replace the existing executable.
+    let bad_runtime = br#"#!/bin/sh
+case "$1" in
+  check) exit 9 ;;
+  *) exit 64 ;;
+esac
+"#;
+    let probe = scratch("install-runtime-fail-probe");
+    fs::write(probe.join("b"), bad_runtime).unwrap();
+    let bad_runtime_sha = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
+    let _ = fs::remove_dir_all(&probe);
+    let (code, text, root) = run_installer("runtime-fail", bad_runtime, &bad_runtime_sha);
+    assert_ne!(
+        code,
+        Some(0),
+        "offline runtime acceptance failure must abort install:\n{text}"
+    );
+    assert!(
+        text.contains("offline runtime acceptance failed"),
+        "installer must identify the failed acceptance stage:\n{text}"
+    );
+    assert_eq!(
+        fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
+        b"old build\n"
+    );
+    assert_eq!(
+        bin_entries(&root),
+        ["huntsman-recon"],
+        "failed runtime acceptance leaves no staging leftovers"
+    );
+    let _ = fs::remove_dir_all(&root);
+
     let src = fs::read_to_string(INSTALL).unwrap();
     for required in [
-        "stage=\"$PREFIX/bin/.${DEST_NAME}.install.$$\"",
+        "stage_dir=\"\"",
+        "mktemp -d \"$PREFIX/bin/.${DEST_NAME}.install.XXXXXX\"",
         "install -m 0755 \"$tmp/$ASSET\" \"$stage\"",
+        "timeout 30 \"$stage\" check",
+        "timeout 30 \"$stage\" verify var/ledger.json",
+        "cmp -s \"$stage\" \"$dest\"",
         "mv -f \"$stage\" \"$dest\"",
     ] {
         assert!(
