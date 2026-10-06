@@ -39,7 +39,7 @@ huntsman-recon search "brisbane port"
 
 `check` runs offline self-acceptance and now rejects any invalid engineering-command contract. `command` validates and prints the fixed engineering hierarchy. `search` and `sources` are offline.
 `fetch`, `hibp`, `recon`, `seeknow`, `email`, `username`, and `people` make HTTP
-requests and use public-only egress by default. `phone` is fully offline.
+requests and use public-only egress by default. `phone` is fully offline. `serve` accepts inbound HTTP on `127.0.0.1:8080` by default.
 Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
 before using credentials or network access.
 
@@ -64,7 +64,7 @@ before using credentials or network access.
 | Source | Commit `7dca720b`. The closest copy in this tree is `legacy/hse-monolith-v1.41.0/`, which is read-only and not built; it is not byte-identical to `7dca720b`. | `src/` |
 | Where to get it | GitHub pre-release `main-7dca720` (asset `hse-aarch64-linux-android`, built from `7dca720b`) | A GitHub pre-release `main-<sha7>` (asset `huntsman-recon-aarch64-linux-android`), the CI artifact of the same name from a `main` push (see "Downloads"), or a source build |
 
-`huntsman-recon` is the in-progress replacement, with a subset of the legacy person-lookup providers. Since #672, every push to `main` publishes it as a `main-<sha7>` pre-release. There is no rolling `latest` pre-release: the workflow creates or moves `latest` only when the repository variable `PROMOTE_RECON_TO_LATEST` is `true`, and it is unset. GitHub's "Latest release" is the stable legacy `hse` release `v1.41.0`.
+`huntsman-recon` is the in-progress replacement, with rebuilt person-lookup slices plus a minimal embedded Web UI/API. Since #672, every push to `main` publishes it as a `main-<sha7>` pre-release. There is no rolling `latest` pre-release: the workflow creates or moves `latest` only when the repository variable `PROMOTE_RECON_TO_LATEST` is `true`, and it is unset. GitHub's "Latest release" is the stable legacy `hse` release `v1.41.0`.
 
 Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands; `check` exercises egress, origin, placeholder and URL-redaction rules as gate 11, without a socket). A challenge page is not a hit. No paid source is called automatically; HIBP is explicit opt-in via the CLI or library. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
 
@@ -309,3 +309,17 @@ live receipt. Live ASIC Connect is WAF-blocked.
 ### SpiderFoot-compatible front end
 
 `sf` restores a tested subset of the legacy SpiderFoot 4.0-compatible command line. `sf -M`, `sf -T`, and `sf -V` are offline; `sf -s TARGET` currently executes rebuilt name, email, username, and phone paths and formats rows as tab, CSV, or JSON. `-u all|footprint|investigate|passive`, `-t TYPE[,TYPE...]`, `-r`, and `-q` are parsed. Passive execution is currently available only where the rebuilt path is entirely offline (phone); unsupported target classes fail explicitly instead of silently changing semantics. The remaining SpiderFoot flags, full event taxonomy, stored-scan correlation, listener mode, and complete legacy differential remain outstanding.
+
+
+### Embedded Web UI and HTTP API
+
+`huntsman-recon serve` starts a dependency-free embedded UI on `127.0.0.1:8080` by default. `HSE_BIND` or `serve --bind ADDR` selects another socket address. Explicit non-loopback binds require a non-empty `HSE_AUTH_TOKEN`.
+
+The first rebuilt API surface is read-only:
+
+- `GET /api/health` — process name/version and status;
+- `GET /api/modules` — the same truthful reachable-module catalogue as `modules --json`;
+- `GET /api/command` — the same validated engineering command contract as `command --json`;
+- `GET /` — a minimal embedded page that renders those endpoints.
+
+The listener bounds request headers to 16 KiB, applies finite read/write timeouts, supports `GET` and `HEAD`, and closes each connection after one response. The broader legacy scan-control UI, stored-result browsing, write endpoints, and complete API surface remain to be rebuilt.
