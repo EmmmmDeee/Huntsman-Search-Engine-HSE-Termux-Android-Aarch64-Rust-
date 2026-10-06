@@ -139,7 +139,6 @@ fn phase_boundaries_follow_the_directive() {
     }
 }
 
-
 #[test]
 fn json_contract_matches_static_contract() {
     let rendered = render_json().unwrap();
