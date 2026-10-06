@@ -13,6 +13,7 @@ au_electoral	adapter	Australian state electoral-roll source client
 au_id	leaf	Australian identifier normalization
 au_people	adapter	Australian people-finder source client
 benchmark	diagnostic	benchmarking support
+bluesky_user	adapter	public Bluesky profile source client
 breach	leaf	breach record parsing utilities
 canonical	runtime	canonicalization for entities and provenance
 circuit	leaf	bounded circuit/cache state
@@ -61,6 +62,7 @@ geometry	leaf	geometry helpers
 gexf	exporter	GEXF graph output
 graph	runtime	shared deterministic graph model
 gravatar	adapter	public Gravatar profile source client
+github_user	adapter	public GitHub profile source client
 hibp	adapter	HIBP source adapter
 http	leaf	single socket-opening transport boundary
 identity	leaf	legacy/simple person record resolution helper
@@ -124,6 +126,9 @@ tlsrpt	leaf	TLS-RPT parser
 trust	leaf	trust analysis utility
 uid	leaf	identifier utility
 union_find	leaf	deterministic clustering primitive
+username_cli	diagnostic	username enrichment command front-end
+username_save	exporter	persists username results as unverified ledger claims
+username_variants	leaf	deterministic handle normalization variants
 validation	runtime	seed/entity validation
 wayback	adapter	Internet Archive Wayback CDX client
 xml	leaf	XML utility
