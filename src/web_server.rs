@@ -18,7 +18,7 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const MAX_REQUEST_BYTES: usize = 16 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ServeConfig {
     pub bind: SocketAddr,
     pub bearer_token: Option<String>,
