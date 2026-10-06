@@ -484,7 +484,7 @@ mod tests {
             Ok(response(200, body)),
             Ok(response(200, body)),
         ]);
-        let report = search(&fake, "alice", 1).unwrap();
+        let report = search(&fake, "alice duplicate-url-dedupe", 1).unwrap();
         assert_eq!(report.hits.len(), 1);
     }
 
@@ -608,7 +608,7 @@ mod tests {
             Ok(response(200, r#"<a href="https://example.org/a">A</a>"#)),
             Ok(response(200, r#"<a href="https://example.net/b">B</a>"#)),
         ]);
-        let report = search(&fake, "alice", 1).unwrap();
+        let report = search(&fake, "alice challenge-page", 1).unwrap();
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
         assert_eq!(report.hits.len(), 2);
     }
