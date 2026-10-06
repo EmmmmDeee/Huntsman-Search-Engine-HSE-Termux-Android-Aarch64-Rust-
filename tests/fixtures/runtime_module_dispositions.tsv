@@ -136,6 +136,7 @@ username_cli	diagnostic	username enrichment command front-end
 username_save	exporter	persists username results as unverified ledger claims
 username_variants	leaf	deterministic handle normalization variants
 validation	runtime	seed/entity validation
+value_syntax	leaf	dependency-free domain mailbox URL-host and E.164 syntax primitives
 wayback	adapter	Internet Archive Wayback CDX client
 web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
