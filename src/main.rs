@@ -616,7 +616,9 @@ fn serve_cmd(args: &[String]) -> ExitCode {
             other => {
                 return fail(
                     EX_USAGE,
-                    &format!("unknown serve option: {other}\nusage: huntsman-recon serve [--bind ADDR]"),
+                    &format!(
+                        "unknown serve option: {other}\nusage: huntsman-recon serve [--bind ADDR]"
+                    ),
                 );
             }
         }
