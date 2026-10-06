@@ -95,6 +95,7 @@ cargo run -- email nobody@example.com     # deterministic pivots + public Gravat
 cargo run -- username octocat             # variants + public GitHub/Bluesky lookups
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
+cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
 cargo run -- recon crtsh https://example.com/
 ```
 
