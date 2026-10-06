@@ -16,9 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::evidence_ancestry::{
-    EvidenceAncestryGraph, EvidenceNodeId, IndependenceRouteCount,
-};
+use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceNodeId, IndependenceRouteCount};
 
 const MAX_INDEPENDENCE_SEARCH_STATES: usize = 4_096;
 
@@ -268,9 +266,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::evidence_ancestry::{
-        EvidenceAncestryNode, IndependenceBasis, IndependenceEvidence,
-    };
+    use crate::evidence_ancestry::{EvidenceAncestryNode, IndependenceBasis, IndependenceEvidence};
     use crate::retrieval_artifact::ArtifactId;
 
     fn graph() -> EvidenceAncestryGraph {
