@@ -97,6 +97,7 @@ cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan 
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
 cargo run -- query "OpenAI research"          # network: Bing/Brave/Mojeek subset
+cargo run -- sf -M                         # SpiderFoot-style reachable-module listing; offline
 cargo run -- modules --json               # only modules currently reachable from the binary
 cargo run -- recon crtsh https://example.com/
 ```
@@ -303,3 +304,8 @@ live receipt. Live ASIC Connect is WAF-blocked.
 ### Web meta-search
 
 `query QUERY...` restores a bounded keyless subset of the legacy multi-engine search path. It currently queries Bing, Brave, and Mojeek independently through the shared fetch boundary, extracts external HTTP(S) result URLs, deduplicates them, and reports each provider outcome separately. One blocked or drifting engine does not erase results from another. The broader legacy engine set, dork packs, pagination, ranking, snippets, and live differential receipts remain outstanding.
+
+
+### SpiderFoot-compatible front end
+
+`sf` restores a tested subset of the legacy SpiderFoot 4.0-compatible command line. `sf -M`, `sf -T`, and `sf -V` are offline; `sf -s TARGET` currently executes rebuilt name, email, username, and phone paths and formats rows as tab, CSV, or JSON. `-u all|footprint|investigate|passive`, `-t TYPE[,TYPE...]`, `-r`, and `-q` are parsed. Passive execution is currently available only where the rebuilt path is entirely offline (phone); unsupported target classes fail explicitly instead of silently changing semantics. The remaining SpiderFoot flags, full event taxonomy, stored-scan correlation, listener mode, and complete legacy differential remain outstanding.
