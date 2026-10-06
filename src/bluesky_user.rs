@@ -420,13 +420,7 @@ mod tests {
     #[test]
     fn custom_domain_handle_emits_domain() {
         let body = r#"{"handle":"alice.example.org","did":"did:plc:oky5czdrnfjpqslsw2a5iclo"}"#;
-        let got = lookup(
-            &Fake::response(200, body),
-            "alice.example.org",
-            "scan",
-            1,
-        )
-        .unwrap();
+        let got = lookup(&Fake::response(200, body), "alice.example.org", "scan", 1).unwrap();
         assert!(
             got.entities
                 .iter()
