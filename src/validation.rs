@@ -276,15 +276,6 @@ pub fn is_bogus_ip(s: &str) -> bool {
 }
 
 #[inline]
-fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
-    let needle = needle.as_bytes();
-    haystack
-        .as_bytes()
-        .windows(needle.len())
-        .any(|window| window.eq_ignore_ascii_case(needle))
-}
-
-#[inline]
 fn normalized_ascii_alnum_eq(input: &str, expected: &str) -> bool {
     input
         .chars()
