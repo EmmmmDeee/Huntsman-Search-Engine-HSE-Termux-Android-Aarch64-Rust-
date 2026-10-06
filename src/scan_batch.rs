@@ -23,8 +23,7 @@ pub fn parse_seed_list(body: &str) -> Result<Vec<String>, Error> {
         }
         if seeds.len() >= MAX_BATCH_SEEDS {
             return Err(Error::Invalid(format!(
-                "scan input contains more than {} unique seeds",
-                MAX_BATCH_SEEDS
+                "scan input contains more than {MAX_BATCH_SEEDS} unique seeds"
             )));
         }
         seeds.push(line.to_owned());
