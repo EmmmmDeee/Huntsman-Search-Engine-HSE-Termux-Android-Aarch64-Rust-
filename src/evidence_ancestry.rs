@@ -251,7 +251,7 @@ impl EvidenceAncestryGraph {
                 )));
             }
         }
-        let method_id = evidence.method_id.trim();
+        let method_id = evidence.method_id.trim().to_owned();
         if method_id.is_empty() {
             return Err(AncestryError::InvalidIndependenceEvidence(
                 "method_id is empty".to_owned(),
@@ -275,7 +275,7 @@ impl EvidenceAncestryGraph {
 
         evidence.left_root = left.clone();
         evidence.right_root = right.clone();
-        method_id.clone_into(&mut evidence.method_id);
+        evidence.method_id = method_id;
 
         let records = self.independence_evidence.entry(left.clone()).or_default();
         match records.get(&right) {
