@@ -216,8 +216,34 @@ mod tests {
             SourceOutcomeKind::Inconclusive,
         ]
         .map(kind_label);
-        assert_eq!(labels.len(), 24);
-        assert_eq!(labels[0], "success");
-        assert_eq!(labels[23], "inconclusive");
+        assert_eq!(
+            labels,
+            [
+                "success",
+                "valid_zero",
+                "auth_required",
+                "auth_rejected",
+                "entitlement_denied",
+                "quota_exhausted",
+                "rate_limited",
+                "bot_waf",
+                "dns_failure",
+                "connect_failure",
+                "tls_failure",
+                "ttfb_timeout",
+                "body_timeout",
+                "upstream_4xx",
+                "upstream_5xx",
+                "redirect_changed",
+                "protocol_drift",
+                "interaction_drift",
+                "schema_drift",
+                "parser_drift",
+                "semantic_drift",
+                "zero_yield_anomaly",
+                "confirmed_dead",
+                "inconclusive",
+            ]
+        );
     }
 }
