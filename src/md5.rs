@@ -109,14 +109,8 @@ pub fn digest(input: &[u8]) -> [u8; 16] {
                     (state_d & state_b) | ((!state_d) & state_c),
                     (5 * index + 1) % 16,
                 ),
-                32..=47 => (
-                    state_b ^ state_c ^ state_d,
-                    (3 * index + 5) % 16,
-                ),
-                _ => (
-                    state_c ^ (state_b | !state_d),
-                    (7 * index) % 16,
-                ),
+                32..=47 => (state_b ^ state_c ^ state_d, (3 * index + 5) % 16),
+                _ => (state_c ^ (state_b | !state_d), (7 * index) % 16),
             };
             let next = state_a
                 .wrapping_add(mix)
