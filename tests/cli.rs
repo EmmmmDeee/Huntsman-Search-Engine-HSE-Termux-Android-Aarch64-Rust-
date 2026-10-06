@@ -95,6 +95,8 @@ fn help_and_version_are_available() {
         ("geo", "geo LAT,LON LAT,LON"),
         ("search", "search QUERY [DIR]"),
         ("people", "people NAME [--save FILE]"),
+        ("phone", "phone NUMBER [--save FILE]"),
+        ("scan", "scan SELECTOR [-k people|email|username|phone]"),
         ("fetch", "fetch URL [--body]"),
         ("hibp", "hibp [breach NAME"),
         ("recon", "recon crtsh TARGET"),
@@ -131,6 +133,33 @@ fn people_skips_single_token_without_network() {
         stdout.contains("skipped"),
         "skip path must print a skip line: {stdout:?}"
     );
+}
+
+#[test]
+fn scan_routes_single_token_to_people_without_network() {
+    let out = bin().args(["scan", "Madonna"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("scan_route=people"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("skipped"));
+}
+
+#[test]
+fn scan_kind_override_routes_phone_offline() {
+    let out = bin()
+        .args(["scan", "-k", "phone", "0412 345 678"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("scan_route=phone"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("+61412345678"));
+}
+
+#[test]
+fn scan_auto_routes_recognised_phone_syntax() {
+    let out = bin().args(["scan", "+44 20 7183 8750"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("scan_route=phone"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("country:GB"));
 }
 
 #[test]
