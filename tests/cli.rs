@@ -95,6 +95,7 @@ fn help_and_version_are_available() {
         ("geo", "geo LAT,LON LAT,LON"),
         ("search", "search QUERY [DIR]"),
         ("people", "people NAME [--save FILE]"),
+        ("scan", "scan SELECTOR [-k people|email|username|phone]"),
         ("fetch", "fetch URL [--body]"),
         ("hibp", "hibp [breach NAME"),
         ("recon", "recon crtsh TARGET"),
@@ -131,6 +132,33 @@ fn people_skips_single_token_without_network() {
         stdout.contains("skipped"),
         "skip path must print a skip line: {stdout:?}"
     );
+}
+
+#[test]
+fn scan_routes_name_and_phone_offline() {
+    let person = bin().args(["scan", "Madonna"]).output().unwrap();
+    assert_eq!(person.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&person.stderr).contains("scan_route=people"));
+    assert!(String::from_utf8_lossy(&person.stdout).contains("skipped"));
+
+    let phone = bin()
+        .args(["scan", "0412 345 678"])
+        .output()
+        .unwrap();
+    assert_eq!(phone.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&phone.stderr).contains("scan_route=phone"));
+    assert!(String::from_utf8_lossy(&phone.stdout).contains("+61412345678"));
+}
+
+#[test]
+fn scan_kind_override_uses_rebuilt_phone_front_end() {
+    let out = bin()
+        .args(["scan", "-k", "phone", "0412 345 678"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("scan_route=phone"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("phone_intl\tsuccess"));
 }
 
 #[test]
