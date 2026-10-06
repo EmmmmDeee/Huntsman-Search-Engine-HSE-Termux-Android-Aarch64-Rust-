@@ -6,7 +6,6 @@ use std::{
 };
 
 use crate::address_au;
-use crate::domains;
 use crate::textnorm::ascii_digits_and_plus;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -61,7 +60,7 @@ pub fn is_role_mailbox(email: &str) -> bool {
     let Some((local, _)) = email.split_once('@') else {
         return false;
     };
-    domains::is_role_localpart(local)
+    crate::value_syntax::is_role_localpart(local)
 }
 
 #[must_use]
@@ -92,23 +91,22 @@ pub fn validate_email_syntax(s: &str) -> ValidationReport {
 
 #[must_use]
 pub fn validate_phone_e164(s: &str) -> ValidationReport {
-    if !s.starts_with('+') {
-        return ValidationReport::fail("e164.missing_plus", "must start with '+'");
-    }
-    let digits = &s[1..];
-    if !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return ValidationReport::fail("e164.non_digit", "non-digit after '+'");
-    }
-    if digits.starts_with('0') {
-        return ValidationReport::fail("e164.cc_leading_zero", "country code cannot start with 0");
-    }
-    if !(10..=15).contains(&digits.len()) {
-        return ValidationReport::fail(
+    match crate::value_syntax::phone_e164_error(s) {
+        None => ValidationReport::ok(),
+        Some(crate::value_syntax::PhoneE164Error::MissingPlus) => {
+            ValidationReport::fail("e164.missing_plus", "must start with '+'")
+        }
+        Some(crate::value_syntax::PhoneE164Error::NonDigit) => {
+            ValidationReport::fail("e164.non_digit", "non-digit after '+'")
+        }
+        Some(crate::value_syntax::PhoneE164Error::CountryCodeLeadingZero) => {
+            ValidationReport::fail("e164.cc_leading_zero", "country code cannot start with 0")
+        }
+        Some(crate::value_syntax::PhoneE164Error::Length(length)) => ValidationReport::fail(
             "e164.length",
-            format!("expected 10..=15 digits, got {}", digits.len()),
-        );
+            format!("expected 10..=15 digits, got {length}"),
+        ),
     }
-    ValidationReport::ok()
 }
 
 #[must_use]
@@ -324,28 +322,7 @@ pub fn is_placeholder_domain(host: &str) -> bool {
 
 #[must_use]
 pub fn is_whois_privacy_placeholder(s: &str) -> bool {
-    const MARKERS: &[&str] = &[
-        "privacy",
-        "redacted",
-        "data protected",
-        "not disclosed",
-        "registration private",
-        "private registration",
-        "domains by proxy",
-        "domainsbyproxy",
-        "whoisguard",
-        "identity protection",
-        "statutory masking",
-        "gdpr masked",
-        "withheld",
-        "unavailable",
-        "non-public data",
-        "domain protection services",
-        "protecteddomainservices",
-    ];
-    MARKERS
-        .iter()
-        .any(|marker| contains_ascii_case_insensitive(s, marker))
+    crate::value_syntax::is_whois_privacy_placeholder(s)
 }
 
 #[must_use]
@@ -404,7 +381,7 @@ fn is_placeholder_email_local(local: &str) -> bool {
 }
 
 fn url_host_is_placeholder(url: &str) -> bool {
-    let host = domains::host_only(url.rsplit('@').next().unwrap_or(url));
+    let host = crate::value_syntax::host_only(url.rsplit('@').next().unwrap_or(url));
     !host.is_empty() && is_placeholder_domain(host)
 }
 
@@ -653,8 +630,8 @@ pub fn looks_like_gibberish_name(value: &str) -> bool {
 
 #[must_use]
 pub fn is_onion_url(value: &str) -> bool {
-    domains::host_from_url(value)
-        .or_else(|| domains::canonical_domain_host(value))
+    crate::value_syntax::host_from_url(value)
+        .or_else(|| crate::value_syntax::canonical_domain_host(value))
         .is_some_and(|host| {
             host.rsplit('.')
                 .next()
