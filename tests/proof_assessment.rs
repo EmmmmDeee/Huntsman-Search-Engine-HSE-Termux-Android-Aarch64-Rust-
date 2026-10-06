@@ -10,6 +10,8 @@ fn verified() -> ClaimAssessment {
         blockers: BTreeSet::new(),
         proven_roots: 1,
         unresolved_support: 0,
+        distinct_resolved_roots: 1,
+        independence_incomplete: false,
         proof_environment_count: 0,
         proof_incomplete: false,
     }
