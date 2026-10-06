@@ -309,7 +309,7 @@ impl IntelligenceLedger {
                 unresolved_support += 1;
                 continue;
             };
-            match graph.root_families(node_id) {
+            match graph.resolved_root_ids(node_id) {
                 Ok(roots) if !roots.is_empty() => {
                     distinct_resolved_roots.extend(roots);
                     resolved_nodes.push(node_id.clone());
