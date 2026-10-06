@@ -9,6 +9,7 @@ assurance	leaf	assurance analysis utility
 atproto	adapter	ATProto source adapter
 attack	leaf	ATT&CK model utility
 attack_catalog	leaf	ATT&CK catalogue
+attack_types	leaf	shared ATT&CK value types
 au_electoral	adapter	Australian state electoral-roll source client
 au_id	leaf	Australian identifier normalization
 au_people	adapter	Australian people-finder source client
@@ -89,6 +90,7 @@ phone_cli	diagnostic	offline phone enrichment command front-end
 phone_intl	leaf	international phone canonicalization and country-prefix lookup
 phone_save	exporter	persists phone results as unverified ledger claims
 pipeline	runtime	bounded normalization and evidence composition
+pipeline_limits	leaf	shared bounded-execution limits
 pivot	runtime	graph pivot ranking
 place	leaf	place primitive
 planner	runtime	deterministic dispatch planning
