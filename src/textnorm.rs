@@ -98,43 +98,12 @@ pub fn is_handle(s: &str, min: usize, max: usize) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
-/// True when `s` is a dotted ASCII domain-style handle.
-///
-/// This is the pure shape predicate shared by canonical domain handling and
-/// AT Protocol handles. It intentionally performs no allocation and has no
-/// dependency on higher-level canonicalisation.
+/// True when `s` is a dotted domain-style handle.
 #[must_use]
 pub fn is_domain_handle(s: &str) -> bool {
-    let domain = s.trim().trim_matches('.');
-    if domain.is_empty() || domain.len() > 253 {
-        return false;
-    }
-    let mut labels = domain.split('.');
-    let Some(first) = labels.next() else {
-        return false;
-    };
-    if !valid_domain_label(first) {
-        return false;
-    }
-    let mut count = 1usize;
-    for label in labels {
-        if !valid_domain_label(label) {
-            return false;
-        }
-        count += 1;
-    }
-    count >= 2
+    crate::value_syntax::canonical_domain(s).is_some()
 }
 
-fn valid_domain_label(label: &str) -> bool {
-    !label.is_empty()
-        && label.len() <= 63
-        && !label.starts_with('-')
-        && !label.ends_with('-')
-        && label
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-}
 
 /// Floor an index to a UTF-8 character boundary.
 #[must_use]
