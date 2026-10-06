@@ -72,8 +72,7 @@ pub struct IndependenceRouteCount {
 pub struct EvidenceAncestryGraph {
     nodes: BTreeMap<EvidenceNodeId, EvidenceAncestryNode>,
     #[serde(default)]
-    independence_evidence:
-        BTreeMap<EvidenceNodeId, BTreeMap<EvidenceNodeId, IndependenceEvidence>>,
+    independence_evidence: BTreeMap<EvidenceNodeId, BTreeMap<EvidenceNodeId, IndependenceEvidence>>,
 }
 
 #[derive(Deserialize)]
@@ -338,15 +337,17 @@ impl EvidenceAncestryGraph {
         let left = left_roots.iter().next().expect("length checked");
         let right = right_roots.iter().next().expect("length checked");
         let (left, right) = canonical_pair(left, right)?;
-        Ok(if self
-            .independence_evidence
-            .get(&left)
-            .is_some_and(|records| records.contains_key(&right))
-        {
-            IndependenceState::ProvenIndependent
-        } else {
-            IndependenceState::Unknown
-        })
+        Ok(
+            if self
+                .independence_evidence
+                .get(&left)
+                .is_some_and(|records| records.contains_key(&right))
+            {
+                IndependenceState::ProvenIndependent
+            } else {
+                IndependenceState::Unknown
+            },
+        )
     }
 
     /// Count a conservative lower bound of mutually proven-independent proof
