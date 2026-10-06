@@ -235,6 +235,45 @@ pub fn validate() -> Result<(), &'static str> {
 ///
 /// # Errors
 /// Fails only if the executable contract itself is invalid.
+pub fn render_json() -> Result<String, &'static str> {
+    validate()?;
+    let roles: Vec<serde_json::Value> = COMMAND_CHAIN
+        .iter()
+        .map(|role| {
+            serde_json::json!({
+                "rank": role.rank,
+                "name": role.name,
+                "title": role.title,
+                "phase": {
+                    "number": role.phase.number(),
+                    "label": role.phase.label(),
+                },
+            })
+        })
+        .collect();
+    let capability_owners: Vec<serde_json::Value> = CAPABILITY_OWNERS
+        .iter()
+        .enumerate()
+        .map(|(index, owner)| {
+            serde_json::json!({
+                "capability": index + 1,
+                "owner": owner,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "invariant": COMMAND_INVARIANT,
+        "execution_protocols": EXECUTION_PROTOCOLS,
+        "roles": roles,
+        "capability_owners": capability_owners,
+    }))
+    .map_err(|_| "failed to serialize command contract")
+}
+
+/// Stable, human-readable rendering for the CLI and automation logs.
+///
+/// # Errors
+/// Fails only if the executable contract itself is invalid.
 pub fn render() -> Result<String, &'static str> {
     validate()?;
     let mut out = String::new();
@@ -275,6 +314,28 @@ mod tests {
         );
         assert_eq!(COMMAND_CHAIN.last().unwrap().name, "JEW BOT");
         assert_eq!(EXECUTION_PROTOCOLS.len(), 7);
+    }
+
+    #[test]
+    fn json_render_contains_complete_contract() {
+        let rendered = render_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            value["invariant"],
+            serde_json::Value::String(COMMAND_INVARIANT.to_owned())
+        );
+        assert_eq!(
+            value["roles"].as_array().map(Vec::len),
+            Some(COMMAND_CHAIN.len())
+        );
+        assert_eq!(
+            value["capability_owners"].as_array().map(Vec::len),
+            Some(CAPABILITY_OWNERS.len())
+        );
+        assert_eq!(
+            value["roles"][15]["name"],
+            serde_json::Value::String("JEW BOT".into())
+        );
     }
 
     #[test]

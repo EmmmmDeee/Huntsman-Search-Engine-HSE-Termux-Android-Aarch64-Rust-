@@ -2,7 +2,7 @@
 
 This document is the repository command contract for Huntsman engineering work.
 The hierarchy is fixed. Its machine-readable source of truth is
-`src/engineering_command.rs`, and `huntsman-recon command` validates and prints it.
+`src/engineering_command.rs`; `huntsman-recon command` validates and prints the text view, while `huntsman-recon command --json` emits the same contract for automation.
 The integration test `tests/engineering_command.rs` requires this table, the executable
 contract, and `ARCHITECTURE.md` capability ownership to remain identical. Runtime
 capability still has to be demonstrated by code, tests, artifacts, and the acceptance
