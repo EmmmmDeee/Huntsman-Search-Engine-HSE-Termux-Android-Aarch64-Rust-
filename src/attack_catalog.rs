@@ -1,4 +1,4 @@
-use crate::attack::{Tactic, Technique};
+use crate::attack_types::{Tactic, Technique};
 
 pub const TACTICS: &[Tactic] = &[
     Tactic {
