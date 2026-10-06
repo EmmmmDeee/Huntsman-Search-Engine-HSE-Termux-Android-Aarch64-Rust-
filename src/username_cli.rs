@@ -128,12 +128,7 @@ fn derived_entities(username: &str, scan_id: &str) -> Vec<Entity> {
     entities.push(seed);
 
     for variant in variants(username) {
-        let mut entity = Entity::new(
-            EntityKind::Username,
-            &variant,
-            VARIANT_CONFIDENCE,
-            scan_id,
-        );
+        let mut entity = Entity::new(EntityKind::Username, &variant, VARIANT_CONFIDENCE, scan_id);
         entity.tag("derived");
         entity.tag("variant");
         entity.tag("candidate");
@@ -333,12 +328,8 @@ mod tests {
 
     #[test]
     fn parses_handle_and_save() {
-        let parsed = UsernameArgs::parse(&[
-            "@Jane.Doe".into(),
-            "--save".into(),
-            "out.json".into(),
-        ])
-        .unwrap();
+        let parsed =
+            UsernameArgs::parse(&["@Jane.Doe".into(), "--save".into(), "out.json".into()]).unwrap();
         assert_eq!(parsed.username, "jane.doe");
         assert_eq!(parsed.save, Some(PathBuf::from("out.json")));
     }
