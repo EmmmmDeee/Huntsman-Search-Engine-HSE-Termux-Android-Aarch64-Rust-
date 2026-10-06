@@ -50,6 +50,7 @@ use huntsman_recon::phone_save;
 use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::retrieval_artifact::ArtifactId;
+use huntsman_recon::scan_batch::parse_seed_list;
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::seeknow_cli::{SEEKNOW_HELP, SEEKNOW_USAGE, SeekNowCliRun};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
@@ -69,7 +70,7 @@ use huntsman_recon::username_save;
 use huntsman_recon::web_query;
 use huntsman_recon::web_server::{DEFAULT_BIND, ServeConfig, Server};
 
-const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -92,7 +93,7 @@ Commands:
   email                 Enrich an email and query its public Gravatar profile
   username              Enrich a username through public GitHub and Bluesky profiles
   phone                 Canonicalise and classify a phone number offline
-  scan                  Route one selector into a rebuilt lookup front-end
+  scan                  Route one selector or bounded seed-list into rebuilt lookup front-ends
   investigate           Extract actionable entities from local text or one bounded file
   query                 Query the rebuilt keyless web-search subset
   sf                    SpiderFoot-compatible front end over rebuilt lookup paths
@@ -195,7 +196,7 @@ fn print_command_help(command: &str) {
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
         "scan" => {
-            "scan SELECTOR [-k people|email|username|phone] [--save FILE]\nRoute one selector into a rebuilt lookup front-end. Without -k, canonical email routes to email, @handle routes to username, recognised phone syntax routes to phone, and other selectors route to people."
+            "scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only."
         }
         "investigate" => {
             "investigate TEXT... | investigate --file FILE\nExtract actionable entities from local text. --file refuses symlinks and files over 1 MiB."
@@ -424,6 +425,7 @@ fn phone_cmd(args: &[String]) -> ExitCode {
 
 fn scan_cmd(args: &[String]) -> ExitCode {
     let mut kind: Option<&str> = None;
+    let mut input_file: Option<&str> = None;
     let mut forwarded = Vec::new();
     let mut index = 0;
 
@@ -439,6 +441,19 @@ fn scan_cmd(args: &[String]) -> ExitCode {
                 kind = Some(value.as_str());
                 index += 2;
             }
+            "--input-file" => {
+                if input_file.is_some() {
+                    return fail(EX_USAGE, "scan accepts only one --input-file");
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return fail(EX_USAGE, "scan --input-file needs a value");
+                };
+                if value.starts_with("--") {
+                    return fail(EX_USAGE, "scan --input-file needs a file path");
+                }
+                input_file = Some(value.as_str());
+                index += 2;
+            }
             value => {
                 forwarded.push(value.to_owned());
                 index += 1;
@@ -446,10 +461,60 @@ fn scan_cmd(args: &[String]) -> ExitCode {
         }
     }
 
+    if let Some(path) = input_file {
+        if !forwarded.is_empty() {
+            return fail(
+                EX_USAGE,
+                "scan --input-file does not accept a positional selector or --save",
+            );
+        }
+        return scan_batch_file(path, kind);
+    }
+
+    scan_one(&forwarded, kind)
+}
+
+fn scan_batch_file(path: &str, kind: Option<&str>) -> ExitCode {
+    let bytes = match read_bounded(Path::new(path), MAX_ARTIFACT_BYTES) {
+        Ok(bytes) => bytes,
+        Err(Error::Store(message)) => return fail(EX_NOINPUT, &message),
+        Err(error) => return fail(EX_DATAERR, &error.to_string()),
+    };
+    let body = match String::from_utf8(bytes) {
+        Ok(body) => body,
+        Err(_) => return fail(EX_DATAERR, "scan --input-file is not UTF-8"),
+    };
+    let seeds = match parse_seed_list(&body) {
+        Ok(seeds) => seeds,
+        Err(error) => return fail(EX_DATAERR, &error.to_string()),
+    };
+
+    let total = seeds.len();
+    eprintln!("batch: scanning {total} seed(s) from {path}");
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+    let mut first_failure = None;
+
+    for (offset, seed) in seeds.iter().enumerate() {
+        eprintln!("batch [{}/{}] {}", offset + 1, total, escape_controls(seed));
+        let code = scan_one(std::slice::from_ref(seed), kind);
+        if code == ExitCode::SUCCESS {
+            succeeded += 1;
+        } else {
+            failed += 1;
+            first_failure.get_or_insert(code);
+        }
+    }
+
+    eprintln!("batch complete: {succeeded} succeeded, {failed} failed, {total} total");
+    first_failure.unwrap_or(ExitCode::SUCCESS)
+}
+
+fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
     let Some(selector) = forwarded.first() else {
         return fail(
             EX_USAGE,
-            "usage: huntsman-recon scan SELECTOR [-k people|email|username|phone] [--save FILE]",
+            "usage: huntsman-recon scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone]",
         );
     };
     if selector.starts_with("--") {
@@ -470,10 +535,10 @@ fn scan_cmd(args: &[String]) -> ExitCode {
 
     eprintln!("scan_route={route}");
     match route {
-        "email" => email_cmd(&forwarded),
-        "username" => username_cmd(&forwarded),
-        "phone" => phone_cmd(&forwarded),
-        _ => people_cmd(&forwarded),
+        "email" => email_cmd(forwarded),
+        "username" => username_cmd(forwarded),
+        "phone" => phone_cmd(forwarded),
+        _ => people_cmd(forwarded),
     }
 }
 
