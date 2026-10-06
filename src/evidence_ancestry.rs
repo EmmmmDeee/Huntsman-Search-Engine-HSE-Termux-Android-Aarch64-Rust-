@@ -186,11 +186,17 @@ impl IndependenceSearch<'_> {
             }
             self.states += 1;
 
-            let compatible = chosen.iter().copied().all(|selected| {
-                self.graph
-                    .independence_state(&self.roots[selected], &self.roots[index])
-                    .is_ok_and(|state| state == IndependenceState::ProvenIndependent)
-            });
+            let mut compatible = true;
+            for &selected in chosen.iter() {
+                if self
+                    .graph
+                    .independence_state(&self.roots[selected], &self.roots[index])?
+                    != IndependenceState::ProvenIndependent
+                {
+                    compatible = false;
+                    break;
+                }
+            }
             if !compatible {
                 continue;
             }
