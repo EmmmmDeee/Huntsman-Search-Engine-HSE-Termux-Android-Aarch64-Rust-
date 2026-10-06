@@ -243,7 +243,10 @@ fn email_cmd(args: &[String]) -> ExitCode {
                     Ok(entries) => {
                         println!("saved={}", path.display());
                         println!("entries={}", entries.len());
-                        println!("tip={}", entries.last().map_or("none", |entry| entry.hash.as_str()));
+                        println!(
+                            "tip={}",
+                            entries.last().map_or("none", |entry| entry.hash.as_str())
+                        );
                         ExitCode::SUCCESS
                     }
                     Err(Error::Store(message)) => fail(EX_IOERR, &message),
