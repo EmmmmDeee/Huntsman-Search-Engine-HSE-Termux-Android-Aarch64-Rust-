@@ -973,6 +973,39 @@ fn capability_rows_are_pinned_and_counted() {
 }
 
 #[test]
+fn current_document_does_not_mark_reachable_commands_absent() {
+    let markdown = doc();
+    let main = read(&root().join("src/main.rs"));
+    let mut commands = BTreeSet::new();
+    for line in main.lines() {
+        let Some(rest) = line.split_once("Some(\"").map(|(_, rest)| rest) else {
+            continue;
+        };
+        let Some((command, tail)) = rest.split_once("\")") else {
+            continue;
+        };
+        if tail.contains("=>") {
+            commands.insert(command.to_owned());
+        }
+    }
+    assert!(commands.contains("serve"), "command extraction lost serve");
+    assert!(commands.contains("recon"), "command extraction lost recon");
+
+    for command in commands {
+        for stale in [
+            format!("\`{command}\` remains absent"),
+            format!("\`{command}\` exits 64"),
+            format!("\`{command}\` has no caller"),
+        ] {
+            assert!(
+                !markdown.contains(&stale),
+                "ARCHITECTURE contradicts reachable command {command:?}: {stale:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn parsers_hold_on_known_inputs() {
     let md = "# T\n\n## A\n\n| L | Modules | R |\n| --- | --- | --- |\n| L0 | `x`, `y_z` | r `q` |\n\n## B\ntext\n";
     assert_eq!(headings(md), ["A", "B"]);
