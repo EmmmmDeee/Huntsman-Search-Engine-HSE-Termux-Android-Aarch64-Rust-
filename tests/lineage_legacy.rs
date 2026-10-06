@@ -93,13 +93,14 @@ fn recon_reproduces_legacy_grouping_but_not_unproven_corroboration() {
             let MergeOutcome::Held { reasons } = &c.outcome else {
                 unreachable!()
             };
+            let expected_proven = usize::from(families > 0);
             assert!(
                 reasons.iter().any(|reason| matches!(
                     reason,
                     HoldReason::InsufficientIndependentFamilies {
-                        found: 1,
+                        found,
                         required: 2
-                    }
+                    } if *found == expected_proven
                 )),
                 "{name}: legacy corroboration was not explicitly demoted"
             );
