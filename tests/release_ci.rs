@@ -912,7 +912,11 @@ esac
 "#;
     let sha = installer_sha_line("install-runtime-fail-probe", bad_runtime);
     let (code, text, root) = run_installer("runtime-fail", bad_runtime, &sha);
-    assert_ne!(code, Some(0), "runtime rejection must abort install:\n{text}");
+    assert_ne!(
+        code,
+        Some(0),
+        "runtime rejection must abort install:\n{text}"
+    );
     assert!(
         text.contains("offline runtime acceptance failed"),
         "installer must identify the failed acceptance stage:\n{text}"
