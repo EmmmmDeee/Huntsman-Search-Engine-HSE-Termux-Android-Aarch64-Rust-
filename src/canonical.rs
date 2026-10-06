@@ -1,7 +1,7 @@
 //! Canonical forms for entity values and provenance labels.
 
 use crate::evidence_ancestry::canonical_family;
-use crate::validation;
+use crate::{textnorm, validation};
 
 const TRACKING_PARAMS: &[&str] = &[
     "gclid",
@@ -69,25 +69,13 @@ pub fn canonical_handle(raw: &str) -> Option<String> {
     Some(trimmed)
 }
 
-fn valid_domain_label(label: &str) -> bool {
-    !label.is_empty()
-        && label.len() <= 63
-        && !label.starts_with('-')
-        && !label.ends_with('-')
-        && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-}
-
 #[must_use]
 pub fn canonical_domain(raw: &str) -> Option<String> {
     let domain = raw.trim().trim_matches('.').to_ascii_lowercase();
     if domain.is_empty() || domain.len() > 253 {
         return None;
     }
-    let labels: Vec<&str> = domain.split('.').collect();
-    if labels.len() < 2 || !labels.iter().all(|label| valid_domain_label(label)) {
-        return None;
-    }
-    Some(domain)
+    textnorm::is_domain_handle(&domain).then_some(domain)
 }
 
 #[must_use]
