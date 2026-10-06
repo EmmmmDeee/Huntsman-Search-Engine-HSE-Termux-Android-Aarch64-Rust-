@@ -138,8 +138,7 @@ mod tests {
             "format",
         ));
         let outcomes = [SourceExecutionOutcome::success("phone_intl", 1, 1)];
-        let dir =
-            std::env::temp_dir().join(format!("huntsman-phone-save-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("huntsman-phone-save-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("phone.json");
