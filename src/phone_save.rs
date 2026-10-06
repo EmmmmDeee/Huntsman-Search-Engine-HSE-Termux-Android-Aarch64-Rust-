@@ -35,10 +35,7 @@ fn entity_claim(entity: &Entity) -> Claim {
         .map(|evidence| evidence.provenance.source.as_str())
         .filter(|source| !source.is_empty())
         .unwrap_or("phone");
-    let component = match source {
-        "phone_intl" | "phone_au" | "seed" => "src/phone_cli.rs",
-        _ => "src/phone_cli.rs",
-    };
+    let component = "src/phone_cli.rs";
 
     Claim {
         claim: format!("{} {}", entity.kind, entity.raw_value),
