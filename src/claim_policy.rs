@@ -8,20 +8,30 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceNodeId};
+use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceNodeId, IndependenceRouteCount};
 use crate::intelligence::{
     ClaimId, ClaimState, Defeat, DefeatKind, EvidenceId, EvidenceNature, IntelligenceLedger,
     LedgerError,
 };
 use crate::proof::ProofEnvironmentSet;
 
+const MAX_INDEPENDENCE_SEARCH_STATES: usize = 4_096;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationPolicy {
     pub id: String,
     pub version: u32,
+    /// Compatibility field name retained for this migration slice. In the
+    /// canonical ancestry path this is the minimum number of *proven independent*
+    /// proof routes, not the number of provider/root labels observed.
     pub min_proven_roots: usize,
     pub require_resolved_ancestry: bool,
     pub required_natures: Vec<EvidenceNature>,
+    /// Claim-specific semantic obligations. Each key must be observed with at
+    /// least one of its explicitly accepted values in attached support evidence.
+    /// Empty by default for backwards-compatible policies.
+    #[serde(default)]
+    pub required_attributes: BTreeMap<String, BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -29,7 +39,9 @@ pub enum VerificationBlocker {
     UnknownAncestry,
     CanonicalAncestryRequired,
     MissingRequiredEvidenceNature,
+    MissingRequiredEvidenceAttribute,
     InsufficientIndependentSupport,
+    IncompleteIndependenceProof,
     UndefeatedDefeater,
     MissingProofEnvironment,
     IncompleteProof,
@@ -39,8 +51,18 @@ pub enum VerificationBlocker {
 pub struct ClaimAssessment {
     pub epistemic: ClaimState,
     pub blockers: BTreeSet<VerificationBlocker>,
+    /// Conservative number of proof routes established under the governing
+    /// independence semantics. This is intentionally not raw root cardinality.
     pub proven_roots: usize,
     pub unresolved_support: usize,
+    /// Diagnostic cardinality of resolved provenance origins before independence
+    /// proof. It can exceed `proven_roots` and cannot itself promote a claim.
+    #[serde(default)]
+    pub distinct_resolved_roots: usize,
+    /// True when the bounded independence search exhausted its budget. Truncation
+    /// is non-strengthening and therefore blocks `Verified`.
+    #[serde(default)]
+    pub independence_incomplete: bool,
     #[serde(default)]
     pub proof_environment_count: usize,
     #[serde(default)]
@@ -84,37 +106,76 @@ fn defeat_blocks_verification(defeat: &Defeat) -> bool {
     }
 }
 
-fn finish_assessment(
+fn observe_attributes(
+    observed: &mut BTreeMap<String, BTreeSet<String>>,
+    attributes: &BTreeMap<String, String>,
+) {
+    for (key, value) in attributes {
+        observed
+            .entry(key.clone())
+            .or_default()
+            .insert(value.clone());
+    }
+}
+
+fn required_attributes_satisfied(
     policy: &VerificationPolicy,
-    support_empty: bool,
-    proven_roots: usize,
+    observed: &BTreeMap<String, BTreeSet<String>>,
+) -> bool {
+    policy.required_attributes.iter().all(|(key, accepted)| {
+        !accepted.is_empty()
+            && observed
+                .get(key)
+                .is_some_and(|values| values.iter().any(|value| accepted.contains(value)))
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AncestryMode {
+    Compatibility,
+    Canonical,
+}
+
+struct AssessmentInputs<'a> {
+    support_count: usize,
+    route_count: IndependenceRouteCount,
+    distinct_resolved_roots: usize,
     unresolved_support: usize,
-    present_natures: &[EvidenceNature],
-    has_blocking_defeat: bool,
-    canonical_ancestry: bool,
-) -> ClaimAssessment {
+    present_natures: &'a [EvidenceNature],
+    observed_attributes: &'a BTreeMap<String, BTreeSet<String>>,
+    blocking_defeats: usize,
+    ancestry_mode: AncestryMode,
+}
+
+fn finish_assessment(policy: &VerificationPolicy, input: &AssessmentInputs<'_>) -> ClaimAssessment {
     let mut blockers = BTreeSet::new();
-    if policy.require_resolved_ancestry && unresolved_support > 0 {
+    if policy.require_resolved_ancestry && input.unresolved_support > 0 {
         blockers.insert(VerificationBlocker::UnknownAncestry);
     }
-    if !canonical_ancestry {
+    if input.ancestry_mode != AncestryMode::Canonical {
         blockers.insert(VerificationBlocker::CanonicalAncestryRequired);
     }
-    if proven_roots < policy.min_proven_roots {
+    if input.route_count.proven < policy.min_proven_roots {
         blockers.insert(VerificationBlocker::InsufficientIndependentSupport);
+    }
+    if input.route_count.incomplete {
+        blockers.insert(VerificationBlocker::IncompleteIndependenceProof);
     }
     if policy
         .required_natures
         .iter()
-        .any(|required| !present_natures.contains(required))
+        .any(|required| !input.present_natures.contains(required))
     {
         blockers.insert(VerificationBlocker::MissingRequiredEvidenceNature);
     }
-    if has_blocking_defeat {
+    if !required_attributes_satisfied(policy, input.observed_attributes) {
+        blockers.insert(VerificationBlocker::MissingRequiredEvidenceAttribute);
+    }
+    if input.blocking_defeats > 0 {
         blockers.insert(VerificationBlocker::UndefeatedDefeater);
     }
 
-    let epistemic = if support_empty {
+    let epistemic = if input.support_count == 0 {
         ClaimState::Candidate
     } else if blockers.is_empty() {
         ClaimState::Verified
@@ -125,8 +186,10 @@ fn finish_assessment(
     ClaimAssessment {
         epistemic,
         blockers,
-        proven_roots,
-        unresolved_support,
+        proven_roots: input.route_count.proven,
+        unresolved_support: input.unresolved_support,
+        distinct_resolved_roots: input.distinct_resolved_roots,
+        independence_incomplete: input.route_count.incomplete,
         proof_environment_count: 0,
         proof_incomplete: false,
     }
@@ -160,6 +223,7 @@ impl IntelligenceLedger {
         let mut proven_roots = BTreeSet::new();
         let mut unresolved_support = 0usize;
         let mut present_natures = Vec::new();
+        let mut observed_attributes = BTreeMap::new();
 
         for evidence_id in &claim.support {
             let evidence = self
@@ -174,17 +238,27 @@ impl IntelligenceLedger {
             if !present_natures.contains(&evidence.nature) {
                 present_natures.push(evidence.nature.clone());
             }
+            observe_attributes(&mut observed_attributes, &evidence.attributes);
         }
 
         Ok(finish_assessment(
             policy,
-            claim.support.is_empty(),
-            proven_roots.len(),
-            unresolved_support,
-            &present_natures,
-            !claim.contradictions.is_empty()
-                || claim.defeats.iter().any(defeat_blocks_verification),
-            false,
+            &AssessmentInputs {
+                support_count: claim.support.len(),
+                route_count: IndependenceRouteCount {
+                    proven: proven_roots.len(),
+                    incomplete: false,
+                },
+                distinct_resolved_roots: proven_roots.len(),
+                unresolved_support,
+                present_natures: &present_natures,
+                observed_attributes: &observed_attributes,
+                blocking_defeats: usize::from(
+                    !claim.contradictions.is_empty()
+                        || claim.defeats.iter().any(defeat_blocks_verification),
+                ),
+                ancestry_mode: AncestryMode::Compatibility,
+            },
         ))
     }
 
@@ -195,7 +269,10 @@ impl IntelligenceLedger {
     ///
     /// A missing binding, missing graph node, missing parent, cycle, or empty
     /// root result is unresolved ancestry and therefore fails closed whenever
-    /// the policy requires resolved ancestry.
+    /// the policy requires resolved ancestry. Multiple resolved roots satisfy a
+    /// multi-route policy only when the graph carries explicit evidence proving
+    /// the required mutually independent routes. Semantic attribute obligations
+    /// are checked independently and cannot be compensated by route volume.
     ///
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
@@ -212,9 +289,11 @@ impl IntelligenceLedger {
             .get(claim_id)
             .ok_or_else(|| LedgerError::MissingClaim(claim_id.clone()))?;
 
-        let mut proven_roots = BTreeSet::new();
+        let mut distinct_resolved_roots = BTreeSet::new();
+        let mut resolved_nodes = Vec::new();
         let mut unresolved_support = 0usize;
         let mut present_natures = Vec::new();
+        let mut observed_attributes = BTreeMap::new();
 
         for evidence_id in &claim.support {
             let evidence = self
@@ -224,25 +303,48 @@ impl IntelligenceLedger {
             if !present_natures.contains(&evidence.nature) {
                 present_natures.push(evidence.nature.clone());
             }
+            observe_attributes(&mut observed_attributes, &evidence.attributes);
 
-            let roots = bindings
-                .get(evidence_id)
-                .and_then(|node_id| graph.root_families(node_id).ok());
-            match roots {
-                Some(roots) if !roots.is_empty() => proven_roots.extend(roots),
+            let Some(node_id) = bindings.get(evidence_id) else {
+                unresolved_support += 1;
+                continue;
+            };
+            match graph.resolved_root_ids(node_id) {
+                Ok(roots) if !roots.is_empty() => {
+                    distinct_resolved_roots.extend(roots);
+                    resolved_nodes.push(node_id.clone());
+                }
                 _ => unresolved_support += 1,
             }
         }
 
+        let route_count = match graph.proven_independent_route_count(
+            resolved_nodes.iter(),
+            policy.min_proven_roots,
+            MAX_INDEPENDENCE_SEARCH_STATES,
+        ) {
+            Ok(count) => count,
+            Err(_) => IndependenceRouteCount {
+                proven: 0,
+                incomplete: true,
+            },
+        };
+
         Ok(finish_assessment(
             policy,
-            claim.support.is_empty(),
-            proven_roots.len(),
-            unresolved_support,
-            &present_natures,
-            !claim.contradictions.is_empty()
-                || claim.defeats.iter().any(defeat_blocks_verification),
-            true,
+            &AssessmentInputs {
+                support_count: claim.support.len(),
+                route_count,
+                distinct_resolved_roots: distinct_resolved_roots.len(),
+                unresolved_support,
+                present_natures: &present_natures,
+                observed_attributes: &observed_attributes,
+                blocking_defeats: usize::from(
+                    !claim.contradictions.is_empty()
+                        || claim.defeats.iter().any(defeat_blocks_verification),
+                ),
+                ancestry_mode: AncestryMode::Canonical,
+            },
         ))
     }
 }

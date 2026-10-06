@@ -37,8 +37,9 @@ fn resolve(observations: Vec<Observation>) -> huntsman_recon::lineage::Candidate
     result.candidates.remove(0)
 }
 
-fn assert_held_for_family_count(out: &huntsman_recon::lineage::CandidateOutcome, found: usize) {
-    assert_eq!(out.independent_families.len(), found);
+fn assert_held_for_family_count(out: &huntsman_recon::lineage::CandidateOutcome, families: usize) {
+    assert_eq!(out.independent_families.len(), families);
+    let proven = usize::from(families > 0);
     assert!(
         matches!(
             &out.outcome,
@@ -46,7 +47,7 @@ fn assert_held_for_family_count(out: &huntsman_recon::lineage::CandidateOutcome,
                 if reasons.iter().any(|reason| matches!(
                     reason,
                     HoldReason::InsufficientIndependentFamilies { found: actual, required: 2 }
-                        if *actual == found
+                        if *actual == proven
                 ))
         ),
         "unexpected outcome: {:?}",
@@ -90,23 +91,23 @@ fn registry_field_without_verified_source_class_does_not_create_corroboration() 
 }
 
 #[test]
-fn verified_registry_origin_can_corroborate_a_dataset() {
+fn verified_registry_plus_dataset_are_distinct_labels_but_not_proven_independent() {
     let out = resolve(vec![
         observation("dump-1", "hibp", &[("breach", "Adobe")]),
         observation("registry-1", "abn_lookup", &[("registry", "ABR")]),
     ]);
     assert_eq!(out.independent_families, ["abr", "adobe"]);
-    assert_eq!(out.outcome, MergeOutcome::AutoMerge);
+    assert_held_for_family_count(&out, 2);
 }
 
 #[test]
-fn two_explicit_datasets_from_one_collector_remain_independent() {
+fn two_explicit_dataset_names_from_one_collector_are_not_independence_proof() {
     let out = resolve(vec![
         observation("dump-1", "dehashed", &[("dbname", "Adobe")]),
         observation("dump-2", "dehashed", &[("dbname", "LinkedIn")]),
     ]);
     assert_eq!(out.independent_families, ["adobe", "linkedin"]);
-    assert_eq!(out.outcome, MergeOutcome::AutoMerge);
+    assert_held_for_family_count(&out, 2);
 }
 
 /// Security S2 (post-merge scan of #679): `provenance.source_family` is serde-loaded from
@@ -178,12 +179,14 @@ fn assert_not_a_verified_registry_source(collector: &str) {
 /// a different string and must not match `VERIFIED_REGISTRY_SOURCES`.
 #[test]
 fn cyrillic_lookalike_collector_is_not_a_verified_registry_source() {
-    // Positive control: the exact allowlisted collector is admitted.
+    // Positive control: the exact allowlisted collector contributes a distinct family
+    // label, but that label alone is still not independence proof.
     let genuine = resolve(vec![
         observation("dump-1", "hibp", &[("breach", "Adobe")]),
         observation("registry-1", "abn_lookup", &[("registry", "ABR")]),
     ]);
     assert_eq!(genuine.independent_families, ["abr", "adobe"]);
+    assert_held_for_family_count(&genuine, 2);
 
     for collector in [
         "\u{0430}bn_lookup",        // Cyrillic small a

@@ -59,8 +59,12 @@ pub fn automatic_clusters(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId};
+    use crate::evidence_ancestry::{
+        EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
+        IndependenceEvidence,
+    };
     use crate::identity_resolution::{IdentityResolutionDecision, ResolutionState};
+    use crate::retrieval_artifact::ArtifactId;
 
     fn graph() -> EvidenceAncestryGraph {
         let mut graph = EvidenceAncestryGraph::default();
@@ -78,6 +82,19 @@ mod tests {
                 source_family: "profile".into(),
                 parents: std::collections::BTreeSet::default(),
                 derived: false,
+            })
+            .unwrap();
+        graph
+            .insert_independence_evidence(IndependenceEvidence {
+                left_root: "registry".into(),
+                right_root: "profile".into(),
+                basis: IndependenceBasis::ExplicitUpstreamProvenance,
+                method_id: "resolve:test".into(),
+                method_version: 1,
+                supporting_artifact_ids: [ArtifactId::from("sha256:resolve-test")]
+                    .into_iter()
+                    .collect(),
+                observed_at_unix: 1,
             })
             .unwrap();
         graph

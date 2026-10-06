@@ -36,6 +36,7 @@ fn policy() -> VerificationPolicy {
         min_proven_roots: 1,
         require_resolved_ancestry: true,
         required_natures: vec![EvidenceNature::Observed],
+        required_attributes: BTreeMap::new(),
     }
 }
 
