@@ -2,9 +2,9 @@
 //!
 //! `tests/fixtures/legacy_7dca720_breach_consensus.json` holds the fixture identities
 //! and the outcomes the legacy code produced on them (captured by running the oracle;
-//! see the file's `oracle.capture`). Recon must reproduce every legacy grouping and
-//! corroboration verdict, except the fixtures marked `intentional_difference`, whose
-//! recon value and reason are pinned so a silent change in either direction fails.
+//! see the file's `oracle.capture`). Recon preserves the useful legacy grouping signal,
+//! except listed intentional grouping differences, but does not inherit the oracle's
+//! assumption that two differently named corpora are automatically independent proof.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -73,7 +73,7 @@ fn partition<'a>(keys: impl Iterator<Item = &'a str>) -> BTreeSet<BTreeSet<usize
 }
 
 #[test]
-fn recon_reproduces_legacy_corpus_counting_except_listed_differences() {
+fn recon_reproduces_legacy_grouping_but_not_unproven_corroboration() {
     let doc = oracle();
     let fixtures = doc["fixtures"].as_array().unwrap();
     assert_eq!(fixtures.len(), 9);
@@ -85,7 +85,22 @@ fn recon_reproduces_legacy_corpus_counting_except_listed_differences() {
         let r = run(fixture, Some(0.99));
         let c = &r.candidates[0];
         let families = c.independent_families.len();
-        let merged = c.outcome == MergeOutcome::AutoMerge;
+
+        // The lineage-only API has no artifact-backed independence evidence, so
+        // family-label multiplicity can never authorize a two-route auto-merge.
+        assert_ne!(c.outcome, MergeOutcome::AutoMerge, "{name}: unproven merge");
+        if legacy["is_corroborated"].as_bool().unwrap() {
+            let MergeOutcome::Held { reasons } = &c.outcome else {
+                unreachable!()
+            };
+            assert!(
+                reasons.iter().any(|reason| matches!(
+                    reason,
+                    HoldReason::InsufficientIndependentFamilies { found: 1, required: 2 }
+                )),
+                "{name}: legacy corroboration was not explicitly demoted"
+            );
+        }
 
         if let Some(diff) = fixture.get("intentional_difference") {
             let want = count(&diff["recon_families"]);
@@ -95,11 +110,6 @@ fn recon_reproduces_legacy_corpus_counting_except_listed_differences() {
             continue;
         }
         assert_eq!(families, legacy_count, "{name}: family count");
-        assert_eq!(
-            merged,
-            legacy["is_corroborated"].as_bool().unwrap(),
-            "{name}: corroboration verdict"
-        );
         let legacy_keys = legacy["breach_corpus_key"].as_array().unwrap();
         let ours: Vec<&str> = r
             .observations
@@ -122,10 +132,10 @@ fn recon_reproduces_legacy_corpus_counting_except_listed_differences() {
     );
 }
 
-/// The default policy is legacy's corroboration threshold: two distinct corpora, and
-/// the confidence legacy lets a two-corpus finding state.
+/// The default policy keeps legacy's two-source numeric threshold for compatibility,
+/// but satisfying that count is no longer sufficient without proven independence.
 #[test]
-fn default_policy_matches_legacy_thresholds() {
+fn default_policy_preserves_legacy_numeric_thresholds_without_inheriting_its_proof_rule() {
     let doc = oracle();
     let ceiling: Vec<f64> = doc["oracle"]["supported_ceiling_0_to_3"]
         .as_array()
@@ -149,7 +159,7 @@ fn default_policy_matches_legacy_thresholds() {
 }
 
 /// Legacy grades corroboration with no match probability. Recon additionally refuses
-/// to auto-merge without one, even where legacy is corroborated: a listed difference.
+/// to auto-merge without one, independently of the proven-independence requirement.
 #[test]
 fn legacy_corroborated_fixtures_are_held_without_a_probability() {
     for fixture in oracle()["fixtures"].as_array().unwrap() {
