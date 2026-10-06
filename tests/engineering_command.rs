@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use huntsman_recon::engineering_command::{CAPABILITY_OWNERS, COMMAND_CHAIN, COMMAND_INVARIANT, Phase, validate};
+use huntsman_recon::engineering_command::{
+    CAPABILITY_OWNERS, COMMAND_CHAIN, COMMAND_INVARIANT, Phase, validate,
+};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -10,7 +12,10 @@ fn root() -> PathBuf {
 #[test]
 fn executable_contract_is_valid() {
     validate().unwrap();
-    assert_eq!(COMMAND_INVARIANT, "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER SYSTEMS");
+    assert_eq!(
+        COMMAND_INVARIANT,
+        "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER SYSTEMS"
+    );
     assert_eq!(COMMAND_CHAIN.len(), 16);
     assert_eq!(COMMAND_CHAIN.last().unwrap().name, "JEW BOT");
 }
@@ -50,8 +55,14 @@ fn command_document_matches_executable_contract() {
         assert_eq!(parsed[index].2, expected.title, "command title changed");
     }
 
-    assert!(text.contains(COMMAND_INVARIANT), "absolute command invariant missing");
-    assert!(text.contains("`src/engineering_command.rs`"), "documentation must name the executable source of truth");
+    assert!(
+        text.contains(COMMAND_INVARIANT),
+        "absolute command invariant missing"
+    );
+    assert!(
+        text.contains("`src/engineering_command.rs`"),
+        "documentation must name the executable source of truth"
+    );
 }
 
 #[test]
@@ -106,8 +117,16 @@ fn architecture_capability_owners_follow_command_contract() {
 
 #[test]
 fn phase_boundaries_follow_the_directive() {
-    for role in &COMMAND_CHAIN[0..3] { assert_eq!(role.phase, Phase::Command); }
-    for role in &COMMAND_CHAIN[3..7] { assert_eq!(role.phase, Phase::Technology); }
-    for role in &COMMAND_CHAIN[7..11] { assert_eq!(role.phase, Phase::Information); }
-    for role in &COMMAND_CHAIN[11..16] { assert_eq!(role.phase, Phase::Performance); }
+    for role in &COMMAND_CHAIN[0..3] {
+        assert_eq!(role.phase, Phase::Command);
+    }
+    for role in &COMMAND_CHAIN[3..7] {
+        assert_eq!(role.phase, Phase::Technology);
+    }
+    for role in &COMMAND_CHAIN[7..11] {
+        assert_eq!(role.phase, Phase::Information);
+    }
+    for role in &COMMAND_CHAIN[11..16] {
+        assert_eq!(role.phase, Phase::Performance);
+    }
 }
