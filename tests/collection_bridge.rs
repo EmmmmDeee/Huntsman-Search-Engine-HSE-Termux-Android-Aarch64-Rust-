@@ -134,7 +134,8 @@ fn huge_observation_batch_is_capped_without_false_completeness() {
             observations,
             truncated: false,
         },
-        &limits,
+        limits.max_entities,
+        limits.max_dispatches,
     );
     assert_eq!(bounded.observations.len(), 3);
     assert!(bounded.truncated);
