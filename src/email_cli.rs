@@ -165,9 +165,9 @@ fn derived_evidence(scan_id: &str, email: &str, derivation: &str) -> Evidence {
 fn domain_is_specific(domain: &str) -> bool {
     !is_freemail(domain)
         && !is_social_platform(domain)
-        && !INFRA_PROVIDER_ROOTS
-            .iter()
-            .any(|root| domain == *root || domain.strip_suffix(root).is_some_and(|p| p.ends_with('.')))
+        && !INFRA_PROVIDER_ROOTS.iter().any(|root| {
+            domain == *root || domain.strip_suffix(root).is_some_and(|p| p.ends_with('.'))
+        })
 }
 
 fn derive_usernames(
@@ -251,12 +251,16 @@ fn derive_person(
     scan_id: &str,
     entities: &mut Vec<Entity>,
 ) {
-    let detagged = local.split('+').next().unwrap_or(local).to_ascii_lowercase();
+    let detagged = local
+        .split('+')
+        .next()
+        .unwrap_or(local)
+        .to_ascii_lowercase();
     let parts: Vec<&str> = detagged.split(['.', '_', '-']).collect();
     if parts.len() != 2
-        || parts.iter().any(|part| {
-            part.len() < 2 || !part.chars().all(char::is_alphabetic)
-        })
+        || parts
+            .iter()
+            .any(|part| part.len() < 2 || !part.chars().all(char::is_alphabetic))
     {
         return;
     }
@@ -442,16 +446,26 @@ mod tests {
     #[test]
     fn role_mailbox_does_not_mint_person_or_username() {
         let entities = derive_entities("info@acme.example", "scan");
-        assert!(!entities.iter().any(|entity| {
-            matches!(entity.kind, EntityKind::Person | EntityKind::Username)
-        }));
-        assert!(entities.iter().any(|entity| entity.kind == EntityKind::Domain));
+        assert!(
+            !entities
+                .iter()
+                .any(|entity| { matches!(entity.kind, EntityKind::Person | EntityKind::Username) })
+        );
+        assert!(
+            entities
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Domain)
+        );
     }
 
     #[test]
     fn freemail_does_not_mint_provider_domain() {
         let entities = derive_entities("jane.doe@gmail.com", "scan");
-        assert!(!entities.iter().any(|entity| entity.kind == EntityKind::Domain));
+        assert!(
+            !entities
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Domain)
+        );
         assert!(
             entities
                 .iter()
