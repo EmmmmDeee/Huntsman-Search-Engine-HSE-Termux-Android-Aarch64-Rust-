@@ -1,9 +1,11 @@
 # Install and upgrade
 
 Huntsman Recon is the current Rust package and installs as `huntsman-recon`.
-It is distinct from the legacy `hse` monolith and does not yet include the old
-monolith's person-lookups. The legacy archives and their extracted copies are
-read-only references, not installation sources.
+It is distinct from the legacy `hse` monolith. Rebuilt people, email, username,
+phone, scan-routing, query, investigate, SpiderFoot-compatible, and read-only
+Web UI/API paths are present, but the full legacy surface is not yet at parity.
+The legacy archives and their extracted copies are read-only references, not
+installation sources.
 
 ## Termux on Android arm64 (build from source)
 
@@ -48,10 +50,13 @@ HUNTSMAN_CHANNEL=recon bash ./install-termux.sh
 
 The `recon` channel installs `huntsman-recon`; the installer's default `hse`
 channel is retained for compatibility with the legacy monolith. The installer
-checks the downloaded binary against the release's SHA-256 file and stages it
-before replacing the destination. A checksum detects transfer/corruption
-errors; review the release provenance and attestation if you need to verify
-publisher/build identity.
+checks the downloaded binary against the release's SHA-256 file, stages it in a
+private directory on the destination filesystem, then runs `check` and
+`verify var/ledger.json` from the staged recon binary with bounded timeouts.
+Only a staged binary that passes both offline runtime checks can replace the
+existing executable. Reinstalling identical verified bytes keeps the existing
+live inode. A checksum detects transfer/corruption errors; review the release
+provenance and attestation if you need to verify publisher/build identity.
 
 ## Linux or another Rust host
 
