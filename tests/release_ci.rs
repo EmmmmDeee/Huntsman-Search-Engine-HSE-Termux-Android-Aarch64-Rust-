@@ -817,26 +817,60 @@ fn bin_entries(root: &Path) -> Vec<String> {
     names
 }
 
+const GOOD_RECON_FIXTURE: &[u8] = br#"#!/bin/sh
+case "$1" in
+  check) mkdir -p var; printf 'fixture-ledger\n' > var/ledger.json ;;
+  verify) [ "$2" = var/ledger.json ] && [ -f "$2" ] ;;
+  *) exit 64 ;;
+esac
+"#;
+
+fn installer_tools_present() -> bool {
+    let tools = [
+        "sha256sum",
+        "install",
+        "mktemp",
+        "mv",
+        "cut",
+        "cmp",
+        "cp",
+        "timeout",
+    ];
+    let present = tools.iter().all(|tool_name| tool(tool_name).is_some());
+    assert!(
+        present || std::env::var_os("CI").is_none(),
+        "CI must have installer coreutils"
+    );
+    present
+}
+
+fn installer_sha_line(tag: &str, bytes: &[u8]) -> String {
+    let asset = "huntsman-recon-aarch64-linux-android";
+    let probe = scratch(tag);
+    fs::write(probe.join("b"), bytes).unwrap();
+    let line = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
+    let _ = fs::remove_dir_all(&probe);
+    line
+}
+
+fn assert_live_binary_only(root: &Path) {
+    assert_eq!(
+        bin_entries(root),
+        ["huntsman-recon"],
+        "installer must leave no staging entries"
+    );
+}
+
 #[test]
 fn installer_replaces_the_binary_atomically_and_only_after_verification() {
-    let tools = ["sha256sum", "install", "mktemp", "mv", "cut", "cp"];
-    if tools.iter().any(|t| tool(t).is_none()) {
-        assert!(std::env::var_os("CI").is_none(), "CI must have coreutils");
-        eprintln!("skipping: coreutils missing");
+    if !installer_tools_present() {
         return;
     }
-    let asset = "huntsman-recon-aarch64-linux-android";
-    let new_build = b"\x7fELF new recon build\n";
-    let probe = scratch("install-probe");
-    fs::write(probe.join("b"), new_build).unwrap();
-    let good = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
-    let _ = fs::remove_dir_all(&probe);
-
-    // Verified: replaced in place, mode 0755, no staging file left behind.
-    let (code, text, root) = run_installer("ok", new_build, &good);
+    let good = installer_sha_line("install-probe", GOOD_RECON_FIXTURE);
+    let (code, text, root) = run_installer("ok", GOOD_RECON_FIXTURE, &good);
     assert_eq!(code, Some(0), "{text}");
     let dest = root.join("prefix/bin/huntsman-recon");
-    assert_eq!(fs::read(&dest).unwrap(), new_build);
+    assert_eq!(fs::read(&dest).unwrap(), GOOD_RECON_FIXTURE);
     {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
@@ -844,32 +878,67 @@ fn installer_replaces_the_binary_atomically_and_only_after_verification() {
             0o755
         );
     }
-    assert_eq!(
-        bin_entries(&root),
-        ["huntsman-recon"],
-        "no staging leftovers"
-    );
+    assert_live_binary_only(&root);
     let _ = fs::remove_dir_all(&root);
+}
 
-    // Mismatch: the existing binary is untouched and nothing is staged.
+#[test]
+fn installer_checksum_failure_preserves_existing_binary() {
+    if !installer_tools_present() {
+        return;
+    }
+    let asset = "huntsman-recon-aarch64-linux-android";
     let bad = format!("{}  {asset}\n", "0".repeat(64));
-    let (code, text, root) = run_installer("bad", new_build, &bad);
+    let (code, text, root) = run_installer("bad", GOOD_RECON_FIXTURE, &bad);
     assert_ne!(code, Some(0), "a sha256 mismatch must fail:\n{text}");
     assert_eq!(
         fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
         b"old build\n"
     );
-    assert_eq!(
-        bin_entries(&root),
-        ["huntsman-recon"],
-        "no staging leftovers"
-    );
+    assert_live_binary_only(&root);
     let _ = fs::remove_dir_all(&root);
+}
 
+#[test]
+fn installer_runtime_acceptance_failure_preserves_existing_binary() {
+    if !installer_tools_present() {
+        return;
+    }
+    let bad_runtime = br#"#!/bin/sh
+case "$1" in
+  check) exit 9 ;;
+  *) exit 64 ;;
+esac
+"#;
+    let sha = installer_sha_line("install-runtime-fail-probe", bad_runtime);
+    let (code, text, root) = run_installer("runtime-fail", bad_runtime, &sha);
+    assert_ne!(
+        code,
+        Some(0),
+        "runtime rejection must abort install:\n{text}"
+    );
+    assert!(
+        text.contains("offline runtime acceptance failed"),
+        "installer must identify the failed acceptance stage:\n{text}"
+    );
+    assert_eq!(
+        fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
+        b"old build\n"
+    );
+    assert_live_binary_only(&root);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn installer_source_contract_uses_private_stage_runtime_gate_and_atomic_activation() {
     let src = fs::read_to_string(INSTALL).unwrap();
     for required in [
-        "stage=\"$PREFIX/bin/.${DEST_NAME}.install.$$\"",
+        "stage_dir=\"\"",
+        "mktemp -d \"$PREFIX/bin/.${DEST_NAME}.install.XXXXXX\"",
         "install -m 0755 \"$tmp/$ASSET\" \"$stage\"",
+        "timeout 30 \"$stage\" check",
+        "timeout 30 \"$stage\" verify var/ledger.json",
+        "cmp -s \"$stage\" \"$dest\"",
         "mv -f \"$stage\" \"$dest\"",
     ] {
         assert!(
