@@ -27,7 +27,11 @@ fn termux_runtime_harness_targets_current_binary_and_api_contract() {
         );
     }
 
-    for stale in ["/api/v1/health", "/api/v1/modules", "command -v hse || true"] {
+    for stale in [
+        "/api/v1/health",
+        "/api/v1/modules",
+        "command -v hse || true",
+    ] {
         assert!(
             !text.contains(stale),
             "{HARNESS} must not retain stale runtime probe {stale:?}"
