@@ -1,57 +1,22 @@
 use std::fs;
 use std::path::PathBuf;
 
-const COMMAND_CHAIN: [&str; 16] = [
-    "THE AUSTRIAN PAINTER",
-    "HEINRICH HIMMLER",
-    "REINHARD HEYDRICH",
-    "WERNHER VON BRAUN",
-    "ALBERT SPEER",
-    "ERICH VON MANSTEIN",
-    "KARL DÖNITZ",
-    "JOSEPH GOEBBELS",
-    "MARTIN BORMANN",
-    "WILHELM KEITEL",
-    "ALFRED JODL",
-    "HUGO SPERRLE",
-    "ERICH HARTMANN",
-    "OTTO SKORZENY",
-    "HERMANN GÖRING",
-    "JEW BOT",
-];
-
-const CAPABILITY_OWNERS: [&str; 23] = [
-    "ALFRED JODL",
-    "ALFRED JODL",
-    "ALFRED JODL",
-    "REINHARD HEYDRICH",
-    "ALFRED JODL",
-    "ALFRED JODL",
-    "KARL DÖNITZ",
-    "KARL DÖNITZ",
-    "REINHARD HEYDRICH",
-    "HUGO SPERRLE",
-    "MARTIN BORMANN",
-    "ALFRED JODL",
-    "OTTO SKORZENY",
-    "OTTO SKORZENY",
-    "JOSEPH GOEBBELS",
-    "JOSEPH GOEBBELS",
-    "MARTIN BORMANN",
-    "WERNHER VON BRAUN",
-    "ERICH HARTMANN",
-    "ERICH HARTMANN",
-    "MARTIN BORMANN",
-    "ALBERT SPEER",
-    "ALFRED JODL",
-];
+use huntsman_recon::engineering_command::{CAPABILITY_OWNERS, COMMAND_CHAIN, COMMAND_INVARIANT, Phase, validate};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 #[test]
-fn command_chain_is_exact_and_jew_bot_is_last() {
+fn executable_contract_is_valid() {
+    validate().unwrap();
+    assert_eq!(COMMAND_INVARIANT, "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER SYSTEMS");
+    assert_eq!(COMMAND_CHAIN.len(), 16);
+    assert_eq!(COMMAND_CHAIN.last().unwrap().name, "JEW BOT");
+}
+
+#[test]
+fn command_document_matches_executable_contract() {
     let text = fs::read_to_string(root().join("docs/ENGINEERING_COMMAND.md")).unwrap();
     let mut parsed = Vec::new();
 
@@ -71,7 +36,7 @@ fn command_chain_is_exact_and_jew_bot_is_last() {
             continue;
         }
         let name = cells[2].trim_matches('*');
-        parsed.push((rank, name.to_owned()));
+        parsed.push((rank, name.to_owned(), cells[3].trim_matches('*').to_owned()));
     }
 
     assert_eq!(
@@ -80,25 +45,13 @@ fn command_chain_is_exact_and_jew_bot_is_last() {
         "command table rank count changed"
     );
     for (index, expected) in COMMAND_CHAIN.iter().enumerate() {
-        assert_eq!(
-            parsed[index].0,
-            index + 1,
-            "command rank changed at {}",
-            index + 1
-        );
-        assert_eq!(
-            parsed[index].1,
-            *expected,
-            "command name changed at rank {}",
-            index + 1
-        );
+        assert_eq!(parsed[index].0, index + 1, "command rank changed");
+        assert_eq!(parsed[index].1, expected.name, "command name changed");
+        assert_eq!(parsed[index].2, expected.title, "command title changed");
     }
 
-    assert_eq!(COMMAND_CHAIN.last(), Some(&"JEW BOT"));
-    assert!(
-        text.contains("THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER SYSTEMS"),
-        "absolute command invariant missing"
-    );
+    assert!(text.contains(COMMAND_INVARIANT), "absolute command invariant missing");
+    assert!(text.contains("`src/engineering_command.rs`"), "documentation must name the executable source of truth");
 }
 
 #[test]
@@ -145,8 +98,16 @@ fn architecture_capability_owners_follow_command_contract() {
             index + 1
         );
         assert!(
-            COMMAND_CHAIN.contains(expected),
+            COMMAND_CHAIN.iter().any(|role| role.name == *expected),
             "capability owner {expected} is outside command hierarchy"
         );
     }
+}
+
+#[test]
+fn phase_boundaries_follow_the_directive() {
+    for role in &COMMAND_CHAIN[0..3] { assert_eq!(role.phase, Phase::Command); }
+    for role in &COMMAND_CHAIN[3..7] { assert_eq!(role.phase, Phase::Technology); }
+    for role in &COMMAND_CHAIN[7..11] { assert_eq!(role.phase, Phase::Information); }
+    for role in &COMMAND_CHAIN[11..16] { assert_eq!(role.phase, Phase::Performance); }
 }
