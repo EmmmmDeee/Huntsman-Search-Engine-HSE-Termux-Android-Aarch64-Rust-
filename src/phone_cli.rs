@@ -96,12 +96,7 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
     };
 
     let scan_id = uid::scan_id("phone", &canonical);
-    let mut entity = Entity::new(
-        EntityKind::Phone,
-        &canonical,
-        PHONE_CONFIDENCE,
-        &scan_id,
-    );
+    let mut entity = Entity::new(EntityKind::Phone, &canonical, PHONE_CONFIDENCE, &scan_id);
     entity.tag("e164");
     entity.tag(format!("country:{iso}"));
     entity.add_evidence(
@@ -197,8 +192,7 @@ fn render(report: &Report) -> Result<String, String> {
             writeln!(
                 out,
                 "evidence\t{}\t{}",
-                evidence.provenance.source,
-                evidence.summary
+                evidence.provenance.source, evidence.summary
             )
             .map_err(|error| error.to_string())?;
         }
@@ -221,12 +215,9 @@ mod tests {
 
     #[test]
     fn parse_accepts_au_local_and_save() {
-        let parsed = PhoneArgs::parse(&[
-            "0412 345 678".into(),
-            "--save".into(),
-            "phone.json".into(),
-        ])
-        .unwrap();
+        let parsed =
+            PhoneArgs::parse(&["0412 345 678".into(), "--save".into(), "phone.json".into()])
+                .unwrap();
         assert_eq!(parsed.phone, "+61412345678");
         assert_eq!(parsed.save, Some(PathBuf::from("phone.json")));
     }
