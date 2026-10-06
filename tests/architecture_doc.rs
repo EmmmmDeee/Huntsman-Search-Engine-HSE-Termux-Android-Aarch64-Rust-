@@ -993,9 +993,9 @@ fn current_document_does_not_mark_reachable_commands_absent() {
 
     for command in commands {
         for stale in [
-            format!("\`{command}\` remains absent"),
-            format!("\`{command}\` exits 64"),
-            format!("\`{command}\` has no caller"),
+            format!("`{command}` remains absent"),
+            format!("`{command}` exits 64"),
+            format!("`{command}` has no caller"),
         ] {
             assert!(
                 !markdown.contains(&stale),
