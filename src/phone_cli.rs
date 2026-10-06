@@ -69,8 +69,8 @@ impl PhoneArgs {
             return Err(Error::Invalid("phone needs exactly one NUMBER".into()));
         }
         let raw = positional[0].trim().to_owned();
-        let phone =
-            canonical_phone(&raw).ok_or_else(|| Error::Invalid("invalid phone number".into()))?;
+        let phone = canonical_selector(&raw)
+            .ok_or_else(|| Error::Invalid("invalid phone number".into()))?;
         Ok(Self { raw, phone, save })
     }
 }
@@ -83,7 +83,7 @@ pub enum PhoneRun {
 
 #[must_use]
 pub fn run(raw: &str) -> PhoneRun {
-    let Some(phone) = canonical_phone(raw) else {
+    let Some(phone) = canonical_selector(raw) else {
         return PhoneRun::Failed("invalid phone number".into());
     };
     let scan_id = uid::scan_id("phone", &phone);
@@ -102,6 +102,22 @@ pub fn run(raw: &str) -> PhoneRun {
         Ok(text) => PhoneRun::Printed { text, report },
         Err(message) => PhoneRun::Failed(message),
     }
+}
+
+fn canonical_selector(raw: &str) -> Option<String> {
+    if let Some(phone) = canonical_phone(raw) {
+        return Some(phone);
+    }
+    let trimmed = raw.trim();
+    let digits: String = trimmed
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect();
+    let international = digits.strip_prefix("00")?;
+    let candidate = format!("+{international}");
+    crate::validation::validate_phone_e164(&candidate)
+        .valid
+        .then_some(candidate)
 }
 
 fn seed_entity(phone: &str, scan_id: &str) -> Entity {
