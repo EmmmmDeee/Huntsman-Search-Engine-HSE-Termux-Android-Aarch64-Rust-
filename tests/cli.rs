@@ -25,7 +25,10 @@ fn check_reproduces_committed_artifacts() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert_eq!(\n        stdout,\n        "command_hierarchy=accepted\\naccepted techniques=0\\nbrisbane_sydney_m=732379\\n"\n    );
+    assert_eq!(
+        stdout,
+        "command_hierarchy=accepted\naccepted techniques=0\nbrisbane_sydney_m=732379\n"
+    );
     let committed = Path::new(env!("CARGO_MANIFEST_DIR")).join("var");
     for name in ["ledger.json", "navigator.json", "stix-bundle.json"] {
         assert_eq!(
