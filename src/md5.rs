@@ -100,29 +100,38 @@ pub fn digest(input: &[u8]) -> [u8; 16] {
             words[index] = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
         }
 
-        let (mut a, mut b, mut c, mut d) = (a0, b0, c0, d0);
+        let (mut state_a, mut state_b, mut state_c, mut state_d) = (a0, b0, c0, d0);
 
         for index in 0..64 {
-            let (f, g) = match index {
-                0..=15 => ((b & c) | ((!b) & d), index),
-                16..=31 => ((d & b) | ((!d) & c), (5 * index + 1) % 16),
-                32..=47 => (b ^ c ^ d, (3 * index + 5) % 16),
-                _ => (c ^ (b | !d), (7 * index) % 16),
+            let (mix, word_index) = match index {
+                0..=15 => ((state_b & state_c) | ((!state_b) & state_d), index),
+                16..=31 => (
+                    (state_d & state_b) | ((!state_d) & state_c),
+                    (5 * index + 1) % 16,
+                ),
+                32..=47 => (
+                    state_b ^ state_c ^ state_d,
+                    (3 * index + 5) % 16,
+                ),
+                _ => (
+                    state_c ^ (state_b | !state_d),
+                    (7 * index) % 16,
+                ),
             };
-            let next = a
-                .wrapping_add(f)
+            let next = state_a
+                .wrapping_add(mix)
                 .wrapping_add(K[index])
-                .wrapping_add(words[g]);
-            a = d;
-            d = c;
-            c = b;
-            b = b.wrapping_add(next.rotate_left(S[index]));
+                .wrapping_add(words[word_index]);
+            state_a = state_d;
+            state_d = state_c;
+            state_c = state_b;
+            state_b = state_b.wrapping_add(next.rotate_left(S[index]));
         }
 
-        a0 = a0.wrapping_add(a);
-        b0 = b0.wrapping_add(b);
-        c0 = c0.wrapping_add(c);
-        d0 = d0.wrapping_add(d);
+        a0 = a0.wrapping_add(state_a);
+        b0 = b0.wrapping_add(state_b);
+        c0 = c0.wrapping_add(state_c);
+        d0 = d0.wrapping_add(state_d);
     }
 
     let mut out = [0_u8; 16];
