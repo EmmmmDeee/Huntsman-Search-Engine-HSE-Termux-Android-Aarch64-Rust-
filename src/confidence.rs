@@ -2,17 +2,18 @@
 //! `Entity::c_effective`, `Classification`, and depth decay. Pure, no I/O.
 //!
 //! `C_eff = clamp(max(C * (1 + 0.15 ln n), 1 - (1 - C) * 0.65^(n - 1)), 0, 1)`
-//! where `n` is the number of independent sources.
+//! where `n` is the number of proven-independent proof routes.
 //!
 //! What changed from the monolith: the doubt kept per extra source was a fixed 0.65,
 //! so five independent sources of confidence 0.05 each reached 0.83 (Verified) and
 //! even a zero-confidence claim reached it. Doubt now shrinks no faster than the
 //! source's own doubt, `max(0.65, 1 - C)`, which is the noisy-OR bound for weak
-//! sources and is identical to the monolith for `C >= 0.35`. Also, `n` was a count of distinct source labels, so
-//! two mirrors of one dump counted twice. [`effective_from_ancestry`] counts
-//! independent root families from the evidence graph instead. Non-finite or
-//! out-of-range confidence is clamped to [0, 1] (NaN is 0), so a bad input can
-//! never raise a tier. Depth decay refuses a base above 1, which would have
+//! sources and is identical to the monolith for `C >= 0.35`. Also, `n` was a count
+//! of distinct source labels, so two mirrors of one dump counted twice. The canonical
+//! ancestry path now boosts only from mutually proven-independent routes; merely
+//! disjoint labels remain one route, and bounded-search truncation is non-strengthening.
+//! Non-finite or out-of-range confidence is clamped to [0, 1] (NaN is 0), so a bad
+//! input can never raise a tier. Depth decay refuses a base above 1, which would have
 //! amplified confidence.
 
 use std::collections::BTreeSet;
@@ -30,6 +31,8 @@ pub const CORROBORATION_DOUBT_DECAY: f64 = 0.65;
 pub const VERIFIED_MIN: f64 = 0.75;
 /// Lower bound of the Probable tier.
 pub const PROBABLE_MIN: f64 = 0.40;
+
+const MAX_INDEPENDENCE_SEARCH_STATES: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Classification {
@@ -127,8 +130,12 @@ pub fn effective_from_distinct_sources<'a>(
     effective(confidence, u32::try_from(count).unwrap_or(u32::MAX))
 }
 
-/// [`effective`] with `n` taken as independent root families behind `support`.
-/// Two mirrors of one dump are one source. Fails closed on unknown ancestry.
+/// [`effective`] with `n` taken from a conservative lower bound of mutually
+/// proven-independent ancestry routes behind `support`.
+///
+/// Shared ancestry counts once. Disjoint-but-unproven roots also count as one route.
+/// If the bounded independence search exhausts its budget, only the routes already
+/// proven before exhaustion contribute to confidence; uncertainty cannot add a boost.
 ///
 /// # Errors
 /// A missing node or a cycle in the ancestry of any support node.
@@ -137,8 +144,16 @@ pub fn effective_from_ancestry(
     graph: &EvidenceAncestryGraph,
     support: &[EvidenceNodeId],
 ) -> Result<f64, AncestryError> {
-    let n = graph.independent_support_count(support)?;
-    Ok(effective(confidence, u32::try_from(n).unwrap_or(u32::MAX)))
+    let required = support.len().max(1);
+    let routes = graph.proven_independent_route_count(
+        support.iter(),
+        required,
+        MAX_INDEPENDENCE_SEARCH_STATES,
+    )?;
+    Ok(effective(
+        confidence,
+        u32::try_from(routes.proven).unwrap_or(u32::MAX),
+    ))
 }
 
 /// Discount for distance from the seed: `c_eff * base^generation`, in [0, 1].
@@ -157,7 +172,10 @@ pub fn depth_decayed(c_eff: f64, base: f64, generation: u32) -> Option<f64> {
 #[allow(clippy::float_cmp)] // exact 0.0/1.0 sentinels are the contract under test
 mod tests {
     use super::*;
-    use crate::evidence_ancestry::EvidenceAncestryNode;
+    use crate::evidence_ancestry::{
+        EvidenceAncestryNode, IndependenceBasis, IndependenceEvidence,
+    };
+    use crate::retrieval_artifact::ArtifactId;
 
     #[test]
     fn documented_values() {
@@ -273,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn mirrors_of_one_dump_are_one_source() {
+    fn corroboration_requires_proven_independence() {
         let mut g = EvidenceAncestryGraph::default();
         let mut add = |id: &str, family: &str, parents: &[&str]| {
             g.insert(EvidenceAncestryNode {
@@ -294,11 +312,26 @@ mod tests {
                 .map(EvidenceNodeId::from)
                 .collect::<Vec<_>>()
         };
+
         let mirrors = effective_from_ancestry(0.6, &g, &ids(&["mirror-a", "mirror-b"])).unwrap();
-        let independent =
-            effective_from_ancestry(0.6, &g, &ids(&["mirror-a", "registry"])).unwrap();
+        let unproven = effective_from_ancestry(0.6, &g, &ids(&["mirror-a", "registry"])).unwrap();
         assert!((mirrors - 0.6).abs() < 1e-12, "{mirrors}");
-        assert!(independent > 0.7, "{independent}");
+        assert!((unproven - 0.6).abs() < 1e-12, "{unproven}");
+
+        g.insert_independence_evidence(IndependenceEvidence {
+            left_root: "dump".into(),
+            right_root: "registry".into(),
+            basis: IndependenceBasis::ExplicitUpstreamProvenance,
+            method_id: "test:confidence".into(),
+            method_version: 1,
+            supporting_artifact_ids: [ArtifactId::from("sha256:confidence-proof")]
+                .into_iter()
+                .collect(),
+            observed_at_unix: 1,
+        })
+        .unwrap();
+        let proven = effective_from_ancestry(0.6, &g, &ids(&["mirror-a", "registry"])).unwrap();
+        assert!(proven > 0.7, "{proven}");
         assert!(
             effective_from_ancestry(0.6, &g, &ids(&["ghost"])).is_err(),
             "unknown ancestry fails closed"
