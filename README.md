@@ -7,7 +7,7 @@ uncertainty visible; a lead or verified claim is not an attribution or ATT&CK
 score.
 
 > **Status:** this is the `huntsman-recon` reconstruction, not the previous
-> `hse` monolith. `people`, `email`, and `username` provide subsets of the old monolith's person-lookups.
+> `hse` monolith. `people`, `email`, `username`, and `phone` provide subsets of the old monolith's person-lookups.
 > Canonical extracted legacy trees are preserved as read-only reconstruction references;
 > the two historical ZIP references remain byte-pinned at the repository root. See
 > [archive provenance](docs/ARCHIVE_PROVENANCE.md) and [architecture and status](ARCHITECTURE.md).
@@ -39,7 +39,7 @@ huntsman-recon search "brisbane port"
 
 `check` runs offline self-acceptance. `command` validates and prints the fixed engineering hierarchy. `search` and `sources` are offline.
 `fetch`, `hibp`, `recon`, `seeknow`, `email`, `username`, and `people` make HTTP
-requests and use public-only egress by default.
+requests and use public-only egress by default. `phone` is fully offline.
 Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
 before using credentials or network access.
 
@@ -93,6 +93,7 @@ cargo run -- people Madonna              # skip path: fewer than two alphabetic 
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
 cargo run -- email nobody@example.com     # deterministic pivots + public Gravatar lookup
 cargo run -- username octocat             # variants + public GitHub/Bluesky lookups
+cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- recon crtsh https://example.com/
 ```
 
@@ -160,10 +161,13 @@ cargo run -- hibp subscription                 # plan, rate and entitlements; ke
 Check one password without putting it on the command line or in shell history:
 
 ```
-read -rs PW && printf '%s\n' "$PW" | huntsman-recon hibp password; unset PW
+read -rs PW && printf '%s
+' "$PW" | huntsman-recon hibp password; unset PW
 ```
 
-`password` reads one line from stdin (at most 4096 bytes after the `\n`/`\r\n` terminator is stripped), SHA-1 hashes it locally and sends only the first 5 hex characters to `GET https://api.pwnedpasswords.com/range/{prefix}` with `Add-Padding: true`. The suffix is matched locally. The password, the full hash and the suffix are never sent, printed, logged or included in an error. The password and hash buffers are overwritten with zeros after use (best effort without `unsafe`; copies in stdin's read buffer are not reached).
+`password` reads one line from stdin (at most 4096 bytes after the `
+`/`\r
+` terminator is stripped), SHA-1 hashes it locally and sends only the first 5 hex characters to `GET https://api.pwnedpasswords.com/range/{prefix}` with `Add-Padding: true`. The suffix is matched locally. The password, the full hash and the suffix are never sent, printed, logged or included in an error. The password and hash buffers are overwritten with zeros after use (best effort without `unsafe`; copies in stdin's read buffer are not reached).
 
 Output is `key=value` lines. Each run starts with `source=HIBP`, `service=` (`api-v3` or `pwned-passwords`), `source_attribution=` and `results=N`. Breach/account output preserves the complete parsed model; pastes preserve every parsed paste field; `password-range` drops zero-count padding entries; `subscription` reports plan/rate/entitlement fields and `key_source=`, never the key. Results are never intentionally truncated.
 
@@ -278,4 +282,13 @@ live receipt. Live ASIC Connect is WAF-blocked.
 ### Email lookup
 
 `email ADDR [--save FILE]` canonicalises the selector, derives deterministic non-network email pivots, queries the public Gravatar profile, renders lineage, and optionally writes an unverified ledger that `verify` can reload. A missing Gravatar profile is a validated zero result; malformed or incomplete responses are not treated as absence.
-\n\n### Username lookup\n\n`username HANDLE [--save FILE]` keeps the operator selector, derives bounded separator/de-decoration variants at candidate confidence, and performs keyless public-profile lookups against GitHub and Bluesky. Provider absence, rate limits, malformed responses, and unsupported handle shapes remain distinct outcomes. `--save` writes an unverified ledger that `verify` can reload.\n
+
+
+### Username lookup
+
+`username HANDLE [--save FILE]` keeps the operator selector, derives bounded separator/de-decoration variants at candidate confidence, and performs keyless public-profile lookups against GitHub and Bluesky. Provider absence, rate limits, malformed responses, and unsupported handle shapes remain distinct outcomes. `--save` writes an unverified ledger that `verify` can reload.
+
+
+### Phone lookup
+
+`phone NUMBER [--save FILE]` is offline. It canonicalises explicit international syntax and recognised Australian local numbers to E.164, resolves the international dialling prefix from the embedded legacy-compatible table, and enriches Australian numbers with numbering-plan line type plus coarse fixed-line allocation region. It does not guess the country of an ambiguous bare foreign national number and does not infer a mobile carrier. `--save` writes an unverified ledger that `verify` can reload.
