@@ -5,6 +5,8 @@ use std::{
     net::{IpAddr, Ipv6Addr},
 };
 
+use crate::textnorm::ascii_digits_and_plus;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ValidationReport {
     pub valid: bool,
@@ -109,6 +111,75 @@ pub fn validate_phone_e164(s: &str) -> ValidationReport {
 #[must_use]
 pub fn to_e164_au(s: &str) -> Option<String> {
     crate::value_syntax::canonical_phone(s)
+}
+
+/// Scan a blob for E.164 numbers. Returns `true` when `cap` was reached.
+pub fn scan_phones(text: &str, cap: usize, mut collect: impl FnMut(String)) -> bool {
+    let bytes = text.as_bytes();
+    let mut cursor = 0usize;
+    let mut count = 0usize;
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'+'
+            && cursor + 10 < bytes.len()
+            && matches!(bytes[cursor + 1], b'1'..=b'9')
+        {
+            let start = cursor;
+            cursor += 1;
+            let mut digits = 0u32;
+            while cursor < bytes.len()
+                && (bytes[cursor].is_ascii_digit()
+                    || matches!(bytes[cursor], b'-' | b' ' | b'(' | b')'))
+            {
+                if bytes[cursor].is_ascii_digit() {
+                    digits += 1;
+                }
+                cursor += 1;
+            }
+            if (10..=15).contains(&digits) {
+                let cleaned = ascii_digits_and_plus(&text[start..cursor]);
+                if validate_phone_e164(&cleaned).valid {
+                    collect(cleaned);
+                    count += 1;
+                    if count >= cap {
+                        return true;
+                    }
+                }
+            }
+        } else {
+            cursor += 1;
+        }
+    }
+    false
+}
+
+fn is_documentation_or_reserved(addr: &IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            octets[0] == 0
+                || octets[0] >= 240
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+                || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
+                || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+                || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+                || (octets[0] == 198 && (octets[1] & 0xFE) == 18)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_documentation_or_reserved(&IpAddr::V4(v4));
+            }
+            let octets = v6.octets();
+            (octets[0] == 0x20 && octets[1] == 0x01 && octets[2] == 0x0d && octets[3] == 0xb8)
+                || (octets[0] == 0x3f && octets[1] == 0xff && (octets[2] & 0xF0) == 0)
+                || (octets[0] == 0x20
+                    && octets[1] == 0x01
+                    && octets[2] == 0x00
+                    && octets[3] == 0x02
+                    && octets[4] == 0x00
+                    && octets[5] == 0x00)
+        }
+    }
 }
 
 #[must_use]
