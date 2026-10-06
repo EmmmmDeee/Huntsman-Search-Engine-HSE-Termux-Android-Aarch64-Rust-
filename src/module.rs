@@ -263,6 +263,149 @@ pub fn unknown_cost_paid_provider_blocked(
         && descriptor.cost_model == CostModel::Unknown
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ReachableModule {
+    pub name: &'static str,
+    pub command: &'static str,
+    pub access: &'static str,
+    pub network: bool,
+    pub description: &'static str,
+}
+
+const REACHABLE_MODULES: &[ReachableModule] = &[
+    ReachableModule {
+        name: "source_registry",
+        command: "sources QUERY",
+        access: "offline",
+        network: false,
+        description: "curated lead-only source routing",
+    },
+    ReachableModule {
+        name: "local_search",
+        command: "search QUERY [DIR]",
+        access: "offline",
+        network: false,
+        description: "bounded local text search",
+    },
+    ReachableModule {
+        name: "asic_persons",
+        command: "people NAME",
+        access: "keyless",
+        network: true,
+        description: "ASIC people register lookup",
+    },
+    ReachableModule {
+        name: "asic_director",
+        command: "people NAME",
+        access: "keyless",
+        network: true,
+        description: "ASIC director register lookup",
+    },
+    ReachableModule {
+        name: "au_people",
+        command: "people NAME",
+        access: "keyless",
+        network: true,
+        description: "Australian public people-source lookup",
+    },
+    ReachableModule {
+        name: "au_electoral",
+        command: "people NAME",
+        access: "keyless",
+        network: true,
+        description: "Australian public electoral-source lookup",
+    },
+    ReachableModule {
+        name: "email_parse",
+        command: "email ADDR",
+        access: "offline",
+        network: false,
+        description: "deterministic email canonicalisation and pivots",
+    },
+    ReachableModule {
+        name: "gravatar",
+        command: "email ADDR",
+        access: "keyless",
+        network: true,
+        description: "public Gravatar profile lookup",
+    },
+    ReachableModule {
+        name: "username_variants",
+        command: "username HANDLE",
+        access: "offline",
+        network: false,
+        description: "bounded deterministic username variants",
+    },
+    ReachableModule {
+        name: "github_user",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        description: "public GitHub profile lookup",
+    },
+    ReachableModule {
+        name: "bluesky_user",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        description: "public Bluesky profile lookup",
+    },
+    ReachableModule {
+        name: "phone_intl",
+        command: "phone NUMBER",
+        access: "offline",
+        network: false,
+        description: "E.164 and international dialling-prefix classification",
+    },
+    ReachableModule {
+        name: "phone_au",
+        command: "phone NUMBER",
+        access: "offline",
+        network: false,
+        description: "Australian numbering-plan classification",
+    },
+    ReachableModule {
+        name: "hibp",
+        command: "hibp SUBCOMMAND",
+        access: "operator_key",
+        network: true,
+        description: "explicit HIBP/Pwned Passwords lookup",
+    },
+    ReachableModule {
+        name: "crtsh",
+        command: "recon crtsh TARGET",
+        access: "keyless",
+        network: true,
+        description: "certificate-transparency lookup",
+    },
+    ReachableModule {
+        name: "dns",
+        command: "recon dns TARGET",
+        access: "keyless",
+        network: true,
+        description: "DNS and mail-policy lookup",
+    },
+    ReachableModule {
+        name: "stolen_tax",
+        command: "recon stolen-tax QUERY",
+        access: "operator_key",
+        network: true,
+        description: "explicit stolen.tax lookup",
+    },
+    ReachableModule {
+        name: "seeknow",
+        command: "seeknow SUBCOMMAND",
+        access: "operator_key",
+        network: true,
+        description: "explicit See-Know lookup",
+    },
+];
+
+#[must_use]
+pub const fn reachable_modules() -> &'static [ReachableModule] {
+    REACHABLE_MODULES
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +427,23 @@ mod tests {
 
         fn produces(&self) -> Vec<&'static str> {
             vec!["subdomain"]
+        }
+    }
+
+    #[test]
+    fn reachable_catalog_is_unique_and_nonempty() {
+        let modules = reachable_modules();
+        assert!(!modules.is_empty());
+        for (index, module) in modules.iter().enumerate() {
+            assert!(!module.name.is_empty());
+            assert!(!module.command.is_empty());
+            assert!(
+                !modules[..index]
+                    .iter()
+                    .any(|prior| prior.name == module.name),
+                "duplicate reachable module {}",
+                module.name
+            );
         }
     }
 
