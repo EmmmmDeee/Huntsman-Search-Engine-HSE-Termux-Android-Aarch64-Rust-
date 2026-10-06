@@ -96,6 +96,7 @@ cargo run -- username octocat             # variants + public GitHub/Bluesky loo
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
 cargo run -- modules --json               # only modules currently reachable from the binary
+cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
 cargo run -- recon crtsh https://example.com/
 ```
 
@@ -291,3 +292,8 @@ live receipt. Live ASIC Connect is WAF-blocked.
 ### Reachable module catalogue
 
 `modules [--json]` is offline and intentionally conservative: it lists only rebuilt modules that have a current `huntsman-recon` command path. A provider definition or compiled helper is not advertised merely because it exists in the source tree. This avoids presenting unconnected modules as operational capability.
+
+
+### Offline investigate
+
+`investigate TEXT... | investigate --file FILE` extracts actionable entities using the rebuilt classifier without network access. File input uses the repository's bounded file reader, refuses symlinks, and is capped at 1 MiB. Output keeps classifier provenance; legacy ingest/import formats and full legacy differential parity remain outstanding.
