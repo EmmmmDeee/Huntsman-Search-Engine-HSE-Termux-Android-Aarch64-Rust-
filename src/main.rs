@@ -41,6 +41,8 @@ use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resol
 use huntsman_recon::navigator::layer;
 use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::people_save;
+use huntsman_recon::phone_cli::{PHONE_HELP, PHONE_USAGE, PhoneArgs, PhoneRun};
+use huntsman_recon::phone_save;
 use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
@@ -58,7 +60,7 @@ use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, UsernameRun};
 use huntsman_recon::username_save;
 
-const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -80,6 +82,7 @@ Commands:
   people                Look up a name on keyless ASIC people registers
   email                 Enrich an email and query its public Gravatar profile
   username              Enrich a username through public GitHub and Bluesky profiles
+  phone                 Canonicalise and classify a phone number offline
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
   hibp                  Have I Been Pwned lookups (opt-in; keyed subcommands need a key)
@@ -129,6 +132,7 @@ fn main() -> ExitCode {
         Some("people") => people_cmd(&remaining.collect::<Vec<_>>()),
         Some("email") => email_cmd(&remaining.collect::<Vec<_>>()),
         Some("username") => username_cmd(&remaining.collect::<Vec<_>>()),
+        Some("phone") => phone_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
         Some("hibp") => hibp_cmd(&remaining.collect::<Vec<_>>()),
@@ -168,6 +172,7 @@ fn print_command_help(command: &str) {
         "people" => PEOPLE_HELP,
         "email" => EMAIL_HELP,
         "username" => USERNAME_HELP,
+        "phone" => PHONE_HELP,
         "classify" => {
             "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
         }
@@ -324,6 +329,45 @@ fn username_cmd(args: &[String]) -> ExitCode {
             }
         }
         UsernameRun::Failed(message) => fail(EX_UNAVAILABLE, &message),
+    }
+}
+
+fn phone_cmd(args: &[String]) -> ExitCode {
+    let parsed = match PhoneArgs::parse(args) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let message = error.to_string();
+            let code = if message.contains("invalid phone number") {
+                EX_DATAERR
+            } else {
+                EX_USAGE
+            };
+            return fail(code, &format!("{message}\n{PHONE_USAGE}"));
+        }
+    };
+
+    match huntsman_recon::phone_cli::run(&parsed.raw) {
+        PhoneRun::Printed { text, report } => {
+            print!("{text}");
+            if let Some(path) = parsed.save {
+                match phone_save::save(&path, &report.entities) {
+                    Ok(entries) => {
+                        println!("saved={}", path.display());
+                        println!("entries={}", entries.len());
+                        println!(
+                            "tip={}",
+                            entries.last().map_or("none", |entry| entry.hash.as_str())
+                        );
+                        ExitCode::SUCCESS
+                    }
+                    Err(Error::Store(message)) => fail(EX_IOERR, &message),
+                    Err(error) => fail(EX_DATAERR, &error.to_string()),
+                }
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        PhoneRun::Failed(message) => fail(EX_DATAERR, &message),
     }
 }
 
