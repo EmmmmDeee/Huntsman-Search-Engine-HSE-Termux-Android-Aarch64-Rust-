@@ -317,13 +317,13 @@ mod tests {
         }
     }
 
-    fn response(status: u16, body: &str) -> Result<Response, TransportFailure> {
-        Ok(Response {
+    fn response(status: u16, body: &str) -> Response {
+        Response {
             status,
             headers: vec![("content-type".into(), "application/json".into())],
             body: body.as_bytes().to_vec(),
             truncated: false,
-        })
+        }
     }
 
     #[test]
@@ -354,7 +354,7 @@ mod tests {
           "displayName":"Jane Citizen",
           "did":"did:plc:oky5czdrnfjpqslsw2a5iclo"
         }"#;
-        let fake = Fake::new(vec![response(200, github), response(200, bluesky)]);
+        let fake = Fake::new(vec![Ok(response(200, github)), Ok(response(200, bluesky))]);
         match run(&fake, "jane-doe", 1) {
             UsernameRun::Printed { text, report } => {
                 assert!(text.contains("github_user\tsuccess"), "{text}");
@@ -367,14 +367,14 @@ mod tests {
                         .any(|entity| entity.kind == EntityKind::Email)
                 );
             }
-            other => panic!("{other:?}"),
+            other @ UsernameRun::Failed(_) => panic!("{other:?}"),
         }
     }
 
     #[test]
     fn one_clean_miss_does_not_erase_the_other_source() {
         let bluesky = r#"{"handle":"nobody.bsky.social"}"#;
-        let fake = Fake::new(vec![response(404, ""), response(200, bluesky)]);
+        let fake = Fake::new(vec![Ok(response(404, "")), Ok(response(200, bluesky))]);
         match run(&fake, "nobody", 1) {
             UsernameRun::Printed { report, .. } => {
                 assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
@@ -386,7 +386,7 @@ mod tests {
                         .any(|entity| entity.has_tag("bluesky"))
                 );
             }
-            other => panic!("{other:?}"),
+            other @ UsernameRun::Failed(_) => panic!("{other:?}"),
         }
     }
 }
