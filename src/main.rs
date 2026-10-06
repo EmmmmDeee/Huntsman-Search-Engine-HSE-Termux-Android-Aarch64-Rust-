@@ -16,6 +16,7 @@ use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::email_cli::{EMAIL_HELP, EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::email_save;
+use huntsman_recon::engineering_command;
 use huntsman_recon::entity::{Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
 use huntsman_recon::evidence_ancestry::{
@@ -55,7 +56,7 @@ use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 use huntsman_recon::textnorm::escape_controls;
 
-const USAGE: &str = "usage: huntsman-recon [check | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -67,6 +68,7 @@ Usage:
 
 Commands:
   check                 Run offline self-acceptance and regenerate var/*.json
+  command               Print and validate the executable engineering hierarchy
   geo                   Distance between two LAT,LON coordinates in metres
   geohash               Encode LAT,LON (default precision: 7)
   coarsen               Round LAT,LON to one decimal place
@@ -114,6 +116,7 @@ fn main() -> ExitCode {
     }
     let mut remaining = argv.into_iter();
     match remaining.next().as_deref() {
+        Some("command") => command_cmd(&remaining.collect::<Vec<_>>()),
         Some("geo") => geo(remaining.next(), remaining.next()),
         Some("geohash") => geohash_cmd(remaining.next(), remaining.next().as_deref()),
         Some("coarsen") => coarsen_cmd(remaining.next()),
@@ -138,6 +141,9 @@ fn print_command_help(command: &str) {
     let help = match command {
         "check" => {
             "check\nRun offline self-acceptance and regenerate var/ledger.json, var/navigator.json, and var/stix-bundle.json."
+        }
+        "command" => {
+            "command\nValidate and print the fixed engineering command invariant, four phases, ranks, names, and titles."
         }
         "geo" => {
             "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres."
@@ -181,6 +187,19 @@ fn print_command_help(command: &str) {
 fn fail(code: u8, msg: &str) -> ExitCode {
     eprintln!("{msg}");
     ExitCode::from(code)
+}
+
+fn command_cmd(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        return fail(EX_USAGE, "usage: huntsman-recon command");
+    }
+    match engineering_command::render() {
+        Ok(rendered) => {
+            print!("{rendered}");
+            ExitCode::SUCCESS
+        }
+        Err(message) => fail(EX_DATAERR, message),
+    }
 }
 
 fn people_cmd(args: &[String]) -> ExitCode {
