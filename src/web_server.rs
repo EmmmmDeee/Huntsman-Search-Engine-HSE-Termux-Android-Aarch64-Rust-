@@ -5,7 +5,7 @@
 //! blocking, bounded per request, and exposes only read-only metadata endpoints.
 
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -97,7 +97,9 @@ impl Server {
                 .listener
                 .accept()
                 .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            let _ = self.handle_stream(stream);
+            if self.handle_stream(stream).is_err() {
+                continue;
+            }
         }
     }
 
@@ -445,11 +447,11 @@ mod tests {
     fn bind_parser_accepts_ipv4_and_ipv6_socket_addresses() {
         assert_eq!(
             normalize_bind("127.0.0.1:8080").unwrap().ip(),
-            IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
         );
         assert_eq!(
             normalize_bind("[::1]:8080").unwrap().ip(),
-            IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
         );
     }
 }
