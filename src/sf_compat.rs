@@ -180,34 +180,32 @@ pub struct SfScan {
     pub include_source: bool,
 }
 
-#[must_use]
-pub fn action(args: &SfArgs) -> SfAction {
+/// Resolve parsed flags to a metadata action or one supported scan.
+pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
     if args.version {
-        return SfAction::Text(format!(
+        return Ok(SfAction::Text(format!(
             "Huntsman Recon {} — SpiderFoot 4.0-compatible subset.\n",
             env!("CARGO_PKG_VERSION")
-        ));
+        )));
     }
     if args.list_modules {
-        return SfAction::Text(module_listing(args.quiet));
+        return Ok(SfAction::Text(module_listing(args.quiet)));
     }
     if args.list_types {
-        return SfAction::Text(type_listing(args.quiet));
+        return Ok(SfAction::Text(type_listing(args.quiet)));
     }
     let target = args.target.as_deref().unwrap_or_default();
-    let Some((target_type, normalized)) = sf_target_type(target) else {
-        return SfAction::Text(format!(
-            "sf: unable to detect target type for {target:?}\n"
-        ));
-    };
-    SfAction::Scan(SfScan {
+    let (target_type, normalized) = sf_target_type(target).ok_or_else(|| {
+        Error::Invalid(format!("sf: unable to detect target type for {target:?}"))
+    })?;
+    Ok(SfAction::Scan(SfScan {
         target: normalized,
         target_type,
         use_case: args.use_case.clone(),
         format: args.format.clone(),
         types: args.types.clone(),
         include_source: args.include_source,
-    })
+    }))
 }
 
 #[must_use]
@@ -410,7 +408,10 @@ fn csv_cell(value: &str) -> String {
     } else {
         one_line
     };
-    if guarded.contains([',', '"', '\n', '\r']) {
+    if guarded
+        .chars()
+        .any(|character| matches!(character, ',' | '"' | '\n' | '\r'))
+    {
         format!("\"{}\"", guarded.replace('"', "\"\""))
     } else {
         guarded
@@ -524,6 +525,7 @@ pub fn type_table() -> &'static [(&'static str, &'static str, &'static str)] {
         ("IP_ADDRESS", "IP Address", "ip_address"),
         ("LINKED_URL_EXTERNAL", "Linked URL - External", "url"),
         ("NETBLOCK_OWNER", "Netblock Ownership", "cidr"),
+        ("NETBLOCKV6_OWNER", "IPv6 Netblock Ownership", "cidr"),
         ("PHONE_NUMBER", "Phone Number", "phone"),
         ("PHYSICAL_ADDRESS", "Physical Address", "address"),
         ("PHYSICAL_COORDINATES", "Physical Coordinates", "coordinates"),
