@@ -67,8 +67,9 @@ use huntsman_recon::uid;
 use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, UsernameRun};
 use huntsman_recon::username_save;
 use huntsman_recon::web_query;
+use huntsman_recon::web_server::{DEFAULT_BIND, ServeConfig, Server};
 
-const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -95,6 +96,7 @@ Commands:
   investigate           Extract actionable entities from local text or one bounded file
   query                 Query the rebuilt keyless web-search subset
   sf                    SpiderFoot-compatible front end over rebuilt lookup paths
+  serve                 Start the embedded Web UI and JSON API
   modules               List only currently reachable rebuilt modules
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
@@ -106,7 +108,7 @@ Commands:
 
 Run `huntsman-recon <COMMAND> --help` for command details.
 Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
-`seeknow`, `people`, `email`, `username`, `query`, and networked `sf -s` lookups make HTTP requests; their default
+`seeknow`, `people`, `email`, `username`, `query`, and networked `sf -s` lookups make HTTP requests; `serve` accepts inbound HTTP connections; their default
 egress policy is public-only.";
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
@@ -150,6 +152,7 @@ fn main() -> ExitCode {
         Some("investigate") => investigate_cmd(&remaining.collect::<Vec<_>>()),
         Some("query") => query_cmd(&remaining.collect::<Vec<_>>()),
         Some("sf") => sf_cmd(&remaining.collect::<Vec<_>>()),
+        Some("serve") => serve_cmd(&remaining.collect::<Vec<_>>()),
         Some("modules") => modules_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
@@ -201,6 +204,9 @@ fn print_command_help(command: &str) {
             "query QUERY...\nQuery the rebuilt keyless Bing, Brave, and Mojeek subset through the shared fetch boundary; provider failures remain independent."
         }
         "sf" => SF_USAGE,
+        "serve" => {
+            "serve [--bind ADDR]\nStart the embedded read-only Web UI and JSON API. Default: 127.0.0.1:8080. HSE_BIND supplies the default bind; an explicit non-loopback bind requires HSE_AUTH_TOKEN."
+        }
         "modules" => {
             "modules [--json]\nList only rebuilt modules that are currently reachable through a huntsman-recon command."
         }
@@ -592,6 +598,49 @@ fn sf_cmd(args: &[String]) -> ExitCode {
                 Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
             }
         }
+    }
+}
+
+fn serve_cmd(args: &[String]) -> ExitCode {
+    let mut bind = env::var("HSE_BIND").unwrap_or_else(|_| DEFAULT_BIND.to_owned());
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--bind" => {
+                let Some(value) = args.get(index + 1) else {
+                    return fail(EX_USAGE, "serve --bind needs ADDR");
+                };
+                bind.clone_from(value);
+                index += 2;
+            }
+            other => {
+                return fail(
+                    EX_USAGE,
+                    &format!(
+                        "unknown serve option: {other}\nusage: huntsman-recon serve [--bind ADDR]"
+                    ),
+                );
+            }
+        }
+    }
+
+    let token = env::var("HSE_AUTH_TOKEN").ok();
+    let config = match ServeConfig::parse(&bind, token) {
+        Ok(config) => config,
+        Err(Error::Invalid(message)) => return fail(EX_DATAERR, &message),
+        Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
+    };
+    let server = match Server::bind(config) {
+        Ok(server) => server,
+        Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
+    };
+    match server.local_addr() {
+        Ok(addr) => println!("serving=http://{addr}/"),
+        Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
+    }
+    match server.run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
     }
 }
 

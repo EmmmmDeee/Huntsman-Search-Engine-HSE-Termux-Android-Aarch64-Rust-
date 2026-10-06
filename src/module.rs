@@ -309,6 +309,13 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "bounded Bing, Brave, and Mojeek meta-search",
     },
     ReachableModule {
+        name: "web_server",
+        command: "serve [--bind ADDR]",
+        access: "local",
+        network: true,
+        description: "embedded Web UI and read-only JSON API",
+    },
+    ReachableModule {
         name: "asic_persons",
         command: "people NAME",
         access: "keyless",
