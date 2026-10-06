@@ -66,6 +66,10 @@ trap - EXIT
 
 export HUNTSMAN_HIBP_NO_EMBED="${HUNTSMAN_HIBP_NO_EMBED:-1}"
 
+# Keep Cargo intermediates across retries/upgrades instead of rebuilding them in
+# a disposable default target directory. Respect an explicit caller override.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/huntsman-recon-target}"
+
 cargo_args=(
   install
   --git "$REPO"
@@ -78,7 +82,6 @@ fi
 cargo_args+=(
   --locked
   --root "$TERMUX_PREFIX"
-  --force
   huntsman-recon
 )
 
