@@ -249,9 +249,7 @@ fn search_budget_exhaustion_is_incomplete_and_never_strengthens() {
 fn required_zero_and_one_have_bounded_semantics() {
     let graph = EvidenceAncestryGraph::default();
     let none: Vec<&EvidenceNodeId> = Vec::new();
-    let zero = graph
-        .proven_independent_route_count(none, 0, 0)
-        .unwrap();
+    let zero = graph.proven_independent_route_count(none, 0, 0).unwrap();
     assert_eq!(zero.proven, 0);
     assert!(!zero.incomplete);
 
