@@ -349,48 +349,7 @@ pub fn single_state_code(text: &str) -> Option<&'static str> {
 
 #[must_use]
 pub fn normalise_phone(s: &str) -> Option<String> {
-    let digits = textnorm::ascii_digits_and_plus(s);
-    let validated = |candidate: String| {
-        crate::validation::validate_phone_e164(&candidate)
-            .valid
-            .then_some(candidate)
-    };
-    if digits.starts_with("+61") {
-        return validated(digits);
-    }
-    if digits.starts_with("0061") {
-        return validated(format!("+{}", &digits[2..]));
-    }
-    if let Some(national) = digits.strip_prefix("61").filter(|national| {
-        national.len() == 9
-            && matches!(
-                national.as_bytes()[0],
-                b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
-            )
-    }) {
-        return validated(format!("+61{national}"));
-    }
-    if digits.starts_with('0')
-        && digits.len() == 10
-        && matches!(
-            digits.as_bytes()[1],
-            b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
-        )
-    {
-        return validated(format!("+61{}", &digits[1..]));
-    }
-    if digits.len() == 9
-        && matches!(
-            digits.as_bytes()[0],
-            b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
-        )
-    {
-        return validated(format!("+61{digits}"));
-    }
-    if digits.len() == 10 && (digits.starts_with("1300") || digits.starts_with("1800")) {
-        return validated(format!("+61{digits}"));
-    }
-    None
+    crate::value_syntax::normalise_au_phone(s)
 }
 
 #[must_use]
