@@ -149,9 +149,7 @@ fn scan_kind_override_and_unavailable_phone_are_explicit() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("scan_route=people")
-    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("scan_route=people"));
 
     let phone = bin()
         .args(["scan", "-k", "phone", "+61700000000"])
