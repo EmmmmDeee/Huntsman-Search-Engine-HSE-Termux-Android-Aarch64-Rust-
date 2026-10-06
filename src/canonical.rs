@@ -78,7 +78,6 @@ pub fn canonical_domain_host(raw: &str) -> Option<String> {
     crate::value_syntax::canonical_domain_host(raw)
 }
 
-
 #[must_use]
 pub fn canonical_email(raw: &str) -> Option<String> {
     let trimmed = raw.trim().to_ascii_lowercase();
