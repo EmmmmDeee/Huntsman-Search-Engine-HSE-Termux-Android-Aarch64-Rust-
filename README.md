@@ -37,7 +37,7 @@ huntsman-recon command
 huntsman-recon search "brisbane port"
 ```
 
-`check` runs offline self-acceptance. `command` validates and prints the fixed engineering hierarchy. `search` and `sources` are offline.
+`check` runs offline self-acceptance and now rejects any invalid engineering-command contract. `command` validates and prints the fixed engineering hierarchy. `search` and `sources` are offline.
 `fetch`, `hibp`, `recon`, `seeknow`, `email`, `username`, and `people` make HTTP
 requests and use public-only egress by default.
 Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
@@ -74,7 +74,7 @@ run `huntsman-recon COMMAND --help` for command-specific usage.
 
 ```
 cargo test
-cargo run -- check                     # self-acceptance; regenerates var/*.json
+cargo run -- check                     # self-acceptance + command invariant; regenerates var/*.json
 cargo run -- command                   # validate + print engineering command contract
 cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
 cargo run -- search "brisbane port"    # built-in fixture
