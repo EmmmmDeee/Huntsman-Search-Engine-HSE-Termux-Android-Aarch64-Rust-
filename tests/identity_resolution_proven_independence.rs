@@ -43,9 +43,7 @@ fn independence(left: &str, right: &str) -> IndependenceEvidence {
         basis: IndependenceBasis::ExplicitUpstreamProvenance,
         method_id: "test:explicit-upstream".into(),
         method_version: 1,
-        supporting_artifact_ids: [ArtifactId::from("sha256:proof")]
-            .into_iter()
-            .collect(),
+        supporting_artifact_ids: [ArtifactId::from("sha256:proof")].into_iter().collect(),
         observed_at_unix: 1_790_000_000,
     }
 }
@@ -78,7 +76,10 @@ fn explicit_independence_can_unlock_auto_merge() {
     let d = decision(&["registry-a", "registry-b"]);
 
     assert!(d.allows_automatic_merge(&graph, AutoMergePolicy::default()));
-    assert!(d.hold_reasons(&graph, AutoMergePolicy::default()).is_empty());
+    assert!(
+        d.hold_reasons(&graph, AutoMergePolicy::default())
+            .is_empty()
+    );
 }
 
 #[test]
