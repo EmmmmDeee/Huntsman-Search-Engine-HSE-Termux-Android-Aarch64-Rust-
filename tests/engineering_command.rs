@@ -74,10 +74,24 @@ fn command_chain_is_exact_and_jew_bot_is_last() {
         parsed.push((rank, name.to_owned()));
     }
 
-    assert_eq!(parsed.len(), COMMAND_CHAIN.len(), "command table rank count changed");
+    assert_eq!(
+        parsed.len(),
+        COMMAND_CHAIN.len(),
+        "command table rank count changed"
+    );
     for (index, expected) in COMMAND_CHAIN.iter().enumerate() {
-        assert_eq!(parsed[index].0, index + 1, "command rank changed at {}", index + 1);
-        assert_eq!(parsed[index].1, *expected, "command name changed at rank {}", index + 1);
+        assert_eq!(
+            parsed[index].0,
+            index + 1,
+            "command rank changed at {}",
+            index + 1
+        );
+        assert_eq!(
+            parsed[index].1,
+            *expected,
+            "command name changed at rank {}",
+            index + 1
+        );
     }
 
     assert_eq!(COMMAND_CHAIN.last(), Some(&"JEW BOT"));
@@ -90,9 +104,13 @@ fn command_chain_is_exact_and_jew_bot_is_last() {
 #[test]
 fn architecture_capability_owners_follow_command_contract() {
     let text = fs::read_to_string(root().join("ARCHITECTURE.md")).unwrap();
-    let cap_start = text.find("\n## CAPABILITIES\n").expect("CAPABILITIES section");
+    let cap_start = text
+        .find("\n## CAPABILITIES\n")
+        .expect("CAPABILITIES section");
     let rest = &text[cap_start..];
-    let cap_end = rest.find("\n## ARCHITECTURE\n").expect("ARCHITECTURE section");
+    let cap_end = rest
+        .find("\n## ARCHITECTURE\n")
+        .expect("ARCHITECTURE section");
     let capabilities = &rest[..cap_end];
 
     let mut owners = Vec::new();
@@ -113,10 +131,19 @@ fn architecture_capability_owners_follow_command_contract() {
         owners.push((number, cells[5].to_owned()));
     }
 
-    assert_eq!(owners.len(), CAPABILITY_OWNERS.len(), "capability owner row count changed");
+    assert_eq!(
+        owners.len(),
+        CAPABILITY_OWNERS.len(),
+        "capability owner row count changed"
+    );
     for (index, expected) in CAPABILITY_OWNERS.iter().enumerate() {
         assert_eq!(owners[index].0, index + 1, "capability numbering changed");
-        assert_eq!(owners[index].1, *expected, "owner changed for capability {}", index + 1);
+        assert_eq!(
+            owners[index].1,
+            *expected,
+            "owner changed for capability {}",
+            index + 1
+        );
         assert!(
             COMMAND_CHAIN.contains(expected),
             "capability owner {expected} is outside command hierarchy"
