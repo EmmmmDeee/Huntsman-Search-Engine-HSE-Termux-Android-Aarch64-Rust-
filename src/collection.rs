@@ -55,8 +55,7 @@ pub fn bounded_batch(
     max_entities: usize,
     max_dispatches: usize,
 ) -> ObservationBatch {
-    let overflow =
-        batch.observations.len() > max_entities || batch.events.len() > max_dispatches;
+    let overflow = batch.observations.len() > max_entities || batch.events.len() > max_dispatches;
     batch.observations.truncate(max_entities);
     batch.events.truncate(max_dispatches);
     if overflow {
