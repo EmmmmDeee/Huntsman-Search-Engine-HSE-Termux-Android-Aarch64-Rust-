@@ -13,8 +13,8 @@ pub const VARIANT_CONFIDENCE: f64 = 0.42;
 
 const SEPARATORS: [char; 3] = ['.', '_', '-'];
 const VANITY_TOKENS: &[&str] = &[
-    "the", "real", "official", "actual", "original", "og", "im", "iam", "its", "mr", "ms",
-    "mrs", "yt", "tv", "hq",
+    "the", "real", "official", "actual", "original", "og", "im", "iam", "its", "mr", "ms", "mrs",
+    "yt", "tv", "hq",
 ];
 
 fn add_variant(out: &mut BTreeSet<String>, seed: &str, candidate: String) {
@@ -37,9 +37,7 @@ pub fn variants(seed: &str) -> Vec<String> {
         .collect();
     let collapsed: String = tokens.concat();
 
-    if collapsed.len() < MIN_HANDLE_LEN
-        || is_placeholder_entity(&ValueKind::Username, &collapsed)
-    {
+    if collapsed.len() < MIN_HANDLE_LEN || is_placeholder_entity(&ValueKind::Username, &collapsed) {
         return Vec::new();
     }
 
@@ -47,35 +45,26 @@ pub fn variants(seed: &str) -> Vec<String> {
 
     if tokens.len() >= 2 {
         for separator in SEPARATORS {
-            add_variant(
-                &mut out,
-                &normalized,
-                tokens.join(&separator.to_string()),
-            );
+            add_variant(&mut out, &normalized, tokens.join(&separator.to_string()));
         }
         add_variant(&mut out, &normalized, collapsed.clone());
     }
 
     let trailing_digits_removed = collapsed.trim_end_matches(char::is_numeric);
     if trailing_digits_removed != collapsed {
-        add_variant(
-            &mut out,
-            &normalized,
-            trailing_digits_removed.to_owned(),
-        );
+        add_variant(&mut out, &normalized, trailing_digits_removed.to_owned());
     }
 
     let leading_digits_removed = collapsed.trim_start_matches(char::is_numeric);
     if leading_digits_removed != collapsed && leading_digits_removed.len() >= MIN_HANDLE_LEN {
-        add_variant(
-            &mut out,
-            &normalized,
-            leading_digits_removed.to_owned(),
-        );
+        add_variant(&mut out, &normalized, leading_digits_removed.to_owned());
     }
 
     let mut core = tokens.clone();
-    while core.first().is_some_and(|token| VANITY_TOKENS.contains(token)) {
+    while core
+        .first()
+        .is_some_and(|token| VANITY_TOKENS.contains(token))
+    {
         core.remove(0);
     }
     while core.last().is_some_and(|token| trailing_decorator(token)) {
@@ -91,11 +80,7 @@ pub fn variants(seed: &str) -> Vec<String> {
             add_variant(&mut out, &normalized, core_collapsed);
             if core.len() >= 2 {
                 for separator in SEPARATORS {
-                    add_variant(
-                        &mut out,
-                        &normalized,
-                        core.join(&separator.to_string()),
-                    );
+                    add_variant(&mut out, &normalized, core.join(&separator.to_string()));
                 }
             }
         }
