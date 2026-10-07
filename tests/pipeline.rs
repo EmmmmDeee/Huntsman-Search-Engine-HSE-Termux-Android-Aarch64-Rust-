@@ -52,6 +52,7 @@ fn batch(observations: Vec<RawObservation>) -> ObservationBatch {
             upstream: None,
         }],
         observations,
+        independence_assertions: Vec::new(),
         truncated: false,
     }
 }
