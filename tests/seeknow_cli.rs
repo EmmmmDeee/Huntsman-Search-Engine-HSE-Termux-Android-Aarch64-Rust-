@@ -131,7 +131,7 @@ fn search_defaults_to_adaptive_and_deep_is_spent_only_after_valid_zero() {
     let seen = transport.seen.borrow();
     assert_eq!(seen.len(), 2);
     assert!(seen[0].url.ends_with("/search"));
-    assert!(seen[1].url.ends_with("/search/deep"));
+    assert!(seen[1].url.ends_with("/stealer"));
 }
 
 #[test]
@@ -157,8 +157,8 @@ fn explicit_fast_only_and_deep_modes_are_distinct_and_invalid_selector_is_data_e
         &deep,
         &[
             "search".into(),
-            "person".into(),
-            "Alice Example".into(),
+            "url".into(),
+            "https://example.com/login".into(),
             "--deep".into(),
         ],
         &configured_keys(),
@@ -166,7 +166,37 @@ fn explicit_fast_only_and_deep_modes_are_distinct_and_invalid_selector_is_data_e
     );
     assert!(matches!(result, SeekNowCliRun::Printed(_)));
     assert_eq!(deep.seen.borrow().len(), 1);
-    assert!(deep.seen.borrow()[0].url.ends_with("/search/deep"));
+    assert!(deep.seen.borrow()[0].url.ends_with("/stealer"));
+
+    let unsupported_deep = ScriptedTransport::new(Vec::new());
+    let result = run_with_keys(
+        &unsupported_deep,
+        &[
+            "search".into(),
+            "person".into(),
+            "Alice Example".into(),
+            "--deep".into(),
+        ],
+        &configured_keys(),
+        7,
+    );
+    assert!(matches!(result, SeekNowCliRun::BadData(_)));
+    assert_eq!(unsupported_deep.seen.borrow().len(), 0);
+
+    let unsupported_fast = ScriptedTransport::new(Vec::new());
+    let result = run_with_keys(
+        &unsupported_fast,
+        &[
+            "search".into(),
+            "machine_id".into(),
+            "synthetic-machine-001".into(),
+            "--fast-only".into(),
+        ],
+        &configured_keys(),
+        7,
+    );
+    assert!(matches!(result, SeekNowCliRun::BadData(_)));
+    assert_eq!(unsupported_fast.seen.borrow().len(), 0);
 
     let invalid = ScriptedTransport::new(Vec::new());
     let result = run_with_keys(
