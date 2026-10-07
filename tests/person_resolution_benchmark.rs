@@ -69,7 +69,7 @@ fn expected(kind: EntityKind, value: &str, source: &str) -> ExpectedPublicFact {
     }
 }
 
-fn captured_public_fixture(include_wrong_identity: bool) -> ObservationBatch {
+fn captured_public_fixture(include_wrong_identity: bool, include_independence_proof: bool) -> ObservationBatch {
     let profile = origin("public_profile", "professional_profile", "profile-capture");
     let project = origin("project_document", "nook_bess", "nook-project-document");
 
@@ -117,9 +117,7 @@ fn captured_public_fixture(include_wrong_identity: bool) -> ObservationBatch {
         ));
     }
 
-    let independence_assertions = if include_wrong_identity {
-        Vec::new()
-    } else {
+    let independence_assertions = if include_independence_proof {
         vec![UpstreamIndependenceAssertion {
             left: profile.clone(),
             right: project.clone(),
@@ -134,6 +132,8 @@ fn captured_public_fixture(include_wrong_identity: bool) -> ObservationBatch {
             .collect(),
             observed_at_unix: 1_700_000_000,
         }]
+    } else {
+        Vec::new()
     };
 
     ObservationBatch {
@@ -150,7 +150,7 @@ fn captured_public_fixture(include_wrong_identity: bool) -> ObservationBatch {
 #[test]
 fn captured_public_observations_flow_through_real_pipeline_and_pass() {
     let snapshot =
-        normalize_observations(captured_public_fixture(false), &PipelineLimits::default())
+        normalize_observations(captured_public_fixture(false, true), &PipelineLimits::default())
             .expect("captured fixture must normalize");
     let expected = vec![
         expected(
@@ -209,7 +209,7 @@ fn captured_public_observations_flow_through_real_pipeline_and_pass() {
 #[test]
 fn real_pipeline_output_with_unrelated_identity_fails_closed() {
     let snapshot =
-        normalize_observations(captured_public_fixture(true), &PipelineLimits::default())
+        normalize_observations(captured_public_fixture(true, false), &PipelineLimits::default())
             .expect("captured fixture must normalize");
     let expected = vec![
         expected(
@@ -256,7 +256,7 @@ fn real_pipeline_output_with_unrelated_identity_fails_closed() {
 #[test]
 fn distinct_source_labels_without_independence_proof_fail_closed() {
     let snapshot =
-        normalize_observations(captured_public_fixture(false), &PipelineLimits::default())
+        normalize_observations(captured_public_fixture(false, false), &PipelineLimits::default())
             .expect("captured fixture must normalize");
     let expected = vec![
         expected(
