@@ -433,14 +433,17 @@ mod tests {
             source: None,
             dataset: None,
         }];
-        let observed = [DifferentialEntity::new(EntityKind::Email, "ada@example.org")];
+        let observed = [DifferentialEntity::new(
+            EntityKind::Email,
+            "ada@example.org",
+        )];
         assert_eq!(compare_legacy(&expected, &observed, &[]), Vec::new());
     }
 
     #[test]
     fn reviewed_misattribution_is_stable_when_extra_output_is_added() {
-        let expected = [DifferentialEntity::new(EntityKind::Domain, "example.org")
-            .with_source("legacy")];
+        let expected =
+            [DifferentialEntity::new(EntityKind::Domain, "example.org").with_source("legacy")];
         let reviewed_observed =
             DifferentialEntity::new(EntityKind::Domain, "example.org").with_source("z-source");
         let observed = [
