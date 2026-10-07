@@ -100,7 +100,7 @@ fn rolling_latest_moves_only_behind_an_explicit_opt_in() {
     assert_eq!(
         wf.matches("gh release delete").count(),
         2,
-        "only a raced draft cleanup and the gated latest step may delete a release"
+        "only centralized candidate cleanup and the gated latest step may delete a release"
     );
     assert!(step.contains("gh release delete latest"));
     assert!(wf.contains("latest moved to this build without PROMOTE_RECON_TO_LATEST"));
