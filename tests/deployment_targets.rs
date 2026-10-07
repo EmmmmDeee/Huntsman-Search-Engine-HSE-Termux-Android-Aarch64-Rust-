@@ -71,7 +71,8 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
         "unset HSE_AUTH_TOKEN",
         "-H \"@$auth_headers\"",
         "HSE_AUTH_TOKEN must not contain CR/LF",
-        "--proto '=https'",
+        "allowed_proto='=https'",
+        "--proto \"$allowed_proto\"",
     ] {
         assert!(
             live_acceptance.contains(required),
@@ -82,6 +83,18 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
     assert!(
         !live_acceptance.contains("Authorization: Bearer $HSE_AUTH_TOKEN"),
         "Railway live acceptance must not place the bearer token directly in curl argv"
+    );
+
+    let rejected = Command::new("bash")
+        .args(["scripts/railway-live-acceptance.sh"])
+        .env("HUNTSMAN_RAILWAY_URL", "https://example.invalid")
+        .env("HSE_AUTH_TOKEN", "bad\nheader")
+        .output()
+        .expect("Railway acceptance rejection path must execute");
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("must not contain CR/LF"),
+        "CR/LF token must be rejected before any request"
     );
 
     let status = Command::new("bash")
