@@ -18,7 +18,7 @@ use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::email_cli::{EMAIL_HELP, EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::engineering_command;
-use huntsman_recon::entity::{Evidence, EvidenceProvenance};
+use huntsman_recon::entity::{self, Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
 use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
@@ -64,7 +64,6 @@ use huntsman_recon::stix::bundle;
 use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 use huntsman_recon::textnorm::escape_controls;
-use huntsman_recon::uid;
 use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, UsernameRun};
 use huntsman_recon::web_query;
 use huntsman_recon::web_server::{ServeConfig, Server, resolve_serve_bind};
