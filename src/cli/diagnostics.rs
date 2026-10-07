@@ -6,15 +6,15 @@
 //!   2. `selftest` — module registry + dispatch graph + core math + storage;
 //!   3. `engines`  — live search-engine liveness sweep.
 //!
-//! Each section runs in turn under a banner; the command exits non-zero if any
-//! underlying check fails, so it is CI/automation-friendly. The individual
-//! commands remain available (and are what the Web UI / API call), this is the
-//! convenience aggregate.
+//! Hard failures still make the command exit non-zero. A live subsystem that is
+//! usable but impaired is reported as DEGRADED rather than being folded into
+//! the previous false-green `ALL PASS` verdict.
 
 use crate::core::error::{Error, Result};
 
 pub(super) async fn cmd_diagnostics(json: bool) -> Result<()> {
     let mut failed: Vec<&str> = Vec::new();
+    let mut degraded: Vec<&str> = Vec::new();
 
     banner("1/3", "Environment — doctor");
     // `diagnostics` stays offline/fast — the live capability preflight is an
@@ -31,21 +31,51 @@ pub(super) async fn cmd_diagnostics(json: bool) -> Result<()> {
     }
 
     banner("3/3", "Search-engine liveness");
-    if let Err(e) = super::engines::cmd_engines(json).await {
-        eprintln!("  ✗ engines failed: {e}");
-        failed.push("engines");
+    match super::engines::cmd_engines_with_summary(json).await {
+        Ok(summary) => match summary.state() {
+            super::engines::EngineFleetState::Healthy => {}
+            super::engines::EngineFleetState::Degraded => {
+                eprintln!(
+                    "  ⚠ engines degraded: {}/{} enabled engine(s) up; {} blocked, {} down",
+                    summary.up, summary.enabled, summary.blocked, summary.down
+                );
+                degraded.push("engines");
+            }
+            super::engines::EngineFleetState::Failed => {
+                eprintln!(
+                    "  ✗ engines failed: 0/{} enabled engine(s) usable; {} blocked, {} down",
+                    summary.enabled, summary.blocked, summary.down
+                );
+                failed.push("engines");
+            }
+        },
+        Err(e) => {
+            eprintln!("  ✗ engines failed: {e}");
+            failed.push("engines");
+        }
     }
 
     println!();
-    if failed.is_empty() {
-        println!("==> diagnostics: ALL PASS (doctor, selftest, engines)");
+    if !failed.is_empty() {
+        Err(Error::Other(format!(
+            "diagnostics: {} section(s) failed: {}{}",
+            failed.len(),
+            failed.join(", "),
+            if degraded.is_empty() {
+                String::new()
+            } else {
+                format!("; degraded: {}", degraded.join(", "))
+            }
+        )))
+    } else if !degraded.is_empty() {
+        println!(
+            "==> diagnostics: DEGRADED ({}); core checks passed",
+            degraded.join(", ")
+        );
         Ok(())
     } else {
-        Err(Error::Other(format!(
-            "diagnostics: {} section(s) failed: {}",
-            failed.len(),
-            failed.join(", ")
-        )))
+        println!("==> diagnostics: ALL PASS (doctor, selftest, engines)");
+        Ok(())
     }
 }
 
