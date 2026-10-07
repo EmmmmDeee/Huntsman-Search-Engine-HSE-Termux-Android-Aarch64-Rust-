@@ -1,0 +1,35 @@
+name: live identity resolution benchmark
+
+on:
+  push:
+    branches:
+      - bench/live-identity-resolution-troyhunt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-identity-resolution-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: "1.87"
+
+      - name: Prove deterministic custom-domain pivot
+        run: cargo test --locked github_personal_domain_pivots_into_custom_bluesky_handle -- --nocapture
+
+      - name: Run genuine live identity-resolution benchmark
+        env:
+          HUNTSMAN_LIVE_IDENTITY_BENCH: "1"
+        run: cargo test --locked --test live_identity_resolution -- --nocapture
