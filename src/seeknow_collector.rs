@@ -133,7 +133,6 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
         }
     }
 
-    batch.entities.truncate(limits.max_entities);
     batch.pivots.truncate(limits.max_pivots);
     Ok(batch)
 }
