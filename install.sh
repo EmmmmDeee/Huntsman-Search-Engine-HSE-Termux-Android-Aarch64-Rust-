@@ -48,6 +48,34 @@ pkg update -y
 # "crate std required to be available in rlib format" before Huntsman is compiled.
 pkg install -y git rust clang curl coreutils
 
+# Compatibility boundary for the frozen legacy `hse` monolith. Its in-app
+# updater predates the reconstruction and invokes repository `main/install.sh`
+# with HSE_REQUIRE_SHA (normal update) or HSE_REF (explicit ref). Current main
+# installs `huntsman-recon`, a distinct binary that is not yet at feature parity.
+# Treat those legacy-only variables as an explicit legacy-channel request unless
+# the caller also supplied the reconstructed installer's HUNTSMAN_REV.
+if [[ -z "${HUNTSMAN_REV:-}" && ( -n "${HSE_REQUIRE_SHA:-}" || -n "${HSE_REF:-}" ) ]]; then
+  printf 'Detected legacy hse self-update contract; preserving the hse monolith.\n'
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  channel_installer="${HUNTSMAN_LEGACY_CHANNEL_INSTALLER:-$script_dir/.github/scripts/install-termux.sh}"
+  downloaded_installer=""
+  if [[ ! -f "$channel_installer" ]]; then
+    downloaded_installer="$(mktemp "${TMPDIR:-$TERMUX_PREFIX/tmp}/huntsman-channel-install.XXXXXX")"
+    channel_installer="$downloaded_installer"
+    curl -fsSL --proto '=https' \
+      "https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/.github/scripts/install-termux.sh" \
+      -o "$channel_installer"
+  fi
+  set +e
+  HUNTSMAN_CHANNEL=hse bash "$channel_installer"
+  compat_status=$?
+  set -e
+  [[ -z "$downloaded_installer" ]] || rm -f "$downloaded_installer"
+  (( compat_status == 0 )) || die "legacy hse channel installer exited $compat_status"
+  printf 'Legacy hse channel accepted; huntsman-recon was not substituted for hse.\n'
+  exit 0
+fi
+
 rust_host="$(rustc -vV | sed -n 's/^host: //p')"
 [[ -n "$rust_host" ]] || die "unable to determine rustc host target"
 
