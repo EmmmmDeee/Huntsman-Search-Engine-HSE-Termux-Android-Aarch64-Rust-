@@ -9,6 +9,7 @@ assurance	leaf	assurance analysis utility
 atproto	adapter	ATProto source adapter
 attack	leaf	ATT&CK model utility
 attack_catalog	leaf	ATT&CK catalogue
+attack_cli	diagnostic	ATT&CK command front-end over the reachable module catalogue
 attack_reporting	leaf	hierarchy-aware ATT&CK coverage projection
 au_electoral	adapter	Australian state electoral-roll source client
 au_id	leaf	Australian identifier normalization
@@ -39,6 +40,7 @@ dependency	runtime	module dependency and dispatch graph
 diamond	leaf	analysis utility
 diff	leaf	diff analysis utility
 differential	diagnostic	legacy no-regression entity comparator and oracle manifest checks
+diagnostics	diagnostic	offline non-sensitive build runtime module and provider diagnostics
 directive_lock	diagnostic	canonical repository directive verification and mirror synchronization
 dmarc	leaf	DMARC parser
 dns	adapter	DNS source client

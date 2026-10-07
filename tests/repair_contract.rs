@@ -17,6 +17,7 @@ fn repair_protocol_is_executable_and_pins_required_gates() {
         "timeout --signal=TERM --kill-after=10s",
         "scripts/railway-live-acceptance.sh",
         "scripts/railway-entrypoint.sh",
+        "--test functional_code_contract",
         "--test repair_contract",
         "necessary but not sufficient for platform-specific changes",
     ] {

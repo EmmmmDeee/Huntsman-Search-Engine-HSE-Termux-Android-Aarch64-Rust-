@@ -101,17 +101,22 @@ before using credentials or network access.
 | Source | Maintained branch `legacy-hse`, seeded from verified monolith commit `98c77fd8dac95082515f0f76cea8f4f0dc7a604b`. | `src/` |
 | Where to get it | Maintained `legacy-hse` branch via its installer; its release workflow publishes per-commit `hse-aarch64-linux-android` pre-releases. | A GitHub pre-release `main-<sha7>` (asset `huntsman-recon-aarch64-linux-android`), the CI artifact of the same name from a `main` push (see "Downloads"), or a source build |
 
-`huntsman-recon` is the in-progress replacement, with rebuilt person-lookup slices plus a minimal embedded Web UI/API. Since #672, every push to `main` publishes it as a `main-<sha7>` pre-release. There is no rolling `latest` pre-release: the workflow creates or moves `latest` only when the repository variable `PROMOTE_RECON_TO_LATEST` is `true`, and it is unset. GitHub's "Latest release" is the stable legacy `hse` release `v1.41.0`.
+`huntsman-recon` is the in-progress replacement, with rebuilt person-lookup slices plus a minimal embedded Web UI/API. Every relevant push to `main` is built and verified; the commit is published as a `main-<sha7>` pre-release only if it is still the current main head when publication occurs. A superseded build remains available as a GitHub Actions artifact for its retention window rather than failing while trying to create a historical tag. There is no rolling `latest` pre-release: the workflow creates or moves `latest` only when the repository variable `PROMOTE_RECON_TO_LATEST` is `true`, and it is unset. GitHub's "Latest release" is the stable legacy `hse` release `v1.41.0`.
 
 Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands; `check` exercises egress, origin, placeholder and URL-redaction rules as gate 11, without a socket). A challenge page is not a hit. No paid source is called automatically; HIBP is explicit opt-in via the CLI or library. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
 
 For contributors: one Rust package (`huntsman-recon`), Rust 1.87+, no workspace.
 The binary's full command list is available with `huntsman-recon --help`;
-run `huntsman-recon COMMAND --help` for command-specific usage.
+run `huntsman-recon COMMAND --help` for command-specific usage. `diagnostics [--json]`
+is fully offline, backed by the reusable `diagnostics` library module, and reports only non-secret build/runtime/module/provider state; `build-sha`
+prints the source commit embedded by provenance-aware builds and prints `unknown` for
+ad-hoc builds that did not supply one.
 
 ```
 cargo test
 cargo run -- check                     # self-acceptance + command invariant; regenerates var/*.json
+cargo run -- diagnostics --json        # offline build/runtime/module/provider status; no secret values
+cargo run -- build-sha                 # exact embedded commit for provenance builds, otherwise unknown
 cargo run -- command                   # validate + print engineering command contract
 cargo run -- directive --help          # repository directive verifier/self-repair usage
 cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
@@ -141,8 +146,11 @@ cargo run -- query "OpenAI research"          # network: Bing/Brave/Mojeek subse
 cargo run -- sf -M                         # SpiderFoot-style reachable-module listing; offline
 cargo run -- serve --help                    # embedded UI/API command options; does not start a listener
 cargo run -- modules --json               # only modules currently reachable from the binary
+cargo run -- attack status --json          # offline ATT&CK Reconnaissance capability posture
 cargo run -- recon crtsh https://example.com/
 ```
+
+`attack status|coverage|gaps [--json]` restores the MITRE ATT&CK Reconnaissance reporting surface over currently reachable network modules. The TA0043 slice is reconciled through ATT&CK v19.2, including T1681 and T1682; the repository's complete embedded Enterprise matrix remains the older v17.1 baseline and is reported separately rather than mislabeled as current. `attack navigator` emits Reconnaissance Navigator JSON. Coverage is hierarchy-aware and evidence-backed: only module-mapped independent leaf techniques count as covered, parent techniques remain roll-ups, and coverage is not proof that a technique was executed or a measure of detection effectiveness.
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
 
@@ -168,7 +176,7 @@ Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys fi
 
 Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch`/`recon`/`seeknow`/`email` got no usable response or `people` registers were unusable, 74 artifact write failure, 77 `fetch`/`recon`/`seeknow`/`email` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal. `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print help and the usage line.
 
-`tests/readme.rs` runs every offline example above, checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to `src/main.rs`. Network HIBP examples below are exercised through a fake transport by `tests/hibp_cli.rs` rather than against the internet in CI.
+`tests/readme.rs` runs every offline example above, checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to the CLI composition sources under `src/cli/`. Network HIBP examples below are exercised through a fake transport by `tests/hibp_cli.rs` rather than against the internet in CI.
 
 `fetch URL` options (defaults in brackets):
 
@@ -285,7 +293,7 @@ The reference NDK is 27.3.13750724. CI uses the runner's `ANDROID_NDK_LATEST_HOM
 
 Each push to `main` uploads a CI artifact named `huntsman-recon-aarch64-linux-android`: the binary plus its `.sha256`, kept for 14 days. Download it from the workflow run's page, or with `gh run download <run-id> -n huntsman-recon-aarch64-linux-android`. Check it with `sha256sum -c huntsman-recon-aarch64-linux-android.sha256`, then copy it into Termux's home directory and `chmod +x` it.
 
-Each push to `main` also publishes a `main-<sha7>` pre-release (`.github/workflows/release.yml`, #672) with the `huntsman-recon-aarch64-linux-android` binary, its `.sha256`, a `.provenance.json` naming the commit, a zero-finding `key-scan-report.txt` and `install-termux.sh`. The `main-<sha7>` pre-releases up to `main-7dca720` predate the reconstruction and ship the legacy `hse` binary. No rolling `latest` pre-release exists (see "Which binary to use"). Release policy: only pre-releases (`main-<sha7>` plus a rolling `latest`); a stable release needs the owner's explicit approval and is never automatic.
+Each relevant push to `main` builds and verifies the Termux artifact; when that commit is still the current main head at publication time, `.github/workflows/release.yml` publishes a `main-<sha7>` pre-release with the `huntsman-recon-aarch64-linux-android` binary, its `.sha256`, a `.provenance.json` naming the commit, a zero-finding `key-scan-report.txt` and `install-termux.sh`. Superseded commits keep their verified Actions artifact for the configured retention window instead of attempting a historical-tag release. The `main-<sha7>` pre-releases up to `main-7dca720` predate the reconstruction and ship the legacy `hse` binary. No rolling `latest` pre-release exists (see "Which binary to use"). Release policy: only pre-releases (`main-<sha7>` plus a rolling `latest`); a stable release needs the owner's explicit approval and is never automatic.
 
 ## Opt-in HIBP library
 

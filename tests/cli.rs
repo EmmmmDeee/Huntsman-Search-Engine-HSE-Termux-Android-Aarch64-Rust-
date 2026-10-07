@@ -146,6 +146,8 @@ fn help_and_version_are_available() {
     assert!(help.contains("public-only"));
 
     for (command, usage) in [
+        ("diagnostics", "diagnostics [--json]"),
+        ("build-sha", "build-sha"),
         ("geo", "geo LAT,LON LAT,LON"),
         ("search", "search QUERY [DIR]"),
         ("domain-lifecycle", "domain-lifecycle analyze INPUT.json"),
@@ -154,6 +156,7 @@ fn help_and_version_are_available() {
         ("scan", "scan SELECTOR [-k people|email|username|phone]"),
         ("investigate", "investigate TEXT..."),
         ("modules", "modules [--json]"),
+        ("attack", "attack status|coverage|gaps [--json]"),
         ("query", "query QUERY..."),
         ("sf", "sf [-M|-T|-V]"),
         ("serve", "serve [--bind ADDR]"),
@@ -182,6 +185,64 @@ fn help_and_version_are_available() {
         String::from_utf8(version.stdout).unwrap(),
         format!("huntsman-recon {}\n", env!("CARGO_PKG_VERSION"))
     );
+}
+
+#[test]
+fn diagnostics_and_build_sha_are_offline_structured_and_non_secret() {
+    let dir = scratch("diagnostics");
+    let diagnostics = bin()
+        .args(["diagnostics", "--json"])
+        .env("HOME", &dir)
+        .env("PREFIX", "/usr")
+        .env_remove("TERMUX_VERSION")
+        .output()
+        .unwrap();
+    assert!(
+        diagnostics.status.success(),
+        "{}",
+        String::from_utf8_lossy(&diagnostics.stderr)
+    );
+    let stdout = String::from_utf8(diagnostics.stdout).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+    assert!(
+        value["build_sha"]
+            .as_str()
+            .is_some_and(|sha| !sha.is_empty())
+    );
+    assert!(value["reachable_modules"].as_u64().unwrap() > 0);
+    assert!(
+        value["network_modules"].as_u64().unwrap() <= value["reachable_modules"].as_u64().unwrap()
+    );
+    assert!(
+        value["attack_mapped_modules"].as_u64().unwrap()
+            <= value["network_modules"].as_u64().unwrap()
+    );
+    assert!(value["providers_total"].as_u64().unwrap() > 0);
+    assert!(
+        value["providers_configured"].as_u64().unwrap()
+            <= value["providers_total"].as_u64().unwrap()
+    );
+    assert_eq!(value["credential_resolution"], "ok");
+    assert_eq!(value["termux"], "not_detected");
+    assert!(value.get("build_sha_known").is_none());
+    assert!(value.get("android_target").is_none());
+    assert!(value.get("credential_warning").is_none());
+    assert_eq!(value["selfcheck_command"], "huntsman-recon check");
+    assert!(!stdout.contains("fingerprint"));
+    assert!(!stdout.contains("HUNTSMAN_"));
+
+    let sha = bin().arg("build-sha").output().unwrap();
+    assert!(sha.status.success());
+    let expected = huntsman_recon::diagnostics::embedded_build_sha();
+    assert_eq!(
+        String::from_utf8(sha.stdout).unwrap(),
+        format!("{expected}\n")
+    );
+
+    let bad = bin().args(["diagnostics", "--live"]).output().unwrap();
+    assert_eq!(bad.status.code(), Some(64));
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -337,8 +398,66 @@ fn modules_lists_only_reachable_catalog_entries() {
         value["modules"].as_array().map(|items| items.len() as u64)
     );
 
+    let web_query = value["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|module| module["name"] == "web_query")
+        .expect("web_query reachable module");
+    assert_eq!(web_query["category"], "search");
+
     let bad = bin().args(["modules", "--all"]).output().unwrap();
     assert_eq!(bad.status.code(), Some(64));
+}
+
+#[test]
+fn attack_restores_legacy_static_coverage_surface() {
+    let status = bin().args(["attack", "status", "--json"]).output().unwrap();
+    assert_eq!(status.status.code(), Some(0));
+    let status_json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status_json["tactic_id"], "TA0043");
+    assert_eq!(status_json["coverage_basis"], "leaf_techniques");
+    assert!(status_json["leaf_techniques_total"].as_u64().unwrap() > 0);
+    assert!(status_json["leaf_techniques_covered"].as_u64().unwrap() > 0);
+
+    let coverage = bin()
+        .args(["attack", "coverage", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(coverage.status.code(), Some(0));
+    let coverage_json: serde_json::Value = serde_json::from_slice(&coverage.stdout).unwrap();
+    let covered = coverage_json["covered"].as_array().unwrap();
+    covered
+        .first()
+        .expect("ATT&CK static coverage must contain at least one covered leaf");
+    assert!(
+        covered
+            .iter()
+            .any(|row| !row["modules"].as_array().unwrap().is_empty()),
+        "static coverage must carry evidence from at least one reachable module"
+    );
+
+    let gaps = bin().args(["attack", "gaps", "--json"]).output().unwrap();
+    assert_eq!(gaps.status.code(), Some(0));
+    let gaps_json: serde_json::Value = serde_json::from_slice(&gaps.stdout).unwrap();
+    assert!(gaps_json["gaps"].is_array());
+
+    let navigator = bin().args(["attack", "navigator"]).output().unwrap();
+    assert_eq!(navigator.status.code(), Some(0));
+    let navigator_json: serde_json::Value = serde_json::from_slice(&navigator.stdout).unwrap();
+    assert_eq!(navigator_json["domain"], "enterprise-attack");
+    navigator_json["techniques"]
+        .as_array()
+        .unwrap()
+        .first()
+        .expect("Navigator layer must contain ATT&CK techniques");
+
+    let bad = bin()
+        .args(["attack", "navigator", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(64));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("attack status|coverage|gaps"));
 }
 
 #[test]

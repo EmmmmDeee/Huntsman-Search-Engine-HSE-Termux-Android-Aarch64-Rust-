@@ -29,7 +29,7 @@ fn job(wf: &str, name: &str) -> String {
 }
 
 #[test]
-fn main_pushes_publish_main_channel_pre_releases_only() {
+fn main_pushes_build_and_current_head_publishes_main_channel_pre_releases_only() {
     let wf = release();
     for required in [
         "branches:\n      - main",
@@ -40,7 +40,10 @@ fn main_pushes_publish_main_channel_pre_releases_only() {
         "gh release create latest",
         "is NOT a pre-release; refusing",
         "In-progress replacement with rebuilt lookup paths.",
-        "queue: max",
+        "--draft --latest=false",
+        "gh release edit \"$TAG\" --draft=false --prerelease --latest=false",
+        "main advanced to",
+        "Actions artifact",
         "ASSET: huntsman-recon-aarch64-linux-android",
         "usage: huntsman-recon \\[check",
         "dist/install-termux.sh",
@@ -78,7 +81,7 @@ fn rolling_latest_moves_only_behind_an_explicit_opt_in() {
         .expect("latest step must exist");
     assert!(
         step.contains(
-            "        if: vars.PROMOTE_RECON_TO_LATEST == 'true' && steps.existing.outputs.exists == 'false'\n"
+            "        if: vars.PROMOTE_RECON_TO_LATEST == 'true' && (steps.existing.outputs.exists == 'true' || steps.publish.outputs.published == 'true')\n"
         ),
         "moving `latest` must be gated on PROMOTE_RECON_TO_LATEST == 'true'"
     );
@@ -96,13 +99,10 @@ fn rolling_latest_moves_only_behind_an_explicit_opt_in() {
     }
     assert_eq!(
         wf.matches("gh release delete").count(),
-        1,
-        "only the gated latest step may delete a release"
+        2,
+        "only centralized candidate cleanup and the gated latest step may delete a release"
     );
-    assert!(
-        step.contains("gh release delete latest"),
-        "the only delete must be in the gated latest step"
-    );
+    assert!(step.contains("gh release delete latest"));
     assert!(wf.contains("latest moved to this build without PROMOTE_RECON_TO_LATEST"));
 }
 
@@ -166,6 +166,25 @@ fn cargo_never_runs_with_a_write_token() {
     // Only these jobs exist, and only `publish` asks for any write scope.
     assert_eq!(wf.matches(": write").count(), 3);
     assert_eq!(publish.matches(": write").count(), 3);
+}
+
+#[test]
+fn release_build_embeds_and_verifies_exact_commit_provenance() {
+    let wf = release();
+    let build = job(&wf, "build");
+    assert!(
+        wf.contains("HUNTSMAN_BUILD_SHA: ${{ github.sha }}"),
+        "release workflow must bind build provenance to github.sha"
+    );
+    assert!(
+        build.contains("grep -Fq \"$GITHUB_SHA\""),
+        "final Android binary must be checked for the exact embedded commit"
+    );
+    assert!(build.contains("embedded_build_sha: ${GITHUB_SHA}"));
+    assert!(
+        wf.contains("--build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\""),
+        "Railway release-gate image must receive the same commit provenance"
+    );
 }
 
 #[test]
@@ -241,38 +260,154 @@ fn publish_scans_with_a_byte_identical_inlined_scanner() {
 }
 
 #[test]
-fn main_publishes_are_serialised_not_coalesced() {
+fn superseded_main_builds_are_verified_without_historical_release_failures() {
     let wf = release();
     let publish = job(&wf, "publish");
-    assert!(publish.contains(
-        "    concurrency:\n      group: release-publish-main\n      cancel-in-progress: false\n      queue: max\n"
-    ));
-    assert_eq!(
-        wf.lines().filter(|l| l.trim() == "queue: max").count(),
-        1,
-        "only the publish job queues"
+    assert!(
+        !publish.contains("concurrency:") && !wf.contains("queue: max"),
+        "publish must not queue old main commits until they become historical"
     );
-    // Main runs never share a workflow-level group, so none is replaced there.
+    // Every main push keeps its own build run, so superseded commits still get
+    // verification and an Actions artifact.
     assert!(wf.contains(
         "  group: release-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}\n"
     ));
-    assert!(wf.contains(
-        "https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency"
-    ));
-    // Idempotent: an existing complete main-<sha7> at this commit is verified,
-    // never replaced, and a tag at another commit is refused.
     for required in [
         "id: existing",
         "verifying it, not replacing it",
         "not ${GITHUB_SHA}; refusing",
         "is missing or has no digest",
-        "if: steps.existing.outputs.exists == 'false'",
+        "id: head",
+        "git/ref/heads/main",
+        "steps.head.outputs.publish == 'true'",
+        "gh api -X POST \"$api/git/refs\"",
+        "-f ref=\"refs/tags/${TAG}\"",
+        "-f sha=\"$GITHUB_SHA\"",
+        "--verify-tag --draft --latest=false",
+        "read -r type actual",
+        "[ \"$actual\" != \"$GITHUB_SHA\" ]",
+        "current=\"$(gh api \"$api/git/ref/heads/main\" --jq .object.sha)\"",
+        "gh release delete \"$TAG\" --yes --cleanup-tag",
+        "gh release edit \"$TAG\" --draft=false --prerelease --latest=false",
+        "published=false",
+        "published=true",
+        "Actions artifact",
     ] {
         assert!(
             publish.contains(required),
             "publish job must contain {required:?}"
         );
     }
+    let per_commit = publish
+        .split("      - name: ")
+        .find(|s| s.starts_with("Publish pre-release "))
+        .expect("per-commit publish step must exist");
+    assert!(
+        !per_commit.contains("--target \"$GITHUB_SHA\""),
+        "per-commit publication must not ask GITHUB_TOKEN to mint a historical target"
+    );
+}
+
+#[test]
+fn orphan_main_drafts_without_backing_tags_are_reconciled_fail_closed() {
+    let wf = release();
+    let publish = job(&wf, "publish");
+    let reconcile = publish
+        .split("      - name: ")
+        .find(|s| s.starts_with("Reconcile orphan main-channel draft releases"))
+        .expect("publish must reconcile orphan main-channel drafts");
+
+    for required in [
+        "set -euo pipefail",
+        "gh api --paginate \"$api/releases?per_page=100\"",
+        "select(.draft == true)",
+        "^main-[0-9a-f]{7}$",
+        "git/ref/tags/${stale_tag}",
+        "gh api -X DELETE \"$api/releases/${id}\"",
+        "> \"$drafts\"",
+        "done < \"$drafts\"",
+    ] {
+        assert!(
+            reconcile.contains(required),
+            "orphan reconciliation must contain {required:?}"
+        );
+    }
+    assert!(
+        !reconcile.contains("|| true"),
+        "draft enumeration/deletion must fail closed rather than hide API failures"
+    );
+    let reconcile_pos = publish
+        .find("      - name: Reconcile orphan main-channel draft releases")
+        .unwrap();
+    let existing_pos = publish.find("      - name: Check for an existing").unwrap();
+    assert!(
+        reconcile_pos < existing_pos,
+        "stale invalid drafts must be reconciled before current-tag existence checks"
+    );
+}
+
+#[test]
+fn per_commit_publish_anchors_the_tag_before_creating_the_draft() {
+    let wf = release();
+    let publish = job(&wf, "publish");
+    let step = publish
+        .split("      - name: ")
+        .find(|s| s.starts_with("Publish pre-release "))
+        .expect("per-commit publish step must exist");
+
+    let pre_tag_head = step
+        .find("git/ref/heads/main")
+        .expect("publish must re-check live main immediately before tag creation");
+    let create_ref = step
+        .find("gh api -X POST \"$api/git/refs\"")
+        .expect("publish must create the immutable tag explicitly");
+    let create_release = step
+        .find("gh release create \"$TAG\"")
+        .expect("publish must create the release");
+    assert!(
+        pre_tag_head < create_ref,
+        "live main must be rechecked immediately before any release tag is created"
+    );
+    assert!(
+        create_ref < create_release,
+        "the immutable tag must exist before draft release creation"
+    );
+    assert!(
+        step.contains("--verify-tag --draft --latest=false"),
+        "draft creation must require the pre-created tag"
+    );
+    assert!(
+        step.matches("git/ref/tags/${TAG}").count() >= 2,
+        "the tag must be verified before and after draft creation"
+    );
+    assert!(
+        step.matches("git/ref/heads/main").count() >= 2,
+        "live main must be checked both immediately before tag creation and again before publication"
+    );
+    assert!(
+        step.contains("trap cleanup_on_exit EXIT")
+            && step.contains("cleanup_candidate()")
+            && step.contains("candidate_tag=true")
+            && step.contains("candidate_release=true"),
+        "an error after tag creation must trigger transactional candidate cleanup"
+    );
+    assert!(
+        step.contains("gh api -X DELETE \"$api/git/refs/tags/${TAG}\""),
+        "candidate cleanup must remove an orphan tag when no draft exists"
+    );
+    assert!(
+        step.contains("gh release delete \"$TAG\" --yes --cleanup-tag"),
+        "candidate cleanup and publication-race cleanup must remove both draft and tag"
+    );
+    assert!(
+        step.matches("candidate_release=false").count() >= 2
+            && step.matches("candidate_tag=false").count() >= 2,
+        "successful publication and intentional race cleanup must disarm the failure trap"
+    );
+    assert!(
+        !step.contains("--target \"$GITHUB_SHA\""),
+        "release creation must never ask GitHub to synthesize a historical target"
+    );
 }
 
 #[test]
@@ -282,6 +417,10 @@ fn post_publish_check_requires_a_matching_non_empty_digest() {
         .split("      - name: ")
         .find(|s| s.starts_with("Verify published pre-releases"))
         .expect("verify step must exist");
+    assert!(
+        step.contains("if: steps.existing.outputs.exists == 'true' || steps.publish.outputs.published == 'true'"),
+        "superseded CI-only builds must skip release verification"
+    );
     for required in [
         "[ -n \"$d\" ] || fail \"${t} has no digest for asset ${a}\"",
         "[[ \"$d\" =~ ^sha256:[0-9a-f]{64}$ ]]",
@@ -348,7 +487,7 @@ fn release_publish_requires_shared_quality_gate() {
 
     for required in [
         "bash scripts/repair-gate.sh full",
-        "docker build --pull -f Dockerfile -t huntsman-recon:railway .",
+        "docker build --pull --build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\" -f Dockerfile -t huntsman-recon:railway .",
         "bash scripts/railway-live-acceptance.sh",
         "persist-credentials: false",
     ] {
@@ -699,7 +838,8 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
 fn attestation_warning_does_not_promise_a_retry() {
     let wf = release();
     assert!(!wf.contains("Re-run to retry"));
-    assert!(wf.contains("A re-run will not add it"));
+    assert!(!wf.contains("A re-run will not add it"));
+    assert!(wf.contains("otherwise it remains a CI-only artifact"));
 }
 
 /// One synthetic positive per pattern rule, assembled at runtime.

@@ -269,6 +269,8 @@ pub struct ReachableModule {
     pub command: &'static str,
     pub access: &'static str,
     pub network: bool,
+    pub category: ModuleCategory,
+    pub attack_techniques: &'static [&'static str],
     pub description: &'static str,
 }
 
@@ -278,6 +280,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "sources QUERY",
         access: "offline",
         network: false,
+        category: ModuleCategory::Other,
+        attack_techniques: &[],
         description: "curated lead-only source routing",
     },
     ReachableModule {
@@ -285,6 +289,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "domain-lifecycle analyze INPUT --as-of TIME",
         access: "offline",
         network: false,
+        category: ModuleCategory::Other,
+        attack_techniques: &[],
         description: "conservative comparison of imported domain observations",
     },
     ReachableModule {
@@ -292,6 +298,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "sf [-M|-T|-V] | -s TARGET [options]",
         access: "mixed",
         network: true,
+        category: ModuleCategory::Other,
+        attack_techniques: &[],
         description: "SpiderFoot-compatible front end over rebuilt lookup paths",
     },
     ReachableModule {
@@ -299,6 +307,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "investigate TEXT... | --file FILE",
         access: "offline",
         network: false,
+        category: ModuleCategory::Other,
+        attack_techniques: &[],
         description: "bounded offline entity extraction from local text",
     },
     ReachableModule {
@@ -306,6 +316,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "search QUERY [DIR]",
         access: "offline",
         network: false,
+        category: ModuleCategory::Other,
+        attack_techniques: &[],
         description: "bounded local text search",
     },
     ReachableModule {
@@ -313,6 +325,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "query QUERY...",
         access: "keyless",
         network: true,
+        category: ModuleCategory::Search,
+        attack_techniques: &["T1593.002"],
         description: "bounded Bing, Brave, and Mojeek meta-search",
     },
     ReachableModule {
@@ -320,6 +334,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "serve [--bind ADDR]",
         access: "local",
         network: true,
+        category: ModuleCategory::Other,
+        attack_techniques: &[],
         description: "embedded Web UI and read-only JSON API",
     },
     ReachableModule {
@@ -327,6 +343,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "people NAME",
         access: "keyless",
         network: true,
+        category: ModuleCategory::People,
+        attack_techniques: &["T1591.004"],
         description: "ASIC people register lookup",
     },
     ReachableModule {
@@ -334,6 +352,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "people NAME",
         access: "keyless",
         network: true,
+        category: ModuleCategory::Corporate,
+        attack_techniques: &["T1591.002", "T1591.004"],
         description: "ASIC director register lookup",
     },
     ReachableModule {
@@ -341,6 +361,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "people NAME",
         access: "keyless",
         network: true,
+        category: ModuleCategory::People,
+        attack_techniques: &["T1589.003"],
         description: "Australian public people-source lookup",
     },
     ReachableModule {
@@ -348,6 +370,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "people NAME",
         access: "keyless",
         network: true,
+        category: ModuleCategory::People,
+        attack_techniques: &["T1589.003"],
         description: "Australian public electoral-source lookup",
     },
     ReachableModule {
@@ -355,6 +379,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "email ADDR",
         access: "offline",
         network: false,
+        category: ModuleCategory::Other,
+        attack_techniques: &[],
         description: "deterministic email canonicalisation and pivots",
     },
     ReachableModule {
@@ -362,6 +388,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "email ADDR",
         access: "keyless",
         network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.001"],
         description: "public Gravatar profile lookup",
     },
     ReachableModule {
@@ -369,6 +397,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "username HANDLE",
         access: "offline",
         network: false,
+        category: ModuleCategory::Other,
+        attack_techniques: &[],
         description: "bounded deterministic username variants",
     },
     ReachableModule {
@@ -376,6 +406,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "username HANDLE",
         access: "keyless",
         network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.003"],
         description: "public GitHub profile lookup",
     },
     ReachableModule {
@@ -383,6 +415,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "username HANDLE",
         access: "keyless",
         network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.001"],
         description: "public Bluesky profile lookup",
     },
     ReachableModule {
@@ -390,6 +424,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "phone NUMBER",
         access: "offline",
         network: false,
+        category: ModuleCategory::Phone,
+        attack_techniques: &[],
         description: "E.164 and international dialling-prefix classification",
     },
     ReachableModule {
@@ -397,6 +433,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "phone NUMBER",
         access: "offline",
         network: false,
+        category: ModuleCategory::Phone,
+        attack_techniques: &[],
         description: "Australian numbering-plan classification",
     },
     ReachableModule {
@@ -404,6 +442,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "hibp SUBCOMMAND",
         access: "operator_key",
         network: true,
+        category: ModuleCategory::Breach,
+        attack_techniques: &["T1589.001", "T1589.002"],
         description: "explicit HIBP/Pwned Passwords lookup",
     },
     ReachableModule {
@@ -411,6 +451,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "recon crtsh TARGET",
         access: "keyless",
         network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1596.003"],
         description: "certificate-transparency lookup",
     },
     ReachableModule {
@@ -418,6 +460,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "recon dns TARGET",
         access: "keyless",
         network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1590.001"],
         description: "DNS and mail-policy lookup",
     },
     ReachableModule {
@@ -425,6 +469,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "recon stolen-tax QUERY",
         access: "operator_key",
         network: true,
+        category: ModuleCategory::Breach,
+        attack_techniques: &["T1589.001", "T1589.002"],
         description: "explicit stolen.tax lookup",
     },
     ReachableModule {
@@ -432,6 +478,8 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "seeknow SUBCOMMAND",
         access: "operator_key",
         network: true,
+        category: ModuleCategory::Breach,
+        attack_techniques: &["T1589.001", "T1589.002"],
         description: "explicit See-Know lookup",
     },
 ];
@@ -472,6 +520,22 @@ mod tests {
         for (index, module) in modules.iter().enumerate() {
             assert!(!module.name.is_empty());
             assert!(!module.command.is_empty());
+            if module.network && module.category != ModuleCategory::Other {
+                assert!(
+                    !module.attack_techniques.is_empty(),
+                    "network collector {} has no explicit ATT&CK mapping",
+                    module.name
+                );
+            }
+            for id in module.attack_techniques {
+                let technique = crate::attack::technique(id)
+                    .unwrap_or_else(|| panic!("{} maps to unknown ATT&CK id {id}", module.name));
+                assert!(
+                    technique.tactics.contains(&"reconnaissance"),
+                    "{} maps outside Reconnaissance: {id}",
+                    module.name
+                );
+            }
             assert!(
                 !modules[..index]
                     .iter()
@@ -480,6 +544,33 @@ mod tests {
                 module.name
             );
         }
+    }
+
+    #[test]
+    fn reachable_catalog_exposes_expected_collection_categories() {
+        let modules = reachable_modules();
+        let category = |name: &str| {
+            modules
+                .iter()
+                .find(|module| module.name == name)
+                .map(|module| module.category)
+        };
+        assert_eq!(category("web_query"), Some(ModuleCategory::Search));
+        assert_eq!(category("hibp"), Some(ModuleCategory::Breach));
+        assert_eq!(category("crtsh"), Some(ModuleCategory::DnsRecon));
+        assert_eq!(category("github_user"), Some(ModuleCategory::Social));
+        assert_eq!(category("email_parse"), Some(ModuleCategory::Other));
+
+        let techniques = |name: &str| {
+            modules
+                .iter()
+                .find(|module| module.name == name)
+                .map(|module| module.attack_techniques)
+        };
+        assert_eq!(techniques("github_user"), Some(&["T1593.003"][..]));
+        assert_eq!(techniques("crtsh"), Some(&["T1596.003"][..]));
+        assert_eq!(techniques("dns"), Some(&["T1590.001"][..]));
+        assert_eq!(techniques("web_server"), Some(&[][..]));
     }
 
     #[test]

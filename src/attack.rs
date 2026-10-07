@@ -7,7 +7,37 @@ use crate::dependency::ModuleCategory;
 use crate::entity::{Entity, EntityKind};
 use crate::graph::{EntityRelation, RelationKind};
 
+/// Version of the repository's complete embedded Enterprise snapshot.
 pub const ATTACK_VERSION: &str = "17.1";
+/// Version to which the embedded TA0043 Reconnaissance slice has been reconciled.
+pub const RECONNAISSANCE_VERSION: &str = "19.2";
+/// Authoritative MITRE page for the scoped Reconnaissance taxonomy.
+pub const RECONNAISSANCE_SOURCE_URL: &str = "https://attack.mitre.org/tactics/TA0043/";
+/// Authoritative MITRE version-history record for the scoped taxonomy version.
+pub const RECONNAISSANCE_VERSION_SOURCE_URL: &str = "https://attack.mitre.org/resources/versions/";
+/// Version-specific MITRE changelog for the v19.2 delta.
+pub const RECONNAISSANCE_CHANGELOG_URL: &str =
+    "https://attack.mitre.org/docs/changelogs/v19.1-v19.2/changelog-detailed.html";
+
+/// Reconnaissance techniques added after the embedded Enterprise v17.1 baseline.
+///
+/// Keeping these objects outside `attack_catalog::ENTERPRISE` preserves the
+/// provenance of that full-matrix snapshot while allowing TA0043 to track v19.2.
+const RECONNAISSANCE_V19_2_OVERLAY: &[Technique] = &[
+    Technique {
+        id: "T1681",
+        name: "Search Threat Vendor Data",
+        is_subtechnique: false,
+        tactics: &["reconnaissance"],
+    },
+    Technique {
+        id: "T1682",
+        name: "Query Public AI Services",
+        is_subtechnique: false,
+        tactics: &["reconnaissance"],
+    },
+];
+
 pub const TACTIC_ID: &str = "TA0043";
 pub const TACTIC_NAME: &str = "Reconnaissance";
 
@@ -20,8 +50,20 @@ pub fn attack_spec_major() -> &'static str {
 }
 
 #[must_use]
+pub fn reconnaissance_spec_major() -> &'static str {
+    match RECONNAISSANCE_VERSION.split_once('.') {
+        Some((major, _)) => major,
+        None => RECONNAISSANCE_VERSION,
+    }
+}
+
+#[must_use]
 pub fn technique(id: &str) -> Option<&'static Technique> {
-    ENTERPRISE.iter().find(|item| item.id == id)
+    ENTERPRISE.iter().find(|item| item.id == id).or_else(|| {
+        RECONNAISSANCE_V19_2_OVERLAY
+            .iter()
+            .find(|item| item.id == id)
+    })
 }
 
 #[must_use]
@@ -33,10 +75,14 @@ pub fn tactic(id_or_shortname: &str) -> Option<&'static Tactic> {
 
 #[must_use]
 pub fn techniques_for_tactic(shortname: &str) -> Vec<&'static Technique> {
-    ENTERPRISE
+    let mut techniques = ENTERPRISE
         .iter()
         .filter(|item| item.tactics.contains(&shortname))
-        .collect()
+        .collect::<Vec<_>>();
+    if shortname == "reconnaissance" {
+        techniques.extend(RECONNAISSANCE_V19_2_OVERLAY.iter());
+    }
+    techniques
 }
 
 #[must_use]
@@ -335,6 +381,28 @@ mod tests {
     }
 
     #[test]
+    fn enterprise_baseline_remains_version_pure_while_reconnaissance_uses_overlay() {
+        assert!(
+            ENTERPRISE
+                .iter()
+                .all(|item| item.id != "T1681" && item.id != "T1682")
+        );
+        assert_eq!(
+            technique("T1681").map(|item| item.name),
+            Some("Search Threat Vendor Data")
+        );
+        assert_eq!(
+            technique("T1682").map(|item| item.name),
+            Some("Query Public AI Services")
+        );
+        assert!(
+            RECONNAISSANCE_V19_2_OVERLAY
+                .iter()
+                .all(|item| item.tactics == ["reconnaissance"])
+        );
+    }
+
+    #[test]
     fn tactics_are_complete() {
         assert_eq!(TACTICS.len(), 14);
         assert_eq!(TACTIC_ID, "TA0043");
@@ -348,6 +416,23 @@ mod tests {
 
     #[test]
     fn reconnaissance_slice_is_exactly_ta0043() {
+        assert_eq!(RECONNAISSANCE_VERSION, "19.2");
+        assert_eq!(reconnaissance_spec_major(), "19");
+        assert_eq!(
+            RECONNAISSANCE_SOURCE_URL,
+            "https://attack.mitre.org/tactics/TA0043/"
+        );
+        assert_eq!(
+            RECONNAISSANCE_VERSION_SOURCE_URL,
+            "https://attack.mitre.org/resources/versions/"
+        );
+        assert_eq!(
+            RECONNAISSANCE_CHANGELOG_URL,
+            "https://attack.mitre.org/docs/changelogs/v19.1-v19.2/changelog-detailed.html"
+        );
+        assert_eq!(ATTACK_VERSION, "17.1");
+        assert_eq!(attack_spec_major(), "17");
+
         const FULL: &[&str] = &[
             "T1589",
             "T1589.001",
@@ -393,6 +478,8 @@ mod tests {
             "T1598.002",
             "T1598.003",
             "T1598.004",
+            "T1681",
+            "T1682",
         ];
         let have: BTreeSet<&str> = reconnaissance().iter().map(|item| item.id).collect();
         for id in FULL {
