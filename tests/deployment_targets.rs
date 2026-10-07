@@ -67,12 +67,22 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
         "unauthenticated_modules=401",
         "authenticated_modules=200",
         "authenticated_command=200",
+        "auth.headers",
+        "unset HSE_AUTH_TOKEN",
+        "-H \"@$auth_headers\"",
+        "HSE_AUTH_TOKEN must not contain CR/LF",
+        "--proto '=https'",
     ] {
         assert!(
             live_acceptance.contains(required),
             "Railway live acceptance harness must contain {required:?}"
         );
     }
+
+    assert!(
+        !live_acceptance.contains("Authorization: Bearer $HSE_AUTH_TOKEN"),
+        "Railway live acceptance must not place the bearer token directly in curl argv"
+    );
 
     let status = Command::new("bash")
         .args(["-n", "scripts/railway-live-acceptance.sh"])
