@@ -20,7 +20,7 @@ pub const ATTACK_USAGE: &str =
 fn module_index() -> BTreeMap<&'static str, Vec<&'static str>> {
     let mut index = BTreeMap::<&'static str, Vec<&'static str>>::new();
     for module in reachable_modules().iter().filter(|module| module.network) {
-        for id in attack::techniques_for_reachable_module(module.name) {
+        for id in module.attack_techniques {
             index.entry(id).or_default().push(module.name);
         }
     }
