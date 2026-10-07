@@ -128,6 +128,9 @@ fn repair_gate_covers_every_added_acceptance_script_and_current_termux_harness()
         "bash -n scripts/termux-runtime-acceptance.sh",
         "bash -n scripts/railway-live-acceptance.sh",
     ] {
-        assert!(gate.contains(required), "{REPAIR_GATE} must contain {required:?}");
+        assert!(
+            gate.contains(required),
+            "{REPAIR_GATE} must contain {required:?}"
+        );
     }
 }
