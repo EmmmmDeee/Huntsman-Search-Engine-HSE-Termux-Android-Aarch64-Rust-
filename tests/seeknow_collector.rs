@@ -80,7 +80,9 @@ fn selector_planning_is_typed_and_rejects_unsupported_before_transport() {
         (EntityKind::Phone, "+61 412 345 678", Some("phone")),
         (EntityKind::IpAddress, "8.8.8.8", Some("ip")),
         (EntityKind::Domain, "Example.COM", Some("domain")),
-        (EntityKind::Person, "Alice Example", None),
+        (EntityKind::Person, "Alice Example", Some("name")),
+        (EntityKind::Url, "https://example.com/login", Some("url")),
+        (EntityKind::DeviceId, "synthetic-machine-001", Some("machine_id")),
     ];
     for (kind, value, expected_type) in cases {
         let plan = plan_selector(&selector(kind, value), &CollectionLimits::default()).unwrap();
@@ -90,20 +92,14 @@ fn selector_planning_is_typed_and_rejects_unsupported_before_transport() {
 
     assert!(
         plan_selector(
-            &selector(EntityKind::Url, "https://example.com"),
-            &CollectionLimits::default()
-        )
-        .is_err()
-    );
-    assert!(
-        plan_selector(
             &selector(EntityKind::Person, "A"),
             &CollectionLimits::default()
         )
         .is_err()
     );
     assert!(SeekNowCollector.accepts(&EntityKind::Email));
-    assert!(!SeekNowCollector.accepts(&EntityKind::Url));
+    assert!(SeekNowCollector.accepts(&EntityKind::Url));
+    assert!(SeekNowCollector.accepts(&EntityKind::DeviceId));
 }
 
 #[test]
@@ -188,6 +184,65 @@ fn validated_fast_zero_escalates_once_and_deep_failure_is_partial() {
 }
 
 #[test]
+fn adaptive_respects_endpoint_specific_selector_support() {
+    let phone = ScriptedTransport::new(vec![response(200, r#"{"success":true,"data":[]}"#)]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Phone, "+61 412 345 678"),
+        &phone,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::Adaptive,
+        22,
+    )
+    .unwrap();
+    assert_eq!(batch.outcome, CollectionOutcome::ValidZero);
+    assert_eq!(phone.request_count(), 1);
+    assert!(phone.seen.borrow()[0].url.ends_with("/search"));
+
+    let url = ScriptedTransport::new(vec![response(200, r#"{"success":true,"data":[]}"#)]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Url, "https://example.com/login"),
+        &url,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::Adaptive,
+        23,
+    )
+    .unwrap();
+    assert_eq!(batch.outcome, CollectionOutcome::ValidZero);
+    assert_eq!(url.request_count(), 1);
+    assert!(url.seen.borrow()[0].url.ends_with("/stealer"));
+
+    let unsupported_deep = ScriptedTransport::new(Vec::new());
+    assert!(
+        collect_with_credential(
+            &selector(EntityKind::Person, "Alice Example"),
+            &unsupported_deep,
+            &credential(),
+            &CollectionLimits::default(),
+            SeekNowCollectionMode::DeepOnly,
+            24,
+        )
+        .is_err()
+    );
+    assert_eq!(unsupported_deep.request_count(), 0);
+
+    let unsupported_fast = ScriptedTransport::new(Vec::new());
+    assert!(
+        collect_with_credential(
+            &selector(EntityKind::DeviceId, "synthetic-machine-001"),
+            &unsupported_fast,
+            &credential(),
+            &CollectionLimits::default(),
+            SeekNowCollectionMode::FastOnly,
+            25,
+        )
+        .is_err()
+    );
+    assert_eq!(unsupported_fast.request_count(), 0);
+}
+
+#[test]
 fn evidence_is_deduped_and_lineage_comes_from_response_dataset_not_seeknow() {
     let transport = ScriptedTransport::new(vec![response(
         200,
@@ -228,6 +283,31 @@ fn evidence_is_deduped_and_lineage_comes_from_response_dataset_not_seeknow() {
         assert!(!rendered.contains("raw-secret"));
         assert!(!rendered.contains("other-secret"));
     }
+}
+
+#[test]
+fn stealer_machine_identifiers_map_to_device_entities() {
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[{"machine_id":"synthetic-machine-001","source":"Synthetic Fixture"}]}"#,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::DeviceId, "synthetic-machine-001"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::DeepOnly,
+        31,
+    )
+    .unwrap();
+    assert_eq!(batch.outcome, CollectionOutcome::Success);
+    assert!(
+        batch
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::DeviceId
+                && entity.value == "synthetic-machine-001")
+    );
 }
 
 #[test]
