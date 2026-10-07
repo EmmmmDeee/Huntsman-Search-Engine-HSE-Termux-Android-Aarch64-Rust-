@@ -45,7 +45,7 @@ fn repair_protocol_is_executable_and_pins_required_gates() {
         .args(["scripts/repair-gate.sh", "invalid-mode"])
         .status()
         .expect("repair gate invalid mode must execute");
-    assert_eq!(invalid.status.code(), Some(64));
+    assert_eq!(invalid.code(), Some(64));
 }
 
 #[test]
