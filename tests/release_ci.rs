@@ -736,7 +736,7 @@ fn every_scanner_rule_has_a_synthetic_positive_fixture() {
 }
 
 #[test]
-fn scanner_detects_every_rule_in_binaries_and_text_without_printing_values() {
+fn scanner_detects_each_rule_on_supported_artifact_kinds_without_printing_values() {
     if !scanner_tools_present() {
         return;
     }
@@ -748,6 +748,13 @@ fn scanner_detects_every_rule_in_binaries_and_text_without_printing_values() {
             ),
             ("txt", format!("k = {value}\n").into_bytes()),
         ] {
+            // A generic Bearer prefix is deliberately text-only. Optimized
+            // binaries may coalesce adjacent static strings into one printable
+            // run, so applying this generic rule to `strings` output creates
+            // false positives. Provider-specific signatures remain binary-scanned.
+            if rule == "bearer-token" && ext == "bin" {
+                continue;
+            }
             let dir = scratch(&format!("rule-{rule}-{ext}"));
             clean_fixture(&dir);
             let file = format!("planted.{ext}");
@@ -762,6 +769,30 @@ fn scanner_detects_every_rule_in_binaries_and_text_without_printing_values() {
             let _ = fs::remove_dir_all(&dir);
         }
     }
+}
+
+#[test]
+fn scanner_ignores_linker_coalesced_generic_bearer_run_in_binary() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let dir = scratch("binary-bearer-literal");
+    clean_fixture(&dir);
+    fs::write(
+        dir.join("linked.bin"),
+        [
+            b"\x00\x01Bearer ".as_slice(),
+            b"compiled_runtime_label_for_authorization_header".as_slice(),
+            b"\x00\xff".as_slice(),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let (code, text) = scan(&dir);
+    assert_eq!(code, Some(0), "generic binary bearer text must not fail:\n{text}");
+    assert!(text.contains("key scan: 0 finding(s)"), "{text}");
+    assert!(!text.contains("rule=bearer-token"), "{text}");
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
