@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
+use huntsman_recon::au_id::{Identifier, classify as classify_id};
 use huntsman_recon::classifier;
 use huntsman_recon::classifier::classify as classify_indicator;
 use huntsman_recon::classify::classify_response;
@@ -20,12 +20,8 @@ use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::email_cli::{EMAIL_HELP, EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::engineering_command;
-use huntsman_recon::entity::{self, Evidence, EvidenceProvenance};
+use huntsman_recon::entity;
 use huntsman_recon::error::Error;
-use huntsman_recon::evidence_ancestry::{
-    EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
-    IndependenceEvidence,
-};
 use huntsman_recon::fetch::{Credential, FetchOptions, fetch};
 use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
 use huntsman_recon::fsio::{read_bounded, write_atomic};
@@ -36,11 +32,8 @@ use huntsman_recon::http::{
     Request, TransportConfig, UreqTransport, origin_of, parse_http_uri, redact_url,
 };
 use huntsman_recon::identity::{PersonRecord, resolve};
-use huntsman_recon::identity_resolution::{
-    AutoMergePolicy, HoldReason, IdentityResolutionDecision, ResolutionState,
-};
-use huntsman_recon::keys::{Keys, is_configured_value};
-use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
+use huntsman_recon::keys::Keys;
+use huntsman_recon::ledger::{admitted, load_chain};
 use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage};
 use huntsman_recon::lookup_save::{self, EMAIL_POLICY, PHONE_POLICY, USERNAME_POLICY};
 use huntsman_recon::module::reachable_modules;
@@ -49,17 +42,15 @@ use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, Pe
 use huntsman_recon::phone_cli::{PHONE_HELP, PHONE_USAGE, PhoneArgs, PhoneRun};
 use huntsman_recon::provider_credentials;
 use huntsman_recon::recon::ReconTargetKind;
-use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
+use huntsman_recon::redact::coarsen_latlon;
 use huntsman_recon::retrieval_artifact::ArtifactId;
 use huntsman_recon::scan_batch::parse_seed_list;
 use huntsman_recon::scan_route::{ScanKind, infer_kind, parse_kind};
-use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
+use huntsman_recon::search::{Document, load_dir, search, tokenize};
 use huntsman_recon::seeknow_cli::{SEEKNOW_HELP, SEEKNOW_USAGE, SeekNowCliRun};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
 use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
-use huntsman_recon::source_outcome::{
-    SourceHealthAction, SourceOutcomeKind, classify_fetch, recommended_action,
-};
+use huntsman_recon::source_outcome::{classify_fetch, recommended_action};
 use huntsman_recon::source_registry::routes_for;
 use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
