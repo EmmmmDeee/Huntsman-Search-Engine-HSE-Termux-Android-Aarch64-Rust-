@@ -52,10 +52,11 @@ pub fn reconnaissance_spec_major() -> &'static str {
 
 #[must_use]
 pub fn technique(id: &str) -> Option<&'static Technique> {
-    ENTERPRISE
-        .iter()
-        .find(|item| item.id == id)
-        .or_else(|| RECONNAISSANCE_V19_2_OVERLAY.iter().find(|item| item.id == id))
+    ENTERPRISE.iter().find(|item| item.id == id).or_else(|| {
+        RECONNAISSANCE_V19_2_OVERLAY
+            .iter()
+            .find(|item| item.id == id)
+    })
 }
 
 #[must_use]
@@ -379,8 +380,14 @@ mod tests {
                 .iter()
                 .all(|item| item.id != "T1681" && item.id != "T1682")
         );
-        assert_eq!(technique("T1681").map(|item| item.name), Some("Search Threat Vendor Data"));
-        assert_eq!(technique("T1682").map(|item| item.name), Some("Query Public AI Services"));
+        assert_eq!(
+            technique("T1681").map(|item| item.name),
+            Some("Search Threat Vendor Data")
+        );
+        assert_eq!(
+            technique("T1682").map(|item| item.name),
+            Some("Query Public AI Services")
+        );
         assert!(
             RECONNAISSANCE_V19_2_OVERLAY
                 .iter()
