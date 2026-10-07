@@ -33,6 +33,13 @@ fn main_pushes_publish_main_channel_pre_releases_only() {
     let wf = release();
     for required in [
         "branches:\n      - main",
+        "paths:",
+        "\"src/**\"",
+        "\"Dockerfile\"",
+        "\"scripts/repair-gate.sh\"",
+        "\"scripts/railway-live-acceptance.sh\"",
+        "\"scripts/validate-railway-iac.sh\"",
+        "\".railway/**\"",
         "workflow_dispatch:",
         "refs/heads/main",
         "main-${GITHUB_SHA:0:7}",
@@ -44,6 +51,9 @@ fn main_pushes_publish_main_channel_pre_releases_only() {
         "ASSET: huntsman-recon-aarch64-linux-android",
         "usage: huntsman-recon \\[check",
         "dist/install-termux.sh",
+        "Require merged PR origin for main pushes",
+        "commits/${GITHUB_SHA}/pulls",
+        ".base.ref == \"main\" and .merged_at != null",
     ] {
         assert!(wf.contains(required), "{RELEASE} must contain {required:?}");
     }
@@ -350,6 +360,9 @@ fn release_publish_requires_shared_quality_gate() {
         "bash scripts/repair-gate.sh full",
         "docker build --pull -f Dockerfile -t huntsman-recon:railway .",
         "bash scripts/railway-live-acceptance.sh",
+        "bash scripts/validate-railway-iac.sh",
+        "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0",
+        "node-version: \"22\"",
         "persist-credentials: false",
     ] {
         assert!(
