@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 pub const EXPECTED_SHA256: &str =
     "5bdd9777d9a8046d2d4a6bf645ee6201b6e1d004b1a6a1fc7a99eb246a687584";
 pub const CANONICAL: &str = "HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md";
+const EMBEDDED_CANONICAL: &[u8] =
+    include_bytes!("../HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md");
 pub const MIRRORS: [&str; 6] = [
     "AGENTS.md",
     "CLAUDE.md",
@@ -21,6 +23,20 @@ pub const MIRRORS: [&str; 6] = [
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Verify the canonical directive embedded into an installed binary at build time.
+///
+/// # Errors
+/// Returns an error if the embedded bytes do not match the pinned canonical hash.
+pub fn verify_embedded() -> Result<(), String> {
+    let actual = crate::sha256::hex32(&crate::sha256::sha256(EMBEDDED_CANONICAL));
+    if actual != EXPECTED_SHA256 {
+        return Err(format!(
+            "embedded canonical SHA-256 drift: expected {EXPECTED_SHA256}, got {actual}"
+        ));
+    }
+    Ok(())
 }
 
 fn canonical_bytes(root: &Path) -> Result<Vec<u8>, String> {
@@ -108,6 +124,11 @@ mod tests {
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ))
+    }
+
+    #[test]
+    fn embedded_canonical_is_verified() {
+        verify_embedded().unwrap();
     }
 
     #[test]
