@@ -16,15 +16,33 @@ pub(in crate::modules::search_engines) const MAX_FETCH_MS: u64 = 8_000;
 /// almost always fails, and starting one risks overrunning the module deadline.
 pub(super) const MIN_FETCH_MS: u64 = 1_500;
 
+/// A parsed zero is not automatically a valid zero. Search providers also
+/// return marketing shells, consent pages and drifted markup as ordinary HTML.
+/// Only an explicit provider statement of no matches earns `Empty`; every
+/// other non-blocked zero is kept distinct as `Drift`.
+const EXPLICIT_ZERO_MARKERS: &[&str] = &[
+    "no results found",
+    "no results for",
+    "no search results",
+    "did not match any",
+    "didn't match any",
+    "we could not find any results",
+    "we couldn't find any results",
+];
+
 /// Outcome of a complete engine request after parsing and the bounded alt-UA
-/// retry. Keep transport failure, blocking, a valid zero-result page, and real
-/// results distinct all the way into the scheduler: collapsing these states to
-/// `None` caused blocked/unreachable engines and honest empty searches to
-/// poison the same "consecutive empty" counter.
+/// retry. Keep transport failure, blocking, validated zero, drift, and real
+/// results distinct all the way into the scheduler. A generic HTML 200 with no
+/// extracted rows is not proof of a healthy zero-result query.
 #[derive(Clone)]
 pub(super) enum SearchFetchResult {
     Results(Vec<SearchResult>),
+    /// Provider explicitly confirmed that the query matched nothing.
     Empty,
+    /// A substantial non-challenge response produced no parseable results and
+    /// did not explicitly confirm a zero. This is parser/semantic drift until
+    /// proven otherwise, never healthy-zero evidence.
+    Drift,
     Blocked,
     Unreachable,
 }
@@ -33,14 +51,14 @@ impl SearchFetchResult {
     pub(super) fn into_results(self) -> Option<Vec<SearchResult>> {
         match self {
             Self::Results(results) => Some(results),
-            Self::Empty | Self::Blocked | Self::Unreachable => None,
+            Self::Empty | Self::Drift | Self::Blocked | Self::Unreachable => None,
         }
     }
 
     fn result_count(&self) -> usize {
         match self {
             Self::Results(results) => results.len(),
-            Self::Empty | Self::Blocked | Self::Unreachable => 0,
+            Self::Empty | Self::Drift | Self::Blocked | Self::Unreachable => 0,
         }
     }
 }
@@ -51,6 +69,7 @@ struct FetchKey {
     engine: &'static str,
     url: String,
     query: String,
+    post_body: Option<String>,
 }
 
 type SharedFetch = Arc<tokio::sync::OnceCell<SearchFetchResult>>;
@@ -86,6 +105,40 @@ fn fetch_timeout_ms(deadline: Instant) -> Option<u64> {
     (remaining >= MIN_FETCH_MS).then(|| remaining.min(MAX_FETCH_MS))
 }
 
+fn explicit_zero_result_page(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    EXPLICIT_ZERO_MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
+fn classify_search_body(
+    body: &str,
+    engine: &'static str,
+    query: &str,
+) -> SearchFetchResult {
+    scan_body_for_keys(body);
+    let results = parse_results(body, engine, query);
+    if !results.is_empty() {
+        SearchFetchResult::Results(results)
+    } else if explicit_zero_result_page(body) {
+        SearchFetchResult::Empty
+    } else {
+        SearchFetchResult::Drift
+    }
+}
+
+fn outcome_label(result: &SearchFetchResult, retry: bool) -> &'static str {
+    match (result, retry) {
+        (SearchFetchResult::Results(_), false) => "ok",
+        (SearchFetchResult::Results(_), true) => "ok_retry",
+        (SearchFetchResult::Empty, false) => "empty",
+        (SearchFetchResult::Empty, true) => "empty_retry",
+        (SearchFetchResult::Drift, false) => "drift",
+        (SearchFetchResult::Drift, true) => "drift_retry",
+        (SearchFetchResult::Blocked, _) => "blocked",
+        (SearchFetchResult::Unreachable, _) => "unreachable",
+    }
+}
+
 async fn fetch_and_parse_uncached(
     url: &str,
     engine: &EngineSpec,
@@ -101,20 +154,12 @@ async fn fetch_and_parse_uncached(
         .max_fetch_ms
         .map_or(timeout_ms, |cap| timeout_ms.min(cap));
 
-    let (first, first_label): (SearchFetchResult, &'static str) =
-        match try_fetch(url, engine.ua, post_body, timeout_ms).await {
-            FetchOutcome::Body(body) => {
-                scan_body_for_keys(&body);
-                let results = parse_results(&body, engine.name, query);
-                if results.is_empty() {
-                    (SearchFetchResult::Empty, "empty")
-                } else {
-                    (SearchFetchResult::Results(results), "ok")
-                }
-            }
-            FetchOutcome::Unreachable => (SearchFetchResult::Unreachable, "unreachable"),
-            FetchOutcome::Blocked => (SearchFetchResult::Blocked, "blocked"),
-        };
+    let first = match try_fetch(url, engine.ua, post_body, timeout_ms).await {
+        FetchOutcome::Body(body) => classify_search_body(&body, engine.name, query),
+        FetchOutcome::Unreachable => SearchFetchResult::Unreachable,
+        FetchOutcome::Blocked => SearchFetchResult::Blocked,
+    };
+    let first_label = outcome_label(&first, false);
 
     // Preserve the first attempt's failure class when a bounded alternate-UA
     // retry also fails. A successful retry upgrades only to Results.
@@ -125,16 +170,9 @@ async fn fetch_and_parse_uncached(
     {
         match try_fetch(url, engine.ua_alt, post_body, retry_ms).await {
             FetchOutcome::Body(body) => {
-                let results = parse_results(&body, engine.name, query);
-                if results.is_empty() {
-                    // Reaching a normal, non-challenge result page is itself
-                    // availability evidence. A prior blocked attempt must not
-                    // survive merely because this successful retry happened to
-                    // have zero matches for the seed.
-                    (SearchFetchResult::Empty, "empty_retry")
-                } else {
-                    (SearchFetchResult::Results(results), "ok_retry")
-                }
+                let retry_result = classify_search_body(&body, engine.name, query);
+                let retry_label = outcome_label(&retry_result, true);
+                (retry_result, retry_label)
             }
             FetchOutcome::Blocked | FetchOutcome::Unreachable => (first, first_label),
         }
@@ -183,6 +221,7 @@ pub(super) async fn fetch_and_parse_classified(
         engine: engine.name,
         url: url.to_string(),
         query: query.to_string(),
+        post_body: post_body.map(str::to_string),
     };
     let cell = {
         let mut map = FETCH_SINGLEFLIGHT
@@ -216,7 +255,7 @@ pub(super) async fn fetch_and_parse_classified(
     // enough to reuse for this scan.
     if matches!(
         &resolved,
-        SearchFetchResult::Blocked | SearchFetchResult::Unreachable
+        SearchFetchResult::Drift | SearchFetchResult::Blocked | SearchFetchResult::Unreachable
     ) {
         let mut map = FETCH_SINGLEFLIGHT
             .lock()
