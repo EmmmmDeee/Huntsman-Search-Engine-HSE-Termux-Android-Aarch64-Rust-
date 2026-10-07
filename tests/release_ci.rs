@@ -335,9 +335,16 @@ fn every_remote_action_is_pinned_to_a_full_commit_sha_with_a_version_comment() {
 #[test]
 fn release_publish_requires_shared_quality_gate() {
     let wf = release();
+    let quality_msrv = job(&wf, "quality-msrv");
     let quality = job(&wf, "quality");
     let build = job(&wf, "build");
     let publish = job(&wf, "publish");
+
+    assert!(
+        quality_msrv.contains("toolchain: \"1.87\"")
+            && quality_msrv.contains("bash scripts/repair-gate.sh msrv"),
+        "release must independently validate the repository MSRV before build/publish"
+    );
 
     for required in [
         "bash scripts/repair-gate.sh full",
@@ -351,12 +358,12 @@ fn release_publish_requires_shared_quality_gate() {
         );
     }
     assert!(
-        build.contains("needs: [resolve, quality]"),
-        "release build must not run before shared quality acceptance passes"
+        build.contains("needs: [resolve, quality-msrv, quality]"),
+        "release build must not run before stable and MSRV quality acceptance pass"
     );
     assert!(
-        publish.contains("needs: [resolve, quality, build]"),
-        "release publish must depend on shared quality and the verified build"
+        publish.contains("needs: [resolve, quality-msrv, quality, build]"),
+        "release publish must depend on stable/MSRV quality and the verified build"
     );
 }
 
