@@ -167,11 +167,7 @@ mod tests {
 
     #[test]
     fn credential_resolution_error_carries_no_keys() {
-        let report = snapshot(
-            None,
-            CredentialResolution::Error,
-            TermuxState::NotDetected,
-        );
+        let report = snapshot(None, CredentialResolution::Error, TermuxState::NotDetected);
         assert_eq!(report.providers_configured, 0);
         assert_eq!(report.credential_resolution, CredentialResolution::Error);
     }
