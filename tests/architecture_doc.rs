@@ -1026,6 +1026,23 @@ fn cli_adapters_declare_dependencies_explicitly() {
 }
 
 #[test]
+fn lookup_adapter_is_a_small_facade() {
+    let lookup = read(&root().join("src/cli/lookup.rs"));
+    for child in ["mod discovery;", "mod profiles;", "mod scan;"] {
+        assert!(lookup.contains(child), "lookup facade is missing {child}");
+    }
+    assert!(
+        !lookup.contains("huntsman_recon::"),
+        "lookup facade must not own domain/library dependencies"
+    );
+    assert!(
+        lookup.lines().count() <= 24,
+        "src/cli/lookup.rs regrew into a mixed-concern adapter ({} lines)",
+        lookup.lines().count()
+    );
+}
+
+#[test]
 fn current_document_does_not_mark_reachable_commands_absent() {
     let markdown = doc();
     let dispatch = read(&root().join("src/cli/mod.rs"));
