@@ -248,6 +248,15 @@ use super::*;
     }
 
     #[test]
+    fn alternate_ua_retry_is_reserved_for_unusable_responses() {
+        assert!(!SearchFetchResult::Results(Vec::new()).should_retry_alt_ua());
+        assert!(!SearchFetchResult::Empty.should_retry_alt_ua());
+        assert!(SearchFetchResult::Inconclusive.should_retry_alt_ua());
+        assert!(SearchFetchResult::Blocked.should_retry_alt_ua());
+        assert!(!SearchFetchResult::Unreachable.should_retry_alt_ua());
+    }
+
+    #[test]
     fn singleflight_identity_includes_post_body() {
         let base = FetchKey {
             scan_id: "s".into(),
