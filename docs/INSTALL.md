@@ -21,10 +21,14 @@ bash "$TMPDIR/huntsman-install.sh"
 
 The installer is no-root userland only. It refreshes Termux repository metadata,
 installs `git rust clang curl coreutils`, aligns the Termux Rust compiler with
-its host `rust-std-<target>` package, compiles a native toolchain probe, builds
-the locked Huntsman root crate, creates `~/.huntsman` and a private
-`~/.huntsman.env`, then runs `check` and ledger verification in a disposable
-directory. It reports success only after that runtime acceptance passes.
+its host `rust-std-<target>` package, compiles a native toolchain probe, resolves
+`main` once to a full immutable commit SHA (unless `HUNTSMAN_REV` already names
+one), builds that exact locked revision, creates `~/.huntsman` and a private
+`~/.huntsman.env`, then runs `check` and ledger verification in the same
+disposable directory. Only after those gates pass does it atomically write
+`~/.huntsman/installed-revision` with the accepted source revision and toolchain
+provenance. It reports success only after runtime acceptance and provenance
+verification pass.
 
 The crate MSRV remains Rust 1.87. `HUNTSMAN_HIBP_NO_EMBED=1` is exported by
 the installer so build-time key embedding stays disabled; runtime key use remains
@@ -42,8 +46,10 @@ Upgrade by running the same `cargo install` command again. The repository's
 `install.sh` wrapper keeps Cargo intermediates under
 `$HOME/.cache/huntsman-recon-target` by default and does not force-rebuild an
 already matching install; set `CARGO_TARGET_DIR` to override that cache path.
-To build a specific commit instead of the moving default branch, append
-`--rev COMMIT` immediately after the repository URL.
+By default the wrapper freezes the current `main` head and supplies that full SHA
+to Cargo, so a branch movement during compilation cannot change the source being
+built. To request a specific revision explicitly, run the installer with a full
+40-character SHA in `HUNTSMAN_REV`.
 
 ## Prebuilt Termux release
 
