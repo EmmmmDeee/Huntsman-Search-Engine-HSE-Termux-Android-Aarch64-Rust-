@@ -3,6 +3,7 @@ use serde::Serialize;
 use crate::coverage::{CoverageVerdict, Event, coverage_verdict, provider_coverage_from_events};
 use crate::dependency::Target;
 use crate::entity::Entity;
+use crate::evidence_ancestry::EvidenceAncestryGraph;
 use crate::graph::{EntityRelation, Graph};
 use crate::metrics::{ScanMetrics, compute};
 
@@ -243,6 +244,9 @@ pub struct PersonResolutionScore {
     pub unsupported_person_entities: usize,
     pub forbidden_facts: usize,
     pub forbidden_facts_emitted: usize,
+    pub required_independent_person_support: usize,
+    pub proven_independent_person_support: usize,
+    pub independence_check_complete: bool,
     pub accepted: bool,
 }
 
@@ -251,6 +255,17 @@ pub fn score_person_resolution(
     entities: &[Entity],
     expected: &[ExpectedPublicFact],
     forbidden: &[ForbiddenPublicFact],
+) -> PersonResolutionScore {
+    score_person_resolution_with_ancestry(entities, expected, forbidden, None, 0)
+}
+
+#[must_use]
+pub fn score_person_resolution_with_ancestry(
+    entities: &[Entity],
+    expected: &[ExpectedPublicFact],
+    forbidden: &[ForbiddenPublicFact],
+    ancestry: Option<&EvidenceAncestryGraph>,
+    required_independent_person_support: usize,
 ) -> PersonResolutionScore {
     use std::collections::BTreeSet;
 
@@ -323,6 +338,38 @@ pub fn score_person_resolution(
         })
         .count();
 
+    let person_ancestry_nodes: BTreeSet<_> = entities
+        .iter()
+        .filter(|entity| {
+            entity.kind == crate::entity::EntityKind::Person
+                && expected
+                    .iter()
+                    .any(|(kind, value, _)| entity.kind == *kind && entity.value == *value)
+        })
+        .flat_map(|entity| entity.evidence.iter().filter_map(|evidence| evidence.ancestry_node.as_ref()))
+        .collect();
+    let independence = if required_independent_person_support == 0 {
+        Some(crate::evidence_ancestry::IndependenceRouteCount {
+            proven: 0,
+            incomplete: false,
+        })
+    } else {
+        ancestry.and_then(|graph| {
+            graph
+                .proven_independent_route_count(
+                    person_ancestry_nodes.iter().copied(),
+                    required_independent_person_support,
+                    100_000,
+                )
+                .ok()
+        })
+    };
+    let proven_independent_person_support = independence.map_or(0, |count| count.proven);
+    let independence_check_complete = independence.is_some_and(|count| !count.incomplete);
+    let independence_accepted = required_independent_person_support == 0
+        || (independence_check_complete
+            && proven_independent_person_support >= required_independent_person_support);
+
     let recall = CoverageRatio::new(matched_facts, expected.len());
     let precision = CoverageRatio::new(supported_entities, entities.len());
     let provenance_coverage = CoverageRatio::new(entities_with_evidence, entities.len());
@@ -330,7 +377,8 @@ pub fn score_person_resolution(
         && precision.is_complete()
         && provenance_coverage.is_complete()
         && unsupported_person_entities == 0
-        && forbidden_facts_emitted == 0;
+        && forbidden_facts_emitted == 0
+        && independence_accepted;
 
     PersonResolutionScore {
         expected_facts: expected.len(),
@@ -345,6 +393,9 @@ pub fn score_person_resolution(
         unsupported_person_entities,
         forbidden_facts: forbidden.len(),
         forbidden_facts_emitted,
+        required_independent_person_support,
+        proven_independent_person_support,
+        independence_check_complete,
         accepted,
     }
 }
