@@ -176,6 +176,34 @@ fn scan_id_for(batch: &ObservationBatch, observation: &RawObservation) -> String
         .map_or_else(|| "collection".to_string(), |event| event.scan_id.clone())
 }
 
+fn person_candidate_uid(observation: &RawObservation, canonical_name: &str) -> String {
+    let mut material = String::from("person-candidate-v1\0");
+    material.push_str(canonical_name);
+    material.push('\0');
+    material.push_str(&observation.provider_id);
+    if let Some(upstream) = &observation.upstream {
+        for part in [
+            upstream.provider.as_deref(),
+            upstream.dataset.as_deref(),
+            upstream.artifact.as_deref(),
+        ] {
+            material.push('\0');
+            material.push_str(part.unwrap_or_default().trim());
+        }
+    } else {
+        material.push_str("\0\0\0");
+    }
+    material.push('\0');
+    material.push_str(&observation.summary);
+    for (key, value) in &observation.attributes {
+        material.push('\0');
+        material.push_str(key);
+        material.push('=');
+        material.push_str(value);
+    }
+    hex32(&sha256(material.as_bytes()))
+}
+
 fn ensure_ancestry(
     graph: &mut EvidenceAncestryGraph,
     observation: &RawObservation,
@@ -304,6 +332,9 @@ pub fn normalize_observations(
             CANDIDATE_CONF,
             scan_id,
         );
+        if candidate.kind == EntityKind::Person {
+            candidate.uid = person_candidate_uid(observation, &candidate.value);
+        }
         if let Some(observed_at) = observation.observed_at_unix {
             candidate.observed_at_unix = observed_at;
         }
