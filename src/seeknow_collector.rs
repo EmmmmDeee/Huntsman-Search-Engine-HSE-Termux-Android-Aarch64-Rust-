@@ -245,7 +245,6 @@ fn append_row(
     }
 }
 
-
 fn row_entities(row: &SeekNowRow) -> Vec<(EntityKind, String)> {
     let mut values = BTreeSet::<(EntityKind, String)>::new();
     for (key, value) in &row.fields {
