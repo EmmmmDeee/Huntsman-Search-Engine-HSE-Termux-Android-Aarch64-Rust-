@@ -370,7 +370,7 @@ mod tests {
                 .iter()
                 .any(|item| item == &("subscription_name".into(), "Core 1".into()))
         );
-        let request = &transport.seen.borrow()[0];
+        let request = transport.seen.borrow()[0].clone();
         assert_eq!(
             request.url,
             "https://haveibeenpwned.com/api/v3/subscription/status"
