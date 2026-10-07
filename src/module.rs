@@ -269,6 +269,7 @@ pub struct ReachableModule {
     pub command: &'static str,
     pub access: &'static str,
     pub network: bool,
+    pub category: ModuleCategory,
     pub description: &'static str,
 }
 
@@ -278,6 +279,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "sources QUERY",
         access: "offline",
         network: false,
+        category: ModuleCategory::Other,
         description: "curated lead-only source routing",
     },
     ReachableModule {
@@ -285,6 +287,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "domain-lifecycle analyze INPUT --as-of TIME",
         access: "offline",
         network: false,
+        category: ModuleCategory::Other,
         description: "conservative comparison of imported domain observations",
     },
     ReachableModule {
@@ -292,6 +295,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "sf [-M|-T|-V] | -s TARGET [options]",
         access: "mixed",
         network: true,
+        category: ModuleCategory::Other,
         description: "SpiderFoot-compatible front end over rebuilt lookup paths",
     },
     ReachableModule {
@@ -299,6 +303,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "investigate TEXT... | --file FILE",
         access: "offline",
         network: false,
+        category: ModuleCategory::Other,
         description: "bounded offline entity extraction from local text",
     },
     ReachableModule {
@@ -306,6 +311,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "search QUERY [DIR]",
         access: "offline",
         network: false,
+        category: ModuleCategory::Other,
         description: "bounded local text search",
     },
     ReachableModule {
@@ -313,6 +319,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "query QUERY...",
         access: "keyless",
         network: true,
+        category: ModuleCategory::Search,
         description: "bounded Bing, Brave, and Mojeek meta-search",
     },
     ReachableModule {
@@ -320,6 +327,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "serve [--bind ADDR]",
         access: "local",
         network: true,
+        category: ModuleCategory::Other,
         description: "embedded Web UI and read-only JSON API",
     },
     ReachableModule {
@@ -327,6 +335,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "people NAME",
         access: "keyless",
         network: true,
+        category: ModuleCategory::People,
         description: "ASIC people register lookup",
     },
     ReachableModule {
@@ -334,6 +343,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "people NAME",
         access: "keyless",
         network: true,
+        category: ModuleCategory::Corporate,
         description: "ASIC director register lookup",
     },
     ReachableModule {
@@ -341,6 +351,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "people NAME",
         access: "keyless",
         network: true,
+        category: ModuleCategory::People,
         description: "Australian public people-source lookup",
     },
     ReachableModule {
@@ -348,6 +359,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "people NAME",
         access: "keyless",
         network: true,
+        category: ModuleCategory::People,
         description: "Australian public electoral-source lookup",
     },
     ReachableModule {
@@ -355,6 +367,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "email ADDR",
         access: "offline",
         network: false,
+        category: ModuleCategory::Other,
         description: "deterministic email canonicalisation and pivots",
     },
     ReachableModule {
@@ -362,6 +375,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "email ADDR",
         access: "keyless",
         network: true,
+        category: ModuleCategory::Social,
         description: "public Gravatar profile lookup",
     },
     ReachableModule {
@@ -369,6 +383,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "username HANDLE",
         access: "offline",
         network: false,
+        category: ModuleCategory::Other,
         description: "bounded deterministic username variants",
     },
     ReachableModule {
@@ -376,6 +391,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "username HANDLE",
         access: "keyless",
         network: true,
+        category: ModuleCategory::Social,
         description: "public GitHub profile lookup",
     },
     ReachableModule {
@@ -383,6 +399,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "username HANDLE",
         access: "keyless",
         network: true,
+        category: ModuleCategory::Social,
         description: "public Bluesky profile lookup",
     },
     ReachableModule {
@@ -390,6 +407,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "phone NUMBER",
         access: "offline",
         network: false,
+        category: ModuleCategory::Phone,
         description: "E.164 and international dialling-prefix classification",
     },
     ReachableModule {
@@ -397,6 +415,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "phone NUMBER",
         access: "offline",
         network: false,
+        category: ModuleCategory::Phone,
         description: "Australian numbering-plan classification",
     },
     ReachableModule {
@@ -404,6 +423,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "hibp SUBCOMMAND",
         access: "operator_key",
         network: true,
+        category: ModuleCategory::Breach,
         description: "explicit HIBP/Pwned Passwords lookup",
     },
     ReachableModule {
@@ -411,6 +431,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "recon crtsh TARGET",
         access: "keyless",
         network: true,
+        category: ModuleCategory::DnsRecon,
         description: "certificate-transparency lookup",
     },
     ReachableModule {
@@ -418,6 +439,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "recon dns TARGET",
         access: "keyless",
         network: true,
+        category: ModuleCategory::DnsRecon,
         description: "DNS and mail-policy lookup",
     },
     ReachableModule {
@@ -425,6 +447,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "recon stolen-tax QUERY",
         access: "operator_key",
         network: true,
+        category: ModuleCategory::Breach,
         description: "explicit stolen.tax lookup",
     },
     ReachableModule {
@@ -432,6 +455,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         command: "seeknow SUBCOMMAND",
         access: "operator_key",
         network: true,
+        category: ModuleCategory::Breach,
         description: "explicit See-Know lookup",
     },
 ];
@@ -472,6 +496,13 @@ mod tests {
         for (index, module) in modules.iter().enumerate() {
             assert!(!module.name.is_empty());
             assert!(!module.command.is_empty());
+            if module.network && module.category != ModuleCategory::Other {
+                assert!(
+                    !crate::attack::techniques_for_category(module.category).is_empty(),
+                    "network collector {} has an unmapped ATT&CK category",
+                    module.name
+                );
+            }
             assert!(
                 !modules[..index]
                     .iter()
@@ -480,6 +511,22 @@ mod tests {
                 module.name
             );
         }
+    }
+
+    #[test]
+    fn reachable_catalog_exposes_expected_collection_categories() {
+        let modules = reachable_modules();
+        let category = |name: &str| {
+            modules
+                .iter()
+                .find(|module| module.name == name)
+                .map(|module| module.category)
+        };
+        assert_eq!(category("web_query"), Some(ModuleCategory::Search));
+        assert_eq!(category("hibp"), Some(ModuleCategory::Breach));
+        assert_eq!(category("crtsh"), Some(ModuleCategory::DnsRecon));
+        assert_eq!(category("github_user"), Some(ModuleCategory::Social));
+        assert_eq!(category("email_parse"), Some(ModuleCategory::Other));
     }
 
     #[test]
