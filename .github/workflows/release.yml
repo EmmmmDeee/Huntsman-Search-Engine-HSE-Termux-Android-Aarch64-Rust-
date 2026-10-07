@@ -7,8 +7,8 @@ name: Release (prebuilt Termux aarch64 binary)
 # `main-<sha7>`, an immutable per-commit PRE-RELEASE.
 #
 # The rolling `latest` pre-release is NOT moved by default. huntsman-recon is an
-# in-progress replacement that cannot run person lookups yet, so the legacy
-# `hse` build stays the default for users. A recon build moves `latest` only
+# in-progress replacement with rebuilt people/email/username/offline-phone lookup
+# paths, but legacy `hse` remains the default until the full capability surface is restored. A recon build moves `latest` only
 # when the repository variable PROMOTE_RECON_TO_LATEST is exactly 'true' (unset
 # today). When it is, `latest` only ever moves forward along main, and is
 # deleted and re-created only after checking that it is a pre-release.
@@ -544,7 +544,7 @@ jobs:
           set -euo pipefail
           files=("dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" "dist/key-scan-report.txt" "dist/install-termux.sh")
           cat > notes.md <<NOTES
-          **In-progress replacement. Cannot run person lookups yet.** This is a main-channel **pre-release** of \`huntsman-recon\`, the reconstructed crate, for aarch64 Android/Termux. It is not a stable release, and it is not a drop-in replacement for \`hse\`. If you need person lookups, keep using the legacy \`hse\` binary. The installer below installs \`hse\` by default.
+          **In-progress replacement with rebuilt lookup paths.** This is a main-channel **pre-release** of \`huntsman-recon\`, the reconstructed crate, for aarch64 Android/Termux. It includes rebuilt people, email, username, and offline phone paths, but it does not yet cover the complete legacy \`hse\` capability surface. The installer below therefore keeps legacy \`hse\` as the default channel while allowing explicit opt-in to the current Recon build.
 
           Built from commit \`${GITHUB_SHA}\` by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. \`${ASSET}.provenance.json\` names that commit.
 

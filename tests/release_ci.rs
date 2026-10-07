@@ -39,7 +39,7 @@ fn main_pushes_publish_main_channel_pre_releases_only() {
         "gh release create \"$TAG\"",
         "gh release create latest",
         "is NOT a pre-release; refusing",
-        "Cannot run person lookups yet.",
+        "In-progress replacement with rebuilt lookup paths.",
         "queue: max",
         "ASSET: huntsman-recon-aarch64-linux-android",
         "usage: huntsman-recon \\[check",
