@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "claim_rule": "A benchmark is evidence only with workload, platform, build profile, repetitions and measured values.",
+    "regression_gate": "unset"
+  },
+  "benchmarks": []
+}

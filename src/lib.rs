@@ -40,6 +40,7 @@ pub mod classify;
 pub mod classify_module;
 pub mod collection;
 pub mod collector;
+pub mod commercial_readiness;
 pub mod community;
 pub mod confidence;
 pub mod coref;

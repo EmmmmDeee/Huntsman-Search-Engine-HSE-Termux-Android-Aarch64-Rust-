@@ -160,7 +160,6 @@ fn json_contract_matches_static_contract() {
     assert_eq!(value["roles"][15]["name"], "JEW BOT");
 }
 
-
 #[test]
 fn canonical_team_directive_is_identical_across_agent_instruction_surfaces() {
     const EXPECTED_SHA256: &str =
@@ -173,7 +172,12 @@ fn canonical_team_directive_is_identical_across_agent_instruction_surfaces() {
         "canonical Huntsman team directive changed"
     );
 
-    for path in ["HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md", "CLAUDE.md", "GEMINI.md", ".github/copilot-instructions.md"] {
+    for path in [
+        "HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md",
+        "CLAUDE.md",
+        "GEMINI.md",
+        ".github/copilot-instructions.md",
+    ] {
         let mirrored = fs::read(root().join(path))
             .unwrap_or_else(|error| panic!("{path} must exist: {error}"));
         assert_eq!(
