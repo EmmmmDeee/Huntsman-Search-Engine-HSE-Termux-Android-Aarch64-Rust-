@@ -118,8 +118,8 @@ async fn fetch_and_parse_uncached(
 
     // Preserve the first attempt's failure class when a bounded alternate-UA
     // retry also fails. A successful retry upgrades only to Results.
-    let (result, outcome) = if !matches!(first, SearchFetchResult::Results(_))
-        && !matches!(first, SearchFetchResult::Unreachable)
+    let (result, outcome) = if !matches!(&first, SearchFetchResult::Results(_))
+        && !matches!(&first, SearchFetchResult::Unreachable)
         && engine.ua != engine.ua_alt
         && let Some(retry_ms) = fetch_timeout_ms(deadline)
     {
@@ -201,9 +201,31 @@ pub(super) async fn fetch_and_parse_classified(
         return cached.clone();
     }
 
-    cell.get_or_init(|| fetch_and_parse_uncached(url, engine, query, post_body, deadline))
+    let resolved = cell
+        .get_or_init(|| fetch_and_parse_uncached(url, engine, query, post_body, deadline))
         .await
-        .clone()
+        .clone();
+
+    // Coalesce concurrent failures, but do not memoize them for the whole scan:
+    // a later sequential attempt may legitimately recover after a transient
+    // network failure or anti-bot response. Successful empty/results are stable
+    // enough to reuse for this scan.
+    if matches!(
+        &resolved,
+        SearchFetchResult::Blocked | SearchFetchResult::Unreachable
+    ) {
+        let mut map = FETCH_SINGLEFLIGHT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if map
+            .get(&key)
+            .is_some_and(|registered| Arc::ptr_eq(registered, &cell))
+        {
+            map.remove(&key);
+        }
+    }
+
+    resolved
 }
 
 /// Compatibility wrapper for pivot/recycler call sites that only need rows.
