@@ -132,22 +132,22 @@ fn captured_public_observations_flow_through_real_pipeline_and_pass() {
         expected(
             EntityKind::Person,
             "Talia Bacot-Keating",
-            "public profile professional profile",
+            "public_profile professional_profile",
         ),
         expected(
             EntityKind::Person,
             "Talia Bacot-Keating",
-            "project document nook bess",
+            "project_document nook_bess",
         ),
         expected(
             EntityKind::Organisation,
             "Anza Power",
-            "public profile professional profile",
+            "public_profile professional_profile",
         ),
         expected(
             EntityKind::Document,
             "Nook Battery Energy Storage System",
-            "project document nook bess",
+            "project_document nook_bess",
         ),
     ];
     let forbidden = vec![ForbiddenPublicFact {
@@ -183,17 +183,17 @@ fn real_pipeline_output_with_unrelated_identity_fails_closed() {
         expected(
             EntityKind::Person,
             "Talia Bacot-Keating",
-            "public profile professional profile",
+            "public_profile professional_profile",
         ),
         expected(
             EntityKind::Organisation,
             "Anza Power",
-            "public profile professional profile",
+            "public_profile professional_profile",
         ),
         expected(
             EntityKind::Document,
             "Nook Battery Energy Storage System",
-            "project document nook bess",
+            "project_document nook_bess",
         ),
     ];
     let forbidden = vec![ForbiddenPublicFact {
