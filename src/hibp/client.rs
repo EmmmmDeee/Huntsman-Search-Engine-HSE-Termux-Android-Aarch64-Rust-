@@ -284,11 +284,16 @@ impl HibpClient {
     /// `GET /subscription/status`. Not cached; see [`Self::cached_subscription_status`].
     pub fn subscription_status(&self) -> Result<SubscriptionStatus, HibpError> {
         let url = self.url("/subscription/status", &[]);
-        self.get_json(&url, true)?
+        let status = self
+            .get_json(&url, true)?
             .ok_or_else(|| HibpError::UnexpectedStatus {
                 status: 404,
                 body: "subscription status not found".into(),
-            })
+            })?;
+        if let Some(rpm) = status.rpm.filter(|rpm| *rpm > 0) {
+            self.limiter.set_limit(rpm);
+        }
+        Ok(status)
     }
 
     /// The subscription status, fetched once per client and reused.
