@@ -8,6 +8,12 @@ pub(super) fn print_command_help(command: &str) {
         "check" => {
             "check\nRun offline self-acceptance and regenerate var/ledger.json, var/navigator.json, and var/stix-bundle.json."
         }
+        "diagnostics" => {
+            "diagnostics [--json]\nPrint offline build provenance, target/runtime context, reachable-module counts, ATT&CK-mapped collector counts, and provider credential completeness without values or network access."
+        }
+        "build-sha" => {
+            "build-sha\nPrint the source commit embedded at build time, or unknown for builds without provenance metadata."
+        }
         "command" => {
             "command [--json]\nValidate and print the fixed engineering command invariant, phases, roles, execution protocols, and capability owners."
         }
