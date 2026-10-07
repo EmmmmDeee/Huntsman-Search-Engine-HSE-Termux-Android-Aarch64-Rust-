@@ -42,8 +42,8 @@ fn public_person_resolution_fixture_scores_recall_and_provenance() {
     let score = score_person_resolution(&entities, &expected);
     assert_eq!(score.expected_facts, 3);
     assert_eq!(score.matched_facts, 3);
-    assert!((score.recall - 1.0).abs() < f64::EPSILON);
-    assert!((score.provenance_coverage - 1.0).abs() < f64::EPSILON);
+    assert_eq!(score.recall.numerator, 3);\n    assert_eq!(score.recall.denominator, 3);\n    assert!(score.recall.is_complete());
+    assert_eq!(score.provenance_coverage.numerator, 3);\n    assert_eq!(score.provenance_coverage.denominator, 3);\n    assert!(score.provenance_coverage.is_complete());
     assert_eq!(score.unsupported_person_entities, 0);
 }
 

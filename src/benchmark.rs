@@ -195,14 +195,42 @@ pub struct ExpectedPublicFact {
     pub source: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CoverageRatio {
+    pub numerator: usize,
+    pub denominator: usize,
+}
+
+impl CoverageRatio {
+    #[must_use]
+    pub const fn new(numerator: usize, denominator: usize) -> Self {
+        if denominator == 0 {
+            Self {
+                numerator: 1,
+                denominator: 1,
+            }
+        } else {
+            Self {
+                numerator,
+                denominator,
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn is_complete(self) -> bool {
+        self.numerator == self.denominator
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PersonResolutionScore {
     pub expected_facts: usize,
     pub matched_facts: usize,
-    pub recall: f64,
+    pub recall: CoverageRatio,
     pub entities_with_evidence: usize,
     pub entities_without_evidence: usize,
-    pub provenance_coverage: f64,
+    pub provenance_coverage: CoverageRatio,
     pub unsupported_person_entities: usize,
 }
 
@@ -236,16 +264,8 @@ pub fn score_person_resolution(
             entity.kind == crate::entity::EntityKind::Person && entity.evidence.is_empty()
         })
         .count();
-    let recall = if expected.is_empty() {
-        1.0
-    } else {
-        matched_facts as f64 / expected.len() as f64
-    };
-    let provenance_coverage = if entities.is_empty() {
-        1.0
-    } else {
-        entities_with_evidence as f64 / entities.len() as f64
-    };
+    let recall = CoverageRatio::new(matched_facts, expected.len());
+    let provenance_coverage = CoverageRatio::new(entities_with_evidence, entities.len());
     PersonResolutionScore {
         expected_facts: expected.len(),
         matched_facts,
