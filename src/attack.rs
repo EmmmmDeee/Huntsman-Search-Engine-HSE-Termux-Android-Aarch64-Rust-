@@ -11,6 +11,11 @@ use crate::graph::{EntityRelation, RelationKind};
 pub const ATTACK_VERSION: &str = "17.1";
 /// Version to which the embedded TA0043 Reconnaissance slice has been reconciled.
 pub const RECONNAISSANCE_VERSION: &str = "19.2";
+/// Authoritative MITRE page for the scoped Reconnaissance taxonomy.
+pub const RECONNAISSANCE_SOURCE_URL: &str = "https://attack.mitre.org/tactics/TA0043/";
+/// Authoritative MITRE release/version record for the scoped taxonomy version.
+pub const RECONNAISSANCE_VERSION_SOURCE_URL: &str =
+    "https://attack.mitre.org/resources/updates/";
 
 /// Reconnaissance techniques added after the embedded Enterprise v17.1 baseline.
 ///
@@ -411,6 +416,14 @@ mod tests {
     fn reconnaissance_slice_is_exactly_ta0043() {
         assert_eq!(RECONNAISSANCE_VERSION, "19.2");
         assert_eq!(reconnaissance_spec_major(), "19");
+        assert_eq!(
+            RECONNAISSANCE_SOURCE_URL,
+            "https://attack.mitre.org/tactics/TA0043/"
+        );
+        assert_eq!(
+            RECONNAISSANCE_VERSION_SOURCE_URL,
+            "https://attack.mitre.org/resources/updates/"
+        );
         assert_eq!(ATTACK_VERSION, "17.1");
         assert_eq!(attack_spec_major(), "17");
 
