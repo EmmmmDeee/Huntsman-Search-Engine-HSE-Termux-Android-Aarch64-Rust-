@@ -126,7 +126,7 @@ jobs:
                   # Pre-release, deliberately: GitHub's "latest release" ignores
                   # pre-releases, so the stable channel still points at the last
                   # version tag and a version bump remains the act that cuts a
-                  # release. This adds a main channel; it does not redefine the
+                  # release. This adds a legacy-hse channel; it does not redefine the
                   # stable one.
                   ahead="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${tag}...${GITHUB_SHA}" \
                             --jq '.ahead_by' 2>/dev/null || echo unknown)"
@@ -139,7 +139,7 @@ jobs:
                     {
                       echo "### Publishing a legacy-hse channel build"
                       echo
-                      echo "\`main\` is **${ahead} commit(s)** past \`v${ver}\`, and \`Cargo.toml\` still says \`${ver}\`."
+                      echo "\`legacy-hse\` is **${ahead} commit(s)** past \`v${ver}\`, and \`Cargo.toml\` still says \`${ver}\`."
                       echo "Publishing this commit as pre-release \`${tag}\` so it is installable now."
                       echo
                       echo "The **stable** channel still serves \`v${ver}\`; bump \`version\` in"
@@ -168,9 +168,32 @@ jobs:
           echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
           echo "Resolved tag=${tag} publish=${publish} prerelease=${prerelease}"
 
+  quality:
+    name: Release quality gate
+    needs: resolve
+    if: needs.resolve.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ (github.event_name == 'push' && github.ref_type == 'tag') && github.ref_name || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.98.0
+          components: rustfmt
+      - name: Installer syntax
+        run: bash -n install.sh
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Unit and integration tests
+        run: cargo test --locked --features dep-cooldown --lib --bins --tests
+
   termux-binary:
     name: Build + publish aarch64 Termux binary
-    needs: resolve
+    needs: [resolve, quality]
     if: needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
     # Scoped here rather than workflow-wide: this is the only job that writes.
