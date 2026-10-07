@@ -337,7 +337,7 @@ fn per_commit_publish_anchors_the_tag_before_creating_the_draft() {
         .expect("per-commit publish step must exist");
 
     let pre_tag_head = step
-        .find("current=\\"$(gh api \\"$api/git/ref/heads/main\\" --jq .object.sha)\\"")
+        .find("git/ref/heads/main")
         .expect("publish must re-check live main immediately before tag creation");
     let create_ref = step
         .find("gh api -X POST \"$api/git/refs\"")
