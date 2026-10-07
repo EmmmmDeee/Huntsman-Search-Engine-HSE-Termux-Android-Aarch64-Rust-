@@ -105,7 +105,8 @@ pub(super) async fn recycle_entities(
                         let scan_id = ctx.scan_id.clone();
                         async move {
                             let outcome =
-                                fetch_one_classified(e, (e.build_url)(q), q.clone(), deadline).await;
+                                fetch_one_classified(e, (e.build_url)(q), q.clone(), deadline)
+                                    .await;
                             match outcome {
                                 SearchFetchResult::Results(results) => {
                                     super::record_hit(&scan_id, engine_name);
