@@ -231,10 +231,7 @@ fn diagnostics_and_build_sha_are_offline_structured_and_non_secret() {
 
     let sha = bin().arg("build-sha").output().unwrap();
     assert!(sha.status.success());
-    let expected = match option_env!("HUNTSMAN_BUILD_SHA") {
-        Some(value) => value,
-        None => "unknown",
-    };
+    let expected = option_env!("HUNTSMAN_BUILD_SHA").unwrap_or("unknown");
     assert_eq!(
         String::from_utf8(sha.stdout).unwrap(),
         format!("{expected}\n")
