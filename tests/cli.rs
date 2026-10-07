@@ -231,7 +231,7 @@ fn diagnostics_and_build_sha_are_offline_structured_and_non_secret() {
 
     let sha = bin().arg("build-sha").output().unwrap();
     assert!(sha.status.success());
-    let expected = option_env!("HUNTSMAN_BUILD_SHA").unwrap_or("unknown");
+    let expected = huntsman_recon::diagnostics::embedded_build_sha();
     assert_eq!(
         String::from_utf8(sha.stdout).unwrap(),
         format!("{expected}\n")
