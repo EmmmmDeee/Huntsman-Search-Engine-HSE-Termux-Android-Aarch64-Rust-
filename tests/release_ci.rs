@@ -789,7 +789,11 @@ fn scanner_ignores_linker_coalesced_generic_bearer_run_in_binary() {
     )
     .unwrap();
     let (code, text) = scan(&dir);
-    assert_eq!(code, Some(0), "generic binary bearer text must not fail:\n{text}");
+    assert_eq!(
+        code,
+        Some(0),
+        "generic binary bearer text must not fail:\n{text}"
+    );
     assert!(text.contains("key scan: 0 finding(s)"), "{text}");
     assert!(!text.contains("rule=bearer-token"), "{text}");
     let _ = fs::remove_dir_all(&dir);
