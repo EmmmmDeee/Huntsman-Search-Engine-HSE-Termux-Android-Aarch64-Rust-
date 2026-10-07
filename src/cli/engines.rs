@@ -15,7 +15,40 @@ use crate::core::error::Result;
 use crate::modules::search_engines::engine_toggles;
 use crate::modules::search_engines::health::{EngineHealth, EngineStatus, probe_all};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EngineFleetState {
+    Healthy,
+    Degraded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EngineHealthSummary {
+    pub total: usize,
+    pub enabled: usize,
+    pub up: usize,
+    pub blocked: usize,
+    pub down: usize,
+    pub disabled: usize,
+}
+
+impl EngineHealthSummary {
+    pub fn state(self) -> EngineFleetState {
+        if self.enabled == 0 || self.up == 0 {
+            EngineFleetState::Failed
+        } else if self.blocked > 0 || self.down > 0 {
+            EngineFleetState::Degraded
+        } else {
+            EngineFleetState::Healthy
+        }
+    }
+}
+
 pub async fn cmd_engines(json: bool) -> Result<()> {
+    cmd_engines_with_summary(json).await.map(|_| ())
+}
+
+pub(super) async fn cmd_engines_with_summary(json: bool) -> Result<EngineHealthSummary> {
     // Probe results for the currently-enabled engines (fully populated — unlike
     // the web panel's cached snapshot, this sweep runs synchronously here).
     let health = probe_all().await;
@@ -26,6 +59,16 @@ pub async fn cmd_engines(json: bool) -> Result<()> {
     // a stable, predictable inventory rather than probe-completion order.
     let mut roster = engine_toggles();
     roster.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let probed = |s: EngineStatus| health.iter().filter(|h| h.status == s).count();
+    let summary = EngineHealthSummary {
+        total: roster.len(),
+        enabled: roster.iter().filter(|(_, enabled)| *enabled).count(),
+        up: probed(EngineStatus::Up),
+        blocked: probed(EngineStatus::Blocked),
+        down: probed(EngineStatus::Down),
+        disabled: roster.iter().filter(|(_, enabled)| !*enabled).count(),
+    };
 
     if json {
         let arr: Vec<serde_json::Value> = roster
@@ -55,21 +98,12 @@ pub async fn cmd_engines(json: bool) -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&serde_json::Value::Array(arr)).unwrap_or_default()
         );
-        return Ok(());
+        return Ok(summary);
     }
 
-    // up/blocked/down are counted from the probe (enabled engines); disabled from
-    // the roster. Their sum is the full roster — the same self-consistent tally
-    // the web panel shows.
-    let probed = |s: EngineStatus| health.iter().filter(|h| h.status == s).count();
-    let disabled = roster.iter().filter(|(_, en)| !en).count();
     println!(
         "\nSearch-engine liveness — {} engines: {} up, {} blocked, {} down, {} disabled\n",
-        roster.len(),
-        probed(EngineStatus::Up),
-        probed(EngineStatus::Blocked),
-        probed(EngineStatus::Down),
-        disabled,
+        summary.total, summary.up, summary.blocked, summary.down, summary.disabled,
     );
     println!("ENGINE           STATUS   LATENCY  RESULTS  DIAGNOSIS");
     println!("{}", "-".repeat(96));
@@ -90,7 +124,6 @@ pub async fn cmd_engines(json: bool) -> Result<()> {
                     h.detail,
                 );
             }
-            // Disabled (turned off in config); never queried by a scan or probe.
             _ => {
                 let (status, dash) = ("disabled", "—");
                 println!("{name:<14} · {status:<8} {dash:>9}  {dash}");
@@ -98,5 +131,34 @@ pub async fn cmd_engines(json: bool) -> Result<()> {
         }
     }
     println!();
-    Ok(())
+    Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(up: usize, blocked: usize, down: usize, disabled: usize) -> EngineHealthSummary {
+        EngineHealthSummary {
+            total: up + blocked + down + disabled,
+            enabled: up + blocked + down,
+            up,
+            blocked,
+            down,
+            disabled,
+        }
+    }
+
+    #[test]
+    fn fleet_state_is_healthy_only_when_every_enabled_engine_is_up() {
+        assert_eq!(summary(3, 0, 0, 2).state(), EngineFleetState::Healthy);
+        assert_eq!(summary(3, 1, 0, 0).state(), EngineFleetState::Degraded);
+        assert_eq!(summary(3, 0, 1, 0).state(), EngineFleetState::Degraded);
+    }
+
+    #[test]
+    fn fleet_state_fails_when_no_enabled_engine_is_usable() {
+        assert_eq!(summary(0, 4, 2, 0).state(), EngineFleetState::Failed);
+        assert_eq!(summary(0, 0, 0, 16).state(), EngineFleetState::Failed);
+    }
 }
