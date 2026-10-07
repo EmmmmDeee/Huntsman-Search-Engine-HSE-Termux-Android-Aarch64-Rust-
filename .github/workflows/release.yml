@@ -2,8 +2,8 @@ name: Release (prebuilt Termux aarch64 binary)
 
 # Main-channel pre-releases for the reconstructed `huntsman-recon` crate.
 #
-# Every push to main (and a manual workflow_dispatch on main) cross-builds the
-# aarch64 Android/Termux `huntsman-recon` binary and publishes it as
+# Every release-relevant push to main (and a manual workflow_dispatch on main)
+# cross-builds the aarch64 Android/Termux `huntsman-recon` binary and publishes it as
 # `main-<sha7>`, an immutable per-commit PRE-RELEASE.
 #
 # The rolling `latest` pre-release is NOT moved by default. huntsman-recon is an
@@ -110,7 +110,8 @@ concurrency:
 
 jobs:
   resolve:
-    # No token needed: an existing main-<sha7> is not a reason to skip the
+    # The read token is used only to prove that a main push is associated with
+    # a merged pull request. An existing main-<sha7> is not a reason to skip the
     # run. `publish` decides: it verifies an existing complete pre-release at
     # this commit, or refuses a partial one, a non-prerelease or a tag at
     # another commit.
