@@ -257,6 +257,15 @@ use super::*;
     }
 
     #[test]
+    fn only_observed_provider_failures_poison_health() {
+        assert!(!SearchFetchResult::Results(Vec::new()).is_provider_failure());
+        assert!(!SearchFetchResult::Empty.is_provider_failure());
+        assert!(!SearchFetchResult::Inconclusive.is_provider_failure());
+        assert!(SearchFetchResult::Blocked.is_provider_failure());
+        assert!(SearchFetchResult::Unreachable.is_provider_failure());
+    }
+
+    #[test]
     fn singleflight_identity_includes_post_body() {
         let base = FetchKey {
             scan_id: "s".into(),
