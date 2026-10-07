@@ -34,9 +34,9 @@ bash scripts/repair-gate.sh msrv
 bash scripts/repair-gate.sh full
 ```
 
-Use `full` before declaring a general Rust/code repair complete. Use `msrv`
+Use `full` before declaring the host-side Rust/code repair complete. Use `msrv`
 when validating under the repository minimum Rust version. Use `fast` only for
-cheap iteration while the defect is still being localized.
+cheap iteration while the defect is still being localized. The host gate is necessary, not universally sufficient: platform-specific behavior needs its own evidence.
 
 A successful `full` gate requires:
 
@@ -46,6 +46,21 @@ A successful `full` gate requires:
 - `cargo test --locked`;
 - `huntsman-recon check`;
 - no uncommitted drift in committed `var/` artifacts.
+
+## Acceptance scope matrix
+
+The repair gate verifies the host repository contract, not every deployment
+environment. Choose additional evidence from the surface changed:
+
+- **Rust/core logic or ordinary repository files:** original reproducer + `full` gate.
+- **Railway/container:** original reproducer + `full` gate + Railway container CI + live Railway acceptance against the exact deployed commit.
+- **Android cross-build:** original reproducer + `full` gate + Android aarch64 CI artifact verification.
+- **Termux runtime behavior:** Android build evidence is insufficient; run the real-device Termux acceptance harness before claiming handset-runtime success.
+- **Documentation/config/data files:** run the narrow parser/validator or reproducer that proves that file's semantics, then the relevant repository/platform gates.
+
+A generic green gate must never replace the original reproducer. It shows that
+the repair did not break the covered contract; it does not by itself prove the
+reported defect was fixed.
 
 ## Railway-specific continuation
 
