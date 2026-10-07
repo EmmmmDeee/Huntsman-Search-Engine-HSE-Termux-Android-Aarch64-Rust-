@@ -3,18 +3,52 @@
 //! Kept separate from CLI dispatch so acceptance logic can evolve and be tested
 //! without further growing the binary entrypoint.
 
-use super::{
-    ArtifactId, AutoMergePolicy, Candidate, CandidateOutcome, Claim, Classification, EgressPolicy,
-    Evidence, EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceLevel, EvidenceNodeId,
-    EvidenceProvenance, ExecuteRecord, ExitCode, FalsifyRecord, FrontierState, HoldReason,
-    IdentityResolutionDecision, IndependenceBasis, IndependenceEvidence, MergeOutcome, Observation,
-    Path, PersonRecord, ResolutionState, Session, SourceHealthAction, SourceOutcomeKind, Status,
-    TerminationSignals, VerifyRecord, EX_IOERR, MAX_ARTIFACT_BYTES, append, bundle,
-    chain_intact, classify_fetch, classify_response, decide_termination, directive_lock, effective,
-    engineering_command, fail, geohash, haversine_m, is_configured_value, is_valid_abn,
-    layer, load_chain, origin_of, parse_latlon, recommended_action, redact_url, resolve,
-    resolve_with_lineage, save_chain, scrub_secrets, search_response, seal, write_atomic,
+use std::path::Path;
+use std::process::ExitCode;
+
+use huntsman_recon::au_id::is_valid_abn;
+use huntsman_recon::classify::classify_response;
+use huntsman_recon::confidence::{Classification, effective};
+use huntsman_recon::directive_lock;
+use huntsman_recon::egress::EgressPolicy;
+use huntsman_recon::engineering_command;
+use huntsman_recon::entity::{Evidence, EvidenceProvenance};
+use huntsman_recon::evidence_ancestry::{
+    EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
+    IndependenceEvidence,
 };
+use huntsman_recon::fsio::write_atomic;
+use huntsman_recon::geohash;
+use huntsman_recon::geoint::{haversine_m, parse_latlon};
+use huntsman_recon::http::{origin_of, redact_url};
+use huntsman_recon::identity::{PersonRecord, resolve};
+use huntsman_recon::identity_resolution::{
+    AutoMergePolicy, HoldReason, IdentityResolutionDecision, ResolutionState,
+};
+use huntsman_recon::keys::is_configured_value;
+use huntsman_recon::ledger::{Claim, append, chain_intact, load_chain, save_chain, seal};
+use huntsman_recon::lineage::{
+    CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage,
+};
+use huntsman_recon::navigator::layer;
+use huntsman_recon::redact::scrub_secrets;
+use huntsman_recon::retrieval_artifact::ArtifactId;
+use huntsman_recon::search::search_response;
+use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
+use huntsman_recon::source_outcome::{
+    SourceHealthAction, SourceOutcomeKind, classify_fetch, recommended_action,
+};
+use huntsman_recon::stage::{EvidenceLevel, Status};
+use huntsman_recon::stix::bundle;
+use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
+
+const EX_IOERR: u8 = 74;
+const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
+
+fn fail(code: u8, msg: &str) -> ExitCode {
+    eprintln!("{msg}");
+    ExitCode::from(code)
+}
 
 /// Self-acceptance. Each gate has its own exit code; every artifact is regenerated, never left stale.
 pub(super) fn check() -> ExitCode {
