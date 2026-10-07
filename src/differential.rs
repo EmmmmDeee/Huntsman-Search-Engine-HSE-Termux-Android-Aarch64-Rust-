@@ -74,28 +74,19 @@ pub struct Difference {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AllowedDifference {
     pub kind: DifferenceKind,
-    pub entity_kind: EntityKind,
-    pub expected_value: String,
+    pub expected: DifferentialEntity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed_value: Option<String>,
+    pub observed: Option<DifferentialEntity>,
     pub reason: String,
 }
 
 impl AllowedDifference {
     #[must_use]
     pub fn matches(&self, difference: &Difference) -> bool {
-        if self.reason.trim().len() < 20
-            || self.kind != difference.kind
-            || self.entity_kind != difference.expected.kind
-            || self.expected_value != difference.expected.value
-        {
-            return false;
-        }
-        match (&self.observed_value, &difference.observed) {
-            (None, _) => true,
-            (Some(want), Some(observed)) => *want == observed.value,
-            (Some(_), None) => false,
-        }
+        self.reason.trim().len() >= 20
+            && self.kind == difference.kind
+            && self.expected == difference.expected
+            && self.observed == difference.observed
     }
 }
 
@@ -114,7 +105,7 @@ impl DifferentialManifest {
     pub fn is_well_formed(&self) -> bool {
         is_hex_sha256(&self.input_sha256)
             && is_hex_sha256(&self.golden_sha256)
-            && self.oracle_commit.len() >= 7
+            && is_git_sha1(&self.oracle_commit)
             && !self.capability.trim().is_empty()
             && self
                 .allowed_differences
@@ -253,6 +244,10 @@ fn is_hex_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn is_git_sha1(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,9 +303,8 @@ mod tests {
         let observed = vec![DifferentialEntity::new(EntityKind::Username, "ada")];
         let weak = [AllowedDifference {
             kind: DifferenceKind::Truncated,
-            entity_kind: EntityKind::Username,
-            expected_value: "adalovelace".into(),
-            observed_value: Some("ada".into()),
+            expected: expected[0].clone(),
+            observed: Some(observed[0].clone()),
             reason: "intentional".into(),
         }];
         assert_eq!(compare_legacy(&expected, &observed, &weak).len(), 1);
