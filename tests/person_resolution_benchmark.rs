@@ -194,8 +194,8 @@ fn captured_public_observations_flow_through_real_pipeline_and_pass() {
     );
     assert_eq!(
         snapshot.entities.len(),
-        3,
-        "duplicate person observations must merge by canonical UID"
+        4,
+        "person observations from distinct upstream records must remain separate candidates until identity resolution"
     );
     assert!(
         snapshot.ancestry.len() >= 4,
