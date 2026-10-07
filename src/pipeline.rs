@@ -13,8 +13,8 @@ use crate::collection::{
 use crate::coverage::{ProviderCoverage, provider_coverage_from_events};
 use crate::entity::{CANDIDATE_CONF, Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::evidence_ancestry::{
-    AncestryError, EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceEvidence,
-    canonical_family,
+    AncestryError, EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId,
+    IndependenceEvidence, canonical_family,
 };
 use crate::graph::{EntityRelation, RelationKind as GraphRelationKind};
 use crate::relation::{self, RelationKind as DomainRelationKind};
