@@ -116,13 +116,16 @@ pub fn readiness_markdown() -> Result<String, String> {
         concat!(
             "# Generated commercial-readiness report\n\n",
             "Schema: {}. Product: {}.\n\n",
-            "Demonstrated: **{demonstrated}**. Partial: **{partial}**. ",
-            "Planned: **{planned}**. Benchmark receipts: **{}**.\n\n",
+            "Demonstrated: **{}**. Partial: **{}**. ",
+            "Planned: **{}**. Benchmark receipts: **{}**.\n\n",
             "| Capability | Status | Interfaces | Platforms | Benchmark |\n",
             "| --- | --- | --- | --- | --- |\n"
         ),
         capabilities.schema_version,
         capabilities.product,
+        demonstrated,
+        partial,
+        planned,
         benchmarks.benchmarks.len()
     );
 
