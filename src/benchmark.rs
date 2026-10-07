@@ -308,7 +308,6 @@ pub fn score_person_resolution_with_ancestry(
     required_independent_person_support: usize,
 ) -> PersonResolutionScore {
     use std::collections::BTreeSet;
-
     let expected: BTreeSet<_> = expected
         .iter()
         .map(|fact| {
@@ -328,7 +327,6 @@ pub fn score_person_resolution_with_ancestry(
             )
         })
         .collect();
-
     let matched_facts = expected
         .iter()
         .filter(|(kind, value, source)| {
@@ -377,7 +375,6 @@ pub fn score_person_resolution_with_ancestry(
                 .any(|entity| entity.kind == *kind && entity.value == *value)
         })
         .count();
-
     let (proven_independent_person_support, independence_check_complete, independence_accepted) =
         person_independence(
             entities,
@@ -385,7 +382,6 @@ pub fn score_person_resolution_with_ancestry(
             ancestry,
             required_independent_person_support,
         );
-
     let recall = CoverageRatio::new(matched_facts, expected.len());
     let precision = CoverageRatio::new(supported_entities, entities.len());
     let provenance_coverage = CoverageRatio::new(entities_with_evidence, entities.len());
