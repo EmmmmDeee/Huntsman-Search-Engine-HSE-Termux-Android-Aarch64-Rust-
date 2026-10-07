@@ -171,7 +171,6 @@ fn name_tokens(full: &str) -> Vec<String> {
         .collect()
 }
 
-
 fn provenance(scan_id: &str) -> EvidenceProvenance {
     EvidenceProvenance::for_scan(SRC, scan_id)
 }

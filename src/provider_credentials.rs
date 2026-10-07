@@ -48,10 +48,17 @@ pub fn status(keys: &Keys) -> Vec<ProviderStatus> {
             let slots: Vec<_> = provider
                 .slots
                 .iter()
-                .map(|&slot| SlotStatus { slot, configured: keys.get(slot).is_some() })
+                .map(|&slot| SlotStatus {
+                    slot,
+                    configured: keys.get(slot).is_some(),
+                })
                 .collect();
             let configured = slots.iter().all(|slot| slot.configured);
-            ProviderStatus { name: provider.name, slots, configured }
+            ProviderStatus {
+                name: provider.name,
+                slots,
+                configured,
+            }
         })
         .collect()
 }
@@ -59,7 +66,11 @@ pub fn status(keys: &Keys) -> Vec<ProviderStatus> {
 pub fn render(keys: &Keys) -> String {
     let mut out = String::new();
     for provider in status(keys) {
-        let state = if provider.configured { "configured" } else { "incomplete" };
+        let state = if provider.configured {
+            "configured"
+        } else {
+            "incomplete"
+        };
         out.push_str("provider=");
         out.push_str(provider.name);
         out.push_str("\tstate=");

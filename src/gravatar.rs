@@ -425,7 +425,6 @@ fn add_contacts(profile: &Profile, scan_id: &str, evidence: &Evidence, entities:
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

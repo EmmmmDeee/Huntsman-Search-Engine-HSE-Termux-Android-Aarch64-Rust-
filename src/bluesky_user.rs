@@ -328,7 +328,6 @@ fn add(
     entities.push(entity);
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
