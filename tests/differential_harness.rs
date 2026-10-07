@@ -45,7 +45,7 @@ fn reviewed_differences_are_exact_and_manifest_hashes_are_pinned() {
         reason: "legacy oracle intentionally truncates this recorded fixture".into(),
     }];
 
-    assert!(compare_legacy(&expected, &observed, &allowed).is_empty());
+    assert_eq!(compare_legacy(&expected, &observed, &allowed), Vec::new());
 
     let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     let json = format!(
