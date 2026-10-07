@@ -663,7 +663,7 @@ impl Module for SearchEngines {
                         // failure count in the opposite direction.
                         record_empty_success(&ctx.scan_id, name);
                     }
-                    SearchFetchResult::Drift
+                    SearchFetchResult::Inconclusive
                     | SearchFetchResult::Blocked
                     | SearchFetchResult::Unreachable
                         if qi == 0 =>
@@ -675,7 +675,7 @@ impl Module for SearchEngines {
                         dead_engines.insert(name);
                         record_failure(&ctx.scan_id, name);
                     }
-                    SearchFetchResult::Drift
+                    SearchFetchResult::Inconclusive
                     | SearchFetchResult::Blocked
                     | SearchFetchResult::Unreachable => {}
                 }
