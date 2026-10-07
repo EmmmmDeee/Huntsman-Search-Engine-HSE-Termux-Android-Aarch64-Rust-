@@ -281,10 +281,7 @@ mod tests {
         let text = render(&args(&["status", "--json"])).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["attack_version"], attack::RECONNAISSANCE_VERSION);
-        assert_eq!(
-            value["catalogue_source"],
-            attack::RECONNAISSANCE_SOURCE_URL
-        );
+        assert_eq!(value["catalogue_source"], attack::RECONNAISSANCE_SOURCE_URL);
         assert_eq!(
             value["version_source"],
             attack::RECONNAISSANCE_VERSION_SOURCE_URL
