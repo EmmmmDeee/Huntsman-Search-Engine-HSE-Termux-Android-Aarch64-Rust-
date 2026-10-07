@@ -44,7 +44,7 @@ fn actual_failures_quarantine_until_expiry_or_success() {
     assert_eq!(
         quarantined_modules_at(
             &health,
-            400 + huntsman_recon::scraper_health::DRIFT_RETRY_TTL_SECS
+            400 + huntsman_recon::scraper_health::DRIFT_RETRY_TTL_SECS,
         )
         .len(),
         0
