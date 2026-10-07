@@ -114,6 +114,7 @@ pub mod place;
 pub mod planner;
 pub mod postcode_au;
 pub mod profiles;
+pub mod provider_credentials;
 pub mod proof;
 pub mod radar;
 pub mod recon;
