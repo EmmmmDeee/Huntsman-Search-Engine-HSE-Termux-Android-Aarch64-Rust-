@@ -4,7 +4,7 @@
 //! never stores, serializes, logs, or returns credential values.
 
 use crate::http::Transport;
-use crate::keys::Keys;
+use crate::keys::{Keys, Secret};
 use crate::service_defs::{ProbeVerdict, probe_service, service_for_env};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,6 +118,13 @@ pub const PROVIDERS: &[Provider] = &[
     },
 ];
 
+fn secret_for_slot(keys: &Keys, slot: &str) -> Option<Secret> {
+    keys.get(slot).or_else(|| match slot {
+        "HUNTSMAN_HIBP_KEY" => keys.get("HIBP_API_KEY"),
+        _ => None,
+    })
+}
+
 #[must_use]
 pub fn status(keys: &Keys) -> Vec<ProviderStatus> {
     PROVIDERS
@@ -128,7 +135,7 @@ pub fn status(keys: &Keys) -> Vec<ProviderStatus> {
                 .iter()
                 .map(|&slot| SlotStatus {
                     slot,
-                    configured: keys.get(slot).is_some(),
+                    configured: secret_for_slot(keys, slot).is_some(),
                 })
                 .collect();
             let configured = slots.iter().all(|slot| slot.configured);
@@ -171,7 +178,7 @@ pub fn probe<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> Vec<ProviderP
                     evidence: Vec::new(),
                 };
             };
-            let Some(secret) = keys.get(slot.slot) else {
+            let Some(secret) = secret_for_slot(keys, slot.slot) else {
                 return ProviderProbeStatus {
                     provider,
                     probe: ProbeState::NotConfigured,
@@ -310,6 +317,17 @@ mod tests {
         assert!(!wigle.configured);
         assert!(wigle.slots[0].configured);
         assert!(!wigle.slots[1].configured);
+    }
+
+    #[test]
+    fn hibp_standard_api_key_alias_counts_as_configured() {
+        let keys = Keys::parse("HIBP_API_KEY=0123456789abcdef0123456789abcdef\n").expect("keys");
+        let hibp = status(&keys)
+            .into_iter()
+            .find(|provider| provider.name == "HIBP")
+            .expect("HIBP");
+        assert!(hibp.configured);
+        assert!(hibp.slots[0].configured);
     }
 
     #[test]
