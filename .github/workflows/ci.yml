@@ -9,6 +9,9 @@ permissions:
   contents: read
   pull-requests: read
 
+env:
+  HUNTSMAN_BUILD_SHA: ${{ github.sha }}
+
 jobs:
   main-pr-origin:
     name: Main push originated from merged PR
@@ -83,7 +86,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Build current Huntsman Recon image
-        run: docker build --pull -f Dockerfile -t huntsman-recon:railway .
+        run: docker build --pull --build-arg HUNTSMAN_BUILD_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:railway .
       - name: Exercise Railway-style runtime
         shell: bash
         run: |
