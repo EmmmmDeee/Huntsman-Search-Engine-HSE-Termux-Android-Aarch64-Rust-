@@ -391,35 +391,23 @@ mod tests {
         };
         assert!(manifest.is_well_formed());
         assert_eq!(
-            manifest.validate_artifacts(
-                "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
-                b"abc",
-                b"abc",
-            ),
+            manifest
+                .validate_artifacts("7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58", b"abc", b"abc",),
             Ok(())
         );
         assert!(matches!(
-            manifest.validate_artifacts(
-                "0000000000000000000000000000000000000000",
-                b"abc",
-                b"abc",
-            ),
+            manifest
+                .validate_artifacts("0000000000000000000000000000000000000000", b"abc", b"abc",),
             Err(ManifestValidationError::OracleCommitMismatch { .. })
         ));
         assert!(matches!(
-            manifest.validate_artifacts(
-                "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
-                b"abd",
-                b"abc",
-            ),
+            manifest
+                .validate_artifacts("7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58", b"abd", b"abc",),
             Err(ManifestValidationError::InputHash(_))
         ));
         assert!(matches!(
-            manifest.validate_artifacts(
-                "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
-                b"abc",
-                b"abd",
-            ),
+            manifest
+                .validate_artifacts("7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58", b"abc", b"abd",),
             Err(ManifestValidationError::GoldenHash(_))
         ));
     }
