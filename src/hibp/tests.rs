@@ -165,6 +165,25 @@ fn domain_and_subscription_endpoint_shapes() {
 }
 
 #[test]
+fn subscription_status_updates_the_active_rate_budget() {
+    let fake = Arc::new(Fake::default());
+    let limiter = Arc::new(rate_limit::RateLimiter::per_minute(0));
+    let client = HibpClient::with_config(
+        fake.clone(),
+        Auth::ApiKey(ApiKey::new("private-key-never-log").unwrap()),
+        HibpConfig::default(),
+        limiter.clone(),
+    );
+    fake.push(
+        200,
+        r#"{"SubscriptionName":"Core 1","Rpm":10,"IncludesStealerLogs":false,"IncludesKAnon":false}"#,
+    );
+    assert_eq!(limiter.limit(), 0);
+    assert_eq!(client.subscription_status().unwrap().rpm, Some(10));
+    assert_eq!(limiter.limit(), 10);
+}
+
+#[test]
 fn missing_key_and_invalid_input_make_no_requests() {
     let (client, fake) = client(Auth::None);
     assert!(matches!(
@@ -537,7 +556,11 @@ fn retry_zero_then_success() {
 
 #[test]
 fn limiter_sliding_window_and_shared_block() {
-    assert_eq!(rate_limit::RateLimiter::per_minute(10).limit(), 10);
+    let adjustable = rate_limit::RateLimiter::per_minute(10);
+    assert_eq!(adjustable.limit(), 10);
+    adjustable.set_limit(7);
+    assert_eq!(adjustable.limit(), 7);
+
     let limiter = rate_limit::RateLimiter::new(10, Duration::from_millis(30));
     for _ in 0..10 {
         limiter.acquire();
