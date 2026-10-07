@@ -38,7 +38,7 @@ huntsman-recon directive check
 huntsman-recon search "brisbane port"
 ```
 
-`check` runs offline self-acceptance and rejects an invalid engineering-command contract; when run from a source checkout containing the canonical directive, it also rejects directive drift. `command` validates and prints the fixed engineering hierarchy. `directive check` verifies the pinned canonical directive and every agent-facing mirror, while `directive sync` rewrites all mirrors byte-for-byte from the canonical file. `search` and `sources` are offline.
+`check` runs offline self-acceptance and rejects an invalid engineering-command contract; when run from a source checkout containing the canonical directive, it also rejects directive drift. `command` validates and prints the fixed engineering hierarchy. From the repository root, `huntsman-recon directive check` verifies the pinned canonical directive and every agent-facing mirror, while `huntsman-recon directive sync` rewrites all mirrors byte-for-byte from the canonical file. `search` and `sources` are offline.
 `fetch`, `hibp`, `recon`, `seeknow`, `email`, `username`, and `people` make HTTP
 requests and use public-only egress by default. `phone` is fully offline. `serve` accepts inbound HTTP on `127.0.0.1:8080` by default.
 Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
@@ -78,8 +78,7 @@ run `huntsman-recon COMMAND --help` for command-specific usage.
 cargo test
 cargo run -- check                     # self-acceptance + command invariant; regenerates var/*.json
 cargo run -- command                   # validate + print engineering command contract
-cargo run -- directive check           # verify canonical directive + all mirrors
-cargo run -- directive sync            # repair every mirror from the pinned canonical file
+cargo run -- directive --help          # repository directive verifier/self-repair usage
 cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
 cargo run -- search "brisbane port"    # built-in fixture
 cargo run -- search "brisbane port" docs/
