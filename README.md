@@ -18,16 +18,20 @@ Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the
 [official GitHub releases](https://github.com/termux/termux-app/releases).
 Keep Termux and its plugins from the same distribution source. On an ARM64
 device, the repository installer refreshes package metadata, aligns the Termux
-Rust compiler and host stdlib, installs the current root crate, creates private
-state/config paths, and runs offline acceptance before reporting success:
+Rust compiler and host stdlib, freezes `main` to one immutable commit SHA,
+installs that exact root crate revision, creates private state/config paths,
+runs offline acceptance, and records the accepted revision before reporting
+success:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh -o "$TMPDIR/huntsman-install.sh" && bash "$TMPDIR/huntsman-install.sh"
 ```
 
 No root, proot, system service, or writable Android system partition is used.
-The result is `$PREFIX/bin/huntsman-recon`; `~/.huntsman` is mode 700 and
-`~/.huntsman.env` is mode 600. Rust 1.87 or newer remains the crate MSRV.
+The result is `$PREFIX/bin/huntsman-recon`; `~/.huntsman` is mode 700,
+`~/.huntsman.env` is mode 600, and accepted install provenance is stored at
+`~/.huntsman/installed-revision` with mode 600. Rust 1.87 or newer remains the
+crate MSRV.
 For prebuilt release installation, upgrades, and troubleshooting, see
 [`docs/INSTALL.md`](docs/INSTALL.md).
 

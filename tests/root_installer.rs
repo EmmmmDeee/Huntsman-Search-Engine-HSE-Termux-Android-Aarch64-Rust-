@@ -3,6 +3,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const DEFAULT_MAIN_REV: &str = "0123456789abcdef0123456789abcdef01234567";
+
 fn scratch() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("huntsman-root-installer-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -33,6 +35,17 @@ fn install_fake_termux_toolchain(fake_bin: &Path, fake_target_libdir: &Path) {
     write_executable(
         &fake_bin.join("pkg"),
         "#!/bin/sh\nprintf 'pkg %s\\n' \"$*\" >> \"$INSTALL_LOG\"\n",
+    );
+    write_executable(
+        &fake_bin.join("git"),
+        r#"#!/bin/sh
+printf 'git %s\n' "$*" >> "$INSTALL_LOG"
+if [ "$1" = 'ls-remote' ]; then
+  printf '%s\t%s\n' "${FAKE_MAIN_REV:-0123456789abcdef0123456789abcdef01234567}" 'refs/heads/main'
+  exit 0
+fi
+exit 2
+"#,
     );
     write_executable(
         &fake_bin.join("dpkg-query"),
@@ -139,9 +152,10 @@ fn assert_first_install_contract(calls: &str, temp: &Path, prefix: &Path, rev: &
     );
 }
 
-fn assert_private_state(temp: &Path) {
+fn assert_private_state(temp: &Path, expected_rev: &str) {
     let state_dir = temp.join(".huntsman");
     let env_file = temp.join(".huntsman.env");
+    let provenance = state_dir.join("installed-revision");
     assert!(state_dir.is_dir(), "installer must initialize ~/.huntsman");
     assert!(
         env_file.is_file(),
@@ -151,6 +165,20 @@ fn assert_private_state(temp: &Path) {
         fs::metadata(&env_file).unwrap().permissions().mode() & 0o777,
         0o600,
         "~/.huntsman.env must remain private"
+    );
+    assert!(
+        provenance.is_file(),
+        "installer must record accepted revision"
+    );
+    assert_eq!(
+        fs::metadata(&provenance).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "installed revision provenance must remain private"
+    );
+    let body = fs::read_to_string(&provenance).unwrap();
+    assert!(
+        body.contains(&format!("revision={expected_rev}\n")),
+        "provenance must bind the accepted revision: {body}"
     );
 }
 
@@ -194,7 +222,7 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
 
     let calls = fs::read_to_string(&log).expect("fake installer log");
     assert_first_install_contract(&calls, &temp, &prefix, rev);
-    assert_private_state(&temp);
+    assert_private_state(&temp, rev);
 
     let custom_cache = temp.join("custom-cache");
     let second = Command::new("bash")
@@ -214,6 +242,15 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         calls.contains(&format!("target={}", custom_cache.display())),
         "caller-selected cache must be preserved: {calls}"
     );
+    assert!(
+        calls.contains("git ls-remote --exit-code https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git refs/heads/main"),
+        "moving main must be resolved exactly once before Cargo: {calls}"
+    );
+    assert!(
+        calls.contains(&format!("--rev {DEFAULT_MAIN_REV}")),
+        "default installs must pin Cargo to the resolved main revision: {calls}"
+    );
+    assert_private_state(&temp, DEFAULT_MAIN_REV);
 
     let _ = fs::remove_dir_all(&temp);
 }
