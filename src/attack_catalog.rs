@@ -4188,4 +4188,16 @@ pub const ENTERPRISE: &[Technique] = &[
         is_subtechnique: false,
         tactics: &["execution"],
     },
+    Technique {
+        id: "T1681",
+        name: "Search Threat Vendor Data",
+        is_subtechnique: false,
+        tactics: &["reconnaissance"],
+    },
+    Technique {
+        id: "T1682",
+        name: "Query Public AI Services",
+        is_subtechnique: false,
+        tactics: &["reconnaissance"],
+    },
 ];
