@@ -42,6 +42,7 @@ dependency	runtime	module dependency and dispatch graph
 diamond	leaf	analysis utility
 diff	leaf	diff analysis utility
 differential	diagnostic	legacy no-regression entity comparator and oracle manifest checks
+directive_lock	diagnostic	canonical repository directive verification and mirror synchronization
 dmarc	leaf	DMARC parser
 dns	adapter	DNS source client
 domain_lifecycle	diagnostic	offline imported domain-observation comparison
