@@ -488,7 +488,7 @@ jobs:
           set -euo pipefail
           files=("dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" "dist/key-scan-report.txt" "dist/install-termux.sh")
           cat > notes.md <<NOTES
-          **In-progress replacement. Cannot run person lookups yet.** This is a main-channel **pre-release** of \`huntsman-recon\`, the reconstructed crate, for aarch64 Android/Termux. It is not a stable release, and it is not a drop-in replacement for \`hse\`. If you need person lookups, keep using the legacy \`hse\` binary. The installer below installs \`hse\` by default.
+          **In-progress replacement with rebuilt lookup paths.** This is a main-channel **pre-release** of \`huntsman-recon\`, the reconstructed crate, for aarch64 Android/Termux. It includes rebuilt people, email, username, and offline phone paths, but it does not yet cover the complete legacy \`hse\` capability surface. The installer below therefore keeps legacy \`hse\` as the default channel while allowing explicit opt-in to the current Recon build.
 
           Built from commit \`${GITHUB_SHA}\` by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. \`${ASSET}.provenance.json\` names that commit.
 
