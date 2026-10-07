@@ -81,7 +81,6 @@ esac
     );
 }
 
-
 fn assert_first_install_contract(calls: &str, temp: &Path, prefix: &Path, rev: &str) {
     assert!(calls.contains("pkg update -y"), "{calls}");
     assert!(
