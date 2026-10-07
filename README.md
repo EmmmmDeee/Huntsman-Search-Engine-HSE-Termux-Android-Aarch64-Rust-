@@ -121,6 +121,7 @@ cargo run -- geohash -27.4698,153.0251 9
 cargo run -- coarsen -27.4698,153.0251 # one decimal place, ~11 km
 cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
+cargo run -- credential-status             # provider credential completeness only; never prints values
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
 cargo run -- hibp help                   # HIBP subcommands; offline
 cargo run -- seeknow --help              # SeekNow subcommands; offline
