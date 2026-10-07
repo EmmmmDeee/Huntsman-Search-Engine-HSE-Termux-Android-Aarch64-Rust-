@@ -13,8 +13,8 @@ use huntsman_recon::classify_module::ClassifyModule;
 use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::crtsh::{self, CrtShError};
-use huntsman_recon::dns;
 use huntsman_recon::directive_lock;
+use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::email_cli::{EMAIL_HELP, EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::email_save;
@@ -274,13 +274,23 @@ fn directive_cmd(args: &[String]) -> ExitCode {
     let (action, root) = match args {
         [action] => (action.as_str(), Path::new(".")),
         [action, root] => (action.as_str(), Path::new(root)),
-        _ => return fail(EX_USAGE, "usage: huntsman-recon directive check|sync [ROOT]"),
+        _ => {
+            return fail(
+                EX_USAGE,
+                "usage: huntsman-recon directive check|sync [ROOT]",
+            );
+        }
     };
 
     let result = match action {
         "check" => directive_lock::verify_at(root),
         "sync" => directive_lock::sync_at(root),
-        _ => return fail(EX_USAGE, "usage: huntsman-recon directive check|sync [ROOT]"),
+        _ => {
+            return fail(
+                EX_USAGE,
+                "usage: huntsman-recon directive check|sync [ROOT]",
+            );
+        }
     };
 
     match result {
