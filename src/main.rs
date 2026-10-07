@@ -17,9 +17,9 @@ use huntsman_recon::directive_lock;
 use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::email_cli::{EMAIL_HELP, EMAIL_USAGE, EmailArgs, EmailRun};
-use huntsman_recon::lookup_save::{self, EMAIL_POLICY, PHONE_POLICY, USERNAME_POLICY};
 use huntsman_recon::engineering_command;
 use huntsman_recon::entity::{Evidence, EvidenceProvenance};
+use huntsman_recon::lookup_save::{self, EMAIL_POLICY, PHONE_POLICY, USERNAME_POLICY};
 use huntsman_recon::error::Error;
 use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
@@ -44,8 +44,8 @@ use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resol
 use huntsman_recon::module::reachable_modules;
 use huntsman_recon::navigator::layer;
 use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, PeopleRun};
-use huntsman_recon::provider_credentials;
 use huntsman_recon::phone_cli::{PHONE_HELP, PHONE_USAGE, PhoneArgs, PhoneRun};
+use huntsman_recon::provider_credentials;
 use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::retrieval_artifact::ArtifactId;
@@ -396,7 +396,12 @@ fn people_cmd(args: &[String]) -> ExitCode {
                 if report.entities.is_empty() && report.outcomes.is_empty() {
                     return ExitCode::SUCCESS;
                 }
-                match lookup_save::save(&path, &report.entities, &report.outcomes, lookup_save::PEOPLE_POLICY) {
+                match lookup_save::save(
+                    &path,
+                    &report.entities,
+                    &report.outcomes,
+                    lookup_save::PEOPLE_POLICY,
+                ) {
                     Ok(entries) => {
                         println!("saved={}", path.display());
                         println!("entries={}", entries.len());
@@ -479,7 +484,8 @@ fn username_cmd(args: &[String]) -> ExitCode {
         UsernameRun::Printed { text, report } => {
             print!("{text}");
             if let Some(path) = parsed.save {
-                match lookup_save::save(&path, &report.entities, &report.outcomes, USERNAME_POLICY) {
+                match lookup_save::save(&path, &report.entities, &report.outcomes, USERNAME_POLICY)
+                {
                     Ok(entries) => {
                         println!("saved={}", path.display());
                         println!("entries={}", entries.len());
