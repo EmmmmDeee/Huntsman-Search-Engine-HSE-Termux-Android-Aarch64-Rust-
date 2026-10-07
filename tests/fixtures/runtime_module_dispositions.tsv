@@ -27,6 +27,7 @@ classify	runtime	response classification
 classify_module	leaf	module classification utility
 collection	runtime	provider-neutral execution/observation bridge
 collector	adapter	source-agnostic collection boundary
+commercial_readiness	diagnostic	machine-checkable capability proof and benchmark readiness reporting
 community	runtime	graph community analysis through intelligence report
 confidence	runtime	entity confidence and verification helpers
 coref	runtime	deterministic coreference clusters in investigation report
