@@ -282,7 +282,7 @@ pub struct Entity {
 
 pub fn merge_by_uid(entities: &mut Vec<Entity>) {
     let mut positions = HashMap::<String, usize>::with_capacity(entities.len());
-    let mut merged = Vec::with_capacity(entities.len());
+    let mut merged: Vec<Entity> = Vec::with_capacity(entities.len());
     for entity in entities.drain(..) {
         if let Some(&index) = positions.get(&entity.uid) {
             merged[index].absorb(entity);
