@@ -41,3 +41,23 @@ fn unsupported_only_input_fails_explicitly() {
     assert_eq!(output.status.code(), Some(65));
     assert!(String::from_utf8_lossy(&output.stderr).contains("no actionable seeds"));
 }
+
+#[test]
+fn version_flags_report_package_version_without_investigation() {
+    for flag in ["--version", "-V"] {
+        let output = Command::new(binary())
+            .arg(flag)
+            .output()
+            .expect("run investigate version");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            concat!("investigate ", env!("CARGO_PKG_VERSION"))
+        );
+        assert!(output.stderr.is_empty());
+    }
+}
