@@ -29,7 +29,7 @@ fn job(wf: &str, name: &str) -> String {
 }
 
 #[test]
-fn main_pushes_publish_main_channel_pre_releases_only() {
+fn main_pushes_build_and_current_head_publishes_main_channel_pre_releases_only() {
     let wf = release();
     for required in [
         "branches:\n      - main",
@@ -40,7 +40,10 @@ fn main_pushes_publish_main_channel_pre_releases_only() {
         "gh release create latest",
         "is NOT a pre-release; refusing",
         "In-progress replacement with rebuilt lookup paths.",
-        "queue: max",
+        "--draft --latest=false",
+        "gh release edit \"$TAG\" --draft=false --prerelease --latest=false",
+        "main advanced to",
+        "Actions artifact",
         "ASSET: huntsman-recon-aarch64-linux-android",
         "usage: huntsman-recon \\[check",
         "dist/install-termux.sh",
@@ -78,7 +81,7 @@ fn rolling_latest_moves_only_behind_an_explicit_opt_in() {
         .expect("latest step must exist");
     assert!(
         step.contains(
-            "        if: vars.PROMOTE_RECON_TO_LATEST == 'true' && steps.existing.outputs.exists == 'false'\n"
+            "        if: vars.PROMOTE_RECON_TO_LATEST == 'true' && (steps.existing.outputs.exists == 'true' || steps.publish.outputs.published == 'true')\n"
         ),
         "moving `latest` must be gated on PROMOTE_RECON_TO_LATEST == 'true'"
     );
@@ -96,13 +99,10 @@ fn rolling_latest_moves_only_behind_an_explicit_opt_in() {
     }
     assert_eq!(
         wf.matches("gh release delete").count(),
-        1,
-        "only the gated latest step may delete a release"
+        2,
+        "only a raced draft cleanup and the gated latest step may delete a release"
     );
-    assert!(
-        step.contains("gh release delete latest"),
-        "the only delete must be in the gated latest step"
-    );
+    assert!(step.contains("gh release delete latest"));
     assert!(wf.contains("latest moved to this build without PROMOTE_RECON_TO_LATEST"));
 }
 
@@ -241,38 +241,48 @@ fn publish_scans_with_a_byte_identical_inlined_scanner() {
 }
 
 #[test]
-fn main_publishes_are_serialised_not_coalesced() {
+fn superseded_main_builds_are_verified_without_historical_release_failures() {
     let wf = release();
     let publish = job(&wf, "publish");
-    assert!(publish.contains(
-        "    concurrency:\n      group: release-publish-main\n      cancel-in-progress: false\n      queue: max\n"
-    ));
-    assert_eq!(
-        wf.lines().filter(|l| l.trim() == "queue: max").count(),
-        1,
-        "only the publish job queues"
+    assert!(
+        !publish.contains("concurrency:") && !wf.contains("queue: max"),
+        "publish must not queue old main commits until they become historical"
     );
-    // Main runs never share a workflow-level group, so none is replaced there.
+    // Every main push keeps its own build run, so superseded commits still get
+    // verification and an Actions artifact.
     assert!(wf.contains(
         "  group: release-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}\n"
     ));
-    assert!(wf.contains(
-        "https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency"
-    ));
-    // Idempotent: an existing complete main-<sha7> at this commit is verified,
-    // never replaced, and a tag at another commit is refused.
     for required in [
         "id: existing",
         "verifying it, not replacing it",
         "not ${GITHUB_SHA}; refusing",
         "is missing or has no digest",
-        "if: steps.existing.outputs.exists == 'false'",
+        "id: head",
+        "git/ref/heads/main",
+        "steps.head.outputs.publish == 'true'",
+        "--draft --latest=false",
+        "read -r type actual",
+        "[ \"$actual\" != \"$GITHUB_SHA\" ]",
+        "gh release delete \"$TAG\" --yes --cleanup-tag",
+        "gh release edit \"$TAG\" --draft=false --prerelease --latest=false",
+        "published=false",
+        "published=true",
+        "Actions artifact",
     ] {
         assert!(
             publish.contains(required),
             "publish job must contain {required:?}"
         );
     }
+    let per_commit = publish
+        .split("      - name: ")
+        .find(|s| s.starts_with("Publish pre-release "))
+        .expect("per-commit publish step must exist");
+    assert!(
+        !per_commit.contains("--target \"$GITHUB_SHA\""),
+        "per-commit publication must not ask GITHUB_TOKEN to mint a historical target"
+    );
 }
 
 #[test]
@@ -282,6 +292,10 @@ fn post_publish_check_requires_a_matching_non_empty_digest() {
         .split("      - name: ")
         .find(|s| s.starts_with("Verify published pre-releases"))
         .expect("verify step must exist");
+    assert!(
+        step.contains("if: steps.existing.outputs.exists == 'true' || steps.publish.outputs.published == 'true'"),
+        "superseded CI-only builds must skip release verification"
+    );
     for required in [
         "[ -n \"$d\" ] || fail \"${t} has no digest for asset ${a}\"",
         "[[ \"$d\" =~ ^sha256:[0-9a-f]{64}$ ]]",
@@ -699,7 +713,8 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
 fn attestation_warning_does_not_promise_a_retry() {
     let wf = release();
     assert!(!wf.contains("Re-run to retry"));
-    assert!(wf.contains("A re-run will not add it"));
+    assert!(!wf.contains("A re-run will not add it"));
+    assert!(wf.contains("otherwise it remains a CI-only artifact"));
 }
 
 /// One synthetic positive per pattern rule, assembled at runtime.
