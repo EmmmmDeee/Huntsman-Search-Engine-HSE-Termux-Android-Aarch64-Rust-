@@ -36,10 +36,7 @@ fn public_differential_harness_enforces_no_legacy_regressions() {
 
 #[test]
 fn reviewed_differences_are_exact_and_manifest_hashes_are_pinned() {
-    let expected = vec![DifferentialEntity::new(
-        EntityKind::Username,
-        "adalovelace",
-    )];
+    let expected = vec![DifferentialEntity::new(EntityKind::Username, "adalovelace")];
     let observed = vec![DifferentialEntity::new(EntityKind::Username, "ada")];
     let allowed = vec![AllowedDifference {
         kind: DifferenceKind::Truncated,
