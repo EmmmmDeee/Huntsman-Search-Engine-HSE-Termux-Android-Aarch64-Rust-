@@ -393,6 +393,58 @@ mod tests {
     }
 
     #[test]
+    fn github_personal_domain_pivots_into_custom_bluesky_handle() {
+        let github = r#"{
+          "login":"troyhunt",
+          "id":273244,
+          "html_url":"https://github.com/troyhunt",
+          "name":"Troy Hunt",
+          "blog":"https://www.troyhunt.com"
+        }"#;
+        let custom_bluesky = r#"{
+          "handle":"troyhunt.com",
+          "displayName":"Troy Hunt",
+          "did":"did:plc:hg47czad2gksha3a7iyhwyan"
+        }"#;
+        let fake = Fake::new(vec![
+            Ok(response(200, github)),
+            Ok(response(400, r#"{"error":"InvalidRequest","message":"Profile not found"}"#)),
+            Ok(response(200, custom_bluesky)),
+        ]);
+
+        match run(&fake, "troyhunt", 1) {
+            UsernameRun::Printed { text, report } => {
+                assert!(text.contains("github_user\tsuccess"), "{text}");
+                assert!(
+                    text.matches("bluesky_user\tsuccess").count() == 1,
+                    "{text}"
+                );
+                assert!(
+                    report.entities.iter().any(|entity| {
+                        entity.kind == EntityKind::Domain && entity.value == "troyhunt.com"
+                    }),
+                    "{text}"
+                );
+                assert!(
+                    report.entities.iter().any(|entity| {
+                        entity.kind == EntityKind::Url
+                            && entity.value == "https://bsky.app/profile/troyhunt.com"
+                    }),
+                    "{text}"
+                );
+                assert!(
+                    report.entities.iter().any(|entity| {
+                        entity.kind == EntityKind::Other
+                            && entity.value == "did:plc:hg47czad2gksha3a7iyhwyan"
+                    }),
+                    "{text}"
+                );
+            }
+            other @ UsernameRun::Failed(_) => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn one_clean_miss_does_not_erase_the_other_source() {
         let bluesky = r#"{"handle":"nobody.bsky.social"}"#;
         let fake = Fake::new(vec![Ok(response(404, "")), Ok(response(200, bluesky))]);
