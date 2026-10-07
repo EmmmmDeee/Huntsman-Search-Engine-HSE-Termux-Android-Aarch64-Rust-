@@ -144,9 +144,8 @@ pub fn snapshot_entities(entities: &[Entity]) -> Vec<DifferentialEntity> {
             continue;
         }
         for evidence in &entity.evidence {
-            let mut snapshot =
-                DifferentialEntity::new(entity.kind.clone(), entity.value.clone())
-                    .with_source(evidence.provenance.source.clone());
+            let mut snapshot = DifferentialEntity::new(entity.kind.clone(), entity.value.clone())
+                .with_source(evidence.provenance.source.clone());
             if let Some(dataset) = dataset_name(evidence) {
                 snapshot = snapshot.with_dataset(dataset);
             }
@@ -171,7 +170,10 @@ pub fn compare_legacy(
     let mut differences = Vec::new();
 
     for item in expected {
-        if observed.iter().any(|candidate| exact_match(&item, candidate)) {
+        if observed
+            .iter()
+            .any(|candidate| exact_match(&item, candidate))
+        {
             continue;
         }
 
@@ -272,13 +274,11 @@ mod tests {
         let expected = vec![
             DifferentialEntity::new(EntityKind::Email, "ada@example.org"),
             DifferentialEntity::new(EntityKind::Username, "adalovelace"),
-            DifferentialEntity::new(EntityKind::Domain, "example.org")
-                .with_source("legacy"),
+            DifferentialEntity::new(EntityKind::Domain, "example.org").with_source("legacy"),
         ];
         let observed = vec![
             DifferentialEntity::new(EntityKind::Username, "ada"),
-            DifferentialEntity::new(EntityKind::Domain, "example.org")
-                .with_source("other"),
+            DifferentialEntity::new(EntityKind::Domain, "example.org").with_source("other"),
         ];
         let differences = compare_legacy(&expected, &observed, &[]);
         assert_eq!(
@@ -296,10 +296,7 @@ mod tests {
 
     #[test]
     fn allow_list_requires_specific_issue_and_substantive_reason() {
-        let expected = vec![DifferentialEntity::new(
-            EntityKind::Username,
-            "adalovelace",
-        )];
+        let expected = vec![DifferentialEntity::new(EntityKind::Username, "adalovelace")];
         let observed = vec![DifferentialEntity::new(EntityKind::Username, "ada")];
         let weak = [AllowedDifference {
             kind: DifferenceKind::Truncated,
