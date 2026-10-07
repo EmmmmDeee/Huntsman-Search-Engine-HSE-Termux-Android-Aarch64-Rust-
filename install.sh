@@ -976,8 +976,14 @@ git -C "$HSE_INSTALL_DIR" checkout -B "$HSE_REF" FETCH_HEAD \
 # Repository main now contains the reconstructed `huntsman-recon` crate, so a
 # branch/tag/SHA that resolves to another package must fail before any build or
 # binary replacement can occur.
-if [[ ! -f "$HSE_INSTALL_DIR/Cargo.toml" ]] \
-    || ! grep -Eq '^name[[:space:]]*=[[:space:]]*"huntsman-search-engine"[[:space:]]* If TARGET_SHA was unresolvable earlier (no network at
+if [[ ! -f "$HSE_INSTALL_DIR/Cargo.toml" ]]; then
+    die "ref '$HSE_REF' has no Cargo.toml; refusing cross-product install"
+fi
+if ! grep -Eq '^name[[:space:]]*=[[:space:]]*"huntsman-search-engine"[[:space:]]*$' "$HSE_INSTALL_DIR/Cargo.toml"; then
+    die "ref '$HSE_REF' is not the legacy HSE monolith (expected package huntsman-search-engine); refusing cross-product install"
+fi
+
+# What we actually got. If TARGET_SHA was unresolvable earlier (no network at
 # that moment, say) this is the first point at which the revision is known, so
 # adopt it — the post-install check below then verifies the built binary against
 # the source it was really built from rather than skipping verification.
