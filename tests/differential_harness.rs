@@ -62,20 +62,12 @@ fn reviewed_differences_are_exact_and_manifest_hashes_are_pinned() {
     assert!(verify_sha256(b"abc", &manifest.input_sha256).is_ok());
     assert!(verify_sha256(b"abd", &manifest.input_sha256).is_err());
     assert_eq!(
-        manifest.validate_artifacts(
-            "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
-            b"abc",
-            b"abc",
-        ),
+        manifest.validate_artifacts("7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58", b"abc", b"abc",),
         Ok(())
     );
     assert!(
         manifest
-            .validate_artifacts(
-                "0000000000000000000000000000000000000000",
-                b"abc",
-                b"abc",
-            )
+            .validate_artifacts("0000000000000000000000000000000000000000", b"abc", b"abc",)
             .is_err()
     );
 }
