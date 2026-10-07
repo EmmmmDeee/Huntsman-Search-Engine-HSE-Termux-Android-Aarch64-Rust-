@@ -27,9 +27,7 @@ use huntsman_recon::identity_resolution::{
 };
 use huntsman_recon::keys::is_configured_value;
 use huntsman_recon::ledger::{Claim, append, chain_intact, load_chain, save_chain, seal};
-use huntsman_recon::lineage::{
-    CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage,
-};
+use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage};
 use huntsman_recon::navigator::layer;
 use huntsman_recon::redact::scrub_secrets;
 use huntsman_recon::retrieval_artifact::ArtifactId;
