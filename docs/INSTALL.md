@@ -10,18 +10,25 @@ installation sources.
 ## Termux on Android arm64 (build from source)
 
 Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the
-[official GitHub releases](https://github.com/termux/termux-app/releases).
-Do not use the abandoned Play Store build. In Termux, run:
+[official GitHub releases](https://github.com/termux/termux-app/releases), and
+keep every Termux plugin on the same distribution source. On an ARM64 handset,
+run:
 
 ```sh
-pkg update && pkg install -y git rust clang && HUNTSMAN_HIBP_NO_EMBED=1 cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git --locked --root "$PREFIX" huntsman-recon
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh -o "$TMPDIR/huntsman-install.sh"
+bash "$TMPDIR/huntsman-install.sh"
 ```
 
-The Rust package must provide Rust 1.87 or newer (`rustc --version`). The command
-builds the default branch on the handset and installs the binary to
-`$PREFIX/bin/huntsman-recon`. `HUNTSMAN_HIBP_NO_EMBED=1` prevents build-time
-embedding of a key from the build environment or local HIBP key file; runtime
-key use remains available.
+The installer is no-root userland only. It refreshes Termux repository metadata,
+installs `git rust clang curl coreutils`, aligns the Termux Rust compiler with
+its host `rust-std-<target>` package, compiles a native toolchain probe, builds
+the locked Huntsman root crate, creates `~/.huntsman` and a private
+`~/.huntsman.env`, then runs `check` and ledger verification in a disposable
+directory. It reports success only after that runtime acceptance passes.
+
+The crate MSRV remains Rust 1.87. `HUNTSMAN_HIBP_NO_EMBED=1` is exported by
+the installer so build-time key embedding stays disabled; runtime key use remains
+available.
 
 Start with:
 
@@ -60,6 +67,21 @@ Only a staged binary that passes both offline runtime checks can replace the
 existing executable. Reinstalling identical verified bytes keeps the existing
 live inode. A checksum detects transfer/corruption errors; review the release
 provenance and attestation if you need to verify publisher/build identity.
+
+## Railway deployment
+
+The current `huntsman-recon` Railway path uses the root `Dockerfile` and
+`.railway/railway.ts`. New Railway services should use `/api/health` as the
+healthcheck path. Railway's injected `PORT` is consumed automatically by the
+binary, and the container entrypoint also sets the same bind explicitly.
+
+For durable state, attach one volume at `/data`. A volume is optional for a
+stateless deployment. Set `HSE_AUTH_TOKEN` as a Railway variable for a stable
+token; if omitted, the entrypoint generates one from `/dev/urandom`, stores it
+under `/data/.huntsman` when that location is persistent, and emits the newly
+generated value once to deployment logs.
+
+See [`RAILWAY.md`](RAILWAY.md) for the complete deployment contract.
 
 ## Linux or another Rust host
 
