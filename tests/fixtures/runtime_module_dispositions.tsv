@@ -29,7 +29,7 @@ commercial_readiness	diagnostic	machine-checkable capability proof and benchmark
 community	runtime	graph community analysis through intelligence report
 confidence	runtime	entity confidence and verification helpers
 coref	runtime	deterministic coreference clusters in investigation report
-correlator	runtime	correlation rules invoked through correlation_bridge
+correlator	runtime	correlation rules used by the runtime analysis spine
 coverage	runtime	provider coverage and incompleteness semantics
 credential_origin	leaf	authentication authority boundary
 cross_scan	runtime	bounded historical scan bridge analysis
