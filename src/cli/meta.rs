@@ -3,6 +3,109 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+fn termux_detected() -> bool {
+    env::var_os("TERMUX_VERSION").is_some()
+        || env::var_os("PREFIX").is_some_and(|value| {
+            value
+                .to_string_lossy()
+                .contains("/data/data/com.termux/files/usr")
+        })
+}
+
+fn diagnostics_value() -> serde_json::Value {
+    let modules = reachable_modules();
+    let network_modules = modules.iter().filter(|module| module.network).count();
+    let attack_mapped_modules = modules
+        .iter()
+        .filter(|module| !module.attack_techniques.is_empty())
+        .count();
+
+    let home = env::var_os("HOME");
+    let (credential_resolution, credential_warning, providers_configured) =
+        match Keys::resolve(None, home.as_deref()) {
+            Ok(resolved) => {
+                let warning = resolved.warning.is_some();
+                let configured = provider_credentials::status(&resolved.keys)
+                    .into_iter()
+                    .filter(|provider| provider.configured)
+                    .count();
+                (
+                    if warning { "warning" } else { "ok" },
+                    warning,
+                    configured,
+                )
+            }
+            Err(_) => ("error", false, 0),
+        };
+
+    serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "build_sha": BUILD_SHA,
+        "build_sha_known": BUILD_SHA != "unknown",
+        "target_os": std::env::consts::OS,
+        "target_arch": std::env::consts::ARCH,
+        "android_target": cfg!(target_os = "android"),
+        "termux_detected": termux_detected(),
+        "reachable_modules": modules.len(),
+        "network_modules": network_modules,
+        "attack_mapped_modules": attack_mapped_modules,
+        "providers_total": provider_credentials::PROVIDERS.len(),
+        "providers_configured": providers_configured,
+        "credential_resolution": credential_resolution,
+        "credential_warning": credential_warning,
+        "selfcheck_command": "huntsman-recon check",
+    })
+}
+
+pub(super) fn diagnostics_cmd(args: &[String]) -> ExitCode {
+    let json = match args {
+        [] => false,
+        [flag] if flag == "--json" => true,
+        _ => return fail(EX_USAGE, "usage: huntsman-recon diagnostics [--json]"),
+    };
+    let value = diagnostics_value();
+    if json {
+        match serde_json::to_string_pretty(&value) {
+            Ok(body) => println!("{body}"),
+            Err(error) => return fail(EX_DATAERR, &format!("json: {error}")),
+        }
+    } else {
+        for key in [
+            "version",
+            "build_sha",
+            "build_sha_known",
+            "target_os",
+            "target_arch",
+            "android_target",
+            "termux_detected",
+            "reachable_modules",
+            "network_modules",
+            "attack_mapped_modules",
+            "providers_total",
+            "providers_configured",
+            "credential_resolution",
+            "credential_warning",
+            "selfcheck_command",
+        ] {
+            let value = &value[key];
+            if let Some(text) = value.as_str() {
+                println!("{key}={text}");
+            } else {
+                println!("{key}={value}");
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+pub(super) fn build_sha_cmd(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        return fail(EX_USAGE, "usage: huntsman-recon build-sha");
+    }
+    println!("{BUILD_SHA}");
+    ExitCode::SUCCESS
+}
+
 pub(super) fn credential_status_cmd(args: &[String]) -> ExitCode {
     let mut live_probe = false;
     let mut explicit = None;
