@@ -976,11 +976,33 @@ fn capability_rows_are_pinned_and_counted() {
 }
 
 #[test]
+fn binary_entrypoint_is_a_thin_composition_root() {
+    let main = read(&root().join("src/main.rs"));
+    assert!(
+        main.contains("mod cli;"),
+        "main must delegate to the CLI composition layer"
+    );
+    assert!(
+        main.contains("cli::run("),
+        "main must delegate process arguments"
+    );
+    assert!(
+        !main.contains("huntsman_recon::"),
+        "business/library dependencies belong below src/cli/, not in src/main.rs"
+    );
+    assert!(
+        main.lines().count() <= 16,
+        "src/main.rs regrew into a front controller ({} lines)",
+        main.lines().count()
+    );
+}
+
+#[test]
 fn current_document_does_not_mark_reachable_commands_absent() {
     let markdown = doc();
-    let main = read(&root().join("src/main.rs"));
+    let dispatch = read(&root().join("src/cli/mod.rs"));
     let mut commands = BTreeSet::new();
-    for line in main.lines() {
+    for line in dispatch.lines() {
         let Some(rest) = line.split_once("Some(\"").map(|(_, rest)| rest) else {
             continue;
         };

@@ -2,9 +2,12 @@ name: Release (prebuilt Termux aarch64 binary)
 
 # Main-channel pre-releases for the reconstructed `huntsman-recon` crate.
 #
-# Every push to main (and a manual workflow_dispatch on main) cross-builds the
-# aarch64 Android/Termux `huntsman-recon` binary and publishes it as
-# `main-<sha7>`, an immutable per-commit PRE-RELEASE.
+# Every push to main (and a manual workflow_dispatch on main) cross-builds and
+# verifies the aarch64 Android/Termux `huntsman-recon` binary. A build is
+# published as immutable `main-<sha7>` PRE-RELEASE only while that commit is
+# still the current main head. Superseded builds remain available as Actions
+# artifacts for their retention window instead of failing while trying to mint
+# a tag for a historical commit with the built-in workflow token.
 #
 # The rolling `latest` pre-release is NOT moved by default. huntsman-recon is an
 # in-progress replacement with rebuilt people/email/username/offline-phone lookup
@@ -33,13 +36,13 @@ name: Release (prebuilt Termux aarch64 binary)
 #     the artifact, which the build job could have rewritten), then attests and
 #     publishes. GH_TOKEN is passed only to the steps that call the API.
 #
-# Ordering: per-commit releases are serialised, not coalesced. The `publish`
-# job uses `queue: max`, so up to 100 pending publishes wait in FIFO order
-# instead of the default single pending slot that would drop a middle commit's
-# main-<sha7> (https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency).
-# Because that FIFO order is not guaranteed, each publish is idempotent (an
-# existing complete main-<sha7> at this commit is verified, never replaced) and
-# `latest` refuses to move to a commit that is behind the one it points at.
+# Publication is intentionally NOT serialised across main commits. Every push
+# still receives its own build/verification run, but an older run may finish
+# after main has advanced. The publish job therefore checks the live main ref,
+# creates an immutable tag for the still-current commit, requires that exact tag
+# when creating the draft, then re-checks both tag and live main before making
+# anything public. If main moves in that race window the draft and tag are
+# deleted and the run succeeds as a verified CI-only build.
 #
 # History: this file lived at this path until f0a1c64 deleted it with the rest
 # of the monolith tree. #665 then edited the copy under legacy/, which GitHub
@@ -99,11 +102,12 @@ permissions:
 env:
   HSE_RELEASE: "1"
   HUNTSMAN_HIBP_NO_EMBED: "1"
+  HUNTSMAN_BUILD_SHA: ${{ github.sha }}
   ASSET: huntsman-recon-aarch64-linux-android
 
 # Workflow level: a newer PR dry run replaces an older one. Every main run gets
-# its own group (the run id), so main runs are never coalesced here; only the
-# `publish` job below shares a group, with `queue: max`.
+# its own group (the run id), so main builds are never coalesced. Publication is
+# decided independently by each run against the live main ref.
 concurrency:
   group: release-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -203,7 +207,7 @@ jobs:
       - name: Type-check Railway Infrastructure as Code
         run: bash scripts/validate-railway-iac.sh
       - name: Build current Railway container
-        run: docker build --pull -f Dockerfile -t huntsman-recon:railway .
+        run: docker build --pull --build-arg HUNTSMAN_BUILD_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:railway .
       - name: Exercise Railway-style runtime
         shell: bash
         run: |
@@ -322,7 +326,12 @@ jobs:
           # prove identity from the exact bytes: the hand-written CLI usage line.
           usage="$(strings -a -n 8 "dist/$ASSET" | grep -o -m1 'usage: huntsman-recon \[check.*verify LEDGER\]' || true)"
           [ -n "$usage" ] || { echo "::error::dist/${ASSET} does not contain the huntsman-recon usage line"; exit 1; }
-          echo "binary_identity: ${usage}" | tee "$RUNNER_TEMP/identity.txt"
+          strings -a -n 8 "dist/$ASSET" | grep -Fq "$GITHUB_SHA" \
+            || { echo "::error::dist/${ASSET} does not embed exact build commit ${GITHUB_SHA}"; exit 1; }
+          {
+            echo "binary_identity: ${usage}"
+            echo "embedded_build_sha: ${GITHUB_SHA}"
+          } | tee "$RUNNER_TEMP/identity.txt"
 
       - name: Key check on the final artifacts (must be zero)
         run: |
@@ -379,13 +388,6 @@ jobs:
       contents: write     # create the tags and pre-releases
       id-token: write     # Sigstore-backed provenance
       attestations: write # record the attestation
-    # Serialise every main publish without coalescing: `queue: max` keeps up to
-    # 100 pending runs (FIFO) instead of replacing the single pending one.
-    # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
-    concurrency:
-      group: release-publish-main
-      cancel-in-progress: false
-      queue: max
     env:
       TAG: ${{ needs.resolve.outputs.tag }}
       GH_REPO: ${{ github.repository }}
@@ -563,6 +565,28 @@ jobs:
           SCAN_FOR_KEYS
           bash "$scanner" dist
 
+      - name: Reconcile orphan main-channel draft releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}"
+          # Under the current publication contract a valid main-channel draft
+          # always has a pre-created main-<sha7> tag. A matching draft with no
+          # tag is therefore an interrupted legacy publication, not a live
+          # candidate. Reconcile only that narrow invalid state.
+          drafts="$RUNNER_TEMP/orphan-main-drafts.txt"
+          gh api --paginate "$api/releases?per_page=100" \
+            --jq '.[] | select(.draft == true) | "\(.id) \(.tag_name)"' > "$drafts"
+          while read -r id stale_tag; do
+            [ -n "$id" ] || continue
+            [[ "$stale_tag" =~ ^main-[0-9a-f]{7}$ ]] || continue
+            if ! gh api "$api/git/ref/tags/${stale_tag}" >/dev/null 2>&1; then
+              echo "Removing orphan draft ${stale_tag} (release id ${id}) with no backing tag." | tee -a "$GITHUB_STEP_SUMMARY"
+              gh api -X DELETE "$api/releases/${id}"
+            fi
+          done < "$drafts"
+
       - name: Check for an existing ${{ needs.resolve.outputs.tag }}
         id: existing
         env:
@@ -589,6 +613,21 @@ jobs:
           fi
           echo "exists=${exists}" >> "$GITHUB_OUTPUT"
 
+      - name: Check whether this commit is still main head
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          if [ "$current" = "$GITHUB_SHA" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "main head still matches ${GITHUB_SHA}; publication may proceed."
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "main advanced to ${current}; ${GITHUB_SHA} remains a verified Actions artifact and will not mint a historical release tag." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Attest build provenance
         id: attest
         if: steps.existing.outputs.exists == 'false'
@@ -599,14 +638,16 @@ jobs:
 
       - name: Warn when attestation failed
         if: steps.existing.outputs.exists == 'false' && steps.attest.outcome != 'success'
-        run: echo "::warning::attestation upload failed; ${TAG} will be published without one. A re-run will not add it, because the release will then exist; to get an attested build, delete the pre-release and re-run."
+        run: echo "::warning::attestation upload failed; if this build is still main head it may be published without an attestation, otherwise it remains a CI-only artifact."
 
       - name: Publish pre-release ${{ needs.resolve.outputs.tag }}
-        if: steps.existing.outputs.exists == 'false'
+        id: publish
+        if: steps.existing.outputs.exists == 'false' && steps.head.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}"
           files=("dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" "dist/key-scan-report.txt" "dist/install-termux.sh")
           cat > notes.md <<NOTES
           **In-progress replacement with rebuilt lookup paths.** This is a main-channel **pre-release** of \`huntsman-recon\`, the reconstructed crate, for aarch64 Android/Termux. It includes rebuilt people, email, username, and offline phone paths, but it does not yet cover the complete legacy \`hse\` capability surface. The installer below therefore keeps legacy \`hse\` as the default channel while allowing explicit opt-in to the current Recon build.
@@ -639,9 +680,76 @@ jobs:
 
           Built with HSE_RELEASE=1 (no build-time key embedding). \`key-scan-report.txt\` is the zero-finding key scan of these exact files. No Termux handset run is claimed.
           NOTES
+          candidate_tag=false
+          candidate_release=false
+          cleanup_candidate() {
+            if [ "$candidate_release" = true ]; then
+              gh release delete "$TAG" --yes --cleanup-tag >/dev/null 2>&1 || true
+            elif [ "$candidate_tag" = true ]; then
+              gh api -X DELETE "$api/git/refs/tags/${TAG}" >/dev/null 2>&1 || true
+            fi
+          }
+          cleanup_on_exit() {
+            rc=$?
+            trap - EXIT
+            if [ "$rc" -ne 0 ]; then
+              cleanup_candidate
+            fi
+            exit "$rc"
+          }
+          trap cleanup_on_exit EXIT
+
+          # Re-check the live head immediately before creating any persistent
+          # ref. The earlier gate runs before attestation and artifact handoff;
+          # main may advance during that interval. A superseded build remains a
+          # verified Actions artifact and must create no transient historical tag.
+          current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)"
+          if [ "$current" != "$GITHUB_SHA" ]; then
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "${TAG}: main advanced to ${current} before tag creation; retaining only the verified Actions artifact." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Create the immutable tag explicitly while this commit is still the
+          # live main head. A draft release alone is "untagged-*" and does not
+          # create refs/tags/$TAG, so the tag is the transaction anchor.
+          gh api -X POST "$api/git/refs" \
+            -f ref="refs/tags/${TAG}" \
+            -f sha="$GITHUB_SHA" >/dev/null
+          candidate_tag=true
+          ref="$(gh api "$api/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')"
+          read -r type actual <<<"$ref"
+          [ "$type" = "commit" ] && [ "$actual" = "$GITHUB_SHA" ] || {
+            echo "::error::created tag ${TAG} resolved to ${type} ${actual}, expected commit ${GITHUB_SHA}"
+            exit 1
+          }
+
+          # Require the pre-created tag; never let gh synthesize an untagged
+          # draft or silently choose a different commit.
           gh release create "$TAG" "${files[@]}" \
-            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --verify-tag --draft --latest=false \
             --title "$TAG" --notes-file notes.md
+          candidate_release=true
+
+          # Re-check both the immutable tag and live main after draft creation.
+          # If main advanced, remove only this unpublished candidate and retain
+          # the already-verified Actions artifact.
+          ref="$(gh api "$api/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')"
+          read -r type actual <<<"$ref"
+          current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)"
+          if [ "$type" != "commit" ] || [ "$actual" != "$GITHUB_SHA" ] || [ "$current" != "$GITHUB_SHA" ]; then
+            echo "::warning::publication race detected: tag=${type} ${actual}, main=${current}, build=${GITHUB_SHA}. Discarding the unpublished candidate."
+            cleanup_candidate
+            candidate_release=false
+            candidate_tag=false
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "${TAG}: verified build retained only as an Actions artifact because main advanced during publication." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh release edit "$TAG" --draft=false --prerelease --latest=false
+          candidate_release=false
+          candidate_tag=false
+          echo "published=true" >> "$GITHUB_OUTPUT"
 
       # OFF by default: nothing moves `latest` unless the repository variable
       # PROMOTE_RECON_TO_LATEST is exactly 'true'. Until recon can run person
@@ -650,12 +758,18 @@ jobs:
       # (an out-of-order queue) leaves it alone.
       - name: Move the rolling `latest` pre-release to this build (opt-in)
         id: latest
-        if: vars.PROMOTE_RECON_TO_LATEST == 'true' && steps.existing.outputs.exists == 'false'
+        if: vars.PROMOTE_RECON_TO_LATEST == 'true' && (steps.existing.outputs.exists == 'true' || steps.publish.outputs.published == 'true')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           api="repos/${GITHUB_REPOSITORY}"
+          current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)"
+          if [ "$current" != "$GITHUB_SHA" ]; then
+            echo "main advanced to ${current}; not promoting historical build ${GITHUB_SHA} to latest." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "moved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           cur="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>/dev/null || true)"
           if [ -n "$cur" ]; then
             if [ "$cur" = "$GITHUB_SHA" ]; then status=identical; else
@@ -686,6 +800,7 @@ jobs:
           echo "moved=true" >> "$GITHUB_OUTPUT"
 
       - name: Verify published pre-releases through the API
+        if: steps.existing.outputs.exists == 'true' || steps.publish.outputs.published == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PROMOTE: ${{ vars.PROMOTE_RECON_TO_LATEST == 'true' }}

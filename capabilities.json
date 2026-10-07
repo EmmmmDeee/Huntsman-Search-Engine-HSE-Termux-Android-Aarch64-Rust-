@@ -7,7 +7,7 @@
       "name": "Hash-chained evidence ledger",
       "status": "demonstrated",
       "implementation": ["src/ledger.rs"],
-      "proof": ["src/ledger.rs", "src/main.rs"],
+      "proof": ["src/ledger.rs", "src/cli/meta.rs", "src/cli/selfcheck.rs"],
       "interfaces": ["rust", "cli"],
       "platforms": ["linux", "android-aarch64"],
       "benchmark": null,

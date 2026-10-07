@@ -14,6 +14,7 @@ fn main() {
         "CI",
         "HSE_RELEASE",
         "HUNTSMAN_HIBP_NO_EMBED",
+        "HUNTSMAN_BUILD_SHA",
     ] {
         println!("cargo:rerun-if-env-changed={name}");
     }
