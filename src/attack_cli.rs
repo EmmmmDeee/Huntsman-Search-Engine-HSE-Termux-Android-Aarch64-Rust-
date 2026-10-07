@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::attack::{self, Coverage};
 use crate::attack_reporting::{HierarchyCoverage, hierarchy_coverage};
-use crate::module::{ReachableModule, reachable_modules};
+use crate::module::reachable_modules;
 use crate::navigator;
 
 pub const ATTACK_USAGE: &str =
@@ -223,10 +223,6 @@ pub fn render(args: &[String]) -> Result<String, String> {
     }
 }
 
-#[must_use]
-pub fn reachable_module_attack_evidence() -> Vec<(&'static str, &'static [ReachableModule])> {
-    Vec::new()
-}
 
 #[cfg(test)]
 mod tests {
