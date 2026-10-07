@@ -1,0 +1,10 @@
+*
+!Cargo.toml
+!Cargo.lock
+!build.rs
+!capabilities.json
+!benchmarks.json
+!src/
+!src/**
+!scripts/
+!scripts/railway-entrypoint.sh
