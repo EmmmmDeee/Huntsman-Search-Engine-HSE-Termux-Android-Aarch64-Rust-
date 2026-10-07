@@ -835,7 +835,7 @@ pub fn derive_canonical_identities(entities: &[Entity], scan_id: &str) -> Vec<Re
                     .or_default()
                     .push(entity);
             }
-            EntityKind::Person | _ => {}
+            _ => {}
         }
     }
     let mut edges = Vec::new();
