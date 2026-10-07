@@ -57,7 +57,6 @@ fn main_push_exposes_the_cross_built_binary_for_handset_testing() {
     }
 }
 
-
 #[test]
 fn ci_and_container_builds_carry_exact_source_commit_provenance() {
     let ci = fs::read_to_string(CI).expect("active CI workflow must be readable");
