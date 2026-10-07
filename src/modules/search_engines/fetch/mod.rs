@@ -62,6 +62,10 @@ impl SearchFetchResult {
             Self::Empty | Self::Inconclusive | Self::Blocked | Self::Unreachable => 0,
         }
     }
+
+    fn should_retry_alt_ua(&self) -> bool {
+        matches!(self, Self::Inconclusive | Self::Blocked)
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -160,11 +164,11 @@ async fn fetch_and_parse_uncached(
     };
     let first_label = outcome_label(&first, false);
 
-    // Preserve the first attempt's failure class when a bounded alternate-UA
-    // retry also fails. A successful retry replaces that failure with its own
-    // classified outcome: Results, validated Empty, or Inconclusive.
-    let (result, outcome) = if !matches!(&first, SearchFetchResult::Results(_))
-        && !matches!(&first, SearchFetchResult::Unreachable)
+    // Retry only an inconclusive/blocked first response. Validated Empty and
+    // Results are terminal evidence; retrying either only spends budget and can
+    // downgrade a known state. If the bounded alternate-UA retry itself fails,
+    // preserve the first attempt's more informative class.
+    let (result, outcome) = if first.should_retry_alt_ua()
         && engine.ua != engine.ua_alt
         && let Some(retry_ms) = fetch_timeout_ms(deadline)
     {
