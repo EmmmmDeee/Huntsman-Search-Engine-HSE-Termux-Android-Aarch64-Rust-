@@ -34,22 +34,36 @@ impl CredentialResolution {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TermuxState {
+    Detected,
+    NotDetected,
+}
+
+impl TermuxState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Detected => "detected",
+            Self::NotDetected => "not_detected",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Diagnostics {
     pub version: &'static str,
     pub build_sha: &'static str,
-    pub build_sha_known: bool,
     pub target_os: &'static str,
     pub target_arch: &'static str,
-    pub android_target: bool,
-    pub termux_detected: bool,
+    pub termux: TermuxState,
     pub reachable_modules: usize,
     pub network_modules: usize,
     pub attack_mapped_modules: usize,
     pub providers_total: usize,
     pub providers_configured: usize,
     pub credential_resolution: CredentialResolution,
-    pub credential_warning: bool,
     pub selfcheck_command: &'static str,
 }
 
@@ -80,7 +94,7 @@ pub fn embedded_build_sha() -> &'static str {
 pub fn snapshot(
     keys: Option<&Keys>,
     credential_resolution: CredentialResolution,
-    termux_detected: bool,
+    termux: TermuxState,
 ) -> Diagnostics {
     let modules = reachable_modules();
     let network_modules = modules.iter().filter(|module| module.network).count();
@@ -99,18 +113,15 @@ pub fn snapshot(
     Diagnostics {
         version: env!("CARGO_PKG_VERSION"),
         build_sha,
-        build_sha_known: build_sha != "unknown",
         target_os: std::env::consts::OS,
         target_arch: std::env::consts::ARCH,
-        android_target: cfg!(target_os = "android"),
-        termux_detected,
+        termux,
         reachable_modules: modules.len(),
         network_modules,
         attack_mapped_modules,
         providers_total: provider_credentials::PROVIDERS.len(),
         providers_configured,
         credential_resolution,
-        credential_warning: credential_resolution == CredentialResolution::Warning,
         selfcheck_command: "huntsman-recon check",
     }
 }
@@ -139,7 +150,11 @@ mod tests {
     fn snapshot_counts_are_bounded_and_secret_free() {
         let secret = "diagnostics-test-secret-value-12345";
         let keys = Keys::parse(&format!("HUNTSMAN_BRAVE_KEY={secret}\n")).expect("keys");
-        let report = snapshot(Some(&keys), CredentialResolution::Ok, false);
+        let report = snapshot(
+            Some(&keys),
+            CredentialResolution::Ok,
+            TermuxState::NotDetected,
+        );
         assert!(report.reachable_modules > 0);
         assert!(report.network_modules <= report.reachable_modules);
         assert!(report.attack_mapped_modules <= report.network_modules);
@@ -152,9 +167,12 @@ mod tests {
 
     #[test]
     fn credential_resolution_error_carries_no_keys() {
-        let report = snapshot(None, CredentialResolution::Error, false);
+        let report = snapshot(
+            None,
+            CredentialResolution::Error,
+            TermuxState::NotDetected,
+        );
         assert_eq!(report.providers_configured, 0);
         assert_eq!(report.credential_resolution, CredentialResolution::Error);
-        assert!(!report.credential_warning);
     }
 }
