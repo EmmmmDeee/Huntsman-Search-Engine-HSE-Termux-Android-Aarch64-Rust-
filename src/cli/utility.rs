@@ -1,7 +1,14 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
-#[allow(clippy::wildcard_imports)]
-use super::*;
+use std::process::ExitCode;
+
+use super::{EX_DATAERR, EX_USAGE, fail};
+use huntsman_recon::au_id::{Identifier, classify as classify_id};
+use huntsman_recon::classify::classify_response;
+use huntsman_recon::geohash;
+use huntsman_recon::geoint::{haversine_m, parse_latlon};
+use huntsman_recon::redact::coarsen_latlon;
+use huntsman_recon::source_outcome::{classify_fetch, recommended_action};
 
 pub(super) fn geo(a: Option<String>, b: Option<String>) -> ExitCode {
     let (Some(a), Some(b)) = (a, b) else {

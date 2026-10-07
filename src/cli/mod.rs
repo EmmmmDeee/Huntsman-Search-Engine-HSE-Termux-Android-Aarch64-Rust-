@@ -5,53 +5,7 @@
 //! behavior belongs in `huntsman_recon`, not in the binary front controller.
 
 use std::env;
-use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use huntsman_recon::attack_cli::{ATTACK_USAGE, render as render_attack};
-use huntsman_recon::au_id::{Identifier, classify as classify_id};
-use huntsman_recon::classifier;
-use huntsman_recon::classifier::classify as classify_indicator;
-use huntsman_recon::classify::classify_response;
-use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
-use huntsman_recon::crtsh::{self, CrtShError};
-use huntsman_recon::diagnostics::{self, CredentialResolution, TermuxState};
-use huntsman_recon::directive_lock;
-use huntsman_recon::dns;
-use huntsman_recon::egress::EgressPolicy;
-use huntsman_recon::email_cli::{EMAIL_HELP, EMAIL_USAGE, EmailArgs, EmailRun};
-use huntsman_recon::engineering_command;
-use huntsman_recon::entity;
-use huntsman_recon::error::Error;
-use huntsman_recon::fetch::{Credential, FetchOptions, fetch};
-use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
-use huntsman_recon::fsio::{read_bounded, write_atomic};
-use huntsman_recon::geohash;
-use huntsman_recon::geoint::{haversine_m, parse_latlon};
-use huntsman_recon::hibp::cli::{HIBP_USAGE, HibpCommand};
-use huntsman_recon::http::{Request, TransportConfig, UreqTransport, parse_http_uri};
-use huntsman_recon::keys::Keys;
-use huntsman_recon::ledger::{admitted, load_chain};
-use huntsman_recon::lookup_save::{self, EMAIL_POLICY, PHONE_POLICY, USERNAME_POLICY};
-use huntsman_recon::module::reachable_modules;
-use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, PeopleRun};
-use huntsman_recon::phone_cli::{PHONE_HELP, PHONE_USAGE, PhoneArgs, PhoneRun};
-use huntsman_recon::provider_credentials;
-use huntsman_recon::recon::ReconTargetKind;
-use huntsman_recon::redact::coarsen_latlon;
-use huntsman_recon::scan_batch::parse_seed_list;
-use huntsman_recon::scan_route::{ScanKind, infer_kind, parse_kind};
-use huntsman_recon::search::{Document, load_dir, search, tokenize};
-use huntsman_recon::seeknow_cli::{SEEKNOW_HELP, SEEKNOW_USAGE, SeekNowCliRun};
-use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
-use huntsman_recon::source_outcome::{classify_fetch, recommended_action};
-use huntsman_recon::source_registry::routes_for;
-use huntsman_recon::stolen_tax::{self, StolenTaxError};
-use huntsman_recon::textnorm::escape_controls;
-use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, UsernameRun};
-use huntsman_recon::web_query;
-use huntsman_recon::web_server::{ServeConfig, Server, resolve_serve_bind};
 
 const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";

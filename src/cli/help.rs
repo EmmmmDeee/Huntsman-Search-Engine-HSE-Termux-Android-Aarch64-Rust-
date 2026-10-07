@@ -1,7 +1,13 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
-#[allow(clippy::wildcard_imports)]
-use super::*;
+use super::{HELP, RECON_USAGE, USAGE};
+use huntsman_recon::email_cli::EMAIL_HELP;
+use huntsman_recon::hibp::cli::HIBP_USAGE;
+use huntsman_recon::people_cli::PEOPLE_HELP;
+use huntsman_recon::phone_cli::PHONE_HELP;
+use huntsman_recon::seeknow_cli::SEEKNOW_HELP;
+use huntsman_recon::sf_compat::SF_USAGE;
+use huntsman_recon::username_cli::USERNAME_HELP;
 
 pub(super) fn print_command_help(command: &str) {
     let help = match command {

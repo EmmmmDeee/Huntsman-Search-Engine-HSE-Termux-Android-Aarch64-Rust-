@@ -1,7 +1,29 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
-#[allow(clippy::wildcard_imports)]
-use super::*;
+use std::path::Path;
+use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::{
+    EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE, MAX_ARTIFACT_BYTES, fail,
+};
+use huntsman_recon::classifier::{self, classify as classify_indicator};
+use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
+use huntsman_recon::entity;
+use huntsman_recon::error::Error;
+use huntsman_recon::fsio::read_bounded;
+use huntsman_recon::http::{TransportConfig, UreqTransport};
+use huntsman_recon::lookup_save::{self, EMAIL_POLICY, PHONE_POLICY, USERNAME_POLICY};
+use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
+use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
+use huntsman_recon::scan_batch::parse_seed_list;
+use huntsman_recon::scan_route::{ScanKind, infer_kind, parse_kind};
+use huntsman_recon::search::{Document, load_dir, search, tokenize};
+use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
+use huntsman_recon::source_registry::routes_for;
+use huntsman_recon::textnorm::escape_controls;
+use huntsman_recon::username_cli::{USERNAME_USAGE, UsernameArgs, UsernameRun};
+use huntsman_recon::web_query;
 
 pub(super) fn people_cmd(args: &[String]) -> ExitCode {
     let parsed = match PeopleArgs::parse(args) {

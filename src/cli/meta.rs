@@ -1,7 +1,21 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
-#[allow(clippy::wildcard_imports)]
-use super::*;
+use std::env;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use super::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_USAGE, fail};
+use huntsman_recon::attack_cli::{ATTACK_USAGE, render as render_attack};
+use huntsman_recon::diagnostics::{self, CredentialResolution, TermuxState};
+use huntsman_recon::directive_lock;
+use huntsman_recon::engineering_command;
+use huntsman_recon::error::Error;
+use huntsman_recon::fsio::{read_bounded, write_atomic};
+use huntsman_recon::http::{TransportConfig, UreqTransport};
+use huntsman_recon::keys::Keys;
+use huntsman_recon::ledger::{admitted, load_chain};
+use huntsman_recon::module::reachable_modules;
+use huntsman_recon::provider_credentials;
 
 fn termux_state() -> TermuxState {
     if env::var_os("TERMUX_VERSION").is_some()

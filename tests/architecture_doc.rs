@@ -998,6 +998,34 @@ fn binary_entrypoint_is_a_thin_composition_root() {
 }
 
 #[test]
+fn cli_adapters_declare_dependencies_explicitly() {
+    let cli = root().join("src/cli");
+    let dispatch = read(&cli.join("mod.rs"));
+    assert!(
+        !dispatch.contains("huntsman_recon::"),
+        "src/cli/mod.rs must remain a process router, not a library dependency hub"
+    );
+
+    for entry in fs::read_dir(&cli).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|extension| extension != "rs") {
+            continue;
+        }
+        let source = read(&path);
+        assert!(
+            !source.contains("use super::*;"),
+            "{} hides adapter coupling behind a parent wildcard import",
+            path.display()
+        );
+        assert!(
+            !source.contains("clippy::wildcard_imports"),
+            "{} suppresses the explicit-dependency rule",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn current_document_does_not_mark_reachable_commands_absent() {
     let markdown = doc();
     let dispatch = read(&root().join("src/cli/mod.rs"));
