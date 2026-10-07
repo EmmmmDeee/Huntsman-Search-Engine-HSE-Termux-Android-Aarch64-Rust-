@@ -41,6 +41,7 @@ diamond	leaf	analysis utility
 diff	leaf	diff analysis utility
 dmarc	leaf	DMARC parser
 dns	adapter	DNS source client
+domain_lifecycle	diagnostic	offline imported domain-observation comparison
 domains	leaf	domain normalization and classification
 egress	leaf	network egress policy
 email_cli	diagnostic	email enrichment command front-end

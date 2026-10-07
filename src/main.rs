@@ -70,7 +70,7 @@ use huntsman_recon::username_save;
 use huntsman_recon::web_query;
 use huntsman_recon::web_server::{DEFAULT_BIND, ServeConfig, Server};
 
-const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -89,6 +89,7 @@ Commands:
   id                    Classify and validate an Australian ABN, ACN, or BSB
   search                Search the built-in fixture or one local text directory
   sources               Classify an indicator and print curated routes (offline)
+  domain-lifecycle      Compare imported domain observations offline
   people                Look up a name on keyless ASIC people registers
   email                 Enrich an email and query its public Gravatar profile
   username              Enrich a username through public GitHub and Bluesky profiles
@@ -145,6 +146,7 @@ fn main() -> ExitCode {
         Some("id") => id_cmd(remaining.next()),
         Some("search") => search_cmd(remaining.next(), remaining.next()),
         Some("sources") => sources_cmd(remaining.next()),
+        Some("domain-lifecycle") => domain_lifecycle_cmd(&remaining.collect::<Vec<_>>()),
         Some("people") => people_cmd(&remaining.collect::<Vec<_>>()),
         Some("email") => email_cmd(&remaining.collect::<Vec<_>>()),
         Some("username") => username_cmd(&remaining.collect::<Vec<_>>()),
@@ -191,6 +193,7 @@ fn print_command_help(command: &str) {
         "sources" => {
             "sources QUERY\nClassify an indicator and print curated public/browser search routes. Does not fetch those routes."
         }
+        "domain-lifecycle" => huntsman_recon::domain_lifecycle::USAGE,
         "people" => PEOPLE_HELP,
         "email" => EMAIL_HELP,
         "username" => USERNAME_HELP,
@@ -259,6 +262,59 @@ fn command_cmd(args: &[String]) -> ExitCode {
         }
         Err(message) => fail(EX_DATAERR, message),
     }
+}
+
+fn domain_lifecycle_cmd(args: &[String]) -> ExitCode {
+    use huntsman_recon::domain_lifecycle::{Input, MAX_INPUT_BYTES, USAGE, analyze};
+
+    if args.len() == 2 && args[0] == "analyze" && matches!(args[1].as_str(), "--help" | "-h") {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if !matches!(args.len(), 4 | 6)
+        || args[0] != "analyze"
+        || args[2] != "--as-of"
+        || (args.len() == 6 && args[4] != "--output")
+    {
+        return fail(EX_USAGE, USAGE);
+    }
+
+    let Ok(as_of) = args[3].parse::<u64>() else {
+        return fail(EX_USAGE, "--as-of requires Unix seconds");
+    };
+    let bytes = match read_bounded(Path::new(&args[1]), MAX_INPUT_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) => return fail(EX_NOINPUT, &error.to_string()),
+    };
+    let input: Input = match serde_json::from_slice(&bytes) {
+        Ok(input) => input,
+        Err(error) => return fail(EX_DATAERR, &error.to_string()),
+    };
+    let mut output = match analyze(input, as_of).and_then(|report| {
+        serde_json::to_vec_pretty(&report).map_err(|error| Error::Invalid(error.to_string()))
+    }) {
+        Ok(output) => output,
+        Err(error) => return fail(EX_DATAERR, &error.to_string()),
+    };
+    output.push(b'\n');
+
+    if args.len() == 6 {
+        let input_path = Path::new(&args[1]);
+        let output_path = Path::new(&args[5]);
+        let same_file = std::fs::canonicalize(input_path)
+            .ok()
+            .zip(std::fs::canonicalize(output_path).ok())
+            .is_some_and(|(input, output)| input == output);
+        if same_file || input_path == output_path {
+            return fail(EX_USAGE, "output must differ from input");
+        }
+        if let Err(error) = write_atomic(output_path, &output, 16_777_216) {
+            return fail(EX_IOERR, &error.to_string());
+        }
+    } else if let Err(error) = std::io::Write::write_all(&mut std::io::stdout().lock(), &output) {
+        return fail(EX_IOERR, &error.to_string());
+    }
+    ExitCode::SUCCESS
 }
 
 fn people_cmd(args: &[String]) -> ExitCode {

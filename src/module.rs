@@ -281,6 +281,13 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "curated lead-only source routing",
     },
     ReachableModule {
+        name: "domain_lifecycle",
+        command: "domain-lifecycle analyze INPUT --as-of TIME",
+        access: "offline",
+        network: false,
+        description: "conservative comparison of imported domain observations",
+    },
+    ReachableModule {
         name: "sf_compat",
         command: "sf [-M|-T|-V] | -s TARGET [options]",
         access: "mixed",
