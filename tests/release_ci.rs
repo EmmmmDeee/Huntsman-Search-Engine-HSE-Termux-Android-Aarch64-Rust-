@@ -333,6 +333,34 @@ fn every_remote_action_is_pinned_to_a_full_commit_sha_with_a_version_comment() {
 }
 
 #[test]
+fn release_publish_requires_shared_quality_gate() {
+    let wf = release();
+    let quality = job(&wf, "quality");
+    let build = job(&wf, "build");
+    let publish = job(&wf, "publish");
+
+    for required in [
+        "bash scripts/repair-gate.sh full",
+        "docker build --pull -f Dockerfile -t huntsman-recon:railway .",
+        "bash scripts/railway-live-acceptance.sh",
+        "persist-credentials: false",
+    ] {
+        assert!(
+            quality.contains(required),
+            "release quality job must contain {required:?}"
+        );
+    }
+    assert!(
+        build.contains("needs: [resolve, quality]"),
+        "release build must not run before shared quality acceptance passes"
+    );
+    assert!(
+        publish.contains("needs: [resolve, quality, build]"),
+        "release publish must depend on shared quality and the verified build"
+    );
+}
+
+#[test]
 fn publishing_requires_release_build_and_zero_finding_key_scan() {
     let wf = release();
     for required in [
