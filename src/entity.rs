@@ -3,7 +3,7 @@
 //! Every evidence item carries mandatory provenance, so graph, timeline,
 //! exposure, and identity logic all rest on the same traceable record shape.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -277,6 +277,21 @@ pub struct Entity {
     pub scan_id: String,
     #[serde(default)]
     pub generation: u32,
+}
+
+
+pub fn merge_by_uid(entities: &mut Vec<Entity>) {
+    let mut positions = HashMap::<String, usize>::with_capacity(entities.len());
+    let mut merged = Vec::with_capacity(entities.len());
+    for entity in entities.drain(..) {
+        if let Some(&index) = positions.get(&entity.uid) {
+            merged[index].absorb(entity);
+        } else {
+            positions.insert(entity.uid.clone(), merged.len());
+            merged.push(entity);
+        }
+    }
+    *entities = merged;
 }
 
 impl Entity {

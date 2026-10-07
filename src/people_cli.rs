@@ -14,7 +14,7 @@ use crate::asic_director;
 use crate::asic_persons;
 use crate::au_electoral;
 use crate::au_people;
-use crate::entity::Entity;
+use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::evidence_ancestry::EvidenceNodeId;
 use crate::http::Transport;
@@ -268,17 +268,6 @@ fn name_tokens(name: &str) -> Vec<String> {
         .collect()
 }
 
-fn merge_by_uid(entities: &mut Vec<Entity>) {
-    let mut merged: Vec<Entity> = Vec::new();
-    for entity in entities.drain(..) {
-        if let Some(existing) = merged.iter_mut().find(|seen| seen.uid == entity.uid) {
-            existing.absorb(entity);
-        } else {
-            merged.push(entity);
-        }
-    }
-    *entities = merged;
-}
 
 fn render(report: &Report) -> Result<String, String> {
     let mut out = format!("entities={}\n", report.entities.len());
