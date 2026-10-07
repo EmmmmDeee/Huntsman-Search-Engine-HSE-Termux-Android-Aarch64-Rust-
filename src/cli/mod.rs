@@ -16,7 +16,7 @@ use huntsman_recon::classifier::classify as classify_indicator;
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::crtsh::{self, CrtShError};
-use huntsman_recon::diagnostics::{self, CredentialResolution};
+use huntsman_recon::diagnostics::{self, CredentialResolution, TermuxState};
 use huntsman_recon::directive_lock;
 use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
