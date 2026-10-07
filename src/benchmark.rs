@@ -188,6 +188,75 @@ pub fn report(
     report
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedPublicFact {
+    pub entity_kind: crate::entity::EntityKind,
+    pub value: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PersonResolutionScore {
+    pub expected_facts: usize,
+    pub matched_facts: usize,
+    pub recall: f64,
+    pub entities_with_evidence: usize,
+    pub entities_without_evidence: usize,
+    pub provenance_coverage: f64,
+    pub unsupported_person_entities: usize,
+}
+
+#[must_use]
+pub fn score_person_resolution(
+    entities: &[Entity],
+    expected: &[ExpectedPublicFact],
+) -> PersonResolutionScore {
+    let matched_facts = expected
+        .iter()
+        .filter(|fact| {
+            let expected_value = crate::entity::normalise(&fact.entity_kind, &fact.value);
+            entities.iter().any(|entity| {
+                entity.kind == fact.entity_kind
+                    && entity.value == expected_value
+                    && entity
+                        .evidence
+                        .iter()
+                        .any(|evidence| evidence.provenance.source == fact.source)
+            })
+        })
+        .count();
+    let entities_with_evidence = entities
+        .iter()
+        .filter(|entity| !entity.evidence.is_empty())
+        .count();
+    let entities_without_evidence = entities.len().saturating_sub(entities_with_evidence);
+    let unsupported_person_entities = entities
+        .iter()
+        .filter(|entity| {
+            entity.kind == crate::entity::EntityKind::Person && entity.evidence.is_empty()
+        })
+        .count();
+    let recall = if expected.is_empty() {
+        1.0
+    } else {
+        matched_facts as f64 / expected.len() as f64
+    };
+    let provenance_coverage = if entities.is_empty() {
+        1.0
+    } else {
+        entities_with_evidence as f64 / entities.len() as f64
+    };
+    PersonResolutionScore {
+        expected_facts: expected.len(),
+        matched_facts,
+        recall,
+        entities_with_evidence,
+        entities_without_evidence,
+        provenance_coverage,
+        unsupported_person_entities,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
