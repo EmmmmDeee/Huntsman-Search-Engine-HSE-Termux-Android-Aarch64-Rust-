@@ -1,11 +1,16 @@
 use std::collections::BTreeMap;
 
-use huntsman_recon::benchmark::{\n    ExpectedPublicFact, ForbiddenPublicFact, score_person_resolution_with_ancestry,\n};
+use huntsman_recon::benchmark::{
+    ExpectedPublicFact, ForbiddenPublicFact, score_person_resolution_with_ancestry,
+};
 use huntsman_recon::collection::{
     CollectionEvent, ObservationBatch, RawObservation, UpstreamOrigin,
 };
 use huntsman_recon::dependency::{Target, TargetKind};
-use huntsman_recon::entity::EntityKind;\nuse huntsman_recon::evidence_ancestry::{IndependenceBasis, IndependenceEvidence};\nuse huntsman_recon::retrieval_artifact::ArtifactId;\nuse huntsman_recon::pipeline::{PipelineLimits, normalize_observations};
+use huntsman_recon::entity::EntityKind;
+use huntsman_recon::evidence_ancestry::{IndependenceBasis, IndependenceEvidence};
+use huntsman_recon::retrieval_artifact::ArtifactId;
+use huntsman_recon::pipeline::{PipelineLimits, normalize_observations};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
 const SCAN_ID: &str = "person-resolution-fixture";
@@ -124,7 +129,8 @@ fn captured_public_fixture(include_wrong_identity: bool) -> ObservationBatch {
 
 #[test]
 fn captured_public_observations_flow_through_real_pipeline_and_pass() {
-    let mut snapshot =\n        normalize_observations(captured_public_fixture(false), &PipelineLimits::default())
+    let mut snapshot =
+        normalize_observations(captured_public_fixture(false), &PipelineLimits::default())
             .expect("captured fixture must normalize");
     let expected = vec![
         expected(
@@ -208,7 +214,10 @@ fn captured_public_observations_flow_through_real_pipeline_and_pass() {
     assert!(score.recall.is_complete());
     assert!(score.precision.is_complete());
     assert!(score.provenance_coverage.is_complete());
-    assert_eq!(score.forbidden_facts_emitted, 0);\n    assert_eq!(score.proven_independent_person_support, 2);\n    assert!(score.independence_check_complete);\n    assert!(score.accepted);
+    assert_eq!(score.forbidden_facts_emitted, 0);
+    assert_eq!(score.proven_independent_person_support, 2);
+    assert!(score.independence_check_complete);
+    assert!(score.accepted);
 }
 
 #[test]
@@ -252,7 +261,9 @@ fn real_pipeline_output_with_unrelated_identity_fails_closed() {
     );
     assert!(!score.precision.is_complete());
     assert_eq!(score.unsupported_person_entities, 1);
-    assert_eq!(score.forbidden_facts_emitted, 1);\n    assert!(score.proven_independent_person_support < 2);\n    assert!(!score.accepted);
+    assert_eq!(score.forbidden_facts_emitted, 1);
+    assert!(score.proven_independent_person_support < 2);
+    assert!(!score.accepted);
 }
 
 
