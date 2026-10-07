@@ -587,9 +587,7 @@ impl IntelligenceLedger {
 
         assessment.epistemic = if claim.support.is_empty() {
             ClaimState::Candidate
-        } else if summary.valid_environment
-            && !summary.malformed
-            && assessment.blockers.is_empty()
+        } else if summary.valid_environment && !summary.malformed && assessment.blockers.is_empty()
         {
             ClaimState::Verified
         } else {
