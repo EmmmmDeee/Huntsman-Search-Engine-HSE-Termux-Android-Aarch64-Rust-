@@ -19,7 +19,7 @@ pub(super) const MIN_FETCH_MS: u64 = 1_500;
 /// A parsed zero is not automatically a valid zero. Search providers also
 /// return marketing shells, consent pages and drifted markup as ordinary HTML.
 /// Only an explicit provider statement of no matches earns `Empty`; every
-/// other non-blocked zero is kept distinct as `Drift`.
+/// other non-blocked zero is kept distinct as `Inconclusive`.
 const EXPLICIT_ZERO_MARKERS: &[&str] = &[
     "no results found",
     "no results for",
@@ -31,7 +31,7 @@ const EXPLICIT_ZERO_MARKERS: &[&str] = &[
 ];
 
 /// Outcome of a complete engine request after parsing and the bounded alt-UA
-/// retry. Keep transport failure, blocking, validated zero, drift, and real
+/// retry. Keep transport failure, blocking, validated zero, inconclusive zero, and real
 /// results distinct all the way into the scheduler. A generic HTML 200 with no
 /// extracted rows is not proof of a healthy zero-result query.
 #[derive(Clone)]
@@ -40,9 +40,10 @@ pub(super) enum SearchFetchResult {
     /// Provider explicitly confirmed that the query matched nothing.
     Empty,
     /// A substantial non-challenge response produced no parseable results and
-    /// did not explicitly confirm a zero. This is parser/semantic drift until
-    /// proven otherwise, never healthy-zero evidence.
-    Drift,
+    /// did not explicitly confirm a zero. The cause is unknown: parser/semantic
+    /// drift, a soft block, or a genuine unmarked zero remain competing states.
+    /// It is unusable for this request, but never healthy-zero evidence.
+    Inconclusive,
     Blocked,
     Unreachable,
 }
@@ -51,14 +52,14 @@ impl SearchFetchResult {
     pub(super) fn into_results(self) -> Option<Vec<SearchResult>> {
         match self {
             Self::Results(results) => Some(results),
-            Self::Empty | Self::Drift | Self::Blocked | Self::Unreachable => None,
+            Self::Empty | Self::Inconclusive | Self::Blocked | Self::Unreachable => None,
         }
     }
 
     fn result_count(&self) -> usize {
         match self {
             Self::Results(results) => results.len(),
-            Self::Empty | Self::Drift | Self::Blocked | Self::Unreachable => 0,
+            Self::Empty | Self::Inconclusive | Self::Blocked | Self::Unreachable => 0,
         }
     }
 }
@@ -120,7 +121,7 @@ fn classify_search_body(body: &str, engine: &'static str, query: &str) -> Search
     } else if explicit_zero_result_page(body) {
         SearchFetchResult::Empty
     } else {
-        SearchFetchResult::Drift
+        SearchFetchResult::Inconclusive
     }
 }
 
@@ -130,8 +131,8 @@ fn outcome_label(result: &SearchFetchResult, retry: bool) -> &'static str {
         (SearchFetchResult::Results(_), true) => "ok_retry",
         (SearchFetchResult::Empty, false) => "empty",
         (SearchFetchResult::Empty, true) => "empty_retry",
-        (SearchFetchResult::Drift, false) => "drift",
-        (SearchFetchResult::Drift, true) => "drift_retry",
+        (SearchFetchResult::Inconclusive, false) => "inconclusive",
+        (SearchFetchResult::Inconclusive, true) => "inconclusive_retry",
         (SearchFetchResult::Blocked, _) => "blocked",
         (SearchFetchResult::Unreachable, _) => "unreachable",
     }
@@ -161,7 +162,7 @@ async fn fetch_and_parse_uncached(
 
     // Preserve the first attempt's failure class when a bounded alternate-UA
     // retry also fails. A successful retry replaces that failure with its own
-    // classified outcome: Results, validated Empty, or semantic Drift.
+    // classified outcome: Results, validated Empty, or Inconclusive.
     let (result, outcome) = if !matches!(&first, SearchFetchResult::Results(_))
         && !matches!(&first, SearchFetchResult::Unreachable)
         && engine.ua != engine.ua_alt
@@ -254,7 +255,7 @@ pub(super) async fn fetch_and_parse_classified(
     // enough to reuse for this scan.
     if matches!(
         &resolved,
-        SearchFetchResult::Drift | SearchFetchResult::Blocked | SearchFetchResult::Unreachable
+        SearchFetchResult::Inconclusive | SearchFetchResult::Blocked | SearchFetchResult::Unreachable
     ) {
         let mut map = FETCH_SINGLEFLIGHT
             .lock()
