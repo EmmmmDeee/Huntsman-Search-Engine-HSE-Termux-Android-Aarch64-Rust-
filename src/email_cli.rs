@@ -283,7 +283,6 @@ fn derive_person(
     entities.push(entity);
 }
 
-
 fn render(report: &Report) -> Result<String, String> {
     let mut out = format!("entities={}\n", report.entities.len());
     for entity in &report.entities {
