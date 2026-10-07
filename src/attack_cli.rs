@@ -320,12 +320,15 @@ mod tests {
             .iter()
             .find(|row| row["id"] == "T1593.003")
             .expect("GitHub collector maps to Code Repositories");
-        assert!(github["modules"].as_array().unwrap().iter().any(|m| m == "github_user"));
         assert!(
-            !covered
+            github["modules"]
+                .as_array()
+                .unwrap()
                 .iter()
-                .find(|row| row["id"] == "T1593.001")
-                .unwrap()["modules"]
+                .any(|m| m == "github_user")
+        );
+        assert!(
+            !covered.iter().find(|row| row["id"] == "T1593.001").unwrap()["modules"]
                 .as_array()
                 .unwrap()
                 .iter()
