@@ -215,7 +215,7 @@ fn every_documented_exit_code_is_observed() {
             "README documents exit {want}"
         );
     }
-    let defined: BTreeSet<u8> = main_source()
+    let defined: BTreeSet<u8> = cli_source()
         .lines()
         .filter_map(|l| l.trim().strip_prefix("const EX_"))
         .filter_map(|l| l.split('=').nth(1))
@@ -224,17 +224,17 @@ fn every_documented_exit_code_is_observed() {
     assert_eq!(
         documented.iter().copied().collect::<BTreeSet<u8>>(),
         defined,
-        "README exit codes differ from the EX_* constants in src/main.rs"
+        "README exit codes differ from the EX_* constants in src/cli/mod.rs"
     );
 }
 
-fn main_source() -> String {
-    fs::read_to_string(root().join("src/main.rs")).unwrap()
+fn cli_source() -> String {
+    fs::read_to_string(root().join("src/cli/mod.rs")).unwrap()
 }
 
 fn check_source() -> String {
-    let mut source = main_source();
-    let selfcheck = root().join("src/selfcheck.rs");
+    let mut source = cli_source();
+    let selfcheck = root().join("src/cli/selfcheck.rs");
     if selfcheck.is_file() {
         source.push_str(&fs::read_to_string(selfcheck).unwrap());
     }
