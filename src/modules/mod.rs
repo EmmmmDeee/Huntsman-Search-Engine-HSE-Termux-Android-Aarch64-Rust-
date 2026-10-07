@@ -350,6 +350,12 @@ impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
         crate::util::oathnet::cleanup_scan(scan_id);
         crate::util::see_know::cleanup_scan(scan_id);
         wigle::cleanup_scan(scan_id);
+        // Search liveness + singleflight are scan-scoped too. Resetting only at
+        // scan start leaves a unique completed scan's successful cache entries
+        // resident forever in a long-lived server because that scan ID is never
+        // started again. Finalisation is the lifecycle boundary that owns this
+        // cleanup, alongside the quota maps above.
+        search_engines::reset_session_liveness(scan_id);
     }
 
     fn set_seeknow_scan_cap(&self, cap: u32) {
