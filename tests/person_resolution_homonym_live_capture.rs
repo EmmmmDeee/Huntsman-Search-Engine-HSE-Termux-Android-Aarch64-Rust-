@@ -199,8 +199,9 @@ fn live_public_homonyms_survive_collection_and_only_evidence_backed_pair_merges(
     );
     assert!(
         snapshot.relations.iter().all(|relation| {
-            !people.iter().any(|person| person.uid == relation.from_uid)
-                || !people.iter().any(|person| person.uid == relation.to_uid)
+            let links_two_people = people.iter().any(|person| person.uid == relation.from_uid)
+                && people.iter().any(|person| person.uid == relation.to_uid);
+            !links_two_people || relation.kind != huntsman_recon::graph::RelationKind::SameAs
         }),
         "canonical-name equality must not emit a person-to-person identity edge"
     );
