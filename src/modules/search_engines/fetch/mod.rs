@@ -255,7 +255,9 @@ pub(super) async fn fetch_and_parse_classified(
     // enough to reuse for this scan.
     if matches!(
         &resolved,
-        SearchFetchResult::Inconclusive | SearchFetchResult::Blocked | SearchFetchResult::Unreachable
+        SearchFetchResult::Inconclusive
+            | SearchFetchResult::Blocked
+            | SearchFetchResult::Unreachable
     ) {
         let mut map = FETCH_SINGLEFLIGHT
             .lock()
