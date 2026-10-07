@@ -158,8 +158,8 @@ fn captured_public_observations_flow_through_real_pipeline_and_pass() {
     let score = score_person_resolution(&snapshot.entities, &expected, &forbidden);
     assert_eq!(
         snapshot.entities.len(),
-        3,
-        "duplicate person observations must merge by canonical UID"
+        4,
+        "independent person observations must remain separate candidates before resolution"
     );
     assert!(
         snapshot.ancestry.len() >= 4,
