@@ -19,10 +19,8 @@ pub const ATTACK_USAGE: &str =
 
 fn module_index() -> BTreeMap<&'static str, Vec<&'static str>> {
     let mut index = BTreeMap::<&'static str, Vec<&'static str>>::new();
-    for module in reachable_modules().iter().filter(|module| {
-        module.network && module.category != crate::dependency::ModuleCategory::Other
-    }) {
-        for id in attack::techniques_for_category(module.category) {
+    for module in reachable_modules().iter().filter(|module| module.network) {
+        for id in attack::techniques_for_reachable_module(module.name) {
             index.entry(id).or_default().push(module.name);
         }
     }
@@ -318,6 +316,21 @@ mod tests {
             .count();
         assert!(with_module > 0);
         assert_eq!(with_module, covered.len());
+        let github = covered
+            .iter()
+            .find(|row| row["id"] == "T1593.003")
+            .expect("GitHub collector maps to Code Repositories");
+        assert!(github["modules"].as_array().unwrap().iter().any(|m| m == "github_user"));
+        assert!(
+            !covered
+                .iter()
+                .find(|row| row["id"] == "T1593.001")
+                .unwrap()["modules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m == "github_user")
+        );
         assert!(
             covered
                 .iter()
