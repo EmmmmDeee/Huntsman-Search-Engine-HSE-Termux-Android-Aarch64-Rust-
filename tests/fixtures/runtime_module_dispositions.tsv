@@ -39,6 +39,7 @@ deadline	leaf	shared per-lookup request budget
 dependency	runtime	module dependency and dispatch graph
 diamond	leaf	analysis utility
 diff	leaf	diff analysis utility
+differential	diagnostic	legacy no-regression entity comparator and oracle manifest checks
 dmarc	leaf	DMARC parser
 dns	adapter	DNS source client
 domain_lifecycle	diagnostic	offline imported domain-observation comparison
