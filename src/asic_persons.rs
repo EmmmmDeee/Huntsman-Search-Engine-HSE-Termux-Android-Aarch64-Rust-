@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use crate::address_au;
 use crate::au_id::{is_valid_abn, is_valid_acn, looks_like_company};
 use crate::ckan::{self, field};
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::fetch::{self, FetchOptions, Fetched};
 use crate::http::{self, Request, Transport};
@@ -224,17 +224,6 @@ fn parse_register(
     }
 }
 
-fn merge_by_uid(entities: &mut Vec<Entity>) {
-    let mut merged: Vec<Entity> = Vec::new();
-    for entity in entities.drain(..) {
-        if let Some(existing) = merged.iter_mut().find(|seen| seen.uid == entity.uid) {
-            existing.absorb(entity);
-        } else {
-            merged.push(entity);
-        }
-    }
-    *entities = merged;
-}
 
 fn name_tokens(full: &str) -> Vec<String> {
     full.split(|c: char| !c.is_alphabetic())
