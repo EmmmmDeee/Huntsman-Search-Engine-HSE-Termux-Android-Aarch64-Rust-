@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use huntsman_recon::benchmark::{
-    ExpectedPublicFact, ForbiddenPublicFact, score_person_resolution,
-};
+use huntsman_recon::benchmark::{ExpectedPublicFact, ForbiddenPublicFact, score_person_resolution};
 use huntsman_recon::collection::{
     CollectionEvent, ObservationBatch, RawObservation, UpstreamOrigin,
 };
@@ -104,7 +102,11 @@ fn captured_public_fixture(include_wrong_identity: bool) -> ObservationBatch {
     if include_wrong_identity {
         observations.push(observation(
             "other_record_collector",
-            origin("other_public_record", "unrelated_record", "unrelated-capture"),
+            origin(
+                "other_public_record",
+                "unrelated_record",
+                "unrelated-capture",
+            ),
             EntityKind::Person,
             "Different Talia Bacot",
             "deliberately unrelated identity",
@@ -154,8 +156,15 @@ fn captured_public_observations_flow_through_real_pipeline_and_pass() {
     }];
 
     let score = score_person_resolution(&snapshot.entities, &expected, &forbidden);
-    assert_eq!(snapshot.entities.len(), 3, "duplicate person observations must merge by canonical UID");
-    assert!(snapshot.ancestry.len() >= 4, "two independent source roots and relays must survive");
+    assert_eq!(
+        snapshot.entities.len(),
+        3,
+        "duplicate person observations must merge by canonical UID"
+    );
+    assert!(
+        snapshot.ancestry.len() >= 4,
+        "two independent source roots and relays must survive"
+    );
     assert_eq!(score.expected_facts, 4);
     assert_eq!(score.matched_facts, 4);
     assert!(score.recall.is_complete());
@@ -194,7 +203,10 @@ fn real_pipeline_output_with_unrelated_identity_fails_closed() {
 
     let score = score_person_resolution(&snapshot.entities, &expected, &forbidden);
     assert!(score.recall.is_complete(), "target recall remains perfect");
-    assert!(score.provenance_coverage.is_complete(), "wrong identity also has real provenance");
+    assert!(
+        score.provenance_coverage.is_complete(),
+        "wrong identity also has real provenance"
+    );
     assert!(!score.precision.is_complete());
     assert_eq!(score.unsupported_person_entities, 1);
     assert_eq!(score.forbidden_facts_emitted, 1);
