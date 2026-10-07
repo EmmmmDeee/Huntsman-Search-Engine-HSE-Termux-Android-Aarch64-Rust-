@@ -40,6 +40,8 @@ use super::*;
             panic!("expected Error::Other");
         };
         assert!(msg.contains("port already in use"), "{msg}");
+        assert!(msg.contains("http://127.0.0.1:8080/"), "{msg}");
+        assert!(msg.contains("keep using that running instance"), "{msg}");
         assert!(msg.contains("8090"), "{msg}");
 
         // An unmapped kind still yields a clean message with no dangling hint.
