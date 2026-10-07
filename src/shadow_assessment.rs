@@ -49,9 +49,8 @@ pub fn compare_legacy_and_policy(
         .ok_or_else(|| LedgerError::MissingClaim(claim_id.clone()))?
         .state;
 
-    let assessment = ledger
-        .assess_claim_with_ancestry(claim_id, policy, graph, bindings)?
-        .with_proof_environments(proof);
+    let assessment =
+        ledger.assess_claim_with_ancestry_and_proof(claim_id, policy, graph, bindings, proof)?;
 
     let mut reason_codes = assessment
         .blockers
