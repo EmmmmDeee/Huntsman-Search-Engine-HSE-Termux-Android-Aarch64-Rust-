@@ -46,16 +46,18 @@ umask 077
 printf 'Authorization: Bearer %s\n' "$HSE_AUTH_TOKEN" > "$auth_headers"
 unset HSE_AUTH_TOKEN
 
+allowed_proto='=https'
+case "$base" in
+  http://127.0.0.1:*|http://localhost:*) allowed_proto='=http' ;;
+esac
+
 curl_common=(
   --silent
   --show-error
   --connect-timeout 10
   --max-time 20
-  --proto '=https'
+  --proto "$allowed_proto"
 )
-case "$base" in
-  http://127.0.0.1:*|http://localhost:*) curl_common+=(--proto '=http') ;;
-esac
 
 request() {
   local output=$1
@@ -82,7 +84,7 @@ grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "$health" \
 unauth="$tmpdir/modules-unauth.json"
 unauth_code="$(request "$unauth" "$base/api/modules" || true)"
 [[ "$unauth_code" == "401" ]] \
-  || die "protected endpoint must reject unauthenticated access with HTTT 401 (got ${unauth_code:-transport-error})"
+  || die "protected endpoint must reject unauthenticated access with HTTP 401 (got ${unauth_code:-transport-error})"
 
 modules="$tmpdir/modules.json"
 modules_code="$(request "$modules" -H "@$auth_headers" "$base/api/modules" || true)"
