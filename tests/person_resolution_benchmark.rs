@@ -299,3 +299,23 @@ fn distinct_source_labels_without_independence_proof_fail_closed() {
         "different source labels and disjoint roots are not proof of independence"
     );
 }
+
+
+#[test]
+fn unresolved_independence_origin_fails_normalization_closed() {
+    let mut batch = captured_public_fixture(false, false);
+    batch.independence_assertions.push(UpstreamIndependenceAssertion {
+        left: origin("public_profile", "professional_profile", "profile-capture"),
+        right: origin("missing_provider", "missing_dataset", "missing-artifact"),
+        basis: IndependenceBasis::ExplicitUpstreamProvenance,
+        method_id: "captured-fixture-upstream-provenance".to_string(),
+        method_version: 1,
+        supporting_artifact_ids: [ArtifactId::from("proof-artifact")].into_iter().collect(),
+        observed_at_unix: 1_700_000_000,
+    });
+
+    assert!(
+        normalize_observations(batch, &PipelineLimits::default()).is_err(),
+        "an independence assertion whose origin has no observed root must fail closed"
+    );
+}
