@@ -12,7 +12,6 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::error::Error;
 use crate::phone_intl;
 use crate::source_outcome::SourceExecutionOutcome;
-use crate::uid;
 
 pub const PHONE_USAGE: &str = "usage: huntsman-recon phone NUMBER [--save FILE]";
 pub const PHONE_HELP: &str = "\
