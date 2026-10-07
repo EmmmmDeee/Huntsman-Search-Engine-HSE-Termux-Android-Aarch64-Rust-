@@ -2,6 +2,7 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -39,6 +40,58 @@ jobs:
         run: |
           cargo run --locked -- check
           git diff --exit-code -- var/
+
+
+  railway-container:
+    name: Railway container smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build current Huntsman Recon image
+        run: docker build --pull -f Dockerfile -t huntsman-recon:railway .
+      - name: Exercise Railway-style runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=huntsman-recon-ci
+          cleanup() {
+            docker rm -f "$name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run -d \
+            --name "$name" \
+            -p 127.0.0.1:18080:8080 \
+            -e PORT=8080 \
+            -e RAILWAY_ENVIRONMENT=ci \
+            -e HSE_AUTH_TOKEN=ci-huntsman-token \
+            -e HUNTSMAN_STARTUP_CHECK=1 \
+            huntsman-recon:railway
+
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18080/api/health >/tmp/huntsman-health.json; then
+              break
+            fi
+            if ! docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null | grep -qx true; then
+              docker logs "$name" >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
+
+          grep -q '"status": "ok"' /tmp/huntsman-health.json
+          if curl -fsS http://127.0.0.1:18080/api/modules >/dev/null 2>&1; then
+            echo "protected endpoint unexpectedly accepted an unauthenticated request" >&2
+            exit 1
+          fi
+          curl -fsS \
+            -H 'Authorization: Bearer ci-huntsman-token' \
+            http://127.0.0.1:18080/api/modules \
+            | grep -q '"modules"'
+          curl -fsS \
+            -H 'Authorization: Bearer ci-huntsman-token' \
+            http://127.0.0.1:18080/api/command \
+            | grep -q '"invariant"'
 
   android-aarch64:
     name: Android aarch64 cross-build

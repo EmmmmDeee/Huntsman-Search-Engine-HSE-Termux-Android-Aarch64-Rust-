@@ -69,7 +69,7 @@ use huntsman_recon::uid;
 use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, UsernameRun};
 use huntsman_recon::username_save;
 use huntsman_recon::web_query;
-use huntsman_recon::web_server::{DEFAULT_BIND, ServeConfig, Server};
+use huntsman_recon::web_server::{ServeConfig, Server, resolve_serve_bind};
 
 const USAGE: &str = "usage: huntsman-recon [check | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
@@ -759,7 +759,21 @@ fn sf_cmd(args: &[String]) -> ExitCode {
 }
 
 fn serve_cmd(args: &[String]) -> ExitCode {
-    let mut bind = env::var("HSE_BIND").unwrap_or_else(|_| DEFAULT_BIND.to_owned());
+    let hse_bind = env::var("HSE_BIND").ok();
+    let railway_port = env::var("PORT").ok();
+    let railway = [
+        "RAILWAY_ENVIRONMENT",
+        "RAILWAY_ENVIRONMENT_ID",
+        "RAILWAY_PROJECT_ID",
+        "RAILWAY_SERVICE_ID",
+    ]
+    .iter()
+    .any(|name| env::var_os(name).is_some());
+    let mut bind = match resolve_serve_bind(hse_bind.as_deref(), railway_port.as_deref(), railway) {
+        Ok(bind) => bind,
+        Err(Error::Invalid(message)) => return fail(EX_DATAERR, &message),
+        Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
+    };
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {

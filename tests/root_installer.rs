@@ -23,6 +23,14 @@ fn install_fake_termux_toolchain(fake_bin: &Path, fake_target_libdir: &Path) {
     fs::write(fake_target_libdir.join("libstd-test.rlib"), b"fixture").unwrap();
 
     write_executable(
+        &fake_bin.join("uname"),
+        "#!/bin/sh\nprintf '%s\\n' aarch64\n",
+    );
+    write_executable(
+        &fake_bin.join("timeout"),
+        "#!/bin/sh\nprintf 'timeout %s\\n' \"$*\" >> \"$INSTALL_LOG\"\nexit 0\n",
+    );
+    write_executable(
         &fake_bin.join("pkg"),
         "#!/bin/sh\nprintf 'pkg %s\\n' \"$*\" >> \"$INSTALL_LOG\"\n",
     );
@@ -35,7 +43,7 @@ fn install_fake_termux_toolchain(fake_bin: &Path, fake_target_libdir: &Path) {
         r#"#!/bin/sh
 case "$1" in
   -vV)
-    printf '%s\n' 'rustc 1.98.0 (fixture)' 'binary: rustc' 'commit-hash: fixture' 'commit-date: 2026-10-05' 'host: x86_64-unknown-linux-gnu' 'release: 1.98.0'
+    printf '%s\n' 'rustc 1.98.0 (fixture)' 'binary: rustc' 'commit-hash: fixture' 'commit-date: 2026-10-05' 'host: aarch64-linux-android' 'release: 1.98.0'
     ;;
   --print)
     if [ "${2:-}" = "target-libdir" ]; then
@@ -73,47 +81,14 @@ esac
     );
 }
 
-#[test]
-fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let installer = root.join("install.sh");
-    assert!(installer.is_file(), "root install.sh must exist");
-
-    let temp = scratch();
-    let prefix = temp.join("prefix");
-    let fake_bin = temp.join("fake-bin");
-    let fake_target_libdir = temp.join("rustlib");
-    let log = temp.join("install.log");
-    fs::create_dir_all(prefix.join("bin")).unwrap();
-    fs::create_dir_all(prefix.join("tmp")).unwrap();
-    install_fake_termux_toolchain(&fake_bin, &fake_target_libdir);
-
-    let existing_path = std::env::var("PATH").unwrap_or_default();
-    let path = format!("{}:{existing_path}", fake_bin.display());
-    let rev = "b2731d117009a841c302a124f38a808d36f6eac7";
-    let output = Command::new("bash")
-        .arg(&installer)
-        .env("PATH", path)
-        .env("PREFIX", &prefix)
-        .env("INSTALL_LOG", &log)
-        .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
-        .env("HUNTSMAN_REV", rev)
-        .env("HOME", &temp)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("root installer must execute under bash");
-
+fn assert_first_install_contract(calls: &str, temp: &Path, prefix: &Path, rev: &str) {
+    assert!(calls.contains("pkg update -y"), "{calls}");
     assert!(
-        output.status.success(),
-        "installer failed:\nstdout={}\nstderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        calls.contains("pkg install -y git rust clang curl coreutils"),
+        "{calls}"
     );
-
-    let calls = fs::read_to_string(&log).expect("fake installer log");
-    assert!(calls.contains("pkg install -y git rust clang"), "{calls}");
     assert!(
-        calls.contains("pkg install -y rust rust-std-x86_64-unknown-linux-gnu"),
+        calls.contains("pkg install -y rust rust-std-aarch64-linux-android"),
         "{calls}"
     );
     assert!(
@@ -121,7 +96,7 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         "{calls}"
     );
     assert!(
-        calls.contains("dpkg-query -W -f=${Version} rust-std-x86_64-unknown-linux-gnu"),
+        calls.contains("dpkg-query -W -f=${Version} rust-std-aarch64-linux-android"),
         "{calls}"
     );
     assert!(
@@ -148,6 +123,78 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         )),
         "default build cache must persist across installer invocations: {calls}"
     );
+    assert!(
+        calls.contains(&format!(
+            "timeout 30 {}/bin/huntsman-recon check",
+            prefix.display()
+        )),
+        "installer must runtime-check the installed binary: {calls}"
+    );
+    assert!(
+        calls.contains(&format!(
+            "timeout 30 {}/bin/huntsman-recon verify var/ledger.json",
+            prefix.display()
+        )),
+        "installer must verify the generated ledger before success: {calls}"
+    );
+}
+
+fn assert_private_state(temp: &Path) {
+    let state_dir = temp.join(".huntsman");
+    let env_file = temp.join(".huntsman.env");
+    assert!(state_dir.is_dir(), "installer must initialize ~/.huntsman");
+    assert!(
+        env_file.is_file(),
+        "installer must initialize ~/.huntsman.env"
+    );
+    assert_eq!(
+        fs::metadata(&env_file).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "~/.huntsman.env must remain private"
+    );
+}
+
+#[test]
+fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let installer = root.join("install.sh");
+    assert!(installer.is_file(), "root install.sh must exist");
+
+    let temp = scratch();
+    let prefix = PathBuf::from("/data/data/com.termux/files/usr");
+    let fake_bin = temp.join("fake-bin");
+    let fake_target_libdir = temp.join("rustlib");
+    let log = temp.join("install.log");
+    let tmpdir = temp.join("tmp");
+    fs::create_dir_all(&tmpdir).unwrap();
+    install_fake_termux_toolchain(&fake_bin, &fake_target_libdir);
+
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    let path = format!("{}:{existing_path}", fake_bin.display());
+    let rev = "b2731d117009a841c302a124f38a808d36f6eac7";
+    let output = Command::new("bash")
+        .arg(&installer)
+        .env("PATH", path)
+        .env("PREFIX", &prefix)
+        .env("INSTALL_LOG", &log)
+        .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
+        .env("HUNTSMAN_REV", rev)
+        .env("HOME", &temp)
+        .env("TMPDIR", &tmpdir)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("root installer must execute under bash");
+
+    assert!(
+        output.status.success(),
+        "installer failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let calls = fs::read_to_string(&log).expect("fake installer log");
+    assert_first_install_contract(&calls, &temp, &prefix, rev);
+    assert_private_state(&temp);
 
     let custom_cache = temp.join("custom-cache");
     let second = Command::new("bash")
@@ -158,6 +205,7 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
         .env("CARGO_TARGET_DIR", &custom_cache)
         .env("HOME", &temp)
+        .env("TMPDIR", &tmpdir)
         .output()
         .expect("repeat installer must execute");
     assert!(second.status.success(), "repeat installer failed");
