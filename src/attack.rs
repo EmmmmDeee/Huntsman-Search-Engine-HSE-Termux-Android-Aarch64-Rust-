@@ -11,6 +11,26 @@ use crate::graph::{EntityRelation, RelationKind};
 pub const ATTACK_VERSION: &str = "17.1";
 /// Version to which the embedded TA0043 Reconnaissance slice has been reconciled.
 pub const RECONNAISSANCE_VERSION: &str = "19.2";
+
+/// Reconnaissance techniques added after the embedded Enterprise v17.1 baseline.
+///
+/// Keeping these objects outside `attack_catalog::ENTERPRISE` preserves the
+/// provenance of that full-matrix snapshot while allowing TA0043 to track v19.2.
+const RECONNAISSANCE_V19_2_OVERLAY: &[Technique] = &[
+    Technique {
+        id: "T1681",
+        name: "Search Threat Vendor Data",
+        is_subtechnique: false,
+        tactics: &["reconnaissance"],
+    },
+    Technique {
+        id: "T1682",
+        name: "Query Public AI Services",
+        is_subtechnique: false,
+        tactics: &["reconnaissance"],
+    },
+];
+
 pub const TACTIC_ID: &str = "TA0043";
 pub const TACTIC_NAME: &str = "Reconnaissance";
 
@@ -32,7 +52,10 @@ pub fn reconnaissance_spec_major() -> &'static str {
 
 #[must_use]
 pub fn technique(id: &str) -> Option<&'static Technique> {
-    ENTERPRISE.iter().find(|item| item.id == id)
+    ENTERPRISE
+        .iter()
+        .find(|item| item.id == id)
+        .or_else(|| RECONNAISSANCE_V19_2_OVERLAY.iter().find(|item| item.id == id))
 }
 
 #[must_use]
@@ -44,10 +67,14 @@ pub fn tactic(id_or_shortname: &str) -> Option<&'static Tactic> {
 
 #[must_use]
 pub fn techniques_for_tactic(shortname: &str) -> Vec<&'static Technique> {
-    ENTERPRISE
+    let mut techniques = ENTERPRISE
         .iter()
         .filter(|item| item.tactics.contains(&shortname))
-        .collect()
+        .collect::<Vec<_>>();
+    if shortname == "reconnaissance" {
+        techniques.extend(RECONNAISSANCE_V19_2_OVERLAY.iter());
+    }
+    techniques
 }
 
 #[must_use]
@@ -343,6 +370,22 @@ mod tests {
         for item in ENTERPRISE.iter().filter(|item| item.is_subtechnique) {
             assert!(bases.contains(&parse_id(item.id).0), "{}", item.id);
         }
+    }
+
+    #[test]
+    fn enterprise_baseline_remains_version_pure_while_reconnaissance_uses_overlay() {
+        assert!(
+            ENTERPRISE
+                .iter()
+                .all(|item| item.id != "T1681" && item.id != "T1682")
+        );
+        assert_eq!(technique("T1681").map(|item| item.name), Some("Search Threat Vendor Data"));
+        assert_eq!(technique("T1682").map(|item| item.name), Some("Query Public AI Services"));
+        assert!(
+            RECONNAISSANCE_V19_2_OVERLAY
+                .iter()
+                .all(|item| item.tactics == ["reconnaissance"])
+        );
     }
 
     #[test]
