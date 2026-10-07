@@ -1,4 +1,8 @@
-use std::time::Instant;
+use std::{
+    collections::HashMap,
+    sync::{Arc, LazyLock, Mutex},
+    time::Instant,
+};
 
 use super::helpers::*;
 use super::{EngineSpec, MAX_RESULTS_PER_ENGINE, SearchResult};
@@ -10,7 +14,61 @@ pub(in crate::modules::search_engines) const MAX_FETCH_MS: u64 = 8_000;
 
 /// Floor below which there's no point starting a request — a sub-1.5 s SERP fetch
 /// almost always fails, and starting one risks overrunning the module deadline.
-const MIN_FETCH_MS: u64 = 1_500;
+pub(super) const MIN_FETCH_MS: u64 = 1_500;
+
+/// Outcome of a complete engine request after parsing and the bounded alt-UA
+/// retry. Keep transport failure, blocking, a valid zero-result page, and real
+/// results distinct all the way into the scheduler: collapsing these states to
+/// `None` caused blocked/unreachable engines and honest empty searches to
+/// poison the same "consecutive empty" counter.
+#[derive(Clone)]
+pub(super) enum SearchFetchResult {
+    Results(Vec<SearchResult>),
+    Empty,
+    Blocked,
+    Unreachable,
+}
+
+impl SearchFetchResult {
+    pub(super) fn into_results(self) -> Option<Vec<SearchResult>> {
+        match self {
+            Self::Results(results) => Some(results),
+            Self::Empty | Self::Blocked | Self::Unreachable => None,
+        }
+    }
+
+    fn result_count(&self) -> usize {
+        match self {
+            Self::Results(results) => results.len(),
+            Self::Empty | Self::Blocked | Self::Unreachable => 0,
+        }
+    }
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct FetchKey {
+    scan_id: String,
+    engine: &'static str,
+    url: String,
+    query: String,
+}
+
+type SharedFetch = Arc<tokio::sync::OnceCell<SearchFetchResult>>;
+
+/// Scan-scoped singleflight registry. Multiple graph branches can ask the same
+/// engine the same question concurrently; one request does the I/O and every
+/// waiter receives the same parsed outcome. Entries are removed at the next
+/// reset for that scan, so a long-lived `hse serve` process does not accumulate
+/// old investigations.
+static FETCH_SINGLEFLIGHT: LazyLock<Mutex<HashMap<FetchKey, SharedFetch>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub(super) fn reset_scan_singleflight(scan_id: &str) {
+    let mut map = FETCH_SINGLEFLIGHT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.retain(|key, _| key.scan_id != scan_id);
+}
 
 /// The curl timeout for a request issued NOW under `deadline`: the budget that
 /// remains, capped at [`MAX_FETCH_MS`]; `None` when too little remains
@@ -28,6 +86,127 @@ fn fetch_timeout_ms(deadline: Instant) -> Option<u64> {
     (remaining >= MIN_FETCH_MS).then(|| remaining.min(MAX_FETCH_MS))
 }
 
+async fn fetch_and_parse_uncached(
+    url: &str,
+    engine: &EngineSpec,
+    query: &str,
+    post_body: Option<&str>,
+    deadline: Instant,
+) -> SearchFetchResult {
+    let started = Instant::now();
+    let Some(timeout_ms) = fetch_timeout_ms(deadline) else {
+        return SearchFetchResult::Unreachable;
+    };
+    let timeout_ms = engine
+        .max_fetch_ms
+        .map_or(timeout_ms, |cap| timeout_ms.min(cap));
+
+    let (first, first_label): (SearchFetchResult, &'static str) =
+        match try_fetch(url, engine.ua, post_body, timeout_ms).await {
+            FetchOutcome::Body(body) => {
+                scan_body_for_keys(&body);
+                let results = parse_results(&body, engine.name, query);
+                if results.is_empty() {
+                    (SearchFetchResult::Empty, "empty")
+                } else {
+                    (SearchFetchResult::Results(results), "ok")
+                }
+            }
+            FetchOutcome::Unreachable => (SearchFetchResult::Unreachable, "unreachable"),
+            FetchOutcome::Blocked => (SearchFetchResult::Blocked, "blocked"),
+        };
+
+    // Preserve the first attempt's failure class when a bounded alternate-UA
+    // retry also fails. A successful retry upgrades only to Results.
+    let (result, outcome) = if !matches!(first, SearchFetchResult::Results(_))
+        && !matches!(first, SearchFetchResult::Unreachable)
+        && engine.ua != engine.ua_alt
+        && let Some(retry_ms) = fetch_timeout_ms(deadline)
+    {
+        match try_fetch(url, engine.ua_alt, post_body, retry_ms).await {
+            FetchOutcome::Body(body) => {
+                let results = parse_results(&body, engine.name, query);
+                if results.is_empty() {
+                    (first, first_label)
+                } else {
+                    (SearchFetchResult::Results(results), "ok_retry")
+                }
+            }
+            FetchOutcome::Blocked | FetchOutcome::Unreachable => (first, first_label),
+        }
+    } else {
+        (first, first_label)
+    };
+
+    tracing::debug!(
+        target: "huntsman::search",
+        engine = engine.name,
+        query,
+        outcome,
+        results = result.result_count(),
+        latency_ms = started.elapsed().as_millis() as u64,
+        "search request"
+    );
+    result
+}
+
+/// Fetch one engine request with scan-wide singleflight deduplication.
+///
+/// The exact engine+URL+query tuple is the cache identity. Pagination therefore
+/// stays distinct because each page has a different URL, while duplicate work
+/// spawned by concurrent graph branches joins the same in-flight cell.
+pub(super) async fn fetch_and_parse_classified(
+    url: &str,
+    engine: &EngineSpec,
+    query: &str,
+    post_body: Option<&str>,
+    deadline: Instant,
+) -> SearchFetchResult {
+    // Do not create/cache a synthetic failure when there is not enough budget to
+    // start a request. Another caller with a longer remaining deadline must still
+    // be allowed to perform the I/O.
+    if fetch_timeout_ms(deadline).is_none() {
+        return SearchFetchResult::Unreachable;
+    }
+
+    let scan_id = crate::util::budget::current_scan();
+    if scan_id.is_empty() {
+        return fetch_and_parse_uncached(url, engine, query, post_body, deadline).await;
+    }
+
+    let key = FetchKey {
+        scan_id,
+        engine: engine.name,
+        url: url.to_string(),
+        query: query.to_string(),
+    };
+    let cell = {
+        let mut map = FETCH_SINGLEFLIGHT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(
+            map.entry(key)
+                .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new())),
+        )
+    };
+
+    if let Some(cached) = cell.get() {
+        tracing::debug!(
+            target: "huntsman::search",
+            engine = engine.name,
+            query,
+            results = cached.result_count(),
+            "search request reused from scan singleflight"
+        );
+        return cached.clone();
+    }
+
+    cell.get_or_init(|| fetch_and_parse_uncached(url, engine, query, post_body, deadline))
+        .await
+        .clone()
+}
+
+/// Compatibility wrapper for pivot/recycler call sites that only need rows.
 pub(super) async fn fetch_and_parse(
     url: &str,
     engine: &EngineSpec,
@@ -35,66 +214,9 @@ pub(super) async fn fetch_and_parse(
     post_body: Option<&str>,
     deadline: Instant,
 ) -> Option<Vec<SearchResult>> {
-    let started = Instant::now();
-    // No budget left to even start: skip rather than risk overrunning the kill.
-    let timeout_ms = fetch_timeout_ms(deadline)?;
-    // Apply per-engine cap when set (e.g. DDG at 4 s vs global 8 s).
-    let timeout_ms = engine
-        .max_fetch_ms
-        .map_or(timeout_ms, |cap| timeout_ms.min(cap));
-    // `outcome` records exactly what happened to this one request so the unified
-    // debug log explains every search interaction — no black-box. One of:
-    // ok / empty (parsed 0 → likely parser/soft-block) / blocked (anti-bot) /
-    // unreachable (network) / ok_retry (succeeded only after the alt-UA retry).
-    let (results, outcome): (Option<Vec<SearchResult>>, &'static str) =
-        match try_fetch(url, engine.ua, post_body, timeout_ms).await {
-            FetchOutcome::Body(body) => {
-                scan_body_for_keys(&body);
-                let results = parse_results(&body, engine.name, query);
-                if results.is_empty() {
-                    (None, "empty")
-                } else {
-                    (Some(results), "ok")
-                }
-            }
-            FetchOutcome::Unreachable => (None, "unreachable"),
-            FetchOutcome::Blocked => (None, "blocked"),
-        };
-
-    // Alt-UA retry only when the first attempt yielded no usable results, the
-    // engine has a distinct fallback UA, AND there's still budget for a second
-    // request (so the retry can never push past the deadline either).
-    let (results, outcome) = if results.is_none()
-        && outcome != "unreachable"
-        && engine.ua != engine.ua_alt
-        && let Some(retry_ms) = fetch_timeout_ms(deadline)
-    {
-        match try_fetch(url, engine.ua_alt, post_body, retry_ms).await {
-            FetchOutcome::Body(body) => {
-                let r = parse_results(&body, engine.name, query);
-                if r.is_empty() {
-                    (None, outcome)
-                } else {
-                    (Some(r), "ok_retry")
-                }
-            }
-            _ => (None, outcome),
-        }
-    } else {
-        (results, outcome)
-    };
-
-    let n = results.as_ref().map_or(0, Vec::len);
-    tracing::debug!(
-        target: "huntsman::search",
-        engine = engine.name,
-        query,
-        outcome,
-        results = n,
-        latency_ms = started.elapsed().as_millis() as u64,
-        "search request"
-    );
-    results
+    fetch_and_parse_classified(url, engine, query, post_body, deadline)
+        .await
+        .into_results()
 }
 
 /// One engine fetch (page 0 only) as a FIXED, owned-param signature future — the
@@ -102,13 +224,24 @@ pub(super) async fn fetch_and_parse(
 /// `buffer_unordered`. Free function (not an inline async closure) so the buffered
 /// stream sees one concrete future type without tripping a higher-ranked-lifetime
 /// bound. Self-clamps to `deadline` via [`fetch_and_parse`].
+pub(super) async fn fetch_one_classified(
+    engine: &'static EngineSpec,
+    url: String,
+    query: String,
+    deadline: std::time::Instant,
+) -> SearchFetchResult {
+    fetch_and_parse_classified(&url, engine, &query, None, deadline).await
+}
+
 pub(super) async fn fetch_one(
     engine: &'static EngineSpec,
     url: String,
     query: String,
     deadline: std::time::Instant,
 ) -> Option<Vec<SearchResult>> {
-    fetch_and_parse(&url, engine, &query, None, deadline).await
+    fetch_one_classified(engine, url, query, deadline)
+        .await
+        .into_results()
 }
 
 pub(super) async fn try_fetch(
