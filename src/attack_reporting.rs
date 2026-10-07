@@ -58,14 +58,16 @@ pub fn hierarchy_coverage(raw: &Coverage) -> HierarchyCoverage {
         .map(|covered| covered.technique.id)
         .collect();
 
-    let mut children_by_parent: BTreeMap<&'static str, Vec<&'static Technique>> =
-        BTreeMap::new();
+    let mut children_by_parent: BTreeMap<&'static str, Vec<&'static Technique>> = BTreeMap::new();
     for technique in &recon {
         if !technique.is_subtechnique {
             continue;
         }
         if let Some((parent, _)) = technique.id.split_once('.') {
-            children_by_parent.entry(parent).or_default().push(*technique);
+            children_by_parent
+                .entry(parent)
+                .or_default()
+                .push(*technique);
         }
     }
 
@@ -137,10 +139,7 @@ mod tests {
         assert_eq!(report.attack_objects_covered, 0);
         assert_eq!(report.leaf_techniques_covered, 0);
         assert_eq!(report.covered_leaves.len(), 0);
-        assert_eq!(
-            report.uncovered_leaves.len(),
-            report.leaf_techniques_total
-        );
+        assert_eq!(report.uncovered_leaves.len(), report.leaf_techniques_total);
         assert_eq!(
             report.leaf_techniques_total + report.parent_rollups.len(),
             report.attack_objects_total
@@ -178,12 +177,7 @@ mod tests {
     fn parent_without_children_remains_a_leaf() {
         let raw = coverage(&BTreeMap::from([("T1594".to_owned(), 3_usize)]));
         let report = hierarchy_coverage(&raw);
-        assert!(
-            report
-                .covered_leaves
-                .iter()
-                .any(|item| item.id == "T1594")
-        );
+        assert!(report.covered_leaves.iter().any(|item| item.id == "T1594"));
         assert_eq!(report.leaf_techniques_covered, 1);
     }
 
@@ -201,8 +195,7 @@ mod tests {
             report.leaf_techniques_total
         );
         #[allow(clippy::cast_precision_loss)]
-        let expected =
-            report.leaf_techniques_covered as f64 / report.leaf_techniques_total as f64;
+        let expected = report.leaf_techniques_covered as f64 / report.leaf_techniques_total as f64;
         assert!((report.coverage_fraction - expected).abs() < f64::EPSILON);
     }
 }
