@@ -109,9 +109,8 @@ pub(crate) async fn web_search(query: &str, deadline: Instant) -> Vec<WebResult>
                 per_engine.push(results);
             }
             SearchFetchResult::Empty => record_empty_success(WEBSEARCH_SCAN_ID, name),
-            SearchFetchResult::Inconclusive
-            | SearchFetchResult::Blocked
-            | SearchFetchResult::Unreachable => {
+            SearchFetchResult::Inconclusive => {}
+            SearchFetchResult::Blocked | SearchFetchResult::Unreachable => {
                 record_failure(WEBSEARCH_SCAN_ID, name);
             }
         }
