@@ -1308,6 +1308,9 @@ fn gate(code: u8, ok: bool, msg: &str) -> Gate {
 
 fn run_check() -> Result<f64, (u8, String)> {
     engineering_command::validate().map_err(|message| (12, message.to_owned()))?;
+    if Path::new(directive_lock::CANONICAL).is_file() {
+        directive_lock::verify_at(Path::new(".")).map_err(|message| (12, message))?;
+    }
     let (blat, blon) = parse_latlon("-27.4698,153.0251").map_err(|e| (2, e.to_string()))?;
     let (slat, slon) = parse_latlon("-33.8688,151.2093").map_err(|e| (2, e.to_string()))?;
     let meters = haversine_m(blat, blon, slat, slon);
