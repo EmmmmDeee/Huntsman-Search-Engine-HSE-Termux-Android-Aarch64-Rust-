@@ -96,6 +96,23 @@ pub fn uncovered(is_covered: impl Fn(&str) -> bool) -> Vec<&'static Technique> {
         .collect()
 }
 
+/// ATT&CK mappings for concrete CLI-reachable collectors.
+#[must_use]
+pub fn techniques_for_reachable_module(module_name: &str) -> &'static [&'static str] {
+    match module_name {
+        "web_query" => &["T1593.002"],
+        "asic_persons" => &["T1591.004"],
+        "asic_director" => &["T1591.002", "T1591.004"],
+        "au_people" | "au_electoral" => &["T1589.003"],
+        "gravatar" | "bluesky_user" => &["T1593.001"],
+        "github_user" => &["T1593.003"],
+        "hibp" | "stolen_tax" | "seeknow" => &["T1589.001", "T1589.002"],
+        "crtsh" => &["T1596.003"],
+        "dns" => &["T1590.001"],
+        _ => &[],
+    }
+}
+
 #[must_use]
 pub fn techniques_for_category(category: ModuleCategory) -> &'static [&'static str] {
     match category {
@@ -480,6 +497,37 @@ mod tests {
             assert!(have.contains(id), "{id}");
         }
         assert_eq!(reconnaissance().len(), FULL.len());
+    }
+
+    #[test]
+    fn reachable_module_mappings_are_specific_and_reconnaissance_only() {
+        let expected = [
+            ("web_query", &["T1593.002"][..]),
+            ("asic_persons", &["T1591.004"][..]),
+            ("asic_director", &["T1591.002", "T1591.004"][..]),
+            ("au_people", &["T1589.003"][..]),
+            ("au_electoral", &["T1589.003"][..]),
+            ("gravatar", &["T1593.001"][..]),
+            ("github_user", &["T1593.003"][..]),
+            ("bluesky_user", &["T1593.001"][..]),
+            ("hibp", &["T1589.001", "T1589.002"][..]),
+            ("crtsh", &["T1596.003"][..]),
+            ("dns", &["T1590.001"][..]),
+            ("stolen_tax", &["T1589.001", "T1589.002"][..]),
+            ("seeknow", &["T1589.001", "T1589.002"][..]),
+        ];
+        for (module, ids) in expected {
+            assert_eq!(techniques_for_reachable_module(module), ids, "{module}");
+            for id in ids {
+                let item = technique(id).expect("reachable-module ATT&CK id exists");
+                assert!(item.tactics.contains(&"reconnaissance"), "{module}: {id}");
+            }
+        }
+        assert!(techniques_for_reachable_module("web_server").is_empty());
+        assert!(techniques_for_reachable_module("sf_compat").is_empty());
+        assert_eq!(techniques_for_reachable_module("github_user"), ["T1593.003"]);
+        assert_eq!(techniques_for_reachable_module("crtsh"), ["T1596.003"]);
+        assert_eq!(techniques_for_reachable_module("dns"), ["T1590.001"]);
     }
 
     #[test]
