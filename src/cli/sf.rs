@@ -483,6 +483,44 @@ fn info(quiet: bool, msg: &str) {
     }
 }
 
+/// True only for a literal bare `hse sf` invocation. Any scan/output option
+/// keeps SpiderFoot's normal validation behavior so, for example,
+/// `hse sf -u passive` still reports the missing target instead of silently
+/// ignoring the supplied option.
+fn is_bare_invocation(a: &SfArgs) -> bool {
+    a.target.is_none()
+        && a.use_case == "all"
+        && a.modules.is_empty()
+        && a.types.is_empty()
+        && a.format == "tab"
+        && !a.no_header
+        && !a.strip_newlines
+        && !a.include_source
+        && a.max_len.is_none()
+        && a.delimiter.is_none()
+        && !a.filter_types
+        && a.show_types.is_empty()
+        && !a.strict
+        && !a.quiet
+        && !a.list_modules
+        && !a.list_types
+        && a.correlate.is_none()
+        && a.listen.is_none()
+        && !a.version
+}
+
+fn print_sf_help() -> Result<()> {
+    use clap::CommandFactory;
+
+    let mut root = super::command::Cli::command();
+    let sf = root.find_subcommand_mut("sf").ok_or_else(|| {
+        Error::Other("internal CLI error: sf subcommand is not registered".into())
+    })?;
+    sf.print_long_help()?;
+    println!();
+    Ok(())
+}
+
 pub async fn cmd_sf(a: SfArgs) -> Result<()> {
     // sf.py's evaluation order: -V, then -C, -M, -T, -l, else scan.
     if a.version {
@@ -524,6 +562,13 @@ pub async fn cmd_sf(a: SfArgs) -> Result<()> {
             return Err(Error::Other("Invalid ip:port format.".into()));
         }
         return super::serve::cmd_serve(listen.clone(), true, None, false).await;
+    }
+
+    // A bare front-end invocation is exploratory, not a malformed scan.
+    // Render clap's canonical subcommand help instead of maintaining a second
+    // usage string that can drift from the real flags.
+    if is_bare_invocation(&a) {
+        return print_sf_help();
     }
 
     // Scan mode — sf.py's validations, in its order, with its messages.
@@ -935,6 +980,44 @@ mod tests {
             source_data: "seed".into(),
             data: data.into(),
             generated: 0,
+        }
+    }
+
+    #[test]
+    fn only_literal_bare_sf_is_treated_as_help() {
+        let mut args = sf_args("tab", None);
+        args.quiet = false;
+        assert!(is_bare_invocation(&args));
+
+        args.use_case = "passive".into();
+        assert!(
+            !is_bare_invocation(&args),
+            "supplied scan options must still require a target"
+        );
+
+        args.use_case = "all".into();
+        args.quiet = true;
+        assert!(
+            !is_bare_invocation(&args),
+            "even -q means this was not a literal bare invocation"
+        );
+    }
+
+    #[test]
+    fn canonical_sf_help_is_generated_from_the_registered_clap_command() {
+        use clap::CommandFactory;
+
+        let mut root = super::super::command::Cli::command();
+        let sf = root.find_subcommand_mut("sf").expect("sf registered");
+        let help = sf.render_long_help().to_string();
+        for required in [
+            "Usage:",
+            "--target",
+            "--use-case",
+            "--list-modules",
+            "--list-types",
+        ] {
+            assert!(help.contains(required), "sf help missing {required:?}");
         }
     }
 
