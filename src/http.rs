@@ -378,12 +378,18 @@ pub struct UreqTransport {
 impl UreqTransport {
     #[must_use]
     pub fn new(config: &TransportConfig) -> Self {
-        let agent_config = ureq::Agent::config_builder()
+        let mut agent_config = ureq::Agent::config_builder()
             .timeout_global(Some(config.timeout))
             .http_status_as_error(false)
             .max_redirects(0)
-            .user_agent(config.user_agent.clone())
-            .build();
+            .user_agent(config.user_agent.clone());
+        // PublicOnly depends on GuardedResolver controlling destination
+        // resolution. Environment proxies may resolve the destination
+        // themselves, so direct transport is required in this mode.
+        if config.egress == EgressPolicy::PublicOnly {
+            agent_config = agent_config.proxy(None);
+        }
+        let agent_config = agent_config.build();
         let agent = ureq::Agent::with_parts(
             agent_config,
             DefaultConnector::default(),
@@ -513,6 +519,46 @@ fn map_ureq_error(err: &ureq::Error) -> TransportFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_only_ignores_environment_proxy() {
+        const CHILD: &str = "HSE_PROXY_CONFIG_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(UreqTransport::default().agent.config().proxy().is_none());
+            let unrestricted = UreqTransport::new(&TransportConfig {
+                egress: EgressPolicy::Unrestricted,
+                ..TransportConfig::default()
+            });
+            assert!(unrestricted.agent.config().proxy().is_some());
+            return;
+        }
+
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "http::tests::public_only_ignores_environment_proxy",
+                "--nocapture",
+            ])
+            .env(CHILD, "1");
+        for key in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            child.env(key, "http://proxy.example:8080");
+        }
+        let result = child.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
 
     #[test]
     fn debug_output_never_contains_credentials() {
