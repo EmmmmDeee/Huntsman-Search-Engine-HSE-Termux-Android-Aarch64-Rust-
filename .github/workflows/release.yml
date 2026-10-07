@@ -114,6 +114,22 @@ jobs:
           echo "Resolved tag=${tag} publish=${publish}"
 
 
+  quality-msrv:
+    name: Shared repair acceptance (Rust 1.87)
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: "1.87"
+      - name: Run shared MSRV repair acceptance
+        run: bash scripts/repair-gate.sh msrv
+
   quality:
     name: Shared repair and Railway acceptance
     needs: resolve
@@ -157,7 +173,7 @@ jobs:
     # Runs cargo and every dependency build script: read-only token, no
     # GH_TOKEN, no persisted git credentials, no OIDC.
     name: Build and key-scan aarch64 Termux binary
-    needs: [resolve, quality]
+    needs: [resolve, quality-msrv, quality]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -300,7 +316,7 @@ jobs:
     # and runs no repository code: it verifies the handed-over bytes, re-runs
     # the inlined key scan on them, then calls the attestation action and `gh`.
     name: Publish main-channel pre-releases
-    needs: [resolve, quality, build]
+    needs: [resolve, quality-msrv, quality, build]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
