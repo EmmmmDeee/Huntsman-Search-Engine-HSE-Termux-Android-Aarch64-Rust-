@@ -121,8 +121,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
 
-        let canonical =
-            fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(CANONICAL)).unwrap();
+        let canonical = fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(CANONICAL)).unwrap();
         fs::write(root.join(CANONICAL), &canonical).unwrap();
         for mirror in MIRRORS {
             let path = root.join(mirror);
