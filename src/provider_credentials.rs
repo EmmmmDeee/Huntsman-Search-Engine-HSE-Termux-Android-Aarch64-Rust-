@@ -83,6 +83,7 @@ pub const PROVIDERS: &[Provider] = &[
     },
 ];
 
+#[must_use]
 pub fn status(keys: &Keys) -> Vec<ProviderStatus> {
     PROVIDERS
         .iter()
@@ -105,6 +106,7 @@ pub fn status(keys: &Keys) -> Vec<ProviderStatus> {
         .collect()
 }
 
+#[must_use]
 pub fn render(keys: &Keys) -> String {
     let mut out = String::new();
     for provider in status(keys) {
@@ -118,7 +120,7 @@ pub fn render(keys: &Keys) -> String {
         out.push_str("\tstate=");
         out.push_str(state);
         for slot in provider.slots {
-            out.push_str("\t");
+            out.push('\t');
             out.push_str(slot.slot);
             out.push('=');
             out.push_str(if slot.configured { "set" } else { "unset" });
@@ -154,8 +156,8 @@ mod tests {
             .find(|p| p.name == "WiGLE")
             .expect("WiGLE");
         assert!(!wigle.configured);
-        assert_eq!(wigle.slots[0].configured, true);
-        assert_eq!(wigle.slots[1].configured, false);
+        assert!(wigle.slots[0].configured);
+        assert!(!wigle.slots[1].configured);
     }
 
     #[test]
