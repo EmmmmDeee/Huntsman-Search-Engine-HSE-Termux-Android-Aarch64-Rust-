@@ -91,6 +91,7 @@ fi
 if [[ "$mode" == "msrv" || "$mode" == "full" ]]; then
   run cargo test --locked
 else
+  run cargo test --locked --test functional_code_contract
   run cargo test --locked --test directive_lock
   run cargo test --locked --test deployment_targets
   run cargo test --locked --test repair_contract

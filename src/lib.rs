@@ -22,6 +22,7 @@ pub mod assurance;
 pub mod atproto;
 pub mod attack;
 pub mod attack_catalog;
+pub mod attack_cli;
 pub mod attack_reporting;
 pub mod au_electoral;
 pub mod au_id;
