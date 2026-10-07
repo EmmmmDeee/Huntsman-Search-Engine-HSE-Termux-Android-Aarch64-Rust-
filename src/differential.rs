@@ -254,62 +254,51 @@ pub fn compare_legacy(
             continue;
         }
 
-        let same_identity: Vec<DifferentialEntity> = observed
+        let same_identity: Vec<Difference> = observed
             .iter()
             .filter(|candidate| candidate.kind == item.kind && candidate.value == item.value)
             .cloned()
+            .map(|candidate| Difference {
+                kind: DifferenceKind::Misattributed,
+                expected: item.clone(),
+                observed: Some(candidate),
+            })
             .collect();
-        if !same_identity.is_empty() {
-            let candidates: Vec<Difference> = same_identity
-                .into_iter()
-                .map(|candidate| Difference {
-                    kind: DifferenceKind::Misattributed,
-                    expected: item.clone(),
-                    observed: Some(candidate),
-                })
-                .collect();
-            if candidates
-                .iter()
-                .any(|difference| allowed.iter().any(|entry| entry.matches(difference)))
-            {
-                continue;
-            }
-            if let Some(diagnostic) = candidates.into_iter().next() {
-                differences.push(diagnostic);
-            }
-            continue;
-        }
 
         let mut truncations: Vec<DifferentialEntity> = observed
             .iter()
             .filter(|candidate| truncated_match(&item, candidate))
             .cloned()
             .collect();
-        if !truncations.is_empty() {
-            truncations.sort_by(|left, right| {
-                right
-                    .value
-                    .len()
-                    .cmp(&left.value.len())
-                    .then_with(|| left.cmp(right))
-            });
-            let candidates: Vec<Difference> = truncations
-                .into_iter()
-                .map(|candidate| Difference {
-                    kind: DifferenceKind::Truncated,
-                    expected: item.clone(),
-                    observed: Some(candidate),
-                })
-                .collect();
-            if candidates
-                .iter()
-                .any(|difference| allowed.iter().any(|entry| entry.matches(difference)))
-            {
-                continue;
-            }
-            if let Some(diagnostic) = candidates.into_iter().next() {
-                differences.push(diagnostic);
-            }
+        truncations.sort_by(|left, right| {
+            right
+                .value
+                .len()
+                .cmp(&left.value.len())
+                .then_with(|| left.cmp(right))
+        });
+        let truncations: Vec<Difference> = truncations
+            .into_iter()
+            .map(|candidate| Difference {
+                kind: DifferenceKind::Truncated,
+                expected: item.clone(),
+                observed: Some(candidate),
+            })
+            .collect();
+
+        if same_identity
+            .iter()
+            .chain(truncations.iter())
+            .any(|difference| allowed.iter().any(|entry| entry.matches(difference)))
+        {
+            continue;
+        }
+        if let Some(diagnostic) = same_identity
+            .into_iter()
+            .next()
+            .or_else(|| truncations.into_iter().next())
+        {
+            differences.push(diagnostic);
             continue;
         }
 
@@ -455,6 +444,25 @@ mod tests {
             expected: expected[0].clone(),
             observed: Some(reviewed_observed),
             reason: "reviewed source attribution difference for this legacy fixture".into(),
+        }];
+        assert_eq!(compare_legacy(&expected, &observed, &allowed), Vec::new());
+    }
+
+    #[test]
+    fn reviewed_truncation_survives_unrelated_full_value_attribution() {
+        let expected =
+            [DifferentialEntity::new(EntityKind::Username, "adalovelace").with_source("legacy")];
+        let reviewed_observed =
+            DifferentialEntity::new(EntityKind::Username, "adalove").with_source("legacy");
+        let observed = [
+            DifferentialEntity::new(EntityKind::Username, "adalovelace").with_source("other"),
+            reviewed_observed.clone(),
+        ];
+        let allowed = [AllowedDifference {
+            kind: DifferenceKind::Truncated,
+            expected: expected[0].clone(),
+            observed: Some(reviewed_observed),
+            reason: "reviewed truncation remains valid despite unrelated full-value output".into(),
         }];
         assert_eq!(compare_legacy(&expected, &observed, &allowed), Vec::new());
     }
