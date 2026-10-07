@@ -224,7 +224,10 @@ fn diagnostics_and_build_sha_are_offline_structured_and_non_secret() {
             <= value["providers_total"].as_u64().unwrap()
     );
     assert_eq!(value["credential_resolution"], "ok");
-    assert_eq!(value["credential_warning"], false);
+    assert_eq!(value["termux"], "not_detected");
+    assert!(value.get("build_sha_known").is_none());
+    assert!(value.get("android_target").is_none());
+    assert!(value.get("credential_warning").is_none());
     assert_eq!(value["selfcheck_command"], "huntsman-recon check");
     assert!(!stdout.contains("fingerprint"));
     assert!(!stdout.contains("HUNTSMAN_"));
