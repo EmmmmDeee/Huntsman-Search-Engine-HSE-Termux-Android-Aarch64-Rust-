@@ -148,7 +148,6 @@ pub mod timefmt;
 pub mod timeline;
 pub mod tlsrpt;
 pub mod trust;
-pub mod uid;
 pub mod union_find;
 pub mod username_cli;
 pub mod username_variants;
