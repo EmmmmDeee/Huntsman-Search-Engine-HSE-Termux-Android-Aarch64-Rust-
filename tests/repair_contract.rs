@@ -9,9 +9,13 @@ fn repair_protocol_is_executable_and_pins_required_gates() {
         "cargo clippy --all-targets --locked -- -D warnings",
         "cargo test --locked",
         "cargo run --locked -- check",
-        "git diff --exit-code -- var/",
+        "git status --porcelain=v1 --untracked-files=all",
+        "REPAIR_GATE_TIMEOUT_SECONDS",
+        "timeout --signal=TERM --kill-after=10s",
         "scripts/railway-live-acceptance.sh",
         "scripts/railway-entrypoint.sh",
+        "--test repair_contract",
+        "necessary but not sufficient for platform-specific changes",
     ] {
         assert!(
             script.contains(required),
@@ -19,15 +23,30 @@ fn repair_protocol_is_executable_and_pins_required_gates() {
         );
     }
 
-    let status = Command::new("bash")
+    let syntax = Command::new("bash")
         .args(["-n", "scripts/repair-gate.sh"])
         .status()
         .expect("bash must execute");
-    assert!(status.success(), "repair gate must parse as bash");
+    assert!(syntax.success(), "repair gate must parse as bash");
+
+    let help = Command::new("bash")
+        .args(["scripts/repair-gate.sh", "--help"])
+        .output()
+        .expect("repair gate help must execute");
+    assert!(help.status.success());
+    let help_text = String::from_utf8_lossy(&help.stdout);
+    assert!(help_text.contains("fast|msrv|full"));
+    assert!(help_text.contains("platform-specific"));
+
+    let invalid = Command::new("bash")
+        .args(["scripts/repair-gate.sh", "invalid-mode"])
+        .status()
+        .expect("repair gate invalid mode must execute");
+    assert_eq!(invalid.status.code(), Some(64));
 }
 
 #[test]
-fn repair_protocol_covers_failure_and_regression_semantics() {
+fn repair_protocol_covers_failure_regression_and_platform_semantics() {
     let doc = fs::read_to_string("docs/REPAIR_PROTOCOL.md").expect("repair protocol");
     for required in [
         "error, bug, broken file, malfunctioning code path",
@@ -40,6 +59,9 @@ fn repair_protocol_covers_failure_and_regression_semantics() {
         "Falsify",
         "Retain or roll back",
         "bash scripts/repair-gate.sh full",
+        "Railway/container",
+        "Android/Termux",
+        "host gate is necessary, not universally sufficient",
         "bash scripts/railway-live-acceptance.sh",
     ] {
         assert!(
