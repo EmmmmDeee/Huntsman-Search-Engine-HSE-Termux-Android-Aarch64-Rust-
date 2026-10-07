@@ -188,11 +188,17 @@ pub fn report(
     report
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ExpectedPublicFact {
     pub entity_kind: crate::entity::EntityKind,
     pub value: String,
     pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ForbiddenPublicFact {
+    pub entity_kind: crate::entity::EntityKind,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -228,28 +234,69 @@ pub struct PersonResolutionScore {
     pub expected_facts: usize,
     pub matched_facts: usize,
     pub recall: CoverageRatio,
+    pub supported_entities: usize,
+    pub emitted_entities: usize,
+    pub precision: CoverageRatio,
     pub entities_with_evidence: usize,
     pub entities_without_evidence: usize,
     pub provenance_coverage: CoverageRatio,
     pub unsupported_person_entities: usize,
+    pub forbidden_facts: usize,
+    pub forbidden_facts_emitted: usize,
+    pub accepted: bool,
 }
 
 #[must_use]
 pub fn score_person_resolution(
     entities: &[Entity],
     expected: &[ExpectedPublicFact],
+    forbidden: &[ForbiddenPublicFact],
 ) -> PersonResolutionScore {
+    use std::collections::BTreeSet;
+
+    let expected: BTreeSet<_> = expected
+        .iter()
+        .map(|fact| {
+            (
+                fact.entity_kind.clone(),
+                crate::entity::normalise(&fact.entity_kind, &fact.value),
+                fact.source.as_str(),
+            )
+        })
+        .collect();
+    let forbidden: BTreeSet<_> = forbidden
+        .iter()
+        .map(|fact| {
+            (
+                fact.entity_kind.clone(),
+                crate::entity::normalise(&fact.entity_kind, &fact.value),
+            )
+        })
+        .collect();
+
     let matched_facts = expected
         .iter()
-        .filter(|fact| {
-            let expected_value = crate::entity::normalise(&fact.entity_kind, &fact.value);
+        .filter(|(kind, value, source)| {
             entities.iter().any(|entity| {
-                entity.kind == fact.entity_kind
-                    && entity.value == expected_value
+                entity.kind == *kind
+                    && entity.value == *value
                     && entity
                         .evidence
                         .iter()
-                        .any(|evidence| evidence.provenance.source == fact.source)
+                        .any(|evidence| evidence.provenance.source == **source)
+            })
+        })
+        .count();
+    let supported_entities = entities
+        .iter()
+        .filter(|entity| {
+            expected.iter().any(|(kind, value, source)| {
+                entity.kind == *kind
+                    && entity.value == *value
+                    && entity
+                        .evidence
+                        .iter()
+                        .any(|evidence| evidence.provenance.source == *source)
             })
         })
         .count();
@@ -261,19 +308,44 @@ pub fn score_person_resolution(
     let unsupported_person_entities = entities
         .iter()
         .filter(|entity| {
-            entity.kind == crate::entity::EntityKind::Person && entity.evidence.is_empty()
+            entity.kind == crate::entity::EntityKind::Person
+                && !expected
+                    .iter()
+                    .any(|(kind, value, _)| entity.kind == *kind && entity.value == *value)
         })
         .count();
+    let forbidden_facts_emitted = forbidden
+        .iter()
+        .filter(|(kind, value)| {
+            entities
+                .iter()
+                .any(|entity| entity.kind == *kind && entity.value == *value)
+        })
+        .count();
+
     let recall = CoverageRatio::new(matched_facts, expected.len());
+    let precision = CoverageRatio::new(supported_entities, entities.len());
     let provenance_coverage = CoverageRatio::new(entities_with_evidence, entities.len());
+    let accepted = recall.is_complete()
+        && precision.is_complete()
+        && provenance_coverage.is_complete()
+        && unsupported_person_entities == 0
+        && forbidden_facts_emitted == 0;
+
     PersonResolutionScore {
         expected_facts: expected.len(),
         matched_facts,
         recall,
+        supported_entities,
+        emitted_entities: entities.len(),
+        precision,
         entities_with_evidence,
         entities_without_evidence,
         provenance_coverage,
         unsupported_person_entities,
+        forbidden_facts: forbidden.len(),
+        forbidden_facts_emitted,
+        accepted,
     }
 }
 
