@@ -6,7 +6,7 @@
 
 use futures::StreamExt;
 
-use super::fetch::fetch_one;
+use super::fetch::{SearchFetchResult, fetch_one_classified};
 use super::helpers::*;
 use super::{ENGINE_CONCURRENCY, engine_enabled, is_social_host, proven_live_engines};
 use crate::core::{
@@ -104,19 +104,19 @@ pub(super) async fn recycle_entities(
                         let engine_name = e.name;
                         let scan_id = ctx.scan_id.clone();
                         async move {
-                            let res = fetch_one(e, (e.build_url)(q), q.clone(), deadline).await;
-                            match res {
-                                Some(results) => {
-                                    // Engine returned results in recycler — update liveness even if
-                                    // it was previously silenced, so it's available for future queries.
+                            let outcome =
+                                fetch_one_classified(e, (e.build_url)(q), q.clone(), deadline).await;
+                            match outcome {
+                                SearchFetchResult::Results(results) => {
                                     super::record_hit(&scan_id, engine_name);
                                     Some(results)
                                 }
-                                None => {
-                                    // Engine returned nothing on recycler query — record the empty
-                                    // so its streak continues. This doesn't break the silence, but
-                                    // contributes to the threshold if it's still being monitored.
-                                    super::record_empty(&scan_id, engine_name);
+                                SearchFetchResult::Empty => {
+                                    super::record_empty_success(&scan_id, engine_name);
+                                    None
+                                }
+                                SearchFetchResult::Blocked | SearchFetchResult::Unreachable => {
+                                    super::record_failure(&scan_id, engine_name);
                                     None
                                 }
                             }
