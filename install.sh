@@ -648,16 +648,16 @@ maybe_download_prebuilt() {
 
     # Which releases could hold the revision we want, best first.
     #
-    # release.yml publishes every main commit past the current version tag as
-    # pre-release `main-<sha7>`, and GitHub's `releases/latest` deliberately
-    # skips pre-releases. So when main is ahead of the last version tag, the
+    # release.yml publishes every legacy-hse commit past the current version tag as
+    # pre-release `hse-<sha7>`, and GitHub's `releases/latest` deliberately
+    # skips pre-releases. So when legacy-hse is ahead of the last version tag, the
     # exact artifact lives under the per-commit tag and `latest` is stale; when
-    # main IS the last version tag, only `latest` exists. Trying both, in that
+    # legacy-hse IS the last version tag, only `latest` exists. Trying both, in that
     # order, covers each case — and `_prebuilt_sha_matches` is what decides,
     # so a wrong guess costs a download, never a wrong install.
     candidates=("$tag")
     if [[ "$tag" == "latest" && -n "$TARGET_SHA" ]]; then
-        candidates=("main-${TARGET_SHA:0:7}" "latest")
+        candidates=("hse-${TARGET_SHA:0:7}" "latest")
     fi
 
     for tag in "${candidates[@]}"; do
