@@ -126,16 +126,21 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
         .expect("bash must execute in CI");
     assert!(status.success(), "Railway IaC validator must parse as bash");
 
-    let plan =
-        fs::read_to_string("scripts/railway-iac-plan.sh").expect("Railway IaC plan wrapper");
+    let plan = fs::read_to_string("scripts/railway-iac-plan.sh").expect("Railway IaC plan wrapper");
     for required in ["railway config plan", "Railway CLI is required"] {
-        assert!(plan.contains(required), "Railway plan wrapper must contain {required:?}");
+        assert!(
+            plan.contains(required),
+            "Railway plan wrapper must contain {required:?}"
+        );
     }
     let status = Command::new("bash")
         .args(["-n", "scripts/railway-iac-plan.sh"])
         .status()
         .expect("bash must execute in CI");
-    assert!(status.success(), "Railway IaC plan wrapper must parse as bash");
+    assert!(
+        status.success(),
+        "Railway IaC plan wrapper must parse as bash"
+    );
 
     let iac = fs::read_to_string(".railway/railway.ts").expect("Railway IaC");
     for required in [
@@ -160,8 +165,8 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
 
 #[test]
 fn termux_installer_is_arm64_userland_and_self_accepting() {
-    let device =
-        fs::read_to_string("scripts/termux-device-acceptance.sh").expect("Termux device acceptance");
+    let device = fs::read_to_string("scripts/termux-device-acceptance.sh")
+        .expect("Termux device acceptance");
     for required in [
         "aarch64|arm64",
         "/data/data/com.termux/files/usr",
