@@ -209,35 +209,103 @@ enum ProofEvaluationFlag {
     Valid,
 }
 
-#[derive(Debug, Default)]
-struct ProofEnvironmentEvaluation {
-    flags: BTreeSet<ProofEvaluationFlag>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CriterionStatus {
+    Met,
+    Unmet,
+}
+
+impl CriterionStatus {
+    const fn is_met(self) -> bool {
+        matches!(self, Self::Met)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssumptionStatus {
+    Clear,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteSearchStatus {
+    Complete,
+    Incomplete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProofEnvironmentEvaluation {
+    Malformed,
+    Structured {
+        routes: CriterionStatus,
+        natures: CriterionStatus,
+        attributes: CriterionStatus,
+        assumptions: AssumptionStatus,
+        route_search: RouteSearchStatus,
+    },
 }
 
 impl ProofEnvironmentEvaluation {
-    fn malformed() -> Self {
-        Self {
-            flags: BTreeSet::from([ProofEvaluationFlag::Malformed]),
-        }
-    }
-
-    fn contains(&self, flag: ProofEvaluationFlag) -> bool {
-        self.flags.contains(&flag)
+    const fn is_valid(self) -> bool {
+        matches!(
+            self,
+            Self::Structured {
+                routes: CriterionStatus::Met,
+                natures: CriterionStatus::Met,
+                attributes: CriterionStatus::Met,
+                assumptions: AssumptionStatus::Clear,
+                route_search: RouteSearchStatus::Complete,
+            }
+        )
     }
 }
 
 #[derive(Debug, Default)]
 struct ProofEvaluationSummary {
-    flags: BTreeSet<ProofEvaluationFlag>,
+    malformed: usize,
+    structurally_valid: usize,
+    sufficient_routes: usize,
+    sufficient_natures: usize,
+    sufficient_attributes: usize,
+    unresolved_assumptions: usize,
+    incomplete_route_searches: usize,
+    valid_environments: usize,
 }
 
 impl ProofEvaluationSummary {
-    fn observe(&mut self, evaluation: &ProofEnvironmentEvaluation) {
-        self.flags.extend(evaluation.flags.iter().copied());
+    fn observe(&mut self, evaluation: ProofEnvironmentEvaluation) {
+        match evaluation {
+            ProofEnvironmentEvaluation::Malformed => self.malformed += 1,
+            ProofEnvironmentEvaluation::Structured {
+                routes,
+                natures,
+                attributes,
+                assumptions,
+                route_search,
+            } => {
+                self.structurally_valid += 1;
+                self.sufficient_routes += usize::from(routes.is_met());
+                self.sufficient_natures += usize::from(natures.is_met());
+                self.sufficient_attributes += usize::from(attributes.is_met());
+                self.unresolved_assumptions +=
+                    usize::from(assumptions == AssumptionStatus::Unresolved);
+                self.incomplete_route_searches +=
+                    usize::from(route_search == RouteSearchStatus::Incomplete);
+                self.valid_environments += usize::from(evaluation.is_valid());
+            }
+        }
     }
 
-    fn contains(&self, flag: ProofEvaluationFlag) -> bool {
-        self.flags.contains(&flag)
+    const fn has_valid_environment(&self) -> bool {
+        self.valid_environments > 0
+    }
+}
+
+const fn criterion(met: bool) -> CriterionStatus {
+    if met {
+        CriterionStatus::Met
+    } else {
+        CriterionStatus::Unmet
     }
 }
 
@@ -404,7 +472,7 @@ impl IntelligenceLedger {
         bindings: &BTreeMap<EvidenceId, EvidenceNodeId>,
     ) -> ProofEnvironmentEvaluation {
         if environment.assertions.is_empty() {
-            return ProofEnvironmentEvaluation::malformed();
+            return ProofEnvironmentEvaluation::Malformed;
         }
 
         let mut canonical_roots = BTreeSet::new();
@@ -414,10 +482,10 @@ impl IntelligenceLedger {
 
         for evidence_id in &environment.assertions {
             if !claim.support.contains(evidence_id) {
-                return ProofEnvironmentEvaluation::malformed();
+                return ProofEnvironmentEvaluation::Malformed;
             }
             let Some(evidence) = self.evidence.get(evidence_id) else {
-                return ProofEnvironmentEvaluation::malformed();
+                return ProofEnvironmentEvaluation::Malformed;
             };
             if !environment_natures.contains(&evidence.nature) {
                 environment_natures.push(evidence.nature.clone());
@@ -425,20 +493,20 @@ impl IntelligenceLedger {
             observe_attributes(&mut environment_attributes, &evidence.attributes);
 
             let Some(node_id) = bindings.get(evidence_id) else {
-                return ProofEnvironmentEvaluation::malformed();
+                return ProofEnvironmentEvaluation::Malformed;
             };
             let Ok(roots) = graph.resolved_root_ids(node_id) else {
-                return ProofEnvironmentEvaluation::malformed();
+                return ProofEnvironmentEvaluation::Malformed;
             };
             if roots.is_empty() {
-                return ProofEnvironmentEvaluation::malformed();
+                return ProofEnvironmentEvaluation::Malformed;
             }
             canonical_roots.extend(roots.into_iter().map(|root| root.0));
             resolved_nodes.push(node_id.clone());
         }
 
         if canonical_roots != environment.roots {
-            return ProofEnvironmentEvaluation::malformed();
+            return ProofEnvironmentEvaluation::Malformed;
         }
 
         let route_count = graph
@@ -451,78 +519,61 @@ impl IntelligenceLedger {
                 proven: 0,
                 incomplete: true,
             });
-        let routes_sufficient =
-            !route_count.incomplete && route_count.proven >= policy.min_proven_roots;
-        let natures_sufficient = policy
-            .required_natures
-            .iter()
-            .all(|required| environment_natures.contains(required));
-        let attributes_sufficient = required_attributes_satisfied(policy, &environment_attributes);
-        let unresolved_assumption = !environment.assumptions.is_empty();
 
-        let mut flags = BTreeSet::from([ProofEvaluationFlag::StructurallyValid]);
-        if routes_sufficient {
-            flags.insert(ProofEvaluationFlag::RoutesSufficient);
+        ProofEnvironmentEvaluation::Structured {
+            routes: criterion(
+                !route_count.incomplete && route_count.proven >= policy.min_proven_roots,
+            ),
+            natures: criterion(
+                policy
+                    .required_natures
+                    .iter()
+                    .all(|required| environment_natures.contains(required)),
+            ),
+            attributes: criterion(required_attributes_satisfied(
+                policy,
+                &environment_attributes,
+            )),
+            assumptions: if environment.assumptions.is_empty() {
+                AssumptionStatus::Clear
+            } else {
+                AssumptionStatus::Unresolved
+            },
+            route_search: if route_count.incomplete {
+                RouteSearchStatus::Incomplete
+            } else {
+                RouteSearchStatus::Complete
+            },
         }
-        if natures_sufficient {
-            flags.insert(ProofEvaluationFlag::NaturesSufficient);
-        }
-        if attributes_sufficient {
-            flags.insert(ProofEvaluationFlag::AttributesSufficient);
-        }
-        if unresolved_assumption {
-            flags.insert(ProofEvaluationFlag::UnresolvedAssumption);
-        }
-        if route_count.incomplete {
-            flags.insert(ProofEvaluationFlag::IncompleteRouteSearch);
-        }
-        if !unresolved_assumption
-            && routes_sufficient
-            && natures_sufficient
-            && attributes_sufficient
-        {
-            flags.insert(ProofEvaluationFlag::Valid);
-        }
-        ProofEnvironmentEvaluation { flags }
     }
 
     fn apply_proof_blockers(assessment: &mut ClaimAssessment, summary: &ProofEvaluationSummary) {
-        if summary.contains(ProofEvaluationFlag::Malformed) {
+        if summary.malformed > 0 {
             assessment
                 .blockers
                 .insert(VerificationBlocker::InvalidProofEnvironment);
         }
-        if summary.contains(ProofEvaluationFlag::UnresolvedAssumption)
-            && !summary.contains(ProofEvaluationFlag::Valid)
-        {
+        if summary.unresolved_assumptions > 0 && !summary.has_valid_environment() {
             assessment
                 .blockers
                 .insert(VerificationBlocker::UnresolvedProofAssumption);
         }
-        if summary.contains(ProofEvaluationFlag::StructurallyValid)
-            && !summary.contains(ProofEvaluationFlag::RoutesSufficient)
-        {
+        if summary.structurally_valid > 0 && summary.sufficient_routes == 0 {
             assessment
                 .blockers
                 .insert(VerificationBlocker::InsufficientIndependentSupport);
         }
-        if summary.contains(ProofEvaluationFlag::IncompleteRouteSearch)
-            && !summary.contains(ProofEvaluationFlag::Valid)
-        {
+        if summary.incomplete_route_searches > 0 && !summary.has_valid_environment() {
             assessment
                 .blockers
                 .insert(VerificationBlocker::IncompleteIndependenceProof);
         }
-        if summary.contains(ProofEvaluationFlag::StructurallyValid)
-            && !summary.contains(ProofEvaluationFlag::NaturesSufficient)
-        {
+        if summary.structurally_valid > 0 && summary.sufficient_natures == 0 {
             assessment
                 .blockers
                 .insert(VerificationBlocker::MissingRequiredEvidenceNature);
         }
-        if summary.contains(ProofEvaluationFlag::StructurallyValid)
-            && !summary.contains(ProofEvaluationFlag::AttributesSufficient)
-        {
+        if summary.structurally_valid > 0 && summary.sufficient_attributes == 0 {
             assessment
                 .blockers
                 .insert(VerificationBlocker::MissingRequiredEvidenceAttribute);
