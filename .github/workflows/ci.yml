@@ -20,10 +20,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
-            --jq '[.[] | select(.base.ref == "main" and .merged_at != null)] | length')"
+          count=0
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+              --jq '[.[] | select(.base.ref == "main" and .merged_at != null)] | length')" || {
+              echo "::error::could not verify merged pull request association for ${GITHUB_SHA}"
+              exit 1
+            }
+            [ "$count" -ge 1 ] && break
+            [ "$attempt" -eq 10 ] || sleep 3
+          done
           [ "$count" -ge 1 ] || {
-            echo "::error::${GITHUB_SHA} reached main without an associated merged pull request"
+            echo "::error::${GITHUB_SHA} reached main without an associated merged pull request after bounded retry"
             exit 1
           }
           echo "main origin: merged PR association verified (${count})"
