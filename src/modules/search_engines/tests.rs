@@ -2875,7 +2875,7 @@ fn html_entity_decoding_apostrophes() {
 }
 
 #[test]
-fn session_dead_threshold_fires_after_n_consecutive_empties() {
+fn session_dead_threshold_fires_after_n_consecutive_failures() {
     // Use a fake engine name and scan ID so this test is isolated from other tests.
     const SCAN_ID: &str = "__test_session_dead_scan__";
     const FAKE: &str = "__test_session_dead__";
@@ -2912,6 +2912,28 @@ fn session_dead_threshold_fires_after_n_consecutive_empties() {
         !is_session_dead(SCAN_ID, FAKE),
         "hit must un-dead the engine"
     );
+}
+
+#[test]
+fn inconclusive_outcomes_never_manufacture_a_failure_streak() {
+    const SCAN_ID: &str = "__test_inconclusive_health_scan__";
+    const FAKE: &str = "__test_inconclusive_health__";
+
+    reset_session_liveness(SCAN_ID);
+    for _ in 0..SESSION_DEAD_THRESHOLD.saturating_mul(2) {
+        record_provider_failure_outcome(SCAN_ID, FAKE, &SearchFetchResult::Inconclusive);
+    }
+    assert!(
+        !is_session_dead(SCAN_ID, FAKE),
+        "ambiguous zero-yield responses must not be promoted into provider failure evidence"
+    );
+    let live = SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&(SCAN_ID.to_string(), FAKE))
+        .copied()
+        .unwrap_or_default();
+    assert_eq!(live.consecutive_failures, 0);
 }
 
 #[test]
