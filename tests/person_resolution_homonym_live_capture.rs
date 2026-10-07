@@ -56,11 +56,11 @@ fn event(provider_id: &str, upstream: UpstreamOrigin, finding_count: usize) -> C
     }
 }
 
-/// Captured from public pages verified on 2026-10-07:
-/// - Rust Project team pages bind Andrew Gallant to GitHub handle BurntSushi.
-/// - Durham University identifies a different Andrew Gallant as Professor of Electronic Engineering.
-/// The benchmark is intentionally a homonym collision: a resolver must preserve two candidate
-/// identities until evidence-backed resolution proves a merge.
+// Captured from public pages verified on 2026-10-07.
+// Rust Project team pages bind Andrew Gallant to GitHub handle BurntSushi.
+// Durham University identifies a different Andrew Gallant as Professor of Electronic Engineering.
+// The benchmark is intentionally a homonym collision: a resolver must preserve two candidate
+// identities until evidence-backed resolution proves a merge.
 fn captured_public_homonyms() -> ObservationBatch {
     let rust = origin(
         "rust_project",
