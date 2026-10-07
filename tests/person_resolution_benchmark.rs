@@ -1,6 +1,4 @@
-use huntsman_recon::benchmark::{
-    ExpectedPublicFact, ForbiddenPublicFact, score_person_resolution,
-};
+use huntsman_recon::benchmark::{ExpectedPublicFact, ForbiddenPublicFact, score_person_resolution};
 use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 
 fn observed(kind: EntityKind, value: &str, source: &str) -> Entity {
@@ -47,7 +45,10 @@ fn public_person_resolution_fixture_requires_recall_precision_and_provenance() {
     }];
 
     let score = score_person_resolution(&entities, &expected, &forbidden);
-    assert_eq!(score.expected_facts, 3, "duplicate expectations must collapse");
+    assert_eq!(
+        score.expected_facts, 3,
+        "duplicate expectations must collapse"
+    );
     assert_eq!(score.matched_facts, 3);
     assert!(score.recall.is_complete());
     assert!(score.precision.is_complete());
@@ -62,7 +63,11 @@ fn public_person_resolution_fixture_requires_recall_precision_and_provenance() {
 fn evidence_bearing_wrong_identity_cannot_hide_behind_perfect_recall() {
     let entities = vec![
         observed(EntityKind::Person, "Talia Bacot-Keating", "public_profile"),
-        observed(EntityKind::Person, "Different Talia Bacot", "other_public_record"),
+        observed(
+            EntityKind::Person,
+            "Different Talia Bacot",
+            "other_public_record",
+        ),
     ];
     let expected = vec![expected(
         EntityKind::Person,
@@ -75,7 +80,10 @@ fn evidence_bearing_wrong_identity_cannot_hide_behind_perfect_recall() {
     }];
 
     let score = score_person_resolution(&entities, &expected, &forbidden);
-    assert!(score.recall.is_complete(), "recall alone is intentionally insufficient");
+    assert!(
+        score.recall.is_complete(),
+        "recall alone is intentionally insufficient"
+    );
     assert!(!score.precision.is_complete());
     assert!(score.provenance_coverage.is_complete());
     assert_eq!(score.unsupported_person_entities, 1);
