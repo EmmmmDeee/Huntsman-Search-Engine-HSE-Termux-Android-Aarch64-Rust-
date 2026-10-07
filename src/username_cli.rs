@@ -83,7 +83,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, username: &str, now_unix: u64) 
         Ok(username) => username,
         Err(error) => return UsernameRun::Failed(error.to_string()),
     };
-    let scan_id = uid::scan_id("username", &username);
+    let scan_id = entity::scan_id("username", &username);
     let mut report = Report {
         entities: derived_entities(&username, &scan_id),
         outcomes: Vec::new(),
