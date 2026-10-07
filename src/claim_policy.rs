@@ -379,8 +379,7 @@ impl IntelligenceLedger {
             .claims
             .get(claim_id)
             .ok_or_else(|| LedgerError::MissingClaim(claim_id.clone()))?;
-        let mut assessment =
-            self.assess_claim_with_ancestry(claim_id, policy, graph, bindings)?;
+        let mut assessment = self.assess_claim_with_ancestry(claim_id, policy, graph, bindings)?;
 
         assessment.proof_environment_count = proof.environments.len();
         assessment.proof_incomplete = proof.incomplete;
