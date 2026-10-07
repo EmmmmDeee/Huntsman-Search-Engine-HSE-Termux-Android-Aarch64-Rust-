@@ -169,8 +169,7 @@ fn validate_capabilities(manifest: &CapabilityManifest) -> Result<(), String> {
         if capability.platforms.is_empty() {
             return Err(format!("capability {} has no platforms", capability.id));
         }
-        if capability.status == CapabilityStatus::Demonstrated
-            && capability.limitations.is_empty()
+        if capability.status == CapabilityStatus::Demonstrated && capability.limitations.is_empty()
         {
             return Err(format!(
                 "demonstrated capability {} must state limitations",
@@ -190,7 +189,10 @@ fn validate_benchmarks(
         return Err("benchmarks.json: unsupported schema_version".into());
     }
     require_nonempty("benchmark claim_rule", &manifest.policy.claim_rule)?;
-    require_nonempty("benchmark regression_gate", &manifest.policy.regression_gate)?;
+    require_nonempty(
+        "benchmark regression_gate",
+        &manifest.policy.regression_gate,
+    )?;
 
     let capability_ids: BTreeSet<_> = capabilities
         .capabilities
