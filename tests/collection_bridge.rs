@@ -41,6 +41,7 @@ fn failed_timeout_waf_and_auth_required_are_not_clean_negative() {
         let batch = ObservationBatch {
             events: vec![event(kind, 0, false)],
             observations: vec![],
+            independence_assertions: Vec::new(),
             truncated: false,
         };
         let rows = provider_coverage_from_events(&coverage_events(&batch));
@@ -54,6 +55,7 @@ fn valid_zero_is_clean_negative_only_when_not_truncated() {
     let complete = ObservationBatch {
         events: vec![event(SourceOutcomeKind::ValidZero, 0, false)],
         observations: vec![],
+        independence_assertions: Vec::new(),
         truncated: false,
     };
     let rows = provider_coverage_from_events(&coverage_events(&complete));
@@ -62,6 +64,7 @@ fn valid_zero_is_clean_negative_only_when_not_truncated() {
     let incomplete = ObservationBatch {
         events: vec![event(SourceOutcomeKind::ValidZero, 0, true)],
         observations: vec![],
+        independence_assertions: Vec::new(),
         truncated: true,
     };
     let rows = provider_coverage_from_events(&coverage_events(&incomplete));
@@ -100,6 +103,7 @@ fn coverage_conversion_is_deterministic() {
             event(SourceOutcomeKind::ValidZero, 0, false),
         ],
         observations: vec![],
+        independence_assertions: Vec::new(),
         truncated: false,
     };
     assert_eq!(coverage_events(&batch), coverage_events(&batch));
@@ -132,6 +136,7 @@ fn huge_observation_batch_is_capped_without_false_completeness() {
         ObservationBatch {
             events: vec![event(SourceOutcomeKind::Success, 8, false)],
             observations,
+            independence_assertions: Vec::new(),
             truncated: false,
         },
         &limits,
