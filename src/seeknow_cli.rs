@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::collector::{CollectionLimits, CollectionOutcome};
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
-use crate::entity::{Entity, EntityKind};
+use crate::entity::{self, Entity, EntityKind};
 use crate::error::Error;
 use crate::fetch::{AuthStyle, Credential};
 use crate::http::Transport;
