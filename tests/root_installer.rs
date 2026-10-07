@@ -2,11 +2,17 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const DEFAULT_MAIN_REV: &str = "0123456789abcdef0123456789abcdef01234567";
+static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn scratch() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("huntsman-root-installer-{}", std::process::id()));
+    let seq = SCRATCH_SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "huntsman-root-installer-{}-{seq}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -251,6 +257,61 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         "default installs must pin Cargo to the resolved main revision: {calls}"
     );
     assert_private_state(&temp, DEFAULT_MAIN_REV);
+
+    let _ = fs::remove_dir_all(&temp);
+}
+
+#[test]
+fn legacy_hse_update_contract_routes_to_legacy_channel_without_building_recon() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let installer = root.join("install.sh");
+    let temp = scratch();
+    let prefix = PathBuf::from("/data/data/com.termux/files/usr");
+    let fake_bin = temp.join("fake-bin");
+    let fake_target_libdir = temp.join("rustlib");
+    let log = temp.join("install.log");
+    let tmpdir = temp.join("tmp");
+    fs::create_dir_all(&tmpdir).unwrap();
+    install_fake_termux_toolchain(&fake_bin, &fake_target_libdir);
+
+    let compat = temp.join("legacy-channel.sh");
+    write_executable(
+        &compat,
+        "#!/bin/sh\nprintf 'compat channel=%s\\n' \"${HUNTSMAN_CHANNEL:-unset}\" >> \"$INSTALL_LOG\"\nexit 0\n",
+    );
+
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    let output = Command::new("bash")
+        .arg(&installer)
+        .env("PATH", format!("{}:{existing_path}", fake_bin.display()))
+        .env("PREFIX", &prefix)
+        .env("INSTALL_LOG", &log)
+        .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
+        .env("HOME", &temp)
+        .env("TMPDIR", &tmpdir)
+        .env("HSE_REQUIRE_SHA", DEFAULT_MAIN_REV)
+        .env("HUNTSMAN_LEGACY_CHANNEL_INSTALLER", &compat)
+        .env_remove("HUNTSMAN_REV")
+        .output()
+        .expect("legacy compatibility route must execute");
+
+    assert!(
+        output.status.success(),
+        "legacy compatibility route failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(calls.contains("compat channel=hse"), "{calls}");
+    assert!(
+        !calls.contains("cargo install"),
+        "must not install recon: {calls}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("huntsman-recon was not substituted for hse"),
+        "{stdout}"
+    );
 
     let _ = fs::remove_dir_all(&temp);
 }
