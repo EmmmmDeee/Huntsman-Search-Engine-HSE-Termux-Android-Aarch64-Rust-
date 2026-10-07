@@ -4,8 +4,7 @@ use serde::Serialize;
 
 use crate::attack_reporting::{HierarchyCoverage, coverage_from_observations};
 use crate::coref::{self, CorefCluster};
-use crate::correlation_bridge;
-use crate::correlator::Correlation;
+use crate::correlator::{Correlation, RuleContext, confirmed_only, rank_and_sort, registry};
 use crate::coverage::{CoverageVerdict, coverage_verdict};
 use crate::cross_scan::{
     CrossScanCategory, CrossScanOptions, CrossScanRecord, CrossScanStore, build_cross_scan_history,
@@ -50,6 +49,22 @@ fn termination_for(snapshot: &AnalysisSnapshot) -> TerminationReason {
     decide_termination(frontier, signals).unwrap_or(TerminationReason::FixedPoint)
 }
 
+
+fn correlate_entities_at(
+    entities: &[crate::entity::Entity],
+    scan_id: &str,
+    now_unix: u64,
+) -> Vec<Correlation> {
+    let confirmed = confirmed_only(entities);
+    let context = RuleContext::new(&confirmed, &[]);
+    let mut correlations = Vec::new();
+    for rule in registry() {
+        correlations.extend(rule.run(&context, scan_id, now_unix));
+    }
+    rank_and_sort(&mut correlations, &confirmed);
+    correlations
+}
+
 fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
     let graph = Graph::build(&snapshot.entities, &snapshot.relations);
     let scan_id = snapshot
@@ -72,7 +87,7 @@ fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
         gaps: gap::analyze(&snapshot.entities, &snapshot.relations),
         pivots: pivot::rank_pivots(&graph),
         coreference: coref::cluster_entities(&snapshot.entities),
-        correlations: correlation_bridge::correlate_entities_at(
+        correlations: correlate_entities_at(
             &snapshot.entities,
             scan_id,
             now_unix,
