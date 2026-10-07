@@ -284,7 +284,7 @@ impl HibpClient {
     /// `GET /subscription/status`. Not cached; see [`Self::cached_subscription_status`].
     pub fn subscription_status(&self) -> Result<SubscriptionStatus, HibpError> {
         let url = self.url("/subscription/status", &[]);
-        let status = self
+        let status: SubscriptionStatus = self
             .get_json(&url, true)?
             .ok_or_else(|| HibpError::UnexpectedStatus {
                 status: 404,
