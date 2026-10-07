@@ -50,6 +50,8 @@ impl SeekNowCollector {
                 | EntityKind::IpAddress
                 | EntityKind::Domain
                 | EntityKind::Person
+                | EntityKind::Url
+                | EntityKind::DeviceId
         )
     }
 }
@@ -75,7 +77,9 @@ pub fn plan_selector(
         EntityKind::Username => SeekNowQueryType::Username,
         EntityKind::IpAddress => SeekNowQueryType::Ip,
         EntityKind::Domain => SeekNowQueryType::Domain,
-        EntityKind::Person => SeekNowQueryType::Auto,
+        EntityKind::Person => SeekNowQueryType::Name,
+        EntityKind::Url => SeekNowQueryType::Url,
+        EntityKind::DeviceId => SeekNowQueryType::MachineId,
         _ => return Err(CollectorError::UnsupportedSelector(selector.kind.clone())),
     };
     let limit = limits
@@ -103,32 +107,59 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
 
     match mode {
         SeekNowCollectionMode::DeepOnly => {
+            if !search.query_type.supports_stealer() {
+                return Err(CollectorError::InvalidSelector(format!(
+                    "SeekNow stealer endpoint does not support {} selectors",
+                    selector.kind
+                )));
+            }
             let result = search_deep(transport, credential, &search, now_unix)
                 .map_err(|error| CollectorError::Execution(error.to_string()))?;
             append_result(&mut batch, selector, &result, limits, now_unix);
             batch.outcome = outcome_from_single(&batch.receipts[0]);
         }
-        SeekNowCollectionMode::FastOnly | SeekNowCollectionMode::Adaptive => {
+        SeekNowCollectionMode::FastOnly => {
+            if !search.query_type.supports_search() {
+                return Err(CollectorError::InvalidSelector(format!(
+                    "SeekNow search endpoint does not support {} selectors",
+                    selector.kind
+                )));
+            }
             let fast = search_fast(transport, credential, &search, now_unix)
                 .map_err(|error| CollectorError::Execution(error.to_string()))?;
-            let fast_kind = fast.outcome.kind;
             append_result(&mut batch, selector, &fast, limits, now_unix);
+            batch.outcome = outcome_from_single(&batch.receipts[0]);
+        }
+        SeekNowCollectionMode::Adaptive => {
+            if search.query_type.supports_search() {
+                let fast = search_fast(transport, credential, &search, now_unix)
+                    .map_err(|error| CollectorError::Execution(error.to_string()))?;
+                let fast_kind = fast.outcome.kind;
+                append_result(&mut batch, selector, &fast, limits, now_unix);
 
-            if mode == SeekNowCollectionMode::Adaptive
-                && fast_kind == SourceOutcomeKind::ValidZero
-                && limits.max_requests >= 2
-            {
+                if fast_kind == SourceOutcomeKind::ValidZero
+                    && search.query_type.supports_stealer()
+                    && limits.max_requests >= 2
+                {
+                    let deep = search_deep(transport, credential, &search, now_unix)
+                        .map_err(|error| CollectorError::Execution(error.to_string()))?;
+                    let deep_kind = deep.outcome.kind;
+                    append_result(&mut batch, selector, &deep, limits, now_unix);
+                    batch.outcome = match deep_kind {
+                        SourceOutcomeKind::Success => CollectionOutcome::Success,
+                        SourceOutcomeKind::ValidZero => CollectionOutcome::ValidZero,
+                        _ => CollectionOutcome::Partial,
+                    };
+                } else {
+                    batch.outcome = outcome_from_single(&batch.receipts[0]);
+                }
+            } else if search.query_type.supports_stealer() {
                 let deep = search_deep(transport, credential, &search, now_unix)
                     .map_err(|error| CollectorError::Execution(error.to_string()))?;
-                let deep_kind = deep.outcome.kind;
                 append_result(&mut batch, selector, &deep, limits, now_unix);
-                batch.outcome = match deep_kind {
-                    SourceOutcomeKind::Success => CollectionOutcome::Success,
-                    SourceOutcomeKind::ValidZero => CollectionOutcome::ValidZero,
-                    _ => CollectionOutcome::Partial,
-                };
-            } else {
                 batch.outcome = outcome_from_single(&batch.receipts[0]);
+            } else {
+                return Err(CollectorError::UnsupportedSelector(selector.kind.clone()));
             }
         }
     }
@@ -155,6 +186,11 @@ fn validate_selector(selector: &Entity) -> Result<(), CollectorError> {
         EntityKind::IpAddress => value.parse::<IpAddr>().is_ok(),
         EntityKind::Domain => value.contains('.') && !value.contains(char::is_whitespace),
         EntityKind::Person => value.split_whitespace().count() >= 2,
+        EntityKind::Url => {
+            (value.starts_with("https://") || value.starts_with("http://"))
+                && !value.contains(char::is_whitespace)
+        }
+        EntityKind::DeviceId => (3..=256).contains(&value.chars().count()),
         _ => false,
     };
     if valid {
@@ -264,6 +300,7 @@ fn row_entities(row: &SeekNowRow) -> Vec<(EntityKind, String)> {
             "domain" | "hostname" => Some(EntityKind::Domain),
             "name" | "full_name" | "fullname" => Some(EntityKind::Person),
             "url" | "website" => Some(EntityKind::Url),
+            "machine_id" | "machineid" | "hwid" | "hardware_id" => Some(EntityKind::DeviceId),
             "address" | "street_address" => Some(EntityKind::Address),
             _ => None,
         };
