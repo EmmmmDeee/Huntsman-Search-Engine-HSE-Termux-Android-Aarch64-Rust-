@@ -127,7 +127,11 @@ async fn fetch_and_parse_uncached(
             FetchOutcome::Body(body) => {
                 let results = parse_results(&body, engine.name, query);
                 if results.is_empty() {
-                    (first, first_label)
+                    // Reaching a normal, non-challenge result page is itself
+                    // availability evidence. A prior blocked attempt must not
+                    // survive merely because this successful retry happened to
+                    // have zero matches for the seed.
+                    (SearchFetchResult::Empty, "empty_retry")
                 } else {
                     (SearchFetchResult::Results(results), "ok_retry")
                 }
