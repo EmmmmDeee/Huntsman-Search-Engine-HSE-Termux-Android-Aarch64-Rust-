@@ -7,7 +7,6 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
-use huntsman_recon::canonical::canonical_email;
 use huntsman_recon::classifier::classify as classify_indicator;
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::classify_module::ClassifyModule;
@@ -51,6 +50,7 @@ use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::retrieval_artifact::ArtifactId;
 use huntsman_recon::scan_batch::parse_seed_list;
+use huntsman_recon::scan_route::{ScanKind, infer_kind, parse_kind};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::seeknow_cli::{SEEKNOW_HELP, SEEKNOW_USAGE, SeekNowCliRun};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
@@ -577,23 +577,19 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
     }
 
     let route = match kind {
-        Some("people" | "name") => "people",
-        Some("email") => "email",
-        Some("username" | "handle") => "username",
-        Some("phone") => "phone",
-        Some(other) => return fail(EX_USAGE, &format!("unsupported scan kind: {other}")),
-        None if canonical_email(selector).is_some() => "email",
-        None if selector.starts_with('@') => "username",
-        None if huntsman_recon::phone_intl::canonicalize(selector).is_some() => "phone",
-        None => "people",
+        Some(value) => match parse_kind(value) {
+            Ok(kind) => kind,
+            Err(other) => return fail(EX_USAGE, &format!("unsupported scan kind: {other}")),
+        },
+        None => infer_kind(selector),
     };
 
-    eprintln!("scan_route={route}");
+    eprintln!("scan_route={}", route.command());
     match route {
-        "email" => email_cmd(forwarded),
-        "username" => username_cmd(forwarded),
-        "phone" => phone_cmd(forwarded),
-        _ => people_cmd(forwarded),
+        ScanKind::Email => email_cmd(forwarded),
+        ScanKind::Username => username_cmd(forwarded),
+        ScanKind::Phone => phone_cmd(forwarded),
+        ScanKind::People => people_cmd(forwarded),
     }
 }
 
