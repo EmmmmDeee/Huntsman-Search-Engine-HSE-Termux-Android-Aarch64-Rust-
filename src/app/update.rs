@@ -104,11 +104,9 @@ fn is_hse_source(p: &Path) -> bool {
     }
     std::fs::read_to_string(manifest).ok().is_some_and(|body| {
         body.lines().any(|line| {
-            line.trim()
-                .split_once('=')
-                .is_some_and(|(key, value)| {
-                    key.trim() == "name" && value.trim() == "\"huntsman-search-engine\""
-                })
+            line.trim().split_once('=').is_some_and(|(key, value)| {
+                key.trim() == "name" && value.trim() == "\"huntsman-search-engine\""
+            })
         })
     })
 }
