@@ -984,6 +984,38 @@ mod tests {
     }
 
     #[test]
+    fn only_literal_bare_sf_is_treated_as_help() {
+        let mut args = sf_args("tab", None);
+        args.quiet = false;
+        assert!(is_bare_invocation(&args));
+
+        args.use_case = "passive".into();
+        assert!(
+            !is_bare_invocation(&args),
+            "supplied scan options must still require a target"
+        );
+
+        args.use_case = "all".into();
+        args.quiet = true;
+        assert!(
+            !is_bare_invocation(&args),
+            "even -q means this was not a literal bare invocation"
+        );
+    }
+
+    #[test]
+    fn canonical_sf_help_is_generated_from_the_registered_clap_command() {
+        use clap::CommandFactory;
+
+        let mut root = super::super::command::Cli::command();
+        let sf = root.find_subcommand_mut("sf").expect("sf registered");
+        let help = sf.render_long_help().to_string();
+        for required in ["Usage:", "--target", "--use-case", "--list-modules", "--list-types"] {
+            assert!(help.contains(required), "sf help missing {required:?}");
+        }
+    }
+
+    #[test]
     fn csv_output_rfc4180_quotes_fields_holding_the_delimiter_or_a_quote() {
         // A raw string join would corrupt these rows: the coordinates carry the
         // comma delimiter, the name carries embedded quotes. RFC-4180 quoting
