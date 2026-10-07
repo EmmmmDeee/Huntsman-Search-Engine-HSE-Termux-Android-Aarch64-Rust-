@@ -23,6 +23,10 @@ fn main() -> ExitCode {
         );
         return ExitCode::SUCCESS;
     }
+    if args.len() == 1 && matches!(args[0].as_str(), "-V" | "--version") {
+        println!("investigate {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     if args.is_empty() {
         return fail(64, USAGE);
     }
