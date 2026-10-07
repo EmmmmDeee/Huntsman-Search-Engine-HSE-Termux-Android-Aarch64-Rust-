@@ -14,7 +14,7 @@ use crate::asic_director;
 use crate::asic_persons;
 use crate::au_electoral;
 use crate::au_people;
-use crate::entity::Entity;
+use crate::entity::{self, Entity};
 use crate::error::Error;
 use crate::evidence_ancestry::EvidenceNodeId;
 use crate::http::Transport;
