@@ -64,7 +64,7 @@ fn ensure_parent(path: &Path) -> Result<(), String> {
 fn replacement_path(path: &Path) -> PathBuf {
     let mut name = path
         .file_name()
-        .map_or_else(|| "directive".into(), |name| name.to_os_string());
+        .map_or_else(|| "directive".into(), std::ffi::OsStr::to_os_string);
     name.push(format!(".tmp-{}", std::process::id()));
     path.with_file_name(name)
 }
