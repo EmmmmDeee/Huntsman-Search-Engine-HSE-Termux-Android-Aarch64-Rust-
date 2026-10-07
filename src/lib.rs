@@ -37,7 +37,6 @@ pub mod claim_coverage;
 pub mod claim_policy;
 pub mod classifier;
 pub mod classify;
-pub mod classify_module;
 pub mod collection;
 pub mod collector;
 pub mod commercial_readiness;
