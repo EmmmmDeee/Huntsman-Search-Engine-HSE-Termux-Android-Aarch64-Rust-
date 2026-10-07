@@ -34,7 +34,7 @@ on:
     tags:
       - "v*"
     branches:
-      - main
+      - legacy-hse
   workflow_dispatch:
     inputs:
       tag:
