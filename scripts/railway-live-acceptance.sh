@@ -7,8 +7,8 @@ usage: HUNTSMAN_RAILWAY_URL=https://service.example HSE_AUTH_TOKEN=... \
        bash scripts/railway-live-acceptance.sh
 
 Runs the same HTTP acceptance contract used by CI against a live Railway
-deployment. The bearer token is read only from HSE_AUTH_TOKEN; do not pass it
-as a positional argument.
+deployment. The bearer token is read from HSE_AUTH_TOKEN, copied into a private
+temporary curl header file, then removed from the environment before requests.
 EOF
 }
 
@@ -36,13 +36,23 @@ fi
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/huntsman-railway-acceptance.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
+chmod 0700 "$tmpdir"
+
+auth_headers="$tmpdir/auth.headers"
+umask 077
+printf 'Authorization: Bearer %s\n' "$HSE_AUTH_TOKEN" > "$auth_headers"
+unset HSE_AUTH_TOKEN
 
 curl_common=(
   --silent
   --show-error
   --connect-timeout 10
   --max-time 20
+  --proto '=https'
 )
+case "$base" in
+  http://127.0.0.1:*|http://localhost:*) curl_common+=(--proto '=http') ;;
+esac
 
 request() {
   local output=$1
@@ -63,23 +73,27 @@ for attempt in $(seq 1 30); do
   sleep 2
 done
 
-grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "$health"   || die "health endpoint returned 200 without status=ok"
+grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "$health" \
+  || die "health endpoint returned 200 without status=ok"
 
 unauth="$tmpdir/modules-unauth.json"
 unauth_code="$(request "$unauth" "$base/api/modules" || true)"
-[[ "$unauth_code" == "401" ]]   || die "protected endpoint must reject unauthenticated access with HTTP 401 (got ${unauth_code:-transport-error})"
-
-auth_header="Authorization: Bearer $HSE_AUTH_TOKEN"
+[[ "$unauth_code" == "401" ]] \
+  || die "protected endpoint must reject unauthenticated access with HTTP 401 (got ${unauth_code:-transport-error})"
 
 modules="$tmpdir/modules.json"
-modules_code="$(request "$modules" -H "$auth_header" "$base/api/modules" || true)"
-[[ "$modules_code" == "200" ]]   || die "authenticated /api/modules failed (HTTP ${modules_code:-transport-error})"
-grep -Eq '"modules"[[:space:]]*:' "$modules"   || die "authenticated /api/modules response is missing modules"
+modules_code="$(request "$modules" -H "@$auth_headers" "$base/api/modules" || true)"
+[[ "$modules_code" == "200" ]] \
+  || die "authenticated /api/modules failed (HTTP ${modules_code:-transport-error})"
+grep -Eq '"modules"[[:space:]]*:' "$modules" \
+  || die "authenticated /api/modules response is missing modules"
 
 command="$tmpdir/command.json"
-command_code="$(request "$command" -H "$auth_header" "$base/api/command" || true)"
-[[ "$command_code" == "200" ]]   || die "authenticated /api/command failed (HTTP ${command_code:-transport-error})"
-grep -Eq '"invariant"[[:space:]]*:' "$command"   || die "authenticated /api/command response is missing invariant"
+command_code="$(request "$command" -H "@$auth_headers" "$base/api/command" || true)"
+[[ "$command_code" == "200" ]] \
+  || die "authenticated /api/command failed (HTTP ${command_code:-transport-error})"
+grep -Eq '"invariant"[[:space:]]*:' "$command" \
+  || die "authenticated /api/command response is missing invariant"
 
 printf 'railway-live-acceptance: PASS\n'
 printf 'url=%s\n' "$base"
