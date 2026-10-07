@@ -381,6 +381,51 @@ fn release_publish_requires_shared_quality_gate() {
 }
 
 #[test]
+fn failed_ci_prereleases_are_machine_quarantined() {
+    let raw = fs::read_to_string(".github/unverified-prereleases.json")
+        .expect("failed-CI prerelease quarantine manifest");
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("valid quarantine JSON");
+    let entries = json["entries"].as_array().expect("entries array");
+    assert_eq!(
+        entries.len(),
+        9,
+        "the independently verified failed-CI prerelease set must remain pinned"
+    );
+    for entry in entries {
+        assert_eq!(entry["ci_conclusion"], "failure");
+        assert!(
+            entry["tag"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("main-"),
+            "quarantine entries must be immutable main-channel tags"
+        );
+    }
+
+    let cleanup = fs::read_to_string("scripts/cleanup-unverified-prereleases.sh")
+        .expect("guarded prerelease cleanup script");
+    for required in [
+        "audit|delete",
+        ".github/unverified-prereleases.json",
+        "prerelease",
+        "ci_run_id",
+        "conclusion",
+        "gh release delete",
+        "--cleanup-tag",
+    ] {
+        assert!(
+            cleanup.contains(required),
+            "cleanup script must contain {required:?}"
+        );
+    }
+    let status = Command::new("bash")
+        .args(["-n", "scripts/cleanup-unverified-prereleases.sh"])
+        .status()
+        .expect("bash must execute");
+    assert!(status.success(), "cleanup script must parse as bash");
+}
+
+#[test]
 fn publishing_requires_release_build_and_zero_finding_key_scan() {
     let wf = release();
     for required in [
