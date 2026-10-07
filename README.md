@@ -141,8 +141,11 @@ cargo run -- query "OpenAI research"          # network: Bing/Brave/Mojeek subse
 cargo run -- sf -M                         # SpiderFoot-style reachable-module listing; offline
 cargo run -- serve --help                    # embedded UI/API command options; does not start a listener
 cargo run -- modules --json               # only modules currently reachable from the binary
+cargo run -- attack status --json          # offline ATT&CK Reconnaissance capability posture
 cargo run -- recon crtsh https://example.com/
 ```
+
+`attack status|coverage|gaps [--json]` restores the legacy static MITRE ATT&CK Reconnaissance reporting surface over the currently reachable module catalogue. `attack navigator` emits Navigator JSON. Coverage is hierarchy-aware: independent leaf techniques are scored while parent techniques remain roll-ups, and capability coverage is not a claim of detection effectiveness or proof that a technique was executed.
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
 
