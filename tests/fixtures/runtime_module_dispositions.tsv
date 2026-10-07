@@ -108,6 +108,7 @@ rf	leaf	radio-frequency model utility
 roi	runtime	dispatch utility scoring
 runtime	runtime	high-level investigation composition root
 scan_batch	leaf	bounded ordered scan seed-list parsing
+scan_route	leaf	deterministic scan selector routing over canonical email/phone normalization
 scraper_health	diagnostic	source drift diagnostics
 search	diagnostic	local search utility
 seeknow	adapter	SeekNow/See-Know source client
