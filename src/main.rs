@@ -72,7 +72,7 @@ use huntsman_recon::username_save;
 use huntsman_recon::web_query;
 use huntsman_recon::web_server::{ServeConfig, Server, resolve_serve_bind};
 
-const USAGE: &str = "usage: huntsman-recon [check | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [FILE] | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -234,7 +234,7 @@ fn print_command_help(command: &str) {
             "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values."
         }
         "credential-status" => {
-            "credential-status [FILE]\nShow provider slot completeness without printing credential values. FILE uses the existing private keys-file loader; otherwise the normal ~/.huntsman.env/environment resolution is used."
+            "credential-status [--probe] [FILE]\nShow provider slot completeness without printing credential values. --probe performs canonical live health checks for configured providers that have a registered probe. FILE uses the existing private keys-file loader; otherwise the normal ~/.huntsman.env/environment resolution is used."
         }
         "verify" => {
             "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
@@ -248,18 +248,42 @@ fn print_command_help(command: &str) {
 }
 
 fn credential_status_cmd(args: &[String]) -> ExitCode {
-    let explicit = match args {
-        [] => None,
-        [path] => Some(Path::new(path)),
-        _ => return fail(EX_USAGE, "usage: huntsman-recon credential-status [FILE]"),
-    };
+    let mut live_probe = false;
+    let mut explicit = None;
+    for arg in args {
+        match arg.as_str() {
+            "--probe" if !live_probe => live_probe = true,
+            flag if flag.starts_with('-') => {
+                return fail(
+                    EX_USAGE,
+                    "usage: huntsman-recon credential-status [--probe] [FILE]",
+                );
+            }
+            path if explicit.is_none() => explicit = Some(Path::new(path)),
+            _ => {
+                return fail(
+                    EX_USAGE,
+                    "usage: huntsman-recon credential-status [--probe] [FILE]",
+                );
+            }
+        }
+    }
+
     let home = env::var_os("HOME");
     match Keys::resolve(explicit, home.as_deref()) {
         Ok(resolved) => {
             if let Some(warning) = resolved.warning {
                 eprintln!("{warning}");
             }
-            print!("{}", provider_credentials::render(&resolved.keys));
+            if live_probe {
+                let transport = UreqTransport::new(&TransportConfig::default());
+                print!(
+                    "{}",
+                    provider_credentials::render_probed(&resolved.keys, &transport)
+                );
+            } else {
+                print!("{}", provider_credentials::render(&resolved.keys));
+            }
             ExitCode::SUCCESS
         }
         Err(error) => fail(EX_NOINPUT, &error.to_string()),
