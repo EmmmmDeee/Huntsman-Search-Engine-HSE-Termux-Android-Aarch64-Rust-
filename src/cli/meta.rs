@@ -12,45 +12,19 @@ fn termux_detected() -> bool {
         })
 }
 
-fn diagnostics_value() -> serde_json::Value {
-    let modules = reachable_modules();
-    let network_modules = modules.iter().filter(|module| module.network).count();
-    let attack_mapped_modules = modules
-        .iter()
-        .filter(|module| !module.attack_techniques.is_empty())
-        .count();
-
+fn diagnostics_snapshot() -> diagnostics::Diagnostics {
     let home = env::var_os("HOME");
-    let (credential_resolution, credential_warning, providers_configured) =
-        match Keys::resolve(None, home.as_deref()) {
-            Ok(resolved) => {
-                let warning = resolved.warning.is_some();
-                let configured = provider_credentials::status(&resolved.keys)
-                    .into_iter()
-                    .filter(|provider| provider.configured)
-                    .count();
-                (if warning { "warning" } else { "ok" }, warning, configured)
-            }
-            Err(_) => ("error", false, 0),
-        };
-
-    serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "build_sha": embedded_build_sha(),
-        "build_sha_known": embedded_build_sha() != "unknown",
-        "target_os": std::env::consts::OS,
-        "target_arch": std::env::consts::ARCH,
-        "android_target": cfg!(target_os = "android"),
-        "termux_detected": termux_detected(),
-        "reachable_modules": modules.len(),
-        "network_modules": network_modules,
-        "attack_mapped_modules": attack_mapped_modules,
-        "providers_total": provider_credentials::PROVIDERS.len(),
-        "providers_configured": providers_configured,
-        "credential_resolution": credential_resolution,
-        "credential_warning": credential_warning,
-        "selfcheck_command": "huntsman-recon check",
-    })
+    match Keys::resolve(None, home.as_deref()) {
+        Ok(resolved) => {
+            let resolution = if resolved.warning.is_some() {
+                CredentialResolution::Warning
+            } else {
+                CredentialResolution::Ok
+            };
+            diagnostics::snapshot(Some(&resolved.keys), resolution, termux_detected())
+        }
+        Err(_) => diagnostics::snapshot(None, CredentialResolution::Error, termux_detected()),
+    }
 }
 
 pub(super) fn diagnostics_cmd(args: &[String]) -> ExitCode {
@@ -59,37 +33,31 @@ pub(super) fn diagnostics_cmd(args: &[String]) -> ExitCode {
         [flag] if flag == "--json" => true,
         _ => return fail(EX_USAGE, "usage: huntsman-recon diagnostics [--json]"),
     };
-    let value = diagnostics_value();
+    let report = diagnostics_snapshot();
     if json {
-        match serde_json::to_string_pretty(&value) {
+        match serde_json::to_string_pretty(&report) {
             Ok(body) => println!("{body}"),
             Err(error) => return fail(EX_DATAERR, &format!("json: {error}")),
         }
     } else {
-        for key in [
-            "version",
-            "build_sha",
-            "build_sha_known",
-            "target_os",
-            "target_arch",
-            "android_target",
-            "termux_detected",
-            "reachable_modules",
-            "network_modules",
-            "attack_mapped_modules",
-            "providers_total",
-            "providers_configured",
-            "credential_resolution",
-            "credential_warning",
-            "selfcheck_command",
-        ] {
-            let value = &value[key];
-            if let Some(text) = value.as_str() {
-                println!("{key}={text}");
-            } else {
-                println!("{key}={value}");
-            }
-        }
+        println!("version={}", report.version);
+        println!("build_sha={}", report.build_sha);
+        println!("build_sha_known={}", report.build_sha_known);
+        println!("target_os={}", report.target_os);
+        println!("target_arch={}", report.target_arch);
+        println!("android_target={}", report.android_target);
+        println!("termux_detected={}", report.termux_detected);
+        println!("reachable_modules={}", report.reachable_modules);
+        println!("network_modules={}", report.network_modules);
+        println!("attack_mapped_modules={}", report.attack_mapped_modules);
+        println!("providers_total={}", report.providers_total);
+        println!("providers_configured={}", report.providers_configured);
+        println!(
+            "credential_resolution={}",
+            report.credential_resolution.as_str()
+        );
+        println!("credential_warning={}", report.credential_warning);
+        println!("selfcheck_command={}", report.selfcheck_command);
     }
     ExitCode::SUCCESS
 }
@@ -98,7 +66,7 @@ pub(super) fn build_sha_cmd(args: &[String]) -> ExitCode {
     if !args.is_empty() {
         return fail(EX_USAGE, "usage: huntsman-recon build-sha");
     }
-    println!("{}", embedded_build_sha());
+    println!("{}", diagnostics::embedded_build_sha());
     ExitCode::SUCCESS
 }
 
