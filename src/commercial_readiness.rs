@@ -6,6 +6,7 @@
 //! "zero" and not "fast".
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -119,14 +120,16 @@ pub fn readiness_markdown() -> Result<String, String> {
     );
 
     for capability in &capabilities.capabilities {
-        output.push_str(&format!(
-            "| {} | {} | {} | {} | {} |\n",
+        writeln!(
+            &mut output,
+            "| {} | {} | {} | {} | {} |",
             capability.name,
             capability.status.as_str(),
             capability.interfaces.join(", "),
             capability.platforms.join(", "),
             capability.benchmark.as_deref().unwrap_or("not measured")
-        ));
+        )
+        .expect("writing to a String cannot fail");
     }
 
     output.push_str(
