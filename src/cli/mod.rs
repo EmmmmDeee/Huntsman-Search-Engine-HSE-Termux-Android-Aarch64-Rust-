@@ -172,4 +172,3 @@ fn fail(code: u8, msg: &str) -> ExitCode {
     eprintln!("{msg}");
     ExitCode::from(code)
 }
-
