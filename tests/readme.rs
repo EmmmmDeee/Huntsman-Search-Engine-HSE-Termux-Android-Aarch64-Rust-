@@ -232,7 +232,16 @@ fn main_source() -> String {
     fs::read_to_string(root().join("src/main.rs")).unwrap()
 }
 
-/// Gate codes passed to `gate(N, …)` in `src/main.rs`.
+fn check_source() -> String {
+    let mut source = main_source();
+    let selfcheck = root().join("src/selfcheck.rs");
+    if selfcheck.is_file() {
+        source.push_str(&fs::read_to_string(selfcheck).unwrap());
+    }
+    source
+}
+
+/// Gate codes passed to `gate(N, …)` by the check implementation.
 fn gate_codes(source: &str) -> BTreeSet<u8> {
     source
         .split("gate(")
@@ -251,7 +260,7 @@ fn documented_gate_range_matches_the_gates() {
         .expect("README states the `check` gate range");
     let (lo, hi) = claim.split_once('–').expect("range written as LO–HI");
     let range: BTreeSet<u8> = (lo.parse().unwrap()..=hi.parse().unwrap()).collect();
-    assert_eq!(range, gate_codes(&main_source()));
+    assert_eq!(range, gate_codes(&check_source()));
 }
 
 #[test]
