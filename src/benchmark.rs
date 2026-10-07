@@ -378,16 +378,13 @@ pub fn score_person_resolution_with_ancestry(
         })
         .count();
 
-    let (
-        proven_independent_person_support,
-        independence_check_complete,
-        independence_accepted,
-    ) = person_independence(
-        entities,
-        &expected,
-        ancestry,
-        required_independent_person_support,
-    );
+    let (proven_independent_person_support, independence_check_complete, independence_accepted) =
+        person_independence(
+            entities,
+            &expected,
+            ancestry,
+            required_independent_person_support,
+        );
 
     let recall = CoverageRatio::new(matched_facts, expected.len());
     let precision = CoverageRatio::new(supported_entities, entities.len());
