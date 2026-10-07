@@ -10,9 +10,17 @@ fn termux_runtime_harness_targets_current_binary_and_api_contract() {
 
     for required in [
         "command -v huntsman-recon",
+        r#"ORIGINAL_PWD="$(pwd -P)""#,
+        r#"HSE_BIN="$ORIGINAL_PWD/$HSE_BIN""#,
+        r#"STATE_DIR="$(anchor_path "${HUNTSMAN_HOME:-$HOME/.huntsman}")""#,
+        "HSE_ACCEPTANCE_TIMEOUT must be positive",
+        "HSE_ACCEPTANCE_SERVER_TIMEOUT must be positive",
+        "HSE_ACCEPTANCE_PORT must be in 1..65535",
+        r#"cd "$WORK_DIR" &&"#,
         r#""$HSE_BIN" check"#,
         r#""$HSE_BIN" verify var/ledger.json"#,
-        r#""$HSE_BIN" serve --bind"#,
+        "unset HSE_AUTH_TOKEN",
+        r#"exec "$HSE_BIN" serve --bind"#,
         "/api/health",
         "/api/modules",
         "/api/command",
@@ -31,6 +39,7 @@ fn termux_runtime_harness_targets_current_binary_and_api_contract() {
         "/api/v1/health",
         "/api/v1/modules",
         "command -v hse || true",
+        "  cd \"$WORK_DIR\"\n  timeout",
     ] {
         assert!(
             !text.contains(stale),
