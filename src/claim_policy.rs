@@ -197,18 +197,6 @@ fn finish_assessment(policy: &VerificationPolicy, input: &AssessmentInputs<'_>) 
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ProofEvaluationFlag {
-    Malformed,
-    StructurallyValid,
-    RoutesSufficient,
-    NaturesSufficient,
-    AttributesSufficient,
-    UnresolvedAssumption,
-    IncompleteRouteSearch,
-    Valid,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CriterionStatus {
     Met,
@@ -634,14 +622,14 @@ impl IntelligenceLedger {
         for environment in &proof.environments {
             let evaluation =
                 self.evaluate_proof_environment(claim, environment, policy, graph, bindings);
-            summary.observe(&evaluation);
+            summary.observe(evaluation);
         }
         Self::apply_proof_blockers(&mut assessment, &summary);
 
         assessment.epistemic = if claim.support.is_empty() {
             ClaimState::Candidate
-        } else if summary.contains(ProofEvaluationFlag::Valid)
-            && !summary.contains(ProofEvaluationFlag::Malformed)
+        } else if summary.has_valid_environment()
+            && summary.malformed == 0
             && assessment.blockers.is_empty()
         {
             ClaimState::Verified
