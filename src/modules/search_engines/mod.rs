@@ -647,18 +647,21 @@ impl Module for SearchEngines {
             for (name, outcome) in batch {
                 match outcome {
                     SearchFetchResult::Results(mut results) => {
-                        if qi == 0 {
-                            record_hit(&ctx.scan_id, name);
-                        }
+                        // A hit on ANY dork proves the engine live. Restricting
+                        // this to qi==0 left engines "unproven" when the broad
+                        // first query was honestly empty but a later, more
+                        // specific query returned results.
+                        record_hit(&ctx.scan_id, name);
                         all_results.append(&mut results);
                     }
                     SearchFetchResult::Empty => {
                         // A real results page with no match is a successful
                         // lookup. Keep this engine eligible for later, more
                         // specific dorks and clear any prior failure streak.
-                        if qi == 0 {
-                            record_empty_success(&ctx.scan_id, name);
-                        }
+                        // Failures are still charged at most once per target
+                        // below, so accepting later successes cannot inflate a
+                        // failure count in the opposite direction.
+                        record_empty_success(&ctx.scan_id, name);
                     }
                     SearchFetchResult::Blocked | SearchFetchResult::Unreachable if qi == 0 => {
                         // Only actual request/provider failure makes the engine
