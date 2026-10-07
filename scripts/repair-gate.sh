@@ -73,6 +73,7 @@ before_fingerprint="$(repo_fingerprint)"
 
 # File/shell contract checks first: fail cheaply before compilation.
 run bash -n scripts/repair-gate.sh
+run bash -n scripts/cleanup-unverified-prereleases.sh
 run bash -n scripts/railway-live-acceptance.sh
 run bash -n scripts/railway-iac-plan.sh
 run bash -n scripts/termux-device-acceptance.sh
