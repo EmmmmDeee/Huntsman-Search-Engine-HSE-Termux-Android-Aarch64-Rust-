@@ -259,17 +259,69 @@ pub fn score_person_resolution(
     score_person_resolution_with_ancestry(entities, expected, forbidden, None, 0)
 }
 
-#[must_use]
-pub fn score_person_resolution_with_ancestry(
+fn person_independence_support(
     entities: &[Entity],
-    expected: &[ExpectedPublicFact],
-    forbidden: &[ForbiddenPublicFact],
+    expected: &std::collections::BTreeSet<(crate::entity::EntityKind, String, &str)>,
     ancestry: Option<&EvidenceAncestryGraph>,
-    required_independent_person_support: usize,
-) -> PersonResolutionScore {
+    required: usize,
+) -> (usize, bool, bool) {
     use std::collections::BTreeSet;
 
-    let expected: BTreeSet<_> = expected
+    if required == 0 {
+        return (0, true, true);
+    }
+    let nodes: BTreeSet<_> = entities
+        .iter()
+        .filter(|entity| {
+            entity.kind == crate::entity::EntityKind::Person
+                && expected
+                    .iter()
+                    .any(|(kind, value, _)| entity.kind == *kind && entity.value == *value)
+        })
+        .flat_map(|entity| {
+            entity
+                .evidence
+                .iter()
+                .filter_map(|evidence| evidence.ancestry_node.as_ref())
+        })
+        .collect();
+    let count = ancestry.and_then(|graph| {
+        graph
+            .proven_independent_route_count(nodes.iter().copied(), required, 100_000)
+            .ok()
+    });
+    let proven = count.map_or(0, |value| value.proven);
+    let complete = count.is_some_and(|value| !value.incomplete);
+    (proven, complete, complete && proven >= required)
+}
+
+fn resolution_accepted(
+    recall: CoverageRatio,
+    precision: CoverageRatio,
+    provenance_coverage: CoverageRatio,
+    unsupported_person_entities: usize,
+    forbidden_facts_emitted: usize,
+    independence_accepted: bool,
+) -> bool {
+    recall.is_complete()
+        && precision.is_complete()
+        && provenance_coverage.is_complete()
+        && unsupported_person_entities == 0
+        && forbidden_facts_emitted == 0
+        && independence_accepted
+}
+
+type ExpectedFactKey<'a> = (crate::entity::EntityKind, String, &'a str);
+type ForbiddenFactKey = (crate::entity::EntityKind, String);
+
+fn resolution_fact_sets<'a>(
+    expected: &'a [ExpectedPublicFact],
+    forbidden: &[ForbiddenPublicFact],
+) -> (
+    std::collections::BTreeSet<ExpectedFactKey<'a>>,
+    std::collections::BTreeSet<ForbiddenFactKey>,
+) {
+    let expected = expected
         .iter()
         .map(|fact| {
             (
@@ -279,7 +331,7 @@ pub fn score_person_resolution_with_ancestry(
             )
         })
         .collect();
-    let forbidden: BTreeSet<_> = forbidden
+    let forbidden = forbidden
         .iter()
         .map(|fact| {
             (
@@ -288,6 +340,18 @@ pub fn score_person_resolution_with_ancestry(
             )
         })
         .collect();
+    (expected, forbidden)
+}
+
+#[must_use]
+pub fn score_person_resolution_with_ancestry(
+    entities: &[Entity],
+    expected: &[ExpectedPublicFact],
+    forbidden: &[ForbiddenPublicFact],
+    ancestry: Option<&EvidenceAncestryGraph>,
+    required_independent_person_support: usize,
+) -> PersonResolutionScore {
+    let (expected, forbidden) = resolution_fact_sets(expected, forbidden);
 
     let matched_facts = expected
         .iter()
@@ -338,47 +402,25 @@ pub fn score_person_resolution_with_ancestry(
         })
         .count();
 
-    let person_ancestry_nodes: BTreeSet<_> = entities
-        .iter()
-        .filter(|entity| {
-            entity.kind == crate::entity::EntityKind::Person
-                && expected
-                    .iter()
-                    .any(|(kind, value, _)| entity.kind == *kind && entity.value == *value)
-        })
-        .flat_map(|entity| entity.evidence.iter().filter_map(|evidence| evidence.ancestry_node.as_ref()))
-        .collect();
-    let independence = if required_independent_person_support == 0 {
-        Some(crate::evidence_ancestry::IndependenceRouteCount {
-            proven: 0,
-            incomplete: false,
-        })
-    } else {
-        ancestry.and_then(|graph| {
-            graph
-                .proven_independent_route_count(
-                    person_ancestry_nodes.iter().copied(),
-                    required_independent_person_support,
-                    100_000,
-                )
-                .ok()
-        })
-    };
-    let proven_independent_person_support = independence.map_or(0, |count| count.proven);
-    let independence_check_complete = independence.is_some_and(|count| !count.incomplete);
-    let independence_accepted = required_independent_person_support == 0
-        || (independence_check_complete
-            && proven_independent_person_support >= required_independent_person_support);
+    let (proven_independent_person_support, independence_check_complete, independence_accepted) =
+        person_independence_support(
+            entities,
+            &expected,
+            ancestry,
+            required_independent_person_support,
+        );
 
     let recall = CoverageRatio::new(matched_facts, expected.len());
     let precision = CoverageRatio::new(supported_entities, entities.len());
     let provenance_coverage = CoverageRatio::new(entities_with_evidence, entities.len());
-    let accepted = recall.is_complete()
-        && precision.is_complete()
-        && provenance_coverage.is_complete()
-        && unsupported_person_entities == 0
-        && forbidden_facts_emitted == 0
-        && independence_accepted;
+    let accepted = resolution_accepted(
+        recall,
+        precision,
+        provenance_coverage,
+        unsupported_person_entities,
+        forbidden_facts_emitted,
+        independence_accepted,
+    );
 
     PersonResolutionScore {
         expected_facts: expected.len(),

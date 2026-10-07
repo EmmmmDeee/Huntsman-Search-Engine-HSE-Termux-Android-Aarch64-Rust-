@@ -70,6 +70,7 @@ fn seed_batch(normalization: &SeedNormalization, scan_id: &str) -> ObservationBa
     ObservationBatch {
         events,
         observations,
+        independence_assertions: Vec::new(),
         truncated: normalization.truncated,
     }
 }

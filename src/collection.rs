@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::coverage::{Event, EventKind};
 use crate::dependency::Target;
 use crate::entity::EntityKind;
+use crate::evidence_ancestry::IndependenceBasis;
 use crate::pipeline_limits::PipelineLimits;
+use crate::retrieval_artifact::ArtifactId;
 use crate::source_outcome::SourceOutcomeKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,9 +46,22 @@ pub struct RawObservation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpstreamIndependenceAssertion {
+    pub left: UpstreamOrigin,
+    pub right: UpstreamOrigin,
+    pub basis: IndependenceBasis,
+    pub method_id: String,
+    pub method_version: u32,
+    pub supporting_artifact_ids: Vec<ArtifactId>,
+    pub observed_at_unix: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservationBatch {
     pub events: Vec<CollectionEvent>,
     pub observations: Vec<RawObservation>,
+    #[serde(default)]
+    pub independence_assertions: Vec<UpstreamIndependenceAssertion>,
     pub truncated: bool,
 }
 

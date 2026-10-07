@@ -4,13 +4,14 @@ use huntsman_recon::benchmark::{
     ExpectedPublicFact, ForbiddenPublicFact, score_person_resolution_with_ancestry,
 };
 use huntsman_recon::collection::{
-    CollectionEvent, ObservationBatch, RawObservation, UpstreamOrigin,
+    CollectionEvent, ObservationBatch, RawObservation, UpstreamIndependenceAssertion,
+    UpstreamOrigin,
 };
 use huntsman_recon::dependency::{Target, TargetKind};
 use huntsman_recon::entity::EntityKind;
-use huntsman_recon::evidence_ancestry::{IndependenceBasis, IndependenceEvidence};
-use huntsman_recon::retrieval_artifact::ArtifactId;
+use huntsman_recon::evidence_ancestry::IndependenceBasis;
 use huntsman_recon::pipeline::{PipelineLimits, normalize_observations};
+use huntsman_recon::retrieval_artifact::ArtifactId;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
 const SCAN_ID: &str = "person-resolution-fixture";
@@ -69,7 +70,10 @@ fn expected(kind: EntityKind, value: &str, source: &str) -> ExpectedPublicFact {
     }
 }
 
-fn captured_public_fixture(include_wrong_identity: bool) -> ObservationBatch {
+fn captured_public_fixture(
+    include_wrong_identity: bool,
+    include_independence_proof: bool,
+) -> ObservationBatch {
     let profile = origin("public_profile", "professional_profile", "profile-capture");
     let project = origin("project_document", "nook_bess", "nook-project-document");
 
@@ -117,21 +121,43 @@ fn captured_public_fixture(include_wrong_identity: bool) -> ObservationBatch {
         ));
     }
 
+    let independence_assertions = if include_independence_proof {
+        vec![UpstreamIndependenceAssertion {
+            left: profile.clone(),
+            right: project.clone(),
+            basis: IndependenceBasis::ExplicitUpstreamProvenance,
+            method_id: "captured-fixture-upstream-provenance".to_string(),
+            method_version: 1,
+            supporting_artifact_ids: [
+                ArtifactId::from("profile-capture"),
+                ArtifactId::from("nook-project-document"),
+            ]
+            .into_iter()
+            .collect(),
+            observed_at_unix: 1_700_000_000,
+        }]
+    } else {
+        Vec::new()
+    };
+
     ObservationBatch {
         events: vec![
             event("profile_collector", profile, 2),
             event("project_collector", project, 2),
         ],
         observations,
+        independence_assertions,
         truncated: false,
     }
 }
 
 #[test]
 fn captured_public_observations_flow_through_real_pipeline_and_pass() {
-    let mut snapshot =
-        normalize_observations(captured_public_fixture(false), &PipelineLimits::default())
-            .expect("captured fixture must normalize");
+    let snapshot = normalize_observations(
+        captured_public_fixture(false, true),
+        &PipelineLimits::default(),
+    )
+    .expect("captured fixture must normalize");
     let expected = vec![
         expected(
             EntityKind::Person,
@@ -158,40 +184,6 @@ fn captured_public_observations_flow_through_real_pipeline_and_pass() {
         entity_kind: EntityKind::Person,
         value: "Different Talia Bacot".to_string(),
     }];
-
-    let person = snapshot
-        .entities
-        .iter()
-        .find(|entity| entity.kind == EntityKind::Person)
-        .expect("target person must exist");
-    let mut roots = std::collections::BTreeSet::new();
-    for node in person.evidence.iter().filter_map(|evidence| evidence.ancestry_node.as_ref()) {
-        roots.extend(
-            snapshot
-                .ancestry
-                .resolved_root_ids(node)
-                .expect("fixture ancestry must resolve"),
-        );
-    }
-    let roots: Vec<_> = roots.into_iter().collect();
-    assert_eq!(roots.len(), 2, "fixture must retain two distinct observed roots");
-    snapshot
-        .ancestry
-        .insert_independence_evidence(IndependenceEvidence {
-            left_root: roots[0].clone(),
-            right_root: roots[1].clone(),
-            basis: IndependenceBasis::ExplicitUpstreamProvenance,
-            method_id: "captured-fixture-upstream-provenance".to_string(),
-            method_version: 1,
-            supporting_artifact_ids: [
-                ArtifactId::from("profile-capture"),
-                ArtifactId::from("nook-project-document"),
-            ]
-            .into_iter()
-            .collect(),
-            observed_at_unix: 1_700_000_000,
-        })
-        .expect("explicit fixture independence proof must be accepted");
 
     let score = score_person_resolution_with_ancestry(
         &snapshot.entities,
@@ -222,9 +214,11 @@ fn captured_public_observations_flow_through_real_pipeline_and_pass() {
 
 #[test]
 fn real_pipeline_output_with_unrelated_identity_fails_closed() {
-    let snapshot =
-        normalize_observations(captured_public_fixture(true), &PipelineLimits::default())
-            .expect("captured fixture must normalize");
+    let snapshot = normalize_observations(
+        captured_public_fixture(true, false),
+        &PipelineLimits::default(),
+    )
+    .expect("captured fixture must normalize");
     let expected = vec![
         expected(
             EntityKind::Person,
@@ -266,12 +260,13 @@ fn real_pipeline_output_with_unrelated_identity_fails_closed() {
     assert!(!score.accepted);
 }
 
-
 #[test]
 fn distinct_source_labels_without_independence_proof_fail_closed() {
-    let snapshot =
-        normalize_observations(captured_public_fixture(false), &PipelineLimits::default())
-            .expect("captured fixture must normalize");
+    let snapshot = normalize_observations(
+        captured_public_fixture(false, false),
+        &PipelineLimits::default(),
+    )
+    .expect("captured fixture must normalize");
     let expected = vec![
         expected(
             EntityKind::Person,
@@ -311,5 +306,26 @@ fn distinct_source_labels_without_independence_proof_fail_closed() {
     assert!(
         !score.accepted,
         "different source labels and disjoint roots are not proof of independence"
+    );
+}
+
+#[test]
+fn unresolved_independence_origin_fails_normalization_closed() {
+    let mut batch = captured_public_fixture(false, false);
+    batch
+        .independence_assertions
+        .push(UpstreamIndependenceAssertion {
+            left: origin("public_profile", "professional_profile", "profile-capture"),
+            right: origin("missing_provider", "missing_dataset", "missing-artifact"),
+            basis: IndependenceBasis::ExplicitUpstreamProvenance,
+            method_id: "captured-fixture-upstream-provenance".to_string(),
+            method_version: 1,
+            supporting_artifact_ids: [ArtifactId::from("proof-artifact")].into_iter().collect(),
+            observed_at_unix: 1_700_000_000,
+        });
+
+    assert!(
+        normalize_observations(batch, &PipelineLimits::default()).is_err(),
+        "an independence assertion whose origin has no observed root must fail closed"
     );
 }
