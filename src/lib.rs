@@ -41,6 +41,7 @@ pub mod classify_module;
 pub mod collection;
 pub mod collector;
 pub mod community;
+pub mod commercial_readiness;
 pub mod confidence;
 pub mod coref;
 pub mod correlation_bridge;
