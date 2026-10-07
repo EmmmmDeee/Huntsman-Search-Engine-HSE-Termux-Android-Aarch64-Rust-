@@ -43,8 +43,8 @@ pub(super) async fn cmd_diagnostics(json: bool) -> Result<()> {
             }
             super::engines::EngineFleetState::Failed => {
                 eprintln!(
-                    "  ✗ engines failed: 0/{} enabled engine(s) usable; {} blocked, {} down",
-                    summary.enabled, summary.blocked, summary.down
+                    "  ✗ engines failed: {}/{} enabled engine(s) usable; {} blocked, {} down",
+                    summary.up, summary.enabled, summary.blocked, summary.down
                 );
                 failed.push("engines");
             }
