@@ -8,8 +8,8 @@ use crate::coverage::{Event, EventKind};
 use crate::dependency::Target;
 use crate::entity::EntityKind;
 use crate::evidence_ancestry::IndependenceBasis;
-use crate::retrieval_artifact::ArtifactId;
 use crate::pipeline_limits::PipelineLimits;
+use crate::retrieval_artifact::ArtifactId;
 use crate::source_outcome::SourceOutcomeKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
