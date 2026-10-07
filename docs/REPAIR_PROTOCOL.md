@@ -87,6 +87,48 @@ HSE_AUTH_TOKEN="$HSE_AUTH_TOKEN" \
 
 Then verify Railway deployment metadata identifies the exact intended commit.
 
+For Railway Infrastructure as Code, CI type-checks `.railway/railway.ts` against
+pinned Railway SDK and TypeScript versions. Before applying infrastructure
+changes, run the authenticated read-only live plan:
+
+```sh
+bash scripts/railway-iac-plan.sh
+```
+
+The plan is evidence of live drift; the type check alone is not.
+
+## Historical prerelease quarantine
+
+Nine main-channel prereleases were independently revalidated as having been
+published from commits whose corresponding CI run concluded `failure`. They
+are pinned in `.github/unverified-prereleases.json` and are not acceptable
+evidence for deployment or release acceptance.
+
+Audit the set without mutation:
+
+```sh
+bash scripts/cleanup-unverified-prereleases.sh audit
+```
+
+Deletion is deliberately guarded and requires explicit operator action plus a
+GitHub token with release write permission:
+
+```sh
+bash scripts/cleanup-unverified-prereleases.sh delete
+```
+
+Before deletion, the script rechecks that each target still exists as a
+prerelease, still points at the recorded commit, and still has the recorded CI
+conclusion `failure`.
+
+For Termux runtime claims, use the existing stronger harness:
+
+```sh
+bash scripts/termux-runtime-acceptance.sh
+```
+
+A cross-build alone does not establish real-device runtime behavior.
+
 ## Stop conditions
 
 A repair is complete only when the original failure is reproduced before the
