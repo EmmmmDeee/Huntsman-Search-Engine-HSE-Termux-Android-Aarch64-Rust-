@@ -664,6 +664,17 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
             && resolve.contains("GH_TOKEN: ${{ github.token }}"),
         "resolve may use the API only to prove merged-PR origin"
     );
+    for required in [
+        "for attempt in 1 2 3 4 5 6 7 8 9 10",
+        "[ \"$attempt\" -eq 10 ] || sleep 3",
+        "could not verify merged pull request association",
+        "after bounded retry",
+    ] {
+        assert!(
+            resolve.contains(required),
+            "merged-PR origin gate must tolerate bounded GitHub indexing lag: missing {required:?}"
+        );
+    }
     assert!(
         !build.contains("    if:"),
         "build must run whenever the path-scoped release workflow is triggered so publish can verify or refuse an existing release"
