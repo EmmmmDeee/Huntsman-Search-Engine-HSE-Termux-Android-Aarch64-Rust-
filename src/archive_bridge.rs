@@ -124,6 +124,7 @@ pub fn records_to_observation_batch(
     ObservationBatch {
         events,
         observations,
+        independence_assertions: Vec::new(),
         truncated,
     }
 }
