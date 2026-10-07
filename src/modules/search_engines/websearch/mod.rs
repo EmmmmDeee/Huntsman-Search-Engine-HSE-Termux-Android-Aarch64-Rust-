@@ -24,7 +24,7 @@ use super::fetch::SearchFetchResult;
 use super::helpers::{canonicalize_url, dedup_results, display_key_phrase, url_engine_counts};
 use super::{
     SearchResult, engine_enabled, is_session_dead, order_engines_for_primary, proven_engine_names,
-    record_empty_success, record_failure, record_hit, run_engine_batch,
+    record_empty_success, record_hit, record_provider_failure_outcome, run_engine_batch,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
