@@ -386,11 +386,17 @@ fn failed_ci_prereleases_are_machine_quarantined() {
         .expect("failed-CI prerelease quarantine manifest");
     let json: serde_json::Value = serde_json::from_str(&raw).expect("valid quarantine JSON");
     let entries = json["entries"].as_array().expect("entries array");
-    assert!(entries.len() >= 9, "known failed-CI releases must remain quarantined");
+    assert!(
+        entries.len() >= 9,
+        "known failed-CI releases must remain quarantined"
+    );
     for entry in entries {
         assert_eq!(entry["ci_conclusion"], "failure");
         assert!(
-            entry["tag"].as_str().unwrap_or_default().starts_with("main-"),
+            entry["tag"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("main-"),
             "quarantine entries must be immutable main-channel tags"
         );
     }
@@ -700,8 +706,8 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
     let resolve = job(&wf, "resolve");
     let build = job(&wf, "build");
     for forbidden in [
-        "gh api",
-        "GH_TOKEN",
+        "releases/tags/",
+        "git/ref/tags/",
         "build=false",
         "publish=false\n            echo \"Release",
     ] {
@@ -711,8 +717,13 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
         );
     }
     assert!(
+        resolve.contains("commits/${GITHUB_SHA}/pulls")
+            && resolve.contains("GH_TOKEN: ${{ github.token }}"),
+        "resolve may use the API only to prove merged-PR origin"
+    );
+    assert!(
         !build.contains("    if:"),
-        "build must run on every main push so publish can verify or refuse an existing release"
+        "build must run whenever the path-scoped release workflow is triggered so publish can verify or refuse an existing release"
     );
     assert!(!wf.contains("needs.resolve.outputs.build"));
     let publish = job(&wf, "publish");
