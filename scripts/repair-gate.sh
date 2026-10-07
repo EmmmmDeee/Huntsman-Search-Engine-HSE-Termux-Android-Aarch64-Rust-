@@ -41,15 +41,14 @@ fail() {
   exit 1
 }
 
+command -v timeout >/dev/null 2>&1 \
+  || fail "GNU/coreutils timeout is required for bounded verification"
+
 run() {
   printf 'repair-gate: RUN:'
   printf ' %q' "$@"
   printf '\n'
-  if command -v timeout >/dev/null 2>&1; then
-    timeout --signal=TERM --kill-after=10s "${timeout_seconds}s" "$@"
-  else
-    "$@"
-  fi
+  timeout --signal=TERM --kill-after=10s "${timeout_seconds}s" "$@"
 }
 
 # Preserve the operator's pre-existing work while detecting any new mutation
