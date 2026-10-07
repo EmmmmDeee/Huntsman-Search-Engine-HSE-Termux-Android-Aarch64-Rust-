@@ -205,11 +205,14 @@ fn diagnostics_and_build_sha_are_offline_structured_and_non_secret() {
     let stdout = String::from_utf8(diagnostics.stdout).unwrap();
     let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
-    assert!(value["build_sha"].as_str().is_some_and(|sha| !sha.is_empty()));
+    assert!(
+        value["build_sha"]
+            .as_str()
+            .is_some_and(|sha| !sha.is_empty())
+    );
     assert!(value["reachable_modules"].as_u64().unwrap() > 0);
     assert!(
-        value["network_modules"].as_u64().unwrap()
-            <= value["reachable_modules"].as_u64().unwrap()
+        value["network_modules"].as_u64().unwrap() <= value["reachable_modules"].as_u64().unwrap()
     );
     assert!(
         value["attack_mapped_modules"].as_u64().unwrap()
@@ -232,7 +235,10 @@ fn diagnostics_and_build_sha_are_offline_structured_and_non_secret() {
         Some(value) => value,
         None => "unknown",
     };
-    assert_eq!(String::from_utf8(sha.stdout).unwrap(), format!("{expected}\n"));
+    assert_eq!(
+        String::from_utf8(sha.stdout).unwrap(),
+        format!("{expected}\n")
+    );
 
     let bad = bin().args(["diagnostics", "--live"]).output().unwrap();
     assert_eq!(bad.status.code(), Some(64));
