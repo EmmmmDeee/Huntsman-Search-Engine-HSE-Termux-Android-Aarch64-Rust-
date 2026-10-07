@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,18 @@ use crate::confidence::{
 use crate::evidence_ancestry::{AncestryError, EvidenceAncestryGraph, EvidenceNodeId};
 use crate::sha256::{hex32, sha256};
 use crate::tags;
+
+static SCAN_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[must_use]
+pub fn scan_id(kind: &str, value: &str) -> String {
+    let counter = SCAN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0u128, |duration| duration.as_nanos());
+    let material = format!("huntsman-scan-id-v1\0{kind}\0{value}\0{now}\0{counter}");
+    hex32(&sha256(material.as_bytes()))
+}
 
 pub const CANDIDATE_CONF: f64 = 0.25;
 pub const RECALL_SOURCE: &str = "recall";

@@ -95,7 +95,7 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
         return PhoneRun::Failed("unknown international dialling prefix".into());
     };
 
-    let scan_id = uid::scan_id("phone", &canonical);
+    let scan_id = entity::scan_id("phone", &canonical);
     let mut entity = Entity::new(EntityKind::Phone, &canonical, PHONE_CONFIDENCE, &scan_id);
     entity.tag("e164");
     entity.tag(format!("country:{iso}"));

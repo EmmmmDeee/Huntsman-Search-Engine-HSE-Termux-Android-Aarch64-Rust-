@@ -686,7 +686,7 @@ fn investigate_cmd(args: &[String]) -> ExitCode {
         args.join(" ")
     };
 
-    let scan_id = uid::scan_id("investigate", &text);
+    let scan_id = entity::scan_id("investigate", &text);
     let entities = classifier::extract_entities(&text, &scan_id);
     println!("entities={}", entities.len());
     for entity in entities {
