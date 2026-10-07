@@ -4,7 +4,7 @@ on:
   push:
     branches: [legacy-hse]
   pull_request:
-    branches: [main]
+    branches: [legacy-hse]
   workflow_dispatch:
 
 env:
