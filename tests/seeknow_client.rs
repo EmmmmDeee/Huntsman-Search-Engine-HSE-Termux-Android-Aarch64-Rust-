@@ -121,10 +121,38 @@ fn deep_typed_search_uses_documented_path_and_type() {
 
     let seen = transport.seen.borrow();
     let request = &seen[0];
-    assert_eq!(request.url, "https://see-know.ru/api/v1/search/deep");
+    assert_eq!(request.url, "https://see-know.ru/api/v1/stealer");
     let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
     assert_eq!(body["type"], "username");
     assert_eq!(body["limit"], 1);
+}
+
+#[test]
+fn query_types_are_rejected_before_transport_when_endpoint_does_not_support_them() {
+    let fast_transport = ScriptedTransport::new(Vec::new());
+    let fast = SeekNowSearch {
+        query: "https://example.com/login".into(),
+        query_type: SeekNowQueryType::Url,
+        limit: 25,
+    };
+    assert!(search_fast(&fast_transport, &credential(), &fast, 9).is_err());
+    assert!(fast_transport.seen.borrow().is_empty());
+
+    let stealer_transport = ScriptedTransport::new(Vec::new());
+    let name = SeekNowSearch {
+        query: "Example Person".into(),
+        query_type: SeekNowQueryType::Name,
+        limit: 25,
+    };
+    assert!(search_deep(&stealer_transport, &credential(), &name, 10).is_err());
+    assert!(stealer_transport.seen.borrow().is_empty());
+
+    assert!(SeekNowQueryType::Name.supports_search());
+    assert!(!SeekNowQueryType::Name.supports_stealer());
+    assert!(!SeekNowQueryType::Url.supports_search());
+    assert!(SeekNowQueryType::Url.supports_stealer());
+    assert_eq!(SeekNowQueryType::MachineId.api_value(), Some("machine_id"));
+    assert_eq!(SEARCH_LIMIT_MAX, 1000);
 }
 
 #[test]
