@@ -176,6 +176,8 @@ fn canonical_team_directive_is_identical_across_agent_instruction_surfaces() {
         "HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md",
         "CLAUDE.md",
         "GEMINI.md",
+        "RULE.md",
+        "CONTRIBUTING.md",
         ".github/copilot-instructions.md",
     ] {
         let mirrored = fs::read(root().join(path))
