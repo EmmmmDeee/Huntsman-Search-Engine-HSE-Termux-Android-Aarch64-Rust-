@@ -165,6 +165,30 @@ fn upstream_family(upstream: Option<&UpstreamOrigin>) -> String {
     }
 }
 
+fn upstream_root_id(upstream: &UpstreamOrigin) -> EvidenceNodeId {
+    ancestry_id("root", &upstream_family(Some(upstream)))
+}
+
+fn import_independence_assertions(
+    graph: &mut EvidenceAncestryGraph,
+    batch: &ObservationBatch,
+) -> Result<(), AncestryError> {
+    for assertion in &batch.independence_assertions {
+        let left_root = upstream_root_id(&assertion.left);
+        let right_root = upstream_root_id(&assertion.right);
+        graph.insert_independence_evidence(IndependenceEvidence {
+            left_root,
+            right_root,
+            basis: assertion.basis.clone(),
+            method_id: assertion.method_id.clone(),
+            method_version: assertion.method_version,
+            supporting_artifact_ids: assertion.supporting_artifact_ids.iter().cloned().collect(),
+            observed_at_unix: assertion.observed_at_unix,
+        })?;
+    }
+    Ok(())
+}
+
 fn scan_id_for(batch: &ObservationBatch, observation: &RawObservation) -> String {
     batch
         .events
@@ -315,6 +339,8 @@ pub fn normalize_observations(
             entities.insert(candidate.uid.clone(), candidate);
         }
     }
+
+    import_independence_assertions(&mut ancestry, &batch)?;
 
     let entities = entities.into_values().collect::<Vec<_>>();
     let scan_id = batch
