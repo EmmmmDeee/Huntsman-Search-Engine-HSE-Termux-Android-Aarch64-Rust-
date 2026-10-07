@@ -15,7 +15,11 @@ fn public_person_resolution_fixture_scores_recall_and_provenance() {
     let entities = vec![
         observed(EntityKind::Person, "Talia Bacot-Keating", "public_profile"),
         observed(EntityKind::Organisation, "Anza Power", "public_profile"),
-        observed(EntityKind::Document, "Nook Battery Energy Storage System", "project_document"),
+        observed(
+            EntityKind::Document,
+            "Nook Battery Energy Storage System",
+            "project_document",
+        ),
     ];
     let expected = vec![
         ExpectedPublicFact {
