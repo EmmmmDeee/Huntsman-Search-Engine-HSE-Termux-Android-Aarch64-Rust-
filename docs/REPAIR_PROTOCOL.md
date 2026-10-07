@@ -24,6 +24,18 @@ weakening, or bypassing the failing invariant.
 8. **Retain or roll back**: keep only changes that pass the relevant acceptance
    gates.
 
+## Integration discipline
+
+A repair that spans multiple dependent files must not be published as a sequence
+of knowingly inconsistent intermediate states on `main`. Prefer one atomic
+commit or a temporary branch/PR, run the relevant gates there, and merge only
+the coherent state. If tooling cannot create an atomic multi-file change, use a
+branch rather than relying on a later commit to repair an earlier broken one.
+
+Release publication must independently require the shared repair and Railway
+quality gate. A successful artifact build alone is not sufficient evidence that
+the source revision is releasable.
+
 ## Deterministic repair gate
 
 Run one of:
