@@ -169,6 +169,25 @@ fn cargo_never_runs_with_a_write_token() {
 }
 
 #[test]
+fn release_build_embeds_and_verifies_exact_commit_provenance() {
+    let wf = release();
+    let build = job(&wf, "build");
+    assert!(
+        wf.contains("HUNTSMAN_BUILD_SHA: ${{ github.sha }}"),
+        "release workflow must bind build provenance to github.sha"
+    );
+    assert!(
+        build.contains("grep -Fq \"$GITHUB_SHA\""),
+        "final Android binary must be checked for the exact embedded commit"
+    );
+    assert!(build.contains("embedded_build_sha: ${GITHUB_SHA}"));
+    assert!(
+        wf.contains("--build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\""),
+        "Railway release-gate image must receive the same commit provenance"
+    );
+}
+
+#[test]
 fn publish_rechecks_the_build_jobs_digests_and_rescans_the_downloaded_bytes() {
     let wf = release();
     let build = job(&wf, "build");
