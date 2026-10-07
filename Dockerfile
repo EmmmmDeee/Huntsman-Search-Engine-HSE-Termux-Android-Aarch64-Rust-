@@ -1,5 +1,5 @@
 # Current Huntsman Recon image for Railway and generic Linux container runtimes.
-# The legacy production adapter remains at deploy/railway/Dockerfile.
+# This is the single canonical container definition for Huntsman Recon.
 FROM rust:1.99-trixie AS builder
 WORKDIR /build
 
