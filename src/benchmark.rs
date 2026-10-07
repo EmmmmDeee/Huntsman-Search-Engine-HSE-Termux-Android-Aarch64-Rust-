@@ -259,6 +259,31 @@ pub fn score_person_resolution(
     score_person_resolution_with_ancestry(entities, expected, forbidden, None, 0)
 }
 
+fn person_resolution_exclusions(
+    entities: &[Entity],
+    expected: &std::collections::BTreeSet<(crate::entity::EntityKind, String, &str)>,
+    forbidden: &std::collections::BTreeSet<(crate::entity::EntityKind, String)>,
+) -> (usize, usize) {
+    let unsupported_person_entities = entities
+        .iter()
+        .filter(|entity| {
+            entity.kind == crate::entity::EntityKind::Person
+                && !expected
+                    .iter()
+                    .any(|(kind, value, _)| entity.kind == *kind && entity.value == *value)
+        })
+        .count();
+    let forbidden_facts_emitted = forbidden
+        .iter()
+        .filter(|(kind, value)| {
+            entities
+                .iter()
+                .any(|entity| entity.kind == *kind && entity.value == *value)
+        })
+        .count();
+    (unsupported_person_entities, forbidden_facts_emitted)
+}
+
 fn person_independence(
     entities: &[Entity],
     expected: &std::collections::BTreeSet<(crate::entity::EntityKind, String, &str)>,
@@ -358,23 +383,8 @@ pub fn score_person_resolution_with_ancestry(
         .filter(|entity| !entity.evidence.is_empty())
         .count();
     let entities_without_evidence = entities.len().saturating_sub(entities_with_evidence);
-    let unsupported_person_entities = entities
-        .iter()
-        .filter(|entity| {
-            entity.kind == crate::entity::EntityKind::Person
-                && !expected
-                    .iter()
-                    .any(|(kind, value, _)| entity.kind == *kind && entity.value == *value)
-        })
-        .count();
-    let forbidden_facts_emitted = forbidden
-        .iter()
-        .filter(|(kind, value)| {
-            entities
-                .iter()
-                .any(|entity| entity.kind == *kind && entity.value == *value)
-        })
-        .count();
+    let (unsupported_person_entities, forbidden_facts_emitted) =
+        person_resolution_exclusions(entities, &expected, &forbidden);
     let (proven_independent_person_support, independence_check_complete, independence_accepted) =
         person_independence(
             entities,
