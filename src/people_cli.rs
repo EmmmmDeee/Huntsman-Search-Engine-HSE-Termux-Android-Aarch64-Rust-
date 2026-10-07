@@ -21,7 +21,6 @@ use crate::http::Transport;
 use crate::identity_resolution::AutoMergePolicy;
 use crate::lineage::{Lineage, Observation, ObservedLineage, UpstreamKind, resolve_with_lineage};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
-use crate::uid;
 
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
@@ -581,7 +580,7 @@ mod tests {
                 std::fs::create_dir_all(&dir).unwrap();
                 let path = dir.join("people.json");
                 let entries =
-                    crate::people_save::save(&path, &report.entities, &report.outcomes).unwrap();
+                    crate::lookup_save::save(&path, &report.entities, &report.outcomes, crate::lookup_save::PEOPLE_POLICY).unwrap();
                 assert_eq!(entries.len(), PEOPLE_SOURCE_REQUESTS);
                 let loaded = crate::ledger::load_chain(&path).unwrap();
                 assert_eq!(loaded, entries);

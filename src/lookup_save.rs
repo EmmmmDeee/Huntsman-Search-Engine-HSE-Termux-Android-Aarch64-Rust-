@@ -60,6 +60,28 @@ pub const USERNAME_POLICY: SavePolicy = SavePolicy {
     entity_provenance: username_provenance,
 };
 
+
+fn people_outcome_provenance(label: &str) -> (&str, &'static str) {
+    match label.split('.').next().unwrap_or(label) {
+        "asic_director" => ("asic_director", "src/asic_director.rs"),
+        "au_people" => ("au_people", "src/au_people.rs"),
+        "au_electoral" => ("au_electoral", "src/au_electoral.rs"),
+        _ => ("asic_persons", "src/asic_persons.rs"),
+    }
+}
+
+fn people_entity_provenance(label: &str) -> (&str, &'static str) {
+    let (_, component) = people_outcome_provenance(label);
+    (label, component)
+}
+
+pub const PEOPLE_POLICY: SavePolicy = SavePolicy {
+    default_source: "asic_persons",
+    does_not_show: "a register row is not identity resolution or an ATT&CK score",
+    outcome_provenance: people_outcome_provenance,
+    entity_provenance: people_entity_provenance,
+};
+
 pub const PHONE_POLICY: SavePolicy = SavePolicy {
     default_source: "phone_intl",
     does_not_show: "a phone-format or numbering-plan classification is not an identity-resolution verdict",

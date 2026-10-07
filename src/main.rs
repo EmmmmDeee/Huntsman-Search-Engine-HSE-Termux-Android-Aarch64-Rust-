@@ -44,7 +44,6 @@ use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resol
 use huntsman_recon::module::reachable_modules;
 use huntsman_recon::navigator::layer;
 use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, PeopleRun};
-use huntsman_recon::people_save;
 use huntsman_recon::provider_credentials;
 use huntsman_recon::phone_cli::{PHONE_HELP, PHONE_USAGE, PhoneArgs, PhoneRun};
 use huntsman_recon::recon::ReconTargetKind;
@@ -397,7 +396,7 @@ fn people_cmd(args: &[String]) -> ExitCode {
                 if report.entities.is_empty() && report.outcomes.is_empty() {
                     return ExitCode::SUCCESS;
                 }
-                match people_save::save(&path, &report.entities, &report.outcomes) {
+                match lookup_save::save(&path, &report.entities, &report.outcomes, lookup_save::PEOPLE_POLICY) {
                     Ok(entries) => {
                         println!("saved={}", path.display());
                         println!("entries={}", entries.len());
