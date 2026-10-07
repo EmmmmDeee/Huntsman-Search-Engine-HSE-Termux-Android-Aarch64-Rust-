@@ -352,10 +352,7 @@ fn modules_lists_only_reachable_catalog_entries() {
 
 #[test]
 fn attack_restores_legacy_static_coverage_surface() {
-    let status = bin()
-        .args(["attack", "status", "--json"])
-        .output()
-        .unwrap();
+    let status = bin().args(["attack", "status", "--json"]).output().unwrap();
     assert_eq!(status.status.code(), Some(0));
     let status_json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status_json["tactic_id"], "TA0043");
@@ -378,21 +375,14 @@ fn attack_restores_legacy_static_coverage_surface() {
         "static coverage must carry evidence from at least one reachable module"
     );
 
-    let gaps = bin()
-        .args(["attack", "gaps", "--json"])
-        .output()
-        .unwrap();
+    let gaps = bin().args(["attack", "gaps", "--json"]).output().unwrap();
     assert_eq!(gaps.status.code(), Some(0));
     let gaps_json: serde_json::Value = serde_json::from_slice(&gaps.stdout).unwrap();
     assert!(gaps_json["gaps"].is_array());
 
-    let navigator = bin()
-        .args(["attack", "navigator"])
-        .output()
-        .unwrap();
+    let navigator = bin().args(["attack", "navigator"]).output().unwrap();
     assert_eq!(navigator.status.code(), Some(0));
-    let navigator_json: serde_json::Value =
-        serde_json::from_slice(&navigator.stdout).unwrap();
+    let navigator_json: serde_json::Value = serde_json::from_slice(&navigator.stdout).unwrap();
     assert_eq!(navigator_json["domain"], "enterprise-attack");
     assert!(!navigator_json["techniques"].as_array().unwrap().is_empty());
 
