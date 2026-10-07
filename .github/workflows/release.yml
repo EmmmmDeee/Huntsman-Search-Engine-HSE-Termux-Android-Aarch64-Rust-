@@ -559,6 +559,28 @@ jobs:
           SCAN_FOR_KEYS
           bash "$scanner" dist
 
+      - name: Reconcile orphan main-channel draft releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}"
+          # Under the current publication contract a valid main-channel draft
+          # always has a pre-created main-<sha7> tag. A matching draft with no
+          # tag is therefore an interrupted legacy publication, not a live
+          # candidate. Reconcile only that narrow invalid state.
+          drafts="$RUNNER_TEMP/orphan-main-drafts.txt"
+          gh api --paginate "$api/releases?per_page=100" \
+            --jq '.[] | select(.draft == true) | "\(.id) \(.tag_name)"' > "$drafts"
+          while read -r id stale_tag; do
+            [ -n "$id" ] || continue
+            [[ "$stale_tag" =~ ^main-[0-9a-f]{7}$ ]] || continue
+            if ! gh api "$api/git/ref/tags/${stale_tag}" >/dev/null 2>&1; then
+              echo "Removing orphan draft ${stale_tag} (release id ${id}) with no backing tag." | tee -a "$GITHUB_STEP_SUMMARY"
+              gh api -X DELETE "$api/releases/${id}"
+            fi
+          done < "$drafts"
+
       - name: Check for an existing ${{ needs.resolve.outputs.tag }}
         id: existing
         env:

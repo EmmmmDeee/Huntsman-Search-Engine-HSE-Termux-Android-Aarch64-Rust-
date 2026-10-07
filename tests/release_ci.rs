@@ -290,6 +290,44 @@ fn superseded_main_builds_are_verified_without_historical_release_failures() {
 }
 
 #[test]
+fn orphan_main_drafts_without_backing_tags_are_reconciled_fail_closed() {
+    let wf = release();
+    let publish = job(&wf, "publish");
+    let reconcile = publish
+        .split("      - name: ")
+        .find(|s| s.starts_with("Reconcile orphan main-channel draft releases"))
+        .expect("publish must reconcile orphan main-channel drafts");
+
+    for required in [
+        "set -euo pipefail",
+        "gh api --paginate \"$api/releases?per_page=100\"",
+        "select(.draft == true)",
+        "^main-[0-9a-f]{7}$",
+        "git/ref/tags/${stale_tag}",
+        "gh api -X DELETE \"$api/releases/${id}\"",
+        "> \"$drafts\"",
+        "done < \"$drafts\"",
+    ] {
+        assert!(
+            reconcile.contains(required),
+            "orphan reconciliation must contain {required:?}"
+        );
+    }
+    assert!(
+        !reconcile.contains("|| true"),
+        "draft enumeration/deletion must fail closed rather than hide API failures"
+    );
+    let reconcile_pos = publish
+        .find("      - name: Reconcile orphan main-channel draft releases")
+        .unwrap();
+    let existing_pos = publish.find("      - name: Check for an existing").unwrap();
+    assert!(
+        reconcile_pos < existing_pos,
+        "stale invalid drafts must be reconciled before current-tag existence checks"
+    );
+}
+
+#[test]
 fn per_commit_publish_anchors_the_tag_before_creating_the_draft() {
     let wf = release();
     let publish = job(&wf, "publish");
