@@ -81,6 +81,80 @@ esac
     );
 }
 
+
+fn assert_first_install_contract(calls: &str, temp: &Path, prefix: &Path, rev: &str) {
+    assert!(calls.contains("pkg update -y"), "{calls}");
+    assert!(
+        calls.contains("pkg install -y git rust clang curl coreutils"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("pkg install -y rust rust-std-aarch64-linux-android"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("dpkg-query -W -f=${Version} rust"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("dpkg-query -W -f=${Version} rust-std-aarch64-linux-android"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains(
+            "cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git"
+        ),
+        "{calls}"
+    );
+    assert!(calls.contains(&format!("--rev {rev}")), "{calls}");
+    assert!(calls.contains("--locked"), "{calls}");
+    assert!(
+        calls.contains(&format!("--root {}", prefix.display())),
+        "{calls}"
+    );
+    assert!(
+        !calls.contains("--force"),
+        "repeat installs must not force a rebuild: {calls}"
+    );
+    assert!(calls.contains("hibp=1"), "{calls}");
+    assert!(
+        calls.contains(&format!(
+            "target={}/.cache/huntsman-recon-target",
+            temp.display()
+        )),
+        "default build cache must persist across installer invocations: {calls}"
+    );
+    assert!(
+        calls.contains(&format!(
+            "timeout 30 {}/bin/huntsman-recon check",
+            prefix.display()
+        )),
+        "installer must runtime-check the installed binary: {calls}"
+    );
+    assert!(
+        calls.contains(&format!(
+            "timeout 30 {}/bin/huntsman-recon verify var/ledger.json",
+            prefix.display()
+        )),
+        "installer must verify the generated ledger before success: {calls}"
+    );
+}
+
+fn assert_private_state(temp: &Path) {
+    let state_dir = temp.join(".huntsman");
+    let env_file = temp.join(".huntsman.env");
+    assert!(state_dir.is_dir(), "installer must initialize ~/.huntsman");
+    assert!(
+        env_file.is_file(),
+        "installer must initialize ~/.huntsman.env"
+    );
+    assert_eq!(
+        fs::metadata(&env_file).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "~/.huntsman.env must remain private"
+    );
+}
+
 #[test]
 fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -120,74 +194,8 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
     );
 
     let calls = fs::read_to_string(&log).expect("fake installer log");
-    assert!(calls.contains("pkg update -y"), "{calls}");
-    assert!(
-        calls.contains("pkg install -y git rust clang curl coreutils"),
-        "{calls}"
-    );
-    assert!(
-        calls.contains("pkg install -y rust rust-std-aarch64-linux-android"),
-        "{calls}"
-    );
-    assert!(
-        calls.contains("dpkg-query -W -f=${Version} rust"),
-        "{calls}"
-    );
-    assert!(
-        calls.contains("dpkg-query -W -f=${Version} rust-std-x86_64-unknown-linux-gnu"),
-        "{calls}"
-    );
-    assert!(
-        calls.contains(
-            "cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git"
-        ),
-        "{calls}"
-    );
-    assert!(calls.contains(&format!("--rev {rev}")), "{calls}");
-    assert!(calls.contains("--locked"), "{calls}");
-    assert!(
-        calls.contains(&format!("--root {}", prefix.display())),
-        "{calls}"
-    );
-    assert!(
-        !calls.contains("--force"),
-        "repeat installs must not force a rebuild: {calls}"
-    );
-    assert!(calls.contains("hibp=1"), "{calls}");
-    assert!(
-        calls.contains(&format!(
-            "target={}/.cache/huntsman-recon-target",
-            temp.display()
-        )),
-        "default build cache must persist across installer invocations: {calls}"
-    );
-
-    assert!(
-        calls.contains(&format!(
-            "timeout 30 {}/bin/huntsman-recon check",
-            prefix.display()
-        )),
-        "installer must runtime-check the installed binary: {calls}"
-    );
-    assert!(
-        calls.contains(&format!(
-            "timeout 30 {}/bin/huntsman-recon verify var/ledger.json",
-            prefix.display()
-        )),
-        "installer must verify the generated ledger before success: {calls}"
-    );
-    let state_dir = temp.join(".huntsman");
-    let env_file = temp.join(".huntsman.env");
-    assert!(state_dir.is_dir(), "installer must initialize ~/.huntsman");
-    assert!(
-        env_file.is_file(),
-        "installer must initialize ~/.huntsman.env"
-    );
-    assert_eq!(
-        fs::metadata(&env_file).unwrap().permissions().mode() & 0o777,
-        0o600,
-        "~/.huntsman.env must remain private"
-    );
+    assert_first_install_contract(&calls, &temp, &prefix, rev);
+    assert_private_state(&temp);
 
     let custom_cache = temp.join("custom-cache");
     let second = Command::new("bash")
