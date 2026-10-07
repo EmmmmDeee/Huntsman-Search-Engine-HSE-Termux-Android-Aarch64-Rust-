@@ -68,30 +68,9 @@ jobs:
             -e HUNTSMAN_STARTUP_CHECK=1 \
             huntsman-recon:railway
 
-          for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:18080/api/health >/tmp/huntsman-health.json; then
-              break
-            fi
-            if ! docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null | grep -qx true; then
-              docker logs "$name" >&2 || true
-              exit 1
-            fi
-            sleep 1
-          done
-
-          grep -q '"status": "ok"' /tmp/huntsman-health.json
-          if curl -fsS http://127.0.0.1:18080/api/modules >/dev/null 2>&1; then
-            echo "protected endpoint unexpectedly accepted an unauthenticated request" >&2
-            exit 1
-          fi
-          curl -fsS \
-            -H 'Authorization: Bearer ci-huntsman-token' \
-            http://127.0.0.1:18080/api/modules \
-            | grep -q '"modules"'
-          curl -fsS \
-            -H 'Authorization: Bearer ci-huntsman-token' \
-            http://127.0.0.1:18080/api/command \
-            | grep -q '"invariant"'
+          HUNTSMAN_RAILWAY_URL=http://127.0.0.1:18080 \
+          HSE_AUTH_TOKEN=ci-huntsman-token \
+            bash scripts/railway-live-acceptance.sh
 
   android-aarch64:
     name: Android aarch64 cross-build
