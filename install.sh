@@ -40,14 +40,6 @@ case "$TERMUX_PREFIX" in
   *) die "non-standard Termux PREFIX: $TERMUX_PREFIX" ;;
 esac
 
-# Refresh repository metadata before resolving the compiler and runtime tools.
-pkg update -y
-
-# Termux packages the Rust host standard library separately. A partial upgrade can
-# leave rustc newer than rust-std-<host>, producing Cargo failures such as
-# "crate std required to be available in rlib format" before Huntsman is compiled.
-pkg install -y git rust clang curl coreutils
-
 # Compatibility boundary for the maintained legacy `hse` monolith. Its
 # historical updater invokes repository `main/install.sh` with HSE_REQUIRE_SHA
 # or HSE_REF. Current main owns `huntsman-recon`, so those legacy-only variables
@@ -55,6 +47,11 @@ pkg install -y git rust clang curl coreutils
 # for the other.
 if [[ -z "${HUNTSMAN_REV:-}" && ( -n "${HSE_REQUIRE_SHA:-}" || -n "${HSE_REF:-}" ) ]]; then
   printf 'Detected legacy hse self-update contract; routing to the maintained legacy-hse branch.\n'
+  command -v bash >/dev/null 2>&1 || die "bash is required for the legacy hse handoff"
+  if [[ -z "${HUNTSMAN_LEGACY_CHANNEL_INSTALLER:-}" ]]; then
+    command -v curl >/dev/null 2>&1 || die "curl is required for the legacy hse handoff"
+    command -v mktemp >/dev/null 2>&1 || die "mktemp is required for the legacy hse handoff"
+  fi
   legacy_installer="${HUNTSMAN_LEGACY_CHANNEL_INSTALLER:-}"
   downloaded_installer=""
   if [[ -z "$legacy_installer" ]]; then
@@ -77,6 +74,14 @@ if [[ -z "${HUNTSMAN_REV:-}" && ( -n "${HSE_REQUIRE_SHA:-}" || -n "${HSE_REF:-}"
   printf 'Legacy hse branch accepted; huntsman-recon was not substituted for hse.\n'
   exit 0
 fi
+
+# Refresh repository metadata before resolving the compiler and runtime tools.
+pkg update -y
+
+# Termux packages the Rust host standard library separately. A partial upgrade can
+# leave rustc newer than rust-std-<host>, producing Cargo failures such as
+# "crate std required to be available in rlib format" before Huntsman is compiled.
+pkg install -y git rust clang curl coreutils
 
 rust_host="$(rustc -vV | sed -n 's/^host: //p')"
 [[ -n "$rust_host" ]] || die "unable to determine rustc host target"
