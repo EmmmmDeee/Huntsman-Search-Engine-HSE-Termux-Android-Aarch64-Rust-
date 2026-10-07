@@ -3,6 +3,75 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+fn termux_state() -> TermuxState {
+    if env::var_os("TERMUX_VERSION").is_some()
+        || env::var_os("PREFIX").is_some_and(|value| {
+            value
+                .to_string_lossy()
+                .contains("/data/data/com.termux/files/usr")
+        })
+    {
+        TermuxState::Detected
+    } else {
+        TermuxState::NotDetected
+    }
+}
+
+fn diagnostics_snapshot() -> diagnostics::Diagnostics {
+    let home = env::var_os("HOME");
+    match Keys::resolve(None, home.as_deref()) {
+        Ok(resolved) => {
+            let resolution = if resolved.warning.is_some() {
+                CredentialResolution::Warning
+            } else {
+                CredentialResolution::Ok
+            };
+            diagnostics::snapshot(Some(&resolved.keys), resolution, termux_state())
+        }
+        Err(_) => diagnostics::snapshot(None, CredentialResolution::Error, termux_state()),
+    }
+}
+
+pub(super) fn diagnostics_cmd(args: &[String]) -> ExitCode {
+    let json = match args {
+        [] => false,
+        [flag] if flag == "--json" => true,
+        _ => return fail(EX_USAGE, "usage: huntsman-recon diagnostics [--json]"),
+    };
+    let report = diagnostics_snapshot();
+    if json {
+        match serde_json::to_string_pretty(&report) {
+            Ok(body) => println!("{body}"),
+            Err(error) => return fail(EX_DATAERR, &format!("json: {error}")),
+        }
+    } else {
+        println!("version={}", report.version);
+        println!("build_sha={}", report.build_sha);
+        println!("target_os={}", report.target_os);
+        println!("target_arch={}", report.target_arch);
+        println!("termux={}", report.termux.as_str());
+        println!("reachable_modules={}", report.reachable_modules);
+        println!("network_modules={}", report.network_modules);
+        println!("attack_mapped_modules={}", report.attack_mapped_modules);
+        println!("providers_total={}", report.providers_total);
+        println!("providers_configured={}", report.providers_configured);
+        println!(
+            "credential_resolution={}",
+            report.credential_resolution.as_str()
+        );
+        println!("selfcheck_command={}", report.selfcheck_command);
+    }
+    ExitCode::SUCCESS
+}
+
+pub(super) fn build_sha_cmd(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        return fail(EX_USAGE, "usage: huntsman-recon build-sha");
+    }
+    println!("{}", diagnostics::embedded_build_sha());
+    ExitCode::SUCCESS
+}
+
 pub(super) fn credential_status_cmd(args: &[String]) -> ExitCode {
     let mut live_probe = false;
     let mut explicit = None;

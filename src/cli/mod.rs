@@ -16,6 +16,7 @@ use huntsman_recon::classifier::classify as classify_indicator;
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::crtsh::{self, CrtShError};
+use huntsman_recon::diagnostics::{self, CredentialResolution, TermuxState};
 use huntsman_recon::directive_lock;
 use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
@@ -52,7 +53,7 @@ use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, 
 use huntsman_recon::web_query;
 use huntsman_recon::web_server::{ServeConfig, Server, resolve_serve_bind};
 
-const USAGE: &str = "usage: huntsman-recon [check | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -64,6 +65,8 @@ Usage:
 
 Commands:
   check                 Run offline self-acceptance and regenerate var/*.json
+  diagnostics           Print offline build/runtime/module/provider diagnostics
+  build-sha             Print the embedded source commit or unknown
   command               Print and validate the executable engineering hierarchy
   directive             Verify or repair canonical repository instruction mirrors
   geo                   Distance between two LAT,LON coordinates in metres
@@ -130,6 +133,8 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
     }
     let mut remaining = argv.into_iter();
     match remaining.next().as_deref() {
+        Some("diagnostics") => meta::diagnostics_cmd(&remaining.collect::<Vec<_>>()),
+        Some("build-sha") => meta::build_sha_cmd(&remaining.collect::<Vec<_>>()),
         Some("command") => meta::command_cmd(&remaining.collect::<Vec<_>>()),
         Some("directive") => meta::directive_cmd(&remaining.collect::<Vec<_>>()),
         Some("geo") => utility::geo(remaining.next(), remaining.next()),

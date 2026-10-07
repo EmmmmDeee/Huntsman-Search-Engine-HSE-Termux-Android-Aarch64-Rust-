@@ -2,6 +2,7 @@ use std::fs;
 
 const CI: &str = ".github/workflows/ci.yml";
 const NDK_ACTION: &str = ".github/actions/setup-ndk-aarch64/action.yml";
+const DOCKERFILE: &str = "Dockerfile";
 
 #[test]
 fn active_ndk_action_exports_aarch64_android_toolchain() {
@@ -34,6 +35,7 @@ fn ci_cross_builds_the_actual_termux_target() {
         "./.github/actions/setup-ndk-aarch64",
         "cargo build --release --locked --target aarch64-linux-android",
         "HUNTSMAN_HIBP_NO_EMBED",
+        "HUNTSMAN_BUILD_SHA: ${{ github.sha }}",
         "llvm-readelf",
         "/system/bin/linker64",
     ] {
@@ -53,4 +55,13 @@ fn main_push_exposes_the_cross_built_binary_for_handset_testing() {
     ] {
         assert!(ci.contains(required), "{CI} must contain {required:?}");
     }
+}
+
+#[test]
+fn ci_and_container_builds_carry_exact_source_commit_provenance() {
+    let ci = fs::read_to_string(CI).expect("active CI workflow must be readable");
+    let docker = fs::read_to_string(DOCKERFILE).expect("Dockerfile must be readable");
+    assert!(ci.contains("--build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\""));
+    assert!(docker.contains("ARG HUNTSMAN_BUILD_SHA=unknown"));
+    assert!(docker.contains("HUNTSMAN_BUILD_SHA=${HUNTSMAN_BUILD_SHA}"));
 }

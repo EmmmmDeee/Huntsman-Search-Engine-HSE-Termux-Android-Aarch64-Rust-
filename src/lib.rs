@@ -50,6 +50,7 @@ pub mod cross_scan;
 pub mod crtsh;
 pub mod deadline;
 pub mod dependency;
+pub mod diagnostics;
 pub mod diamond;
 pub mod diff;
 pub mod differential;

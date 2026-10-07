@@ -146,6 +146,8 @@ fn help_and_version_are_available() {
     assert!(help.contains("public-only"));
 
     for (command, usage) in [
+        ("diagnostics", "diagnostics [--json]"),
+        ("build-sha", "build-sha"),
         ("geo", "geo LAT,LON LAT,LON"),
         ("search", "search QUERY [DIR]"),
         ("domain-lifecycle", "domain-lifecycle analyze INPUT.json"),
@@ -183,6 +185,64 @@ fn help_and_version_are_available() {
         String::from_utf8(version.stdout).unwrap(),
         format!("huntsman-recon {}\n", env!("CARGO_PKG_VERSION"))
     );
+}
+
+#[test]
+fn diagnostics_and_build_sha_are_offline_structured_and_non_secret() {
+    let dir = scratch("diagnostics");
+    let diagnostics = bin()
+        .args(["diagnostics", "--json"])
+        .env("HOME", &dir)
+        .env("PREFIX", "/usr")
+        .env_remove("TERMUX_VERSION")
+        .output()
+        .unwrap();
+    assert!(
+        diagnostics.status.success(),
+        "{}",
+        String::from_utf8_lossy(&diagnostics.stderr)
+    );
+    let stdout = String::from_utf8(diagnostics.stdout).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+    assert!(
+        value["build_sha"]
+            .as_str()
+            .is_some_and(|sha| !sha.is_empty())
+    );
+    assert!(value["reachable_modules"].as_u64().unwrap() > 0);
+    assert!(
+        value["network_modules"].as_u64().unwrap() <= value["reachable_modules"].as_u64().unwrap()
+    );
+    assert!(
+        value["attack_mapped_modules"].as_u64().unwrap()
+            <= value["network_modules"].as_u64().unwrap()
+    );
+    assert!(value["providers_total"].as_u64().unwrap() > 0);
+    assert!(
+        value["providers_configured"].as_u64().unwrap()
+            <= value["providers_total"].as_u64().unwrap()
+    );
+    assert_eq!(value["credential_resolution"], "ok");
+    assert_eq!(value["termux"], "not_detected");
+    assert!(value.get("build_sha_known").is_none());
+    assert!(value.get("android_target").is_none());
+    assert!(value.get("credential_warning").is_none());
+    assert_eq!(value["selfcheck_command"], "huntsman-recon check");
+    assert!(!stdout.contains("fingerprint"));
+    assert!(!stdout.contains("HUNTSMAN_"));
+
+    let sha = bin().arg("build-sha").output().unwrap();
+    assert!(sha.status.success());
+    let expected = huntsman_recon::diagnostics::embedded_build_sha();
+    assert_eq!(
+        String::from_utf8(sha.stdout).unwrap(),
+        format!("{expected}\n")
+    );
+
+    let bad = bin().args(["diagnostics", "--live"]).output().unwrap();
+    assert_eq!(bad.status.code(), Some(64));
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
