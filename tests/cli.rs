@@ -154,6 +154,7 @@ fn help_and_version_are_available() {
         ("scan", "scan SELECTOR [-k people|email|username|phone]"),
         ("investigate", "investigate TEXT..."),
         ("modules", "modules [--json]"),
+        ("attack", "attack status|coverage|gaps [--json]"),
         ("query", "query QUERY..."),
         ("sf", "sf [-M|-T|-V]"),
         ("serve", "serve [--bind ADDR]"),
@@ -337,8 +338,70 @@ fn modules_lists_only_reachable_catalog_entries() {
         value["modules"].as_array().map(|items| items.len() as u64)
     );
 
+    let web_query = value["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|module| module["name"] == "web_query")
+        .expect("web_query reachable module");
+    assert_eq!(web_query["category"], "search");
+
     let bad = bin().args(["modules", "--all"]).output().unwrap();
     assert_eq!(bad.status.code(), Some(64));
+}
+
+#[test]
+fn attack_restores_legacy_static_coverage_surface() {
+    let status = bin()
+        .args(["attack", "status", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(status.status.code(), Some(0));
+    let status_json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status_json["tactic_id"], "TA0043");
+    assert_eq!(status_json["coverage_basis"], "leaf_techniques");
+    assert!(status_json["leaf_techniques_total"].as_u64().unwrap() > 0);
+    assert!(status_json["leaf_techniques_covered"].as_u64().unwrap() > 0);
+
+    let coverage = bin()
+        .args(["attack", "coverage", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(coverage.status.code(), Some(0));
+    let coverage_json: serde_json::Value = serde_json::from_slice(&coverage.stdout).unwrap();
+    let covered = coverage_json["covered"].as_array().unwrap();
+    assert!(!covered.is_empty());
+    assert!(
+        covered
+            .iter()
+            .any(|row| !row["modules"].as_array().unwrap().is_empty()),
+        "static coverage must carry evidence from at least one reachable module"
+    );
+
+    let gaps = bin()
+        .args(["attack", "gaps", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(gaps.status.code(), Some(0));
+    let gaps_json: serde_json::Value = serde_json::from_slice(&gaps.stdout).unwrap();
+    assert!(gaps_json["gaps"].is_array());
+
+    let navigator = bin()
+        .args(["attack", "navigator"])
+        .output()
+        .unwrap();
+    assert_eq!(navigator.status.code(), Some(0));
+    let navigator_json: serde_json::Value =
+        serde_json::from_slice(&navigator.stdout).unwrap();
+    assert_eq!(navigator_json["domain"], "enterprise-attack");
+    assert!(!navigator_json["techniques"].as_array().unwrap().is_empty());
+
+    let bad = bin()
+        .args(["attack", "navigator", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(64));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("attack status|coverage|gaps"));
 }
 
 #[test]
