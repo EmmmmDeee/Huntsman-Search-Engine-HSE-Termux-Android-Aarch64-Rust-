@@ -15,18 +15,36 @@ score.
 ## Install on Termux (Android arm64)
 
 Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the
-[official GitHub releases](https://github.com/termux/termux-app/releases), then
-run this one-line source install:
+[official GitHub releases](https://github.com/termux/termux-app/releases).
+Keep Termux and its plugins from the same distribution source. On an ARM64
+device, the repository installer refreshes package metadata, aligns the Termux
+Rust compiler and host stdlib, installs the current root crate, creates private
+state/config paths, and runs offline acceptance before reporting success:
 
 ```sh
-pkg update && pkg install -y git rust clang && HUNTSMAN_HIBP_NO_EMBED=1 cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git --locked --root "$PREFIX" huntsman-recon
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh -o "$TMPDIR/huntsman-install.sh" && bash "$TMPDIR/huntsman-install.sh"
 ```
 
-This builds the current `main` source on-device, installs
-`$PREFIX/bin/huntsman-recon`, and prevents accidental build-time embedding of a
-locally configured HIBP key. Rust 1.87 or newer is required. For prebuilt,
-release-pinned installation, Linux development setup, upgrades, and
-troubleshooting, see [`docs/INSTALL.md`](docs/INSTALL.md).
+No root, proot, system service, or writable Android system partition is used.
+The result is `$PREFIX/bin/huntsman-recon`; `~/.huntsman` is mode 700 and
+`~/.huntsman.env` is mode 600. Rust 1.87 or newer remains the crate MSRV.
+For prebuilt release installation, upgrades, and troubleshooting, see
+[`docs/INSTALL.md`](docs/INSTALL.md).
+
+## Deploy on Railway
+
+For a new Railway service, connect this repository's `main` branch. Railway
+automatically detects the root `Dockerfile`; configure the healthcheck path as
+`/api/health`. The image reads Railway's injected `PORT`, runs the same
+offline acceptance before serving, and drops from the container startup user to
+uid 10001 for the application process.
+
+Set `HSE_AUTH_TOKEN` as a Railway variable for a stable bearer token. If it is
+absent, the container generates a 256-bit token, stores it under
+`$HUNTSMAN_DATA_DIR/.huntsman/`, and prints it once to deployment logs.
+Attaching a Railway volume at `/data` makes that state durable; the service can
+also run without a volume. Current Railway Infrastructure as Code lives at
+`.railway/railway.ts`; see [`docs/RAILWAY.md`](docs/RAILWAY.md).
 
 ## First commands
 
