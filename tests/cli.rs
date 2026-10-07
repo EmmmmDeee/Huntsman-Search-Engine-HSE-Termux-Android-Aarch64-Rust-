@@ -27,7 +27,7 @@ fn check_reproduces_committed_artifacts() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert_eq!(
         stdout,
-        "command_hierarchy=accepted\naccepted techniques=0\nbrisbane_sydney_m=732379\n"
+        "command_hierarchy=accepted\nselftest_admitted_techniques=0\nbrisbane_sydney_m=732379\n"
     );
     let committed = Path::new(env!("CARGO_MANIFEST_DIR")).join("var");
     for name in ["ledger.json", "navigator.json", "stix-bundle.json"] {
@@ -44,6 +44,60 @@ fn check_reproduces_committed_artifacts() {
         .unwrap();
     assert!(verify.status.success());
     assert!(String::from_utf8_lossy(&verify.stdout).contains("admitted=0"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn directive_check_is_useful_outside_a_source_checkout() {
+    let dir = scratch("directive-embedded");
+    let out = bin()
+        .args(["directive", "check"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("directive=check"));
+    assert!(stdout.contains("scope=embedded"));
+    assert!(stdout.contains("mirrors=0"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn directive_check_verifies_an_explicit_repository_root() {
+    let dir = scratch("directive-repository");
+    let root = env!("CARGO_MANIFEST_DIR");
+    let out = bin()
+        .args(["directive", "check", root])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("scope=repository"));
+    assert!(stdout.contains("mirrors=6"));
+    assert!(stdout.contains(&format!("root={root}")));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn directive_sync_outside_a_checkout_is_actionable() {
+    let dir = scratch("directive-sync-no-root");
+    let out = bin()
+        .args(["directive", "sync"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(66));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("requires a source checkout"));
     let _ = fs::remove_dir_all(&dir);
 }
 
