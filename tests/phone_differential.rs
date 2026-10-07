@@ -34,11 +34,7 @@ fn phone_offline_matches_recorded_7dca720_golden_without_legacy_regressions() {
             PhoneRun::Failed(message) => panic!("phone {input:?} failed: {message}"),
         };
         let observed = snapshot_entities(&report.entities);
-        let regressions = compare_legacy(
-            &case.expected,
-            &observed,
-            &manifest.allowed_differences,
-        );
+        let regressions = compare_legacy(&case.expected, &observed, &manifest.allowed_differences);
         assert!(
             regressions.is_empty(),
             "phone {input:?} regressed from {ORACLE}: {regressions:#?}"
@@ -50,7 +46,11 @@ fn phone_offline_matches_recorded_7dca720_golden_without_legacy_regressions() {
 fn phone_golden_is_attributed_to_legacy_phone_modules() {
     let golden: Vec<GoldenCase> = serde_json::from_slice(GOLDEN).expect("golden JSON");
     for case in golden {
-        assert!(!case.expected.is_empty(), "{:?} has no oracle output", case.input);
+        assert!(
+            !case.expected.is_empty(),
+            "{:?} has no oracle output",
+            case.input
+        );
         for entity in case.expected {
             assert_eq!(entity.kind.as_str(), "phone");
             assert!(
