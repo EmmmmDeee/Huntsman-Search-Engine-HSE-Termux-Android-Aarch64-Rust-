@@ -21,6 +21,7 @@ use crate::http::Transport;
 use crate::identity_resolution::AutoMergePolicy;
 use crate::lineage::{Lineage, Observation, ObservedLineage, UpstreamKind, resolve_with_lineage};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::uid;
 
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
@@ -98,7 +99,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
         };
     }
 
-    let scan_id = entity::scan_id("person", name);
+    let scan_id = uid::scan_id("person", name);
     let mut report = Report::default();
     let mut network = None;
     let mut failed = None;
