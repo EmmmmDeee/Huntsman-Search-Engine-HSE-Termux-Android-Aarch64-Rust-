@@ -9,8 +9,8 @@ use huntsman_recon::collection::{
 use huntsman_recon::dependency::{Target, TargetKind};
 use huntsman_recon::entity::EntityKind;
 use huntsman_recon::evidence_ancestry::{IndependenceBasis, IndependenceEvidence};
-use huntsman_recon::retrieval_artifact::ArtifactId;
 use huntsman_recon::pipeline::{PipelineLimits, normalize_observations};
+use huntsman_recon::retrieval_artifact::ArtifactId;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
 const SCAN_ID: &str = "person-resolution-fixture";
@@ -165,7 +165,11 @@ fn captured_public_observations_flow_through_real_pipeline_and_pass() {
         .find(|entity| entity.kind == EntityKind::Person)
         .expect("target person must exist");
     let mut roots = std::collections::BTreeSet::new();
-    for node in person.evidence.iter().filter_map(|evidence| evidence.ancestry_node.as_ref()) {
+    for node in person
+        .evidence
+        .iter()
+        .filter_map(|evidence| evidence.ancestry_node.as_ref())
+    {
         roots.extend(
             snapshot
                 .ancestry
@@ -174,7 +178,11 @@ fn captured_public_observations_flow_through_real_pipeline_and_pass() {
         );
     }
     let roots: Vec<_> = roots.into_iter().collect();
-    assert_eq!(roots.len(), 2, "fixture must retain two distinct observed roots");
+    assert_eq!(
+        roots.len(),
+        2,
+        "fixture must retain two distinct observed roots"
+    );
     snapshot
         .ancestry
         .insert_independence_evidence(IndependenceEvidence {
@@ -265,7 +273,6 @@ fn real_pipeline_output_with_unrelated_identity_fails_closed() {
     assert!(score.proven_independent_person_support < 2);
     assert!(!score.accepted);
 }
-
 
 #[test]
 fn distinct_source_labels_without_independence_proof_fail_closed() {
