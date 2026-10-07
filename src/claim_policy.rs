@@ -581,16 +581,11 @@ impl IntelligenceLedger {
 
         let mut summary = ProofEvaluationSummary::default();
         for environment in &proof.environments {
-            summary.observe(evaluate_proof_environment(
-                self,
-                &claim.support,
-                environment,
-                policy,
-                graph,
-                bindings,
-            ));
+            let evaluation =
+                self.evaluate_proof_environment(claim, environment, policy, graph, bindings);
+            summary.observe(&evaluation);
         }
-        summary.apply_blockers(&mut assessment);
+        Self::apply_proof_blockers(&mut assessment, &summary);
 
         assessment.epistemic = if claim.support.is_empty() {
             ClaimState::Candidate
