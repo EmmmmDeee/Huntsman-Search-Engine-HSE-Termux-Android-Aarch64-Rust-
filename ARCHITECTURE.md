@@ -64,7 +64,7 @@ CURRENT. One package and library (`src/lib.rs`). `src/main.rs` is a thin composi
 Binary adapter structure:
 - `src/main.rs` owns process startup only.
 - `src/cli/mod.rs` owns top-level argument dispatch, shared exit codes, and adapter-wide imports.
-- `src/cli/{lookup,network,service,utility,meta}.rs` group process-facing commands by responsibility; `help.rs` owns per-command help and `selfcheck.rs` owns offline acceptance.
+- `src/cli/{network,service,utility,meta}.rs` group process-facing commands by responsibility; `lookup.rs` is a facade over `lookup/{profiles,scan,discovery}.rs`; `help.rs` owns per-command help and `selfcheck.rs` owns offline acceptance.
 - `src/cli/mod.rs` imports no library modules. Each adapter declares its own library dependencies explicitly; parent wildcard imports are forbidden so coupling remains visible and reviewable.
 - Domain behavior and reusable logic remain in the library crate. CLI modules may orchestrate library calls but must not become a second domain layer.
 
