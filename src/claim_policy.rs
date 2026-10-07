@@ -197,40 +197,47 @@ fn finish_assessment(policy: &VerificationPolicy, input: &AssessmentInputs<'_>) 
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ProofEvaluationFlag {
+    Malformed,
+    StructurallyValid,
+    RoutesSufficient,
+    NaturesSufficient,
+    AttributesSufficient,
+    UnresolvedAssumption,
+    IncompleteRouteSearch,
+    Valid,
+}
+
 #[derive(Debug, Default)]
 struct ProofEnvironmentEvaluation {
-    malformed: bool,
-    structurally_valid: bool,
-    routes_sufficient: bool,
-    natures_sufficient: bool,
-    attributes_sufficient: bool,
-    unresolved_assumption: bool,
-    incomplete_route_search: bool,
-    valid: bool,
+    flags: BTreeSet<ProofEvaluationFlag>,
+}
+
+impl ProofEnvironmentEvaluation {
+    fn malformed() -> Self {
+        Self {
+            flags: BTreeSet::from([ProofEvaluationFlag::Malformed]),
+        }
+    }
+
+    fn contains(&self, flag: ProofEvaluationFlag) -> bool {
+        self.flags.contains(&flag)
+    }
 }
 
 #[derive(Debug, Default)]
 struct ProofEvaluationSummary {
-    malformed: bool,
-    saw_structurally_valid: bool,
-    saw_sufficient_routes: bool,
-    saw_sufficient_natures: bool,
-    saw_sufficient_attributes: bool,
-    saw_unresolved_assumption: bool,
-    saw_incomplete_route_search: bool,
-    valid_environment: bool,
+    flags: BTreeSet<ProofEvaluationFlag>,
 }
 
 impl ProofEvaluationSummary {
-    fn observe(&mut self, evaluation: ProofEnvironmentEvaluation) {
-        self.malformed |= evaluation.malformed;
-        self.saw_structurally_valid |= evaluation.structurally_valid;
-        self.saw_sufficient_routes |= evaluation.routes_sufficient;
-        self.saw_sufficient_natures |= evaluation.natures_sufficient;
-        self.saw_sufficient_attributes |= evaluation.attributes_sufficient;
-        self.saw_unresolved_assumption |= evaluation.unresolved_assumption;
-        self.saw_incomplete_route_search |= evaluation.incomplete_route_search;
-        self.valid_environment |= evaluation.valid;
+    fn observe(&mut self, evaluation: &ProofEnvironmentEvaluation) {
+        self.flags.extend(evaluation.flags.iter().copied());
+    }
+
+    fn contains(&self, flag: ProofEvaluationFlag) -> bool {
+        self.flags.contains(&flag)
     }
 }
 
@@ -397,10 +404,7 @@ impl IntelligenceLedger {
         bindings: &BTreeMap<EvidenceId, EvidenceNodeId>,
     ) -> ProofEnvironmentEvaluation {
         if environment.assertions.is_empty() {
-            return ProofEnvironmentEvaluation {
-                malformed: true,
-                ..ProofEnvironmentEvaluation::default()
-            };
+            return ProofEnvironmentEvaluation::malformed();
         }
 
         let mut canonical_roots = BTreeSet::new();
@@ -410,16 +414,10 @@ impl IntelligenceLedger {
 
         for evidence_id in &environment.assertions {
             if !claim.support.contains(evidence_id) {
-                return ProofEnvironmentEvaluation {
-                    malformed: true,
-                    ..ProofEnvironmentEvaluation::default()
-                };
+                return ProofEnvironmentEvaluation::malformed();
             }
             let Some(evidence) = self.evidence.get(evidence_id) else {
-                return ProofEnvironmentEvaluation {
-                    malformed: true,
-                    ..ProofEnvironmentEvaluation::default()
-                };
+                return ProofEnvironmentEvaluation::malformed();
             };
             if !environment_natures.contains(&evidence.nature) {
                 environment_natures.push(evidence.nature.clone());
@@ -427,32 +425,20 @@ impl IntelligenceLedger {
             observe_attributes(&mut environment_attributes, &evidence.attributes);
 
             let Some(node_id) = bindings.get(evidence_id) else {
-                return ProofEnvironmentEvaluation {
-                    malformed: true,
-                    ..ProofEnvironmentEvaluation::default()
-                };
+                return ProofEnvironmentEvaluation::malformed();
             };
             let Ok(roots) = graph.resolved_root_ids(node_id) else {
-                return ProofEnvironmentEvaluation {
-                    malformed: true,
-                    ..ProofEnvironmentEvaluation::default()
-                };
+                return ProofEnvironmentEvaluation::malformed();
             };
             if roots.is_empty() {
-                return ProofEnvironmentEvaluation {
-                    malformed: true,
-                    ..ProofEnvironmentEvaluation::default()
-                };
+                return ProofEnvironmentEvaluation::malformed();
             }
             canonical_roots.extend(roots.into_iter().map(|root| root.0));
             resolved_nodes.push(node_id.clone());
         }
 
         if canonical_roots != environment.roots {
-            return ProofEnvironmentEvaluation {
-                malformed: true,
-                ..ProofEnvironmentEvaluation::default()
-            };
+            return ProofEnvironmentEvaluation::malformed();
         }
 
         let route_count = graph
@@ -474,48 +460,69 @@ impl IntelligenceLedger {
         let attributes_sufficient = required_attributes_satisfied(policy, &environment_attributes);
         let unresolved_assumption = !environment.assumptions.is_empty();
 
-        ProofEnvironmentEvaluation {
-            malformed: false,
-            structurally_valid: true,
-            routes_sufficient,
-            natures_sufficient,
-            attributes_sufficient,
-            unresolved_assumption,
-            incomplete_route_search: route_count.incomplete,
-            valid: !unresolved_assumption
-                && routes_sufficient
-                && natures_sufficient
-                && attributes_sufficient,
+        let mut flags = BTreeSet::from([ProofEvaluationFlag::StructurallyValid]);
+        if routes_sufficient {
+            flags.insert(ProofEvaluationFlag::RoutesSufficient);
         }
+        if natures_sufficient {
+            flags.insert(ProofEvaluationFlag::NaturesSufficient);
+        }
+        if attributes_sufficient {
+            flags.insert(ProofEvaluationFlag::AttributesSufficient);
+        }
+        if unresolved_assumption {
+            flags.insert(ProofEvaluationFlag::UnresolvedAssumption);
+        }
+        if route_count.incomplete {
+            flags.insert(ProofEvaluationFlag::IncompleteRouteSearch);
+        }
+        if !unresolved_assumption
+            && routes_sufficient
+            && natures_sufficient
+            && attributes_sufficient
+        {
+            flags.insert(ProofEvaluationFlag::Valid);
+        }
+        ProofEnvironmentEvaluation { flags }
     }
 
     fn apply_proof_blockers(assessment: &mut ClaimAssessment, summary: &ProofEvaluationSummary) {
-        if summary.malformed {
+        if summary.contains(ProofEvaluationFlag::Malformed) {
             assessment
                 .blockers
                 .insert(VerificationBlocker::InvalidProofEnvironment);
         }
-        if summary.saw_unresolved_assumption && !summary.valid_environment {
+        if summary.contains(ProofEvaluationFlag::UnresolvedAssumption)
+            && !summary.contains(ProofEvaluationFlag::Valid)
+        {
             assessment
                 .blockers
                 .insert(VerificationBlocker::UnresolvedProofAssumption);
         }
-        if summary.saw_structurally_valid && !summary.saw_sufficient_routes {
+        if summary.contains(ProofEvaluationFlag::StructurallyValid)
+            && !summary.contains(ProofEvaluationFlag::RoutesSufficient)
+        {
             assessment
                 .blockers
                 .insert(VerificationBlocker::InsufficientIndependentSupport);
         }
-        if summary.saw_incomplete_route_search && !summary.valid_environment {
+        if summary.contains(ProofEvaluationFlag::IncompleteRouteSearch)
+            && !summary.contains(ProofEvaluationFlag::Valid)
+        {
             assessment
                 .blockers
                 .insert(VerificationBlocker::IncompleteIndependenceProof);
         }
-        if summary.saw_structurally_valid && !summary.saw_sufficient_natures {
+        if summary.contains(ProofEvaluationFlag::StructurallyValid)
+            && !summary.contains(ProofEvaluationFlag::NaturesSufficient)
+        {
             assessment
                 .blockers
                 .insert(VerificationBlocker::MissingRequiredEvidenceNature);
         }
-        if summary.saw_structurally_valid && !summary.saw_sufficient_attributes {
+        if summary.contains(ProofEvaluationFlag::StructurallyValid)
+            && !summary.contains(ProofEvaluationFlag::AttributesSufficient)
+        {
             assessment
                 .blockers
                 .insert(VerificationBlocker::MissingRequiredEvidenceAttribute);
@@ -576,13 +583,15 @@ impl IntelligenceLedger {
         for environment in &proof.environments {
             let evaluation =
                 self.evaluate_proof_environment(claim, environment, policy, graph, bindings);
-            summary.observe(evaluation);
+            summary.observe(&evaluation);
         }
         Self::apply_proof_blockers(&mut assessment, &summary);
 
         assessment.epistemic = if claim.support.is_empty() {
             ClaimState::Candidate
-        } else if summary.valid_environment && !summary.malformed && assessment.blockers.is_empty()
+        } else if summary.contains(ProofEvaluationFlag::Valid)
+            && !summary.contains(ProofEvaluationFlag::Malformed)
+            && assessment.blockers.is_empty()
         {
             ClaimState::Verified
         } else {
