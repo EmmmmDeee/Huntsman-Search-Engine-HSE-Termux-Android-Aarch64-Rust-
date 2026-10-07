@@ -94,6 +94,7 @@ fn help_and_version_are_available() {
     for (command, usage) in [
         ("geo", "geo LAT,LON LAT,LON"),
         ("search", "search QUERY [DIR]"),
+        ("domain-lifecycle", "domain-lifecycle analyze INPUT.json"),
         ("people", "people NAME [--save FILE]"),
         ("phone", "phone NUMBER [--save FILE]"),
         ("scan", "scan SELECTOR [-k people|email|username|phone]"),
