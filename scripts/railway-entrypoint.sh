@@ -13,7 +13,7 @@ if [ "$PORT_VALUE" -lt 1 ] || [ "$PORT_VALUE" -gt 65535 ]; then
 fi
 
 export HUNTSMAN_DATA_DIR="$DATA_DIR"
-export HOME="${HOME:-$DATA_DIR}"
+export HOME="$DATA_DIR"
 export HSE_BIND="${HSE_BIND:-0.0.0.0:$PORT_VALUE}"
 
 if [ "$(id -u)" = "0" ]; then
