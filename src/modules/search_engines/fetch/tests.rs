@@ -226,6 +226,40 @@ use super::*;
         assert!(!is_challenge_page(""));
     }
 
+    #[test]
+    fn only_explicit_zero_pages_are_healthy_empty() {
+        let explicit = "<html><body><p>No results found for this query.</p>xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</body></html>";
+        assert!(matches!(
+            classify_search_body(explicit, "test", "missing"),
+            SearchFetchResult::Empty
+        ));
+
+        let ambiguous = format!(
+            "<html><body><main>Search</main>{}</body></html>",
+            "x".repeat(600)
+        );
+        assert!(matches!(
+            classify_search_body(&ambiguous, "test", "missing"),
+            SearchFetchResult::Drift
+        ));
+    }
+
+    #[test]
+    fn singleflight_identity_includes_post_body() {
+        let base = FetchKey {
+            scan_id: "s".into(),
+            engine: "duckduckgo",
+            url: "https://html.duckduckgo.com/html/".into(),
+            query: "same display query".into(),
+            post_body: Some("q=first".into()),
+        };
+        let other = FetchKey {
+            post_body: Some("q=second".into()),
+            ..base.clone()
+        };
+        assert_ne!(base, other, "different POST bodies must never share one flight");
+    }
+
     // ── Golden fixture (T2.7 "scraper resilience" — the corpus leg) ─────────
     //
     // `testdata/brave_kylo4kylo.html` is a REAL Brave SERP response, fetched
@@ -497,6 +531,13 @@ use super::*;
     /// addition makes this fail (30 leaked results); restored, it passes.
     #[test]
     fn parse_results_excludes_metagers_own_chrome_from_a_real_serp_capture() {
+        assert!(
+            matches!(
+                classify_search_body(GOLDEN_METAGER_KYLO4KYLO, "metager", "Kylo4kylo"),
+                SearchFetchResult::Drift
+            ),
+            "MetaGer's marketing/homepage response is semantic drift, not a healthy zero"
+        );
         let results = parse_results(GOLDEN_METAGER_KYLO4KYLO, "metager", "Kylo4kylo");
         let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
         assert!(
