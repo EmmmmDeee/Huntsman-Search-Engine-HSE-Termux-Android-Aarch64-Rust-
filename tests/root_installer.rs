@@ -23,6 +23,14 @@ fn install_fake_termux_toolchain(fake_bin: &Path, fake_target_libdir: &Path) {
     fs::write(fake_target_libdir.join("libstd-test.rlib"), b"fixture").unwrap();
 
     write_executable(
+        &fake_bin.join("uname"),
+        "#!/bin/sh\nprintf '%s\\n' aarch64\n",
+    );
+    write_executable(
+        &fake_bin.join("timeout"),
+        "#!/bin/sh\nprintf 'timeout %s\\n' \"$*\" >> \"$INSTALL_LOG\"\nexit 0\n",
+    );
+    write_executable(
         &fake_bin.join("pkg"),
         "#!/bin/sh\nprintf 'pkg %s\\n' \"$*\" >> \"$INSTALL_LOG\"\n",
     );
@@ -111,7 +119,11 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
     );
 
     let calls = fs::read_to_string(&log).expect("fake installer log");
-    assert!(calls.contains("pkg install -y git rust clang"), "{calls}");
+    assert!(calls.contains("pkg update -y"), "{calls}");
+    assert!(
+        calls.contains("pkg install -y git rust clang curl coreutils"),
+        "{calls}"
+    );
     assert!(
         calls.contains("pkg install -y rust rust-std-x86_64-unknown-linux-gnu"),
         "{calls}"
@@ -147,6 +159,33 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
             temp.display()
         )),
         "default build cache must persist across installer invocations: {calls}"
+    );
+
+    assert!(
+        calls.contains(&format!(
+            "timeout 30 {}/bin/huntsman-recon check",
+            prefix.display()
+        )),
+        "installer must runtime-check the installed binary: {calls}"
+    );
+    assert!(
+        calls.contains(&format!(
+            "timeout 30 {}/bin/huntsman-recon verify var/ledger.json",
+            prefix.display()
+        )),
+        "installer must verify the generated ledger before success: {calls}"
+    );
+    let state_dir = temp.join(".huntsman");
+    let env_file = temp.join(".huntsman.env");
+    assert!(state_dir.is_dir(), "installer must initialize ~/.huntsman");
+    assert!(
+        env_file.is_file(),
+        "installer must initialize ~/.huntsman.env"
+    );
+    assert_eq!(
+        fs::metadata(&env_file).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "~/.huntsman.env must remain private"
     );
 
     let custom_cache = temp.join("custom-cache");
