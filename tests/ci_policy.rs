@@ -11,7 +11,10 @@ fn main_pushes_must_have_a_merged_pr_association() {
         "pull-requests: read",
         "commits/${GITHUB_SHA}/pulls",
         ".base.ref == \"main\" and .merged_at != null",
-        "reached main without an associated merged pull request",
+        "for attempt in 1 2 3 4 5 6 7 8 9 10",
+        "[ \"$attempt\" -eq 10 ] || sleep 3",
+        "could not verify merged pull request association",
+        "reached main without an associated merged pull request after bounded retry",
     ] {
         assert!(ci.contains(required), "{CI} must contain {required:?}");
     }
