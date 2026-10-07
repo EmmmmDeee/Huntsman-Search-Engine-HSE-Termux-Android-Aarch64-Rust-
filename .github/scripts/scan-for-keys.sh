@@ -87,58 +87,8 @@ for f in "${files[@]}"; do
     data=$(strings -a -n 8 "$f") || { echo "::error::strings failed on $f"; exit 1; }
   fi
   for rule in "${RULES[@]}"; do
-    name=${rule%%    # SIGPIPE, which pipefail would turn into a silently missed finding.
-    matches=$(grep -Eo -- "$re" <<<"$data")
-    rc=$?
-    [ "$rc" -le 1 ] || { echo "::error::rule $name failed (grep exit $rc)"; exit 1; }
-    [ -n "$matches" ] || continue
-    kept=$(grep -Ev -- "$ALLOW_RE" <<<"$matches")
-    rc=$?
-    [ "$rc" -le 1 ] || { echo "::error::allow filter failed for rule $name (grep exit $rc)"; exit 1; }
-    [ -z "$kept" ] || report "$f" "$name"
-  done
-  if [ "$text" = 1 ]; then
-    # Segments of 24+ chars mixing upper, lower and digits at >= 4.2 bits/char:
-    # catches base64/alnum secrets, not paths, snake_case or hex digests.
-    ent=$(python3 -c "$ENTROPY_PY" "$f") || { echo "::error::entropy check failed on $f"; exit 1; }
-    while IFS= read -r line; do
-      [ -n "$line" ] && report "$f" "high-entropy-string"
-    done <<<"$ent"
-  fi
-done
-
-echo "rules: ${#RULES[@]} pattern rules + high-entropy (text files)"
-echo "files scanned: $scanned"
-echo "key scan: $hits finding(s)"
-[ "$scanned" -gt 0 ] || { echo "::error::nothing scanned"; exit 1; }
-[ "$hits" -eq 0 ]
-\t'*}
-    re=${rule#*    # SIGPIPE, which pipefail would turn into a silently missed finding.
-    matches=$(grep -Eo -- "$re" <<<"$data")
-    rc=$?
-    [ "$rc" -le 1 ] || { echo "::error::rule $name failed (grep exit $rc)"; exit 1; }
-    [ -n "$matches" ] || continue
-    kept=$(grep -Ev -- "$ALLOW_RE" <<<"$matches")
-    rc=$?
-    [ "$rc" -le 1 ] || { echo "::error::allow filter failed for rule $name (grep exit $rc)"; exit 1; }
-    [ -z "$kept" ] || report "$f" "$name"
-  done
-  if [ "$text" = 1 ]; then
-    # Segments of 24+ chars mixing upper, lower and digits at >= 4.2 bits/char:
-    # catches base64/alnum secrets, not paths, snake_case or hex digests.
-    ent=$(python3 -c "$ENTROPY_PY" "$f") || { echo "::error::entropy check failed on $f"; exit 1; }
-    while IFS= read -r line; do
-      [ -n "$line" ] && report "$f" "high-entropy-string"
-    done <<<"$ent"
-  fi
-done
-
-echo "rules: ${#RULES[@]} pattern rules + high-entropy (text files)"
-echo "files scanned: $scanned"
-echo "key scan: $hits finding(s)"
-[ "$scanned" -gt 0 ] || { echo "::error::nothing scanned"; exit 1; }
-[ "$hits" -eq 0 ]
-\t'}
+    name=${rule%%$'\t'*}
+    re=${rule#*$'\t'}
     # Generic bearer detection is intentionally text-only. In linked binaries,
     # `strings` can expose adjacent read-only literals as one printable run,
     # synthesising "Bearer <long-token>" even though no such runtime value
