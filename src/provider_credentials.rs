@@ -25,20 +25,62 @@ pub struct SlotStatus {
 }
 
 pub const PROVIDERS: &[Provider] = &[
-    Provider { name: "WiGLE", slots: &["HUNTSMAN_WIGLE_USER", "HUNTSMAN_WIGLE_TOKEN"] },
-    Provider { name: "Brave Search", slots: &["HUNTSMAN_BRAVE_KEY"] },
-    Provider { name: "Shodan", slots: &["HUNTSMAN_SHODAN_KEY"] },
-    Provider { name: "Whoxy", slots: &["HUNTSMAN_WHOXY_KEY"] },
-    Provider { name: "Citadel", slots: &["HUNTSMAN_CITADEL_KEY"] },
-    Provider { name: "HIBP", slots: &["HUNTSMAN_HIBP_KEY"] },
-    Provider { name: "SeekNow", slots: &["HUNTSMAN_SEEKNOW_KEY"] },
-    Provider { name: "OathNet", slots: &["HUNTSMAN_OATHNET_KEY"] },
-    Provider { name: "Exa", slots: &["HUNTSMAN_EXA_KEY"] },
-    Provider { name: "OpenRouter", slots: &["HUNTSMAN_OPENROUTER_KEY"] },
-    Provider { name: "Google Gemini", slots: &["HUNTSMAN_GEMINI_KEY"] },
-    Provider { name: "GitHub", slots: &["HUNTSMAN_GITHUB_TOKEN"] },
-    Provider { name: "VirusTotal", slots: &["HUNTSMAN_VIRUSTOTAL_KEY"] },
-    Provider { name: "Censys", slots: &["HUNTSMAN_CENSYS_ID", "HUNTSMAN_CENSYS_SECRET"] },
+    Provider {
+        name: "WiGLE",
+        slots: &["HUNTSMAN_WIGLE_USER", "HUNTSMAN_WIGLE_TOKEN"],
+    },
+    Provider {
+        name: "Brave Search",
+        slots: &["HUNTSMAN_BRAVE_KEY"],
+    },
+    Provider {
+        name: "Shodan",
+        slots: &["HUNTSMAN_SHODAN_KEY"],
+    },
+    Provider {
+        name: "Whoxy",
+        slots: &["HUNTSMAN_WHOXY_KEY"],
+    },
+    Provider {
+        name: "Citadel",
+        slots: &["HUNTSMAN_CITADEL_KEY"],
+    },
+    Provider {
+        name: "HIBP",
+        slots: &["HUNTSMAN_HIBP_KEY"],
+    },
+    Provider {
+        name: "SeekNow",
+        slots: &["HUNTSMAN_SEEKNOW_KEY"],
+    },
+    Provider {
+        name: "OathNet",
+        slots: &["HUNTSMAN_OATHNET_KEY"],
+    },
+    Provider {
+        name: "Exa",
+        slots: &["HUNTSMAN_EXA_KEY"],
+    },
+    Provider {
+        name: "OpenRouter",
+        slots: &["HUNTSMAN_OPENROUTER_KEY"],
+    },
+    Provider {
+        name: "Google Gemini",
+        slots: &["HUNTSMAN_GEMINI_KEY"],
+    },
+    Provider {
+        name: "GitHub",
+        slots: &["HUNTSMAN_GITHUB_TOKEN"],
+    },
+    Provider {
+        name: "VirusTotal",
+        slots: &["HUNTSMAN_VIRUSTOTAL_KEY"],
+    },
+    Provider {
+        name: "Censys",
+        slots: &["HUNTSMAN_CENSYS_ID", "HUNTSMAN_CENSYS_SECRET"],
+    },
 ];
 
 pub fn status(keys: &Keys) -> Vec<ProviderStatus> {
@@ -48,10 +90,17 @@ pub fn status(keys: &Keys) -> Vec<ProviderStatus> {
             let slots: Vec<_> = provider
                 .slots
                 .iter()
-                .map(|&slot| SlotStatus { slot, configured: keys.get(slot).is_some() })
+                .map(|&slot| SlotStatus {
+                    slot,
+                    configured: keys.get(slot).is_some(),
+                })
                 .collect();
             let configured = slots.iter().all(|slot| slot.configured);
-            ProviderStatus { name: provider.name, slots, configured }
+            ProviderStatus {
+                name: provider.name,
+                slots,
+                configured,
+            }
         })
         .collect()
 }
@@ -59,7 +108,11 @@ pub fn status(keys: &Keys) -> Vec<ProviderStatus> {
 pub fn render(keys: &Keys) -> String {
     let mut out = String::new();
     for provider in status(keys) {
-        let state = if provider.configured { "configured" } else { "incomplete" };
+        let state = if provider.configured {
+            "configured"
+        } else {
+            "incomplete"
+        };
         out.push_str("provider=");
         out.push_str(provider.name);
         out.push_str("\tstate=");
@@ -96,7 +149,10 @@ mod tests {
     #[test]
     fn status_requires_every_slot_for_multi_slot_provider() {
         let keys = Keys::parse("HUNTSMAN_WIGLE_USER=user-123\n").expect("keys");
-        let wigle = status(&keys).into_iter().find(|p| p.name == "WiGLE").expect("WiGLE");
+        let wigle = status(&keys)
+            .into_iter()
+            .find(|p| p.name == "WiGLE")
+            .expect("WiGLE");
         assert!(!wigle.configured);
         assert_eq!(wigle.slots[0].configured, true);
         assert_eq!(wigle.slots[1].configured, false);
