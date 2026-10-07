@@ -82,7 +82,11 @@ fn selector_planning_is_typed_and_rejects_unsupported_before_transport() {
         (EntityKind::Domain, "Example.COM", Some("domain")),
         (EntityKind::Person, "Alice Example", Some("name")),
         (EntityKind::Url, "https://example.com/login", Some("url")),
-        (EntityKind::DeviceId, "synthetic-machine-001", Some("machine_id")),
+        (
+            EntityKind::DeviceId,
+            "synthetic-machine-001",
+            Some("machine_id"),
+        ),
     ];
     for (kind, value, expected_type) in cases {
         let plan = plan_selector(&selector(kind, value), &CollectionLimits::default()).unwrap();
@@ -301,13 +305,9 @@ fn stealer_machine_identifiers_map_to_device_entities() {
     )
     .unwrap();
     assert_eq!(batch.outcome, CollectionOutcome::Success);
-    assert!(
-        batch
-            .entities
-            .iter()
-            .any(|entity| entity.kind == EntityKind::DeviceId
-                && entity.value == "synthetic-machine-001")
-    );
+    assert!(batch.entities.iter().any(
+        |entity| entity.kind == EntityKind::DeviceId && entity.value == "synthetic-machine-001"
+    ));
 }
 
 #[test]
