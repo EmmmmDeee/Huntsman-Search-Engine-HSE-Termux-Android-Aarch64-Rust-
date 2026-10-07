@@ -33,6 +33,13 @@ fn main_pushes_publish_main_channel_pre_releases_only() {
     let wf = release();
     for required in [
         "branches:\n      - main",
+        "paths:",
+        "\"src/**\"",
+        "\"Dockerfile\"",
+        "\"scripts/repair-gate.sh\"",
+        "\"scripts/railway-live-acceptance.sh\"",
+        "\"scripts/validate-railway-iac.sh\"",
+        "\".railway/**\"",
         "workflow_dispatch:",
         "refs/heads/main",
         "main-${GITHUB_SHA:0:7}",
@@ -44,6 +51,9 @@ fn main_pushes_publish_main_channel_pre_releases_only() {
         "ASSET: huntsman-recon-aarch64-linux-android",
         "usage: huntsman-recon \\[check",
         "dist/install-termux.sh",
+        "Require merged PR origin for main pushes",
+        "commits/${GITHUB_SHA}/pulls",
+        ".base.ref == \"main\" and .merged_at != null",
     ] {
         assert!(wf.contains(required), "{RELEASE} must contain {required:?}");
     }
@@ -350,6 +360,9 @@ fn release_publish_requires_shared_quality_gate() {
         "bash scripts/repair-gate.sh full",
         "docker build --pull -f Dockerfile -t huntsman-recon:railway .",
         "bash scripts/railway-live-acceptance.sh",
+        "bash scripts/validate-railway-iac.sh",
+        "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0",
+        "node-version: \"22\"",
         "persist-credentials: false",
     ] {
         assert!(
@@ -365,6 +378,50 @@ fn release_publish_requires_shared_quality_gate() {
         publish.contains("needs: [resolve, quality-msrv, quality, build]"),
         "release publish must depend on stable/MSRV quality and the verified build"
     );
+}
+
+#[test]
+fn failed_ci_prereleases_are_machine_quarantined() {
+    let raw = fs::read_to_string(".github/unverified-prereleases.json")
+        .expect("failed-CI prerelease quarantine manifest");
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("valid quarantine JSON");
+    let entries = json["entries"].as_array().expect("entries array");
+    assert!(
+        entries.len() >= 9,
+        "known failed-CI releases must remain quarantined"
+    );
+    for entry in entries {
+        assert_eq!(entry["ci_conclusion"], "failure");
+        assert!(
+            entry["tag"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("main-"),
+            "quarantine entries must be immutable main-channel tags"
+        );
+    }
+
+    let cleanup = fs::read_to_string("scripts/cleanup-unverified-prereleases.sh")
+        .expect("guarded prerelease cleanup script");
+    for required in [
+        "audit|delete",
+        ".github/unverified-prereleases.json",
+        "prerelease",
+        "ci_run_id",
+        "conclusion",
+        "gh release delete",
+        "--cleanup-tag",
+    ] {
+        assert!(
+            cleanup.contains(required),
+            "cleanup script must contain {required:?}"
+        );
+    }
+    let status = Command::new("bash")
+        .args(["-n", "scripts/cleanup-unverified-prereleases.sh"])
+        .status()
+        .expect("bash must execute");
+    assert!(status.success(), "cleanup script must parse as bash");
 }
 
 #[test]
@@ -649,8 +706,8 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
     let resolve = job(&wf, "resolve");
     let build = job(&wf, "build");
     for forbidden in [
-        "gh api",
-        "GH_TOKEN",
+        "releases/tags/",
+        "git/ref/tags/",
         "build=false",
         "publish=false\n            echo \"Release",
     ] {
@@ -660,8 +717,13 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
         );
     }
     assert!(
+        resolve.contains("commits/${GITHUB_SHA}/pulls")
+            && resolve.contains("GH_TOKEN: ${{ github.token }}"),
+        "resolve may use the API only to prove merged-PR origin"
+    );
+    assert!(
         !build.contains("    if:"),
-        "build must run on every main push so publish can verify or refuse an existing release"
+        "build must run whenever the path-scoped release workflow is triggered so publish can verify or refuse an existing release"
     );
     assert!(!wf.contains("needs.resolve.outputs.build"));
     let publish = job(&wf, "publish");
