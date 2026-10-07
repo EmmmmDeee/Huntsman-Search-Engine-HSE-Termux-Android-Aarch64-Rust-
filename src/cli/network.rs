@@ -1,7 +1,26 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
-#[allow(clippy::wildcard_imports)]
-use super::*;
+use std::env;
+use std::path::Path;
+use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE, RECON_USAGE, fail};
+use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use huntsman_recon::crtsh::{self, CrtShError};
+use huntsman_recon::dns;
+use huntsman_recon::egress::EgressPolicy;
+use huntsman_recon::error::Error;
+use huntsman_recon::fetch::{Credential, FetchOptions, fetch};
+use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
+use huntsman_recon::hibp::cli::HibpCommand;
+use huntsman_recon::http::{Request, TransportConfig, UreqTransport, parse_http_uri};
+use huntsman_recon::keys::Keys;
+use huntsman_recon::recon::ReconTargetKind;
+use huntsman_recon::seeknow_cli::{SEEKNOW_USAGE, SeekNowCliRun};
+use huntsman_recon::source_outcome::recommended_action;
+use huntsman_recon::stolen_tax::{self, StolenTaxError};
+use huntsman_recon::textnorm::escape_controls;
 
 pub(super) fn hibp_cmd(args: &[String]) -> ExitCode {
     ExitCode::from(HibpCommand::production().run(
