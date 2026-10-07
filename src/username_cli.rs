@@ -193,7 +193,6 @@ fn error_outcome(module: &str, now_unix: u64, error: &Error) -> SourceExecutionO
     }
 }
 
-
 fn render(report: &Report) -> Result<String, String> {
     let mut out = format!("entities={}\n", report.entities.len());
     for entity in &report.entities {

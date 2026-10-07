@@ -249,7 +249,6 @@ fn ambiguous_upstream_array_counts_as_no_independent_family() {
     assert!(matches!(Lineage::of(evidence), Lineage::Ambiguous { .. }));
 }
 
-
 #[test]
 fn entity_capacity_still_absorbs_evidence_for_existing_uid() {
     let transport = ScriptedTransport::new(vec![response(
