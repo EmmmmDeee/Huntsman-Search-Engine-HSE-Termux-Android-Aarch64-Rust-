@@ -41,8 +41,24 @@ fail() {
   exit 1
 }
 
-command -v timeout >/dev/null 2>&1 \
-  || fail "GNU/coreutils timeout is required for bounded verification"
+for required_tool in timeout sha256sum sort; do
+  command -v "$required_tool" >/dev/null 2>&1 \
+    || fail "required verification tool is missing: $required_tool"
+done
+
+repo_fingerprint() {
+  {
+    git diff --binary --no-ext-diff HEAD --
+    while IFS= read -r -d '' path; do
+      printf '\0untracked\0%s\0' "$path"
+      if [[ -L "$path" ]]; then
+        readlink -- "$path"
+      else
+        sha256sum -- "$path"
+      fi
+    done < <(git ls-files --others --exclude-standard -z | sort -z)
+  } | sha256sum | awk '{print $1}'
+}
 
 run() {
   printf 'repair-gate: RUN:'
@@ -51,9 +67,9 @@ run() {
   timeout --signal=TERM --kill-after=10s "${timeout_seconds}s" "$@"
 }
 
-# Preserve the operator's pre-existing work while detecting any new mutation
-# caused by verification itself. Ignored build products do not enter this set.
-before_status="$(git status --porcelain=v1 --untracked-files=all)"
+# Preserve the operator's pre-existing work while detecting any content change
+# caused by verification itself. Ignored build products do not enter this hash.
+before_fingerprint="$(repo_fingerprint)"
 
 # File/shell contract checks first: fail cheaply before compilation.
 run bash -n scripts/repair-gate.sh
@@ -78,11 +94,10 @@ fi
 
 run cargo run --locked -- check
 
-after_status="$(git status --porcelain=v1 --untracked-files=all)"
-if [[ "$before_status" != "$after_status" ]]; then
-  printf 'repair-gate: repository state changed during verification\n' >&2
-  printf '%s\n' '--- before ---' "$before_status" '--- after ---' "$after_status" >&2
-  fail "verification must not mutate tracked or untracked repository state"
+after_fingerprint="$(repo_fingerprint)"
+if [[ "$before_fingerprint" != "$after_fingerprint" ]]; then
+  git status --short --untracked-files=all >&2 || true
+  fail "verification mutated tracked or untracked repository content"
 fi
 
 printf 'repair-gate: PASS mode=%s timeout=%ss\n' "$mode" "$timeout_seconds"
