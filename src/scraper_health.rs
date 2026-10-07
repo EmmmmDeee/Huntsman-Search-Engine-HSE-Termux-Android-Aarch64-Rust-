@@ -112,9 +112,7 @@ pub fn aggregate_source_health(events_newest_first: &[Event]) -> Vec<SourceHealt
 pub fn quarantined_modules_at(health: &[SourceHealth], now: u64) -> HashSet<String> {
     health
         .iter()
-        .filter(|source| {
-            source.is_drifted() && !source.quarantine_expired(now)
-        })
+        .filter(|source| source.is_drifted() && !source.quarantine_expired(now))
         .map(|source| source.module.clone())
         .collect()
 }
