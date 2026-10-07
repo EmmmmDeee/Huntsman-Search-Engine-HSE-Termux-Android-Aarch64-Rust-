@@ -243,7 +243,7 @@ use super::*;
         );
         assert!(matches!(
             classify_search_body(&ambiguous, "test", "missing"),
-            SearchFetchResult::Drift
+            SearchFetchResult::Inconclusive
         ));
     }
 
@@ -537,7 +537,7 @@ use super::*;
         assert!(
             matches!(
                 classify_search_body(GOLDEN_METAGER_KYLO4KYLO, "metager", "Kylo4kylo"),
-                SearchFetchResult::Drift
+                SearchFetchResult::Inconclusive
             ),
             "MetaGer's marketing/homepage response is semantic drift, not a healthy zero"
         );
