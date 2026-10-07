@@ -116,7 +116,9 @@ pub(super) async fn recycle_entities(
                                     super::record_empty_success(&scan_id, engine_name);
                                     None
                                 }
-                                SearchFetchResult::Blocked | SearchFetchResult::Unreachable => {
+                                SearchFetchResult::Drift
+                                | SearchFetchResult::Blocked
+                                | SearchFetchResult::Unreachable => {
                                     super::record_failure(&scan_id, engine_name);
                                     None
                                 }
