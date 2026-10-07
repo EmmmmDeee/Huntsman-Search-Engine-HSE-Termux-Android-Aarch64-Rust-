@@ -336,12 +336,19 @@ fn per_commit_publish_anchors_the_tag_before_creating_the_draft() {
         .find(|s| s.starts_with("Publish pre-release "))
         .expect("per-commit publish step must exist");
 
+    let pre_tag_head = step
+        .find("git/ref/heads/main")
+        .expect("publish must re-check live main immediately before tag creation");
     let create_ref = step
         .find("gh api -X POST \"$api/git/refs\"")
         .expect("publish must create the immutable tag explicitly");
     let create_release = step
         .find("gh release create \"$TAG\"")
         .expect("publish must create the release");
+    assert!(
+        pre_tag_head < create_ref,
+        "live main must be rechecked immediately before any release tag is created"
+    );
     assert!(
         create_ref < create_release,
         "the immutable tag must exist before draft release creation"
@@ -355,8 +362,8 @@ fn per_commit_publish_anchors_the_tag_before_creating_the_draft() {
         "the tag must be verified before and after draft creation"
     );
     assert!(
-        step.matches("git/ref/heads/main").count() >= 1,
-        "live main must be rechecked before publication"
+        step.matches("git/ref/heads/main").count() >= 2,
+        "live main must be checked both immediately before tag creation and again before publication"
     );
     assert!(
         step.contains("trap cleanup_on_exit EXIT")

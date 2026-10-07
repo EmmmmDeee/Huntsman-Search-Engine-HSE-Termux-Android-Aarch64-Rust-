@@ -693,6 +693,17 @@ jobs:
           }
           trap cleanup_on_exit EXIT
 
+          # Re-check the live head immediately before creating any persistent
+          # ref. The earlier gate runs before attestation and artifact handoff;
+          # main may advance during that interval. A superseded build remains a
+          # verified Actions artifact and must create no transient historical tag.
+          current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)"
+          if [ "$current" != "$GITHUB_SHA" ]; then
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "${TAG}: main advanced to ${current} before tag creation; retaining only the verified Actions artifact." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           # Create the immutable tag explicitly while this commit is still the
           # live main head. A draft release alone is "untagged-*" and does not
           # create refs/tags/$TAG, so the tag is the transaction anchor.
