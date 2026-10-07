@@ -106,6 +106,26 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
         "Railway live acceptance harness must parse as bash"
     );
 
+    let iac_validator =
+        fs::read_to_string("scripts/validate-railway-iac.sh").expect("Railway IaC validator");
+    for required in [
+        "Node.js 22+ required",
+        "railway\": \"3.12.0",
+        "typescript\": \"5.9.3",
+        "./node_modules/.bin/tsc -p tsconfig.json",
+        ".railway/railway.ts",
+    ] {
+        assert!(
+            iac_validator.contains(required),
+            "Railway IaC validator must contain {required:?}"
+        );
+    }
+    let status = Command::new("bash")
+        .args(["-n", "scripts/validate-railway-iac.sh"])
+        .status()
+        .expect("bash must execute in CI");
+    assert!(status.success(), "Railway IaC validator must parse as bash");
+
     let iac = fs::read_to_string(".railway/railway.ts").expect("Railway IaC");
     for required in [
         "railway/iac",
