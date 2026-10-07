@@ -429,10 +429,20 @@ fn within_budget_the_cascade_is_unchanged() {
             ("hudsonrock", 20, HUDSON_HIT),
         ],
     );
-    let budgeted = timed(&clock, &transport).unwrap();
+    let mut budgeted = timed(&clock, &transport).unwrap();
     assert_eq!(transport.sent(), ["snusbase", "osintcat", "hudsonrock"]);
     assert_eq!(clock.elapsed(), Duration::from_secs(90));
-    let plain = lookup(&Paths::ok(&answers), &keys(), "user@example.com", "scan", 0).unwrap();
+    let mut plain = lookup(&Paths::ok(&answers), &keys(), "user@example.com", "scan", 0).unwrap();
+    // These independent calls may cross a wall-clock second boundary.
+    // Compare all report content while normalizing only recording timestamps.
+    for report in [&mut budgeted, &mut plain] {
+        for entity in &mut report.entities {
+            entity.observed_at_unix = 0;
+            for evidence in &mut entity.evidence {
+                evidence.provenance.recorded_at_unix = 0;
+            }
+        }
+    }
     assert_eq!(budgeted, plain);
     assert!(budgeted.failed_paths.is_empty() && budgeted.skipped_paths.is_empty());
     assert!(budgeted.truncation.is_none());
