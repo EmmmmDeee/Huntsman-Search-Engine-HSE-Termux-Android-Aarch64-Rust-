@@ -106,9 +106,7 @@ fn independence(left: &str, right: &str) -> IndependenceEvidence {
         basis: IndependenceBasis::ExplicitUpstreamProvenance,
         method_id: "test:explicit-upstream".into(),
         method_version: 1,
-        supporting_artifact_ids: [ArtifactId::from("sha256:proof")]
-            .into_iter()
-            .collect(),
+        supporting_artifact_ids: [ArtifactId::from("sha256:proof")].into_iter().collect(),
         observed_at_unix: 1,
     }
 }
@@ -128,12 +126,7 @@ fn valid_claim_scoped_proof_can_verify() {
             &policy(1),
             &graph,
             &bindings,
-            &proof(
-                std::slice::from_ref(&evidence_id),
-                &["root-a"],
-                &[],
-                false,
-            ),
+            &proof(std::slice::from_ref(&evidence_id), &["root-a"], &[], false),
         )
         .unwrap();
 
@@ -152,10 +145,8 @@ fn forged_root_or_detached_assertion_cannot_verify() {
     let detached = ledger
         .insert_evidence(evidence("detached", BTreeMap::new()))
         .unwrap();
-    let (graph, bindings) = root_graph(&[
-        (&attached, "root-attached"),
-        (&detached, "root-detached"),
-    ]);
+    let (graph, bindings) =
+        root_graph(&[(&attached, "root-attached"), (&detached, "root-detached")]);
 
     for invalid in [
         proof(
@@ -225,12 +216,7 @@ fn assumption_or_incomplete_proof_cannot_verify() {
             &policy(1),
             &graph,
             &bindings,
-            &proof(
-                std::slice::from_ref(&evidence_id),
-                &["root-a"],
-                &[],
-                true,
-            ),
+            &proof(std::slice::from_ref(&evidence_id), &["root-a"], &[], true),
         )
         .unwrap();
     assert_eq!(incomplete.epistemic, ClaimState::Supported);
