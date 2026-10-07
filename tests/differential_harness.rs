@@ -43,9 +43,8 @@ fn reviewed_differences_are_exact_and_manifest_hashes_are_pinned() {
     let observed = vec![DifferentialEntity::new(EntityKind::Username, "ada")];
     let allowed = vec![AllowedDifference {
         kind: DifferenceKind::Truncated,
-        entity_kind: EntityKind::Username,
-        expected_value: "adalovelace".into(),
-        observed_value: Some("ada".into()),
+        expected: expected[0].clone(),
+        observed: Some(observed[0].clone()),
         reason: "legacy oracle intentionally truncates this recorded fixture".into(),
     }];
 
