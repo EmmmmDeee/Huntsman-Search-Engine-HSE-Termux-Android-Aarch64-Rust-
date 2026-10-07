@@ -121,6 +121,7 @@ pub mod rf;
 pub mod roi;
 pub mod runtime;
 pub mod scan_batch;
+pub mod scan_route;
 pub mod scraper_health;
 pub mod search;
 pub mod seeknow;
