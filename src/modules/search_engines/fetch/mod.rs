@@ -160,7 +160,8 @@ async fn fetch_and_parse_uncached(
     let first_label = outcome_label(&first, false);
 
     // Preserve the first attempt's failure class when a bounded alternate-UA
-    // retry also fails. A successful retry upgrades only to Results.
+    // retry also fails. A successful retry replaces that failure with its own
+    // classified outcome: Results, validated Empty, or semantic Drift.
     let (result, outcome) = if !matches!(&first, SearchFetchResult::Results(_))
         && !matches!(&first, SearchFetchResult::Unreachable)
         && engine.ua != engine.ua_alt
