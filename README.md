@@ -80,6 +80,7 @@ cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero 
 cargo run -- search "brisbane port"    # built-in fixture
 cargo run -- search "brisbane port" docs/
 cargo run -- sources example.com       # classify + build curated routes; no network
+cargo run -- domain-lifecycle analyze docs/domain-lifecycle-example.json --as-of 1000  # offline timeline comparison
 cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
 cargo run -- id "53 004 085 616"        # ABN/ACN/BSB, strict grouping
 cargo run -- geohash -27.4698,153.0251 9
@@ -329,3 +330,8 @@ The listener bounds request headers to 16 KiB, applies finite read/write timeout
 ### Batch scan input
 
 `scan --input-file FILE [-k people|email|username|phone]` accepts UTF-8 files up to 1 MiB with one target per line. Blank lines and lines whose trimmed form starts with `#` are ignored; exact duplicate seeds keep only their first occurrence. A batch is capped at 1000 unique seeds, every accepted seed is attempted even after an earlier failure, and the process exits non-zero after completion if any seed failed. Batch `--save` is refused for now so one seed can never overwrite another seed's ledger artifact.
+
+
+### Domain lifecycle analysis
+
+`domain-lifecycle analyze INPUT.json --as-of UNIX_SECONDS [--output REPORT.json]` compares imported domain observations entirely offline. It preserves source/upstream boundaries, rejects conflicting duplicate identifiers, records failed/truncated observations as coverage gaps, and emits only conservative observed changes. Ownership, causality, and registration availability remain explicitly unknown unless established elsewhere. See [docs/DOMAIN_LIFECYCLE.md](docs/DOMAIN_LIFECYCLE.md).
