@@ -112,12 +112,47 @@ impl DifferentialManifest {
                 .iter()
                 .all(|allowed| allowed.reason.trim().len() >= 20)
     }
+
+    /// Validate the manifest against the approved oracle commit and the exact
+    /// recorded input/golden byte streams.
+    ///
+    /// Shape-only validation is insufficient for a differential receipt:
+    /// callers must prove both content digests and exact oracle identity.
+    pub fn validate_artifacts(
+        &self,
+        approved_oracle_commit: &str,
+        input_bytes: &[u8],
+        golden_bytes: &[u8],
+    ) -> Result<(), ManifestValidationError> {
+        if !self.is_well_formed() || !is_git_sha1(approved_oracle_commit) {
+            return Err(ManifestValidationError::MalformedManifest);
+        }
+        if self.oracle_commit != approved_oracle_commit {
+            return Err(ManifestValidationError::OracleCommitMismatch {
+                expected: approved_oracle_commit.to_owned(),
+                actual: self.oracle_commit.clone(),
+            });
+        }
+        verify_sha256(input_bytes, &self.input_sha256)
+            .map_err(ManifestValidationError::InputHash)?;
+        verify_sha256(golden_bytes, &self.golden_sha256)
+            .map_err(ManifestValidationError::GoldenHash)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HashMismatch {
     pub expected: String,
     pub actual: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManifestValidationError {
+    MalformedManifest,
+    OracleCommitMismatch { expected: String, actual: String },
+    InputHash(HashMismatch),
+    GoldenHash(HashMismatch),
 }
 
 pub fn verify_sha256(bytes: &[u8], expected: &str) -> Result<(), HashMismatch> {
@@ -144,12 +179,16 @@ pub fn snapshot_entities(entities: &[Entity]) -> Vec<DifferentialEntity> {
             continue;
         }
         for evidence in &entity.evidence {
-            let mut snapshot = DifferentialEntity::new(entity.kind.clone(), entity.value.clone())
+            let base = DifferentialEntity::new(entity.kind.clone(), entity.value.clone())
                 .with_source(evidence.provenance.source.clone());
-            if let Some(dataset) = dataset_name(evidence) {
-                snapshot = snapshot.with_dataset(dataset);
+            let datasets = dataset_names(evidence);
+            if datasets.is_empty() {
+                out.insert(base);
+            } else {
+                for dataset in datasets {
+                    out.insert(base.clone().with_dataset(dataset));
+                }
             }
-            out.insert(snapshot);
         }
     }
     out.into_iter().collect()
@@ -231,15 +270,14 @@ fn truncated_match(expected: &DifferentialEntity, observed: &DifferentialEntity)
         && expected.value.starts_with(&observed.value)
 }
 
-fn dataset_name(evidence: &Evidence) -> Option<String> {
-    DATASET_KEYS.iter().find_map(|key| {
-        evidence
-            .attr_values(key)
-            .next()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-    })
+fn dataset_names(evidence: &Evidence) -> BTreeSet<String> {
+    DATASET_KEYS
+        .iter()
+        .flat_map(|key| evidence.attr_values(key))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn is_hex_sha256(value: &str) -> bool {
@@ -266,7 +304,7 @@ mod tests {
             expected[0].clone(),
             DifferentialEntity::new(EntityKind::Domain, "example.org"),
         ];
-        assert!(compare_legacy(&expected, &observed, &[]).is_empty());
+        assert_eq!(compare_legacy(&expected, &observed, &[]), Vec::new());
     }
 
     #[test]
@@ -310,22 +348,30 @@ mod tests {
             reason: "legacy truncation is intentionally retained for this fixture".into(),
             ..weak[0].clone()
         }];
-        assert!(compare_legacy(&expected, &observed, &reviewed).is_empty());
+        assert_eq!(compare_legacy(&expected, &observed, &reviewed), Vec::new());
     }
 
     #[test]
-    fn snapshots_preserve_source_and_dataset_attribution() {
+    fn snapshots_preserve_every_source_and_dataset_attribution() {
         let mut entity = Entity::new(EntityKind::Email, "ADA@EXAMPLE.ORG", 0.8, "scan");
         entity.add_evidence(
             Evidence::new(EvidenceProvenance::for_scan("hibp", "scan"), "record")
-                .with_attr("breach", "Example"),
+                .with_attr("breach", "Example")
+                .with_attr("breach", "Second")
+                .with_attr("dataset", "Third"),
         );
         assert_eq!(
             snapshot_entities(&[entity]),
             vec![
                 DifferentialEntity::new(EntityKind::Email, "ada@example.org")
                     .with_source("hibp")
-                    .with_dataset("Example")
+                    .with_dataset("Example"),
+                DifferentialEntity::new(EntityKind::Email, "ada@example.org")
+                    .with_source("hibp")
+                    .with_dataset("Second"),
+                DifferentialEntity::new(EntityKind::Email, "ada@example.org")
+                    .with_source("hibp")
+                    .with_dataset("Third"),
             ]
         );
     }
@@ -344,5 +390,37 @@ mod tests {
             allowed_differences: Vec::new(),
         };
         assert!(manifest.is_well_formed());
+        assert_eq!(
+            manifest.validate_artifacts(
+                "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
+                b"abc",
+                b"abc",
+            ),
+            Ok(())
+        );
+        assert!(matches!(
+            manifest.validate_artifacts(
+                "0000000000000000000000000000000000000000",
+                b"abc",
+                b"abc",
+            ),
+            Err(ManifestValidationError::OracleCommitMismatch { .. })
+        ));
+        assert!(matches!(
+            manifest.validate_artifacts(
+                "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
+                b"abd",
+                b"abc",
+            ),
+            Err(ManifestValidationError::InputHash(_))
+        ));
+        assert!(matches!(
+            manifest.validate_artifacts(
+                "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
+                b"abc",
+                b"abd",
+            ),
+            Err(ManifestValidationError::GoldenHash(_))
+        ));
     }
 }
