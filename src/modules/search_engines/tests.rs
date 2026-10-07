@@ -2893,7 +2893,7 @@ fn session_dead_threshold_fires_after_n_consecutive_empties() {
     );
     // An UNPROVEN engine (never produced a result) dies fast — google/you/etc.
     for i in 0..SESSION_DEAD_THRESHOLD {
-        record_empty(SCAN_ID, FAKE);
+        record_failure(SCAN_ID, FAKE);
         if i + 1 < SESSION_DEAD_THRESHOLD {
             assert!(
                 !is_session_dead(SCAN_ID, FAKE),
@@ -2915,6 +2915,39 @@ fn session_dead_threshold_fires_after_n_consecutive_empties() {
 }
 
 #[test]
+fn successful_empty_lookup_clears_failure_streak_without_claiming_a_hit() {
+    const SCAN_ID: &str = "__test_empty_success_scan__";
+    const FAKE: &str = "__test_empty_success__";
+
+    let mut map = SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.retain(|(sid, _), _| sid != SCAN_ID);
+    drop(map);
+
+    for _ in 0..SESSION_DEAD_THRESHOLD.saturating_sub(1) {
+        record_failure(SCAN_ID, FAKE);
+    }
+    assert!(!is_session_dead(SCAN_ID, FAKE));
+
+    // A valid zero-result response proves provider availability. It must erase
+    // the failure streak, but it must not grant proven-hit credit.
+    record_empty_success(SCAN_ID, FAKE);
+    let live = SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&(SCAN_ID.to_string(), FAKE))
+        .copied()
+        .unwrap_or_default();
+    assert_eq!(live.consecutive_failures, 0);
+    assert!(!live.ever_hit);
+
+    // One later failure starts a fresh streak rather than completing the old one.
+    record_failure(SCAN_ID, FAKE);
+    assert!(!is_session_dead(SCAN_ID, FAKE));
+}
+
+#[test]
 fn proven_engine_tolerates_long_block_streaks() {
     // A "proven live" engine (≥1 result this session) must ride out the kind of
     // 3-block streaks that intermittently-blocked engines (bing ~48% block,
@@ -2933,16 +2966,16 @@ fn proven_engine_tolerates_long_block_streaks() {
     // Prove it live, then feed it the streak that WOULD have killed it before.
     record_hit(SCAN_ID, FAKE);
     for _ in 0..SESSION_DEAD_THRESHOLD {
-        record_empty(SCAN_ID, FAKE);
+        record_failure(SCAN_ID, FAKE);
     }
     assert!(
         !is_session_dead(SCAN_ID, FAKE),
-        "a proven engine must survive an unproven-length empty streak"
+        "a proven engine must survive an unproven-length failure streak"
     );
 
     // It still dies if the host genuinely goes down for the full tolerant run.
     for _ in SESSION_DEAD_THRESHOLD..SESSION_DEAD_THRESHOLD_PROVEN {
-        record_empty(SCAN_ID, FAKE);
+        record_failure(SCAN_ID, FAKE);
     }
     assert!(
         is_session_dead(SCAN_ID, FAKE),
@@ -2976,7 +3009,7 @@ fn reset_session_liveness_clears_silenced_and_proven_state_across_scans() {
 
     // Scan A: Silence an engine via the unproven threshold
     for _ in 0..SESSION_DEAD_THRESHOLD {
-        record_empty(SCAN_ID_A, FAKE);
+        record_failure(SCAN_ID_A, FAKE);
     }
     assert!(
         is_session_dead(SCAN_ID_A, FAKE),
