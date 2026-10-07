@@ -14,8 +14,7 @@ pub const RECONNAISSANCE_VERSION: &str = "19.2";
 /// Authoritative MITRE page for the scoped Reconnaissance taxonomy.
 pub const RECONNAISSANCE_SOURCE_URL: &str = "https://attack.mitre.org/tactics/TA0043/";
 /// Authoritative MITRE version-history record for the scoped taxonomy version.
-pub const RECONNAISSANCE_VERSION_SOURCE_URL: &str =
-    "https://attack.mitre.org/resources/versions/";
+pub const RECONNAISSANCE_VERSION_SOURCE_URL: &str = "https://attack.mitre.org/resources/versions/";
 /// Version-specific MITRE changelog for the v19.2 delta.
 pub const RECONNAISSANCE_CHANGELOG_URL: &str =
     "https://attack.mitre.org/docs/changelogs/v19.1-v19.2/changelog-detailed.html";
