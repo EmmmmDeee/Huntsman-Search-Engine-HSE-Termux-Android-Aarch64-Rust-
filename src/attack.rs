@@ -2,8 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-pub use crate::attack_catalog::{ENTERPRISE, TACTICS};
-pub use crate::attack_types::{Tactic, Technique};
+pub use crate::attack_catalog::{ENTERPRISE, TACTICS, Tactic, Technique};
 use crate::dependency::ModuleCategory;
 use crate::entity::{Entity, EntityKind};
 use crate::graph::{EntityRelation, RelationKind};
