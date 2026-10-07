@@ -8,8 +8,7 @@ ENV HUNTSMAN_HIBP_NO_EMBED=1
 COPY Cargo.toml Cargo.lock build.rs capabilities.json benchmarks.json ./
 COPY src ./src
 
-RUN cargo build --release --locked --bin huntsman-recon \
-    && strip target/release/huntsman-recon
+RUN cargo build --release --locked --bin huntsman-recon
 
 FROM debian:trixie-slim AS runtime
 
