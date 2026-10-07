@@ -108,7 +108,7 @@ Local search, recorder and ledger, with a guarded fetch layer (egress policy, cr
 For contributors: one Rust package (`huntsman-recon`), Rust 1.87+, no workspace.
 The binary's full command list is available with `huntsman-recon --help`;
 run `huntsman-recon COMMAND --help` for command-specific usage. `diagnostics [--json]`
-is fully offline and reports only non-secret build/runtime/module/provider state; `build-sha`
+is fully offline, backed by the reusable `diagnostics` library module, and reports only non-secret build/runtime/module/provider state; `build-sha`
 prints the source commit embedded by provenance-aware builds and prints `unknown` for
 ad-hoc builds that did not supply one.
 
