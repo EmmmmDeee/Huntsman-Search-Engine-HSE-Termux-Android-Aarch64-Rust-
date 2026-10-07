@@ -7,7 +7,7 @@ use crate::atproto::{
 };
 use crate::canonical::canonical_domain;
 use crate::classifier;
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Transport, append_query_param};
@@ -328,17 +328,6 @@ fn add(
     entities.push(entity);
 }
 
-fn merge_by_uid(entities: &mut Vec<Entity>) {
-    let mut merged: Vec<Entity> = Vec::new();
-    for entity in entities.drain(..) {
-        if let Some(existing) = merged.iter_mut().find(|seen| seen.uid == entity.uid) {
-            existing.absorb(entity);
-        } else {
-            merged.push(entity);
-        }
-    }
-    *entities = merged;
-}
 
 #[cfg(test)]
 mod tests {
