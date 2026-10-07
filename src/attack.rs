@@ -359,6 +359,11 @@ mod tests {
 
     #[test]
     fn reconnaissance_slice_is_exactly_ta0043() {
+        assert_eq!(RECONNAISSANCE_VERSION, "19.2");
+        assert_eq!(reconnaissance_spec_major(), "19");
+        assert_eq!(ATTACK_VERSION, "17.1");
+        assert_eq!(attack_spec_major(), "17");
+
         const FULL: &[&str] = &[
             "T1589",
             "T1589.001",
