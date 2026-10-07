@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use huntsman_recon::attack_cli::{ATTACK_USAGE, render as render_attack};
 use huntsman_recon::au_id::{Identifier, classify as classify_id};
 use huntsman_recon::classifier;
 use huntsman_recon::classifier::classify as classify_indicator;
@@ -50,7 +51,7 @@ use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, 
 use huntsman_recon::web_query;
 use huntsman_recon::web_server::{ServeConfig, Server, resolve_serve_bind};
 
-const USAGE: &str = "usage: huntsman-recon [check | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack status|coverage|gaps [--json]|navigator | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -81,6 +82,7 @@ Commands:
   sf                    SpiderFoot-compatible front end over rebuilt lookup paths
   serve                 Start the embedded Web UI and JSON API
   modules               List only currently reachable rebuilt modules
+  attack                MITRE ATT&CK Reconnaissance posture, coverage, gaps, or Navigator JSON
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
   hibp                  Have I Been Pwned lookups (opt-in; keyed subcommands need a key)
@@ -140,6 +142,7 @@ fn main() -> ExitCode {
         Some("sf") => sf_cmd(&remaining.collect::<Vec<_>>()),
         Some("serve") => serve_cmd(&remaining.collect::<Vec<_>>()),
         Some("modules") => modules_cmd(&remaining.collect::<Vec<_>>()),
+        Some("attack") => attack_cmd(&remaining.collect::<Vec<_>>()),
         Some("classify") => classify(remaining.next(), remaining.next()),
         Some("fetch") => fetch_cmd(&remaining.collect::<Vec<_>>()),
         Some("hibp") => hibp_cmd(&remaining.collect::<Vec<_>>()),
@@ -200,6 +203,9 @@ fn print_command_help(command: &str) {
         }
         "modules" => {
             "modules [--json]\nList only rebuilt modules that are currently reachable through a huntsman-recon command."
+        }
+        "attack" => {
+            "attack status|coverage|gaps [--json] | attack navigator\nRender current Reconnaissance capability coverage from the reachable module catalogue. Parent techniques are roll-ups, not extra scored capabilities."
         }
         "classify" => {
             "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
@@ -884,6 +890,17 @@ fn serve_cmd(args: &[String]) -> ExitCode {
     match server.run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
+    }
+}
+
+fn attack_cmd(args: &[String]) -> ExitCode {
+    match render_attack(args) {
+        Ok(body) => {
+            print!("{body}");
+            ExitCode::SUCCESS
+        }
+        Err(message) if message == ATTACK_USAGE => fail(EX_USAGE, &message),
+        Err(message) => fail(EX_DATAERR, &message),
     }
 }
 
