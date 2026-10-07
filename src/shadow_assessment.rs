@@ -100,5 +100,7 @@ const fn blocker_code(blocker: VerificationBlocker) -> &'static str {
         VerificationBlocker::UndefeatedDefeater => "undefeated_defeater",
         VerificationBlocker::MissingProofEnvironment => "missing_proof_environment",
         VerificationBlocker::IncompleteProof => "incomplete_proof",
+        VerificationBlocker::InvalidProofEnvironment => "invalid_proof_environment",
+        VerificationBlocker::UnresolvedProofAssumption => "unresolved_proof_assumption",
     }
 }
