@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
 use huntsman_recon::classifier::classify as classify_indicator;
 use huntsman_recon::classify::classify_response;
-use huntsman_recon::classify_module::ClassifyModule;
+use huntsman_recon::classifier;
 use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::crtsh::{self, CrtShError};
@@ -686,8 +686,8 @@ fn investigate_cmd(args: &[String]) -> ExitCode {
         args.join(" ")
     };
 
-    let scan_id = uid::scan_id("investigate", &text);
-    let entities = ClassifyModule.process_text(&text, &scan_id);
+    let scan_id = entity::scan_id("investigate", &text);
+    let entities = classifier::extract_entities(&text, &scan_id);
     println!("entities={}", entities.len());
     for entity in entities {
         println!(
