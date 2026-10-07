@@ -559,6 +559,283 @@ jobs:
           SCAN_FOR_KEYS
           bash "$scanner" dist
 
+      - name: Reconcile orphan main-channel draft releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}"
+          # Under the current publication contract a valid main-channel draft
+          # always has a pre-created main-<sha7> tag. A matching draft with no
+          # tag is therefore an interrupted legacy publication, not a live
+          # candidate. Reconcile only that narrow invalid state.
+          while IFS=        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}"
+          files=("$ASSET" "$ASSET.sha256" "$ASSET.provenance.json" key-scan-report.txt install-termux.sh)
+          exists=false
+          if ref="$(gh api "$api/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha' 2>/dev/null)"; then
+            read -r type existing <<<"$ref"
+            [ "$type" = "commit" ] && [ "$existing" = "$GITHUB_SHA" ] \
+              || { echo "::error::tag ${TAG} already exists at ${type} ${existing}, not ${GITHUB_SHA}; refusing"; exit 1; }
+            rel="$(gh api "$api/releases/tags/${TAG}")" \
+              || { echo "::error::tag ${TAG} exists at this commit without a published release; delete the tag to re-publish"; exit 1; }
+            [ "$(jq -r .prerelease <<<"$rel")" = "true" ] || { echo "::error::${TAG} exists and is NOT a pre-release; refusing"; exit 1; }
+            for a in "${files[@]}"; do
+              d="$(jq -r --arg a "$a" '[.assets[] | select(.name == $a)] | if length == 1 then (.[0].digest // "") else "" end' <<<"$rel")"
+              [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] \
+                || { echo "::error::${TAG} exists but asset ${a} is missing or has no digest; delete the pre-release to re-publish"; exit 1; }
+            done
+            exists=true
+            echo "${TAG} was already published by an earlier run at this commit; verifying it, not replacing it." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "exists=${exists}" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether this commit is still main head
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          if [ "$current" = "$GITHUB_SHA" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "main head still matches ${GITHUB_SHA}; publication may proceed."
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "main advanced to ${current}; ${GITHUB_SHA} remains a verified Actions artifact and will not mint a historical release tag." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Attest build provenance
+        id: attest
+        if: steps.existing.outputs.exists == 'false'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: dist/${{ env.ASSET }}
+
+      - name: Warn when attestation failed
+        if: steps.existing.outputs.exists == 'false' && steps.attest.outcome != 'success'
+        run: echo "::warning::attestation upload failed; if this build is still main head it may be published without an attestation, otherwise it remains a CI-only artifact."
+
+      - name: Publish pre-release ${{ needs.resolve.outputs.tag }}
+        id: publish
+        if: steps.existing.outputs.exists == 'false' && steps.head.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}"
+          files=("dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" "dist/key-scan-report.txt" "dist/install-termux.sh")
+          cat > notes.md <<NOTES
+          **In-progress replacement with rebuilt lookup paths.** This is a main-channel **pre-release** of \`huntsman-recon\`, the reconstructed crate, for aarch64 Android/Termux. It includes rebuilt people, email, username, and offline phone paths, but it does not yet cover the complete legacy \`hse\` capability surface. The installer below therefore keeps legacy \`hse\` as the default channel while allowing explicit opt-in to the current Recon build.
+
+          Built from commit \`${GITHUB_SHA}\` by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. \`${ASSET}.provenance.json\` names that commit.
+
+          **Install on Termux.** By default this installs the legacy \`hse\` into \`\$PREFIX/bin/hse\` after checking its sha256:
+
+          \`\`\`bash
+          curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/install-termux.sh | bash
+          \`\`\`
+
+          To opt in to this huntsman-recon pre-release instead (installs \`\$PREFIX/bin/huntsman-recon\` and leaves \`hse\` alone):
+
+          \`\`\`bash
+          curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/install-termux.sh | HUNTSMAN_CHANNEL=recon bash
+          \`\`\`
+
+          Manual recon install:
+
+          \`\`\`bash
+          curl -fsSL -O https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ASSET}
+          curl -fsSL -O https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ASSET}.sha256
+          sha256sum -c ${ASSET}.sha256
+          install -m 0755 ${ASSET} "\$PREFIX/bin/huntsman-recon"
+          huntsman-recon help
+          \`\`\`
+
+          Authenticity (optional): \`gh attestation verify ${ASSET} --repo ${GITHUB_REPOSITORY}\`.
+
+          Built with HSE_RELEASE=1 (no build-time key embedding). \`key-scan-report.txt\` is the zero-finding key scan of these exact files. No Termux handset run is claimed.
+          NOTES
+          candidate_tag=false
+          candidate_release=false
+          cleanup_candidate() {
+            if [ "$candidate_release" = true ]; then
+              gh release delete "$TAG" --yes --cleanup-tag >/dev/null 2>&1 || true
+            elif [ "$candidate_tag" = true ]; then
+              gh api -X DELETE "$api/git/refs/tags/${TAG}" >/dev/null 2>&1 || true
+            fi
+          }
+          cleanup_on_exit() {
+            rc=$?
+            trap - EXIT
+            if [ "$rc" -ne 0 ]; then
+              cleanup_candidate
+            fi
+            exit "$rc"
+          }
+          trap cleanup_on_exit EXIT
+
+          # Create the immutable tag explicitly while this commit is still the
+          # live main head. A draft release alone is "untagged-*" and does not
+          # create refs/tags/$TAG, so the tag is the transaction anchor.
+          gh api -X POST "$api/git/refs" \
+            -f ref="refs/tags/${TAG}" \
+            -f sha="$GITHUB_SHA" >/dev/null
+          candidate_tag=true
+          ref="$(gh api "$api/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')"
+          read -r type actual <<<"$ref"
+          [ "$type" = "commit" ] && [ "$actual" = "$GITHUB_SHA" ] || {
+            echo "::error::created tag ${TAG} resolved to ${type} ${actual}, expected commit ${GITHUB_SHA}"
+            exit 1
+          }
+
+          # Require the pre-created tag; never let gh synthesize an untagged
+          # draft or silently choose a different commit.
+          gh release create "$TAG" "${files[@]}" \
+            --verify-tag --draft --latest=false \
+            --title "$TAG" --notes-file notes.md
+          candidate_release=true
+
+          # Re-check both the immutable tag and live main after draft creation.
+          # If main advanced, remove only this unpublished candidate and retain
+          # the already-verified Actions artifact.
+          ref="$(gh api "$api/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')"
+          read -r type actual <<<"$ref"
+          current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)"
+          if [ "$type" != "commit" ] || [ "$actual" != "$GITHUB_SHA" ] || [ "$current" != "$GITHUB_SHA" ]; then
+            echo "::warning::publication race detected: tag=${type} ${actual}, main=${current}, build=${GITHUB_SHA}. Discarding the unpublished candidate."
+            cleanup_candidate
+            candidate_release=false
+            candidate_tag=false
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "${TAG}: verified build retained only as an Actions artifact because main advanced during publication." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh release edit "$TAG" --draft=false --prerelease --latest=false
+          candidate_release=false
+          candidate_tag=false
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      # OFF by default: nothing moves `latest` unless the repository variable
+      # PROMOTE_RECON_TO_LATEST is exactly 'true'. Until recon can run person
+      # lookups, `latest` stays on the legacy hse build. When on, `latest` only
+      # moves forward: a run whose commit is behind the one `latest` points at
+      # (an out-of-order queue) leaves it alone.
+      - name: Move the rolling `latest` pre-release to this build (opt-in)
+        id: latest
+        if: vars.PROMOTE_RECON_TO_LATEST == 'true' && (steps.existing.outputs.exists == 'true' || steps.publish.outputs.published == 'true')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}"
+          current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)"
+          if [ "$current" != "$GITHUB_SHA" ]; then
+            echo "main advanced to ${current}; not promoting historical build ${GITHUB_SHA} to latest." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "moved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cur="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>/dev/null || true)"
+          if [ -n "$cur" ]; then
+            if [ "$cur" = "$GITHUB_SHA" ]; then status=identical; else
+              status="$(gh api "$api/compare/${cur}...${GITHUB_SHA}" --jq .status)"
+            fi
+            case "$status" in
+              ahead) echo "latest: ${cur} -> ${GITHUB_SHA} (forward)" ;;
+              identical | behind)
+                echo "latest already points at ${cur} (${status}); never moving it backwards." | tee -a "$GITHUB_STEP_SUMMARY"
+                echo "moved=false" >> "$GITHUB_OUTPUT"
+                exit 0 ;;
+              *) echo "::error::latest (${cur}) and ${GITHUB_SHA} are ${status}; refusing to move latest"; exit 1 ;;
+            esac
+          fi
+          if pre="$(gh release view latest --json isPrerelease --jq .isPrerelease 2>/dev/null)"; then
+            [ "$pre" = "true" ] || { echo "::error::release 'latest' exists and is NOT a pre-release; refusing"; exit 1; }
+            gh release delete latest --yes --cleanup-tag
+          fi
+          # A leftover `latest` tag would make the new release reuse it instead of --target.
+          if gh api "$api/git/ref/tags/latest" >/dev/null 2>&1; then
+            gh api -X DELETE "$api/git/refs/tags/latest"
+          fi
+          gh release create latest \
+            "dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" dist/key-scan-report.txt dist/install-termux.sh \
+            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "latest main build (${TAG})" \
+            --notes "Rolling pre-release: huntsman-recon build \`${GITHUB_SHA}\` (also \`${TAG}\`), promoted via PROMOTE_RECON_TO_LATEST. Not a stable release."
+          echo "moved=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify published pre-releases through the API
+        if: steps.existing.outputs.exists == 'true' || steps.publish.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTE: ${{ vars.PROMOTE_RECON_TO_LATEST == 'true' }}
+          EXISTS: ${{ steps.existing.outputs.exists }}
+          MOVED: ${{ steps.latest.outputs.moved }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}"
+          files=("$ASSET" "$ASSET.sha256" "$ASSET.provenance.json" key-scan-report.txt install-termux.sh)
+          fail() { echo "::error::$*"; exit 1; }
+          # Every asset must exist exactly once with a non-empty sha256 digest.
+          # mode=local: each digest must equal this run's downloaded file.
+          # mode=self (an earlier run published it): the binary's digest must
+          # equal the one its own .sha256 asset records.
+          check_release() {
+            local t="$1" mode="$2" rel sha a d want
+            rel="$(gh api "$api/releases/tags/${t}")" || fail "${t}: no published release"
+            [ "$(jq -r .prerelease <<<"$rel")" = "true" ] || fail "${t} is not a pre-release"
+            [ "$(jq -r .draft <<<"$rel")" = "false" ] || fail "${t} is a draft"
+            sha="$(gh api "$api/commits/refs/tags/${t}" --jq .sha)"
+            [ "$sha" = "$GITHUB_SHA" ] || fail "${t} points at ${sha}, not ${GITHUB_SHA}"
+            for a in "${files[@]}"; do
+              d="$(jq -r --arg a "$a" '[.assets[] | select(.name == $a)] | if length == 1 then (.[0].digest // "") else "" end' <<<"$rel")"
+              [ -n "$d" ] || fail "${t} has no digest for asset ${a}"
+              [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "${t} asset ${a} digest '${d}' is not a sha256 digest"
+              if [ "$mode" = local ]; then
+                want="sha256:$(sha256sum "dist/$a" | cut -d' ' -f1)"
+                [ "$d" = "$want" ] || fail "${t} asset ${a} digest ${d} != ${want}"
+              fi
+            done
+            if [ "$mode" = self ]; then
+              rm -rf "$RUNNER_TEMP/self" && mkdir -p "$RUNNER_TEMP/self"
+              gh release download "$t" --pattern "$ASSET.sha256" --dir "$RUNNER_TEMP/self"
+              want="sha256:$(sha256sum "$RUNNER_TEMP/self/$ASSET.sha256" | cut -d' ' -f1)"
+              d="$(jq -r --arg a "$ASSET.sha256" '.assets[] | select(.name == $a) | .digest' <<<"$rel")"
+              [ "$d" = "$want" ] || fail "${t} ${ASSET}.sha256 digest ${d} != downloaded ${want}"
+              want="sha256:$(cut -d' ' -f1 "$RUNNER_TEMP/self/$ASSET.sha256")"
+              d="$(jq -r --arg a "$ASSET" '.assets[] | select(.name == $a) | .digest' <<<"$rel")"
+              [ "$d" = "$want" ] || fail "${t} ${ASSET} digest ${d} != ${want} from its own ${ASSET}.sha256"
+            fi
+            echo "${t}: prerelease=true target=${sha} assets=${#files[@]} digests verified (${mode})" | tee -a "$GITHUB_STEP_SUMMARY"
+          }
+          if [ "$EXISTS" = "true" ]; then check_release "$TAG" self; else check_release "$TAG" local; fi
+          if [ "${MOVED:-}" = "true" ]; then
+            check_release latest local
+          elif [ "$PROMOTE" != "true" ]; then
+            # Not promoted: `latest` must not point at this build.
+            lsha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>/dev/null || echo absent)"
+            [ "$lsha" != "$GITHUB_SHA" ] || fail "latest moved to this build without PROMOTE_RECON_TO_LATEST"
+            echo "latest: not moved (currently ${lsha})" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          latest="$(gh api "$api/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          case "$latest" in main-*|latest) fail "GitHub 'Latest release' is ${latest}" ;; esac
+\t' read -r id stale_tag; do
+            [ -n "$id" ] || continue
+            [[ "$stale_tag" =~ ^main-[0-9a-f]{7}$ ]] || continue
+            if ! gh api "$api/git/ref/tags/${stale_tag}" >/dev/null 2>&1; then
+              echo "Removing orphan draft ${stale_tag} (release id ${id}) with no backing tag." | tee -a "$GITHUB_STEP_SUMMARY"
+              gh api -X DELETE "$api/releases/${id}"
+            fi
+          done < <(
+            gh api --paginate "$api/releases?per_page=100" \
+              --jq '.[] | select(.draft == true) | [.id, .tag_name] | @tsv'
+          )
+
       - name: Check for an existing ${{ needs.resolve.outputs.tag }}
         id: existing
         env:
