@@ -9,7 +9,7 @@ name: Release (prebuilt Termux aarch64 binary)
 #
 # It fires three ways:
 #   • push a version tag `v*`            → publish to that tag
-#   • push to main                       → publish v<Cargo.toml version> if that
+#   • push to legacy-hse                 → publish v<Cargo.toml version> if that
 #                                          tag does not exist yet (a version
 #                                          bump cuts the STABLE release), else
 #                                          publish this commit as pre-release
@@ -53,19 +53,14 @@ on:
 permissions:
   contents: read
 
-# Serialise ALL release runs (one group for the whole workflow, NOT per-ref) so
-# they can't race to build + create + upload the same release. A version-bump
-# push fires two runs with DIFFERENT refs for the SAME version — the branch push
-# (refs/heads/main) and, with --follow-tags, the tag push (refs/tags/v<ver>). A
-# per-ref group put those in separate lanes, so both cross-built and raced the
-# asset upload to one release. A single group makes the second queue behind the
-# first; don't cancel an in-flight publish — let it finish, and the queued
-# follow-up no-ops once the version's tag exists (exactly as intended). Distinct
-# versions serialise too, but releases are infrequent and the build cost is the
-# same, so correctness wins over the lost parallelism.
+# Serialise ALL release runs through one lane so branch pushes and version-tag
+# pushes cannot cross-build and race the same release assets. Never cancel an
+# in-flight publication when a newer commit lands: let it finish, then allow the
+# queued run to verify/publish its own immutable commit build. Releases are
+# infrequent enough that correctness is worth the lost parallelism.
 concurrency:
-  group: legacy-hse-release-${{ github.ref }}
-  cancel-in-progress: true
+  group: legacy-hse-release
+  cancel-in-progress: false
 
 jobs:
   # Decide the target tag and whether there's anything to publish. Splitting this
