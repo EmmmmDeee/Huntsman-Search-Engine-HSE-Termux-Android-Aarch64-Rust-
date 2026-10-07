@@ -3,7 +3,18 @@
 //! Kept separate from CLI dispatch so acceptance logic can evolve and be tested
 //! without further growing the binary entrypoint.
 
-use super::*;
+use super::{
+    ArtifactId, AutoMergePolicy, Candidate, CandidateOutcome, Claim, Classification, EgressPolicy,
+    Evidence, EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceLevel, EvidenceNodeId,
+    EvidenceProvenance, ExecuteRecord, ExitCode, FalsifyRecord, FrontierState, HoldReason,
+    IdentityResolutionDecision, IndependenceBasis, IndependenceEvidence, MergeOutcome, Observation,
+    Path, PersonRecord, ResolutionState, Session, SourceHealthAction, SourceOutcomeKind, Status,
+    TerminationSignals, VerifyRecord, EX_IOERR, MAX_ARTIFACT_BYTES, admitted, append, bundle,
+    chain_intact, classify_fetch, classify_response, decide_termination, directive_lock, effective,
+    engineering_command, fail, geohash, haversine_m, is_configured_value, is_valid_abn,
+    layer, load_chain, origin_of, parse_latlon, recommended_action, redact_url, resolve,
+    resolve_with_lineage, save_chain, scrub_secrets, search_response, seal, write_atomic,
+};
 
 /// Self-acceptance. Each gate has its own exit code; every artifact is regenerated, never left stale.
 pub(super) fn check() -> ExitCode {
