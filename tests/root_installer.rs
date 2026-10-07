@@ -277,7 +277,7 @@ fn legacy_hse_update_contract_routes_to_legacy_channel_without_building_recon() 
     let compat = temp.join("legacy-channel.sh");
     write_executable(
         &compat,
-        "#!/bin/sh\nprintf 'compat channel=%s\\n' \"${HUNTSMAN_CHANNEL:-unset}\" >> \"$INSTALL_LOG\"\nexit 0\n",
+        "#!/bin/sh\nprintf 'compat ref=%s require=%s\\n' \"${HSE_REF:-unset}\" \"${HSE_REQUIRE_SHA:-unset}\" >> \"$INSTALL_LOG\"\nexit 0\n",
     );
 
     let existing_path = std::env::var("PATH").unwrap_or_default();
@@ -302,10 +302,17 @@ fn legacy_hse_update_contract_routes_to_legacy_channel_without_building_recon() 
         String::from_utf8_lossy(&output.stderr)
     );
     let calls = fs::read_to_string(&log).unwrap();
-    assert!(calls.contains("compat channel=hse"), "{calls}");
+    assert!(
+        calls.contains("compat ref=legacy-hse require=unset"),
+        "{calls}"
+    );
     assert!(
         !calls.contains("cargo install"),
         "must not install recon: {calls}"
+    );
+    assert!(
+        !calls.contains("pkg "),
+        "legacy handoff must happen before recon package/toolchain setup: {calls}"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
