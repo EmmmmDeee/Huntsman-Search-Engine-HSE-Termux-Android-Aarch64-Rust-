@@ -9,8 +9,11 @@ Use after any error, bug, broken file, malfunctioning code path, failed refactor
 or suspicious repository change.
 
 fast  - syntax/format + focused repository self-check
-msrv  - full test suite + repository self-check (for Rust 1.87)
-full  - format + strict clippy + full tests + repository self-check
+msrv  - full Rust test suite + repository self-check (for Rust 1.87)
+full  - host acceptance: format + strict clippy + full tests + self-check
+
+A full host pass is necessary but not sufficient for platform-specific changes.
+Railway/container and Android/Termux changes require their platform gates too.
 EOF
 }
 
@@ -24,6 +27,15 @@ esac
 root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
+timeout_seconds="${REPAIR_GATE_TIMEOUT_SECONDS:-3600}"
+case "$timeout_seconds" in
+  ''|*[!0-9]*) printf 'repair-gate: invalid REPAIR_GATE_TIMEOUT_SECONDS=%q\n' "$timeout_seconds" >&2; exit 64 ;;
+esac
+if [[ "$timeout_seconds" -lt 1 ]]; then
+  printf 'repair-gate: REPAIR_GATE_TIMEOUT_SECONDS must be >= 1\n' >&2
+  exit 64
+fi
+
 fail() {
   printf 'repair-gate: FAIL: %s\n' "$*" >&2
   exit 1
@@ -33,8 +45,16 @@ run() {
   printf 'repair-gate: RUN:'
   printf ' %q' "$@"
   printf '\n'
-  "$@"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --signal=TERM --kill-after=10s "${timeout_seconds}s" "$@"
+  else
+    "$@"
+  fi
 }
+
+# Preserve the operator's pre-existing work while detecting any new mutation
+# caused by verification itself. Ignored build products do not enter this set.
+before_status="$(git status --porcelain=v1 --untracked-files=all)"
 
 # File/shell contract checks first: fail cheaply before compilation.
 run bash -n scripts/repair-gate.sh
@@ -54,13 +74,16 @@ if [[ "$mode" == "msrv" || "$mode" == "full" ]]; then
 else
   run cargo test --locked --test directive_lock
   run cargo test --locked --test deployment_targets
+  run cargo test --locked --test repair_contract
 fi
 
-before="$(git status --porcelain -- var/ || true)"
 run cargo run --locked -- check
-after="$(git status --porcelain -- var/ || true)"
-[[ "$before" == "$after" ]] || fail "repository self-check changed committed var/ artifacts"
 
-run git diff --exit-code -- var/
+after_status="$(git status --porcelain=v1 --untracked-files=all)"
+if [[ "$before_status" != "$after_status" ]]; then
+  printf 'repair-gate: repository state changed during verification\n' >&2
+  printf '%s\n' '--- before ---' "$before_status" '--- after ---' "$after_status" >&2
+  fail "verification must not mutate tracked or untracked repository state"
+fi
 
-printf 'repair-gate: PASS mode=%s\n' "$mode"
+printf 'repair-gate: PASS mode=%s timeout=%ss\n' "$mode" "$timeout_seconds"
