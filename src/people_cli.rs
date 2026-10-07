@@ -98,7 +98,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
         };
     }
 
-    let scan_id = entity::scan_id("person", name);
+    let scan_id = crate::entity::scan_id("person", name);
     let mut report = Report::default();
     let mut network = None;
     let mut failed = None;

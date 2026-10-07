@@ -183,7 +183,7 @@ fn run_search<T: Transport + ?Sized>(
         return SeekNowCliRun::Usage;
     }
     let value = value_parts.join(" ");
-    let scan_id = entity::scan_id(&kind.to_string(), &value);
+    let scan_id = crate::entity::scan_id(&kind.to_string(), &value);
     let selector = Entity::new(kind, value, 1.0, scan_id);
     let limits = CollectionLimits::default();
     let batch =
