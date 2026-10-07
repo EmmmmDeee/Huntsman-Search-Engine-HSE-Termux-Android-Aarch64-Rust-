@@ -31,15 +31,12 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
-      - run: cargo fmt --check
+      - name: Run deterministic repair gate (stable)
         if: matrix.toolchain == 'stable'
-      - run: cargo clippy --all-targets --locked -- -D warnings
-        if: matrix.toolchain == 'stable'
-      - run: cargo test --locked
-      - name: check leaves committed artifacts unchanged
-        run: |
-          cargo run --locked -- check
-          git diff --exit-code -- var/
+        run: bash scripts/repair-gate.sh full
+      - name: Run deterministic repair gate (MSRV)
+        if: matrix.toolchain == '1.87'
+        run: bash scripts/repair-gate.sh msrv
 
 
   railway-container:
