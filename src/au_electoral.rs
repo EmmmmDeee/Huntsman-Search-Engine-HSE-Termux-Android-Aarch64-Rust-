@@ -790,9 +790,7 @@ mod tests {
 
     #[test]
     fn extract_division_returns_none_for_the_real_retired_aec_namesearch_response() {
-        let html = include_str!(
-            "../legacy/hse-monolith-v1.41.0/src/modules/au_electoral/testdata/aec_namesearch_retired.html"
-        );
+        let html = include_str!("../tests/fixtures/aec_namesearch_retired.html");
         assert!(
             extract_division(html).is_none(),
             "the retired AEC error page must not parse as an enrolment result"
