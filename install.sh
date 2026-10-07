@@ -9,10 +9,29 @@ if ! command -v pkg >/dev/null 2>&1; then
   exit 1
 fi
 
+case "$(uname -m)" in
+  aarch64|arm64) ;;
+  *)
+    printf 'error: Huntsman Termux installer requires Android ARM64/aarch64 (got %s)\n' "$(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+case "$TERMUX_PREFIX" in
+  /data/data/com.termux/files/usr*) ;;
+  *)
+    printf 'error: non-standard Termux PREFIX: %s\n' "$TERMUX_PREFIX" >&2
+    exit 1
+    ;;
+esac
+
+# Refresh repository metadata before resolving the compiler and runtime tools.
+pkg update -y
+
 # Termux packages the Rust host standard library separately. A partial upgrade can
 # leave rustc newer than rust-std-<host>, producing Cargo failures such as
 # "crate std required to be available in rlib format" before Huntsman is compiled.
-pkg install -y git rust clang
+pkg install -y git rust clang curl coreutils
 
 rust_host="$(rustc -vV | sed -n 's/^host: //p')"
 if [[ -z "$rust_host" ]]; then
@@ -87,4 +106,34 @@ cargo_args+=(
 
 cargo "${cargo_args[@]}"
 
-printf 'Huntsman installed: %s/bin/huntsman-recon\n' "$TERMUX_PREFIX"
+STATE_DIR="${HUNTSMAN_HOME:-$HOME/.huntsman}"
+mkdir -p "$STATE_DIR"
+chmod 0700 "$STATE_DIR"
+
+ENV_FILE="${HUNTSMAN_ENV_FILE:-$HOME/.huntsman.env}"
+if [[ ! -e "$ENV_FILE" ]]; then
+  old_umask="$(umask)"
+  umask 077
+  : > "$ENV_FILE"
+  umask "$old_umask"
+fi
+chmod 0600 "$ENV_FILE"
+
+installed="$TERMUX_PREFIX/bin/huntsman-recon"
+accept_dir="$(mktemp -d "${TMPDIR:-$TERMUX_PREFIX/tmp}/huntsman-install-accept.XXXXXX")"
+cleanup_accept() { rm -rf "$accept_dir"; }
+trap cleanup_accept EXIT
+
+(
+  cd "$accept_dir"
+  timeout 30 "$installed" check >/dev/null
+  timeout 30 "$installed" verify var/ledger.json >/dev/null
+)
+
+rm -rf "$accept_dir"
+trap - EXIT
+
+printf 'Huntsman installed and accepted: %s\n' "$installed"
+printf 'State directory: %s\n' "$STATE_DIR"
+printf 'Runtime variables file: %s\n' "$ENV_FILE"
+printf 'Next: huntsman-recon --help\n'
