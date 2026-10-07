@@ -4,7 +4,7 @@
 //! It does not infer execution from catalogue presence and does not duplicate module
 //! reachability: module evidence comes from `module::reachable_modules`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde_json::json;
@@ -72,6 +72,15 @@ fn modules_for<'a>(
     index.get(id).map_or(&[], Vec::as_slice)
 }
 
+fn mapped_module_count(index: &BTreeMap<&'static str, Vec<&'static str>>) -> usize {
+    index
+        .values()
+        .flatten()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
 fn status(json_output: bool) -> Result<String, String> {
     let (index, raw, hierarchy) = coverage_state();
     if json_output {
@@ -89,6 +98,7 @@ fn status(json_output: bool) -> Result<String, String> {
             "attack_objects_total": hierarchy.attack_objects_total,
             "attack_objects_covered": hierarchy.attack_objects_covered,
             "techniques_with_module_evidence": index.len(),
+            "mapped_network_modules": mapped_module_count(&index),
             "reachable_modules": reachable_modules().len(),
         }));
     }
@@ -102,7 +112,8 @@ Coverage basis    : {} over reachable network modules\n\
 Leaf coverage     : {}/{} ({:.1}%)\n\
 ATT&CK objects    : {}/{} covered (parents retained as roll-ups)\n\
 Mapped techniques : {} with reachable module evidence\n\
-Reachable modules : {}\n\n\
+Mapped collectors : {} reachable network modules\n\
+Reachable modules : {} total CLI-reachable modules\n\n\
 Coverage reports reachable module mapping, not technique execution or detection effectiveness.\n",
         attack::RECONNAISSANCE_VERSION,
         attack::ATTACK_VERSION,
@@ -115,6 +126,7 @@ Coverage reports reachable module mapping, not technique execution or detection 
         hierarchy.attack_objects_covered,
         hierarchy.attack_objects_total,
         index.len(),
+        mapped_module_count(&index),
         reachable_modules().len(),
     ))
 }
@@ -272,6 +284,11 @@ mod tests {
         );
         assert!(value["leaf_techniques_total"].as_u64().unwrap() > 0);
         assert!(value["leaf_techniques_covered"].as_u64().unwrap() > 0);
+        assert!(value["mapped_network_modules"].as_u64().unwrap() > 0);
+        assert!(
+            value["mapped_network_modules"].as_u64().unwrap()
+                <= value["reachable_modules"].as_u64().unwrap()
+        );
         assert!(
             value["leaf_techniques_covered"].as_u64().unwrap()
                 <= value["leaf_techniques_total"].as_u64().unwrap()
@@ -293,6 +310,17 @@ mod tests {
         assert!(covered
             .iter()
             .all(|row| row["evidence_basis"] == "reachable_network_modules"));
+
+        let gaps = render(&args(&["gaps", "--json"])).unwrap();
+        let gap_value: serde_json::Value = serde_json::from_str(&gaps).unwrap();
+        let gap_ids = gap_value["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["id"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(gap_ids.contains("T1681"));
+        assert!(gap_ids.contains("T1682"));
     }
 
     #[test]
