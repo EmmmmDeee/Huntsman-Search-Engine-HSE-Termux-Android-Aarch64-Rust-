@@ -45,7 +45,7 @@ A successful `full` gate requires:
 - strict `cargo clippy --all-targets --locked -- -D warnings`;
 - `cargo test --locked`;
 - `huntsman-recon check`;
-- no uncommitted drift in committed `var/` artifacts.
+- verification does not mutate tracked or untracked repository content, including a worktree that was already dirty before the gate.
 
 ## Acceptance scope matrix
 
