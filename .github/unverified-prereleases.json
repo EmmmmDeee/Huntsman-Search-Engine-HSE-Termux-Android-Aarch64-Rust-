@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "policy": "These immutable main-channel prereleases were published before release publication was coupled to successful repository quality gates. Treat them as unverified and do not promote or use them for acceptance.",
+  "entries": [
+    {
+      "tag": "main-5dfc6e4",
+      "commit": "5dfc6e40d7310f4ec1f94b5ff166112cf4d514bf",
+      "ci_run_id": 37568827325,
+      "release_run_id": 37568827356,
+      "ci_conclusion": "failure"
+    },
+    {
+      "tag": "main-e88cebf",
+      "commit": "e88cebfd6c375c43e53b8568a5731b1a1e9fb00a",
+      "ci_run_id": 37568870563,
+      "release_run_id": 37568868000,
+      "ci_conclusion": "failure"
+    },
+    {
+      "tag": "main-affec61",
+      "commit": "affec61d9b4cbdef005254d111cca61906c5eda4",
+      "ci_run_id": 37568898623,
+      "release_run_id": 37568898795,
+      "ci_conclusion": "failure"
+    },
+    {
+      "tag": "main-88c61aa",
+      "commit": "88c61aa2b4257b70fdee5a665b5b6a2458aa163d",
+      "ci_run_id": 37568961581,
+      "release_run_id": 37568961643,
+      "ci_conclusion": "failure"
+    },
+    {
+      "tag": "main-aa7c882",
+      "commit": "aa7c882a32db550d3574d32d2f413fef5034a6af",
+      "ci_run_id": 37568994517,
+      "release_run_id": 37568994398,
+      "ci_conclusion": "failure"
+    },
+    {
+      "tag": "main-1ca4e59",
+      "commit": "1ca4e591678e0045fbc949494c20fa7b71e4ad8c",
+      "ci_run_id": 37569005000,
+      "release_run_id": 37569004972,
+      "ci_conclusion": "failure"
+    },
+    {
+      "tag": "main-939dfa1",
+      "commit": "939dfa1e59ccfae6388614ac00f999df602e3f5b",
+      "ci_run_id": 37569016960,
+      "release_run_id": 37569017003,
+      "ci_conclusion": "failure"
+    },
+    {
+      "tag": "main-31af7e6",
+      "commit": "31af7e6554c6568ed290fe70a5c53d7ecd3494a1",
+      "ci_run_id": 37569027735,
+      "release_run_id": 37569027731,
+      "ci_conclusion": "failure"
+    },
+    {
+      "tag": "main-4cca9cd",
+      "commit": "4cca9cd7295634301e8c0389b000d0051338dbf4",
+      "ci_run_id": 37569096819,
+      "release_run_id": 37569096727,
+      "ci_conclusion": "failure"
+    }
+  ]
+}
