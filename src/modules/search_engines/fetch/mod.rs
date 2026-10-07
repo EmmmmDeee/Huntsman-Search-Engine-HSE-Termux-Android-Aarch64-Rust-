@@ -107,14 +107,12 @@ fn fetch_timeout_ms(deadline: Instant) -> Option<u64> {
 
 fn explicit_zero_result_page(body: &str) -> bool {
     let lower = body.to_ascii_lowercase();
-    EXPLICIT_ZERO_MARKERS.iter().any(|marker| lower.contains(marker))
+    EXPLICIT_ZERO_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
-fn classify_search_body(
-    body: &str,
-    engine: &'static str,
-    query: &str,
-) -> SearchFetchResult {
+fn classify_search_body(body: &str, engine: &'static str, query: &str) -> SearchFetchResult {
     scan_body_for_keys(body);
     let results = parse_results(body, engine, query);
     if !results.is_empty() {
