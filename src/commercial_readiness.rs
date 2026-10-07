@@ -143,7 +143,7 @@ pub fn readiness_markdown() -> Result<String, String> {
     }
 
     output.push_str(
-        "\nGenerated from capabilities.json and benchmarks.json;          not a valuation or revenue claim.\n",
+        "\nGenerated from capabilities.json and benchmarks.json; not a valuation or revenue claim.\n",
     );
 
     Ok(output)
