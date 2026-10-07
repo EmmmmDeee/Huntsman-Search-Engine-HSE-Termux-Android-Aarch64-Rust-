@@ -57,8 +57,7 @@ const BUILD_SHA: &str = match option_env!("HUNTSMAN_BUILD_SHA") {
     None => "unknown",
 };
 
-fn embedded_build_sha() -> &'static str {
-    let value = BUILD_SHA;
+fn normalized_build_sha(value: &str) -> &str {
     if value.len() == 40
         && value
             .bytes()
@@ -68,6 +67,10 @@ fn embedded_build_sha() -> &'static str {
     } else {
         "unknown"
     }
+}
+
+fn embedded_build_sha() -> &'static str {
+    normalized_build_sha(BUILD_SHA)
 }
 
 const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
@@ -188,4 +191,26 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
 fn fail(code: u8, msg: &str) -> ExitCode {
     eprintln!("{msg}");
     ExitCode::from(code)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_build_sha;
+
+    #[test]
+    fn build_sha_accepts_only_canonical_lowercase_git_hashes() {
+        let valid = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(normalized_build_sha(valid), valid);
+        for invalid in [
+            "",
+            "unknown",
+            "0123456789abcdef",
+            "0123456789abcdef0123456789abcdef012345678",
+            "0123456789ABCDEF0123456789ABCDEF01234567",
+            "g123456789abcdef0123456789abcdef01234567",
+        ] {
+            assert_eq!(normalized_build_sha(invalid), "unknown", "{invalid:?}");
+        }
+    }
 }
