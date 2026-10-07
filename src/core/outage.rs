@@ -92,17 +92,14 @@ pub enum OutageKind {
     /// change resolver (the DoH fallback already does this for HSE's own
     /// requests), not change network.
     DnsUnavailable,
-    /// The system resolver and a DNS-over-HTTPS resolver, asked about the
-    /// SAME domain at roughly the same time, returned disjoint address
-    /// sets: the two paths tell a different truth for one lookup, which a
-    /// healthy resolver should never do for a stable, pinned domain — the
-    /// signature of DNS interception or poisoning, not mere unavailability.
-    /// Checked before the captive-portal signal because a hijacked resolver
-    /// can also make the connectivity probe itself look like a portal; the
-    /// upstream cause is reported, not the downstream symptom.
-    DnsHijacked,
+    /// The system resolver and an independent DNS-over-HTTPS resolver returned
+    /// disjoint address sets for the same lookup. This is a real observation,
+    /// but NOT by itself proof of interception: CDN/anycast geography, resolver
+    /// cache state and load balancing can legitimately yield disjoint subsets.
+    /// Treat this as a reason to re-check, not as a confirmed compromise.
+    DnsDivergent,
     /// DNS resolved (through the system resolver, and it was not judged
-    /// hijacked) and a direct path exists, but the connectivity probe's
+    /// divergent) and a direct path exists, but the connectivity probe's
     /// answer was not the expected 204: something between here and the
     /// probe target is intercepting the request and answering for it — the
     /// signature of a captive portal.
@@ -151,11 +148,11 @@ impl OutageReport {
                  DNS) to a resolver your carrier or network doesn't filter — or wait for the \
                  automatic DNS-over-HTTPS fallback HSE's own requests already use."
             }
-            OutageKind::DnsHijacked => {
-                "The system resolver and an independent DNS-over-HTTPS resolver disagree on \
-                 the same lookup. Do not trust this network's DNS answers for anything \
-                 sensitive; set Android's system-wide Private DNS to a resolver you control, \
-                 or prefer cell data until this clears."
+            OutageKind::DnsDivergent => {
+                "The system resolver and an independent DNS-over-HTTPS resolver returned \
+                 disjoint address sets. That can be normal for CDN/anycast services, so this \
+                 is not proof of DNS interception. Re-run the check and compare against a \
+                 stable authoritative target before escalating the finding."
             }
             OutageKind::CaptivePortal => {
                 "Something between here and the internet is intercepting requests and \
@@ -258,18 +255,6 @@ pub fn classify(path: &OutagePath) -> OutageReport {
                 .to_string(),
         );
     }
-    if let Some(doh) = &path.doh_dns
-        && disjoint(&path.system_dns, doh)
-    {
-        return mk(
-            OutageKind::DnsHijacked,
-            format!(
-                "the system resolver returned {:?} and an independent DNS-over-HTTPS resolver \
-                 returned {doh:?} for the same lookup — no address in common.",
-                path.system_dns
-            ),
-        );
-    }
     if let Some(status) = path.connectivity_status
         && status != 204
     {
@@ -279,6 +264,19 @@ pub fn classify(path: &OutagePath) -> OutageReport {
                 "a neutral connectivity check expected an empty 204 and received {status} \
                  instead: something is intercepting the request and answering for the real \
                  destination."
+            ),
+        );
+    }
+    if let Some(doh) = &path.doh_dns
+        && disjoint(&path.system_dns, doh)
+    {
+        return mk(
+            OutageKind::DnsDivergent,
+            format!(
+                "the system resolver returned {:?} and an independent DNS-over-HTTPS resolver \
+                 returned {doh:?} for the same lookup — no address in common. This is resolver \
+                 divergence, not by itself evidence of interception.",
+                path.system_dns
             ),
         );
     }
