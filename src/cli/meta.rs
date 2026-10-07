@@ -29,11 +29,7 @@ fn diagnostics_value() -> serde_json::Value {
                     .into_iter()
                     .filter(|provider| provider.configured)
                     .count();
-                (
-                    if warning { "warning" } else { "ok" },
-                    warning,
-                    configured,
-                )
+                (if warning { "warning" } else { "ok" }, warning, configured)
             }
             Err(_) => ("error", false, 0),
         };
