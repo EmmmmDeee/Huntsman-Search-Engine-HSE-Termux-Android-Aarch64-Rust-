@@ -11,7 +11,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use crate::attack::{Coverage, Technique, reconnaissance};
+use crate::attack::{
+    Coverage, Technique, coverage, reconnaissance, techniques_for_entity_kind,
+    techniques_for_relation_kind,
+};
+use crate::entity::{Entity, Evidence};
+use crate::graph::EntityRelation;
 
 pub const COVERAGE_BASIS: &str = "leaf_techniques";
 
@@ -24,7 +29,7 @@ pub struct ParentRollup {
     pub total_children: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HierarchyCoverage {
     pub coverage_basis: &'static str,
     pub leaf_techniques_total: usize,
@@ -35,6 +40,59 @@ pub struct HierarchyCoverage {
     pub covered_leaves: Vec<&'static Technique>,
     pub uncovered_leaves: Vec<&'static Technique>,
     pub parent_rollups: Vec<ParentRollup>,
+}
+
+/// Build a descriptive ATT&CK coverage view from one observed entity/relation snapshot.
+///
+/// This is an evidence-to-taxonomy projection, not a claim that a particular
+/// collection technique was executed. Explicit operator seed assertions are
+/// excluded unless the same entity also carries non-seed evidence. Relations
+/// contribute only when both endpoints have at least one non-seed observation.
+#[must_use]
+pub fn coverage_from_observations(
+    entities: &[Entity],
+    relations: &[EntityRelation],
+) -> HierarchyCoverage {
+    let observed_uids: BTreeSet<&str> = entities
+        .iter()
+        .filter(|entity| {
+            entity
+                .evidence
+                .iter()
+                .any(|evidence| !seed_evidence(evidence))
+        })
+        .map(|entity| entity.uid.as_str())
+        .collect();
+
+    let mut exercised = BTreeMap::<String, usize>::new();
+    for entity in entities
+        .iter()
+        .filter(|entity| observed_uids.contains(entity.uid.as_str()))
+    {
+        for id in techniques_for_entity_kind(&entity.kind) {
+            *exercised.entry((*id).to_owned()).or_insert(0) += 1;
+        }
+    }
+
+    for relation in relations.iter().filter(|relation| {
+        observed_uids.contains(relation.from_uid.as_str())
+            && observed_uids.contains(relation.to_uid.as_str())
+    }) {
+        for id in techniques_for_relation_kind(relation.kind) {
+            *exercised.entry((*id).to_owned()).or_insert(0) += 1;
+        }
+    }
+
+    hierarchy_coverage(&coverage(&exercised))
+}
+
+fn seed_evidence(evidence: &Evidence) -> bool {
+    matches!(
+        evidence.provenance.source.as_str(),
+        "operator_input" | "seed"
+    ) || evidence
+        .attr_values("evidence_role")
+        .any(|value| value == "seed_not_external_verification")
 }
 
 /// Derive a hierarchy-aware coverage view from the current ATT&CK catalogue.
@@ -129,6 +187,80 @@ mod tests {
 
     use super::*;
     use crate::attack::{coverage, reconnaissance};
+
+    #[test]
+    fn observed_projection_excludes_seed_only_entities_and_relations() {
+        use crate::entity::{EntityKind, EvidenceProvenance};
+        use crate::graph::RelationKind;
+
+        let mut seed = Entity::new(EntityKind::Email, "seed@example.org", 1.0, "scan");
+        seed.add_evidence(
+            Evidence::new(
+                EvidenceProvenance::for_scan("operator_input", "scan"),
+                "operator seed",
+            )
+            .with_attr("evidence_role", "seed_not_external_verification"),
+        );
+
+        let mut person = Entity::new(EntityKind::Person, "Ada Lovelace", 0.8, "scan");
+        person.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("public_registry", "scan"),
+            "public observation",
+        ));
+
+        let mut address = Entity::new(EntityKind::Address, "Brisbane QLD", 0.7, "scan");
+        address.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("public_registry", "scan"),
+            "public observation",
+        ));
+
+        let relations = vec![
+            EntityRelation::new(
+                seed.uid.clone(),
+                person.uid.clone(),
+                RelationKind::AssociatedWith,
+                0.5,
+            ),
+            EntityRelation::new(
+                person.uid.clone(),
+                address.uid.clone(),
+                RelationKind::LocatedAt,
+                0.8,
+            ),
+        ];
+
+        let report = coverage_from_observations(&[seed, person, address], &relations);
+        let covered: BTreeSet<&str> = report.covered_leaves.iter().map(|item| item.id).collect();
+
+        assert!(covered.contains("T1591.001"));
+        assert!(!covered.contains("T1589.002"));
+    }
+
+    #[test]
+    fn merged_seed_and_external_evidence_is_observed() {
+        use crate::entity::{EntityKind, EvidenceProvenance};
+
+        let mut email = Entity::new(EntityKind::Email, "ada@example.org", 0.8, "scan");
+        email.add_evidence(
+            Evidence::new(
+                EvidenceProvenance::for_scan("operator_input", "scan"),
+                "operator seed",
+            )
+            .with_attr("evidence_role", "seed_not_external_verification"),
+        );
+        email.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("public_profile", "scan"),
+            "provider observation",
+        ));
+
+        let report = coverage_from_observations(&[email], &[]);
+        assert!(
+            report
+                .covered_leaves
+                .iter()
+                .any(|item| item.id == "T1589.002")
+        );
+    }
 
     #[test]
     fn empty_coverage_partitions_current_catalogue_without_fixed_counts() {

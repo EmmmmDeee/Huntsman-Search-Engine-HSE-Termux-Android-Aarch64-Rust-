@@ -4,7 +4,7 @@ use huntsman_recon::analysis::{analyze_snapshot, analyze_snapshot_with_cross_sca
 use huntsman_recon::archive::{ArchiveCapture, ArchiveSource, merge_captures, parse_archive_url};
 use huntsman_recon::archive_bridge::records_to_observation_batch;
 use huntsman_recon::cross_scan::{CrossScanCategory, CrossScanStore};
-use huntsman_recon::entity::{Entity, EntityKind};
+use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
 use huntsman_recon::evidence_ancestry::EvidenceAncestryGraph;
 use huntsman_recon::graph::{EntityRelation, RelationKind};
@@ -54,9 +54,46 @@ fn one_snapshot_drives_intelligence_metrics_gaps_pivots_and_termination() {
     assert_eq!(report.metrics.total_entities, 2);
     assert_eq!(report.metrics.total_relations, 1);
     assert_eq!(report.gaps.linked_seeds, 2);
+    assert_eq!(report.attack.leaf_techniques_covered, 0);
     assert_eq!(report.pivots.len(), 2);
     assert_eq!(report.termination, TerminationReason::FixedPoint);
     assert!(!report.truncated);
+}
+
+#[test]
+fn observed_evidence_drives_attack_projection_without_scoring_seed_assertions() {
+    let mut seed = Entity::new(EntityKind::Email, "seed@example.com", 1.0, "current");
+    seed.add_evidence(
+        Evidence::new(
+            EvidenceProvenance::for_scan("operator_input", "current"),
+            "operator seed",
+        )
+        .with_attr("evidence_role", "seed_not_external_verification"),
+    );
+
+    let mut observed = Entity::new(EntityKind::Email, "ada@example.com", 0.8, "current");
+    observed.add_evidence(Evidence::new(
+        EvidenceProvenance::for_scan("public_profile", "current"),
+        "provider observation",
+    ));
+
+    let snapshot = AnalysisSnapshot {
+        entities: vec![seed, observed],
+        relations: vec![],
+        coverage: vec![],
+        ancestry: EvidenceAncestryGraph::default(),
+        truncated: false,
+    };
+    let report = analyze_snapshot(&snapshot);
+    let covered: Vec<&str> = report
+        .attack
+        .covered_leaves
+        .iter()
+        .map(|item| item.id)
+        .collect();
+
+    assert!(covered.contains(&"T1589.002"));
+    assert_eq!(report.attack.leaf_techniques_covered, 1);
 }
 
 #[test]

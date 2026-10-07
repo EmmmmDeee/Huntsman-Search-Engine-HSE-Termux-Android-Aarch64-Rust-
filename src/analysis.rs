@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 
+use crate::attack_reporting::{HierarchyCoverage, coverage_from_observations};
 use crate::coref::{self, CorefCluster};
 use crate::correlation_bridge;
 use crate::correlator::Correlation;
@@ -23,6 +24,7 @@ use crate::termination::{
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct InvestigationReport {
+    pub attack: HierarchyCoverage,
     pub intelligence: IntelligenceReport,
     pub metrics: ScanMetrics,
     pub gaps: GapReport,
@@ -61,6 +63,7 @@ fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
         .max()
         .unwrap_or(0);
     InvestigationReport {
+        attack: coverage_from_observations(&snapshot.entities, &snapshot.relations),
         intelligence: intelligence::build_intelligence_report(
             &snapshot.entities,
             &snapshot.relations,
