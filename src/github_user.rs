@@ -431,7 +431,7 @@ fn add_blog(user: &GhUser, scan_id: &str, profile_evidence: &Evidence, entities:
             DOMAIN_CONF,
             scan_id,
             profile_evidence.clone().with_attr("blog_url", blog),
-            &["personal-site", "derived"],
+            &["personal-site", "github", "derived"],
         );
     }
 }
