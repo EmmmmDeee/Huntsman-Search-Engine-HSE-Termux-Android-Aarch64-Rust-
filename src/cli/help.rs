@@ -2,7 +2,6 @@
 
 use super::{HELP, RECON_USAGE, USAGE};
 use huntsman_recon::email_cli::EMAIL_HELP;
-use huntsman_recon::fetch_cli::FETCH_USAGE;
 use huntsman_recon::hibp::cli::HIBP_USAGE;
 use huntsman_recon::people_cli::PEOPLE_HELP;
 use huntsman_recon::phone_cli::PHONE_HELP;
