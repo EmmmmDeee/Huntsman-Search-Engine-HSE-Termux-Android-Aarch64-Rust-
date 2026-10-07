@@ -2,11 +2,17 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const DEFAULT_MAIN_REV: &str = "0123456789abcdef0123456789abcdef01234567";
+static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn scratch() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("huntsman-root-installer-{}", std::process::id()));
+    let seq = SCRATCH_SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "huntsman-root-installer-{}-{seq}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
