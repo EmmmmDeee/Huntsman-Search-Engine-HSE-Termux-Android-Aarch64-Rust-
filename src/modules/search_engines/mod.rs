@@ -663,15 +663,17 @@ impl Module for SearchEngines {
                         // failure count in the opposite direction.
                         record_empty_success(&ctx.scan_id, name);
                     }
-                    SearchFetchResult::Inconclusive
-                    | SearchFetchResult::Blocked
-                    | SearchFetchResult::Unreachable
-                        if qi == 0 =>
-                    {
-                        // An unusable response is not healthy-zero evidence.
-                        // Stop spending this target's budget on a source whose
-                        // request, provider contract, or parser is currently
-                        // unusable, and let later targets/retries prove recovery.
+                    SearchFetchResult::Inconclusive if qi == 0 => {
+                        // This response is unusable for the current target, so do
+                        // not spend more of this target's dork budget on it. The
+                        // cause is unresolved, though, so it must NOT poison the
+                        // provider's cross-target failure streak.
+                        dead_engines.insert(name);
+                    }
+                    SearchFetchResult::Blocked | SearchFetchResult::Unreachable if qi == 0 => {
+                        // These are actual provider/request failures. Charge at
+                        // most once per target (query 0), then let later targets
+                        // prove recovery.
                         dead_engines.insert(name);
                         record_failure(&ctx.scan_id, name);
                     }
