@@ -649,8 +649,8 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
     let resolve = job(&wf, "resolve");
     let build = job(&wf, "build");
     for forbidden in [
-        "gh api",
-        "GH_TOKEN",
+        "releases/tags/",
+        "git/ref/tags/",
         "build=false",
         "publish=false\n            echo \"Release",
     ] {
@@ -660,8 +660,13 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
         );
     }
     assert!(
+        resolve.contains("commits/${GITHUB_SHA}/pulls")
+            && resolve.contains("GH_TOKEN: ${{ github.token }}"),
+        "resolve may use the API only to prove merged-PR origin"
+    );
+    assert!(
         !build.contains("    if:"),
-        "build must run on every main push so publish can verify or refuse an existing release"
+        "build must run whenever the path-scoped release workflow is triggered so publish can verify or refuse an existing release"
     );
     assert!(!wf.contains("needs.resolve.outputs.build"));
     let publish = job(&wf, "publish");
