@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::au_id;
 use crate::canonical::{canonical_domain, canonical_email, canonical_phone, canonical_url};
-use crate::entity::EntityKind;
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 
 pub const ACTIONABLE_FLOOR: f64 = 0.50;
 
@@ -105,6 +105,33 @@ pub fn extract(text: &str) -> Vec<Classified> {
     out
 }
 
+
+#[must_use]
+pub fn extract_entities(text: &str, scan_id: &str) -> Vec<Entity> {
+    extract(text)
+        .into_iter()
+        .filter(Classified::is_actionable)
+        .map(|classified| {
+            Entity::builder(
+                classified.kind,
+                classified.value,
+                classified.confidence,
+                scan_id,
+            )
+            .tag("classified")
+            .tag("auto-seed")
+            .evidence(
+                Evidence::new(
+                    EvidenceProvenance::for_scan("classifier", scan_id),
+                    format!("{} match in unstructured input", classified.signal),
+                )
+                .with_attr("signal", classified.signal),
+            )
+            .build()
+        })
+        .collect()
+}
+
 fn classified(kind: EntityKind, value: &str, confidence: f64, signal: &'static str) -> Classified {
     Classified {
         kind,
@@ -160,6 +187,16 @@ fn decimal_degree(raw: &str, max_int_digits: usize, limit: f64) -> Option<&str> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actionable_entities_are_emitted() {
+        let entities = extract_entities(
+            "see https://example.com and ada@example.com",
+            "scan",
+        );
+        assert_eq!(entities.len(), 2);
+        assert!(entities.iter().all(|entity| entity.has_tag("classified")));
+    }
 
     #[test]
     fn classifies_structural_values() {
