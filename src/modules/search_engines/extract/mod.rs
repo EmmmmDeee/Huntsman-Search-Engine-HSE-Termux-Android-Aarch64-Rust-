@@ -116,10 +116,14 @@ pub(super) async fn recycle_entities(
                                     super::record_empty_success(&scan_id, engine_name);
                                     None
                                 }
-                                SearchFetchResult::Inconclusive
-                                | SearchFetchResult::Blocked
+                                SearchFetchResult::Inconclusive => None,
+                                SearchFetchResult::Blocked
                                 | SearchFetchResult::Unreachable => {
-                                    super::record_failure(&scan_id, engine_name);
+                                    // The primary pass owns the per-target
+                                    // failure charge. A recycler fan-out has
+                                    // many queries for the same seed, so charging
+                                    // each one would turn one target into an
+                                    // artificial multi-"seed" failure streak.
                                     None
                                 }
                             }
