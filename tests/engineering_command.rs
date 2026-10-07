@@ -173,7 +173,7 @@ fn canonical_team_directive_is_identical_across_agent_instruction_surfaces() {
         "canonical Huntsman team directive changed"
     );
 
-    for path in ["CLAUDE.md", "GEMINI.md", ".github/copilot-instructions.md"] {
+    for path in ["HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md", "CLAUDE.md", "GEMINI.md", ".github/copilot-instructions.md"] {
         let mirrored = fs::read(root().join(path))
             .unwrap_or_else(|error| panic!("{path} must exist: {error}"));
         assert_eq!(
