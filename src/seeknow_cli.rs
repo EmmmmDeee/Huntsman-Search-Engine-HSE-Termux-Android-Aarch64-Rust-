@@ -19,7 +19,6 @@ use crate::lineage::Lineage;
 use crate::seeknow::{KEY_SLOT, credits, status};
 use crate::seeknow_collector::{SeekNowCollectionMode, collect_with_credential};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
-use crate::uid;
 
 pub const SEEKNOW_USAGE: &str = "usage: huntsman-recon seeknow [status | credits | search KIND VALUE [--deep | --fast-only]] [--keys FILE]";
 pub const SEEKNOW_HELP: &str = "\
