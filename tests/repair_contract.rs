@@ -63,7 +63,8 @@ fn repair_protocol_covers_failure_regression_and_platform_semantics() {
         "Retain or roll back",
         "bash scripts/repair-gate.sh full",
         "Railway/container",
-        "Android/Termux",
+        "Android cross-build",
+        "Termux runtime behavior",
         "host gate is necessary, not universally sufficient",
         "bash scripts/railway-live-acceptance.sh",
     ] {
