@@ -66,6 +66,10 @@ impl SearchFetchResult {
     fn should_retry_alt_ua(&self) -> bool {
         matches!(self, Self::Inconclusive | Self::Blocked)
     }
+
+    pub(super) fn is_provider_failure(&self) -> bool {
+        matches!(self, Self::Blocked | Self::Unreachable)
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
