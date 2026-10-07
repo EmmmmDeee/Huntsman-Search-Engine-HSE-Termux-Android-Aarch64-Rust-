@@ -56,6 +56,33 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
         "Railway entrypoint must parse as POSIX sh"
     );
 
+    let live_acceptance = fs::read_to_string("scripts/railway-live-acceptance.sh")
+        .expect("Railway live acceptance harness");
+    for required in [
+        "HUNTSMAN_RAILWAY_URL",
+        "HSE_AUTH_TOKEN",
+        "/api/health",
+        "/api/modules",
+        "/api/command",
+        "unauthenticated_modules=401",
+        "authenticated_modules=200",
+        "authenticated_command=200",
+    ] {
+        assert!(
+            live_acceptance.contains(required),
+            "Railway live acceptance harness must contain {required:?}"
+        );
+    }
+
+    let status = Command::new("bash")
+        .args(["-n", "scripts/railway-live-acceptance.sh"])
+        .status()
+        .expect("bash must execute in CI");
+    assert!(
+        status.success(),
+        "Railway live acceptance harness must parse as bash"
+    );
+
     let iac = fs::read_to_string(".railway/railway.ts").expect("Railway IaC");
     for required in [
         "railway/iac",
