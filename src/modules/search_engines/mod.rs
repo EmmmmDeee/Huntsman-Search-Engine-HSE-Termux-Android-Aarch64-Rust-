@@ -111,12 +111,12 @@ const SESSION_DEAD_THRESHOLD: u8 = 3;
 /// ride out a normal block streak, low enough to abandon a truly dead host.
 const SESSION_DEAD_THRESHOLD_PROVEN: u8 = 10;
 
-/// Per-engine session liveness: consecutive empties and whether the engine has
-/// EVER returned a result this run. Scoped per scan under `hse serve` / `hse live`
-/// to prevent concurrent scans from poisoning each other's liveness state.
+/// Per-engine session liveness: consecutive request failures and whether the
+/// engine has EVER returned a result this run. A successful zero-result page is
+/// availability evidence, not failure evidence.
 #[derive(Default, Clone, Copy)]
 struct EngineLiveness {
-    consecutive_empty: u8,
+    consecutive_failures: u8,
     ever_hit: bool,
 }
 
@@ -146,37 +146,47 @@ fn is_session_dead(scan_id: &str, name: &str) -> bool {
         .get(&(scan_id.to_string(), name))
         .copied()
         .unwrap_or_default();
-    live.consecutive_empty >= dead_threshold(live)
+    live.consecutive_failures >= dead_threshold(live)
 }
 
-/// Increment the empty streak for `name`; log once when it crosses its
-/// (proven-aware) threshold so operators know why it was silenced.
-fn record_empty(scan_id: &str, name: &'static str) {
+/// Record an actual provider/request failure for `name`; log once when the
+/// failure streak crosses its proven-aware threshold.
+fn record_failure(scan_id: &str, name: &'static str) {
     let mut map = SESSION_EMPTY_COUNTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let live = map.entry((scan_id.to_string(), name)).or_default();
-    live.consecutive_empty = live.consecutive_empty.saturating_add(1);
+    live.consecutive_failures = live.consecutive_failures.saturating_add(1);
     let threshold = dead_threshold(*live);
-    if live.consecutive_empty == threshold {
+    if live.consecutive_failures == threshold {
         tracing::debug!(
             engine = name,
             threshold,
             proven = live.ever_hit,
-            "search engine returned nothing for {threshold} consecutive seeds \
+            "search engine failed for {threshold} consecutive seeds \
              — silenced for the rest of this scan"
         );
     }
 }
 
-/// Reset the empty streak for `name` when it actually returns results, and mark
-/// it "proven live" so future streaks are judged against the tolerant threshold.
+/// A valid response containing zero matching results proves the engine is
+/// reachable. Clear any failure streak without awarding "proven hit" credit.
+fn record_empty_success(scan_id: &str, name: &'static str) {
+    let mut map = SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let live = map.entry((scan_id.to_string(), name)).or_default();
+    live.consecutive_failures = 0;
+}
+
+/// Reset the failure streak for `name` when it returns results, and mark it
+/// "proven live" so future failure streaks use the tolerant threshold.
 fn record_hit(scan_id: &str, name: &'static str) {
     let mut map = SESSION_EMPTY_COUNTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let live = map.entry((scan_id.to_string(), name)).or_default();
-    live.consecutive_empty = 0;
+    live.consecutive_failures = 0;
     live.ever_hit = true;
 }
 
@@ -188,6 +198,7 @@ fn record_hit(scan_id: &str, name: &'static str) {
 /// surgical — only this scan's state is cleared, allowing concurrent scans to
 /// maintain independent liveness records.
 pub(crate) fn reset_session_liveness(scan_id: &str) {
+    fetch::reset_scan_singleflight(scan_id);
     let mut map = SESSION_EMPTY_COUNTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -362,10 +373,12 @@ async fn fetch_engine(
     query: String,
     qi: usize,
     deadline: std::time::Instant,
-) -> (&'static str, Option<Vec<SearchResult>>) {
-    let Some(mut acc) = fetch_and_parse(&url, engine, &query, post_body.as_deref(), deadline).await
-    else {
-        return (engine.name, None);
+) -> (&'static str, SearchFetchResult) {
+    let first =
+        fetch_and_parse_classified(&url, engine, &query, post_body.as_deref(), deadline).await;
+    let mut acc = match first {
+        SearchFetchResult::Results(results) => results,
+        other => return (engine.name, other),
     };
     if qi == 0
         && let Some(pf) = engine.paginate
@@ -380,7 +393,7 @@ async fn fetch_engine(
             }
         }
     }
-    (engine.name, Some(acc))
+    (engine.name, SearchFetchResult::Results(acc))
 }
 
 /// Fan one query out across `engines` — already filtered and ordered by the
@@ -400,7 +413,7 @@ async fn run_engine_batch(
     query: &str,
     qi: usize,
     deadline: std::time::Instant,
-) -> Vec<(&'static str, Option<Vec<SearchResult>>)> {
+) -> Vec<(&'static str, SearchFetchResult)> {
     let futs: Vec<_> = engines
         .into_iter()
         .map(|engine| {
@@ -409,7 +422,7 @@ async fn run_engine_batch(
             fetch_engine(engine, url, post_body, query.to_string(), qi, deadline)
         })
         .collect();
-    let mut batch: Vec<(&'static str, Option<Vec<SearchResult>>)> = futures::stream::iter(futs)
+    let mut batch: Vec<(&'static str, SearchFetchResult)> = futures::stream::iter(futs)
         .buffer_unordered(ENGINE_CONCURRENCY)
         .collect()
         .await;
@@ -631,24 +644,30 @@ impl Module for SearchEngines {
                 primary_deadline,
             )
             .await;
-            for (name, res) in batch {
-                match res {
-                    Some(mut results) => {
-                        // fetch_engine only returns Some(...) when results are
-                        // non-empty (empty → None via fetch_and_parse). Reset
-                        // the session-dead streak for this engine on qi == 0.
+            for (name, outcome) in batch {
+                match outcome {
+                    SearchFetchResult::Results(mut results) => {
                         if qi == 0 {
                             record_hit(&ctx.scan_id, name);
                         }
                         all_results.append(&mut results);
                     }
-                    // Nothing on the FIRST query → down/blocked for this session;
-                    // skip it on subsequent queries to save the budget.
-                    None if qi == 0 => {
-                        dead_engines.insert(name);
-                        record_empty(&ctx.scan_id, name);
+                    SearchFetchResult::Empty => {
+                        // A real results page with no match is a successful
+                        // lookup. Keep this engine eligible for later, more
+                        // specific dorks and clear any prior failure streak.
+                        if qi == 0 {
+                            record_empty_success(&ctx.scan_id, name);
+                        }
                     }
-                    None => {}
+                    SearchFetchResult::Blocked | SearchFetchResult::Unreachable if qi == 0 => {
+                        // Only actual request/provider failure makes the engine
+                        // ineligible for the rest of this target and advances
+                        // the cross-target failure quarantine.
+                        dead_engines.insert(name);
+                        record_failure(&ctx.scan_id, name);
+                    }
+                    SearchFetchResult::Blocked | SearchFetchResult::Unreachable => {}
                 }
             }
             // Working-set ceiling for a broad multi-dork scan on a low-RAM
@@ -748,7 +767,8 @@ impl Module for SearchEngines {
         //    discovered entities for geolocation and cross-linking ─────
         let elapsed_ms = process_start.elapsed().as_millis() as u64;
         let remaining_ms = budget_ms.saturating_sub(elapsed_ms);
-        if !ctx.cancel.is_cancelled() && remaining_ms > 15_000 {
+        let recycler_min_remaining_ms = FINALIZE_MARGIN_MS + fetch::MIN_FETCH_MS;
+        if !ctx.cancel.is_cancelled() && remaining_ms > recycler_min_remaining_ms {
             recycle_entities(
                 ctx,
                 &mut module_result,
@@ -757,11 +777,12 @@ impl Module for SearchEngines {
                 fetch_deadline,
             )
             .await;
-        } else if !ctx.cancel.is_cancelled() && remaining_ms <= 15_000 {
+        } else if !ctx.cancel.is_cancelled() {
             tracing::debug!(
                 elapsed_ms,
                 remaining_ms,
-                "recycler pass skipped: insufficient time remaining (need 15s, have {remaining_ms}ms)"
+                recycler_min_remaining_ms,
+                "recycler pass skipped: insufficient time remaining"
             );
         }
 
@@ -800,7 +821,7 @@ pub(crate) fn session_dead(name: &str) -> bool {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .any(|((_, engine_name), live)| {
-            *engine_name == name && live.consecutive_empty >= dead_threshold(*live)
+            *engine_name == name && live.consecutive_failures >= dead_threshold(*live)
         })
 }
 
