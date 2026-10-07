@@ -652,12 +652,32 @@ jobs:
 
           Built with HSE_RELEASE=1 (no build-time key embedding). \`key-scan-report.txt\` is the zero-finding key scan of these exact files. No Termux handset run is claimed.
           NOTES
+          candidate_tag=false
+          candidate_release=false
+          cleanup_candidate() {
+            if [ "$candidate_release" = true ]; then
+              gh release delete "$TAG" --yes --cleanup-tag >/dev/null 2>&1 || true
+            elif [ "$candidate_tag" = true ]; then
+              gh api -X DELETE "$api/git/refs/tags/${TAG}" >/dev/null 2>&1 || true
+            fi
+          }
+          cleanup_on_exit() {
+            rc=$?
+            trap - EXIT
+            if [ "$rc" -ne 0 ]; then
+              cleanup_candidate
+            fi
+            exit "$rc"
+          }
+          trap cleanup_on_exit EXIT
+
           # Create the immutable tag explicitly while this commit is still the
           # live main head. A draft release alone is "untagged-*" and does not
           # create refs/tags/$TAG, so the tag is the transaction anchor.
           gh api -X POST "$api/git/refs" \
             -f ref="refs/tags/${TAG}" \
             -f sha="$GITHUB_SHA" >/dev/null
+          candidate_tag=true
           ref="$(gh api "$api/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')"
           read -r type actual <<<"$ref"
           [ "$type" = "commit" ] && [ "$actual" = "$GITHUB_SHA" ] || {
@@ -668,12 +688,10 @@ jobs:
 
           # Require the pre-created tag; never let gh synthesize an untagged
           # draft or silently choose a different commit.
-          if ! gh release create "$TAG" "${files[@]}" \
+          gh release create "$TAG" "${files[@]}" \
             --verify-tag --draft --latest=false \
-            --title "$TAG" --notes-file notes.md; then
-            gh api -X DELETE "$api/git/refs/tags/${TAG}" >/dev/null 2>&1 || true
-            exit 1
-          fi
+            --title "$TAG" --notes-file notes.md
+          candidate_release=true
 
           # Re-check both the immutable tag and live main after draft creation.
           # If main advanced, remove only this unpublished candidate and retain
@@ -684,11 +702,15 @@ jobs:
           if [ "$type" != "commit" ] || [ "$actual" != "$GITHUB_SHA" ] || [ "$current" != "$GITHUB_SHA" ]; then
             echo "::warning::publication race detected: tag=${type} ${actual}, main=${current}, build=${GITHUB_SHA}. Discarding the unpublished candidate."
             gh release delete "$TAG" --yes --cleanup-tag
+            candidate_release=false
+            candidate_tag=false
             echo "published=false" >> "$GITHUB_OUTPUT"
             echo "${TAG}: verified build retained only as an Actions artifact because main advanced during publication." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           gh release edit "$TAG" --draft=false --prerelease --latest=false
+          candidate_release=false
+          candidate_tag=false
           echo "published=true" >> "$GITHUB_OUTPUT"
 
       # OFF by default: nothing moves `latest` unless the repository variable
