@@ -11,6 +11,7 @@ release yet; pushes to `main` publish `main-<sha7>` pre-releases (#672). Release
 
 ### Added
 
+- Provider credential automation: `credential-status [--probe] [FILE]` resolves the existing private runtime key sources, reports completeness without values, and can run canonical live provider probes. HIBP uses `/subscription/status` with the required `User-Agent` and returns non-secret plan/RPM/entitlement metadata.
 - `seeknow` command: opt-in SeekNow/See-Know lookups through guarded `fetch`,
   with typed entitlement/quota outcomes, a generic collector boundary, and
   lineage-safe L5 collection. Fast/deep duplicates do not manufacture
@@ -63,6 +64,7 @@ release yet; pushes to `main` publish `main-<sha7>` pre-releases (#672). Release
 
 ### Changed
 
+- HIBP's process-wide sliding-window limiter now adopts a positive `Rpm` from each successful subscription-status response while preserving already-consumed capacity; the configured/default budget remains the bootstrap and 429 backoff remains authoritative.
 - `huntsman-recon` is the only current tree. The HSE v1.41.0 monolith and the
   refactor overlay are read-only reference under `legacy/` (f0a1c64c, #668).
 - `search` is local retrieval over operator-supplied documents; a challenge

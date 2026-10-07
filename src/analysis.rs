@@ -49,7 +49,6 @@ fn termination_for(snapshot: &AnalysisSnapshot) -> TerminationReason {
     decide_termination(frontier, signals).unwrap_or(TerminationReason::FixedPoint)
 }
 
-
 fn correlate_entities_at(
     entities: &[crate::entity::Entity],
     scan_id: &str,
@@ -87,11 +86,7 @@ fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
         gaps: gap::analyze(&snapshot.entities, &snapshot.relations),
         pivots: pivot::rank_pivots(&graph),
         coreference: coref::cluster_entities(&snapshot.entities),
-        correlations: correlate_entities_at(
-            &snapshot.entities,
-            scan_id,
-            now_unix,
-        ),
+        correlations: correlate_entities_at(&snapshot.entities, scan_id, now_unix),
         cross_scan: None,
         cross_scan_history: build_cross_scan_history(&snapshot.entities),
         coverage: coverage_verdict(&snapshot.coverage),

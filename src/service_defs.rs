@@ -274,6 +274,17 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         success_indicates_valid_key: false,
     },
     ServiceDef {
+        name: "hibp",
+        env_var: "HUNTSMAN_HIBP_KEY",
+        category: "breach",
+        test_url: "https://haveibeenpwned.com/api/v3/subscription/status",
+        probe_method: Method::Get,
+        key_placement: KeyPlacement::Header("hibp-api-key"),
+        rate_limit_reset_secs: 60,
+        probe_body: None,
+        success_indicates_valid_key: true,
+    },
+    ServiceDef {
         name: "osintcat",
         env_var: "HUNTSMAN_OSINTCAT_KEY",
         category: "breach",
@@ -372,6 +383,9 @@ pub fn build_probe_request(service: &ServiceDef, key: &str) -> Request {
             request = request.header(*name, format!("{prefix} {key}"));
         }
     }
+    if service.name == "hibp" {
+        request = request.header("User-Agent", crate::hibp::client::USER_AGENT);
+    }
     if matches!(service.probe_method, Method::Post) && !request.body.is_empty() {
         request = request.header("Content-Type", "application/json");
     }
@@ -448,6 +462,27 @@ pub fn extract_probe_evidence(service: &str, response: &Response) -> Vec<(String
                 .and_then(serde_json::Value::as_u64)
             {
                 out.push(("daily_quota".to_string(), allowed.to_string()));
+            }
+            out
+        }
+        "hibp" => {
+            let mut out = Vec::new();
+            if let Some(name) = body
+                .get("SubscriptionName")
+                .and_then(serde_json::Value::as_str)
+            {
+                out.push(("subscription_name".to_string(), name.to_string()));
+            }
+            if let Some(rpm) = body.get("Rpm").and_then(serde_json::Value::as_u64) {
+                out.push(("rpm".to_string(), rpm.to_string()));
+            }
+            for (field, label) in [
+                ("IncludesStealerLogs", "includes_stealer_logs"),
+                ("IncludesKAnon", "includes_k_anon"),
+            ] {
+                if let Some(enabled) = body.get(field).and_then(serde_json::Value::as_bool) {
+                    out.push((label.to_string(), enabled.to_string()));
+                }
             }
             out
         }
@@ -546,6 +581,18 @@ mod tests {
         assert_eq!(
             threatfox_request.body,
             br#"{"query":"get_iocs","limit":1}"#.to_vec()
+        );
+
+        let hibp = find_service("hibp").expect("hibp");
+        let hibp_request = build_probe_request(hibp, "test-key");
+        assert_eq!(
+            hibp_request.url,
+            "https://haveibeenpwned.com/api/v3/subscription/status"
+        );
+        assert_eq!(hibp_request.header_value("hibp-api-key"), Some("test-key"));
+        assert_eq!(
+            hibp_request.header_value("User-Agent"),
+            Some(crate::hibp::client::USER_AGENT)
         );
     }
 

@@ -105,7 +105,6 @@ pub fn extract(text: &str) -> Vec<Classified> {
     out
 }
 
-
 #[must_use]
 pub fn extract_entities(text: &str, scan_id: &str) -> Vec<Entity> {
     extract(text)
@@ -190,10 +189,7 @@ mod tests {
 
     #[test]
     fn actionable_entities_are_emitted() {
-        let entities = extract_entities(
-            "see https://example.com and ada@example.com",
-            "scan",
-        );
+        let entities = extract_entities("see https://example.com and ada@example.com", "scan");
         assert_eq!(entities.len(), 2);
         assert!(entities.iter().all(|entity| entity.has_tag("classified")));
     }

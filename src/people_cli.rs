@@ -14,7 +14,7 @@ use crate::asic_director;
 use crate::asic_persons;
 use crate::au_electoral;
 use crate::au_people;
-use crate::entity::{Entity, merge_by_uid};
+use crate::entity::{self, Entity, merge_by_uid};
 use crate::error::Error;
 use crate::evidence_ancestry::EvidenceNodeId;
 use crate::http::Transport;
@@ -267,7 +267,6 @@ fn name_tokens(name: &str) -> Vec<String> {
         .map(str::to_ascii_lowercase)
         .collect()
 }
-
 
 fn render(report: &Report) -> Result<String, String> {
     let mut out = format!("entities={}\n", report.entities.len());
@@ -568,8 +567,13 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&dir);
                 std::fs::create_dir_all(&dir).unwrap();
                 let path = dir.join("people.json");
-                let entries =
-                    crate::lookup_save::save(&path, &report.entities, &report.outcomes, crate::lookup_save::PEOPLE_POLICY).unwrap();
+                let entries = crate::lookup_save::save(
+                    &path,
+                    &report.entities,
+                    &report.outcomes,
+                    crate::lookup_save::PEOPLE_POLICY,
+                )
+                .unwrap();
                 assert_eq!(entries.len(), PEOPLE_SOURCE_REQUESTS);
                 let loaded = crate::ledger::load_chain(&path).unwrap();
                 assert_eq!(loaded, entries);

@@ -279,7 +279,6 @@ pub struct Entity {
     pub generation: u32,
 }
 
-
 pub fn merge_by_uid(entities: &mut Vec<Entity>) {
     let mut positions = HashMap::<String, usize>::with_capacity(entities.len());
     let mut merged = Vec::with_capacity(entities.len());

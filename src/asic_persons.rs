@@ -224,7 +224,6 @@ fn parse_register(
     }
 }
 
-
 fn name_tokens(full: &str) -> Vec<String> {
     full.split(|c: char| !c.is_alphabetic())
         .filter(|token| token.len() >= 2)

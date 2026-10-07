@@ -7,9 +7,9 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
+use huntsman_recon::classifier;
 use huntsman_recon::classifier::classify as classify_indicator;
 use huntsman_recon::classify::classify_response;
-use huntsman_recon::classifier;
 use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::crtsh::{self, CrtShError};
@@ -17,9 +17,8 @@ use huntsman_recon::directive_lock;
 use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::email_cli::{EMAIL_HELP, EMAIL_USAGE, EmailArgs, EmailRun};
-use huntsman_recon::lookup_save::{self, EMAIL_POLICY, PHONE_POLICY, USERNAME_POLICY};
 use huntsman_recon::engineering_command;
-use huntsman_recon::entity::{Evidence, EvidenceProvenance};
+use huntsman_recon::entity::{self, Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
 use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
@@ -41,11 +40,12 @@ use huntsman_recon::identity_resolution::{
 use huntsman_recon::keys::{Keys, is_configured_value};
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage};
+use huntsman_recon::lookup_save::{self, EMAIL_POLICY, PHONE_POLICY, USERNAME_POLICY};
 use huntsman_recon::module::reachable_modules;
 use huntsman_recon::navigator::layer;
 use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, PeopleRun};
-use huntsman_recon::provider_credentials;
 use huntsman_recon::phone_cli::{PHONE_HELP, PHONE_USAGE, PhoneArgs, PhoneRun};
+use huntsman_recon::provider_credentials;
 use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::retrieval_artifact::ArtifactId;
@@ -64,12 +64,11 @@ use huntsman_recon::stix::bundle;
 use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 use huntsman_recon::textnorm::escape_controls;
-use huntsman_recon::uid;
 use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, UsernameRun};
 use huntsman_recon::web_query;
 use huntsman_recon::web_server::{ServeConfig, Server, resolve_serve_bind};
 
-const USAGE: &str = "usage: huntsman-recon [check | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [FILE] | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -231,7 +230,7 @@ fn print_command_help(command: &str) {
             "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values."
         }
         "credential-status" => {
-            "credential-status [FILE]\nShow provider slot completeness without printing credential values. FILE uses the existing private keys-file loader; otherwise the normal ~/.huntsman.env/environment resolution is used."
+            "credential-status [--probe] [FILE]\nShow provider slot completeness without printing credential values. --probe performs canonical live health checks for configured providers that have a registered probe. FILE uses the existing private keys-file loader; otherwise the normal ~/.huntsman.env/environment resolution is used."
         }
         "verify" => {
             "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
@@ -245,18 +244,42 @@ fn print_command_help(command: &str) {
 }
 
 fn credential_status_cmd(args: &[String]) -> ExitCode {
-    let explicit = match args {
-        [] => None,
-        [path] => Some(Path::new(path)),
-        _ => return fail(EX_USAGE, "usage: huntsman-recon credential-status [FILE]"),
-    };
+    let mut live_probe = false;
+    let mut explicit = None;
+    for arg in args {
+        match arg.as_str() {
+            "--probe" if !live_probe => live_probe = true,
+            flag if flag.starts_with('-') => {
+                return fail(
+                    EX_USAGE,
+                    "usage: huntsman-recon credential-status [--probe] [FILE]",
+                );
+            }
+            path if explicit.is_none() => explicit = Some(Path::new(path)),
+            _ => {
+                return fail(
+                    EX_USAGE,
+                    "usage: huntsman-recon credential-status [--probe] [FILE]",
+                );
+            }
+        }
+    }
+
     let home = env::var_os("HOME");
     match Keys::resolve(explicit, home.as_deref()) {
         Ok(resolved) => {
             if let Some(warning) = resolved.warning {
                 eprintln!("{warning}");
             }
-            print!("{}", provider_credentials::render(&resolved.keys));
+            if live_probe {
+                let transport = UreqTransport::new(&TransportConfig::default());
+                print!(
+                    "{}",
+                    provider_credentials::render_probed(&resolved.keys, &transport)
+                );
+            } else {
+                print!("{}", provider_credentials::render(&resolved.keys));
+            }
             ExitCode::SUCCESS
         }
         Err(error) => fail(EX_NOINPUT, &error.to_string()),
@@ -396,7 +419,12 @@ fn people_cmd(args: &[String]) -> ExitCode {
                 if report.entities.is_empty() && report.outcomes.is_empty() {
                     return ExitCode::SUCCESS;
                 }
-                match lookup_save::save(&path, &report.entities, &report.outcomes, lookup_save::PEOPLE_POLICY) {
+                match lookup_save::save(
+                    &path,
+                    &report.entities,
+                    &report.outcomes,
+                    lookup_save::PEOPLE_POLICY,
+                ) {
                     Ok(entries) => {
                         println!("saved={}", path.display());
                         println!("entries={}", entries.len());
@@ -479,7 +507,8 @@ fn username_cmd(args: &[String]) -> ExitCode {
         UsernameRun::Printed { text, report } => {
             print!("{text}");
             if let Some(path) = parsed.save {
-                match lookup_save::save(&path, &report.entities, &report.outcomes, USERNAME_POLICY) {
+                match lookup_save::save(&path, &report.entities, &report.outcomes, USERNAME_POLICY)
+                {
                     Ok(entries) => {
                         println!("saved={}", path.display());
                         println!("entries={}", entries.len());

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::canonical;
 
-pub use crate::{domains, textnorm, uid, validation, xml};
+pub use crate::{domains, textnorm, validation};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonRecord {

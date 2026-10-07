@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::bluesky_user;
 use crate::canonical::canonical_handle;
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
+use crate::entity::{self, Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::evidence_ancestry::EvidenceNodeId;
 use crate::github_user;
@@ -192,7 +192,6 @@ fn error_outcome(module: &str, now_unix: u64, error: &Error) -> SourceExecutionO
         detail: Some(error.to_string()),
     }
 }
-
 
 fn render(report: &Report) -> Result<String, String> {
     let mut out = format!("entities={}\n", report.entities.len());

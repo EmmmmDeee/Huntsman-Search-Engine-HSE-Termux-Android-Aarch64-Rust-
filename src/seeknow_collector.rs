@@ -196,7 +196,15 @@ fn append_result(
         .map(|(index, entity)| (entity.uid.clone(), index))
         .collect::<HashMap<_, _>>();
     for (row_index, row) in result.rows.iter().enumerate() {
-        append_row(batch, selector, row, row_index, limits, now_unix, &mut positions);
+        append_row(
+            batch,
+            selector,
+            row,
+            row_index,
+            limits,
+            now_unix,
+            &mut positions,
+        );
     }
 }
 
@@ -245,7 +253,6 @@ fn append_row(
         }
     }
 }
-
 
 fn row_entities(row: &SeekNowRow) -> Vec<(EntityKind, String)> {
     let mut values = BTreeSet::<(EntityKind, String)>::new();
