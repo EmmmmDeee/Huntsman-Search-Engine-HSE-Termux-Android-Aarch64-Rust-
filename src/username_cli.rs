@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::bluesky_user;
 use crate::canonical::canonical_handle;
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::evidence_ancestry::EvidenceNodeId;
 use crate::github_user;
@@ -193,17 +193,6 @@ fn error_outcome(module: &str, now_unix: u64, error: &Error) -> SourceExecutionO
     }
 }
 
-fn merge_by_uid(entities: &mut Vec<Entity>) {
-    let mut merged: Vec<Entity> = Vec::new();
-    for entity in entities.drain(..) {
-        if let Some(existing) = merged.iter_mut().find(|seen| seen.uid == entity.uid) {
-            existing.absorb(entity);
-        } else {
-            merged.push(entity);
-        }
-    }
-    *entities = merged;
-}
 
 fn render(report: &Report) -> Result<String, String> {
     let mut out = format!("entities={}\n", report.entities.len());
