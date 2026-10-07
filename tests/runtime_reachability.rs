@@ -3,12 +3,11 @@ use std::fs;
 use std::path::PathBuf;
 
 const ALLOWED: [&str; 5] = ["runtime", "adapter", "exporter", "leaf", "diagnostic"];
-const REQUIRED_RUNTIME: [&str; 22] = [
+const REQUIRED_RUNTIME: [&str; 21] = [
     "analysis",
     "collection",
     "community",
     "coref",
-    "correlation_bridge",
     "correlator",
     "coverage",
     "cross_scan",
