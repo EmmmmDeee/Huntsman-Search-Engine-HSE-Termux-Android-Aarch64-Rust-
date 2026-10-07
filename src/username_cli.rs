@@ -13,7 +13,6 @@ use crate::http::Transport;
 use crate::identity_resolution::AutoMergePolicy;
 use crate::lineage::{Lineage, Observation, ObservedLineage, UpstreamKind, resolve_with_lineage};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
-use crate::uid;
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
 
