@@ -45,6 +45,8 @@ pub enum VerificationBlocker {
     UndefeatedDefeater,
     MissingProofEnvironment,
     IncompleteProof,
+    InvalidProofEnvironment,
+    UnresolvedProofAssumption,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -346,5 +348,190 @@ impl IntelligenceLedger {
                 ancestry_mode: AncestryMode::Canonical,
             },
         ))
+    }
+
+    /// Evaluates a claim through a claim-scoped proof environment.
+    ///
+    /// This is the strict verification path when proof bookkeeping is available.
+    /// Every proof assertion must belong to the claim's support set, every
+    /// declared proof root must exactly match the canonical ancestry root id
+    /// resolved from those assertions, semantic obligations must be satisfied
+    /// inside one sufficient environment, and any required multi-route support
+    /// must be explicitly proven independent by the ancestry graph. Unresolved
+    /// assumptions, malformed environments, bounded-search truncation, or an
+    /// incomplete proof set fail closed.
+    ///
+    /// `MinimalProofEnvironment::roots` is interpreted here as canonical
+    /// `EvidenceNodeId` strings, never provider labels or cached family names.
+    ///
+    /// # Errors
+    /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
+    /// when the ledger itself references absent support records.
+    pub fn assess_claim_with_ancestry_and_proof(
+        &self,
+        claim_id: &ClaimId,
+        policy: &VerificationPolicy,
+        graph: &EvidenceAncestryGraph,
+        bindings: &BTreeMap<EvidenceId, EvidenceNodeId>,
+        proof: &ProofEnvironmentSet,
+    ) -> Result<ClaimAssessment, LedgerError> {
+        let claim = self
+            .claims
+            .get(claim_id)
+            .ok_or_else(|| LedgerError::MissingClaim(claim_id.clone()))?;
+        let mut assessment =
+            self.assess_claim_with_ancestry(claim_id, policy, graph, bindings)?;
+
+        assessment.proof_environment_count = proof.environments.len();
+        assessment.proof_incomplete = proof.incomplete;
+        if proof.incomplete {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::IncompleteProof);
+        }
+        if proof.environments.is_empty() {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::MissingProofEnvironment);
+            assessment.epistemic = if claim.support.is_empty() {
+                ClaimState::Candidate
+            } else {
+                ClaimState::Supported
+            };
+            return Ok(assessment);
+        }
+
+        let mut malformed = false;
+        let mut saw_structurally_valid = false;
+        let mut saw_sufficient_routes = false;
+        let mut saw_sufficient_natures = false;
+        let mut saw_sufficient_attributes = false;
+        let mut saw_unresolved_assumption = false;
+        let mut saw_incomplete_route_search = false;
+        let mut valid_environment = false;
+
+        for environment in &proof.environments {
+            if environment.assertions.is_empty() {
+                malformed = true;
+                continue;
+            }
+
+            let mut canonical_roots = BTreeSet::new();
+            let mut resolved_nodes = Vec::new();
+            let mut environment_natures = Vec::new();
+            let mut environment_attributes = BTreeMap::new();
+            let mut structurally_valid = true;
+
+            for evidence_id in &environment.assertions {
+                if !claim.support.contains(evidence_id) {
+                    structurally_valid = false;
+                    break;
+                }
+                let Some(evidence) = self.evidence.get(evidence_id) else {
+                    structurally_valid = false;
+                    break;
+                };
+                if !environment_natures.contains(&evidence.nature) {
+                    environment_natures.push(evidence.nature.clone());
+                }
+                observe_attributes(&mut environment_attributes, &evidence.attributes);
+
+                let Some(node_id) = bindings.get(evidence_id) else {
+                    structurally_valid = false;
+                    break;
+                };
+                match graph.resolved_root_ids(node_id) {
+                    Ok(roots) if !roots.is_empty() => {
+                        canonical_roots.extend(roots.into_iter().map(|root| root.0));
+                        resolved_nodes.push(node_id.clone());
+                    }
+                    _ => {
+                        structurally_valid = false;
+                        break;
+                    }
+                }
+            }
+
+            if !structurally_valid || canonical_roots != environment.roots {
+                malformed = true;
+                continue;
+            }
+
+            saw_structurally_valid = true;
+            let route_count = match graph.proven_independent_route_count(
+                resolved_nodes.iter(),
+                policy.min_proven_roots,
+                MAX_INDEPENDENCE_SEARCH_STATES,
+            ) {
+                Ok(count) => count,
+                Err(_) => IndependenceRouteCount {
+                    proven: 0,
+                    incomplete: true,
+                },
+            };
+            saw_incomplete_route_search |= route_count.incomplete;
+
+            let routes_sufficient =
+                !route_count.incomplete && route_count.proven >= policy.min_proven_roots;
+            let natures_sufficient = policy
+                .required_natures
+                .iter()
+                .all(|required| environment_natures.contains(required));
+            let attributes_sufficient =
+                required_attributes_satisfied(policy, &environment_attributes);
+
+            saw_sufficient_routes |= routes_sufficient;
+            saw_sufficient_natures |= natures_sufficient;
+            saw_sufficient_attributes |= attributes_sufficient;
+
+            if !environment.assumptions.is_empty() {
+                saw_unresolved_assumption = true;
+                continue;
+            }
+
+            if routes_sufficient && natures_sufficient && attributes_sufficient {
+                valid_environment = true;
+            }
+        }
+
+        if malformed {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::InvalidProofEnvironment);
+        }
+        if saw_unresolved_assumption && !valid_environment {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::UnresolvedProofAssumption);
+        }
+        if saw_structurally_valid && !saw_sufficient_routes {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::InsufficientIndependentSupport);
+        }
+        if saw_incomplete_route_search && !valid_environment {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::IncompleteIndependenceProof);
+        }
+        if saw_structurally_valid && !saw_sufficient_natures {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::MissingRequiredEvidenceNature);
+        }
+        if saw_structurally_valid && !saw_sufficient_attributes {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::MissingRequiredEvidenceAttribute);
+        }
+
+        assessment.epistemic = if claim.support.is_empty() {
+            ClaimState::Candidate
+        } else if valid_environment && !malformed && assessment.blockers.is_empty() {
+            ClaimState::Verified
+        } else {
+            ClaimState::Supported
+        };
+        Ok(assessment)
     }
 }
