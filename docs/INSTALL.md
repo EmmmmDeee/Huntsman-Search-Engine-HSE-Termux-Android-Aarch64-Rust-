@@ -54,7 +54,7 @@ built. To request a specific revision explicitly, run the installer with a full
 ## Prebuilt Termux release
 
 The release workflow attaches a checksum-verified Termux installer to each
-`main-<commit>` pre-release. Select the commit tag from the repository's
+published `main-<commit>` pre-release. Relevant main pushes are always built and verified, but a build superseded before publication remains an Actions artifact rather than minting a historical release tag. Select an available commit tag from the repository's
 [Releases](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases)
 page, replacing `main-<commit>` below with that exact tag:
 
