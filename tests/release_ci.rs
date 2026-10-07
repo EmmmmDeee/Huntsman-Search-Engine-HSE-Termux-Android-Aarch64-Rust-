@@ -320,9 +320,7 @@ fn orphan_main_drafts_without_backing_tags_are_reconciled_fail_closed() {
     let reconcile_pos = publish
         .find("      - name: Reconcile orphan main-channel draft releases")
         .unwrap();
-    let existing_pos = publish
-        .find("      - name: Check for an existing")
-        .unwrap();
+    let existing_pos = publish.find("      - name: Check for an existing").unwrap();
     assert!(
         reconcile_pos < existing_pos,
         "stale invalid drafts must be reconciled before current-tag existence checks"
