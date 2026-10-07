@@ -1,52 +1,28 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-const EXPECTED_SHA256: &str =
-    "5bdd9777d9a8046d2d4a6bf645ee6201b6e1d004b1a6a1fc7a99eb246a687584";
-const CANONICAL: &str = "HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md";
-const MIRRORS: [&str; 6] = [
-    "AGENTS.md",
-    "CLAUDE.md",
-    "GEMINI.md",
-    "RULE.md",
-    "CONTRIBUTING.md",
-    ".github/copilot-instructions.md",
-];
+use huntsman_recon::directive_lock::{CANONICAL, EXPECTED_SHA256, MIRRORS, verify_at};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(path: &Path) -> Vec<u8> {
-    fs::read(path).unwrap_or_else(|error| panic!("{} must exist: {error}", path.display()))
-}
-
 #[test]
-fn canonical_directive_hash_is_immutable() {
-    let bytes = read(&root().join(CANONICAL));
-    let hash = huntsman_recon::sha256::hex32(&huntsman_recon::sha256::sha256(&bytes));
+fn repository_directive_contract_is_valid() {
+    verify_at(&root()).unwrap();
     assert_eq!(
-        hash, EXPECTED_SHA256,
-        "{CANONICAL} changed; update only by deliberate canonical replacement"
+        EXPECTED_SHA256,
+        "5bdd9777d9a8046d2d4a6bf645ee6201b6e1d004b1a6a1fc7a99eb246a687584"
     );
-}
-
-#[test]
-fn all_instruction_surfaces_are_byte_identical_to_canonical() {
-    let canonical = read(&root().join(CANONICAL));
-
-    for mirror in MIRRORS {
-        let mirrored = read(&root().join(mirror));
-        assert_eq!(
-            mirrored, canonical,
-            "{mirror} must remain byte-identical to {CANONICAL}"
-        );
-    }
+    assert_eq!(MIRRORS.len(), 6);
 }
 
 #[test]
 fn canonical_directive_contains_required_adaptive_invariants() {
-    let text = String::from_utf8(read(&root().join(CANONICAL))).expect("canonical directive is UTF-8");
+    let path = root().join(CANONICAL);
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} must exist: {error}", path.display()));
+
     for required in [
         "THE AUSTRIAN PAINTER → HIMMLER → ALL OTHER SYSTEMS",
         "# PERMANENT ADAPTIVE DEFAULT OVERRIDE",
