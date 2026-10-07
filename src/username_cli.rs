@@ -19,7 +19,7 @@ use crate::validation::{ValueKind, is_placeholder_entity};
 pub const USERNAME_USAGE: &str = "usage: huntsman-recon username HANDLE [--save FILE]";
 pub const USERNAME_HELP: &str = "\
 username HANDLE [--save FILE]
-Derive deterministic handle variants and query keyless public GitHub and Bluesky profiles. --save FILE writes an unverified ledger that verify can reload.";
+Derive deterministic handle variants and query keyless public GitHub and Bluesky profiles. A GitHub self-published personal-site domain may be tried once as a Bluesky custom-domain handle after the direct Bluesky lookup misses. --save FILE writes an unverified ledger that verify can reload.";
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -75,6 +75,8 @@ pub enum UsernameRun {
     Failed(String),
 }
 
+const MAX_BLUESKY_DOMAIN_PIVOTS: usize = 2;
+
 /// Run deterministic variants and the two keyless public-profile collectors.
 #[must_use]
 pub fn run<T: Transport + ?Sized>(transport: &T, username: &str, now_unix: u64) -> UsernameRun {
@@ -89,7 +91,17 @@ pub fn run<T: Transport + ?Sized>(transport: &T, username: &str, now_unix: u64) 
     };
 
     collect_github(transport, &username, &scan_id, now_unix, &mut report);
-    collect_bluesky(transport, &username, &scan_id, now_unix, &mut report);
+    let direct_bluesky =
+        collect_bluesky(transport, &username, &scan_id, now_unix, &mut report);
+    if direct_bluesky != SourceOutcomeKind::Success {
+        for domain in bluesky_domain_pivots(&report, &username) {
+            if collect_bluesky(transport, &domain, &scan_id, now_unix, &mut report)
+                == SourceOutcomeKind::Success
+            {
+                break;
+            }
+        }
+    }
     merge_by_uid(&mut report.entities);
 
     match render(&report) {
@@ -169,16 +181,37 @@ fn collect_bluesky<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
     report: &mut Report,
-) {
+) -> SourceOutcomeKind {
     match bluesky_user::lookup(transport, username, scan_id, now_unix) {
         Ok(found) => {
+            let kind = found.outcome.kind;
             report.entities.extend(found.entities);
             report.outcomes.push(found.outcome);
+            kind
         }
-        Err(error) => report
-            .outcomes
-            .push(error_outcome(bluesky_user::SRC, now_unix, &error)),
+        Err(error) => {
+            let outcome = error_outcome(bluesky_user::SRC, now_unix, &error);
+            let kind = outcome.kind;
+            report.outcomes.push(outcome);
+            kind
+        }
     }
+}
+
+fn bluesky_domain_pivots(report: &Report, seed: &str) -> Vec<String> {
+    let mut domains = report
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::Domain)
+        .filter(|entity| entity.has_tag("personal-site") && entity.has_tag("github"))
+        .map(|entity| entity.value.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|domain| domain != seed)
+        .filter(|domain| crate::atproto::is_handle(domain))
+        .collect::<Vec<_>>();
+    domains.sort();
+    domains.dedup();
+    domains.truncate(MAX_BLUESKY_DOMAIN_PIVOTS);
+    domains
 }
 
 fn error_outcome(module: &str, now_unix: u64, error: &Error) -> SourceExecutionOutcome {
