@@ -20,7 +20,6 @@ use crate::identity_resolution::AutoMergePolicy;
 use crate::lineage::{Lineage, Observation, ObservedLineage, UpstreamKind, resolve_with_lineage};
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::textnorm::upper_first;
-use crate::uid;
 
 pub const EMAIL_USAGE: &str = "usage: huntsman-recon email ADDR [--save FILE]";
 pub const EMAIL_HELP: &str = "\
