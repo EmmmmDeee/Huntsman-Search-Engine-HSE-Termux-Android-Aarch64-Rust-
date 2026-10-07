@@ -185,7 +185,7 @@ pub(super) async fn fetch_and_parse_classified(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::clone(
-            map.entry(key)
+            map.entry(key.clone())
                 .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new())),
         )
     };
