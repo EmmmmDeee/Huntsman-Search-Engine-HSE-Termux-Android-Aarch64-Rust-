@@ -17,37 +17,76 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const API_BASE: &str = "https://see-know.ru/api/v1";
 pub const KEY_SLOT: &str = "HUNTSMAN_SEEKNOW_KEY";
-pub const SEARCH_LIMIT_MAX: u16 = 500;
+pub const SEARCH_LIMIT_MAX: u16 = 1000;
+pub const SEARCH_PATH: &str = "/search";
+pub const STEALER_PATH: &str = "/stealer";
 pub const MAX_FIELDS_PER_ROW: usize = 64;
 pub const MAX_FIELD_CHARS: usize = 4096;
 
 const FAST_MODULE: &str = "seeknow_search";
-const DEEP_MODULE: &str = "seeknow_search_deep";
+const STEALER_MODULE: &str = "seeknow_stealer";
 const CREDITS_MODULE: &str = "seeknow_credits";
 const STATUS_MODULE: &str = "seeknow_status";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SeekNowQueryType {
+    Auto,
     Email,
-    Phone,
     Username,
+    Phone,
     Ip,
     Domain,
-    Auto,
+    Name,
+    Hash,
+    Url,
+    MachineId,
 }
 
 impl SeekNowQueryType {
     #[must_use]
     pub const fn api_value(self) -> Option<&'static str> {
         match self {
+            Self::Auto => None,
             Self::Email => Some("email"),
-            Self::Phone => Some("phone"),
             Self::Username => Some("username"),
+            Self::Phone => Some("phone"),
             Self::Ip => Some("ip"),
             Self::Domain => Some("domain"),
-            Self::Auto => None,
+            Self::Name => Some("name"),
+            Self::Hash => Some("hash"),
+            Self::Url => Some("url"),
+            Self::MachineId => Some("machine_id"),
         }
+    }
+
+    #[must_use]
+    pub const fn supports_search(self) -> bool {
+        matches!(
+            self,
+            Self::Auto
+                | Self::Email
+                | Self::Username
+                | Self::Phone
+                | Self::Ip
+                | Self::Domain
+                | Self::Name
+                | Self::Hash
+        )
+    }
+
+    #[must_use]
+    pub const fn supports_stealer(self) -> bool {
+        matches!(
+            self,
+            Self::Auto
+                | Self::Email
+                | Self::Username
+                | Self::Ip
+                | Self::Domain
+                | Self::Url
+                | Self::MachineId
+        )
     }
 }
 
@@ -197,27 +236,40 @@ pub fn search_fast<T: Transport + ?Sized>(
     search: &SeekNowSearch,
     now_unix: u64,
 ) -> Result<SeekNowSearchResult, Error> {
+    if !search.query_type.supports_search() {
+        return Err(Error::Invalid(format!(
+            "SeekNow search endpoint does not support query type {}",
+            search.query_type.api_value().unwrap_or("auto")
+        )));
+    }
     execute_search(
         transport,
         credential,
-        "/search",
+        SEARCH_PATH,
         FAST_MODULE,
         search,
         now_unix,
     )
 }
 
+/// Execute SeekNow's current stealer/deep endpoint.
 pub fn search_deep<T: Transport + ?Sized>(
     transport: &T,
     credential: &Credential,
     search: &SeekNowSearch,
     now_unix: u64,
 ) -> Result<SeekNowSearchResult, Error> {
+    if !search.query_type.supports_stealer() {
+        return Err(Error::Invalid(format!(
+            "SeekNow stealer endpoint does not support query type {}",
+            search.query_type.api_value().unwrap_or("auto")
+        )));
+    }
     execute_search(
         transport,
         credential,
-        "/search/deep",
-        DEEP_MODULE,
+        STEALER_PATH,
+        STEALER_MODULE,
         search,
         now_unix,
     )
