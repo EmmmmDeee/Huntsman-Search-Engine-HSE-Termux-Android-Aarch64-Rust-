@@ -7,9 +7,9 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use huntsman_recon::au_id::{Identifier, classify as classify_id, is_valid_abn};
+use huntsman_recon::classifier;
 use huntsman_recon::classifier::classify as classify_indicator;
 use huntsman_recon::classify::classify_response;
-use huntsman_recon::classifier;
 use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::crtsh::{self, CrtShError};
@@ -19,7 +19,6 @@ use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::email_cli::{EMAIL_HELP, EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::engineering_command;
 use huntsman_recon::entity::{Evidence, EvidenceProvenance};
-use huntsman_recon::lookup_save::{self, EMAIL_POLICY, PHONE_POLICY, USERNAME_POLICY};
 use huntsman_recon::error::Error;
 use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
@@ -41,6 +40,7 @@ use huntsman_recon::identity_resolution::{
 use huntsman_recon::keys::{Keys, is_configured_value};
 use huntsman_recon::ledger::{Claim, admitted, append, chain_intact, load_chain, save_chain, seal};
 use huntsman_recon::lineage::{CandidateOutcome, MergeOutcome, Observation, resolve_with_lineage};
+use huntsman_recon::lookup_save::{self, EMAIL_POLICY, PHONE_POLICY, USERNAME_POLICY};
 use huntsman_recon::module::reachable_modules;
 use huntsman_recon::navigator::layer;
 use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, PeopleRun};
