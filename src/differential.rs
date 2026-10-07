@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::entity::{Entity, EntityKind, Evidence};
+use crate::entity::{Entity, EntityKind, Evidence, normalise};
 use crate::sha256::{hex32, sha256};
 
 const DATASET_KEYS: [&str; 6] = [
@@ -34,12 +34,19 @@ pub struct DifferentialEntity {
 impl DifferentialEntity {
     #[must_use]
     pub fn new(kind: EntityKind, value: impl Into<String>) -> Self {
+        let value = value.into();
         Self {
+            value: normalise(&kind, &value),
             kind,
-            value: value.into(),
             source: None,
             dataset: None,
         }
+    }
+
+    #[must_use]
+    fn canonicalized(mut self) -> Self {
+        self.value = normalise(&self.kind, &self.value);
+        self
     }
 
     #[must_use]
@@ -82,6 +89,13 @@ pub struct AllowedDifference {
 
 impl AllowedDifference {
     #[must_use]
+    fn canonicalized(mut self) -> Self {
+        self.expected = self.expected.canonicalized();
+        self.observed = self.observed.map(DifferentialEntity::canonicalized);
+        self
+    }
+
+    #[must_use]
     pub fn matches(&self, difference: &Difference) -> bool {
         self.reason.trim().len() >= 20
             && self.kind == difference.kind
@@ -120,12 +134,22 @@ impl DifferentialManifest {
     /// callers must prove both content digests and exact oracle identity.
     pub fn validate_artifacts(
         &self,
+        approved_capability: &str,
         approved_oracle_commit: &str,
         input_bytes: &[u8],
         golden_bytes: &[u8],
     ) -> Result<(), ManifestValidationError> {
-        if !self.is_well_formed() || !is_git_sha1(approved_oracle_commit) {
+        if !self.is_well_formed()
+            || approved_capability.trim().is_empty()
+            || !is_git_sha1(approved_oracle_commit)
+        {
             return Err(ManifestValidationError::MalformedManifest);
+        }
+        if self.capability != approved_capability {
+            return Err(ManifestValidationError::CapabilityMismatch {
+                expected: approved_capability.to_owned(),
+                actual: self.capability.clone(),
+            });
         }
         if self.oracle_commit != approved_oracle_commit {
             return Err(ManifestValidationError::OracleCommitMismatch {
@@ -150,6 +174,7 @@ pub struct HashMismatch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestValidationError {
     MalformedManifest,
+    CapabilityMismatch { expected: String, actual: String },
     OracleCommitMismatch { expected: String, actual: String },
     InputHash(HashMismatch),
     GoldenHash(HashMismatch),
@@ -204,8 +229,21 @@ pub fn compare_legacy(
     observed: &[DifferentialEntity],
     allowed: &[AllowedDifference],
 ) -> Vec<Difference> {
-    let expected: BTreeSet<DifferentialEntity> = expected.iter().cloned().collect();
-    let observed: BTreeSet<DifferentialEntity> = observed.iter().cloned().collect();
+    let expected: BTreeSet<DifferentialEntity> = expected
+        .iter()
+        .cloned()
+        .map(DifferentialEntity::canonicalized)
+        .collect();
+    let observed: BTreeSet<DifferentialEntity> = observed
+        .iter()
+        .cloned()
+        .map(DifferentialEntity::canonicalized)
+        .collect();
+    let allowed: Vec<AllowedDifference> = allowed
+        .iter()
+        .cloned()
+        .map(AllowedDifference::canonicalized)
+        .collect();
     let mut differences = Vec::new();
 
     for item in expected {
@@ -216,34 +254,70 @@ pub fn compare_legacy(
             continue;
         }
 
-        let same_identity = observed
+        let same_identity: Vec<DifferentialEntity> = observed
             .iter()
-            .find(|candidate| candidate.kind == item.kind && candidate.value == item.value)
-            .cloned();
-        let difference = if let Some(candidate) = same_identity {
-            Difference {
-                kind: DifferenceKind::Misattributed,
-                expected: item,
-                observed: Some(candidate),
-            }
-        } else if let Some(candidate) = observed
-            .iter()
-            .find(|candidate| truncated_match(&item, candidate))
+            .filter(|candidate| candidate.kind == item.kind && candidate.value == item.value)
             .cloned()
-        {
-            Difference {
-                kind: DifferenceKind::Truncated,
-                expected: item,
-                observed: Some(candidate),
+            .collect();
+        if !same_identity.is_empty() {
+            let candidates: Vec<Difference> = same_identity
+                .into_iter()
+                .map(|candidate| Difference {
+                    kind: DifferenceKind::Misattributed,
+                    expected: item.clone(),
+                    observed: Some(candidate),
+                })
+                .collect();
+            if candidates
+                .iter()
+                .any(|difference| allowed.iter().any(|entry| entry.matches(difference)))
+            {
+                continue;
             }
-        } else {
-            Difference {
-                kind: DifferenceKind::Missing,
-                expected: item,
-                observed: None,
+            if let Some(diagnostic) = candidates.into_iter().next() {
+                differences.push(diagnostic);
             }
-        };
+            continue;
+        }
 
+        let mut truncations: Vec<DifferentialEntity> = observed
+            .iter()
+            .filter(|candidate| truncated_match(&item, candidate))
+            .cloned()
+            .collect();
+        if !truncations.is_empty() {
+            truncations.sort_by(|left, right| {
+                right
+                    .value
+                    .len()
+                    .cmp(&left.value.len())
+                    .then_with(|| left.cmp(right))
+            });
+            let candidates: Vec<Difference> = truncations
+                .into_iter()
+                .map(|candidate| Difference {
+                    kind: DifferenceKind::Truncated,
+                    expected: item.clone(),
+                    observed: Some(candidate),
+                })
+                .collect();
+            if candidates
+                .iter()
+                .any(|difference| allowed.iter().any(|entry| entry.matches(difference)))
+            {
+                continue;
+            }
+            if let Some(diagnostic) = candidates.into_iter().next() {
+                differences.push(diagnostic);
+            }
+            continue;
+        }
+
+        let difference = Difference {
+            kind: DifferenceKind::Missing,
+            expected: item,
+            observed: None,
+        };
         if !allowed.iter().any(|entry| entry.matches(&difference)) {
             differences.push(difference);
         }
@@ -352,6 +426,54 @@ mod tests {
     }
 
     #[test]
+    fn canonical_values_do_not_create_false_regressions() {
+        let expected = [DifferentialEntity {
+            kind: EntityKind::Email,
+            value: "ADA@EXAMPLE.ORG".into(),
+            source: None,
+            dataset: None,
+        }];
+        let observed = [DifferentialEntity::new(EntityKind::Email, "ada@example.org")];
+        assert_eq!(compare_legacy(&expected, &observed, &[]), Vec::new());
+    }
+
+    #[test]
+    fn reviewed_misattribution_is_stable_when_extra_output_is_added() {
+        let expected = [DifferentialEntity::new(EntityKind::Domain, "example.org")
+            .with_source("legacy")];
+        let reviewed_observed =
+            DifferentialEntity::new(EntityKind::Domain, "example.org").with_source("z-source");
+        let observed = [
+            DifferentialEntity::new(EntityKind::Domain, "example.org").with_source("a-extra"),
+            reviewed_observed.clone(),
+        ];
+        let allowed = [AllowedDifference {
+            kind: DifferenceKind::Misattributed,
+            expected: expected[0].clone(),
+            observed: Some(reviewed_observed),
+            reason: "reviewed source attribution difference for this legacy fixture".into(),
+        }];
+        assert_eq!(compare_legacy(&expected, &observed, &allowed), Vec::new());
+    }
+
+    #[test]
+    fn reviewed_truncation_is_stable_when_extra_prefix_is_added() {
+        let expected = [DifferentialEntity::new(EntityKind::Username, "adalovelace")];
+        let reviewed_observed = DifferentialEntity::new(EntityKind::Username, "adalove");
+        let observed = [
+            DifferentialEntity::new(EntityKind::Username, "ada"),
+            reviewed_observed.clone(),
+        ];
+        let allowed = [AllowedDifference {
+            kind: DifferenceKind::Truncated,
+            expected: expected[0].clone(),
+            observed: Some(reviewed_observed),
+            reason: "reviewed truncation difference for this legacy fixture output".into(),
+        }];
+        assert_eq!(compare_legacy(&expected, &observed, &allowed), Vec::new());
+    }
+
+    #[test]
     fn snapshots_preserve_every_source_and_dataset_attribution() {
         let mut entity = Entity::new(EntityKind::Email, "ADA@EXAMPLE.ORG", 0.8, "scan");
         entity.add_evidence(
@@ -391,23 +513,48 @@ mod tests {
         };
         assert!(manifest.is_well_formed());
         assert_eq!(
-            manifest
-                .validate_artifacts("7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58", b"abc", b"abc",),
+            manifest.validate_artifacts(
+                "fixture",
+                "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
+                b"abc",
+                b"abc",
+            ),
             Ok(())
         );
         assert!(matches!(
-            manifest
-                .validate_artifacts("0000000000000000000000000000000000000000", b"abc", b"abc",),
+            manifest.validate_artifacts(
+                "wrong-capability",
+                "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
+                b"abc",
+                b"abc",
+            ),
+            Err(ManifestValidationError::CapabilityMismatch { .. })
+        ));
+        assert!(matches!(
+            manifest.validate_artifacts(
+                "fixture",
+                "0000000000000000000000000000000000000000",
+                b"abc",
+                b"abc",
+            ),
             Err(ManifestValidationError::OracleCommitMismatch { .. })
         ));
         assert!(matches!(
-            manifest
-                .validate_artifacts("7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58", b"abd", b"abc",),
+            manifest.validate_artifacts(
+                "fixture",
+                "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
+                b"abd",
+                b"abc",
+            ),
             Err(ManifestValidationError::InputHash(_))
         ));
         assert!(matches!(
-            manifest
-                .validate_artifacts("7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58", b"abc", b"abd",),
+            manifest.validate_artifacts(
+                "fixture",
+                "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
+                b"abc",
+                b"abd",
+            ),
             Err(ManifestValidationError::GoldenHash(_))
         ));
     }
