@@ -43,7 +43,7 @@ fn install_fake_termux_toolchain(fake_bin: &Path, fake_target_libdir: &Path) {
         r#"#!/bin/sh
 case "$1" in
   -vV)
-    printf '%s\n' 'rustc 1.98.0 (fixture)' 'binary: rustc' 'commit-hash: fixture' 'commit-date: 2026-10-05' 'host: x86_64-unknown-linux-gnu' 'release: 1.98.0'
+    printf '%s\n' 'rustc 1.98.0 (fixture)' 'binary: rustc' 'commit-hash: fixture' 'commit-date: 2026-10-05' 'host: aarch64-linux-android' 'release: 1.98.0'
     ;;
   --print)
     if [ "${2:-}" = "target-libdir" ]; then
@@ -88,12 +88,12 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
     assert!(installer.is_file(), "root install.sh must exist");
 
     let temp = scratch();
-    let prefix = temp.join("prefix");
+    let prefix = PathBuf::from("/data/data/com.termux/files/usr");
     let fake_bin = temp.join("fake-bin");
     let fake_target_libdir = temp.join("rustlib");
     let log = temp.join("install.log");
-    fs::create_dir_all(prefix.join("bin")).unwrap();
-    fs::create_dir_all(prefix.join("tmp")).unwrap();
+    let tmpdir = temp.join("tmp");
+    fs::create_dir_all(&tmpdir).unwrap();
     install_fake_termux_toolchain(&fake_bin, &fake_target_libdir);
 
     let existing_path = std::env::var("PATH").unwrap_or_default();
@@ -107,6 +107,7 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
         .env("HUNTSMAN_REV", rev)
         .env("HOME", &temp)
+        .env("TMPDIR", &tmpdir)
         .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("root installer must execute under bash");
@@ -125,7 +126,7 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         "{calls}"
     );
     assert!(
-        calls.contains("pkg install -y rust rust-std-x86_64-unknown-linux-gnu"),
+        calls.contains("pkg install -y rust rust-std-aarch64-linux-android"),
         "{calls}"
     );
     assert!(
@@ -197,6 +198,7 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
         .env("CARGO_TARGET_DIR", &custom_cache)
         .env("HOME", &temp)
+        .env("TMPDIR", &tmpdir)
         .output()
         .expect("repeat installer must execute");
     assert!(second.status.success(), "repeat installer failed");
