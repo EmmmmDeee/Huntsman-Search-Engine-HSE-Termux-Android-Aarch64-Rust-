@@ -14,8 +14,7 @@ pub const RECONNAISSANCE_VERSION: &str = "19.2";
 /// Authoritative MITRE page for the scoped Reconnaissance taxonomy.
 pub const RECONNAISSANCE_SOURCE_URL: &str = "https://attack.mitre.org/tactics/TA0043/";
 /// Authoritative MITRE release/version record for the scoped taxonomy version.
-pub const RECONNAISSANCE_VERSION_SOURCE_URL: &str =
-    "https://attack.mitre.org/resources/updates/";
+pub const RECONNAISSANCE_VERSION_SOURCE_URL: &str = "https://attack.mitre.org/resources/updates/";
 
 /// Reconnaissance techniques added after the embedded Enterprise v17.1 baseline.
 ///
