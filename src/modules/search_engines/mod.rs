@@ -94,10 +94,11 @@ const MAX_ACCUMULATED_RESULTS: usize = 2000;
 /// the deadline, so concurrency can never push the pass past the hard kill.
 const ENGINE_CONCURRENCY: usize = 6;
 
-/// Consecutive-empty threshold for an engine that has **never** produced a
-/// result this session. From datacenter IPs `google`, `you`, `presearch`,
-/// `qwant`, … return 0 results on every seed; three strikeouts is enough signal
-/// that they're hard-blocked here, so stop probing them (saves ~200+ s/scan).
+/// Consecutive provider/request-failure threshold for an engine that has
+/// **never** produced a result this session. Three independently observed
+/// blocked/unreachable target attempts are enough to silence an unproven engine
+/// for this scan. Validated empty and inconclusive responses do not advance this
+/// streak, so absence/ambiguity cannot manufacture a provider-failure verdict.
 const SESSION_DEAD_THRESHOLD: u8 = 3;
 
 /// Consecutive-failure threshold for an engine that **has** produced ≥1 result
@@ -558,7 +559,7 @@ impl Module for SearchEngines {
         }
 
         // Clean up liveness state for disabled engines (Issue #8). When an engine
-        // is toggled off via config/settings, its liveness entries (consecutive_empty,
+        // is toggled off via config/settings, its liveness entries (failure streak,
         // ever_hit) persist in SESSION_EMPTY_COUNTS, wasting memory and potentially
         // interfering with future scans if the engine is re-enabled. Call this at
         // the start of every scan to keep the map clean.
