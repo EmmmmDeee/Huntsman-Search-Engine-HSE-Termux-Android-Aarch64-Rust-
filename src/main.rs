@@ -14,6 +14,7 @@ use huntsman_recon::confidence::{Classification, effective};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::crtsh::{self, CrtShError};
 use huntsman_recon::dns;
+use huntsman_recon::directive_lock;
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::email_cli::{EMAIL_HELP, EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::email_save;
@@ -70,7 +71,7 @@ use huntsman_recon::username_save;
 use huntsman_recon::web_query;
 use huntsman_recon::web_server::{DEFAULT_BIND, ServeConfig, Server};
 
-const USAGE: &str = "usage: huntsman-recon [check | command | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -83,6 +84,7 @@ Usage:
 Commands:
   check                 Run offline self-acceptance and regenerate var/*.json
   command               Print and validate the executable engineering hierarchy
+  directive             Verify or repair canonical repository instruction mirrors
   geo                   Distance between two LAT,LON coordinates in metres
   geohash               Encode LAT,LON (default precision: 7)
   coarsen               Round LAT,LON to one decimal place
@@ -140,6 +142,7 @@ fn main() -> ExitCode {
     let mut remaining = argv.into_iter();
     match remaining.next().as_deref() {
         Some("command") => command_cmd(&remaining.collect::<Vec<_>>()),
+        Some("directive") => directive_cmd(&remaining.collect::<Vec<_>>()),
         Some("geo") => geo(remaining.next(), remaining.next()),
         Some("geohash") => geohash_cmd(remaining.next(), remaining.next().as_deref()),
         Some("coarsen") => coarsen_cmd(remaining.next()),
@@ -176,6 +179,9 @@ fn print_command_help(command: &str) {
         }
         "command" => {
             "command [--json]\nValidate and print the fixed engineering command invariant, phases, roles, execution protocols, and capability owners."
+        }
+        "directive" => {
+            "directive check|sync [ROOT]\nVerify or repair the pinned canonical Huntsman directive and every repository instruction mirror. ROOT defaults to the current directory."
         }
         "geo" => {
             "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres."
@@ -261,6 +267,31 @@ fn command_cmd(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(message) => fail(EX_DATAERR, message),
+    }
+}
+
+fn directive_cmd(args: &[String]) -> ExitCode {
+    let (action, root) = match args {
+        [action] => (action.as_str(), Path::new(".")),
+        [action, root] => (action.as_str(), Path::new(root)),
+        _ => return fail(EX_USAGE, "usage: huntsman-recon directive check|sync [ROOT]"),
+    };
+
+    let result = match action {
+        "check" => directive_lock::verify_at(root),
+        "sync" => directive_lock::sync_at(root),
+        _ => return fail(EX_USAGE, "usage: huntsman-recon directive check|sync [ROOT]"),
+    };
+
+    match result {
+        Ok(()) => {
+            println!("directive={action}");
+            println!("canonical={}", directive_lock::CANONICAL);
+            println!("sha256={}", directive_lock::EXPECTED_SHA256);
+            println!("mirrors={}", directive_lock::MIRRORS.len());
+            ExitCode::SUCCESS
+        }
+        Err(message) => fail(EX_DATAERR, &message),
     }
 }
 
