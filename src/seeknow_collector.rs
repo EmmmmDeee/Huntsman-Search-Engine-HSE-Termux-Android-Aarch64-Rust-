@@ -2,7 +2,7 @@
 //! and response-derived evidence. This adapter opens no sockets and never treats the
 //! collector name as an independent evidence family.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
 
 use crate::collector::{
@@ -189,8 +189,14 @@ fn append_result(
     if result.outcome.kind != SourceOutcomeKind::Success {
         return;
     }
+    let mut positions = batch
+        .entities
+        .iter()
+        .enumerate()
+        .map(|(index, entity)| (entity.uid.clone(), index))
+        .collect::<HashMap<_, _>>();
     for (row_index, row) in result.rows.iter().enumerate() {
-        append_row(batch, selector, row, row_index, limits, now_unix);
+        append_row(batch, selector, row, row_index, limits, now_unix, &mut positions);
     }
 }
 
@@ -201,11 +207,9 @@ fn append_row(
     row_index: usize,
     limits: &CollectionLimits,
     now_unix: u64,
+    positions: &mut HashMap<String, usize>,
 ) {
     for (kind, value) in row_entities(row) {
-        if batch.entities.len() >= limits.max_entities {
-            return;
-        }
         let mut entity = Entity::new(
             kind.clone(),
             value.clone(),
@@ -222,7 +226,14 @@ fn append_row(
             &selector.scan_id,
             now_unix,
         ));
-        insert_entity(batch, entity);
+        if let Some(&index) = positions.get(&entity.uid) {
+            batch.entities[index].absorb(entity);
+        } else if batch.entities.len() < limits.max_entities {
+            positions.insert(entity.uid.clone(), batch.entities.len());
+            batch.entities.push(entity);
+        } else {
+            continue;
+        }
         if batch.pivots.len() < limits.max_pivots
             && entity_differs_from_selector(&kind, &value, selector)
         {
@@ -235,17 +246,6 @@ fn append_row(
     }
 }
 
-fn insert_entity(batch: &mut CollectionBatch, entity: Entity) {
-    if let Some(existing) = batch
-        .entities
-        .iter_mut()
-        .find(|existing| existing.uid == entity.uid)
-    {
-        existing.absorb(entity);
-    } else {
-        batch.entities.push(entity);
-    }
-}
 
 fn row_entities(row: &SeekNowRow) -> Vec<(EntityKind, String)> {
     let mut values = BTreeSet::<(EntityKind, String)>::new();
