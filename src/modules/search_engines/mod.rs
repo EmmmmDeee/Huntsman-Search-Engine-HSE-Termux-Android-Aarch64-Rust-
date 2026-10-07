@@ -100,7 +100,7 @@ const ENGINE_CONCURRENCY: usize = 6;
 /// that they're hard-blocked here, so stop probing them (saves ~200+ s/scan).
 const SESSION_DEAD_THRESHOLD: u8 = 3;
 
-/// Consecutive-empty threshold for an engine that **has** produced ≥1 result
+/// Consecutive-failure threshold for an engine that **has** produced ≥1 result
 /// this session ("proven live"). Intermittently-blocked engines like `bing`
 /// (~48% block rate) and `ecosia` (~78%) routinely hit 3-block streaks *between*
 /// real hits; the low threshold was permanently silencing them mid-scan and
@@ -137,7 +137,7 @@ fn dead_threshold(live: EngineLiveness) -> u8 {
     }
 }
 
-/// True when `name` has missed enough consecutive seeds to be silenced — using
+/// True when `name` has accumulated enough consecutive unusable executions to be silenced — using
 /// the tolerant threshold once the engine has proven it can produce results.
 fn is_session_dead(scan_id: &str, name: &str) -> bool {
     let live = SESSION_EMPTY_COUNTS
@@ -663,14 +663,21 @@ impl Module for SearchEngines {
                         // failure count in the opposite direction.
                         record_empty_success(&ctx.scan_id, name);
                     }
-                    SearchFetchResult::Blocked | SearchFetchResult::Unreachable if qi == 0 => {
-                        // Only actual request/provider failure makes the engine
-                        // ineligible for the rest of this target and advances
-                        // the cross-target failure quarantine.
+                    SearchFetchResult::Drift
+                    | SearchFetchResult::Blocked
+                    | SearchFetchResult::Unreachable
+                        if qi == 0 =>
+                    {
+                        // An unusable response is not healthy-zero evidence.
+                        // Stop spending this target's budget on a source whose
+                        // request, provider contract, or parser is currently
+                        // unusable, and let later targets/retries prove recovery.
                         dead_engines.insert(name);
                         record_failure(&ctx.scan_id, name);
                     }
-                    SearchFetchResult::Blocked | SearchFetchResult::Unreachable => {}
+                    SearchFetchResult::Drift
+                    | SearchFetchResult::Blocked
+                    | SearchFetchResult::Unreachable => {}
                 }
             }
             // Working-set ceiling for a broad multi-dork scan on a low-RAM
