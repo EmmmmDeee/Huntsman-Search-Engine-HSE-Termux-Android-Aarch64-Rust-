@@ -123,7 +123,7 @@ fn invalid_provenance_future_time_and_foreign_hosts_are_rejected() {
         a[field] = value;
         let out = run(vec![a]);
         assert_eq!(out.status.code(), Some(65));
-        assert!(out.stdout.is_empty());
+        assert_eq!(out.stdout, Vec::<u8>::new());
     }
 }
 
@@ -134,7 +134,7 @@ fn conflicting_duplicate_ids_reject_the_envelope() {
         observation("a", 200, "ns2.example.net"),
     ]);
     assert_eq!(out.status.code(), Some(65));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, Vec::<u8>::new());
 }
 
 #[test]
@@ -254,7 +254,7 @@ fn evidence_removal_withdraws_the_dependent_change() {
 fn observation_count_is_bounded_before_deduplication() {
     let out = run(vec![observation("a", 100, "ns1.example.net"); 4097]);
     assert_eq!(out.status.code(), Some(65));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, Vec::<u8>::new());
 }
 
 #[test]
