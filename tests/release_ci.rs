@@ -487,7 +487,7 @@ fn release_publish_requires_shared_quality_gate() {
 
     for required in [
         "bash scripts/repair-gate.sh full",
-        "docker build --pull -f Dockerfile -t huntsman-recon:railway .",
+        "docker build --pull --build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\" -f Dockerfile -t huntsman-recon:railway .",
         "bash scripts/railway-live-acceptance.sh",
         "persist-credentials: false",
     ] {
