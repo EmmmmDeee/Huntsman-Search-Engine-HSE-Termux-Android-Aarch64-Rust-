@@ -652,24 +652,33 @@ jobs:
 
           Built with HSE_RELEASE=1 (no build-time key embedding). \`key-scan-report.txt\` is the zero-finding key scan of these exact files. No Termux handset run is claimed.
           NOTES
-          # Do not pass --target GITHUB_SHA here. If another commit reaches main
-          # while this run is finishing, the built-in GITHUB_TOKEN can be unable
-          # to mint a release tag for the now-historical commit. Create a draft
-          # from the live default-branch head, then prove where GitHub put the tag
-          # before making anything public.
+          # Re-check immediately before creating any ref. A superseded build is
+          # still a verified Actions artifact, but it must never mint a release.
+          current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)"
+          if [ "$current" != "$GITHUB_SHA" ]; then
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "${TAG}: main advanced to ${current} before publication; retaining only the verified Actions artifact." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Create the tag explicitly at the verified commit. Draft releases are
+          # intentionally untagged on GitHub, so creating a draft first and then
+          # querying refs/tags/$TAG is invalid. If main races after this point,
+          # remove the private tag and retain only the Actions artifact.
+          gh api -X POST "$api/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
+          current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)"
+          if [ "$current" != "$GITHUB_SHA" ]; then
+            gh api -X DELETE "$api/git/refs/tags/$TAG"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "${TAG}: main advanced to ${current} after tag creation; removed the private tag and retained only the verified Actions artifact." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           gh release create "$TAG" "${files[@]}" \
-            --draft --latest=false \
+            --verify-tag --prerelease --latest=false \
             --title "$TAG" --notes-file notes.md
           ref="$(gh api "$api/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')"
           read -r type actual <<<"$ref"
-          if [ "$type" != "commit" ] || [ "$actual" != "$GITHUB_SHA" ]; then
-            echo "::warning::main moved during publication; draft ${TAG} targets ${type} ${actual}, not ${GITHUB_SHA}. Discarding the draft instead of publishing the wrong commit."
-            gh release delete "$TAG" --yes --cleanup-tag
-            echo "published=false" >> "$GITHUB_OUTPUT"
-            echo "${TAG}: verified build retained only as an Actions artifact because main advanced during publication." | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          gh release edit "$TAG" --draft=false --prerelease --latest=false
+          [ "$type" = "commit" ] && [ "$actual" = "$GITHUB_SHA" ] \
+            || { echo "::error::published tag ${TAG} resolved to ${type} ${actual}, not ${GITHUB_SHA}"; exit 1; }
           echo "published=true" >> "$GITHUB_OUTPUT"
 
       # OFF by default: nothing moves `latest` unless the repository variable
