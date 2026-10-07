@@ -89,6 +89,15 @@ for f in "${files[@]}"; do
   for rule in "${RULES[@]}"; do
     name=${rule%%$'\t'*}
     re=${rule#*$'\t'}
+    # Generic bearer detection is intentionally text-only. In linked binaries,
+    # `strings` can expose adjacent read-only literals as one printable run,
+    # synthesising "Bearer <long-token>" even though no such runtime value
+    # exists. Provider-specific token shapes and exact key rules still scan
+    # binaries, while the build job separately proves credential-bearing build
+    # inputs are absent.
+    if [ "$text" = 0 ] && [ "$name" = "bearer-token" ]; then
+      continue
+    fi
     # Collect matches first: piping `grep -o` into `grep -q` can end in
     # SIGPIPE, which pipefail would turn into a silently missed finding.
     matches=$(grep -Eo -- "$re" <<<"$data")

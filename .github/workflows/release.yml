@@ -391,7 +391,7 @@ jobs:
           # missing tool, a missing path, an unreadable file, a broken rule or an
           # entropy-check error is never reported as a clean scan.
           set -uo pipefail
-
+          
           # Fail closed: without these the binary scan or the entropy check would
           # silently find nothing.
           for dep in strings python3 grep find sort cat mktemp; do
@@ -401,14 +401,14 @@ jobs:
           for p in "$@"; do
             [ -e "$p" ] || { echo "::error::scan path does not exist: $p"; exit 1; }
           done
-
+          
           hits=0
           report() {
             echo "FINDING file=$1 rule=$2 (value withheld)"
             echo "::error file=$1::key-like content ($2), value withheld"
             hits=$((hits + 1))
           }
-
+          
           # name<TAB>ERE. Known provider token shapes.
           RULES=(
             $'openai-style-sk\t(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}'
@@ -429,7 +429,7 @@ jobs:
             $'credential-assignment\t(HUNTSMAN_[A-Z0-9_]*|HIBP_[A-Z0-9_]*)(KEY|TOKEN|SECRET)["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9_./+-]{12,}'
           )
           ALLOW_RE='insert_[a-z0-9_]+_here|AKIAIOSFODNN7EXAMPLE|<value>|\$\{?[A-Z_]+'
-
+          
           ENTROPY_PY='
           import collections, math, re, sys
           txt = open(sys.argv[1], errors="ignore").read()
@@ -440,7 +440,7 @@ jobs:
               if -sum(v / n * math.log2(v / n) for v in c.values()) >= 4.2:
                   print("hit")
           '
-
+          
           # Build and check the sorted file list before scanning anything, so a failing
           # or truncating `find` or `sort` fails the scan (exit 2) instead of silently
           # shortening it. Never read the list through a process substitution: its exit
@@ -455,7 +455,7 @@ jobs:
           [ "${#files[@]}" -eq "${#found[@]}" ] \
             || { echo "::error::sort returned ${#files[@]} of ${#found[@]} files; refusing to scan a partial file list"; exit 2; }
           [ "${#files[@]}" -gt 0 ] || { echo "::error::nothing scanned: no files under $*"; exit 2; }
-
+          
           scanned=0
           for f in "${files[@]}"; do
             scanned=$((scanned + 1))
@@ -469,6 +469,15 @@ jobs:
             for rule in "${RULES[@]}"; do
               name=${rule%%$'\t'*}
               re=${rule#*$'\t'}
+              # Generic bearer detection is intentionally text-only. In linked binaries,
+              # `strings` can expose adjacent read-only literals as one printable run,
+              # synthesising "Bearer <long-token>" even though no such runtime value
+              # exists. Provider-specific token shapes and exact key rules still scan
+              # binaries, while the build job separately proves credential-bearing build
+              # inputs are absent.
+              if [ "$text" = 0 ] && [ "$name" = "bearer-token" ]; then
+                continue
+              fi
               # Collect matches first: piping `grep -o` into `grep -q` can end in
               # SIGPIPE, which pipefail would turn into a silently missed finding.
               matches=$(grep -Eo -- "$re" <<<"$data")
@@ -489,7 +498,7 @@ jobs:
               done <<<"$ent"
             fi
           done
-
+          
           echo "rules: ${#RULES[@]} pattern rules + high-entropy (text files)"
           echo "files scanned: $scanned"
           echo "key scan: $hits finding(s)"
