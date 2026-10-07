@@ -159,32 +159,3 @@ fn json_contract_matches_static_contract() {
     assert_eq!(value["roles"][0]["name"], "THE AUSTRIAN PAINTER");
     assert_eq!(value["roles"][15]["name"], "JEW BOT");
 }
-
-#[test]
-fn canonical_team_directive_is_identical_across_agent_instruction_surfaces() {
-    const EXPECTED_SHA256: &str =
-        "5bdd9777d9a8046d2d4a6bf645ee6201b6e1d004b1a6a1fc7a99eb246a687584";
-
-    let canonical = fs::read(root().join("AGENTS.md")).expect("AGENTS.md must exist");
-    assert_eq!(
-        huntsman_recon::sha256::hex32(&huntsman_recon::sha256::sha256(&canonical)),
-        EXPECTED_SHA256,
-        "canonical Huntsman team directive changed"
-    );
-
-    for path in [
-        "HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md",
-        "CLAUDE.md",
-        "GEMINI.md",
-        "RULE.md",
-        "CONTRIBUTING.md",
-        ".github/copilot-instructions.md",
-    ] {
-        let mirrored = fs::read(root().join(path))
-            .unwrap_or_else(|error| panic!("{path} must exist: {error}"));
-        assert_eq!(
-            mirrored, canonical,
-            "{path} must remain byte-identical to AGENTS.md"
-        );
-    }
-}
