@@ -326,7 +326,7 @@ jobs:
           # prove identity from the exact bytes: the hand-written CLI usage line.
           usage="$(strings -a -n 8 "dist/$ASSET" | grep -o -m1 'usage: huntsman-recon \[check.*verify LEDGER\]' || true)"
           [ -n "$usage" ] || { echo "::error::dist/${ASSET} does not contain the huntsman-recon usage line"; exit 1; }
-          strings -a -n 8 "dist/$ASSET" | grep -Fqx "$GITHUB_SHA" \
+          strings -a -n 8 "dist/$ASSET" | grep -Fq "$GITHUB_SHA" \
             || { echo "::error::dist/${ASSET} does not embed exact build commit ${GITHUB_SHA}"; exit 1; }
           {
             echo "binary_identity: ${usage}"
