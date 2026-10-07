@@ -9,7 +9,7 @@ use super::{
     EvidenceProvenance, ExecuteRecord, ExitCode, FalsifyRecord, FrontierState, HoldReason,
     IdentityResolutionDecision, IndependenceBasis, IndependenceEvidence, MergeOutcome, Observation,
     Path, PersonRecord, ResolutionState, Session, SourceHealthAction, SourceOutcomeKind, Status,
-    TerminationSignals, VerifyRecord, EX_IOERR, MAX_ARTIFACT_BYTES, admitted, append, bundle,
+    TerminationSignals, VerifyRecord, EX_IOERR, MAX_ARTIFACT_BYTES, append, bundle,
     chain_intact, classify_fetch, classify_response, decide_termination, directive_lock, effective,
     engineering_command, fail, geohash, haversine_m, is_configured_value, is_valid_abn,
     layer, load_chain, origin_of, parse_latlon, recommended_action, redact_url, resolve,
