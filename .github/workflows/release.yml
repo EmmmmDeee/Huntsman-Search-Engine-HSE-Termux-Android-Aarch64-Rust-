@@ -113,11 +113,51 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Resolved tag=${tag} publish=${publish}"
 
+
+  quality:
+    name: Shared repair and Railway acceptance
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - name: Run shared host repair acceptance
+        run: bash scripts/repair-gate.sh full
+      - name: Build current Railway container
+        run: docker build --pull -f Dockerfile -t huntsman-recon:railway .
+      - name: Exercise Railway-style runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=huntsman-recon-release-gate
+          cleanup() {
+            docker rm -f "$name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run -d \
+            --name "$name" \
+            -p 127.0.0.1:18080:8080 \
+            -e PORT=8080 \
+            -e RAILWAY_ENVIRONMENT=release-gate \
+            -e HSE_AUTH_TOKEN=release-gate-token \
+            -e HUNTSMAN_STARTUP_CHECK=1 \
+            huntsman-recon:railway
+          HUNTSMAN_RAILWAY_URL=http://127.0.0.1:18080 \
+          HSE_AUTH_TOKEN=release-gate-token \
+            bash scripts/railway-live-acceptance.sh
+
   build:
     # Runs cargo and every dependency build script: read-only token, no
     # GH_TOKEN, no persisted git credentials, no OIDC.
     name: Build and key-scan aarch64 Termux binary
-    needs: resolve
+    needs: [resolve, quality]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -260,7 +300,7 @@ jobs:
     # and runs no repository code: it verifies the handed-over bytes, re-runs
     # the inlined key scan on them, then calls the attestation action and `gh`.
     name: Publish main-channel pre-releases
-    needs: [resolve, build]
+    needs: [resolve, quality, build]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
