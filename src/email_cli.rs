@@ -94,7 +94,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> 
     let Some(email) = canonical_email(email) else {
         return EmailRun::Failed("invalid email address".into());
     };
-    let scan_id = entity::scan_id("email", &email);
+    let scan_id = crate::entity::scan_id("email", &email);
     let mut report = Report {
         entities: derive_entities(&email, &scan_id),
         outcomes: Vec::new(),
