@@ -8,6 +8,30 @@ permissions:
   contents: read
 
 jobs:
+  directive-lock:
+    name: Canonical Huntsman directive lock
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify canonical Huntsman directive byte identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='5bdd9777d9a8046d2d4a6bf645ee6201b6e1d004b1a6a1fc7a99eb246a687584'
+          canonical='AGENTS.md'
+          actual="$(sha256sum "$canonical" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          for path in \
+            HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md \
+            CLAUDE.md \
+            GEMINI.md \
+            RULE.md \
+            CONTRIBUTING.md \
+            .github/copilot-instructions.md
+          do
+            test -f "$path"
+            cmp -s "$canonical" "$path"
+          done
   test:
     runs-on: ubuntu-latest
     strategy:
