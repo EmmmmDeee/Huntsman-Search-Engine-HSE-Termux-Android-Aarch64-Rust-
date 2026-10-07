@@ -22,7 +22,6 @@ pub struct SavePolicy {
     pub entity_provenance: ProvenanceFn,
 }
 
-
 fn email_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "gravatar" => ("gravatar", "src/gravatar.rs"),
@@ -59,7 +58,6 @@ pub const USERNAME_POLICY: SavePolicy = SavePolicy {
     outcome_provenance: username_provenance,
     entity_provenance: username_provenance,
 };
-
 
 fn people_outcome_provenance(label: &str) -> (&str, &'static str) {
     match label.split('.').next().unwrap_or(label) {
