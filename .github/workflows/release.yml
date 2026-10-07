@@ -51,6 +51,24 @@ on:
   push:
     branches:
       - main
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/scripts/scan-for-keys.sh"
+      - ".github/scripts/install-termux.sh"
+      - ".github/actions/setup-ndk-aarch64/**"
+      - ".railway/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "capabilities.json"
+      - "benchmarks.json"
+      - "src/**"
+      - "scripts/railway-entrypoint.sh"
+      - "scripts/railway-live-acceptance.sh"
+      - "scripts/repair-gate.sh"
+      - "scripts/validate-railway-iac.sh"
   workflow_dispatch:
   # Dry run on PRs that touch the release path: same build, embed check and
   # key scan, nothing published, no write token requested.
@@ -60,12 +78,23 @@ on:
       - ".github/scripts/scan-for-keys.sh"
       - ".github/scripts/install-termux.sh"
       - ".github/actions/setup-ndk-aarch64/**"
+      - ".railway/**"
+      - "Dockerfile"
+      - ".dockerignore"
       - "build.rs"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "capabilities.json"
+      - "benchmarks.json"
+      - "src/**"
+      - "scripts/railway-entrypoint.sh"
+      - "scripts/railway-live-acceptance.sh"
+      - "scripts/repair-gate.sh"
+      - "scripts/validate-railway-iac.sh"
 
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   HSE_RELEASE: "1"
@@ -113,6 +142,20 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Resolved tag=${tag} publish=${publish}"
 
+      - name: Require merged PR origin for main pushes
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '[.[] | select(.base.ref == "main" and .merged_at != null)] | length')"
+          [ "$count" -ge 1 ] || {
+            echo "::error::${GITHUB_SHA} reached main without an associated merged pull request"
+            exit 1
+          }
+          echo "main origin: merged PR association verified (${count})"
+
 
   quality-msrv:
     name: Shared repair acceptance (Rust 1.87)
@@ -146,6 +189,11 @@ jobs:
           components: clippy, rustfmt
       - name: Run shared host repair acceptance
         run: bash scripts/repair-gate.sh full
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22"
+      - name: Type-check Railway Infrastructure as Code
+        run: bash scripts/validate-railway-iac.sh
       - name: Build current Railway container
         run: docker build --pull -f Dockerfile -t huntsman-recon:railway .
       - name: Exercise Railway-style runtime
@@ -579,8 +627,8 @@ jobs:
             --title "$TAG" --notes-file notes.md
 
       # OFF by default: nothing moves `latest` unless the repository variable
-      # PROMOTE_RECON_TO_LATEST is exactly 'true'. Until recon can run person
-      # lookups, `latest` stays on the legacy hse build. When on, `latest` only
+      # PROMOTE_RECON_TO_LATEST is exactly 'true'. Until Recon restores the full
+      # legacy capability surface, `latest` stays on the legacy hse build. When on, `latest` only
       # moves forward: a run whose commit is behind the one `latest` points at
       # (an out-of-order queue) leaves it alone.
       - name: Move the rolling `latest` pre-release to this build (opt-in)

@@ -105,6 +105,45 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
         status.success(),
         "Railway live acceptance harness must parse as bash"
     );
+}
+
+#[test]
+fn railway_iac_contract_is_current_and_shell_valid() {
+    let iac_validator =
+        fs::read_to_string("scripts/validate-railway-iac.sh").expect("Railway IaC validator");
+    for required in [
+        "Node.js 22+ required",
+        "railway\": \"3.12.0",
+        "typescript\": \"5.9.3",
+        "./node_modules/.bin/tsc -p tsconfig.json",
+        ".railway/railway.ts",
+    ] {
+        assert!(
+            iac_validator.contains(required),
+            "Railway IaC validator must contain {required:?}"
+        );
+    }
+    let status = Command::new("bash")
+        .args(["-n", "scripts/validate-railway-iac.sh"])
+        .status()
+        .expect("bash must execute in CI");
+    assert!(status.success(), "Railway IaC validator must parse as bash");
+
+    let plan = fs::read_to_string("scripts/railway-iac-plan.sh").expect("Railway IaC plan wrapper");
+    for required in ["railway config plan", "Railway CLI is required"] {
+        assert!(
+            plan.contains(required),
+            "Railway plan wrapper must contain {required:?}"
+        );
+    }
+    let status = Command::new("bash")
+        .args(["-n", "scripts/railway-iac-plan.sh"])
+        .status()
+        .expect("bash must execute in CI");
+    assert!(
+        status.success(),
+        "Railway IaC plan wrapper must parse as bash"
+    );
 
     let iac = fs::read_to_string(".railway/railway.ts").expect("Railway IaC");
     for required in [
@@ -129,6 +168,29 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
 
 #[test]
 fn termux_installer_is_arm64_userland_and_self_accepting() {
+    let device = fs::read_to_string("scripts/termux-device-acceptance.sh")
+        .expect("Termux device acceptance");
+    for required in [
+        "aarch64|arm64",
+        "/data/data/com.termux/files/usr",
+        "timeout 30 \"$bin\" check",
+        "timeout 30 \"$bin\" verify var/ledger.json",
+        "termux-acceptance: PASS",
+    ] {
+        assert!(
+            device.contains(required),
+            "Termux device acceptance must contain {required:?}"
+        );
+    }
+    let status = Command::new("bash")
+        .args(["-n", "scripts/termux-device-acceptance.sh"])
+        .status()
+        .expect("bash must execute in CI");
+    assert!(
+        status.success(),
+        "Termux device acceptance harness must parse as bash"
+    );
+
     let installer = fs::read_to_string("install.sh").expect("Termux installer");
     for required in [
         "aarch64|arm64",

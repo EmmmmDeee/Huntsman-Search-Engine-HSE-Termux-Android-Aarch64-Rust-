@@ -67,7 +67,7 @@ environment. Choose additional evidence from the surface changed:
 - **Rust/core logic or ordinary repository files:** original reproducer + `full` gate.
 - **Railway/container:** original reproducer + `full` gate + Railway container CI + live Railway acceptance against the exact deployed commit.
 - **Android cross-build:** original reproducer + `full` gate + Android aarch64 CI artifact verification.
-- **Termux runtime behavior:** Android build evidence is insufficient; run the real-device Termux acceptance harness before claiming handset-runtime success.
+- **Termux runtime behavior:** Android build evidence is insufficient; run `bash scripts/termux-device-acceptance.sh` on the real handset before claiming handset-runtime success.
 - **Documentation/config/data files:** run the narrow parser/validator or reproducer that proves that file's semantics, then the relevant repository/platform gates.
 
 A generic green gate must never replace the original reproducer. It shows that
@@ -86,6 +86,16 @@ HSE_AUTH_TOKEN="$HSE_AUTH_TOKEN" \
 ```
 
 Then verify Railway deployment metadata identifies the exact intended commit.
+
+For Infrastructure as Code, CI type-checks `.railway/railway.ts` against pinned
+Railway SDK and TypeScript versions. Before applying infrastructure changes,
+run the authenticated read-only live plan:
+
+```sh
+bash scripts/railway-iac-plan.sh
+```
+
+The plan is evidence of live drift; the type check alone is not.
 
 ## Stop conditions
 

@@ -74,6 +74,9 @@ before_fingerprint="$(repo_fingerprint)"
 # File/shell contract checks first: fail cheaply before compilation.
 run bash -n scripts/repair-gate.sh
 run bash -n scripts/railway-live-acceptance.sh
+run bash -n scripts/railway-iac-plan.sh
+run bash -n scripts/termux-device-acceptance.sh
+run bash -n scripts/validate-railway-iac.sh
 run sh -n scripts/railway-entrypoint.sh
 
 if [[ "$mode" == "fast" || "$mode" == "full" ]]; then
