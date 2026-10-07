@@ -4,10 +4,11 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The crate (`huntsman-recon`, version `0.2.0` in `Cargo.toml`) has no stable
-release yet; pushes to `main` publish `main-<sha7>` pre-releases (#672). Release policy: only pre-releases (`main-<sha7>` plus a rolling
+release yet; relevant pushes to `main` are built and verified, and a current-head build publishes a `main-<sha7>` pre-release (#672). Superseded builds remain Actions artifacts for their retention window. Release policy: only pre-releases (`main-<sha7>` plus a rolling
 `latest`); a stable release needs the owner's explicit approval.
 
 ## [Unreleased]
+- Fix the main-channel release race where a queued build could become historical before `gh release create --target <sha>` and fail with GitHub's built-in workflow token. Publication now uses a draft created from the live main head, verifies its tag exactly, and discards a raced draft rather than failing or publishing the wrong commit.
 
 ### Added
 
