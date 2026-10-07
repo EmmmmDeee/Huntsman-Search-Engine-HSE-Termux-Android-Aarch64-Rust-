@@ -63,7 +63,7 @@ impl SearchFetchResult {
     }
 }
 
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct FetchKey {
     scan_id: String,
     engine: &'static str,
@@ -194,7 +194,7 @@ async fn fetch_and_parse_uncached(
 
 /// Fetch one engine request with scan-wide singleflight deduplication.
 ///
-/// The exact engine+URL+query tuple is the cache identity. Pagination therefore
+/// The exact engine+URL+query+POST-body tuple is the cache identity. Pagination therefore
 /// stays distinct because each page has a different URL, while duplicate work
 /// spawned by concurrent graph branches joins the same in-flight cell.
 pub(super) async fn fetch_and_parse_classified(
