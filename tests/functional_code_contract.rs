@@ -62,7 +62,10 @@ fn declared_file_modules(source: &str) -> Vec<String> {
             continue;
         }
         let name = tokens.pop().expect("module name");
-        if name.chars().all(|ch| ch == '_' || ch.is_ascii_alphanumeric()) {
+        if name
+            .chars()
+            .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+        {
             out.push(name.to_string());
         }
     }
