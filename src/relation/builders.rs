@@ -829,13 +829,13 @@ pub fn derive_canonical_identities(entities: &[Entity], scan_id: &str) -> Vec<Re
     let mut buckets = BTreeMap::<(EntityKind, String), Vec<&Entity>>::new();
     for entity in entities {
         match entity.kind {
-            EntityKind::Email | EntityKind::Person | EntityKind::Domain | EntityKind::Username => {
+            EntityKind::Email | EntityKind::Domain | EntityKind::Username => {
                 buckets
                     .entry((entity.kind.clone(), entity.value.clone()))
                     .or_default()
                     .push(entity);
             }
-            _ => {}
+            EntityKind::Person | _ => {}
         }
     }
     let mut edges = Vec::new();
