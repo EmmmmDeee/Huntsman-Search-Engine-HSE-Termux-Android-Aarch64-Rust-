@@ -311,17 +311,17 @@ fn resolution_accepted(
         && independence_accepted
 }
 
-#[must_use]
-pub fn score_person_resolution_with_ancestry(
-    entities: &[Entity],
-    expected: &[ExpectedPublicFact],
-    forbidden: &[ForbiddenPublicFact],
-    ancestry: Option<&EvidenceAncestryGraph>,
-    required_independent_person_support: usize,
-) -> PersonResolutionScore {
-    use std::collections::BTreeSet;
+type ExpectedFactKey<'a> = (crate::entity::EntityKind, String, &'a str);
+type ForbiddenFactKey = (crate::entity::EntityKind, String);
 
-    let expected: BTreeSet<_> = expected
+fn resolution_fact_sets<'a>(
+    expected: &'a [ExpectedPublicFact],
+    forbidden: &[ForbiddenPublicFact],
+) -> (
+    std::collections::BTreeSet<ExpectedFactKey<'a>>,
+    std::collections::BTreeSet<ForbiddenFactKey>,
+) {
+    let expected = expected
         .iter()
         .map(|fact| {
             (
@@ -331,7 +331,7 @@ pub fn score_person_resolution_with_ancestry(
             )
         })
         .collect();
-    let forbidden: BTreeSet<_> = forbidden
+    let forbidden = forbidden
         .iter()
         .map(|fact| {
             (
@@ -340,6 +340,18 @@ pub fn score_person_resolution_with_ancestry(
             )
         })
         .collect();
+    (expected, forbidden)
+}
+
+#[must_use]
+pub fn score_person_resolution_with_ancestry(
+    entities: &[Entity],
+    expected: &[ExpectedPublicFact],
+    forbidden: &[ForbiddenPublicFact],
+    ancestry: Option<&EvidenceAncestryGraph>,
+    required_independent_person_support: usize,
+) -> PersonResolutionScore {
+    let (expected, forbidden) = resolution_fact_sets(expected, forbidden);
 
     let matched_facts = expected
         .iter()
