@@ -89,3 +89,26 @@ cargo run --locked -- check
 remain byte-identical to their committed versions. See the [README](../README.md)
 for runnable examples, credential-file rules, command exit codes, and project
 boundaries.
+
+
+## Real-device Termux acceptance
+
+Cross-build CI proves that Huntsman compiles as an Android aarch64 ELF, but it
+does not prove execution inside a real Termux userspace. After installing
+`huntsman-recon` on a handset, run:
+
+```sh
+bash scripts/termux-runtime-acceptance.sh
+```
+
+The harness validates the current binary metadata, runs offline `check` plus
+ledger verification in a disposable directory, starts the embedded loopback
+server on an isolated high port, checks `/api/health`, `/api/modules`, and
+`/api/command`, stops it, then repeats the server lifecycle once. A relative
+`HSE_BIN` override is anchored before the disposable-directory step, every
+offline prerequisite must succeed, and the isolated child server ignores an
+ambient `HSE_AUTH_TOKEN` so unrelated user configuration cannot create a
+false rejection. Results are written to
+`~/.huntsman/termux-acceptance.txt`. A passing cross-build is not reported as
+a handset-runtime pass; this harness must actually run on the device for that
+claim.
