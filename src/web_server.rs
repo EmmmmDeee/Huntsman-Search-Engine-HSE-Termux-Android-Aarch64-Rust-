@@ -15,6 +15,35 @@ use crate::error::Error;
 use crate::module::reachable_modules;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
+
+/// Resolve the implicit server bind without weakening the explicit bind contract.
+///
+/// Local/Termux runs stay loopback-only. Railway runs use the platform-provided
+/// PORT on all interfaces so Railway routing and health checks reach the server.
+/// `HSE_BIND` always wins and an explicit CLI `--bind` still wins later.
+///
+/// # Errors
+/// Railway mode fails closed when PORT is absent, malformed, or zero.
+pub fn resolve_serve_bind(
+    hse_bind: Option<&str>,
+    railway_port: Option<&str>,
+    railway: bool,
+) -> Result<String, Error> {
+    if let Some(bind) = hse_bind {
+        return Ok(bind.to_owned());
+    }
+    if !railway {
+        return Ok(DEFAULT_BIND.to_owned());
+    }
+
+    let raw = railway_port.ok_or_else(|| Error::Invalid("Railway PORT is missing".into()))?;
+    let port = raw
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or_else(|| Error::Invalid(format!("invalid Railway PORT {raw:?}")))?;
+    Ok(format!("0.0.0.0:{port}"))
+}
 const MAX_REQUEST_BYTES: usize = 16 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -380,6 +409,22 @@ document.getElementById('refresh').onclick=refresh; refresh();
 mod tests {
     use super::*;
     use std::thread;
+
+    #[test]
+    fn implicit_bind_is_loopback_locally_and_railway_port_on_railway() {
+        assert_eq!(resolve_serve_bind(None, None, false).unwrap(), DEFAULT_BIND);
+        assert_eq!(
+            resolve_serve_bind(Some("127.0.0.1:9000"), Some("1234"), true).unwrap(),
+            "127.0.0.1:9000"
+        );
+        assert_eq!(
+            resolve_serve_bind(None, Some("43210"), true).unwrap(),
+            "0.0.0.0:43210"
+        );
+        assert!(resolve_serve_bind(None, None, true).is_err());
+        assert!(resolve_serve_bind(None, Some("0"), true).is_err());
+        assert!(resolve_serve_bind(None, Some("not-a-port"), true).is_err());
+    }
 
     #[test]
     fn config_defaults_and_public_token_requirement_are_explicit() {
