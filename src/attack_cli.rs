@@ -86,6 +86,8 @@ fn status(json_output: bool) -> Result<String, String> {
     if json_output {
         return json_line(&json!({
             "attack_version": attack::RECONNAISSANCE_VERSION,
+            "catalogue_source": attack::RECONNAISSANCE_SOURCE_URL,
+            "version_source": attack::RECONNAISSANCE_VERSION_SOURCE_URL,
             "enterprise_baseline_version": attack::ATTACK_VERSION,
             "catalogue_scope": "reconnaissance",
             "evidence_basis": "reachable_network_modules",
@@ -106,6 +108,8 @@ fn status(json_output: bool) -> Result<String, String> {
     Ok(format!(
         "MITRE ATT&CK posture — Huntsman Recon\n\n\
 Recon catalogue   : ATT&CK Enterprise TA0043 v{}\n\
+Recon source      : {}\n\
+Version source    : {}\n\
 Enterprise base   : embedded full-matrix snapshot v{}\n\
 Tactic in scope   : {} {}\n\
 Coverage basis    : {} over reachable network modules\n\
@@ -116,6 +120,8 @@ Mapped collectors : {} reachable network modules\n\
 Reachable modules : {} total CLI-reachable modules\n\n\
 Coverage reports reachable module mapping, not technique execution or detection effectiveness.\n",
         attack::RECONNAISSANCE_VERSION,
+        attack::RECONNAISSANCE_SOURCE_URL,
+        attack::RECONNAISSANCE_VERSION_SOURCE_URL,
         attack::ATTACK_VERSION,
         raw.tactic_id,
         raw.tactic_name,
@@ -275,6 +281,14 @@ mod tests {
         let text = render(&args(&["status", "--json"])).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["attack_version"], attack::RECONNAISSANCE_VERSION);
+        assert_eq!(
+            value["catalogue_source"],
+            attack::RECONNAISSANCE_SOURCE_URL
+        );
+        assert_eq!(
+            value["version_source"],
+            attack::RECONNAISSANCE_VERSION_SOURCE_URL
+        );
         assert_eq!(value["enterprise_baseline_version"], attack::ATTACK_VERSION);
         assert_eq!(value["evidence_basis"], "reachable_network_modules");
         assert_eq!(value["tactic_id"], attack::TACTIC_ID);
