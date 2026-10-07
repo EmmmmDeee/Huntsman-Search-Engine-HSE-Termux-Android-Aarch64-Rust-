@@ -69,7 +69,7 @@ concurrency:
 
 jobs:
   # Decide the target tag and whether there's anything to publish. Splitting this
-  # out keeps the (slow) cross-build from even starting on a routine main push
+  # out keeps the (slow) cross-build from even starting on a routine legacy-hse push
   # whose version was already released.
   resolve:
     name: Resolve release tag
@@ -137,7 +137,7 @@ jobs:
                     prerelease=true
                     tag="main-${GITHUB_SHA:0:7}"
                     {
-                      echo "### Publishing a main-channel build"
+                      echo "### Publishing a legacy-hse channel build"
                       echo
                       echo "\`main\` is **${ahead} commit(s)** past \`v${ver}\`, and \`Cargo.toml\` still says \`${ver}\`."
                       echo "Publishing this commit as pre-release \`${tag}\` so it is installable now."
@@ -197,7 +197,7 @@ jobs:
       - name: Install Rust + aarch64 Android target
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.0
           targets: aarch64-linux-android
 
       - name: Cache cargo
