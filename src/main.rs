@@ -50,6 +50,7 @@ use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::retrieval_artifact::ArtifactId;
 use huntsman_recon::scan_batch::parse_seed_list;
+use huntsman_recon::scan_route::{ScanKind, infer_kind, parse_kind};
 use huntsman_recon::search::{Document, load_dir, search, search_response, tokenize};
 use huntsman_recon::seeknow_cli::{SEEKNOW_HELP, SEEKNOW_USAGE, SeekNowCliRun};
 use huntsman_recon::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
