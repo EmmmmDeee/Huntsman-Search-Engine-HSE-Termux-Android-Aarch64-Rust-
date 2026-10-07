@@ -102,6 +102,7 @@ permissions:
 env:
   HSE_RELEASE: "1"
   HUNTSMAN_HIBP_NO_EMBED: "1"
+  HUNTSMAN_BUILD_SHA: ${{ github.sha }}
   ASSET: huntsman-recon-aarch64-linux-android
 
 # Workflow level: a newer PR dry run replaces an older one. Every main run gets
@@ -206,7 +207,7 @@ jobs:
       - name: Type-check Railway Infrastructure as Code
         run: bash scripts/validate-railway-iac.sh
       - name: Build current Railway container
-        run: docker build --pull -f Dockerfile -t huntsman-recon:railway .
+        run: docker build --pull --build-arg HUNTSMAN_BUILD_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:railway .
       - name: Exercise Railway-style runtime
         shell: bash
         run: |
@@ -325,7 +326,12 @@ jobs:
           # prove identity from the exact bytes: the hand-written CLI usage line.
           usage="$(strings -a -n 8 "dist/$ASSET" | grep -o -m1 'usage: huntsman-recon \[check.*verify LEDGER\]' || true)"
           [ -n "$usage" ] || { echo "::error::dist/${ASSET} does not contain the huntsman-recon usage line"; exit 1; }
-          echo "binary_identity: ${usage}" | tee "$RUNNER_TEMP/identity.txt"
+          strings -a -n 8 "dist/$ASSET" | grep -Fqx "$GITHUB_SHA" \
+            || { echo "::error::dist/${ASSET} does not embed exact build commit ${GITHUB_SHA}"; exit 1; }
+          {
+            echo "binary_identity: ${usage}"
+            echo "embedded_build_sha: ${GITHUB_SHA}"
+          } | tee "$RUNNER_TEMP/identity.txt"
 
       - name: Key check on the final artifacts (must be zero)
         run: |
