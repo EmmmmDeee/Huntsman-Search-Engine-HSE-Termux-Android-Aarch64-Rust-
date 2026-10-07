@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::bluesky_user;
 use crate::canonical::canonical_handle;
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
+use crate::entity::{self, Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::evidence_ancestry::EvidenceNodeId;
 use crate::github_user;
