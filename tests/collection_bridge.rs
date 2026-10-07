@@ -90,6 +90,7 @@ fn upstream_origin_survives_collection_bridge() {
             attributes: BTreeMap::new(),
             observed_at_unix: Some(10),
         }],
+        independence_assertions: Vec::new(),
         truncated: false,
     };
     assert_eq!(batch.observations[0].upstream.as_ref(), Some(&origin));
