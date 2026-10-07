@@ -36,8 +36,8 @@ fn diagnostics_value() -> serde_json::Value {
 
     serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "build_sha": BUILD_SHA,
-        "build_sha_known": BUILD_SHA != "unknown",
+        "build_sha": embedded_build_sha(),
+        "build_sha_known": embedded_build_sha() != "unknown",
         "target_os": std::env::consts::OS,
         "target_arch": std::env::consts::ARCH,
         "android_target": cfg!(target_os = "android"),
@@ -98,7 +98,7 @@ pub(super) fn build_sha_cmd(args: &[String]) -> ExitCode {
     if !args.is_empty() {
         return fail(EX_USAGE, "usage: huntsman-recon build-sha");
     }
-    println!("{BUILD_SHA}");
+    println!("{}", embedded_build_sha());
     ExitCode::SUCCESS
 }
 
