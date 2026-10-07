@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::attack::{
-    Coverage, Technique, coverage, techniques_for_entity_kind, techniques_for_relation_kind,
-    reconnaissance,
+    Coverage, Technique, coverage, reconnaissance, techniques_for_entity_kind,
+    techniques_for_relation_kind,
 };
 use crate::entity::{Entity, Evidence};
 use crate::graph::EntityRelation;
@@ -55,7 +55,12 @@ pub fn coverage_from_observations(
 ) -> HierarchyCoverage {
     let observed_uids: BTreeSet<&str> = entities
         .iter()
-        .filter(|entity| entity.evidence.iter().any(|evidence| !seed_evidence(evidence)))
+        .filter(|entity| {
+            entity
+                .evidence
+                .iter()
+                .any(|evidence| !seed_evidence(evidence))
+        })
         .map(|entity| entity.uid.as_str())
         .collect();
 
@@ -82,10 +87,12 @@ pub fn coverage_from_observations(
 }
 
 fn seed_evidence(evidence: &Evidence) -> bool {
-    matches!(evidence.provenance.source.as_str(), "operator_input" | "seed")
-        || evidence
-            .attr_values("evidence_role")
-            .any(|value| value == "seed_not_external_verification")
+    matches!(
+        evidence.provenance.source.as_str(),
+        "operator_input" | "seed"
+    ) || evidence
+        .attr_values("evidence_role")
+        .any(|value| value == "seed_not_external_verification")
 }
 
 /// Derive a hierarchy-aware coverage view from the current ATT&CK catalogue.
@@ -223,8 +230,7 @@ mod tests {
         ];
 
         let report = coverage_from_observations(&[seed, person, address], &relations);
-        let covered: BTreeSet<&str> =
-            report.covered_leaves.iter().map(|item| item.id).collect();
+        let covered: BTreeSet<&str> = report.covered_leaves.iter().map(|item| item.id).collect();
 
         assert!(covered.contains("T1591.001"));
         assert!(!covered.contains("T1589.002"));
