@@ -261,9 +261,13 @@ fn superseded_main_builds_are_verified_without_historical_release_failures() {
         "id: head",
         "git/ref/heads/main",
         "steps.head.outputs.publish == 'true'",
-        "--draft --latest=false",
+        "gh api -X POST \"$api/git/refs\"",
+        "-f ref=\"refs/tags/${TAG}\"",
+        "-f sha=\"$GITHUB_SHA\"",
+        "--verify-tag --draft --latest=false",
         "read -r type actual",
         "[ \"$actual\" != \"$GITHUB_SHA\" ]",
+        "current=\"$(gh api \"$api/git/ref/heads/main\" --jq .object.sha)\"",
         "gh release delete \"$TAG\" --yes --cleanup-tag",
         "gh release edit \"$TAG\" --draft=false --prerelease --latest=false",
         "published=false",
@@ -282,6 +286,51 @@ fn superseded_main_builds_are_verified_without_historical_release_failures() {
     assert!(
         !per_commit.contains("--target \"$GITHUB_SHA\""),
         "per-commit publication must not ask GITHUB_TOKEN to mint a historical target"
+    );
+}
+
+#[test]
+fn per_commit_publish_anchors_the_tag_before_creating_the_draft() {
+    let wf = release();
+    let publish = job(&wf, "publish");
+    let step = publish
+        .split("      - name: ")
+        .find(|s| s.starts_with("Publish pre-release "))
+        .expect("per-commit publish step must exist");
+
+    let create_ref = step
+        .find("gh api -X POST \"$api/git/refs\"")
+        .expect("publish must create the immutable tag explicitly");
+    let create_release = step
+        .find("gh release create \"$TAG\"")
+        .expect("publish must create the release");
+    assert!(
+        create_ref < create_release,
+        "the immutable tag must exist before draft release creation"
+    );
+    assert!(
+        step.contains("--verify-tag --draft --latest=false"),
+        "draft creation must require the pre-created tag"
+    );
+    assert!(
+        step.matches("git/ref/tags/${TAG}").count() >= 2,
+        "the tag must be verified before and after draft creation"
+    );
+    assert!(
+        step.matches("git/ref/heads/main").count() >= 1,
+        "live main must be rechecked before publication"
+    );
+    assert!(
+        step.contains("gh api -X DELETE \"$api/git/refs/tags/${TAG}\""),
+        "a failed draft creation must clean up its pre-created tag"
+    );
+    assert!(
+        step.contains("gh release delete \"$TAG\" --yes --cleanup-tag"),
+        "a publication race must remove both draft and tag"
+    );
+    assert!(
+        !step.contains("--target \"$GITHUB_SHA\""),
+        "release creation must never ask GitHub to synthesize a historical target"
     );
 }
 
