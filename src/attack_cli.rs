@@ -39,7 +39,11 @@ fn coverage_state() -> (
     HierarchyCoverage,
 ) {
     let modules = module_index();
-    let raw = attack::static_reconnaissance_coverage(modules.keys().copied());
+    let exercised = modules
+        .iter()
+        .map(|(id, evidence)| ((*id).to_owned(), evidence.len()))
+        .collect::<BTreeMap<_, _>>();
+    let raw = attack::coverage(&exercised);
     let hierarchy = hierarchy_coverage(&raw);
     (modules, raw, hierarchy)
 }
@@ -72,7 +76,10 @@ fn status(json_output: bool) -> Result<String, String> {
     let (index, raw, hierarchy) = coverage_state();
     if json_output {
         return json_line(&json!({
-            "attack_version": attack::ATTACK_VERSION,
+            "attack_version": attack::RECONNAISSANCE_VERSION,
+            "enterprise_baseline_version": attack::ATTACK_VERSION,
+            "catalogue_scope": "reconnaissance",
+            "evidence_basis": "reachable_network_modules",
             "tactic_id": raw.tactic_id,
             "tactic_name": raw.tactic_name,
             "coverage_basis": hierarchy.coverage_basis,
@@ -88,14 +95,16 @@ fn status(json_output: bool) -> Result<String, String> {
 
     Ok(format!(
         "MITRE ATT&CK posture — Huntsman Recon\n\n\
-Catalogue version : ATT&CK Enterprise v{}\n\
+Recon catalogue   : ATT&CK Enterprise TA0043 v{}\n\
+Enterprise base   : embedded full-matrix snapshot v{}\n\
 Tactic in scope   : {} {}\n\
-Coverage basis    : {}\n\
+Coverage basis    : {} over reachable network modules\n\
 Leaf coverage     : {}/{} ({:.1}%)\n\
 ATT&CK objects    : {}/{} covered (parents retained as roll-ups)\n\
 Mapped techniques : {} with reachable module evidence\n\
 Reachable modules : {}\n\n\
-Coverage reports collection capability, not detection effectiveness.\n",
+Coverage reports reachable module mapping, not technique execution or detection effectiveness.\n",
+        attack::RECONNAISSANCE_VERSION,
         attack::ATTACK_VERSION,
         raw.tactic_id,
         raw.tactic_name,
@@ -122,7 +131,7 @@ fn coverage(json_output: bool) -> Result<String, String> {
                     "id": technique.id,
                     "name": technique.name,
                     "modules": modules,
-                    "structural_mapping": modules.is_empty(),
+                    "evidence_basis": "reachable_network_modules",
                 })
             })
             .collect::<Vec<_>>();
@@ -146,11 +155,7 @@ fn coverage(json_output: bool) -> Result<String, String> {
     writeln!(&mut output, "{}", "─".repeat(96)).map_err(|error| error.to_string())?;
     for technique in &hierarchy.covered_leaves {
         let modules = modules_for(&index, technique.id);
-        let evidence = if modules.is_empty() {
-            "— (entity/relation mapping)".to_string()
-        } else {
-            modules.join(", ")
-        };
+        let evidence = modules.join(", ");
         writeln!(
             &mut output,
             "{:<12}  {:<36}  {}",
@@ -204,7 +209,7 @@ fn navigator_layer() -> Result<String, String> {
     let (_index, raw, _hierarchy) = coverage_state();
     json_line(&navigator::coverage_layer(
         &raw,
-        "static reachable capability",
+        "reachable network-module capability",
     ))
 }
 
@@ -257,7 +262,9 @@ mod tests {
     fn status_json_uses_leaf_coverage_and_current_catalogue_version() {
         let text = render(&args(&["status", "--json"])).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["attack_version"], attack::ATTACK_VERSION);
+        assert_eq!(value["attack_version"], attack::RECONNAISSANCE_VERSION);
+        assert_eq!(value["enterprise_baseline_version"], attack::ATTACK_VERSION);
+        assert_eq!(value["evidence_basis"], "reachable_network_modules");
         assert_eq!(value["tactic_id"], attack::TACTIC_ID);
         assert_eq!(
             value["coverage_basis"],
@@ -281,12 +288,11 @@ mod tests {
             .iter()
             .filter(|row| !row["modules"].as_array().unwrap().is_empty())
             .count();
-        let structural = covered
-            .iter()
-            .filter(|row| row["structural_mapping"] == true)
-            .count();
         assert!(with_module > 0);
-        assert!(structural > 0);
+        assert_eq!(with_module, covered.len());
+        assert!(covered
+            .iter()
+            .all(|row| row["evidence_basis"] == "reachable_network_modules"));
     }
 
     #[test]
@@ -294,7 +300,7 @@ mod tests {
         let text = render(&args(&["navigator"])).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["domain"], "enterprise-attack");
-        assert_eq!(value["versions"]["attack"], attack::attack_spec_major());
+        assert_eq!(value["versions"]["attack"], attack::reconnaissance_spec_major());
         assert_eq!(
             value["techniques"].as_array().unwrap().len(),
             attack::reconnaissance().len()
