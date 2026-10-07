@@ -7,7 +7,10 @@ use crate::dependency::ModuleCategory;
 use crate::entity::{Entity, EntityKind};
 use crate::graph::{EntityRelation, RelationKind};
 
+/// Version of the repository's complete embedded Enterprise snapshot.
 pub const ATTACK_VERSION: &str = "17.1";
+/// Version to which the embedded TA0043 Reconnaissance slice has been reconciled.
+pub const RECONNAISSANCE_VERSION: &str = "19.2";
 pub const TACTIC_ID: &str = "TA0043";
 pub const TACTIC_NAME: &str = "Reconnaissance";
 
@@ -16,6 +19,14 @@ pub fn attack_spec_major() -> &'static str {
     match ATTACK_VERSION.split_once('.') {
         Some((major, _)) => major,
         None => ATTACK_VERSION,
+    }
+}
+
+#[must_use]
+pub fn reconnaissance_spec_major() -> &'static str {
+    match RECONNAISSANCE_VERSION.split_once('.') {
+        Some((major, _)) => major,
+        None => RECONNAISSANCE_VERSION,
     }
 }
 
@@ -393,6 +404,8 @@ mod tests {
             "T1598.002",
             "T1598.003",
             "T1598.004",
+            "T1681",
+            "T1682",
         ];
         let have: BTreeSet<&str> = reconnaissance().iter().map(|item| item.id).collect();
         for id in FULL {
