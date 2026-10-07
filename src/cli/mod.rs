@@ -193,7 +193,6 @@ fn fail(code: u8, msg: &str) -> ExitCode {
     ExitCode::from(code)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::normalized_build_sha;
