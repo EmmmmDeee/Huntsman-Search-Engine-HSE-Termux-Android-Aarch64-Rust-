@@ -3,13 +3,18 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-fn termux_detected() -> bool {
-    env::var_os("TERMUX_VERSION").is_some()
+fn termux_state() -> TermuxState {
+    if env::var_os("TERMUX_VERSION").is_some()
         || env::var_os("PREFIX").is_some_and(|value| {
             value
                 .to_string_lossy()
                 .contains("/data/data/com.termux/files/usr")
         })
+    {
+        TermuxState::Detected
+    } else {
+        TermuxState::NotDetected
+    }
 }
 
 fn diagnostics_snapshot() -> diagnostics::Diagnostics {
@@ -21,9 +26,9 @@ fn diagnostics_snapshot() -> diagnostics::Diagnostics {
             } else {
                 CredentialResolution::Ok
             };
-            diagnostics::snapshot(Some(&resolved.keys), resolution, termux_detected())
+            diagnostics::snapshot(Some(&resolved.keys), resolution, termux_state())
         }
-        Err(_) => diagnostics::snapshot(None, CredentialResolution::Error, termux_detected()),
+        Err(_) => diagnostics::snapshot(None, CredentialResolution::Error, termux_state()),
     }
 }
 
@@ -42,11 +47,9 @@ pub(super) fn diagnostics_cmd(args: &[String]) -> ExitCode {
     } else {
         println!("version={}", report.version);
         println!("build_sha={}", report.build_sha);
-        println!("build_sha_known={}", report.build_sha_known);
         println!("target_os={}", report.target_os);
         println!("target_arch={}", report.target_arch);
-        println!("android_target={}", report.android_target);
-        println!("termux_detected={}", report.termux_detected);
+        println!("termux={}", report.termux.as_str());
         println!("reachable_modules={}", report.reachable_modules);
         println!("network_modules={}", report.network_modules);
         println!("attack_mapped_modules={}", report.attack_mapped_modules);
@@ -56,7 +59,6 @@ pub(super) fn diagnostics_cmd(args: &[String]) -> ExitCode {
             "credential_resolution={}",
             report.credential_resolution.as_str()
         );
-        println!("credential_warning={}", report.credential_warning);
         println!("selfcheck_command={}", report.selfcheck_command);
     }
     ExitCode::SUCCESS
