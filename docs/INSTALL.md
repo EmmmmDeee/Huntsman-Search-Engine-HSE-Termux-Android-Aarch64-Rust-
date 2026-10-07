@@ -104,7 +104,11 @@ bash scripts/termux-runtime-acceptance.sh
 The harness verifies the current binary metadata, runs offline `check` plus
 ledger verification in a disposable directory, starts the embedded loopback
 server on an isolated high port, checks `/api/health`, `/api/modules`, and
-`/api/command`, stops it, then repeats the server lifecycle once. Results are
-written to `~/.huntsman/termux-acceptance.txt`. A passing CI cross-build is not
-reported as a handset-runtime pass; this harness must actually run on the
-device for that claim.
+`/api/command`, stops it, then repeats the server lifecycle once. Relative
+binary and output paths are anchored before the disposable-directory step,
+every offline prerequisite must succeed, and the isolated child server ignores
+an unrelated inherited API token so local account configuration cannot create
+a false rejection. Results are written to
+`~/.huntsman/termux-acceptance.txt`. A passing CI cross-build is not reported
+as a handset-runtime pass; this harness must actually run on the device for that
+claim.
