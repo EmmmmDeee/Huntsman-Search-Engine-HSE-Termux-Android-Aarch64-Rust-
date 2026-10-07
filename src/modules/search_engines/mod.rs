@@ -170,6 +170,19 @@ fn record_failure(scan_id: &str, name: &'static str) {
     }
 }
 
+/// Charge session health only when the classified outcome contains direct
+/// provider/request-failure evidence. Ambiguous zero-yield responses remain
+/// unknown and therefore cannot manufacture a quarantine streak.
+fn record_provider_failure_outcome(
+    scan_id: &str,
+    name: &'static str,
+    outcome: &SearchFetchResult,
+) {
+    if outcome.is_provider_failure() {
+        record_failure(scan_id, name);
+    }
+}
+
 /// A valid response containing zero matching results proves the engine is
 /// reachable. Clear any failure streak without awarding "proven hit" credit.
 fn record_empty_success(scan_id: &str, name: &'static str) {
@@ -671,12 +684,14 @@ impl Module for SearchEngines {
                         // provider's cross-target failure streak.
                         dead_engines.insert(name);
                     }
-                    SearchFetchResult::Blocked | SearchFetchResult::Unreachable if qi == 0 => {
+                    failure @ (SearchFetchResult::Blocked | SearchFetchResult::Unreachable)
+                        if qi == 0 =>
+                    {
                         // These are actual provider/request failures. Charge at
                         // most once per target (query 0), then let later targets
                         // prove recovery.
                         dead_engines.insert(name);
-                        record_failure(&ctx.scan_id, name);
+                        record_provider_failure_outcome(&ctx.scan_id, name, &failure);
                     }
                     SearchFetchResult::Inconclusive
                     | SearchFetchResult::Blocked
