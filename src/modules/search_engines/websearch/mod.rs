@@ -20,10 +20,11 @@
 //! general search is no more aggressive on a Termux link than a normal scan.
 
 use super::engines::{ENGINES, EngineSpec, reliable_engines};
+use super::fetch::SearchFetchResult;
 use super::helpers::{canonicalize_url, dedup_results, display_key_phrase, url_engine_counts};
 use super::{
-    SearchResult, engine_enabled, order_engines_for_primary, proven_engine_names, record_empty,
-    record_hit, run_engine_batch, session_dead,
+    SearchResult, engine_enabled, order_engines_for_primary, proven_engine_names,
+    record_empty_success, record_failure, record_hit, run_engine_batch, session_dead,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
@@ -102,13 +103,16 @@ pub(crate) async fn web_search(query: &str, deadline: Instant) -> Vec<WebResult>
     // query now contributes the same up/down evidence a scan does, so a blocked
     // engine is skipped for both and a recovered one is un-silenced for both.
     let mut per_engine: Vec<Vec<SearchResult>> = Vec::new();
-    for (name, res) in batch {
-        match res {
-            Some(results) => {
+    for (name, outcome) in batch {
+        match outcome {
+            SearchFetchResult::Results(results) => {
                 record_hit(WEBSEARCH_SCAN_ID, name);
                 per_engine.push(results);
             }
-            None => record_empty(WEBSEARCH_SCAN_ID, name),
+            SearchFetchResult::Empty => record_empty_success(WEBSEARCH_SCAN_ID, name),
+            SearchFetchResult::Blocked | SearchFetchResult::Unreachable => {
+                record_failure(WEBSEARCH_SCAN_ID, name);
+            }
         }
     }
 
