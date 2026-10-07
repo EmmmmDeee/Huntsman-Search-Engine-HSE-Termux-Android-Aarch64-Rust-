@@ -2,7 +2,7 @@
 //! `check` fails if a self-labeled technique enters Navigator or STIX.
 
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -180,7 +180,7 @@ fn print_command_help(command: &str) {
             "command [--json]\nValidate and print the fixed engineering command invariant, phases, roles, execution protocols, and capability owners."
         }
         "directive" => {
-            "directive check|sync [ROOT]\nVerify or repair the pinned canonical Huntsman directive and every repository instruction mirror. ROOT defaults to the current directory."
+            "directive check|sync [ROOT]\nVerify or repair the pinned canonical Huntsman directive. Without ROOT, check auto-discovers a source checkout from the current directory or its parents and otherwise verifies the embedded canonical artifact; sync requires a source checkout."
         }
         "geo" => {
             "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres."
@@ -315,10 +315,21 @@ fn command_cmd(args: &[String]) -> ExitCode {
     }
 }
 
+fn discover_directive_root(explicit: Option<&str>) -> Result<Option<PathBuf>, String> {
+    if let Some(root) = explicit {
+        return Ok(Some(PathBuf::from(root)));
+    }
+    let cwd = env::current_dir().map_err(|error| format!("current directory: {error}"))?;
+    Ok(cwd
+        .ancestors()
+        .find(|candidate| candidate.join(directive_lock::CANONICAL).is_file())
+        .map(Path::to_path_buf))
+}
+
 fn directive_cmd(args: &[String]) -> ExitCode {
-    let (action, root) = match args {
-        [action] => (action.as_str(), Path::new(".")),
-        [action, root] => (action.as_str(), Path::new(root)),
+    let (action, explicit_root) = match args {
+        [action] => (action.as_str(), None),
+        [action, root] => (action.as_str(), Some(root.as_str())),
         _ => {
             return fail(
                 EX_USAGE,
@@ -327,9 +338,33 @@ fn directive_cmd(args: &[String]) -> ExitCode {
         }
     };
 
-    let result = match action {
-        "check" => directive_lock::verify_at(root),
-        "sync" => directive_lock::sync_at(root),
+    let root = match discover_directive_root(explicit_root) {
+        Ok(root) => root,
+        Err(message) => return fail(EX_NOINPUT, &message),
+    };
+
+    let (scope, mirrors, result) = match action {
+        "check" => match root.as_deref() {
+            Some(root) => (
+                "repository",
+                directive_lock::MIRRORS.len(),
+                directive_lock::verify_at(root),
+            ),
+            None => ("embedded", 0, directive_lock::verify_embedded()),
+        },
+        "sync" => {
+            let Some(root) = root.as_deref() else {
+                return fail(
+                    EX_NOINPUT,
+                    "directive sync requires a source checkout; run it from the repository tree or pass ROOT",
+                );
+            };
+            (
+                "repository",
+                directive_lock::MIRRORS.len(),
+                directive_lock::sync_at(root),
+            )
+        }
         _ => {
             return fail(
                 EX_USAGE,
@@ -341,9 +376,13 @@ fn directive_cmd(args: &[String]) -> ExitCode {
     match result {
         Ok(()) => {
             println!("directive={action}");
+            println!("scope={scope}");
             println!("canonical={}", directive_lock::CANONICAL);
             println!("sha256={}", directive_lock::EXPECTED_SHA256);
-            println!("mirrors={}", directive_lock::MIRRORS.len());
+            println!("mirrors={mirrors}");
+            if let Some(root) = root {
+                println!("root={}", root.display());
+            }
             ExitCode::SUCCESS
         }
         Err(message) => fail(EX_DATAERR, &message),
@@ -1363,7 +1402,7 @@ fn check() -> ExitCode {
     match run_check() {
         Ok(meters) => {
             println!("command_hierarchy=accepted");
-            println!("accepted techniques=0");
+            println!("selftest_admitted_techniques=0");
             println!("brisbane_sydney_m={meters:.0}");
             ExitCode::SUCCESS
         }

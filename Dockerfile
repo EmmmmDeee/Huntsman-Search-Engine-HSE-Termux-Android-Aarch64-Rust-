@@ -5,7 +5,7 @@ WORKDIR /build
 
 ENV HUNTSMAN_HIBP_NO_EMBED=1
 
-COPY Cargo.toml Cargo.lock build.rs capabilities.json benchmarks.json ./
+COPY Cargo.toml Cargo.lock build.rs capabilities.json benchmarks.json HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md ./
 COPY src ./src
 
 RUN cargo build --release --locked --bin huntsman-recon
