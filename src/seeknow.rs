@@ -252,7 +252,7 @@ pub fn search_fast<T: Transport + ?Sized>(
     )
 }
 
-/// Execute SeekNow's current stealer/deep endpoint.
+/// Execute `SeekNow`'s current stealer/deep endpoint.
 pub fn search_deep<T: Transport + ?Sized>(
     transport: &T,
     credential: &Credential,
