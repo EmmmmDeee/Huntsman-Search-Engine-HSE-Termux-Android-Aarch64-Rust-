@@ -367,7 +367,9 @@ fn attack_restores_legacy_static_coverage_surface() {
     assert_eq!(coverage.status.code(), Some(0));
     let coverage_json: serde_json::Value = serde_json::from_slice(&coverage.stdout).unwrap();
     let covered = coverage_json["covered"].as_array().unwrap();
-    assert_ne!(covered.as_slice(), []);
+    covered
+        .first()
+        .expect("ATT&CK static coverage must contain at least one covered leaf");
     assert!(
         covered
             .iter()
@@ -384,10 +386,11 @@ fn attack_restores_legacy_static_coverage_surface() {
     assert_eq!(navigator.status.code(), Some(0));
     let navigator_json: serde_json::Value = serde_json::from_slice(&navigator.stdout).unwrap();
     assert_eq!(navigator_json["domain"], "enterprise-attack");
-    assert_ne!(
-        navigator_json["techniques"].as_array().unwrap().as_slice(),
-        []
-    );
+    navigator_json["techniques"]
+        .as_array()
+        .unwrap()
+        .first()
+        .expect("Navigator layer must contain ATT&CK techniques");
 
     let bad = bin()
         .args(["attack", "navigator", "--json"])
