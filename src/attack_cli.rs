@@ -307,9 +307,11 @@ mod tests {
             .count();
         assert!(with_module > 0);
         assert_eq!(with_module, covered.len());
-        assert!(covered
-            .iter()
-            .all(|row| row["evidence_basis"] == "reachable_network_modules"));
+        assert!(
+            covered
+                .iter()
+                .all(|row| row["evidence_basis"] == "reachable_network_modules")
+        );
 
         let gaps = render(&args(&["gaps", "--json"])).unwrap();
         let gap_value: serde_json::Value = serde_json::from_str(&gaps).unwrap();
@@ -328,7 +330,10 @@ mod tests {
         let text = render(&args(&["navigator"])).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["domain"], "enterprise-attack");
-        assert_eq!(value["versions"]["attack"], attack::reconnaissance_spec_major());
+        assert_eq!(
+            value["versions"]["attack"],
+            attack::reconnaissance_spec_major()
+        );
         assert_eq!(
             value["techniques"].as_array().unwrap().len(),
             attack::reconnaissance().len()
