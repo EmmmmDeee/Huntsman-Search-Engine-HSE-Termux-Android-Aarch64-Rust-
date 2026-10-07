@@ -4,7 +4,7 @@
 //! and [`crate::au_electoral`] over one injected [`crate::http::Transport`]. One
 //! source's [`Error::Invalid`] or `BotWaf` does not abort the others. Evidence is
 //! fed through [`crate::lineage::resolve_with_lineage`]. Tests inject fakes; live
-//! sources are not run here. Saving a ledger is L7 ([`crate::people_save`]); this
+//! sources are not run here. Saving a ledger is handled by [`crate::lookup_save`]; this
 //! module only parses `--save`.
 
 use std::fmt::Write;

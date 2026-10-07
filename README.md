@@ -334,7 +334,7 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 ### Offline investigate
 
-`investigate TEXT... | investigate --file FILE` extracts actionable entities through the rebuilt classifier without network access. File input uses the bounded reader, refuses symlinks, and is capped at 1 MiB. The `modules` catalogue includes this path as `classify_module` only because it is now reachable from the binary.
+`investigate TEXT... | investigate --file FILE` extracts actionable entities through the rebuilt classifier without network access. File input uses the bounded reader, refuses symlinks, and is capped at 1 MiB. The `modules` catalogue includes this path as `classifier` only because it is now reachable from the binary.
 
 
 ### Web meta-search
