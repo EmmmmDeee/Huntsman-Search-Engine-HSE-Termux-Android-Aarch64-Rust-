@@ -138,7 +138,7 @@ fn dead_threshold(live: EngineLiveness) -> u8 {
     }
 }
 
-/// True when `name` has accumulated enough consecutive unusable executions to be silenced — using
+/// True when `name` has accumulated enough consecutive provider/request failures to be silenced — using
 /// the tolerant threshold once the engine has proven it can produce results.
 fn is_session_dead(scan_id: &str, name: &str) -> bool {
     let live = SESSION_EMPTY_COUNTS
