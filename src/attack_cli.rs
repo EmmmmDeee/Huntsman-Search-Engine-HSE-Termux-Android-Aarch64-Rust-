@@ -86,6 +86,7 @@ fn status(json_output: bool) -> Result<String, String> {
             "attack_version": attack::RECONNAISSANCE_VERSION,
             "catalogue_source": attack::RECONNAISSANCE_SOURCE_URL,
             "version_source": attack::RECONNAISSANCE_VERSION_SOURCE_URL,
+            "version_changelog": attack::RECONNAISSANCE_CHANGELOG_URL,
             "enterprise_baseline_version": attack::ATTACK_VERSION,
             "catalogue_scope": "reconnaissance",
             "evidence_basis": "reachable_network_modules",
@@ -108,6 +109,7 @@ fn status(json_output: bool) -> Result<String, String> {
 Recon catalogue   : ATT&CK Enterprise TA0043 v{}\n\
 Recon source      : {}\n\
 Version source    : {}\n\
+Version changelog : {}\n\
 Enterprise base   : embedded full-matrix snapshot v{}\n\
 Tactic in scope   : {} {}\n\
 Coverage basis    : {} over reachable network modules\n\
@@ -120,6 +122,7 @@ Coverage reports reachable module mapping, not technique execution or detection 
         attack::RECONNAISSANCE_VERSION,
         attack::RECONNAISSANCE_SOURCE_URL,
         attack::RECONNAISSANCE_VERSION_SOURCE_URL,
+        attack::RECONNAISSANCE_CHANGELOG_URL,
         attack::ATTACK_VERSION,
         raw.tactic_id,
         raw.tactic_name,
@@ -283,6 +286,10 @@ mod tests {
         assert_eq!(
             value["version_source"],
             attack::RECONNAISSANCE_VERSION_SOURCE_URL
+        );
+        assert_eq!(
+            value["version_changelog"],
+            attack::RECONNAISSANCE_CHANGELOG_URL
         );
         assert_eq!(value["enterprise_baseline_version"], attack::ATTACK_VERSION);
         assert_eq!(value["evidence_basis"], "reachable_network_modules");
