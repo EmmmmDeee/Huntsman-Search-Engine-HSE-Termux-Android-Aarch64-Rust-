@@ -682,7 +682,6 @@ jobs:
           read -r type actual <<<"$ref"
           [ "$type" = "commit" ] && [ "$actual" = "$GITHUB_SHA" ] || {
             echo "::error::created tag ${TAG} resolved to ${type} ${actual}, expected commit ${GITHUB_SHA}"
-            gh api -X DELETE "$api/git/refs/tags/${TAG}" >/dev/null 2>&1 || true
             exit 1
           }
 
@@ -701,7 +700,7 @@ jobs:
           current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)"
           if [ "$type" != "commit" ] || [ "$actual" != "$GITHUB_SHA" ] || [ "$current" != "$GITHUB_SHA" ]; then
             echo "::warning::publication race detected: tag=${type} ${actual}, main=${current}, build=${GITHUB_SHA}. Discarding the unpublished candidate."
-            gh release delete "$TAG" --yes --cleanup-tag
+            cleanup_candidate
             candidate_release=false
             candidate_tag=false
             echo "published=false" >> "$GITHUB_OUTPUT"
