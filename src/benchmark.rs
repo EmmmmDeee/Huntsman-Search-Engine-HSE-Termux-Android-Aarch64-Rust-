@@ -295,6 +295,22 @@ fn person_independence_support(
     (proven, complete, complete && proven >= required)
 }
 
+fn resolution_accepted(
+    recall: CoverageRatio,
+    precision: CoverageRatio,
+    provenance_coverage: CoverageRatio,
+    unsupported_person_entities: usize,
+    forbidden_facts_emitted: usize,
+    independence_accepted: bool,
+) -> bool {
+    recall.is_complete()
+        && precision.is_complete()
+        && provenance_coverage.is_complete()
+        && unsupported_person_entities == 0
+        && forbidden_facts_emitted == 0
+        && independence_accepted
+}
+
 #[must_use]
 pub fn score_person_resolution_with_ancestry(
     entities: &[Entity],
@@ -385,12 +401,14 @@ pub fn score_person_resolution_with_ancestry(
     let recall = CoverageRatio::new(matched_facts, expected.len());
     let precision = CoverageRatio::new(supported_entities, entities.len());
     let provenance_coverage = CoverageRatio::new(entities_with_evidence, entities.len());
-    let accepted = recall.is_complete()
-        && precision.is_complete()
-        && provenance_coverage.is_complete()
-        && unsupported_person_entities == 0
-        && forbidden_facts_emitted == 0
-        && independence_accepted;
+    let accepted = resolution_accepted(
+        recall,
+        precision,
+        provenance_coverage,
+        unsupported_person_entities,
+        forbidden_facts_emitted,
+        independence_accepted,
+    );
 
     PersonResolutionScore {
         expected_facts: expected.len(),
