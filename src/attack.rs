@@ -525,7 +525,10 @@ mod tests {
         }
         assert!(techniques_for_reachable_module("web_server").is_empty());
         assert!(techniques_for_reachable_module("sf_compat").is_empty());
-        assert_eq!(techniques_for_reachable_module("github_user"), ["T1593.003"]);
+        assert_eq!(
+            techniques_for_reachable_module("github_user"),
+            ["T1593.003"]
+        );
         assert_eq!(techniques_for_reachable_module("crtsh"), ["T1596.003"]);
         assert_eq!(techniques_for_reachable_module("dns"), ["T1590.001"]);
     }
