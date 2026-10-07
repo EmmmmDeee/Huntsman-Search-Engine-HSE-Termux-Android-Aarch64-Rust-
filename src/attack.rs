@@ -421,7 +421,7 @@ mod tests {
         );
         assert_eq!(
             RECONNAISSANCE_VERSION_SOURCE_URL,
-            "https://attack.mitre.org/resources/updates/"
+            "https://attack.mitre.org/resources/versions/"
         );
         assert_eq!(ATTACK_VERSION, "17.1");
         assert_eq!(attack_spec_major(), "17");
