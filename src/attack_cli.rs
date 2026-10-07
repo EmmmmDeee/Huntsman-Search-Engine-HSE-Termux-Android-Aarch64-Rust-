@@ -19,10 +19,9 @@ pub const ATTACK_USAGE: &str =
 
 fn module_index() -> BTreeMap<&'static str, Vec<&'static str>> {
     let mut index = BTreeMap::<&'static str, Vec<&'static str>>::new();
-    for module in reachable_modules()
-        .iter()
-        .filter(|module| module.network && module.category != crate::dependency::ModuleCategory::Other)
-    {
+    for module in reachable_modules().iter().filter(|module| {
+        module.network && module.category != crate::dependency::ModuleCategory::Other
+    }) {
         for id in attack::techniques_for_category(module.category) {
             index.entry(id).or_default().push(module.name);
         }
@@ -138,8 +137,12 @@ fn coverage(json_output: bool) -> Result<String, String> {
     }
 
     let mut output = String::from("MITRE ATT&CK — Huntsman Reconnaissance coverage\n\n");
-    writeln!(&mut output, "{:<12}  {:<36}  MODULES (evidence)", "TECHNIQUE", "NAME")
-        .map_err(|error| error.to_string())?;
+    writeln!(
+        &mut output,
+        "{:<12}  {:<36}  MODULES (evidence)",
+        "TECHNIQUE", "NAME"
+    )
+    .map_err(|error| error.to_string())?;
     writeln!(&mut output, "{}", "─".repeat(96)).map_err(|error| error.to_string())?;
     for technique in &hierarchy.covered_leaves {
         let modules = modules_for(&index, technique.id);
@@ -180,8 +183,7 @@ fn gaps(json_output: bool) -> Result<String, String> {
         }));
     }
 
-    let mut output =
-        String::from("MITRE ATT&CK — Huntsman Reconnaissance coverage gaps\n\n");
+    let mut output = String::from("MITRE ATT&CK — Huntsman Reconnaissance coverage gaps\n\n");
     writeln!(&mut output, "{:<12}  NAME", "TECHNIQUE").map_err(|error| error.to_string())?;
     writeln!(&mut output, "{}", "─".repeat(60)).map_err(|error| error.to_string())?;
     for technique in &hierarchy.uncovered_leaves {
@@ -223,7 +225,6 @@ pub fn render(args: &[String]) -> Result<String, String> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,7 +247,10 @@ mod tests {
             assert!(render(&args(values)).is_ok(), "{values:?}");
         }
         assert_eq!(render(&[]).unwrap_err(), ATTACK_USAGE);
-        assert_eq!(render(&args(&["navigator", "--json"])).unwrap_err(), ATTACK_USAGE);
+        assert_eq!(
+            render(&args(&["navigator", "--json"])).unwrap_err(),
+            ATTACK_USAGE
+        );
     }
 
     #[test]
@@ -255,7 +259,10 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["attack_version"], attack::ATTACK_VERSION);
         assert_eq!(value["tactic_id"], attack::TACTIC_ID);
-        assert_eq!(value["coverage_basis"], crate::attack_reporting::COVERAGE_BASIS);
+        assert_eq!(
+            value["coverage_basis"],
+            crate::attack_reporting::COVERAGE_BASIS
+        );
         assert!(value["leaf_techniques_total"].as_u64().unwrap() > 0);
         assert!(value["leaf_techniques_covered"].as_u64().unwrap() > 0);
         assert!(
@@ -265,7 +272,8 @@ mod tests {
     }
 
     #[test]
-    fn coverage_json_carries_reachable_module_evidence_without_claiming_every_mapping_has_a_module() {
+    fn coverage_json_carries_reachable_module_evidence_without_claiming_every_mapping_has_a_module()
+    {
         let text = render(&args(&["coverage", "--json"])).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         let covered = value["covered"].as_array().unwrap();
