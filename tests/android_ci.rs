@@ -46,7 +46,7 @@ fn main_push_exposes_the_cross_built_binary_for_handset_testing() {
     let ci = fs::read_to_string(CI).expect("active CI workflow must be readable");
 
     for required in [
-        "actions/upload-artifact@v4",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2",
         "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
         "huntsman-recon-aarch64-linux-android",
         "huntsman-recon-aarch64-linux-android.sha256",
