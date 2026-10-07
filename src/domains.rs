@@ -105,84 +105,6 @@ pub const INFRA_PROVIDER_ROOTS: &[&str] = &[
     "mailgun.org",
 ];
 
-const ROLE_LOCALPARTS: &[&str] = &[
-    "admin",
-    "administrator",
-    "info",
-    "support",
-    "help",
-    "helpdesk",
-    "contact",
-    "sales",
-    "abuse",
-    "postmaster",
-    "hostmaster",
-    "webmaster",
-    "noreply",
-    "donotreply",
-    "dns",
-    "root",
-    "mail",
-    "mailer",
-    "mailerdaemon",
-    "security",
-    "privacy",
-    "legal",
-    "billing",
-    "accounts",
-    "marketing",
-    "hello",
-    "team",
-    "office",
-    "service",
-    "services",
-    "notifications",
-    "notify",
-    "news",
-    "newsletter",
-    "robot",
-    "automated",
-    "system",
-    "daemon",
-    "feedback",
-    "enquiries",
-    "enquiry",
-    "generalenquiry",
-    "generalenquiries",
-    "inquiries",
-    "inquiry",
-    "careers",
-    "jobs",
-    "press",
-    "media",
-    "webmail",
-    "namehost",
-    "dmca",
-    "domains",
-    "domain",
-    "registrar",
-    "whois",
-    "nic",
-    "noc",
-    "registry",
-    "soa",
-    "ssladmin",
-    "sysadmin",
-    "tech",
-];
-
-const SYSTEM_LOCALPART_SEGMENTS: &[&str] = &[
-    "hostmaster",
-    "postmaster",
-    "webmaster",
-    "namehost",
-    "mailerdaemon",
-    "noreply",
-    "donotreply",
-    "abuse",
-    "dns",
-];
-
 const VN_REGISTRANTS: &[(&str, &str, &str)] = &[
     (
         ".gov.vn",
@@ -279,33 +201,7 @@ pub fn is_absolute_http_url(s: &str) -> bool {
     crate::http::parse_http_uri(s).is_ok()
 }
 
-#[must_use]
-pub fn host_only(s: &str) -> &str {
-    let trimmed = s.trim();
-    let after_scheme = ["https://", "http://"]
-        .iter()
-        .find_map(|scheme| {
-            trimmed
-                .get(..scheme.len())
-                .filter(|prefix| prefix.eq_ignore_ascii_case(scheme))
-                .map(|_| &trimmed[scheme.len()..])
-        })
-        .unwrap_or(trimmed);
-    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
-    if let Some(close) = authority
-        .strip_prefix('[')
-        .and_then(|without_open| without_open.find(']'))
-    {
-        return &authority[..close + 2];
-    }
-    authority.split(':').next().unwrap_or("")
-}
-
-#[must_use]
-pub fn host_from_url(url: &str) -> Option<String> {
-    let host = host_only(url).to_ascii_lowercase();
-    (!host.is_empty() && host.contains('.')).then_some(host)
-}
+pub use crate::value_syntax::{host_from_url, host_only, is_role_localpart};
 
 #[must_use]
 pub fn is_tracking_param_key(key: &str) -> bool {
@@ -373,7 +269,7 @@ pub fn is_proper_subdomain_of(host: &str, domain: &str) -> bool {
 
 #[must_use]
 pub fn canonical_domain_host(host: &str) -> Option<String> {
-    crate::canonical::canonical_domain_host(host).filter(|domain| looks_like_domain(domain))
+    crate::value_syntax::canonical_domain_host(host).filter(|domain| looks_like_domain(domain))
 }
 
 #[must_use]
@@ -389,27 +285,6 @@ pub fn classify_domain_candidate(candidate: &str, base: &str) -> (String, bool) 
 #[must_use]
 pub fn is_freemail(domain: &str) -> bool {
     FREEMAIL.contains(&domain)
-}
-
-#[must_use]
-pub fn is_role_localpart(local: &str) -> bool {
-    let detagged = local.split('+').next().unwrap_or(local);
-    let base: String = detagged
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
-    if ROLE_LOCALPARTS.contains(&base.as_str()) {
-        return true;
-    }
-    detagged.split(['-', '.', '_']).any(|segment| {
-        let folded: String = segment
-            .chars()
-            .filter(char::is_ascii_alphanumeric)
-            .map(|c| c.to_ascii_lowercase())
-            .collect();
-        SYSTEM_LOCALPART_SEGMENTS.contains(&folded.as_str())
-    })
 }
 
 #[must_use]
@@ -449,7 +324,7 @@ pub fn is_social_platform(domain: &str) -> bool {
 
 #[must_use]
 pub fn is_proxy_registrant(value: &str, is_email: bool) -> bool {
-    crate::validation::is_whois_privacy_placeholder(value)
+    crate::value_syntax::is_whois_privacy_placeholder(value)
         || (is_email && is_infrastructure_email(value))
 }
 
