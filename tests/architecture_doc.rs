@@ -978,8 +978,14 @@ fn capability_rows_are_pinned_and_counted() {
 #[test]
 fn binary_entrypoint_is_a_thin_composition_root() {
     let main = read(&root().join("src/main.rs"));
-    assert!(main.contains("mod cli;"), "main must delegate to the CLI composition layer");
-    assert!(main.contains("cli::run("), "main must delegate process arguments");
+    assert!(
+        main.contains("mod cli;"),
+        "main must delegate to the CLI composition layer"
+    );
+    assert!(
+        main.contains("cli::run("),
+        "main must delegate process arguments"
+    );
     assert!(
         !main.contains("huntsman_recon::"),
         "business/library dependencies belong below src/cli/, not in src/main.rs"
