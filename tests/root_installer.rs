@@ -310,6 +310,10 @@ fn legacy_hse_update_contract_routes_to_legacy_channel_without_building_recon() 
         !calls.contains("cargo install"),
         "must not install recon: {calls}"
     );
+    assert!(
+        !calls.contains("pkg "),
+        "legacy handoff must happen before recon package/toolchain setup: {calls}"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("huntsman-recon was not substituted for hse"),
