@@ -248,3 +248,34 @@ fn ambiguous_upstream_array_counts_as_no_independent_family() {
     let evidence = &batch.entities[0].evidence[0];
     assert!(matches!(Lineage::of(evidence), Lineage::Ambiguous { .. }));
 }
+
+
+#[test]
+fn entity_capacity_still_absorbs_evidence_for_existing_uid() {
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[
+            {"email":"alice@example.com","dbname":"Dataset A","record_id":"r1"},
+            {"email":"alice@example.com","dbname":"Dataset A","record_id":"r2"},
+            {"username":"overflow","dbname":"Dataset A","record_id":"r3"}
+        ]}"#,
+    )]);
+    let limits = CollectionLimits {
+        max_entities: 1,
+        ..CollectionLimits::default()
+    };
+    let batch = collect_with_credential(
+        &selector(EntityKind::Email, "alice@example.com"),
+        &transport,
+        &credential(),
+        &limits,
+        SeekNowCollectionMode::FastOnly,
+        32,
+    )
+    .unwrap();
+
+    assert_eq!(batch.entities.len(), 1);
+    assert_eq!(batch.entities[0].kind, EntityKind::Email);
+    assert_eq!(batch.entities[0].value, "alice@example.com");
+    assert_eq!(batch.entities[0].evidence.len(), 2);
+}
