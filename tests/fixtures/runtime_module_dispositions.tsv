@@ -9,6 +9,7 @@ assurance	leaf	assurance analysis utility
 atproto	adapter	ATProto source adapter
 attack	leaf	ATT&CK model utility
 attack_catalog	leaf	ATT&CK catalogue
+attack_reporting	leaf	hierarchy-aware ATT&CK coverage projection
 attack_types	leaf	shared ATT&CK value types
 au_electoral	adapter	Australian state electoral-roll source client
 au_id	leaf	Australian identifier normalization
