@@ -42,6 +42,31 @@ Persistence is optional. For durable relative outputs, attach one Railway volume
 at `/data`. The image can start without a volume; in that case `/data` is
 ephemeral and a generated authentication token can change after redeployment.
 
+## Live acceptance
+
+Use the repository-owned acceptance harness after Railway reports the candidate
+deployment healthy. Keep the bearer token in the environment rather than a
+positional argument so it is not copied into shell history:
+
+```sh
+HUNTSMAN_RAILWAY_URL=https://YOUR-SERVICE.up.railway.app \
+HSE_AUTH_TOKEN="$HSE_AUTH_TOKEN" \
+  bash scripts/railway-live-acceptance.sh
+```
+
+The harness is also used by CI against the built container, so live and local
+acceptance cannot silently drift. A pass requires:
+
+- `GET /api/health` -> HTTP 200 with `status=ok`;
+- unauthenticated `GET /api/modules` -> HTTP 401;
+- authenticated `GET /api/modules` -> HTTP 200 with a module catalogue;
+- authenticated `GET /api/command` -> HTTP 200 with the command invariant.
+
+Before promotion, independently verify in Railway that the successful
+deployment metadata names the exact commit intended for release. HTTP
+acceptance proves runtime behavior; Railway deployment metadata supplies the
+source-revision binding.
+
 ## Infrastructure as Code
 
 `.railway/railway.ts` is the current Railway Infrastructure-as-Code entry
