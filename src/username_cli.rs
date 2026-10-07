@@ -199,16 +199,27 @@ fn collect_bluesky<T: Transport + ?Sized>(
 }
 
 fn bluesky_domain_pivots(report: &Report, seed: &str) -> Vec<String> {
-    let mut domains = report
+    let mut domains = Vec::new();
+    for entity in report
         .entities
         .iter()
         .filter(|entity| entity.kind == EntityKind::Domain)
         .filter(|entity| entity.has_tag("personal-site") && entity.has_tag("github"))
-        .map(|entity| entity.value.trim().trim_end_matches('.').to_ascii_lowercase())
-        .filter(|domain| domain != seed)
-        .filter(|domain| crate::atproto::is_handle(domain))
-        .collect::<Vec<_>>();
-    domains.sort();
+    {
+        let domain = entity
+            .value
+            .trim()
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        if let Some(apex_style) = domain.strip_prefix("www.") {
+            if apex_style != seed && crate::atproto::is_handle(apex_style) {
+                domains.push(apex_style.to_owned());
+            }
+        }
+        if domain != seed && crate::atproto::is_handle(&domain) {
+            domains.push(domain);
+        }
+    }
     domains.dedup();
     domains.truncate(MAX_BLUESKY_DOMAIN_PIVOTS);
     domains
