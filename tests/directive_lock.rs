@@ -31,6 +31,9 @@ fn canonical_directive_contains_required_adaptive_invariants() {
         "Activate only roles that can materially improve that objective; leave unnecessary roles idle.",
         "Where any earlier local team, persona, or hierarchy convention conflicts with this directive, this directive supersedes it.",
     ] {
-        assert!(text.contains(required), "canonical directive missing: {required}");
+        assert!(
+            text.contains(required),
+            "canonical directive missing: {required}"
+        );
     }
 }
