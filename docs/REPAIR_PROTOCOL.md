@@ -97,6 +97,30 @@ bash scripts/railway-iac-plan.sh
 
 The plan is evidence of live drift; the type check alone is not.
 
+## Historical prerelease quarantine
+
+Known main-channel prereleases that were published while their corresponding CI
+run failed are pinned in `.github/unverified-prereleases.json`. Their release
+targets and failed CI runs were independently rechecked before this manifest was
+ported to current main.
+
+Audit them without mutation:
+
+```sh
+bash scripts/cleanup-unverified-prereleases.sh audit
+```
+
+Deletion is deliberately guarded and requires explicit operator action plus a
+GitHub token with release write permission:
+
+```sh
+bash scripts/cleanup-unverified-prereleases.sh delete
+```
+
+Before deletion, the script rechecks that each target is still a prerelease,
+still points at the recorded commit, and still has the recorded CI conclusion
+`failure`.
+
 ## Stop conditions
 
 A repair is complete only when the original failure is reproduced before the
