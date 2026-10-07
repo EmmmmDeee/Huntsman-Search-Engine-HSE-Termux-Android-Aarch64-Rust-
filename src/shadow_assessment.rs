@@ -49,9 +49,8 @@ pub fn compare_legacy_and_policy(
         .ok_or_else(|| LedgerError::MissingClaim(claim_id.clone()))?
         .state;
 
-    let assessment = ledger
-        .assess_claim_with_ancestry(claim_id, policy, graph, bindings)?
-        .with_proof_environments(proof);
+    let assessment =
+        ledger.assess_claim_with_ancestry_and_proof(claim_id, policy, graph, bindings, proof)?;
 
     let mut reason_codes = assessment
         .blockers
@@ -100,5 +99,7 @@ const fn blocker_code(blocker: VerificationBlocker) -> &'static str {
         VerificationBlocker::UndefeatedDefeater => "undefeated_defeater",
         VerificationBlocker::MissingProofEnvironment => "missing_proof_environment",
         VerificationBlocker::IncompleteProof => "incomplete_proof",
+        VerificationBlocker::InvalidProofEnvironment => "invalid_proof_environment",
+        VerificationBlocker::UnresolvedProofAssumption => "unresolved_proof_assumption",
     }
 }
