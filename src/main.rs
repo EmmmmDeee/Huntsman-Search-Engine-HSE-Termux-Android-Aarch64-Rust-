@@ -45,6 +45,7 @@ use huntsman_recon::module::reachable_modules;
 use huntsman_recon::navigator::layer;
 use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::people_save;
+use huntsman_recon::provider_credentials;
 use huntsman_recon::phone_cli::{PHONE_HELP, PHONE_USAGE, PhoneArgs, PhoneRun};
 use huntsman_recon::phone_save;
 use huntsman_recon::recon::ReconTargetKind;
@@ -71,7 +72,7 @@ use huntsman_recon::username_save;
 use huntsman_recon::web_query;
 use huntsman_recon::web_server::{ServeConfig, Server, resolve_serve_bind};
 
-const USAGE: &str = "usage: huntsman-recon [check | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [FILE] | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -108,6 +109,7 @@ Commands:
   recon                 One crt.sh, DNS/mail, or stolen.tax lookup (network access)
   seeknow               SeekNow/See-Know lookup (opt-in; needs HUNTSMAN_SEEKNOW_KEY)
   keys                  Validate a private keys file; print slots and fingerprints
+  credential-status     Show provider credential completeness without values
   verify                Verify a saved evidence ledger
 
 Run `huntsman-recon <COMMAND> --help` for command details.
@@ -166,6 +168,7 @@ fn main() -> ExitCode {
         Some("recon") => recon_cmd(&remaining.collect::<Vec<_>>()),
         Some("seeknow") => seeknow_cmd(&remaining.collect::<Vec<_>>()),
         Some("keys") => keys_cmd(remaining.next()),
+        Some("credential-status") => credential_status_cmd(&remaining.collect::<Vec<_>>()),
         Some("verify") => verify(remaining.next()),
         Some("check") | None => check(),
         Some(other) => fail(EX_USAGE, &format!("unknown command: {other}\n{USAGE}")),
@@ -230,6 +233,9 @@ fn print_command_help(command: &str) {
         "keys" => {
             "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values."
         }
+        "credential-status" => {
+            "credential-status [FILE]\nShow provider slot completeness without printing credential values. FILE uses the existing private keys-file loader; otherwise the normal ~/.huntsman.env/environment resolution is used."
+        }
         "verify" => {
             "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
         }
@@ -239,6 +245,25 @@ fn print_command_help(command: &str) {
         }
     };
     println!("{help}\n  -h, --help  Show this help");
+}
+
+fn credential_status_cmd(args: &[String]) -> ExitCode {
+    let explicit = match args {
+        [] => None,
+        [path] => Some(Path::new(path)),
+        _ => return fail(EX_USAGE, "usage: huntsman-recon credential-status [FILE]"),
+    };
+    let home = env::var_os("HOME");
+    match Keys::resolve(explicit, home.as_deref()) {
+        Ok(resolved) => {
+            if let Some(warning) = resolved.warning {
+                eprintln!("{warning}");
+            }
+            print!("{}", provider_credentials::render(&resolved.keys));
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(EX_NOINPUT, &error.to_string()),
+    }
 }
 
 fn fail(code: u8, msg: &str) -> ExitCode {
