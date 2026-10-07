@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use crate::address_au::{self, AuLineType};
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+use crate::entity::{self, Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::error::Error;
 use crate::phone_intl;
 use crate::source_outcome::SourceExecutionOutcome;
