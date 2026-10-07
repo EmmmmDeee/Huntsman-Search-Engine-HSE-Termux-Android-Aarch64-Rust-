@@ -346,7 +346,12 @@ pub fn score_person_resolution_with_ancestry(
                     .iter()
                     .any(|(kind, value, _)| entity.kind == *kind && entity.value == *value)
         })
-        .flat_map(|entity| entity.evidence.iter().filter_map(|evidence| evidence.ancestry_node.as_ref()))
+        .flat_map(|entity| {
+            entity
+                .evidence
+                .iter()
+                .filter_map(|evidence| evidence.ancestry_node.as_ref())
+        })
         .collect();
     let independence = if required_independent_person_support == 0 {
         Some(crate::evidence_ancestry::IndependenceRouteCount {
