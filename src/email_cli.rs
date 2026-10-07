@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use crate::canonical::canonical_email;
 use crate::domains::{INFRA_PROVIDER_ROOTS, is_freemail, is_role_localpart, is_social_platform};
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+use crate::entity::{self, Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::error::Error;
 use crate::evidence_ancestry::EvidenceNodeId;
 use crate::gravatar;
