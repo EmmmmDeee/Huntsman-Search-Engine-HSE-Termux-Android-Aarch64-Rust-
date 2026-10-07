@@ -5,9 +5,7 @@ use huntsman_recon::collection::{
 };
 use huntsman_recon::dependency::{Target, TargetKind};
 use huntsman_recon::entity::{Entity, EntityKind};
-use huntsman_recon::evidence_ancestry::{
-    EvidenceNodeId, IndependenceBasis, IndependenceEvidence,
-};
+use huntsman_recon::evidence_ancestry::{EvidenceNodeId, IndependenceBasis, IndependenceEvidence};
 use huntsman_recon::identity_resolution::{
     AutoMergePolicy, IdentityResolutionDecision, ResolutionState,
 };
@@ -273,13 +271,19 @@ fn live_public_homonyms_survive_collection_and_only_evidence_backed_pair_merges(
         AutoMergePolicy::default(),
     );
 
-    assert_eq!(clusters.len(), 2, "resolution must finish with two real people");
+    assert_eq!(
+        clusters.len(),
+        2,
+        "resolution must finish with two real people"
+    );
     assert!(clusters.iter().any(|cluster| {
         cluster.members.len() == 2
             && cluster.members.contains(&rust_uid)
             && cluster.members.contains(&github_uid)
     }));
-    assert!(clusters.iter().any(|cluster| {
-        cluster.members.len() == 1 && cluster.members.contains(&durham_uid)
-    }));
+    assert!(
+        clusters
+            .iter()
+            .any(|cluster| { cluster.members.len() == 1 && cluster.members.contains(&durham_uid) })
+    );
 }
