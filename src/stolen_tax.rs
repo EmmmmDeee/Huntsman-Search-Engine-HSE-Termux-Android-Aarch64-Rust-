@@ -39,7 +39,7 @@
 //! other failure (401, 403, 400, an in-body key or quota error, 5xx, a transport
 //! failure) fails the path on its first attempt. This is the monolith's
 //! `keyed_cascade_json` + `handle_keyed_error` with a one-key pool. The persistent
-//! key pool (rotation across keys) is deferred; see `docs/DISPOSITIONS.md`.
+//! key pool (rotation across keys) is deferred.
 //!
 //! Honest failure: a path that fails or is skipped while another produced evidence
 //! is reported in [`StolenTaxReport::failed_paths`] / [`StolenTaxReport::skipped_paths`]

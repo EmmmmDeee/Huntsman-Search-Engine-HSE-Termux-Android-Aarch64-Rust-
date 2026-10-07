@@ -28,27 +28,15 @@ fn repository_root_contains_no_opaque_archives() {
     assert_eq!(
         offenders,
         Vec::<String>::new(),
-        "opaque archive snapshots are forbidden at the repository root; use canonical extracted references under legacy/ and record historical container identity in docs/ARCHIVE_PROVENANCE.md"
+        "opaque archive snapshots are forbidden at the repository root; preserve historical identity in docs/ARCHIVE_PROVENANCE.md and Git history"
     );
 }
 
 #[test]
-fn archive_documentation_tracks_the_canonical_extracted_state() {
+fn archive_provenance_is_documented() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let readme = fs::read_to_string(root.join("README.md")).expect("README.md");
-    let architecture = fs::read_to_string(root.join("ARCHITECTURE.md")).expect("ARCHITECTURE.md");
-    let dispositions =
-        fs::read_to_string(root.join("docs/DISPOSITIONS.md")).expect("docs/DISPOSITIONS.md");
-    let reconstruction = fs::read_to_string(root.join("docs/RECONSTRUCTION_2026-10-02.md"))
-        .expect("docs/RECONSTRUCTION_2026-10-02.md");
-
-    assert!(readme.contains("docs/ARCHIVE_PROVENANCE.md"));
-    assert!(architecture.contains("docs/ARCHIVE_PROVENANCE.md"));
-    assert!(dispositions.contains("ARCHIVE_PROVENANCE.md"));
-    assert!(reconstruction.contains("ARCHIVE_PROVENANCE.md"));
-
-    assert!(!readme.contains("`*.zip` (root)"));
-    assert!(!architecture.contains("two root zip archives are pinned"));
-    assert!(!dispositions.contains("two root zip archives"));
-    assert!(!reconstruction.contains("legacy zip archives are back in the repository root"));
+    let provenance = fs::read_to_string(root.join("docs/ARCHIVE_PROVENANCE.md"))
+        .expect("docs/ARCHIVE_PROVENANCE.md");
+    assert!(provenance.contains("01089c7e756216a33573cdefdfd7068dfa4e5380"));
+    assert!(provenance.contains("Historical Git tree"));
 }

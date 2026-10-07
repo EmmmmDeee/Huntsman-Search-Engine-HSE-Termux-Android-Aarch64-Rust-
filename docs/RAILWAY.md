@@ -1,7 +1,7 @@
 # Railway deployment — Huntsman Recon
 
 This is the current `huntsman-recon` deployment path. The preserved legacy
-`hse` Railway adapter remains at `deploy/railway/Dockerfile` so existing
+`hse` Railway adapter remains at the root `Dockerfile` so existing
 legacy services are not silently downgraded or replaced.
 
 ## Current deployment contract

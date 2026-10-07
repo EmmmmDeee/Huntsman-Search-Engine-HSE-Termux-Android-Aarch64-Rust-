@@ -4,7 +4,7 @@ Target design for the first-principles reconstruction of Huntsman as the single 
 
 Engineering ownership and command routing are defined by [`docs/ENGINEERING_COMMAND.md`](docs/ENGINEERING_COMMAND.md) and the executable contract in `src/engineering_command.rs`; `huntsman-recon command` validates and prints that contract. Names there are repository-internal engineering codenames and do not alter collection or evidence semantics.
 
-The capability oracle is git commit `7dca720` (root crate `huntsman-search-engine` v1.41.0, binary `hse`, published as pre-release `main-7dca720`, the newest `hse` build and the default of `.github/scripts/install-termux.sh`). `legacy/hse-monolith-v1.41.0/` is a different, earlier snapshot of the same monolith (its `src/` differs from `7dca720` in 677 paths: 56 present in only one tree, 621 with different bytes). It is used for per-file accounting in `docs/DISPOSITIONS.md`, and as the oracle only where `7dca720` lacks a path (`src/modules/au_people/` and `src/modules/au_electoral/`, both deleted in #635). Nothing under `legacy/` is ever modified.
+The capability oracle is git commit `7dca720` (root crate `huntsman-search-engine` v1.41.0, binary `hse`, published as pre-release `main-7dca720`, the newest `hse` build and the default of `.github/scripts/install-termux.sh`). historical Git tree `58adb561ddad030092838234c69ed63e2c1a0314` is a different, earlier snapshot of the same monolith (its `src/` differs from `7dca720` in 677 paths: 56 present in only one tree, 621 with different bytes). It is used for per-file accounting in `docs/ARCHIVE_PROVENANCE.md`, and as the oracle only where `7dca720` lacks a path (`src/modules/au_people/` and `src/modules/au_electoral/`, both deleted in #635). Nothing under `legacy/` is ever modified.
 
 ## OBJECTIVE
 
@@ -112,8 +112,8 @@ CURRENT:
 - `#![deny(unsafe_code)]`; clippy `pedantic` is warn and CI denies warnings.
 - A challenge page is never a result. A self-labelled ATT&CK technique never enters Navigator or STIX (`check` gates).
 - `check` regenerates `var/*.json` byte-identically (CI runs `git diff --exit-code -- var/`).
-- Canonical extracted legacy trees are file-count pinned by `tests/legacy_reference.rs`; original root-ZIP SHA-256/Git identities and a recoverable commit are recorded in `docs/ARCHIVE_PROVENANCE.md`, and `tests/repository_hygiene.rs` forbids opaque root snapshots from returning.
-- The README examples, usage line, exit codes and gate range match the binary (`tests/readme.rs`); `docs/DISPOSITIONS.md` counts match `legacy/` (`tests/dispositions.rs`); this file's module map, dependency claims and capability rows match `src/` (`tests/architecture_doc.rs`).
+- Canonical extracted legacy trees are file-count pinned by `tests/repository_hygiene.rs`; original root-ZIP SHA-256/Git identities and a recoverable commit are recorded in `docs/ARCHIVE_PROVENANCE.md`, and `tests/repository_hygiene.rs` forbids opaque root snapshots from returning.
+- The README examples, usage line, exit codes and gate range match the binary (`tests/readme.rs`); `docs/ARCHIVE_PROVENANCE.md` counts match `legacy/` (`tests/architecture_doc.rs`); this file's module map, dependency claims and capability rows match `src/` (`tests/architecture_doc.rs`).
 - Every `.rs` file under `src/` is compiled (#675); `tests/architecture_doc.rs` fails on a file the module tree does not reach.
 - In `lineage`, mirrors of one named dataset count as one family whatever the collectors are called, and record URLs, record ids and collector names never create a family (`tests/lineage_merge_rule.rs`, `tests/lineage_independence_adversarial.rs`).
 - Automatic merge requires a present, finite probability in `[0, 1]` at or above the policy floor; `probability: None` holds the candidate (`HoldReason::ProbabilityMissing`).
