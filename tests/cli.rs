@@ -367,7 +367,7 @@ fn attack_restores_legacy_static_coverage_surface() {
     assert_eq!(coverage.status.code(), Some(0));
     let coverage_json: serde_json::Value = serde_json::from_slice(&coverage.stdout).unwrap();
     let covered = coverage_json["covered"].as_array().unwrap();
-    assert!(!covered.is_empty());
+    assert_ne!(covered.as_slice(), []);
     assert!(
         covered
             .iter()
@@ -384,7 +384,10 @@ fn attack_restores_legacy_static_coverage_surface() {
     assert_eq!(navigator.status.code(), Some(0));
     let navigator_json: serde_json::Value = serde_json::from_slice(&navigator.stdout).unwrap();
     assert_eq!(navigator_json["domain"], "enterprise-attack");
-    assert!(!navigator_json["techniques"].as_array().unwrap().is_empty());
+    assert_ne!(
+        navigator_json["techniques"].as_array().unwrap().as_slice(),
+        []
+    );
 
     let bad = bin()
         .args(["attack", "navigator", "--json"])
