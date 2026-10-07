@@ -52,6 +52,7 @@ pub mod deadline;
 pub mod dependency;
 pub mod diamond;
 pub mod diff;
+pub mod differential;
 pub mod dmarc;
 pub mod dns;
 pub mod domain_lifecycle;
