@@ -40,8 +40,7 @@ fn main_pushes_build_and_current_head_publishes_main_channel_pre_releases_only()
         "gh release create latest",
         "is NOT a pre-release; refusing",
         "In-progress replacement with rebuilt lookup paths.",
-        "--draft --latest=false",
-        "gh release edit \"$TAG\" --draft=false --prerelease --latest=false",
+        "--verify-tag --prerelease --latest=false",
         "main advanced to",
         "Actions artifact",
         "ASSET: huntsman-recon-aarch64-linux-android",
@@ -99,8 +98,8 @@ fn rolling_latest_moves_only_behind_an_explicit_opt_in() {
     }
     assert_eq!(
         wf.matches("gh release delete").count(),
-        2,
-        "only a raced draft cleanup and the gated latest step may delete a release"
+        1,
+        "only the gated latest step may delete a release"
     );
     assert!(step.contains("gh release delete latest"));
     assert!(wf.contains("latest moved to this build without PROMOTE_RECON_TO_LATEST"));
@@ -261,11 +260,12 @@ fn superseded_main_builds_are_verified_without_historical_release_failures() {
         "id: head",
         "git/ref/heads/main",
         "steps.head.outputs.publish == 'true'",
-        "--draft --latest=false",
+        "git/ref/heads/main",
+        "git/refs/tags/$TAG",
+        "refs/tags/$TAG",
+        "--verify-tag --prerelease --latest=false",
         "read -r type actual",
-        "[ \"$actual\" != \"$GITHUB_SHA\" ]",
-        "gh release delete \"$TAG\" --yes --cleanup-tag",
-        "gh release edit \"$TAG\" --draft=false --prerelease --latest=false",
+        "[ \"$actual\" = \"$GITHUB_SHA\" ]",
         "published=false",
         "published=true",
         "Actions artifact",
@@ -282,6 +282,19 @@ fn superseded_main_builds_are_verified_without_historical_release_failures() {
     assert!(
         !per_commit.contains("--target \"$GITHUB_SHA\""),
         "per-commit publication must not ask GITHUB_TOKEN to mint a historical target"
+    );
+    assert!(
+        per_commit.matches("git/ref/heads/main").count() >= 2,
+        "publication must re-check main immediately before and after creating the private tag"
+    );
+    assert!(
+        per_commit.find("git/refs/tags/$TAG").unwrap()
+            < per_commit.find("gh release create \"$TAG\"").unwrap(),
+        "the exact-SHA tag must exist before the release is created"
+    );
+    assert!(
+        per_commit.contains("gh api -X DELETE \"$api/git/refs/tags/$TAG\""),
+        "a race after tag creation must remove the unpublished tag"
     );
 }
 
