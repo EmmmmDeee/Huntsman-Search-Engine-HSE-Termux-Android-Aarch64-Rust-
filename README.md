@@ -46,6 +46,19 @@ Attaching a Railway volume at `/data` makes that state durable; the service can
 also run without a volume. Current Railway Infrastructure as Code lives at
 `.railway/railway.ts`; see [`docs/RAILWAY.md`](docs/RAILWAY.md).
 
+## Repair broken code or files
+
+For any error, bug, broken file, malfunctioning code path, failed refactor, or
+repository inconsistency, follow [the repair protocol](docs/REPAIR_PROTOCOL.md).
+The terminal local verification command is:
+
+```sh
+bash scripts/repair-gate.sh full
+```
+
+CI runs the same gate, so local repair acceptance and automated acceptance use
+one contract.
+
 ## First commands
 
 ```sh
