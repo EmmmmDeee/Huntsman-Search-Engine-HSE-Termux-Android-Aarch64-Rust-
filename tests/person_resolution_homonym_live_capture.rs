@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 
-use huntsman_recon::collection::{CollectionEvent, ObservationBatch, RawObservation, UpstreamOrigin};
+use huntsman_recon::collection::{
+    CollectionEvent, ObservationBatch, RawObservation, UpstreamOrigin,
+};
 use huntsman_recon::dependency::{Target, TargetKind};
 use huntsman_recon::entity::EntityKind;
-use huntsman_recon::pipeline::{normalize_observations, PipelineLimits};
+use huntsman_recon::pipeline::{PipelineLimits, normalize_observations};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
 const SCAN_ID: &str = "andrew-gallant-homonym-live-capture-2026-10-07";
