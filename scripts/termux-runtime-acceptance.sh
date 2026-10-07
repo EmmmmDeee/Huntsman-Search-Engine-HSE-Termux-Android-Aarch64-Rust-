@@ -10,10 +10,18 @@ IFS=$'\n\t'
 #   bash scripts/termux-runtime-acceptance.sh
 
 ORIGINAL_PWD="$(pwd -P)"
+
+anchor_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "$ORIGINAL_PWD" "$1" ;;
+  esac
+}
+
 HSE_BIN="${HSE_BIN:-$(command -v huntsman-recon || true)}"
-STATE_DIR="${HUNTSMAN_HOME:-$HOME/.huntsman}"
-REPORT="${HSE_ACCEPTANCE_REPORT:-$STATE_DIR/termux-acceptance.txt}"
-SERVER_LOG="${HSE_ACCEPTANCE_SERVER_LOG:-$STATE_DIR/termux-acceptance-server.log}"
+STATE_DIR="$(anchor_path "${HUNTSMAN_HOME:-$HOME/.huntsman}")"
+REPORT="$(anchor_path "${HSE_ACCEPTANCE_REPORT:-$STATE_DIR/termux-acceptance.txt}")"
+SERVER_LOG="$(anchor_path "${HSE_ACCEPTANCE_SERVER_LOG:-$STATE_DIR/termux-acceptance-server.log}")"
 TIMEOUT_SECS="${HSE_ACCEPTANCE_TIMEOUT:-30}"
 SERVER_TIMEOUT_SECS="${HSE_ACCEPTANCE_SERVER_TIMEOUT:-30}"
 SERVER_PORT="${HSE_ACCEPTANCE_PORT:-}"
@@ -50,6 +58,24 @@ case "$HSE_BIN" in
 esac
 [ -f "$HSE_BIN" ] || fail "huntsman-recon is not a regular file: $HSE_BIN"
 [ -x "$HSE_BIN" ] || fail "huntsman-recon is not executable: $HSE_BIN"
+
+case "$TIMEOUT_SECS" in
+  ''|*[!0-9]*) fail "invalid HSE_ACCEPTANCE_TIMEOUT: $TIMEOUT_SECS" ;;
+esac
+[ "$TIMEOUT_SECS" -gt 0 ] || fail 'HSE_ACCEPTANCE_TIMEOUT must be positive'
+
+case "$SERVER_TIMEOUT_SECS" in
+  ''|*[!0-9]*) fail "invalid HSE_ACCEPTANCE_SERVER_TIMEOUT: $SERVER_TIMEOUT_SECS" ;;
+esac
+[ "$SERVER_TIMEOUT_SECS" -gt 0 ] || fail 'HSE_ACCEPTANCE_SERVER_TIMEOUT must be positive'
+
+if [ -n "$SERVER_PORT" ]; then
+  case "$SERVER_PORT" in
+    *[!0-9]*) fail "invalid HSE_ACCEPTANCE_PORT: $SERVER_PORT" ;;
+  esac
+  [ "$SERVER_PORT" -ge 1 ] && [ "$SERVER_PORT" -le 65535 ] ||
+    fail 'HSE_ACCEPTANCE_PORT must be in 1..65535'
+fi
 
 case "$(uname -m)" in
   aarch64|arm64) pass 'runtime architecture is ARM64' ;;
