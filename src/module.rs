@@ -498,8 +498,8 @@ mod tests {
             assert!(!module.command.is_empty());
             if module.network && module.category != ModuleCategory::Other {
                 assert!(
-                    !crate::attack::techniques_for_category(module.category).is_empty(),
-                    "network collector {} has an unmapped ATT&CK category",
+                    !crate::attack::techniques_for_reachable_module(module.name).is_empty(),
+                    "network collector {} has no explicit ATT&CK mapping",
                     module.name
                 );
             }
