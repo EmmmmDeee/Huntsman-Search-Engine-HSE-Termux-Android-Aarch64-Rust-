@@ -388,23 +388,7 @@ impl IntelligenceLedger {
         ))
     }
 
-    /// Evaluates a claim through a claim-scoped proof environment.
-    ///
-    /// This is the strict verification path when proof bookkeeping is available.
-    /// Every proof assertion must belong to the claim's support set, every
-    /// declared proof root must exactly match the canonical ancestry root id
-    /// resolved from those assertions, semantic obligations must be satisfied
-    /// inside one sufficient environment, and any required multi-route support
-    /// must be explicitly proven independent by the ancestry graph. Unresolved
-    /// assumptions, malformed environments, bounded-search truncation, or an
-    /// incomplete proof set fail closed.
-    ///
-    /// `MinimalProofEnvironment::roots` is interpreted here as canonical
-    /// `EvidenceNodeId` strings, never provider labels or cached family names.
-    ///
-    /// # Errors
-    /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
-    /// when the ledger itself references absent support records.
+    /// Evaluates one proof environment against one already-resolved claim.
     fn evaluate_proof_environment(
         &self,
         claim: &Claim,
@@ -543,6 +527,23 @@ impl IntelligenceLedger {
         }
     }
 
+    /// Evaluates a claim through a claim-scoped proof environment.
+    ///
+    /// This is the strict verification path when proof bookkeeping is available.
+    /// Every proof assertion must belong to the claim's support set, every
+    /// declared proof root must exactly match the canonical ancestry root id
+    /// resolved from those assertions, semantic obligations must be satisfied
+    /// inside one sufficient environment, and any required multi-route support
+    /// must be explicitly proven independent by the ancestry graph. Unresolved
+    /// assumptions, malformed environments, bounded-search truncation, or an
+    /// incomplete proof set fail closed.
+    ///
+    /// `MinimalProofEnvironment::roots` is interpreted here as canonical
+    /// `EvidenceNodeId` strings, never provider labels or cached family names.
+    ///
+    /// # Errors
+    /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
+    /// when the ledger itself references absent support records.
     pub fn assess_claim_with_ancestry_and_proof(
         &self,
         claim_id: &ClaimId,
