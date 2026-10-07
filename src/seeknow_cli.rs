@@ -26,8 +26,10 @@ seeknow status [--keys FILE]
 seeknow credits [--keys FILE]
 seeknow search KIND VALUE [--deep | --fast-only] [--keys FILE]
 Use the operator-provided HUNTSMAN_SEEKNOW_KEY through the guarded HTTPS boundary.
-KIND is one of email, username, phone, ip, domain, person. Search defaults to fast
-and spends a deep-search request only after a contract-validated fast zero.";
+KIND is one of email, username, phone, ip, domain, person, url, machine_id.
+--deep is retained as the CLI name for SeekNow's current /api/v1/stealer endpoint.
+Adaptive mode uses /search first when that endpoint supports the selector, and spends
+a stealer request only when the selector is supported there and escalation is justified.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeekNowCliRun {
@@ -225,6 +227,8 @@ fn parse_kind(value: &str) -> Option<EntityKind> {
         "ip" => Some(EntityKind::IpAddress),
         "domain" => Some(EntityKind::Domain),
         "person" => Some(EntityKind::Person),
+        "url" => Some(EntityKind::Url),
+        "machine_id" => Some(EntityKind::DeviceId),
         _ => None,
     }
 }
