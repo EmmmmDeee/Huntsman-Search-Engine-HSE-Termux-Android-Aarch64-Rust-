@@ -58,6 +58,6 @@ fn version_flags_report_package_version_without_investigation() {
             String::from_utf8_lossy(&output.stdout).trim(),
             concat!("investigate ", env!("CARGO_PKG_VERSION"))
         );
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, Vec::<u8>::new());
     }
 }
