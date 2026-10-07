@@ -113,7 +113,14 @@ pub fn readiness_markdown() -> Result<String, String> {
         .count();
 
     let mut output = format!(
-        "# Generated commercial-readiness report\n\n         Schema: {}. Product: {}.\n\n         Demonstrated: **{demonstrated}**. Partial: **{partial}**. Planned: **{planned}**.          Benchmark receipts: **{}**.\n\n         | Capability | Status | Interfaces | Platforms | Benchmark |\n         | --- | --- | --- | --- | --- |\n",
+        concat!(
+            "# Generated commercial-readiness report\n\n",
+            "Schema: {}. Product: {}.\n\n",
+            "Demonstrated: **{demonstrated}**. Partial: **{partial}**. ",
+            "Planned: **{planned}**. Benchmark receipts: **{}**.\n\n",
+            "| Capability | Status | Interfaces | Platforms | Benchmark |\n",
+            "| --- | --- | --- | --- | --- |\n"
+        ),
         capabilities.schema_version,
         capabilities.product,
         benchmarks.benchmarks.len()
