@@ -17,7 +17,7 @@ use huntsman_recon::directive_lock;
 use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::email_cli::{EMAIL_HELP, EMAIL_USAGE, EmailArgs, EmailRun};
-use huntsman_recon::email_save;
+use huntsman_recon::lookup_save::{self, EMAIL_POLICY, PHONE_POLICY, USERNAME_POLICY};
 use huntsman_recon::engineering_command;
 use huntsman_recon::entity::{Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
@@ -47,7 +47,6 @@ use huntsman_recon::people_cli::{self, PEOPLE_HELP, PEOPLE_USAGE, PeopleArgs, Pe
 use huntsman_recon::people_save;
 use huntsman_recon::provider_credentials;
 use huntsman_recon::phone_cli::{PHONE_HELP, PHONE_USAGE, PhoneArgs, PhoneRun};
-use huntsman_recon::phone_save;
 use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::redact::{coarsen_latlon, scrub_secrets};
 use huntsman_recon::retrieval_artifact::ArtifactId;
@@ -68,7 +67,6 @@ use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_term
 use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::uid;
 use huntsman_recon::username_cli::{USERNAME_HELP, USERNAME_USAGE, UsernameArgs, UsernameRun};
-use huntsman_recon::username_save;
 use huntsman_recon::web_query;
 use huntsman_recon::web_server::{ServeConfig, Server, resolve_serve_bind};
 
@@ -439,7 +437,7 @@ fn email_cmd(args: &[String]) -> ExitCode {
         EmailRun::Printed { text, report } => {
             print!("{text}");
             if let Some(path) = parsed.save {
-                match email_save::save(&path, &report.entities, &report.outcomes) {
+                match lookup_save::save(&path, &report.entities, &report.outcomes, EMAIL_POLICY) {
                     Ok(entries) => {
                         println!("saved={}", path.display());
                         println!("entries={}", entries.len());
@@ -482,7 +480,7 @@ fn username_cmd(args: &[String]) -> ExitCode {
         UsernameRun::Printed { text, report } => {
             print!("{text}");
             if let Some(path) = parsed.save {
-                match username_save::save(&path, &report.entities, &report.outcomes) {
+                match lookup_save::save(&path, &report.entities, &report.outcomes, USERNAME_POLICY) {
                     Ok(entries) => {
                         println!("saved={}", path.display());
                         println!("entries={}", entries.len());
@@ -524,7 +522,7 @@ fn phone_cmd(args: &[String]) -> ExitCode {
         PhoneRun::Printed { text, report } => {
             print!("{text}");
             if let Some(path) = parsed.save {
-                match phone_save::save(&path, &report.entities, &report.outcomes) {
+                match lookup_save::save(&path, &report.entities, &report.outcomes, PHONE_POLICY) {
                     Ok(entries) => {
                         println!("saved={}", path.display());
                         println!("entries={}", entries.len());
