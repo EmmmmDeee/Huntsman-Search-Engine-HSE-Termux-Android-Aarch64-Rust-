@@ -65,7 +65,12 @@ HUNTSMAN_CHANNEL=recon bash ./install-termux.sh
 ```
 
 The `recon` channel installs `huntsman-recon`; the installer's default `hse`
-channel is retained for compatibility with the legacy monolith. The installer
+channel is retained for compatibility with the legacy monolith. Legacy in-app
+`hse update` invocations use the historical `HSE_REQUIRE_SHA` / `HSE_REF`
+contract; current `main/install.sh` detects that contract and delegates to the
+legacy `hse` channel instead of substituting the not-yet-parity `huntsman-recon`
+binary. New reconstruction installs use `HUNTSMAN_REV`, which takes precedence.
+The installer
 checks the downloaded binary against the release's SHA-256 file, stages it in a
 private directory on the destination filesystem, then runs `check` and
 `verify var/ledger.json` from the staged recon binary with bounded timeouts.
