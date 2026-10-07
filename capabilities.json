@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "product": "huntsman-recon",
+  "capabilities": [
+    {
+      "id": "evidence-ledger",
+      "name": "Hash-chained evidence ledger",
+      "status": "demonstrated",
+      "implementation": ["src/ledger.rs"],
+      "proof": ["src/ledger.rs", "src/main.rs"],
+      "interfaces": ["rust", "cli"],
+      "platforms": ["linux", "android-aarch64"],
+      "benchmark": null,
+      "limitations": ["No performance SLO is declared."]
+    },
+    {
+      "id": "guarded-fetch",
+      "name": "Guarded HTTP collection boundary",
+      "status": "demonstrated",
+      "implementation": ["src/fetch.rs", "src/http.rs", "src/egress.rs"],
+      "proof": ["tests/http_local.rs"],
+      "interfaces": ["rust", "cli"],
+      "platforms": ["linux", "android-aarch64"],
+      "benchmark": null,
+      "limitations": ["Offline tests do not imply live upstream availability."]
+    },
+    {
+      "id": "lineage-resolution",
+      "name": "Provenance-rooted lineage and identity resolution",
+      "status": "demonstrated",
+      "implementation": ["src/lineage.rs", "src/identity_resolution.rs", "src/evidence_ancestry.rs"],
+      "proof": ["tests/lineage_merge_rule.rs", "tests/lineage_independence_adversarial.rs"],
+      "interfaces": ["rust"],
+      "platforms": ["linux", "android-aarch64"],
+      "benchmark": null,
+      "limitations": ["Collector-wide end-to-end lineage coverage remains incomplete."]
+    },
+    {
+      "id": "embedded-api",
+      "name": "Embedded Web UI and JSON API",
+      "status": "demonstrated",
+      "implementation": ["src/web_server.rs"],
+      "proof": ["scripts/termux-runtime-acceptance.sh", "tests/cli.rs"],
+      "interfaces": ["http"],
+      "platforms": ["linux", "android-aarch64"],
+      "benchmark": null,
+      "limitations": ["No global latency or throughput SLO is declared."]
+    },
+    {
+      "id": "android-release",
+      "name": "Android aarch64 build and acceptance path",
+      "status": "demonstrated",
+      "implementation": [".github/workflows/ci.yml", ".github/workflows/release.yml"],
+      "proof": ["tests/android_ci.rs", "scripts/termux-runtime-acceptance.sh"],
+      "interfaces": ["binary"],
+      "platforms": ["android-aarch64"],
+      "benchmark": null,
+      "limitations": ["CI cross-build does not itself prove execution on a physical handset."]
+    }
+  ]
+}
