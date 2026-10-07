@@ -145,7 +145,7 @@ cargo run -- attack status --json          # offline ATT&CK Reconnaissance capab
 cargo run -- recon crtsh https://example.com/
 ```
 
-`attack status|coverage|gaps [--json]` restores the legacy static MITRE ATT&CK Reconnaissance reporting surface over the currently reachable module catalogue. `attack navigator` emits Navigator JSON. Coverage is hierarchy-aware: independent leaf techniques are scored while parent techniques remain roll-ups, and capability coverage is not a claim of detection effectiveness or proof that a technique was executed.
+`attack status|coverage|gaps [--json]` restores the MITRE ATT&CK Reconnaissance reporting surface over currently reachable network modules. The TA0043 slice is reconciled through ATT&CK v19.2, including T1681 and T1682; the repository's complete embedded Enterprise matrix remains the older v17.1 baseline and is reported separately rather than mislabeled as current. `attack navigator` emits Reconnaissance Navigator JSON. Coverage is hierarchy-aware and evidence-backed: only module-mapped independent leaf techniques count as covered, parent techniques remain roll-ups, and coverage is not proof that a technique was executed or a measure of detection effectiveness.
 
 `search` needs at least one term of two or more letters or digits (exit 64 otherwise). `search DIR` loads `.txt` and `.md` (any case) from that one directory. Challenge pages, non-UTF-8 files, files over 1 MiB, and symlinks are skipped and listed on stderr. An unreadable directory exits 66; it does not print `hits=0`.
 
