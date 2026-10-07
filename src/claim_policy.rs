@@ -234,7 +234,6 @@ impl ProofEvaluationSummary {
     }
 }
 
-
 impl IntelligenceLedger {
     /// Evaluates one claim against explicit, non-compensatory obligations using
     /// compatibility lineage fields.
@@ -472,8 +471,7 @@ impl IntelligenceLedger {
             .required_natures
             .iter()
             .all(|required| environment_natures.contains(required));
-        let attributes_sufficient =
-            required_attributes_satisfied(policy, &environment_attributes);
+        let attributes_sufficient = required_attributes_satisfied(policy, &environment_attributes);
         let unresolved_assumption = !environment.assumptions.is_empty();
 
         ProofEnvironmentEvaluation {
@@ -491,10 +489,7 @@ impl IntelligenceLedger {
         }
     }
 
-    fn apply_proof_blockers(
-        assessment: &mut ClaimAssessment,
-        summary: &ProofEvaluationSummary,
-    ) {
+    fn apply_proof_blockers(assessment: &mut ClaimAssessment, summary: &ProofEvaluationSummary) {
         if summary.malformed {
             assessment
                 .blockers
@@ -591,12 +586,12 @@ impl IntelligenceLedger {
 
         assessment.epistemic = if claim.support.is_empty() {
             ClaimState::Candidate
-        } else if summary.valid_environment && !summary.malformed && assessment.blockers.is_empty() {
+        } else if summary.valid_environment && !summary.malformed && assessment.blockers.is_empty()
+        {
             ClaimState::Verified
         } else {
             ClaimState::Supported
         };
         Ok(assessment)
     }
-
 }
