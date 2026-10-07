@@ -513,9 +513,9 @@ fn print_sf_help() -> Result<()> {
     use clap::CommandFactory;
 
     let mut root = super::command::Cli::command();
-    let sf = root
-        .find_subcommand_mut("sf")
-        .ok_or_else(|| Error::Other("internal CLI error: sf subcommand is not registered".into()))?;
+    let sf = root.find_subcommand_mut("sf").ok_or_else(|| {
+        Error::Other("internal CLI error: sf subcommand is not registered".into())
+    })?;
     sf.print_long_help()?;
     println!();
     Ok(())
@@ -1010,7 +1010,13 @@ mod tests {
         let mut root = super::super::command::Cli::command();
         let sf = root.find_subcommand_mut("sf").expect("sf registered");
         let help = sf.render_long_help().to_string();
-        for required in ["Usage:", "--target", "--use-case", "--list-modules", "--list-types"] {
+        for required in [
+            "Usage:",
+            "--target",
+            "--use-case",
+            "--list-modules",
+            "--list-types",
+        ] {
             assert!(help.contains(required), "sf help missing {required:?}");
         }
     }
