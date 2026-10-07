@@ -106,7 +106,7 @@ fn direct_primary_evidence_exposes_candidate_to_verified_semantic_difference() {
         &policy(1),
         &graph,
         &bindings,
-        &proof(&ids, &["primary"], false),
+        &proof(&ids, &["root-primary"], false),
     )
     .unwrap();
 
@@ -129,7 +129,7 @@ fn collapsed_mirrors_surface_the_independence_blocker_even_when_state_matches() 
         &policy(2),
         &graph,
         &bindings,
-        &proof(&ids, &["shared"], false),
+        &proof(&ids, &["root-shared"], false),
     )
     .unwrap();
 
@@ -161,7 +161,7 @@ fn legacy_verified_with_unproven_disjoint_roots_is_demoted_and_explained() {
         &policy(2),
         &graph,
         &bindings,
-        &proof(&ids, &["source-a", "source-b"], false),
+        &proof(&ids, &["root-source-a", "root-source-b"], false),
     )
     .unwrap();
 
@@ -196,7 +196,10 @@ fn bounded_independence_search_exhaustion_is_visible_and_non_strengthening() {
         .map(|(id, (_, origin))| (id, origin.as_str()))
         .collect();
     let (graph, bindings) = root_graph(&binding_pairs);
-    let root_names: Vec<String> = pairs.iter().map(|(_, origin)| origin.clone()).collect();
+    let root_names: Vec<String> = pairs
+        .iter()
+        .map(|(_, origin)| format!("root-{origin}"))
+        .collect();
     let root_refs: Vec<&str> = root_names.iter().map(String::as_str).collect();
 
     let shadow = compare_legacy_and_policy(
@@ -236,7 +239,7 @@ fn incomplete_proof_is_visible_and_prevents_shadow_verification() {
         &policy(1),
         &graph,
         &bindings,
-        &proof(&ids, &["primary"], true),
+        &proof(&ids, &["root-primary"], true),
     )
     .unwrap();
 
