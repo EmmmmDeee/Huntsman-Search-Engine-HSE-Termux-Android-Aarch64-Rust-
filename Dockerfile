@@ -3,7 +3,9 @@
 FROM rust:1.99-trixie AS builder
 WORKDIR /build
 
-ENV HUNTSMAN_HIBP_NO_EMBED=1
+ARG HUNTSMAN_BUILD_SHA=unknown
+ENV HUNTSMAN_HIBP_NO_EMBED=1 \
+    HUNTSMAN_BUILD_SHA=${HUNTSMAN_BUILD_SHA}
 
 COPY Cargo.toml Cargo.lock build.rs capabilities.json benchmarks.json HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md ./
 COPY src ./src
