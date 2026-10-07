@@ -6,16 +6,16 @@
     ]
   },
   {
-    "input": "+61 412 345 678",
+    "input": "+61 2 9876 5432",
     "expected": [
-      {"kind": "phone", "value": "+61412345678", "source": "phone_intl"},
-      {"kind": "phone", "value": "+61412345678", "source": "phone_au"}
+      {"kind": "phone", "value": "+61298765432", "source": "phone_intl"},
+      {"kind": "phone", "value": "+61298765432", "source": "phone_au"}
     ]
   },
   {
-    "input": "(07) 3739 4511",
+    "input": "(02) 9876 5432",
     "expected": [
-      {"kind": "phone", "value": "+61737394511", "source": "phone_au"}
+      {"kind": "phone", "value": "+61298765432", "source": "phone_au"}
     ]
   },
   {
