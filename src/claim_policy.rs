@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceNodeId, IndependenceRouteCount};
 use crate::intelligence::{
-    ClaimId, ClaimState, Defeat, DefeatKind, EvidenceId, EvidenceNature, IntelligenceLedger,
+    Claim, ClaimId, ClaimState, Defeat, DefeatKind, EvidenceId, EvidenceNature, IntelligenceLedger,
     LedgerError,
 };
-use crate::proof::ProofEnvironmentSet;
+use crate::proof::{MinimalProofEnvironment, ProofEnvironmentSet};
 
 const MAX_INDEPENDENCE_SEARCH_STATES: usize = 4_096;
 
@@ -197,6 +197,44 @@ fn finish_assessment(policy: &VerificationPolicy, input: &AssessmentInputs<'_>) 
     }
 }
 
+#[derive(Debug, Default)]
+struct ProofEnvironmentEvaluation {
+    malformed: bool,
+    structurally_valid: bool,
+    routes_sufficient: bool,
+    natures_sufficient: bool,
+    attributes_sufficient: bool,
+    unresolved_assumption: bool,
+    incomplete_route_search: bool,
+    valid: bool,
+}
+
+#[derive(Debug, Default)]
+struct ProofEvaluationSummary {
+    malformed: bool,
+    saw_structurally_valid: bool,
+    saw_sufficient_routes: bool,
+    saw_sufficient_natures: bool,
+    saw_sufficient_attributes: bool,
+    saw_unresolved_assumption: bool,
+    saw_incomplete_route_search: bool,
+    valid_environment: bool,
+}
+
+impl ProofEvaluationSummary {
+    fn observe(&mut self, evaluation: ProofEnvironmentEvaluation) {
+        self.malformed |= evaluation.malformed;
+        self.saw_structurally_valid |= evaluation.structurally_valid;
+        self.saw_sufficient_routes |= evaluation.routes_sufficient;
+        self.saw_sufficient_natures |= evaluation.natures_sufficient;
+        self.saw_sufficient_attributes |= evaluation.attributes_sufficient;
+        self.saw_unresolved_assumption |= evaluation.unresolved_assumption;
+        self.saw_incomplete_route_search |= evaluation.incomplete_route_search;
+        self.valid_environment |= evaluation.valid;
+    }
+}
+
+
 impl IntelligenceLedger {
     /// Evaluates one claim against explicit, non-compensatory obligations using
     /// compatibility lineage fields.
@@ -367,6 +405,144 @@ impl IntelligenceLedger {
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]
     /// when the ledger itself references absent support records.
+    fn evaluate_proof_environment(
+        &self,
+        claim: &Claim,
+        environment: &MinimalProofEnvironment,
+        policy: &VerificationPolicy,
+        graph: &EvidenceAncestryGraph,
+        bindings: &BTreeMap<EvidenceId, EvidenceNodeId>,
+    ) -> ProofEnvironmentEvaluation {
+        if environment.assertions.is_empty() {
+            return ProofEnvironmentEvaluation {
+                malformed: true,
+                ..ProofEnvironmentEvaluation::default()
+            };
+        }
+
+        let mut canonical_roots = BTreeSet::new();
+        let mut resolved_nodes = Vec::new();
+        let mut environment_natures = Vec::new();
+        let mut environment_attributes = BTreeMap::new();
+
+        for evidence_id in &environment.assertions {
+            if !claim.support.contains(evidence_id) {
+                return ProofEnvironmentEvaluation {
+                    malformed: true,
+                    ..ProofEnvironmentEvaluation::default()
+                };
+            }
+            let Some(evidence) = self.evidence.get(evidence_id) else {
+                return ProofEnvironmentEvaluation {
+                    malformed: true,
+                    ..ProofEnvironmentEvaluation::default()
+                };
+            };
+            if !environment_natures.contains(&evidence.nature) {
+                environment_natures.push(evidence.nature.clone());
+            }
+            observe_attributes(&mut environment_attributes, &evidence.attributes);
+
+            let Some(node_id) = bindings.get(evidence_id) else {
+                return ProofEnvironmentEvaluation {
+                    malformed: true,
+                    ..ProofEnvironmentEvaluation::default()
+                };
+            };
+            let Ok(roots) = graph.resolved_root_ids(node_id) else {
+                return ProofEnvironmentEvaluation {
+                    malformed: true,
+                    ..ProofEnvironmentEvaluation::default()
+                };
+            };
+            if roots.is_empty() {
+                return ProofEnvironmentEvaluation {
+                    malformed: true,
+                    ..ProofEnvironmentEvaluation::default()
+                };
+            }
+            canonical_roots.extend(roots.into_iter().map(|root| root.0));
+            resolved_nodes.push(node_id.clone());
+        }
+
+        if canonical_roots != environment.roots {
+            return ProofEnvironmentEvaluation {
+                malformed: true,
+                ..ProofEnvironmentEvaluation::default()
+            };
+        }
+
+        let route_count = graph
+            .proven_independent_route_count(
+                resolved_nodes.iter(),
+                policy.min_proven_roots,
+                MAX_INDEPENDENCE_SEARCH_STATES,
+            )
+            .unwrap_or(IndependenceRouteCount {
+                proven: 0,
+                incomplete: true,
+            });
+        let routes_sufficient =
+            !route_count.incomplete && route_count.proven >= policy.min_proven_roots;
+        let natures_sufficient = policy
+            .required_natures
+            .iter()
+            .all(|required| environment_natures.contains(required));
+        let attributes_sufficient =
+            required_attributes_satisfied(policy, &environment_attributes);
+        let unresolved_assumption = !environment.assumptions.is_empty();
+
+        ProofEnvironmentEvaluation {
+            malformed: false,
+            structurally_valid: true,
+            routes_sufficient,
+            natures_sufficient,
+            attributes_sufficient,
+            unresolved_assumption,
+            incomplete_route_search: route_count.incomplete,
+            valid: !unresolved_assumption
+                && routes_sufficient
+                && natures_sufficient
+                && attributes_sufficient,
+        }
+    }
+
+    fn apply_proof_blockers(
+        assessment: &mut ClaimAssessment,
+        summary: &ProofEvaluationSummary,
+    ) {
+        if summary.malformed {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::InvalidProofEnvironment);
+        }
+        if summary.saw_unresolved_assumption && !summary.valid_environment {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::UnresolvedProofAssumption);
+        }
+        if summary.saw_structurally_valid && !summary.saw_sufficient_routes {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::InsufficientIndependentSupport);
+        }
+        if summary.saw_incomplete_route_search && !summary.valid_environment {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::IncompleteIndependenceProof);
+        }
+        if summary.saw_structurally_valid && !summary.saw_sufficient_natures {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::MissingRequiredEvidenceNature);
+        }
+        if summary.saw_structurally_valid && !summary.saw_sufficient_attributes {
+            assessment
+                .blockers
+                .insert(VerificationBlocker::MissingRequiredEvidenceAttribute);
+        }
+    }
+
     pub fn assess_claim_with_ancestry_and_proof(
         &self,
         claim_id: &ClaimId,
@@ -400,137 +576,26 @@ impl IntelligenceLedger {
             return Ok(assessment);
         }
 
-        let mut malformed = false;
-        let mut saw_structurally_valid = false;
-        let mut saw_sufficient_routes = false;
-        let mut saw_sufficient_natures = false;
-        let mut saw_sufficient_attributes = false;
-        let mut saw_unresolved_assumption = false;
-        let mut saw_incomplete_route_search = false;
-        let mut valid_environment = false;
-
+        let mut summary = ProofEvaluationSummary::default();
         for environment in &proof.environments {
-            if environment.assertions.is_empty() {
-                malformed = true;
-                continue;
-            }
-
-            let mut canonical_roots = BTreeSet::new();
-            let mut resolved_nodes = Vec::new();
-            let mut environment_natures = Vec::new();
-            let mut environment_attributes = BTreeMap::new();
-            let mut structurally_valid = true;
-
-            for evidence_id in &environment.assertions {
-                if !claim.support.contains(evidence_id) {
-                    structurally_valid = false;
-                    break;
-                }
-                let Some(evidence) = self.evidence.get(evidence_id) else {
-                    structurally_valid = false;
-                    break;
-                };
-                if !environment_natures.contains(&evidence.nature) {
-                    environment_natures.push(evidence.nature.clone());
-                }
-                observe_attributes(&mut environment_attributes, &evidence.attributes);
-
-                let Some(node_id) = bindings.get(evidence_id) else {
-                    structurally_valid = false;
-                    break;
-                };
-                match graph.resolved_root_ids(node_id) {
-                    Ok(roots) if !roots.is_empty() => {
-                        canonical_roots.extend(roots.into_iter().map(|root| root.0));
-                        resolved_nodes.push(node_id.clone());
-                    }
-                    _ => {
-                        structurally_valid = false;
-                        break;
-                    }
-                }
-            }
-
-            if !structurally_valid || canonical_roots != environment.roots {
-                malformed = true;
-                continue;
-            }
-
-            saw_structurally_valid = true;
-            let route_count = match graph.proven_independent_route_count(
-                resolved_nodes.iter(),
-                policy.min_proven_roots,
-                MAX_INDEPENDENCE_SEARCH_STATES,
-            ) {
-                Ok(count) => count,
-                Err(_) => IndependenceRouteCount {
-                    proven: 0,
-                    incomplete: true,
-                },
-            };
-            saw_incomplete_route_search |= route_count.incomplete;
-
-            let routes_sufficient =
-                !route_count.incomplete && route_count.proven >= policy.min_proven_roots;
-            let natures_sufficient = policy
-                .required_natures
-                .iter()
-                .all(|required| environment_natures.contains(required));
-            let attributes_sufficient =
-                required_attributes_satisfied(policy, &environment_attributes);
-
-            saw_sufficient_routes |= routes_sufficient;
-            saw_sufficient_natures |= natures_sufficient;
-            saw_sufficient_attributes |= attributes_sufficient;
-
-            if !environment.assumptions.is_empty() {
-                saw_unresolved_assumption = true;
-                continue;
-            }
-
-            if routes_sufficient && natures_sufficient && attributes_sufficient {
-                valid_environment = true;
-            }
+            summary.observe(self.evaluate_proof_environment(
+                claim,
+                environment,
+                policy,
+                graph,
+                bindings,
+            ));
         }
-
-        if malformed {
-            assessment
-                .blockers
-                .insert(VerificationBlocker::InvalidProofEnvironment);
-        }
-        if saw_unresolved_assumption && !valid_environment {
-            assessment
-                .blockers
-                .insert(VerificationBlocker::UnresolvedProofAssumption);
-        }
-        if saw_structurally_valid && !saw_sufficient_routes {
-            assessment
-                .blockers
-                .insert(VerificationBlocker::InsufficientIndependentSupport);
-        }
-        if saw_incomplete_route_search && !valid_environment {
-            assessment
-                .blockers
-                .insert(VerificationBlocker::IncompleteIndependenceProof);
-        }
-        if saw_structurally_valid && !saw_sufficient_natures {
-            assessment
-                .blockers
-                .insert(VerificationBlocker::MissingRequiredEvidenceNature);
-        }
-        if saw_structurally_valid && !saw_sufficient_attributes {
-            assessment
-                .blockers
-                .insert(VerificationBlocker::MissingRequiredEvidenceAttribute);
-        }
+        Self::apply_proof_blockers(&mut assessment, &summary);
 
         assessment.epistemic = if claim.support.is_empty() {
             ClaimState::Candidate
-        } else if valid_environment && !malformed && assessment.blockers.is_empty() {
+        } else if summary.valid_environment && !summary.malformed && assessment.blockers.is_empty() {
             ClaimState::Verified
         } else {
             ClaimState::Supported
         };
         Ok(assessment)
     }
+
 }
