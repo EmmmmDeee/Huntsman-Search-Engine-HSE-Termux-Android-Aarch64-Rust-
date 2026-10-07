@@ -321,12 +321,24 @@ fn per_commit_publish_anchors_the_tag_before_creating_the_draft() {
         "live main must be rechecked before publication"
     );
     assert!(
+        step.contains("trap cleanup_on_exit EXIT")
+            && step.contains("cleanup_candidate()")
+            && step.contains("candidate_tag=true")
+            && step.contains("candidate_release=true"),
+        "an error after tag creation must trigger transactional candidate cleanup"
+    );
+    assert!(
         step.contains("gh api -X DELETE \"$api/git/refs/tags/${TAG}\""),
-        "a failed draft creation must clean up its pre-created tag"
+        "candidate cleanup must remove an orphan tag when no draft exists"
     );
     assert!(
         step.contains("gh release delete \"$TAG\" --yes --cleanup-tag"),
-        "a publication race must remove both draft and tag"
+        "candidate cleanup and publication-race cleanup must remove both draft and tag"
+    );
+    assert!(
+        step.matches("candidate_release=false").count() >= 2
+            && step.matches("candidate_tag=false").count() >= 2,
+        "successful publication and intentional race cleanup must disarm the failure trap"
     );
     assert!(
         !step.contains("--target \"$GITHUB_SHA\""),
