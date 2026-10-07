@@ -22,51 +22,6 @@ pub struct SavePolicy {
     pub entity_provenance: ProvenanceFn,
 }
 
-
-fn email_provenance(source: &str) -> (&str, &'static str) {
-    match source {
-        "gravatar" => ("gravatar", "src/gravatar.rs"),
-        _ => (source, "src/email_cli.rs"),
-    }
-}
-
-fn username_provenance(source: &str) -> (&str, &'static str) {
-    match source {
-        "github_user" => ("github_user", "src/github_user.rs"),
-        "bluesky_user" => ("bluesky_user", "src/bluesky_user.rs"),
-        _ => (source, "src/username_cli.rs"),
-    }
-}
-
-fn phone_provenance(source: &str) -> (&str, &'static str) {
-    match source {
-        "phone_intl" => ("phone_intl", "src/phone_intl.rs"),
-        "phone_au" => ("phone_au", "src/phone_cli.rs"),
-        _ => (source, "src/phone_cli.rs"),
-    }
-}
-
-pub const EMAIL_POLICY: SavePolicy = SavePolicy {
-    default_source: "email_parse",
-    does_not_show: "an email-derived lead is not an identity-resolution verdict",
-    outcome_provenance: email_provenance,
-    entity_provenance: email_provenance,
-};
-
-pub const USERNAME_POLICY: SavePolicy = SavePolicy {
-    default_source: "username_variants",
-    does_not_show: "a public username-profile lead is not an identity-resolution verdict",
-    outcome_provenance: username_provenance,
-    entity_provenance: username_provenance,
-};
-
-pub const PHONE_POLICY: SavePolicy = SavePolicy {
-    default_source: "phone_intl",
-    does_not_show: "a phone-format or numbering-plan classification is not an identity-resolution verdict",
-    outcome_provenance: phone_provenance,
-    entity_provenance: phone_provenance,
-};
-
 /// Persist one lookup report as a fresh unverified hash chain.
 ///
 /// # Errors
