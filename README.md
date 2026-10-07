@@ -107,11 +107,16 @@ Local search, recorder and ledger, with a guarded fetch layer (egress policy, cr
 
 For contributors: one Rust package (`huntsman-recon`), Rust 1.87+, no workspace.
 The binary's full command list is available with `huntsman-recon --help`;
-run `huntsman-recon COMMAND --help` for command-specific usage.
+run `huntsman-recon COMMAND --help` for command-specific usage. `diagnostics [--json]`
+is fully offline and reports only non-secret build/runtime/module/provider state; `build-sha`
+prints the source commit embedded by provenance-aware builds and prints `unknown` for
+ad-hoc builds that did not supply one.
 
 ```
 cargo test
 cargo run -- check                     # self-acceptance + command invariant; regenerates var/*.json
+cargo run -- diagnostics --json        # offline build/runtime/module/provider status; no secret values
+cargo run -- build-sha                 # exact embedded commit for provenance builds, otherwise unknown
 cargo run -- command                   # validate + print engineering command contract
 cargo run -- directive --help          # repository directive verifier/self-repair usage
 cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
