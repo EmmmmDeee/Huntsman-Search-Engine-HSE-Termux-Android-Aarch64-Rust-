@@ -53,6 +53,19 @@ pub(super) async fn cmd_serve(
     // Pin `localhost` to the v4 loopback for reliable Chrome-on-device access.
     let bind = normalise_bind(&bind);
 
+    // Fail at the network boundary BEFORE opening the database, loading keys,
+    // constructing the scan engine, or spawning any background machinery. A
+    // duplicate `hse serve` on Termux is common; an occupied port must be a
+    // cheap, side-effect-free failure rather than a near-full application boot.
+    //
+    // Resolve auth first because an invalid explicit token is a configuration
+    // error independent of port availability and should remain authoritative.
+    let auth = crate::api::auth::resolve(&bind, auth_token, allow_unauthenticated)?
+        .map(std::sync::Arc::new);
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .map_err(|e| bind_error(&bind, &e))?;
+
     let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
         crate::app::runtime::build_runtime(1024)?;
     let http = build_client();
@@ -97,16 +110,7 @@ pub(super) async fn cmd_serve(
     // signal in-flight work to stop before the process exits.
     let state_for_shutdown = Arc::clone(&state);
 
-    // Resolve the auth posture BEFORE binding: a misconfigured token (an empty
-    // `HSE_AUTH_TOKEN`) must fail the command outright rather than open a
-    // listener that then rejects every request — or, worse, accepts them.
-    let auth = crate::api::auth::resolve(&bind, auth_token, allow_unauthenticated)?
-        .map(std::sync::Arc::new);
-
     let app = router(state, &bind, auth.clone());
-    let listener = tokio::net::TcpListener::bind(&bind)
-        .await
-        .map_err(|e| bind_error(&bind, &e))?;
 
     announce_auth(&bind, auth.as_deref(), allow_unauthenticated);
 
@@ -447,17 +451,19 @@ fn announce_auth(bind: &str, auth: Option<&crate::api::auth::AuthToken>, opted_o
 fn bind_error(bind: &str, e: &std::io::Error) -> Error {
     use std::io::ErrorKind;
     let hint = match e.kind() {
-        ErrorKind::AddrInUse => {
-            " — port already in use (another `hse serve` running? stop it, or pass a free port, \
-             e.g. --bind 127.0.0.1:8090)"
-        }
+        ErrorKind::AddrInUse => format!(
+            " — port already in use; if http://{bind}/ already opens the HSE UI, keep using that \
+             running instance. Otherwise stop the process holding the port or pass a free port, \
+             e.g. --bind 127.0.0.1:8090"
+        ),
         ErrorKind::PermissionDenied => {
-            " — permission denied (no root on Termux; use a port >= 1024, e.g. 8080)"
+            " — permission denied (no root on Termux; use a port >= 1024, e.g. 8080)".to_string()
         }
         ErrorKind::AddrNotAvailable => {
             " — address not available (the host part isn't a local interface; try 127.0.0.1)"
+                .to_string()
         }
-        _ => "",
+        _ => String::new(),
     };
     Error::Other(format!("bind {bind}: {e}{hint}"))
 }

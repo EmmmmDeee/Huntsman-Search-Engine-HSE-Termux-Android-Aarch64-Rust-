@@ -222,7 +222,8 @@ if [[ -z "${HSE_INSTALL_DIR:-}" && -d .git && -f Cargo.toml ]] \
     HSE_INSTALL_DIR="$(pwd)"
 fi
 HSE_INSTALL_DIR="${HSE_INSTALL_DIR:-$HOME/.local/share/hse}"
-RUST_MIN_VERSION="1.88"
+# Must equal Cargo.toml package.rust-version; tests/installer_msrv.rs locks the contract.
+RUST_MIN_VERSION="1.98"
 
 # ─── Stale-install cleanup (definitions; invoked after the new binary lands) ──
 # Signature stamped into every wrapper this installer generates, and present for
