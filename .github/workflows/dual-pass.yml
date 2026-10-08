@@ -30,6 +30,12 @@ jobs:
           components: rustfmt
       - name: Install tree-sitter fallback
         run: python3 -m pip install --disable-pip-version-check tree-sitter tree-sitter-rust
+      - name: Reject model endpoints in the runner
+        run: |
+          if grep -R -n -E 'https?://api\.x\.ai|secrets\.XAI|openai\.com|anthropic\.com' scripts/dual-pass .github/workflows/dual-pass.yml; then
+            echo "LLM API reference is forbidden"
+            exit 1
+          fi
       - name: Dual-pass plan then red-green
         env:
           GH_TOKEN: ${{ github.token }}
