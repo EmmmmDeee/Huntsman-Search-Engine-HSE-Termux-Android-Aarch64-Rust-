@@ -98,6 +98,23 @@ fn reject_message(reject: PlanReject) -> String {
     }
 }
 
+
+/// One admitted round. `planner` is not called.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatedRound {
+    pub admitted: MetaPlan,
+}
+
+/// Refuse an inherited or incomplete plan before any dispatch.
+///
+/// # Errors
+/// Returns the [`admit_round`] refusal. Does not call `build_dispatch_plan`.
+pub fn investigate_gated(plan: MetaPlan) -> Result<GatedRound, Error> {
+    Ok(GatedRound {
+        admitted: admit_round(plan)?,
+    })
+}
+
 /// Execute the full deterministic offline spine. Dispatches are planned but not executed.
 ///
 /// # Errors
@@ -210,7 +227,33 @@ mod tests {
             stop_rule: "stop on two independent admitted origins".into(),
             next_pivot: "none until a body is admitted".into(),
         };
-        let error = admit_round(plan).expect_err("inherited plan must be refused");
+        let error = admit_round(plan.clone()).expect_err("inherited plan must be refused");
         assert!(error.to_string().contains("inherited fallback"));
+        let gated = investigate_gated(plan).expect_err("gated path must refuse");
+        assert!(gated.to_string().contains("inherited fallback"));
+    }
+
+    #[test]
+    fn gated_path_returns_the_admitted_plan_only() {
+        let plan = MetaPlan {
+            seed: " Example.COM ".into(),
+            hypotheses: vec!["domain".into()],
+            determination_method: "reversal-tested case construction".into(),
+            method_reversal: "a fetched body contradicts the method".into(),
+            actions: vec![crate::meta_plan::PlanAction {
+                source_id: " CrtSh ".into(),
+                query: " Example.COM ".into(),
+                why: "structured names before html".into(),
+                reversal_observation: "quarantine or valid zero".into(),
+                requires_key: false,
+                lead_only: true,
+            }],
+            stop_rule: "stop on two independent admitted origins".into(),
+            next_pivot: "none until a body is admitted".into(),
+        };
+        let gated = investigate_gated(plan).expect("admitted round");
+        assert_eq!(gated.admitted.seed, "example.com");
+        assert_eq!(gated.admitted.actions[0].source_id, "crtsh");
+        assert_eq!(gated.admitted.actions[0].query, "example.com");
     }
 }
