@@ -193,6 +193,40 @@ pub fn canonical_url(raw: &str) -> Option<String> {
     Some(out)
 }
 
+
+/// One selector, one stored form. Email, phone, URL, domain, handle and
+/// coordinates win before a name. Empty after normalisation is `None`.
+#[must_use]
+pub fn canonicalise_selector(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    canonical_email(trimmed)
+        .or_else(|| canonical_phone(trimmed))
+        .or_else(|| canonical_url(trimmed))
+        .or_else(|| canonical_domain(trimmed))
+        .or_else(|| canonical_handle(trimmed))
+        .or_else(|| canonical_coordinates(trimmed))
+        .or_else(|| {
+            let name = canonical_name(trimmed);
+            (!name.is_empty()).then_some(name)
+        })
+}
+
+/// Source identifiers are tokens, not selectors.
+#[must_use]
+pub fn canonicalise_token(raw: &str) -> Option<String> {
+    let token = raw.trim().to_ascii_lowercase();
+    if token.is_empty() || token.chars().any(char::is_whitespace) {
+        return None;
+    }
+    if !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return None;
+    }
+    Some(token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +273,17 @@ mod tests {
             Some("+61412345678".into())
         );
         assert_eq!(canonical_phone("abc"), None);
+    }
+
+    #[test]
+    fn selector_prefers_email_over_name() {
+        assert_eq!(
+            canonicalise_selector("  Ada@Example.COM "),
+            Some("ada@example.com".into())
+        );
+        assert_eq!(canonicalise_selector("  Example.COM "), Some("example.com".into()));
+        assert_eq!(canonicalise_selector("   "), None);
+        assert_eq!(canonicalise_token(" CrtSh "), Some("crtsh".into()));
+        assert_eq!(canonicalise_token("has space"), None);
     }
 }
