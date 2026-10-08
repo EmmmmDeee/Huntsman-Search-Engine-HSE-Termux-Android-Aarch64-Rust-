@@ -12,6 +12,7 @@ pub(super) use std::collections::HashSet;
 
 pub(super) const SRC: &str = "search_engines";
 
+#[derive(Clone)]
 pub(crate) struct SearchResult {
     pub(super) url: String,
     pub(super) title: String,

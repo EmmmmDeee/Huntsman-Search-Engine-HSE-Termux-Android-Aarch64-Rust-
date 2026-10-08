@@ -50,43 +50,43 @@ fn no_dns_but_a_direct_path_works_is_dns_unavailable_not_offline() {
 }
 
 #[test]
-fn a_resolver_disagreement_with_no_shared_address_is_hijacked() {
+fn a_resolver_disagreement_with_no_shared_address_is_divergent_not_hijack_proof() {
     let mut p = healthy_path();
     p.system_dns = vec![ip(203, 0, 113, 1)];
     p.doh_dns = Some(vec![ip(198, 51, 100, 1)]);
     let r = classify(&p);
-    assert_eq!(r.kind, OutageKind::DnsHijacked, "{r:?}");
+    assert_eq!(r.kind, OutageKind::DnsDivergent, "{r:?}");
     assert!(r.evidence.contains("203.0.113.1") && r.evidence.contains("198.51.100.1"));
 }
 
 #[test]
-fn a_shared_address_between_resolvers_is_not_hijacked_even_if_the_sets_differ() {
+fn a_shared_address_between_resolvers_is_not_divergent_even_if_the_sets_differ() {
     // A CDN answering with a different SUBSET each time is not interception
     // — real agreement needs only overlap, not an identical set or order.
     let mut p = healthy_path();
     p.system_dns = vec![ip(1, 1, 1, 1), ip(1, 0, 0, 1)];
     p.doh_dns = Some(vec![ip(1, 0, 0, 1), ip(1, 1, 1, 2)]);
     let r = classify(&p);
-    assert_ne!(r.kind, OutageKind::DnsHijacked, "{r:?}");
+    assert_ne!(r.kind, OutageKind::DnsDivergent, "{r:?}");
 }
 
 #[test]
-fn doh_not_run_is_no_signal_never_a_false_hijack() {
+fn doh_not_run_is_no_signal_never_a_false_divergence() {
     let mut p = healthy_path();
     p.doh_dns = None;
     let r = classify(&p);
-    assert_ne!(r.kind, OutageKind::DnsHijacked, "{r:?}");
+    assert_ne!(r.kind, OutageKind::DnsDivergent, "{r:?}");
     assert_eq!(r.kind, OutageKind::Clear, "{r:?}");
 }
 
 #[test]
-fn doh_running_and_finding_nothing_is_not_by_itself_a_hijack() {
+fn doh_running_and_finding_nothing_is_not_by_itself_a_divergence() {
     // An empty DoH answer alone is weaker evidence than a genuine collision
     // with a different address — `disjoint` requires both sides non-empty.
     let mut p = healthy_path();
     p.doh_dns = Some(vec![]);
     let r = classify(&p);
-    assert_ne!(r.kind, OutageKind::DnsHijacked, "{r:?}");
+    assert_ne!(r.kind, OutageKind::DnsDivergent, "{r:?}");
 }
 
 #[test]
@@ -172,16 +172,16 @@ fn no_certificate_captured_at_all_never_reads_as_intercepted() {
 }
 
 #[test]
-fn a_hijacked_resolver_is_reported_over_a_captive_portal_symptom_it_also_causes() {
-    // Both signals are present; the upstream cause (the resolver
-    // disagreement) must win over the downstream symptom (a bad
-    // connectivity answer that the same hijack could easily also produce).
+fn captive_portal_evidence_outranks_ambiguous_dns_divergence() {
+    // Disjoint DNS answers can be normal CDN/anycast behaviour, whereas a
+    // connectivity probe that was expected to return 204 but was answered with
+    // 200 is direct evidence of interception on that HTTP path.
     let mut p = healthy_path();
     p.system_dns = vec![ip(203, 0, 113, 1)];
     p.doh_dns = Some(vec![ip(198, 51, 100, 1)]);
     p.connectivity_status = Some(200);
     let r = classify(&p);
-    assert_eq!(r.kind, OutageKind::DnsHijacked, "{r:?}");
+    assert_eq!(r.kind, OutageKind::CaptivePortal, "{r:?}");
 }
 
 #[test]
@@ -207,7 +207,7 @@ fn every_kind_carries_non_empty_advice() {
     for kind in [
         OutageKind::Offline,
         OutageKind::DnsUnavailable,
-        OutageKind::DnsHijacked,
+        OutageKind::DnsDivergent,
         OutageKind::CaptivePortal,
         OutageKind::TlsIntercepted,
         OutageKind::Clear,
@@ -223,8 +223,8 @@ fn every_kind_carries_non_empty_advice() {
 
 #[test]
 fn the_kind_serialises_as_a_stable_snake_case_tag() {
-    let json = serde_json::to_value(OutageKind::DnsHijacked).unwrap();
-    assert_eq!(json, serde_json::json!("dns_hijacked"));
+    let json = serde_json::to_value(OutageKind::DnsDivergent).unwrap();
+    assert_eq!(json, serde_json::json!("dns_divergent"));
     let json = serde_json::to_value(OutageKind::CaptivePortal).unwrap();
     assert_eq!(json, serde_json::json!("captive_portal"));
 }

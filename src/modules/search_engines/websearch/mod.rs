@@ -20,10 +20,11 @@
 //! general search is no more aggressive on a Termux link than a normal scan.
 
 use super::engines::{ENGINES, EngineSpec, reliable_engines};
+use super::fetch::SearchFetchResult;
 use super::helpers::{canonicalize_url, dedup_results, display_key_phrase, url_engine_counts};
 use super::{
-    SearchResult, engine_enabled, order_engines_for_primary, proven_engine_names, record_empty,
-    record_hit, run_engine_batch, session_dead,
+    SearchResult, engine_enabled, is_session_dead, order_engines_for_primary, proven_engine_names,
+    record_empty_success, record_hit, record_provider_failure_outcome, run_engine_batch,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
@@ -61,11 +62,10 @@ pub(crate) async fn web_search(query: &str, deadline: Instant) -> Vec<WebResult>
         return Vec::new();
     }
 
-    // Web search operates standalone without a scan context, so we use a constant
-    // scan_id for liveness tracking. This means general `hse query` commands share
-    // engine liveness state with each other and with the main scan if running under
-    // `hse serve`, which is correct — a blocked/proven engine for one query is
-    // blocked/proven for any query in the same process.
+    // Web search operates standalone without a scan context, so use one bounded
+    // pseudo-scan namespace for its liveness tracking. Do NOT consult the global
+    // health-panel OR across every active scan here: one unrelated concurrent scan
+    // hitting an anti-bot page must not suppress an engine for this raw query.
     const WEBSEARCH_SCAN_ID: &str = "__websearch__";
 
     // Order the live engines exactly as the OSINT primary pass does: proven-live
@@ -77,7 +77,7 @@ pub(crate) async fn web_search(query: &str, deadline: Instant) -> Vec<WebResult>
     let proven = proven_engine_names(WEBSEARCH_SCAN_ID);
     let live: Vec<&'static EngineSpec> = ENGINES
         .iter()
-        .filter(|e| engine_enabled(e.name) && !session_dead(e.name))
+        .filter(|e| engine_enabled(e.name) && !is_session_dead(WEBSEARCH_SCAN_ID, e.name))
         .collect();
 
     // `fetch_engine` (not `fetch_one`) is the parent's full per-engine unit: it
@@ -102,13 +102,17 @@ pub(crate) async fn web_search(query: &str, deadline: Instant) -> Vec<WebResult>
     // query now contributes the same up/down evidence a scan does, so a blocked
     // engine is skipped for both and a recovered one is un-silenced for both.
     let mut per_engine: Vec<Vec<SearchResult>> = Vec::new();
-    for (name, res) in batch {
-        match res {
-            Some(results) => {
+    for (name, outcome) in batch {
+        match outcome {
+            SearchFetchResult::Results(results) => {
                 record_hit(WEBSEARCH_SCAN_ID, name);
                 per_engine.push(results);
             }
-            None => record_empty(WEBSEARCH_SCAN_ID, name),
+            SearchFetchResult::Empty => record_empty_success(WEBSEARCH_SCAN_ID, name),
+            SearchFetchResult::Inconclusive => {}
+            failure @ (SearchFetchResult::Blocked | SearchFetchResult::Unreachable) => {
+                record_provider_failure_outcome(WEBSEARCH_SCAN_ID, name, &failure);
+            }
         }
     }
 
