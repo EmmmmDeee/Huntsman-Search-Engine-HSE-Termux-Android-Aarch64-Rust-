@@ -409,9 +409,8 @@ impl Module for SeekNow {
         // ── Per-seed endpoint matrix: maximise SeekNow's UNIQUE coverage ──
         //
         // Each target kind plans the relevant SeekNow endpoints via
-        // `effective_plan` (an unfiltered pass-through of `plan_endpoints`
-        // — see the `endpoints` submodule's own doc comments for why the
-        // single-origin filter this comment used to describe was removed),
+        // `effective_plan` orders `plan_endpoints` by ROI before any credit
+        // is spent. The set is unchanged; high-yield endpoints run first.
         // and the whole plan dispatches concurrently (bounded by remaining
         // scan + session budget). What actually runs:
         //
@@ -450,6 +449,10 @@ impl Module for SeekNow {
             // means SeekNow's platform-specific profile depth is worth the
             // quota even where free coverage exists at presence-only depth.
             let plan = effective_plan(target.kind, v, &ctx.scan_id);
+            tracing::debug!(
+                paths = ?plan.iter().map(|c| c.canonical_path()).collect::<Vec<_>>(),
+                "see_know bulk plan ordered before spend"
+            );
             let (endpoint_results, plan_failure) = dispatch_plan(key, v, &plan).await;
             // Dispatch tallies feed `seeknow_never_answered` just below. Declared
             // here rather than hoisted above the `if`: nothing outside this
