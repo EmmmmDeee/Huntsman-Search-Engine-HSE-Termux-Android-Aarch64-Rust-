@@ -400,7 +400,7 @@ use super::*;
 
     #[test]
     fn surface_max_page_size_matches_the_documented_per_endpoint_ceiling() {
-        // docs/OATHNET_API_GUIDE.txt §11: Breach Search max 1000, V2 Stealer
+        // docs/oathnet-api-guide.txt §11: Breach Search max 1000, V2 Stealer
         // max 100 — they differ, so a shared batch page_size must be clamped
         // per surface, not passed through uncapped.
         assert_eq!(Surface::Breach.max_page_size(), 1000);
@@ -432,7 +432,7 @@ use super::*;
         // Live-confirmed 2026-07-15 against the REAL
         // `GET /service/v2/breach/search`: the pagination block is keyed
         // "meta" (no underscore) and next_cursor is a SIBLING of it, not
-        // nested inside — NOT the shape `docs/OATHNET_API_GUIDE.txt` §3.1's
+        // nested inside — NOT the shape `docs/oathnet-api-guide.txt` §3.1's
         // illustrative example shows (data._meta with next_cursor nested
         // inside it). This exact shape (trimmed to the pagination-relevant
         // fields; the real response also carries dbname_info and a
@@ -469,7 +469,7 @@ use super::*;
 
     #[test]
     fn search_data_still_accepts_the_documented_underscore_meta_shape() {
-        // Defense-in-depth: `docs/OATHNET_API_GUIDE.txt` §3.1's illustrative
+        // Defense-in-depth: `docs/oathnet-api-guide.txt` §3.1's illustrative
         // `_meta`-nested shape was proven wrong for breach search (see the
         // test above), but the alias is kept in case another surface
         // (stealer, victims) or a future response variant genuinely uses

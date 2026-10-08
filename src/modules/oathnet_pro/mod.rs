@@ -204,7 +204,7 @@ impl Module for OathnetPro {
         // page_size is free ROI, and `oathnet::search` now pages through
         // `has_more`/`next_cursor` on top of this anyway, so the actual
         // ceiling is the documented per-request maximum, not a smaller
-        // hand-picked value (`docs/OATHNET_API_GUIDE.txt` §11: Breach
+        // hand-picked value (`docs/oathnet-api-guide.txt` §11: Breach
         // Search max 1000). The prior 100/50 split under-fetched by 10-20x
         // for a cost the API's own docs describe as free. `extract_breach_page`'s
         // existing candidate-flood cap already bounds how much of a larger
@@ -293,7 +293,7 @@ impl Module for OathnetPro {
         // index match. Phone/FullName use free-text "q" which is noisy and
         // rarely productive. IP/Domain are already breach-only above.
         // 100 is already the documented per-request ceiling for this
-        // endpoint (`docs/OATHNET_API_GUIDE.txt` §11: V2 Stealer max 100,
+        // endpoint (`docs/oathnet-api-guide.txt` §11: V2 Stealer max 100,
         // unlike Breach Search's 1000) — `oathnet::search`'s own cursor
         // pagination now carries past that ceiling if the server reports
         // more results than one page holds.

@@ -87,7 +87,7 @@ Per Rule 0.7 (priorities 1-5 are correctness, evidence integrity, safety, determ
 - **Performance optimization** (priority 7): Correct to defer until correctness + determinism are guaranteed. CPU/memory profiling deferred to CAP phase.
 - **Multi-platform ports** (priority 9): Rule 0.6 defers porting unless it strengthens Termux AArch64 target. Desktop/Web builds not in scope.
 - **Feature expansion** (priority 10): New modules, new schemas, new correlations deferred pending P0-P2 closure.
-- **Documentation expansion**: osint-api-reference.md, seeknow-setup.md, OATHNET_API_GUIDE.txt are complete. Further docs deferred.
+- **Documentation expansion**: osint-api-reference.md, seeknow-setup.md, oathnet-api-guide.txt are complete. Further docs deferred.
 
 ---
 

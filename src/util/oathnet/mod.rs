@@ -201,7 +201,7 @@ pub fn budget_snapshot() -> crate::util::budget::BudgetSnapshot {
 /// signal anywhere was a binary "hit exactly 0" latch
 /// ([`is_quota_exhausted`]) — the documented best practice ("Monitor
 /// `left_today` after every response. Stop gracefully when quota is low",
-/// `docs/OATHNET_API_GUIDE.txt` §14.1.4) had no code path to follow at
+/// `docs/oathnet-api-guide.txt` §14.1.4) had no code path to follow at
 /// all: there was nothing tracking the actual remaining count, only
 /// whether it had already hit zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,7 +243,7 @@ fn real_quota_from_envelope(env: &Envelope) -> Option<RealQuota> {
 /// guard ran BEFORE the body was parsed and the page accumulated, so the day's
 /// final SUCCESSFUL page — which carries its data AND `left_today:0` in the
 /// same body, because `used_today` counts the current call
-/// (`docs/OATHNET_API_GUIDE.txt`: `used_today:13 + left_today:487 =
+/// (`docs/oathnet-api-guide.txt`: `used_today:13 + left_today:487 =
 /// daily_limit:500`) — had its paid records silently dropped. It also
 /// false-latched on an unlimited account that happened to report
 /// `left_today:0`. Driving the latch off the typed meter fixes both: the
@@ -453,7 +453,7 @@ struct SearchData {
     dbname_info: HashMap<String, DbMeta>,
     /// Live-confirmed (2026-07-15) against the real
     /// `GET /service/v2/breach/search`: this block is keyed `"meta"`, NOT
-    /// `"_meta"` as `docs/OATHNET_API_GUIDE.txt` §3.1's illustrative example
+    /// `"_meta"` as `docs/oathnet-api-guide.txt` §3.1's illustrative example
     /// shows — the real quota block (`user`/`lookups`/`service`/
     /// `performance`) is what actually lives at a TOP-LEVEL `_meta`, a
     /// sibling of `data` itself, not nested inside it. `alias = "_meta"` is
@@ -486,7 +486,7 @@ struct DbMeta {
 }
 
 /// Pagination signal from the response envelope's `data` block
-/// (`docs/OATHNET_API_GUIDE.txt` §3.1/§11 — see [`SearchData`]'s doc
+/// (`docs/oathnet-api-guide.txt` §3.1/§11 — see [`SearchData`]'s doc
 /// comment for the live-confirmed real key names, which differ from this
 /// doc's own illustrative example). OathNet uses cursor-based pagination —
 /// no offset/page-number support — so `next_cursor` is the only way to
@@ -566,7 +566,7 @@ pub async fn search(
     // explicitly — never read from shared process state — so a concurrent scan
     // under `hse serve` can't clobber which session THIS query uses.
     //
-    // OathNet uses cursor-based pagination (`docs/OATHNET_API_GUIDE.txt` §11:
+    // OathNet uses cursor-based pagination (`docs/oathnet-api-guide.txt` §11:
     // "No offset/page-number support... Read next_cursor... Repeat until
     // cursor is null"), not offset/page-number — the operator directive is to
     // always fetch the entire content of a batch query's results, so a
@@ -685,7 +685,7 @@ pub async fn search(
                     attempt += 1;
                     continue;
                 }
-                // `docs/OATHNET_API_GUIDE.txt` §13: "5xx: retry up to 3
+                // `docs/oathnet-api-guide.txt` §13: "5xx: retry up to 3
                 // times with exponential backoff (2s, 4s, 8s)" — identical
                 // numbers to `RATE_LIMIT_BACKOFF`, reused rather than
                 // duplicated. Previously ANY status other than 404/429
@@ -972,7 +972,7 @@ impl Surface {
     }
 
     /// The documented per-request page-size ceiling for this surface
-    /// (`docs/OATHNET_API_GUIDE.txt` §11: Breach Search max 1000, V2
+    /// (`docs/oathnet-api-guide.txt` §11: Breach Search max 1000, V2
     /// Stealer max 100 — they differ). A caller-supplied page_size should
     /// be clamped to this, not passed through uncapped: a batch plan that
     /// spans both surfaces with one shared page_size value would otherwise
@@ -1061,7 +1061,7 @@ fn session_init_body(value: &str) -> String {
 /// "summary": … } }` — "The returned `session.id` should be passed as
 /// `search_id` to all subsequent service calls" (the live reference,
 /// `docs.oathnet.org/api-reference/search-session/initialize-a-search-session.md`,
-/// retrieved 2026-09-03; mirrored in `docs/OATHNET_API_GUIDE.txt` §9). Only
+/// retrieved 2026-09-03; mirrored in `docs/oathnet-api-guide.txt` §9). Only
 /// that path is read: a flat top-level `search_id` (what an earlier revision
 /// of the in-repo guide showed, and what this parser briefly read) or a
 /// top-level `session.id` appears in no documented response, so accepting

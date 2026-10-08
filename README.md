@@ -640,7 +640,7 @@ diagnostic bundle") for the complete engine state in one file.
 | [`docs/osint-api-reference.md`](docs/osint-api-reference.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
 | [`docs/seeknow-setup.md`](docs/seeknow-setup.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
 | [`docs/seeknow-web-automation.md`](docs/seeknow-web-automation.md) | SeekNow web automation, Turnstile analysis, manual login workflow, browser automation framework evaluation |
-| [`docs/OATHNET_API_GUIDE.txt`](docs/OATHNET_API_GUIDE.txt) | OathNet API contract reference |
+| [`docs/oathnet-api-guide.txt`](docs/oathnet-api-guide.txt) | OathNet API contract reference |
 | [`docs/operational-constitution.md`](docs/operational-constitution.md) | Reasoning, evidence, and analysis standards governing HSE work |
 | [`docs/persistent-intelligence.md`](docs/persistent-intelligence.md) | How understanding accumulates across reasoning cycles (constitution companion) |
 

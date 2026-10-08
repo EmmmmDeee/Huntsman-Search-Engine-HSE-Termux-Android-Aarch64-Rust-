@@ -1,4 +1,4 @@
-# Evidence for run/PHASE0_AUDIT.md section 7, MODE 1.
+# Evidence for run/phase0-audit.md section 7, MODE 1.
 # Command (run from repo root, after `cargo vendor --sync hse-core/Cargo.toml
 # --sync wasm-ui/Cargo.toml --sync fuzz/Cargo.toml vendor`):
 #

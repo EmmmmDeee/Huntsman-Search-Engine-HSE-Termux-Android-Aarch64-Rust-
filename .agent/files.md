@@ -1247,7 +1247,7 @@ checked.
 | 1210 | `src/core/query_pack/tests.rs` | test | 1.78 | 0 | 0 | 0 | 158 |
 | 1211 | `src/modules/sanctions_ofac/crypto_tests.rs` | test | 1.77 | 0 | 0 | 0 | 156 |
 | 1212 | `src/modules/sunrise_sunset/tests.rs` | test | 1.76 | 0 | 0 | 0 | 151 |
-| 1213 | `docs/OATHNET_API_GUIDE.txt` | docs | 1.75 | 0 | 1 | 0 | 992 |
+| 1213 | `docs/oathnet-api-guide.txt` | docs | 1.75 | 0 | 1 | 0 | 992 |
 | 1214 | `src/modules/europeana/tests.rs` | test | 1.74 | 0 | 0 | 0 | 143 |
 | 1215 | `src/util/egress/pool_tests.rs` | test | 1.74 | 0 | 0 | 0 | 141 |
 | 1216 | `src/util/iptc_tests.rs` | test | 1.73 | 0 | 0 | 0 | 140 |
@@ -1287,14 +1287,14 @@ checked.
 | 1250 | `src/bin/dep_cooldown/registry_tests.rs` | test | 1.36 | 0 | 0 | 0 | 47 |
 | 1251 | `docs/rust-migration-audit-2026-08-27.md` | docs | 1.36 | 0 | 1 | 0 | 208 |
 | 1252 | `docs/audit/2026-08-27-architecture.md` | docs | 1.35 | 0 | 1 | 0 | 204 |
-| 1253 | `run/FINAL_REPORT.md` | docs | 1.33 | 0 | 2 | 0 | 66 |
+| 1253 | `run/final-report.md` | docs | 1.33 | 0 | 2 | 0 | 66 |
 | 1254 | `docs/autonomy.md` | docs | 1.32 | 0 | 1 | 0 | 182 |
 | 1255 | `src/core/stealer_row/tests.rs` | test | 1.32 | 0 | 0 | 0 | 41 |
 | 1256 | `docs/final-report-2026-08-27.md` | docs | 1.30 | 0 | 1 | 0 | 162 |
 | 1257 | `docs/autonomous-decisions-2026-08-27.md` | docs | 1.28 | 0 | 1 | 0 | 155 |
 | 1258 | `src/util/freq/tests.rs` | test | 1.25 | 0 | 0 | 0 | 34 |
 | 1259 | `docs/audit/2026-08-27-benchmarks.md` | docs | 1.24 | 0 | 1 | 0 | 129 |
-| 1260 | `run/PHASE0_AUDIT.md` | docs | 1.22 | 0 | 1 | 0 | 118 |
+| 1260 | `run/phase0-audit.md` | docs | 1.22 | 0 | 1 | 0 | 118 |
 | 1261 | `docs/credential-audit-2026-08-27-base.md` | docs | 1.21 | 0 | 1 | 0 | 115 |
 | 1262 | `HUNTSMAN_UNIVERSAL_CODING_AGENT_DIRECTIVE_CLAUDE_CODE_OPTIMIZED-1.txt` | docs | 1.20 | 0 | 0 | 0 | 2929 |
 | 1263 | `.claude/commands/ci.md` | docs | 1.18 | 0 | 1 | 1 | 40 |
@@ -1308,7 +1308,7 @@ checked.
 | 1271 | `src/main_tests.rs` | test | 1.07 | 0 | 0 | 0 | 19 |
 | 1272 | `docs/glossary.md` | docs | 1.06 | 0 | 1 | 0 | 64 |
 | 1273 | `.env.example` | data | 1.05 | 0 | 9 | 0 | 579 |
-| 1274 | `run/RUNSTATE.md` | docs | 1.00 | 0 | 2 | 0 | 22 |
+| 1274 | `run/runstate.md` | docs | 1.00 | 0 | 2 | 0 | 22 |
 | 1275 | `fuzz/fuzz_targets/cert_der.rs` | bench/fuzz | 1.00 | 0 | 0 | 0 | 26 |
 | 1276 | `proptest-regressions/core/entity/tests.txt` | docs | 0.97 | 0 | 4 | 0 | 10 |
 | 1277 | `docs/exception-ledger-2026-08-27.md` | docs | 0.95 | 0 | 1 | 0 | 40 |
@@ -1319,7 +1319,7 @@ checked.
 | 1282 | `docs/development-rules.md` | docs | 0.82 | 0 | 0 | 0 | 230 |
 | 1283 | `.claude/UPGRADE_SUMMARY.md` | docs | 0.80 | 0 | 0 | 0 | 206 |
 | 1284 | `docs/engineering-reference.md` | docs | 0.78 | 0 | 0 | 0 | 174 |
-| 1285 | `.claude/QUICK_REFERENCE.md` | docs | 0.76 | 0 | 0 | 0 | 161 |
+| 1285 | `.claude/quick-reference.md` | docs | 0.76 | 0 | 0 | 0 | 161 |
 | 1286 | `src/cli/env_template.txt` | data | 0.76 | 0 | 7 | 0 | 140 |
 | 1287 | `proptest-regressions/core/relation/graph.txt` | docs | 0.72 | 0 | 2 | 0 | 8 |
 | 1288 | `fuzz/Cargo.lock` | lockfile | 0.68 | 0 | 1 | 0 | 3231 |
@@ -1338,7 +1338,7 @@ checked.
 | 1301 | `.claude/agents/hse-drift-watcher.md` | docs | 0.53 | 0 | 0 | 0 | 32 |
 | 1302 | `src/modules/search_engines/fetch/testdata/metager_kylo4kylo.html` | data | 0.52 | 0 | 1 | 0 | 440 |
 | 1303 | `src/modules/search_engines/fetch/testdata/duckduckgo_kylo4kylo.html` | data | 0.51 | 0 | 1 | 0 | 404 |
-| 1304 | `run/ISSUE_LEDGER_PORTABLE.md` | docs | 0.48 | 0 | 0 | 0 | 23 |
+| 1304 | `run/issue-ledger-portable.md` | docs | 0.48 | 0 | 0 | 0 | 23 |
 | 1305 | `run/offline_build_result.txt` | docs | 0.43 | 0 | 0 | 0 | 16 |
 | 1306 | `src/modules/search_engines/fetch/testdata/dogpile_kylo4kylo.html` | data | 0.39 | 0 | 1 | 0 | 100 |
 | 1307 | `src/util/domains/test_psl.txt` | data | 0.39 | 0 | 1 | 0 | 98 |
