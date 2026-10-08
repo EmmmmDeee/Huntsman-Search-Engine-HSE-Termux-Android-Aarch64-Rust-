@@ -62,6 +62,7 @@ pub async fn run_seed(target: Target, options: ScanOptions) -> Result<ScanRun> {
     // exits.
     ctrl_c_listener.abort();
     let scan = result?;
+    let _ = crate::util::scan_debug::publish(&sid, &crate::util::log_capture::dump());
 
     Ok(ScanRun {
         scan_id: sid,

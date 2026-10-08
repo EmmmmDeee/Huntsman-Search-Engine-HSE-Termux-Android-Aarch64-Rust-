@@ -49,6 +49,7 @@ pub mod key_roi;
 pub mod key_vault;
 pub mod keys;
 pub mod log_capture;
+pub mod scan_debug;
 pub mod mediawiki;
 pub mod namesake;
 pub mod netrotate;

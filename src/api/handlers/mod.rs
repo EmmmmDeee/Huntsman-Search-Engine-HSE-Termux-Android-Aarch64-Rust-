@@ -800,8 +800,9 @@ pub async fn logs_download(
         return rejection;
     }
     let body = crate::util::log_capture::dump();
-    let filename = format!("hse-debug-{}.log", crate::core::entity::unix_now());
-    crate::api::scan_export::attachment_response(body, "text/plain; charset=utf-8", &filename)
+    let scan_id = format!("hse-debug-{}", crate::core::entity::unix_now());
+    let _ = crate::util::scan_debug::publish(&scan_id, &body);
+    crate::api::scan_export::attachment_response(body, "text/plain; charset=utf-8", &format!("{scan_id}.log"))
 }
 
 /// `GET /api/v1/logs/tail?after=N` — the **live** counterpart to
