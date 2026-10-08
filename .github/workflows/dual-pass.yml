@@ -1,0 +1,40 @@
+name: dual-pass
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  plan-and-execute:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'dual-pass'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          ref: main
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        with:
+          toolchain: 1.87.0
+          components: rustfmt
+      - name: Install tree-sitter fallback
+        run: python3 -m pip install --disable-pip-version-check tree-sitter tree-sitter-rust
+      - name: Dual-pass plan then red-green
+        env:
+          GH_TOKEN: ${{ github.token }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          XAI_MODEL: ${{ secrets.XAI_MODEL }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/dual-pass/run.sh
