@@ -311,6 +311,10 @@ pub(super) async fn cmd_serve(
                 tracing::warn!(check = %c.name, "self-test FAIL: {}", c.detail);
             }
         }
+        let _ = crate::util::scan_debug::publish(
+            "serve",
+            &crate::util::log_capture::dump(),
+        );
     });
 
     // `shutdown_fired` is only notified once `shutdown_signal` resolves (OS
@@ -356,6 +360,7 @@ pub(super) async fn cmd_serve(
     }
 
     tracing::info!("server stopped");
+    let _ = crate::util::scan_debug::publish("serve-stop", &crate::util::log_capture::dump());
     Ok(())
 }
 
