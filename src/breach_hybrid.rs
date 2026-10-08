@@ -26,6 +26,14 @@ pub fn exposure_order(has_operator_key: bool) -> Vec<BreachLeg> {
     order
 }
 
+
+/// Hudson Rock v3 requires a key and can carry credential fields.
+/// The only allowed path is the keyed `stolen.tax` cascade, which does not declare those fields.
+#[must_use]
+pub const fn keyless_hudson_rock() -> Option<BreachLeg> {
+    None
+}
+
 /// A password count is a lead. Do not admit it as verified.
 #[must_use]
 pub const fn count_is_lead(count: u64) -> bool {
@@ -59,5 +67,11 @@ mod tests {
     fn zero_count_is_not_a_lead() {
         assert!(!count_is_lead(0));
         assert!(count_is_lead(1));
+    }
+
+    #[test]
+    fn hudson_rock_is_not_a_free_leg() {
+        assert_eq!(keyless_hudson_rock(), None);
+        assert!(!exposure_order(false).contains(&BreachLeg::StolenTax));
     }
 }
