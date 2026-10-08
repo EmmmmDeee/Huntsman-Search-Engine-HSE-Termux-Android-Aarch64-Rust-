@@ -155,6 +155,9 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
         },
         None => Keys::from_env(),
     };
+    if !huntsman_recon::breach_hybrid::stolen_tax_allowed(keys.get(stolen_tax::KEY_SLOT).is_some()) {
+        return fail(EX_NOPERM, "stolen-tax: keyed leg is not in the free order");
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
