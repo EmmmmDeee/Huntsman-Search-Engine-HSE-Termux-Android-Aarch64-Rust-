@@ -69,6 +69,31 @@ if python3 "$root/scripts/dual-pass/plan.py" "$root" "$root/bad2.md"; then
   exit 1
 fi
 
+echo "reject tautology"
+python3 - "$root/bad3.md" <<'PY'
+import sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(
+    "```json\n"
+    '{"targets":[{"path":"src/lib.rs","signatures":["pub fn answer"]}],'
+    '"new_tests":[{"path":"tests/generated_1.rs","signatures":["fn t"],'
+    '"source":"#[test]\\nfn t() { assert!(true); }\\n"}],'
+    '"patches":[{"diff":"","ops":[{"kind":"replace_fn","path":"src/lib.rs","name":"answer","body":"pub fn answer() -> i32 { 1 }"}]}]}'
+    "\n```\n",
+    encoding="utf-8",
+)
+PY
+if python3 "$root/scripts/dual-pass/plan.py" "$root" "$root/bad3.md"; then
+  echo "tautology was accepted" >&2
+  exit 1
+fi
+python3 "$root/scripts/dual-pass/plan.py" "$root" "$root/bad3.md" >"$root/bad3.out" 2>&1 || true
+if ! grep -q "tautological assertion rejected" "$root/bad3.out"; then
+  echo "tautology rejection reason missing" >&2
+  cat "$root/bad3.out" >&2
+  exit 1
+fi
+
 echo "offline red-green"
 set +e
 (

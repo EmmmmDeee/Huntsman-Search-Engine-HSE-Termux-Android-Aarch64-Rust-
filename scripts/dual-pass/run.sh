@@ -23,7 +23,23 @@ fail_human() {
     exit 1
   fi
   git checkout -B "dual-pass/issue-${ISSUE_NUMBER}-wip"
-  git add -A
+  git add dual-pass-report.md execution-plan.json 2>/dev/null || true
+  if compgen -G "tests/generated_*.rs" > /dev/null; then
+    git add tests/generated_*.rs
+  fi
+  python3 - <<'PY'
+import json
+from pathlib import Path
+plan = Path("execution-plan.json")
+if plan.is_file():
+    paths = [item["path"] for item in json.loads(plan.read_text()).get("targets", [])]
+    Path(".dual-pass-add").write_text("\n".join(paths) + "\n")
+PY
+  if [[ -f .dual-pass-add ]]; then
+    while read -r f; do
+      [[ -n "$f" && -f "$f" ]] && git add -- "$f"
+    done < .dual-pass-add
+  fi
   git -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
     -c user.name="github-actions[bot]" \
     commit -m "dual-pass WIP for issue ${ISSUE_NUMBER}" --allow-empty
@@ -123,7 +139,14 @@ fi
 if printf '%s\n' "$red_log" | grep -q 'expected one of'; then
   fail_human "red gate rejected the plan: generated test does not parse"
 fi
-log "red confirmed"
+red_class="assertion-or-compile"
+if printf '%s\n' "$red_log" | grep -q 'cannot find'; then
+  red_class="missing-symbol"
+elif printf '%s\n' "$red_log" | grep -q 'assertion'; then
+  red_class="assertion-failed"
+fi
+printf '\nRed class: %s\n' "$red_class" >> "$REPORT"
+log "red confirmed ($red_class)"
 
 turn=1
 green=0

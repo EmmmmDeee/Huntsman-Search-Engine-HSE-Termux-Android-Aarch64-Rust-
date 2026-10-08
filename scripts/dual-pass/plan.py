@@ -143,6 +143,10 @@ def validate(plan: dict, root: Path) -> dict:
         source = item["source"]
         if "assert" not in source and "panic" not in source and "todo!" not in source:
             die(f"test source has no assertion: {path}")
+        if re.search(r"assert!\(\s*true\s*\)", source):
+            die(f"tautological assertion rejected: {path}")
+        if re.search(r"assert_eq!\(\s*([^,()]+)\s*,\s*\1\s*\)", source):
+            die(f"tautological equality rejected: {path}")
     for index, patch in enumerate(patches, 1):
         diff = patch.get("diff") or ""
         for line in diff.splitlines():
