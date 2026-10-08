@@ -24,6 +24,16 @@ use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::textnorm::escape_controls;
 
 pub(super) fn hibp_cmd(args: &[String]) -> ExitCode {
+    let subcommand = args.first().map(String::as_str).unwrap_or("help");
+    let has_key = huntsman_recon::hibp::KeyLoader::default_chain(None)
+        .load()
+        .is_some();
+    if !huntsman_recon::breach_hybrid::command_allowed(subcommand, has_key) {
+        return fail(
+            EX_NOPERM,
+            "hibp: keyed leg is not in the free order",
+        );
+    }
     ExitCode::from(HibpCommand::production().run(
         args,
         &mut std::io::stdin().lock(),

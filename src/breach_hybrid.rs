@@ -34,6 +34,20 @@ pub const fn keyless_hudson_rock() -> Option<BreachLeg> {
     None
 }
 
+
+/// Whether this HIBP subcommand is in the current order.
+#[must_use]
+pub fn command_allowed(subcommand: &str, has_operator_key: bool) -> bool {
+    let order = exposure_order(has_operator_key);
+    match subcommand {
+        "password" | "password-range" => order.contains(&BreachLeg::PwnedPasswords),
+        "breach" | "breaches" => order.contains(&BreachLeg::HibpCatalog),
+        "account" | "pastes" | "subscription" => order.contains(&BreachLeg::HibpAccount),
+        "help" | "-h" | "--help" => true,
+        _ => false,
+    }
+}
+
 /// A password count is a lead. Do not admit it as verified.
 #[must_use]
 pub const fn count_is_lead(count: u64) -> bool {
@@ -73,5 +87,13 @@ mod tests {
     fn hudson_rock_is_not_a_free_leg() {
         assert_eq!(keyless_hudson_rock(), None);
         assert!(!exposure_order(false).contains(&BreachLeg::StolenTax));
+    }
+
+    #[test]
+    fn keyed_command_requires_a_key() {
+        assert!(command_allowed("password", false));
+        assert!(command_allowed("breaches", false));
+        assert!(!command_allowed("account", false));
+        assert!(command_allowed("account", true));
     }
 }
