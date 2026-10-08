@@ -40,59 +40,49 @@ case "$TERMUX_PREFIX" in
   *) die "non-standard Termux PREFIX: $TERMUX_PREFIX" ;;
 esac
 
-# Compatibility boundary for the maintained legacy `hse` monolith.
-# Current main owns `huntsman-recon`. A legacy `hse update` must never install
-# that binary over the `hse` product line.
-#
-# The maintained updater sets HSE_REQUIRE_SHA or HSE_REF. The installed 1.41.0
-# updater does not: it executes this script with neither variable, which is the
-# observed failure (cargo install huntsman-recon, `hse` left at 1.41.0). A
-# parent process named `hse` is the same handoff. HUNTSMAN_REV remains the
-# explicit recon pin and is never redirected.
-legacy_hse_caller=0
-if [[ -n "${HSE_REQUIRE_SHA:-}" || -n "${HSE_REF:-}" || "${HUNTSMAN_LEGACY_CALLER:-}" == "hse" ]]; then
-  legacy_hse_caller=1
-fi
-proc_root="${HUNTSMAN_PROC_ROOT:-/proc}"
-pid="$$"
-for _ in 1 2 3 4 5; do
-  [[ -r "$proc_root/$pid/status" ]] || break
-  ppid="$(awk '/^PPid:/ { print $2; exit }' "$proc_root/$pid/status" 2>/dev/null || true)"
-  [[ -n "$ppid" && "$ppid" != "$pid" && "$ppid" != "0" ]] || break
-  pid="$ppid"
-  [[ -r "$proc_root/$pid/cmdline" ]] || continue
-  cmd="$(tr '\0' ' ' < "$proc_root/$pid/cmdline")"
-  case " $cmd " in
-    *" /hse "*|*" hse "*|*" hse") legacy_hse_caller=1; break ;;
-  esac
-done
-if [[ -z "${HUNTSMAN_REV:-}" && "$legacy_hse_caller" -eq 1 ]]; then
-  printf 'Detected legacy hse self-update contract; routing to the maintained legacy-hse branch.\n'
-  command -v bash >/dev/null 2>&1 || die "bash is required for the legacy hse handoff"
-  if [[ -z "${HUNTSMAN_LEGACY_CHANNEL_INSTALLER:-}" ]]; then
+# Product line. HUNTSMAN_REV installs huntsman-recon. Everything else named
+# hse installs legacy-hse, then stops. Recon setup below does not run.
+is_hse_update() {
+  [[ -z "${HUNTSMAN_REV:-}" ]] || return 1
+  [[ -n "${HSE_REF:-}${HSE_REQUIRE_SHA:-}" ]] && return 0
+  [[ "${HUNTSMAN_LEGACY_CALLER:-}" == "hse" ]] && return 0
+  local root="${HUNTSMAN_PROC_ROOT:-/proc}" pid="$$" ppid cmd
+  local _
+  for _ in 1 2 3 4 5; do
+    [[ -r "$root/$pid/status" ]] || return 1
+    ppid="$(awk '/^PPid:/ { print $2; exit }' "$root/$pid/status" 2>/dev/null || true)"
+    [[ -n "$ppid" && "$ppid" != "0" && "$ppid" != "$pid" ]] || return 1
+    pid="$ppid"
+    [[ -r "$root/$pid/cmdline" ]] || continue
+    cmd="$(tr '\0' '\n' < "$root/$pid/cmdline" | head -n 1)"
+    [[ "${cmd##*/}" == "hse" ]] && return 0
+  done
+  return 1
+}
+
+install_legacy_hse() {
+  printf 'hse update: installing legacy-hse, not huntsman-recon.\n'
+  local installer="${HUNTSMAN_LEGACY_CHANNEL_INSTALLER:-}" downloaded=""
+  if [[ -z "$installer" ]]; then
     command -v curl >/dev/null 2>&1 || die "curl is required for the legacy hse handoff"
     command -v mktemp >/dev/null 2>&1 || die "mktemp is required for the legacy hse handoff"
-  fi
-  legacy_installer="${HUNTSMAN_LEGACY_CHANNEL_INSTALLER:-}"
-  downloaded_installer=""
-  if [[ -z "$legacy_installer" ]]; then
-    downloaded_installer="$(mktemp "${TMPDIR:-$TERMUX_PREFIX/tmp}/huntsman-legacy-install.XXXXXX")"
-    legacy_installer="$downloaded_installer"
+    downloaded="$(mktemp "${TMPDIR:-$TERMUX_PREFIX/tmp}/huntsman-legacy-install.XXXXXX")"
+    installer="$downloaded"
     curl -fsSL --proto '=https' \
       "https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/legacy-hse/install.sh" \
-      -o "$legacy_installer"
+      -o "$installer"
   fi
-
-  # The incoming HSE_REQUIRE_SHA may name reconstructed-main, which is exactly
-  # what must NOT be built as `hse`. The maintained branch resolves and verifies
-  # its own revision, so discard the cross-product target and pin the product line.
   set +e
-  env -u HSE_REQUIRE_SHA HSE_REF=legacy-hse bash "$legacy_installer"
-  compat_status=$?
+  env -u HSE_REQUIRE_SHA HSE_REF=legacy-hse bash "$installer"
+  local status=$?
   set -e
-  [[ -z "$downloaded_installer" ]] || rm -f "$downloaded_installer"
-  (( compat_status == 0 )) || die "legacy hse installer exited $compat_status"
-  printf 'Legacy hse branch accepted; huntsman-recon was not substituted for hse.\n'
+  [[ -z "$downloaded" ]] || rm -f "$downloaded"
+  (( status == 0 )) || die "legacy hse installer exited $status"
+  printf 'legacy-hse installed; huntsman-recon was not substituted for hse.\n'
+}
+
+if is_hse_update; then
+  install_legacy_hse
   exit 0
 fi
 
