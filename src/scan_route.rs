@@ -4,7 +4,7 @@
 //! one deterministic contract and makes future recursive expansion reuse the
 //! exact same classifier.
 
-use crate::canonical::canonical_email;
+use crate::canonical::{canonical_email, canonical_handle, canonical_name, canonical_phone};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanKind {
@@ -37,6 +37,21 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
         "username" | "handle" => Ok(ScanKind::Username),
         "phone" => Ok(ScanKind::Phone),
         other => Err(other),
+    }
+}
+
+
+/// Canonical selector for a route. `None` means the route cannot run.
+#[must_use]
+pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
+    match kind {
+        ScanKind::Email => canonical_email(raw),
+        ScanKind::Username => canonical_handle(raw),
+        ScanKind::Phone => canonical_phone(raw),
+        ScanKind::People => {
+            let name = canonical_name(raw);
+            (name.split_whitespace().count() >= 2).then_some(name)
+        }
     }
 }
 
@@ -77,5 +92,22 @@ mod tests {
         assert_eq!(infer_kind("@ada"), ScanKind::Username);
         assert_eq!(infer_kind("+61412345678"), ScanKind::Phone);
         assert_eq!(infer_kind("Ada Lovelace"), ScanKind::People);
+    }
+
+    #[test]
+    fn route_selector_is_canonical() {
+        assert_eq!(
+            canonical_selector(ScanKind::Email, " Ada@Example.ORG "),
+            Some("ada@example.org".into())
+        );
+        assert_eq!(
+            canonical_selector(ScanKind::Username, "@Ada"),
+            Some("ada".into())
+        );
+        assert_eq!(
+            canonical_selector(ScanKind::People, " Ada   Lovelace "),
+            Some("ada lovelace".into())
+        );
+        assert_eq!(canonical_selector(ScanKind::People, "Ada"), None);
     }
 }

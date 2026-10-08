@@ -13,6 +13,7 @@ use crate::pipeline::{
     AnalysisSnapshot, InvestigationInput, PipelineLimits, SeedNormalization,
     normalize_observations, normalize_seeds,
 };
+use crate::meta_plan::{MetaPlan, PlanReject};
 use crate::planner::{DispatchPlan, PlannerPolicy, build_dispatch_plan};
 use crate::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
 use crate::source_outcome::SourceOutcomeKind;
@@ -73,6 +74,45 @@ fn seed_batch(normalization: &SeedNormalization, scan_id: &str) -> ObservationBa
         independence_assertions: Vec::new(),
         truncated: normalization.truncated,
     }
+}
+
+
+/// Admit one round plan. Refusal is the result when the plan is inherited or incomplete.
+///
+/// # Errors
+/// Returns [`Error::Invalid`] for every [`PlanReject`]. Does not fall back to `planner`.
+pub fn admit_round(plan: MetaPlan) -> Result<MetaPlan, Error> {
+    plan.admit().map_err(|reject| Error::Invalid(reject_message(reject)))
+}
+
+fn reject_message(reject: PlanReject) -> String {
+    match reject {
+        PlanReject::EmptySeed => "meta-plan refused: empty seed".to_string(),
+        PlanReject::MissingField(field) => format!("meta-plan refused: missing {field}"),
+        PlanReject::InheritedFallback => "meta-plan refused: inherited fallback".to_string(),
+        PlanReject::VerificationClaim => "meta-plan refused: verification claim".to_string(),
+        PlanReject::EmptyDispatch => "meta-plan refused: empty dispatch".to_string(),
+        PlanReject::NoReversalObservation => {
+            "meta-plan refused: no reversal observation".to_string()
+        }
+    }
+}
+
+
+/// One admitted round. `planner` is not called.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatedRound {
+    pub admitted: MetaPlan,
+}
+
+/// Refuse an inherited or incomplete plan before any dispatch.
+///
+/// # Errors
+/// Returns the [`admit_round`] refusal. Does not call `build_dispatch_plan`.
+pub fn investigate_gated(plan: MetaPlan) -> Result<GatedRound, Error> {
+    Ok(GatedRound {
+        admitted: admit_round(plan)?,
+    })
 }
 
 /// Execute the full deterministic offline spine. Dispatches are planned but not executed.
@@ -163,4 +203,57 @@ pub fn session_for_outcome(
 /// Returns store/path validation failures.
 pub fn persist_session(root: &Path, session: &Session) -> Result<PathBuf, Error> {
     Store::new(root).save(session)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caller_refuses_inherited_plan() {
+        let plan = MetaPlan {
+            seed: "example.com".into(),
+            hypotheses: vec!["domain".into()],
+            determination_method: "fallback to static source table".into(),
+            method_reversal: "a fetched body contradicts the method".into(),
+            actions: vec![crate::meta_plan::PlanAction {
+                source_id: "crtsh".into(),
+                query: "example.com".into(),
+                why: "structured names before html".into(),
+                reversal_observation: "quarantine or valid zero".into(),
+                requires_key: false,
+                lead_only: true,
+            }],
+            stop_rule: "stop on two independent admitted origins".into(),
+            next_pivot: "none until a body is admitted".into(),
+        };
+        let error = admit_round(plan.clone()).expect_err("inherited plan must be refused");
+        assert!(error.to_string().contains("inherited fallback"));
+        let gated = investigate_gated(plan).expect_err("gated path must refuse");
+        assert!(gated.to_string().contains("inherited fallback"));
+    }
+
+    #[test]
+    fn gated_path_returns_the_admitted_plan_only() {
+        let plan = MetaPlan {
+            seed: " Example.COM ".into(),
+            hypotheses: vec!["domain".into()],
+            determination_method: "reversal-tested case construction".into(),
+            method_reversal: "a fetched body contradicts the method".into(),
+            actions: vec![crate::meta_plan::PlanAction {
+                source_id: " CrtSh ".into(),
+                query: " Example.COM ".into(),
+                why: "structured names before html".into(),
+                reversal_observation: "quarantine or valid zero".into(),
+                requires_key: false,
+                lead_only: true,
+            }],
+            stop_rule: "stop on two independent admitted origins".into(),
+            next_pivot: "none until a body is admitted".into(),
+        };
+        let gated = investigate_gated(plan).expect("admitted round");
+        assert_eq!(gated.admitted.seed, "example.com");
+        assert_eq!(gated.admitted.actions[0].source_id, "crtsh");
+        assert_eq!(gated.admitted.actions[0].query, "example.com");
+    }
 }

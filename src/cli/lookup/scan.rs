@@ -7,7 +7,7 @@ use crate::cli::{EX_DATAERR, EX_NOINPUT, EX_USAGE, MAX_ARTIFACT_BYTES, fail};
 use huntsman_recon::error::Error;
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::scan_batch::parse_seed_list;
-use huntsman_recon::scan_route::{ScanKind, infer_kind, parse_kind};
+use huntsman_recon::scan_route::{ScanKind, canonical_selector, infer_kind, parse_kind};
 use huntsman_recon::textnorm::escape_controls;
 
 use super::profiles::{email_cmd, people_cmd, phone_cmd, username_cmd};
@@ -117,11 +117,16 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
         None => infer_kind(selector),
     };
 
+    let Some(selector) = canonical_selector(route, selector) else {
+        return fail(EX_DATAERR, "scan selector is not canonical");
+    };
+    let mut forwarded = forwarded.to_vec();
+    forwarded[0] = selector;
     eprintln!("scan_route={}", route.command());
     match route {
-        ScanKind::Email => email_cmd(forwarded),
-        ScanKind::Username => username_cmd(forwarded),
-        ScanKind::Phone => phone_cmd(forwarded),
-        ScanKind::People => people_cmd(forwarded),
+        ScanKind::Email => email_cmd(&forwarded),
+        ScanKind::Username => username_cmd(&forwarded),
+        ScanKind::Phone => phone_cmd(&forwarded),
+        ScanKind::People => people_cmd(&forwarded),
     }
 }

@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE, RECON_USAGE, fail};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use huntsman_recon::canonical::{canonical_domain, canonical_email, canonical_url};
 use huntsman_recon::crtsh::{self, CrtShError};
 use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
@@ -77,12 +78,11 @@ fn print_entities(entities: &[huntsman_recon::entity::Entity]) {
 }
 
 fn dns_cmd(target: &str) -> ExitCode {
-    let target = target.trim();
-    if target.is_empty() {
-        return fail(EX_USAGE, RECON_USAGE);
-    }
+    let Some(target) = canonical_domain(target) else {
+        return fail(EX_DATAERR, &format!("bad domain: {}", target.trim()));
+    };
     let transport = UreqTransport::new(&dns::transport_config());
-    match dns::lookup_domain(&transport, target) {
+    match dns::lookup_domain(&transport, &target) {
         None => fail(EX_DATAERR, &format!("bad domain: {target}")),
         Some(report) => {
             let empty = report.answers.is_empty();
@@ -101,15 +101,24 @@ fn crtsh_cmd(target: &str) -> ExitCode {
     if target.is_empty() {
         return fail(EX_USAGE, RECON_USAGE);
     }
-    let kind = if target.contains("://") {
-        ReconTargetKind::Url
+    let (kind, target) = if target.contains("://") {
+        let Some(url) = canonical_url(target) else {
+            return fail(EX_DATAERR, &format!("bad url: {target}"));
+        };
+        (ReconTargetKind::Url, url)
     } else if target.contains('@') {
-        ReconTargetKind::Email
+        let Some(email) = canonical_email(target) else {
+            return fail(EX_DATAERR, &format!("bad email: {target}"));
+        };
+        (ReconTargetKind::Email, email)
     } else {
-        ReconTargetKind::Domain
+        let Some(domain) = canonical_domain(target) else {
+            return fail(EX_DATAERR, &format!("bad domain: {target}"));
+        };
+        (ReconTargetKind::Domain, domain)
     };
     let transport = UreqTransport::new(&crtsh::transport_config());
-    match crtsh::lookup(&transport, kind, target, "cli") {
+    match crtsh::lookup(&transport, kind, &target, "cli") {
         Ok(report) => {
             print_entities(&report.entities);
             println!(

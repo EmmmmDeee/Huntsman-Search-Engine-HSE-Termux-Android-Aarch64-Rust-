@@ -10,6 +10,7 @@
 use std::fmt::Write;
 use std::path::PathBuf;
 
+use crate::canonical::canonical_name;
 use crate::asic_director;
 use crate::asic_persons;
 use crate::au_electoral;
@@ -91,21 +92,22 @@ pub enum PeopleRun {
 /// A single-token name prints the skip line and makes no request.
 #[must_use]
 pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> PeopleRun {
-    if name_tokens(name).len() < 2 {
+    let name = canonical_name(name);
+    if name_tokens(&name).len() < 2 {
         return PeopleRun::Printed {
             text: "people: skipped (need two alphabetic tokens)\n".into(),
             report: Report::default(),
         };
     }
 
-    let scan_id = crate::entity::scan_id("person", name);
+    let scan_id = crate::entity::scan_id("person", &name);
     let mut report = Report::default();
     let mut network = None;
     let mut failed = None;
 
     collect(
         "asic_persons",
-        asic_persons::lookup(transport, name, &scan_id, now_unix),
+        asic_persons::lookup(transport, &name, &scan_id, now_unix),
         now_unix,
         &mut report,
         &mut network,
@@ -113,7 +115,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
     );
     collect(
         "asic_director",
-        asic_director::lookup(transport, name, &scan_id, now_unix),
+        asic_director::lookup(transport, &name, &scan_id, now_unix),
         now_unix,
         &mut report,
         &mut network,
@@ -121,7 +123,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
     );
     collect(
         "au_people",
-        au_people::lookup(transport, name, &scan_id, now_unix),
+        au_people::lookup(transport, &name, &scan_id, now_unix),
         now_unix,
         &mut report,
         &mut network,
@@ -129,7 +131,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
     );
     collect(
         "au_electoral",
-        au_electoral::lookup(transport, name, &scan_id, now_unix),
+        au_electoral::lookup(transport, &name, &scan_id, now_unix),
         now_unix,
         &mut report,
         &mut network,
