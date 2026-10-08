@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Dual-pass runner. Pass 1 writes execution-plan.json. Pass 2 is red-then-green.
-# Existing tests, lockfile, and release workflows are restored if mutated.
+# Dual-pass runner. No LLM API.
+# Pass 1 reads execution-plan.json from the issue body.
+# Pass 2 proves red, then applies at most 3 declared patches.
 set -Eeuo pipefail
 IFS=$'\n\t'
 
 : "${ISSUE_NUMBER:?issue number required}"
 : "${REPO:?owner/repo required}"
 MAX_TURNS=3
-WORKDIR="$(pwd)"
-REPORT="$WORKDIR/dual-pass-report.md"
-PLAN="$WORKDIR/execution-plan.json"
+REPORT="$(pwd)/dual-pass-report.md"
+PLAN="$(pwd)/execution-plan.json"
 
 log() { printf '%s\n' "$*"; }
 
@@ -53,98 +53,56 @@ restore_protected() {
   done
 }
 
-ask() {
-  local body="$1"
-  if [[ -z "${XAI_API_KEY:-}" ]]; then
-    fail_human "XAI_API_KEY secret is not set; pass 1 cannot run"
-  fi
-  python3 - "$body" <<'PY'
-import json, os, sys, urllib.request
-body = sys.argv[1]
-payload = {
-  "model": os.environ.get("XAI_MODEL", "grok-4"),
-  "temperature": 0,
-  "messages": [
-    {"role": "system", "content": open("scripts/dual-pass/static-context.md", encoding="utf-8").read()},
-    {"role": "user", "content": body},
-  ],
-}
-req = urllib.request.Request(
-  "https://api.x.ai/v1/chat/completions",
-  data=json.dumps(payload).encode(),
-  headers={"Authorization": "Bearer " + os.environ["XAI_API_KEY"], "Content-Type": "application/json"},
-)
-with urllib.request.urlopen(req, timeout=120) as resp:
-    data = json.load(resp)
-print(data["choices"][0]["message"]["content"])
-PY
-}
-
-extract_json() {
-  python3 -c 'import json,re,sys; t=sys.stdin.read();
-m=re.search(r"\{[\s\S]*\}\s*$", t);
-print(m.group(0) if m else t)'
-}
-
-printf '# Dual-pass report for issue %s\n\n' "$ISSUE_NUMBER" > "$REPORT"
+printf '# Dual-pass report for issue %s\n\nNo LLM API.\n\n' "$ISSUE_NUMBER" > "$REPORT"
 snapshot
 
-ISSUE_BODY="$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json title,body,labels --jq '{title,body,labels}')"
-DEPS="$(python3 - <<'PY'
-import json, tomllib
+log "pass 1: read plan from issue body"
+gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json body --jq .body > .issue-body.md
+python3 - <<'PY'
+import json, re
 from pathlib import Path
-data = tomllib.loads(Path("Cargo.toml").read_text())
-print(json.dumps({"package": data.get("package", {}), "dependencies": data.get("dependencies", {})}))
-PY
-)"
-IFACES="$(grep -R -n -E '^pub (fn|struct|enum|trait) ' src --include='*.rs' | head -n 200 || true)"
-
-log "pass 1: plan"
-PLAN_TEXT="$(ask "Issue ${ISSUE_NUMBER}: ${ISSUE_BODY}
-Dependencies: ${DEPS}
-Public interfaces:
-${IFACES}
-Return only JSON with keys targets, new_tests, forbidden. Each new_tests item has path, signatures, and source. path must be tests/generated_<issue>.rs. Do not list tests/, Cargo.toml, Cargo.lock, or .github/ as targets.")"
-printf '%s\n' "$PLAN_TEXT" | extract_json > "$PLAN"
-python3 - <<PY
-import json
-from pathlib import Path
-plan = json.loads(Path("execution-plan.json").read_text())
+body = Path(".issue-body.md").read_text(encoding="utf-8")
+match = re.search(r"```json\s*(\{.*?\})\s*```", body, re.S)
+if not match:
+    raise SystemExit("issue body has no fenced json plan")
+plan = json.loads(match.group(1))
 for item in plan.get("new_tests", []):
     path = item["path"]
-    if not path.startswith("tests/generated_") or not path.endswith(".rs"):
+    if not path.startswith("tests/generated_") or not path.endswith(".rs") or "/" in path[len("tests/"):]:
         raise SystemExit(f"test path must be tests/generated_*.rs: {path}")
-    if "/" in path[len("tests/"):]:
-        raise SystemExit(f"nested test path is not a Cargo integration test: {path}")
-    if "signatures" not in item:
-        raise SystemExit(f"test spec missing signatures: {path}")
+    if "source" not in item or "signatures" not in item:
+        raise SystemExit(f"test missing source or signatures: {path}")
 for item in plan.get("targets", []):
     path = item["path"]
     if path.startswith(("tests/", ".github/", "Cargo")):
         raise SystemExit(f"target touches a protected path: {path}")
     if "signatures" not in item:
         raise SystemExit(f"target missing signatures: {path}")
+patches = plan.get("patches") or []
+if not patches or len(patches) > 3:
+    raise SystemExit("patches must contain 1 to 3 items")
+Path("execution-plan.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
 print("plan ok")
 PY
+if [[ $? -ne 0 ]]; then
+  fail_human "pass 1 rejected the issue: add a fenced json plan with targets, new_tests, and 1 to 3 patches"
+fi
 
 log "red: write generated tests and require failure on untouched code"
 python3 - <<'PY'
 import json
 from pathlib import Path
 plan = json.loads(Path("execution-plan.json").read_text())
-for item in plan.get("new_tests", []):
+for item in plan["new_tests"]:
     Path(item["path"]).write_text(item["source"], encoding="utf-8")
+print(plan["new_tests"][0]["path"].rsplit("/", 1)[-1][:-3])
 PY
-mapfile -t TEST_BINS < <(python3 -c 'import json; print("\n".join(item["path"].rsplit("/",1)[-1][:-3] for item in json.load(open("execution-plan.json"))["new_tests"]))')
+TEST_BIN="$(python3 -c 'import json; print(json.load(open("execution-plan.json"))["new_tests"][0]["path"].rsplit("/",1)[-1][:-3])' )"
 set +e
-red_log="$(cargo test --locked --test "${TEST_BINS[0]}" -- --test-threads=1 2>&1)"
+red_log="$(cargo test --locked --test "$TEST_BIN" -- --test-threads=1 2>&1)"
 red_status=$?
 set -e
-python3 - <<PY
-from pathlib import Path
-red = """${red_log}"""
-Path("dual-pass-report.md").write_text(Path("dual-pass-report.md").read_text() + "\n## Red\n\nstatus=${red_status}\n\n```\n" + "\n".join(red.splitlines()[-40:]) + "\n```\n", encoding="utf-8")
-PY
+printf '\n## Red\n\nstatus=%s\n\n```\n%s\n```\n' "$red_status" "$(printf '%s\n' "$red_log" | tail -n 40)" >> "$REPORT"
 if [[ "$red_status" -eq 0 ]]; then
   fail_human "red gate rejected the plan: generated tests passed on untouched main"
 fi
@@ -154,11 +112,17 @@ turn=1
 green=0
 while [[ "$turn" -le "$MAX_TURNS" ]]; do
   log "green turn $turn"
-  diag="$(tail -n 60 "$REPORT")"
-  reply="$(ask "Implement only declared targets. Return JSON with diff and ops. diff is a unified git patch. ops is the tree-sitter fallback list of path, kind replace_fn, name, body. Plan: $(cat "$PLAN")
-Structured diagnostics:
-$diag")"
-  if ! printf '%s\n' "$reply" | extract_json | python3 scripts/dual-pass/apply_change.py; then
+  if ! python3 - "$turn" <<'PY' | python3 scripts/dual-pass/apply_change.py
+import json, sys
+from pathlib import Path
+plan = json.loads(Path("execution-plan.json").read_text())
+turn = int(sys.argv[1])
+patches = plan["patches"]
+if turn > len(patches):
+    raise SystemExit(0)
+print(json.dumps(patches[turn - 1]))
+PY
+  then
     printf '\n## Turn %s apply failed\n\n' "$turn" >> "$REPORT"
     turn=$((turn + 1))
     continue
@@ -174,7 +138,7 @@ $diag")"
     continue
   fi
   set +e
-  unit="$(cargo test --locked --test "${TEST_BINS[0]}" -- --test-threads=1 2>&1)"
+  unit="$(cargo test --locked --test "$TEST_BIN" -- --test-threads=1 2>&1)"
   unit_status=$?
   set -e
   printf '\n## Turn %s unit\n\n```\n%s\n```\n' "$turn" "$(printf '%s\n' "$unit" | tail -n 40)" >> "$REPORT"
@@ -186,7 +150,7 @@ $diag")"
 done
 
 if [[ "$green" -ne 1 ]]; then
-  fail_human "self-correction budget exhausted after ${MAX_TURNS} turns"
+  fail_human "self-correction budget exhausted after ${MAX_TURNS} declared patches"
 fi
 
 rustfmt --edition 2024 src tests/generated_*.rs >/dev/null 2>&1 || true

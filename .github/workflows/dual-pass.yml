@@ -33,8 +33,6 @@ jobs:
       - name: Dual-pass plan then red-green
         env:
           GH_TOKEN: ${{ github.token }}
-          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-          XAI_MODEL: ${{ secrets.XAI_MODEL }}
           ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
           REPO: ${{ github.repository }}
         run: bash scripts/dual-pass/run.sh

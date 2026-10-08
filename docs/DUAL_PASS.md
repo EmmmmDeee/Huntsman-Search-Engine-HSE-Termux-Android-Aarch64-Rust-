@@ -1,17 +1,19 @@
 # Dual-pass runner
 
-Label a GitHub issue `dual-pass`, or run the `dual-pass` workflow with an issue number. The workflow file is on `main`, which is what GitHub uses for issue events.
+No LLM API. No model secret.
 
-Pass 1 asks the model for `execution-plan.json`: target files, required signatures, and new tests. New tests must be `tests/generated_<issue>.rs` so Cargo runs them as integration tests. Existing files under `tests/` are snapshotted and restored.
+Label an issue `dual-pass`, or dispatch the workflow with an issue number. The issue body must contain one fenced json plan:
 
-Pass 2 writes those tests and runs them against untouched code. A pass is rejected. A failure is the red gate. The model may then patch only declared files, at most 3 turns.
+```json
+{
+  "targets": [{"path": "src/repository_identity.rs", "signatures": ["pub const CANONICAL_REPOSITORY"]}],
+  "new_tests": [{"path": "tests/generated_1.rs", "signatures": ["generated_identity_is_nonempty"], "source": "..."}],
+  "patches": [{"diff": "", "ops": [{"path": "src/repository_identity.rs", "kind": "replace_fn", "name": "canonical", "body": "fn canonical() {}"}]}]
+}
+```
 
-Apply order: `git apply`, then a tree-sitter Rust function replace, then a brace-matched `fn` replace. The workflow installs `tree-sitter` and `tree-sitter-rust`.
+Pass 1 extracts that object to `execution-plan.json` and rejects protected paths. Pass 2 writes `tests/generated_*.rs` and runs it against untouched `main`. A passing test is rejected. A failure is the red gate. The runner then applies `patches` in order, at most 3, using `git apply` and then the tree-sitter or brace-matched function replace.
 
-Gates: `cargo check --locked`, then the generated integration test. `tsc` and `mypy` are not used; this crate is Rust. `rustfmt` runs before the pull request.
-
-Protected and restored if mutated: snapshotted `tests/` files, `Cargo.toml`, `Cargo.lock`, `ci.yml`, `release.yml`. Generated `tests/generated_*.rs` files are new, so restore does not delete them.
+Gates: `cargo check --locked`, then the generated integration test, then `rustfmt`. Snapshotted tests, `Cargo.toml`, `Cargo.lock`, `ci.yml`, and `release.yml` are restored if a patch touches them.
 
 Success opens a pull request to `main` with `dual-pass-report.md`. Failure pushes `dual-pass/issue-N-wip`, labels `needs-human-review`, and comments the trace.
-
-Required secret: `XAI_API_KEY`. Optional: `XAI_MODEL` (default `grok-4`). The static prefix is `scripts/dual-pass/static-context.md` so the provider can cache it. Missing key stops in the human-review path.
