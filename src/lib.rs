@@ -95,6 +95,7 @@ pub mod lookup_save;
 pub mod md5;
 pub mod mediawiki;
 pub mod metrics;
+pub mod meta_plan;
 pub mod module;
 pub mod navigator;
 pub mod oui;
