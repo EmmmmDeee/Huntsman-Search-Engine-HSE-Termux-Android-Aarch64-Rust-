@@ -15,6 +15,7 @@ pub mod classifier;
 pub mod classify_module;
 pub mod community;
 pub mod confidence;
+pub mod pivot_grade;
 pub mod convex;
 pub mod coref;
 /// Cross-entity correlation rules: the findings the engine derives from
