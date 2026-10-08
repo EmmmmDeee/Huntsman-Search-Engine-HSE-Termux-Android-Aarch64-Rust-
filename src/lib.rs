@@ -116,6 +116,7 @@ pub mod radar;
 pub mod recon;
 pub mod redact;
 pub mod relation;
+pub mod repository_identity;
 pub mod resolve;
 pub mod retrieval_artifact;
 pub mod rf;
