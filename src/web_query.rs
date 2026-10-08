@@ -9,7 +9,7 @@ use std::thread;
 
 use serde::Serialize;
 
-use crate::canonical::canonical_url;
+use crate::canonical::{canonical_url, canonical_whitespace};
 use crate::circuit::{self, BackoffPolicy, ResponseCache};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
@@ -72,7 +72,7 @@ pub fn search<T: Transport + ?Sized>(
     query: &str,
     now_unix: u64,
 ) -> Result<SearchReport, Error> {
-    let query = query.trim();
+    let query = canonical_whitespace(query);
     if query.is_empty() {
         return Err(Error::Invalid("query must not be empty".into()));
     }
@@ -80,7 +80,7 @@ pub fn search<T: Transport + ?Sized>(
     let mut hits = Vec::new();
     let mut outcomes = Vec::new();
     for engine in ENGINES {
-        let result = search_engine(transport, engine, query, now_unix)?;
+        let result = search_engine(transport, engine, &query, now_unix)?;
         hits.extend(result.hits);
         outcomes.push(result.outcome);
     }
@@ -611,5 +611,9 @@ mod tests {
         let report = search(&fake, "alice challenge-page", 1).unwrap();
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
         assert_eq!(report.hits.len(), 2);
+    }
+    #[test]
+    fn query_is_canonical_before_search_setup() {
+        assert_eq!(canonical_whitespace("  Ada   Lovelace "), "ada lovelace");
     }
 }
