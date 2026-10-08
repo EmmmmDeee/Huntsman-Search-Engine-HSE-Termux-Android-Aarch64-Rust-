@@ -1,7 +1,7 @@
 # HSE — Persistent Intelligence
 
 > **Status:** Active operational specification. Companion to
-> [`OPERATIONAL_CONSTITUTION.md`](OPERATIONAL_CONSTITUTION.md).
+> [`operational-constitution.md`](operational-constitution.md).
 > **Scope:** Governs how understanding accumulates across reasoning cycles.
 >
 > The constitution governs how a single conclusion is reached. This document

@@ -12,7 +12,7 @@ Huntsman Search Engine (HSE) is v1.40.0 of a mature, from-scratch Rust
 project — 988 `.rs` files, 343,506 lines, `unsafe_code = "forbid"`,
 full-`clippy::all`-deny lints, 8 CI workflows, its own 175-module OSINT/GEOINT
 engine, and a multi-week autonomous-engineering history already run by prior
-Claude Code sessions (`docs/AUTONOMY_CHARTER.md`, `.agent/state.json`, 41
+Claude Code sessions (`docs/autonomy-charter.md`, `.agent/state.json`, 41
 cycles recorded). There is no legacy non-Rust implementation anywhere in git
 history to port from. This was verified, not assumed — see §1.
 
@@ -30,7 +30,7 @@ carried out in full:
 - **One real, critical finding acted on**: a live-shaped SeekNow API key had
   leaked into a git-tracked file outside every existing safeguard. Redacted,
   the detection gap closed, and a recovery point tagged before touching
-  anything — full writeup in `docs/CREDENTIAL_AUDIT_2026-08-27.md` (§7).
+  anything — full writeup in `docs/credential-audit-2026-08-27-base.md` (§7).
 - **Gate**: all 8 locally-executable checks pass (fmt, check, clippy, rustdoc
   lints, test, doctests, doc coverage, install.sh syntax); 4 more (MSRV
   1.88, aarch64-android cross-build, shellcheck, cargo-audit/deny/machete)
@@ -250,7 +250,7 @@ security issues):**
   proxy/DoH overrides, etc.). Two are genuine undocumented **credentials**,
   not just config: `HUNTSMAN_SEEKNOW_EMAIL` / `HUNTSMAN_SEEKNOW_PASSWORD`
   (a website-login fallback pair for SeekNow, per
-  `docs/SEEKNOW_WEB_AUTOMATION.md`) — these should be added to
+  `docs/seeknow-web-automation.md`) — these should be added to
   `.env.example` so an operator can discover and set them without reading
   source.
 
@@ -289,7 +289,7 @@ engine's own outbound auth).
 | # | Decision | Trigger | Recovery point | Outcome |
 |---|---|---|---|---|
 | 1 | Treat "migrate to Rust" as an audit-and-verify task rather than fabricating a port, per this run's own "adapt strategy to the code as actually found" clause | Full-tree language census + git history showed zero non-Rust legacy implementation | N/A (no destructive action) | Documented in §1; carried through the rest of the run |
-| 2 | Redact a live-shaped SeekNow credential found in `.agent/state.json`; add two custom `gitleaks` rules to close the detection gap that let it through undetected | Credential audit sub-agent flagged the value as not matching any known-revoked digest, i.e. not provably dead | Git tag `pre-secret-redaction-2026-08-27` → `26fe12229262d0ae939c5a70f5f691d0b53ac77a`, created **before** any edit | Committed as `f4b0e5079`; full writeup in `docs/CREDENTIAL_AUDIT_2026-08-27.md`; no git history rewritten (an owner-authorized decision, not made unilaterally) |
+| 2 | Redact a live-shaped SeekNow credential found in `.agent/state.json`; add two custom `gitleaks` rules to close the detection gap that let it through undetected | Credential audit sub-agent flagged the value as not matching any known-revoked digest, i.e. not provably dead | Git tag `pre-secret-redaction-2026-08-27` → `26fe12229262d0ae939c5a70f5f691d0b53ac77a`, created **before** any edit | Committed as `f4b0e5079`; full writeup in `docs/credential-audit-2026-08-27-base.md`; no git history rewritten (an owner-authorized decision, not made unilaterally) |
 | 3 | Use `huntsman_refactored.zip` as the deliverable filename | The project's own `.gitignore` already reserves this exact name, commented "Generated delivery package (git archive of the tree)" | N/A | Matches an existing project convention instead of inventing a new one |
 | 4 | Did not attempt to validate the flagged SeekNow key against the live provider API | Would spend/expose a possibly-real third-party secret without the account owner's authorization | N/A | Reported as a finding requiring the owner's action instead (rotate at the SeekNow dashboard) |
 | 5 | Did not rewrite git history to purge the leaked credential from prior commits | Rewriting shared history changes every downstream commit SHA — a hard-to-reverse, other-people-affecting action explicitly requiring the repo owner's go-ahead, not a unilateral call | N/A (deliberately not done) | Left as a follow-up recommendation (§10) for the account/repo owner to decide |
@@ -374,7 +374,7 @@ perf-path API drift guard, regardless of this run's own numbers.
    commits.** Redaction stops the current and future state from carrying it
    forward; it does not remove it from `git log -p`/`git show` on commit
    `419da67` onward. This is a known, explicitly-accepted tradeoff (see
-   `docs/CREDENTIAL_AUDIT_2026-08-27.md`), not an oversight.
+   `docs/credential-audit-2026-08-27-base.md`), not an oversight.
 
 ## 11. Follow-up recommendations
 

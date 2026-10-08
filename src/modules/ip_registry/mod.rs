@@ -15,8 +15,8 @@
 //! target hard-errored — so the BGPView half was retired: the announcing-ASN /
 //! covering-prefix pivots an IP used to get from it are `ripestat`'s
 //! (`network-info`), and the ASN registry record is RDAP's, the same corpus
-//! the IP path already reads (`docs/PROVIDER_SWEEP_BACKLOG.md` #25,
-//! `docs/REQUIREMENTS_LEDGER.md` REQ-BGP-001).
+//! the IP path already reads (`docs/provider-sweep-backlog.md` #25,
+//! `docs/requirements-ledger.md` REQ-BGP-001).
 //!
 //! Both endpoints are free and keyless. Each network fn is a thin transport
 //! shell over a **pure** `build_*` function that owns the record→entity

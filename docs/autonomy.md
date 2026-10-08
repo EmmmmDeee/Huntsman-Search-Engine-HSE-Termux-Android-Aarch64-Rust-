@@ -62,7 +62,7 @@ immediately. Keys only *escalate* specific sources.
   - the **Settings** page in the web UI (paste from the phone browser).
 - **Every recognised provider** — with signup links, free-tier notes, and key
   formats — is documented in [`.env.example`](../.env.example) and
-  [`docs/OSINT_API_REFERENCE.md`](OSINT_API_REFERENCE.md) (14 categories,
+  [`docs/osint-api-reference.md`](osint-api-reference.md) (14 categories,
   ~150 providers). Many have free tiers; HSE never marks up provider pricing.
 - **Check what's active:** `hse keys status` (pool health) and `hse doctor`
   (which modules are enabled vs key-gated).

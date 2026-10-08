@@ -34,7 +34,7 @@ WALL="${HSE_WALL:-240}"
 
 # Locate the binary: explicit override, else release, else the `fast` profile
 # (Termux's default build profile — see install.sh's HSE_BUILD_PROFILE and
-# docs/INSTALL.md's "Manual build" section, both of which build --profile fast
+# docs/install.md's "Manual build" section, both of which build --profile fast
 # on Termux by default, landing at target/fast/hse), else debug, else a
 # PATH-installed `hse` (the curl-pipe prebuilt install has no target/ tree).
 BIN="${HSE_BIN:-}"

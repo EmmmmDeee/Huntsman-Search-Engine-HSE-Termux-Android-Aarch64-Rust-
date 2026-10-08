@@ -4,7 +4,7 @@
 #
 # Cloud CI proves cloud success. It cross-compiles for aarch64-linux-android
 # but runs nothing there, so it cannot vouch for the device
-# (docs/OPERATING_ARCHITECTURE.md §5). This script is the device-side stage of
+# (docs/operating-architecture.md §5). This script is the device-side stage of
 # that ladder, reduced to one command and one record:
 #
 #   checkout   HEAD, with no uncommitted change: the commit under test, not
@@ -136,7 +136,7 @@ stage platform PASS "$KIND: $ARCH${TERMUX_VERSION:+, Termux $TERMUX_VERSION}${AN
 
 # ── the commit itself ───────────────────────────────────────────────────────
 # Where cargo puts the binary is cargo's answer, not an assumed `target/` in the
-# checkout: it follows CARGO_TARGET_DIR (docs/INSTALL.md suggests
+# checkout: it follows CARGO_TARGET_DIR (docs/install.md suggests
 # ~/.cache/hse-build), a relative one included, and any cargo config. Asked
 # here, in the checkout, so the operator's target directory and its compiled
 # dependencies are the ones reused.

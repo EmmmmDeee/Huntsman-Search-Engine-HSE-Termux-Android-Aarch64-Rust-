@@ -319,7 +319,7 @@ impl AdvancedWebClient {
     ///
     /// **Not implemented.** Automated browser login to see-know.ru is blocked
     /// by its Cloudflare Turnstile challenge, and no maintained Rust Playwright
-    /// crate exists to drive a real browser (see `docs/SEEKNOW_WEB_AUTOMATION.md`).
+    /// crate exists to drive a real browser (see `docs/seeknow-web-automation.md`).
     /// Rather than silently returning `Ok(Vec::new())` — which is
     /// indistinguishable from "searched, found nothing" and hides that no
     /// search ran — this returns the clear, actionable error that document's
@@ -338,7 +338,7 @@ impl AdvancedWebClient {
             "SeekNow web-automation scraping is not implemented: see-know.ru's Cloudflare \
              Turnstile blocks automated login and no maintained Rust Playwright crate exists \
              to drive a real browser. Configure HUNTSMAN_SEEKNOW_KEY to use the API path, or \
-             log in manually — see docs/SEEKNOW_WEB_AUTOMATION.md.",
+             log in manually — see docs/seeknow-web-automation.md.",
         ))
     }
 
@@ -426,7 +426,7 @@ mod tests {
         assert!(session.auth_token.is_none());
     }
 
-    /// The design contract in `docs/SEEKNOW_WEB_AUTOMATION.md` ("Final fallback
+    /// The design contract in `docs/seeknow-web-automation.md` ("Final fallback
     /// — Return clear error message with manual login instructions", and "Clear
     /// error messages directing users to manual login") requires the
     /// unimplemented scraping path to FAIL LOUDLY, never return `Ok(empty)`. A

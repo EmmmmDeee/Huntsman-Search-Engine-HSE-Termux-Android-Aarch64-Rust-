@@ -22,7 +22,7 @@
 //! engines. It was never wired into anything live — `order_by_roi` calls the
 //! scoring engines directly instead, a simpler design that supersedes it — so
 //! it was dead code (zero callers outside its own definition) and has been
-//! removed. See `docs/HIGH_VALUE_QUERY_SYSTEM.md` for the scoring-dimension
+//! removed. See `docs/high-value-query.md` for the scoring-dimension
 //! reference; its "Architecture Integration" section describes that
 //! superseded facade, not the current wiring.
 

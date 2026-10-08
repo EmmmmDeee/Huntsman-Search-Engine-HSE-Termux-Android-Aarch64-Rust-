@@ -67,8 +67,8 @@
         "src/api/scan_export/mod.rs",
         "src/app/export/renderers.rs",
         "tests/cli_seed_validation.rs",
-        "docs/TROUBLESHOOTING.md",
-        "docs/REQUIREMENTS_LEDGER.md",
+        "docs/troubleshooting.md",
+        "docs/requirements-ledger.md",
         "CHANGELOG.md"
       ],
       "tests": [
@@ -489,7 +489,7 @@
         "src/api/live_handlers.rs",
         "src/web/js/views/live.js",
         "install.sh",
-        "docs/AUTONOMY.md"
+        "docs/autonomy.md"
       ]
     },
     {

@@ -592,13 +592,13 @@ fn ble_radar_dependency_is_pinned_and_consumed() {
         assert!(
             !wifi.contains(copy),
             "signal_radar/wifi.rs re-implements a radar rule (`{copy}`); call bleradar_core::sweep \
-             (docs/REPOSITORY_BOUNDARY.md)"
+             (docs/repository-boundary.md)"
         );
     }
 
     // The radar is consumed in exactly one place — the `signal_radar` module — so
     // the boundary between the two repositories stays one seam. Using a radar
-    // rule elsewhere means changing this test and docs/REPOSITORY_BOUNDARY.md on
+    // rule elsewhere means changing this test and docs/repository-boundary.md on
     // purpose. Every source tree that could call it is walked, not just the
     // root workspace's `src/`: `hse-core` and `wasm-ui` are separate Cargo
     // workspaces (each with their own `bleradar-core` reachability were one
@@ -625,7 +625,7 @@ fn ble_radar_dependency_is_pinned_and_consumed() {
     assert!(
         outside.is_empty(),
         "bleradar-core is consumed only by src/modules/signal_radar \
-         (docs/REPOSITORY_BOUNDARY.md); also referenced in: {outside:?}"
+         (docs/repository-boundary.md); also referenced in: {outside:?}"
     );
 
     // Bluetooth applies the same placeholder rule, from the same authority.
@@ -637,7 +637,7 @@ fn ble_radar_dependency_is_pinned_and_consumed() {
     assert!(
         bluetooth.contains("bleradar_core::is_real_device_address"),
         "signal_radar/bluetooth.rs must use the BLE Radar's `is_real_device_address`, \
-         not a local placeholder check (docs/REPOSITORY_BOUNDARY.md)"
+         not a local placeholder check (docs/repository-boundary.md)"
     );
     assert!(
         !bluetooth.contains("\"00:00:00:00:00:00\""),

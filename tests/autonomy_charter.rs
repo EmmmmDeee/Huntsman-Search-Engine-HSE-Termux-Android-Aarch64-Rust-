@@ -1,4 +1,4 @@
-//! Guard test for `docs/AUTONOMY_CHARTER.md` — the binding invariants the
+//! Guard test for `docs/autonomy-charter.md` — the binding invariants the
 //! autonomous engineering loop re-loads verbatim each cycle.
 //!
 //! The charter is only load-bearing if it cannot silently lose a guardrail.
@@ -15,10 +15,10 @@ use std::fs;
 use std::path::Path;
 
 fn charter() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/AUTONOMY_CHARTER.md");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/autonomy-charter.md");
     assert!(
         path.exists(),
-        "docs/AUTONOMY_CHARTER.md must exist — it is the immutable core the \
+        "docs/autonomy-charter.md must exist — it is the immutable core the \
          autonomous loop loads every cycle (see the HUNTSMAN AUTONOMOUS \
          ENGINEERING CONTROLLER prompt, Section A)"
     );

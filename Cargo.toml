@@ -17,7 +17,7 @@ path = "src/main.rs"
 # MA-L vendor registry `src/util/oui/ieee.rs` binary-searches at runtime)
 # from the live registry. A one-off, occasionally-run offline tool, not scan
 # engine code — a separate binary, not an `hse` subcommand. Replaces the former `scripts/gen_oui.py`, closing
-# that accepted non-Rust exception in `docs/RUST_MIGRATION_AUDIT_2026-08-27.md`.
+# that accepted non-Rust exception in `docs/rust-migration-audit-2026-08-27-base.md`.
 #
 # Deliberately UNGATED: every
 # dependency it needs (csv/reqwest/sha2/clap/tokio) is already unconditional
@@ -34,7 +34,7 @@ path = "src/bin/gen_oui/main.rs"
 # engine code; same "separate binary, not an `hse` subcommand" reasoning as
 # `gen-oui` above. Replaces the former
 # `scripts/architecture_audit.py`, closing that accepted non-Rust exception in
-# `docs/RUST_MIGRATION_AUDIT_2026-08-27.md`.
+# `docs/rust-migration-audit-2026-08-27-base.md`.
 #
 # Deliberately UNGATED, for the identical reason `gen-oui` is: every
 # dependency it needs (reqwest/serde_json/clap/tokio) is already unconditional

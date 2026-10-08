@@ -206,7 +206,7 @@ impl Module for SunriseSunset {
 /// (`INVALID_REQUEST`, `INVALID_DATE`, `UNKNOWN_ERROR` — the documented
 /// server-side failure) or an `OK` without `results` is a failed lookup and is
 /// the module's error. Before this every one of them was an empty result —
-/// recorded as a clean negative (`docs/PROVIDER_SWEEP_BACKLOG.md` #43).
+/// recorded as a clean negative (`docs/provider-sweep-backlog.md` #43).
 async fn fetch_solar(
     client: &reqwest::Client,
     api_base: &str,

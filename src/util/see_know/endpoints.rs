@@ -140,18 +140,18 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
 
 /// Deep search via `POST /api/v1/search/deep` — trawls slower, higher-yield
 /// databases beyond the fast index's local-DB/low-latency sources (server cap
-/// ~40s per `docs/SEEKNOW_SETUP.md`'s troubleshooting section, vs. `/search`'s
+/// ~40s per `docs/seeknow-setup.md`'s troubleshooting section, vs. `/search`'s
 /// ~5s typical for a typed query). Same request contract as [`search`] —
 /// identical body shape via [`build_search_body`], same 1-credit cost; the
 /// see-know.eu docs list the two endpoints side by side with no differing
-/// parameters, only depth of corpus searched (`docs/SEEKNOW_SETUP.md`'s own
+/// parameters, only depth of corpus searched (`docs/seeknow-setup.md`'s own
 /// FAQ: "Fast: Local DB + low-latency sources… Deep: Fast + slower high-yield
 /// databases, maximum coverage").
 ///
 /// Callers should reserve this for a confirmed EMPTY [`search`] result: it
 /// costs the same credit but roughly 8x the latency, so calling it after a
 /// fast HIT would waste both quota and wall-time for zero additional coverage
-/// — this was never wired before (`docs/SEEKNOW_SETUP.md`: "HSE always calls
+/// — this was never wired before (`docs/seeknow-setup.md`: "HSE always calls
 /// fast `/search`, never deep"), the single largest documented, unimplemented
 /// coverage gap in the SeekNow integration.
 pub async fn search_deep(key: &str, query: &str, query_type: &str) -> Result<Vec<Value>> {

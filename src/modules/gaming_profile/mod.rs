@@ -180,7 +180,7 @@ impl Module for GamingProfile {
 /// answered is not a platform that said "no such account". Before this every
 /// transport/HTTP failure on either platform was swallowed with a debug line,
 /// so a total outage read as "no Roblox / Minecraft account"
-/// (`docs/PROVIDER_SWEEP_BACKLOG.md` #18). Pure, so the policy is testable
+/// (`docs/provider-sweep-backlog.md` #18). Pure, so the policy is testable
 /// without the network.
 fn combine(roblox: Result<Vec<Entity>>, minecraft: Result<Vec<Entity>>) -> Result<ModuleResult> {
     let mut result = ModuleResult::new();

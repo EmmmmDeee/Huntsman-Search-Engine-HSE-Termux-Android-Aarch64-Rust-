@@ -15,7 +15,7 @@ in this file still apply.
 ## Refactoring operator
 
 Code-structure edits that are behavior-preserving use
-[`docs/HYBRID_REFACTORING_PROMPT.md`](docs/HYBRID_REFACTORING_PROMPT.md).
+[`docs/hybrid-refactoring.md`](docs/hybrid-refactoring.md).
 That file is an operator, not a second agent query, and does not
 supersede `AGENTS.md` or `RULE.md`.
 
@@ -27,7 +27,7 @@ Republic of Vietnam**. HSE operates from Vietnam and under Vietnamese law. This
 is a standing operating fact — remember it across sessions.
 
 The authoritative record, including the full capability scope operated from this
-base, is [`docs/OPERATING_JURISDICTION.md`](docs/OPERATING_JURISDICTION.md).
+base, is [`docs/operating-jurisdiction.md`](docs/operating-jurisdiction.md).
 
 Vietnam is a first-class jurisdiction in the code, on the same footing as the
 established Australian support — see `src/util/domain_vn` and
@@ -39,24 +39,24 @@ Agent execution: [`AGENTS.md`](AGENTS.md) — sole issued query; absolute
 authority; supersedes every earlier agent-execution contract.
 
 Refactoring of existing structure:
-[`docs/HYBRID_REFACTORING_PROMPT.md`](docs/HYBRID_REFACTORING_PROMPT.md).
+[`docs/hybrid-refactoring.md`](docs/hybrid-refactoring.md).
 
 Product evidence law and operational specs continue to apply:
 [`RULE.md`](RULE.md) and
-[`docs/OPERATIONAL_CONSTITUTION.md`](docs/OPERATIONAL_CONSTITUTION.md).
+[`docs/operational-constitution.md`](docs/operational-constitution.md).
 
 ## Roadmap & optimal file structure
 
-[`docs/ROADMAP.md`](docs/ROADMAP.md) is the single, living map of HSE's optimal
+[`docs/roadmap.md`](docs/roadmap.md) is the single, living map of HSE's optimal
 file structure, the codependencies and pivot pathways between its parts, and the
 route to completion. It is maintained continuously — re-assessed and realigned
-on each iteration — and is the map that `REQUIREMENTS_LEDGER.md` (the correctness
+on each iteration — and is the map that `requirements-ledger.md` (the correctness
 transcripts) and the module registry (`src/modules/mod.rs`, the catalogue) hang
 off. Read it to understand where a change fits before making it.
 
 ## Operating architecture & the push gate
 
-[`docs/OPERATING_ARCHITECTURE.md`](docs/OPERATING_ARCHITECTURE.md) maps the
+[`docs/operating-architecture.md`](docs/operating-architecture.md) maps the
 Huntsman × Claude Code loop (coordinate → isolate → implement → gate → falsify
 → CI → ultrareview → Termux acceptance) to the mechanism behind each stage.
 Three of those mechanisms are in this repository and must keep working:
@@ -88,7 +88,7 @@ non-constant offsets, with all 77 doc-tests passing.
 Never reason from that line number. In particular, "CI reports a line this
 branch does not have, therefore CI compiled a different tree" is **invalid** —
 four hypotheses were built on that premise and all four were refuted
-(REQ-CI-005 / REQ-CI-008 in `docs/REQUIREMENTS_LEDGER.md`). Use
+(REQ-CI-005 / REQ-CI-008 in `docs/requirements-ledger.md`). Use
 `cargo test --doc -- --list`, which reports correctly, and identify a failing
 doc-test by its assertion content rather than its position.
 

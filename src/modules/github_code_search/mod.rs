@@ -73,7 +73,7 @@ impl Module for GithubCodeSearch {
     fn cost(&self) -> ModuleCost {
         // GitHub's code search is authenticated-only (401 without a token):
         // declaring it Free made the dispatcher run it keyless on every scan
-        // and record a ModuleError each time (`docs/PROVIDER_SWEEP_BACKLOG.md`,
+        // and record a ModuleError each time (`docs/provider-sweep-backlog.md`,
         // "Free-but-401").
         ModuleCost::KeyGated
     }

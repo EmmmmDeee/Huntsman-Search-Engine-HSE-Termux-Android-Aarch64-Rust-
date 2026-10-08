@@ -5,7 +5,7 @@ autonomous Rust-migration/remediation run, and cross-verified against a
 **concurrent session's identical finding** on a separate branch
 (`claude/migrate-codebase-rust-qen2pn`, PR #483) — both sessions were given
 the same task against this repository at roughly the same time and reached
-the same result independently. That PR's `docs/CREDENTIAL_AUDIT_2026-08-27.md`
+the same result independently. That PR's `docs/credential-audit-2026-08-27-base.md`
 has the full writeup (disclosure-window analysis, structural root cause,
 recommended follow-ups for the repo/SeekNow account owner); this document
 records the same fix applied here, since this branch forked from `main`

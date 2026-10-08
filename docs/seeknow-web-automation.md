@@ -290,5 +290,5 @@ If you're unable to extract a token or have authentication issues:
 
 ## See Also
 
-- **SEEKNOW_SETUP.md** — Original guide (API key method, fallback to web automation)
-- **OSINT_API_REFERENCE.md** — SeekNow endpoint documentation
+- **seeknow-setup.md** — Original guide (API key method, fallback to web automation)
+- **osint-api-reference.md** — SeekNow endpoint documentation

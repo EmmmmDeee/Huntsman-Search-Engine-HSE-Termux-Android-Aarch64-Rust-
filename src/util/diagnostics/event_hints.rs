@@ -4,7 +4,7 @@
 //! emitted entities' evidence), so it is absent, not present-at-zero, and
 //! `analyse()` has no `StoragePort` access to ask what was dispatched.
 //!
-//! `PROBLEM_TREE.md` T2.13 found and removed two now-unreachable hints that
+//! `problem-tree.md` T2.13 found and removed two now-unreachable hints that
 //! tried to compute this inside `analyse()`. T2.14 reinstates both correctly,
 //! at the CALLER layer (which already holds `StoragePort` and fetches this
 //! scan's events for other purposes): a caller calls

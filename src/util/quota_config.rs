@@ -11,7 +11,7 @@
 //! at `oathnet/mod.rs:51` and never used again — a *different*, same-named
 //! field on `RealQuota`, populated from the live API's own response, is what
 //! actually tracks the daily limit). See REQ-ENV-003 in
-//! `docs/REQUIREMENTS_LEDGER.md` for the full finding.
+//! `docs/requirements-ledger.md` for the full finding.
 //! - `HSE_OATHNET_PER_SCAN_LIMIT`: oathnet queries per scan (default 4) — **live**
 //! - `HSE_OATHNET_DAILY_LIMIT`: oathnet daily limit (default 10000) — parsed, not consumed
 //! - `HSE_SEE_KNOW_PER_SCAN_LIMIT`: see_know queries per scan (default 8) — parsed, not consumed

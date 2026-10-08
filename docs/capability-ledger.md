@@ -32,7 +32,7 @@ The following are **not** evidence that a capability is Verified:
 | `Module::attack_techniques()` / module→technique maps | Structural reachability only |
 | `core::attack::Coverage` / `coverage_fraction` / entity_count heat | Collection-reach map, not evidence chain |
 | `core::attack::navigator_layer` | **Coverage heatmap** export (intensity), not ledger status |
-| `docs/REQUIREMENTS_LEDGER.md` `VERIFIED` rows | Human REQ ledger — different domain |
+| `docs/requirements-ledger.md` `VERIFIED` rows | Human REQ ledger — different domain |
 | `core::assurance` Assured / maturity ladder | Control maturity, not ATT&CK capability rows |
 
 **Coverage ≠ Verified.** ATT&CK is the **canonical interoperability map**, not a
@@ -46,7 +46,7 @@ remains **derive-only** from evidence links.
 |---|---|
 | `core::capability` (this) | Self-verifying technique claims + derive_status + ledger Navigator |
 | `core::attack::Coverage` + `attack::navigator_layer` | Recon collection-reach heatmap (keep both; do not replace) |
-| `docs/REQUIREMENTS_LEDGER.md` | Human REQ-* verification notes |
+| `docs/requirements-ledger.md` | Human REQ-* verification notes |
 | `core::assurance` | Domain control maturity ladder |
 
 ## Statuses

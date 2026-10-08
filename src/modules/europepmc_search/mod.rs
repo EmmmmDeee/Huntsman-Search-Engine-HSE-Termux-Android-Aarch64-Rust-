@@ -22,7 +22,7 @@
 //! "authorString": "Carbonaro NJ, Thorpe IF.", "affiliation": "..." }, ... ] } }`.
 //! Only a work [`attribution`] ties to the seed — an author whose name matches,
 //! an affiliation naming the organisation — is emitted: the same rule
-//! `crossref_search` applies (`docs/PROVIDER_SWEEP_BACKLOG.md` #14), through
+//! `crossref_search` applies (`docs/provider-sweep-backlog.md` #14), through
 //! the same two matchers, so the sibling literature sources cannot drift apart.
 //! A result's URL prefers its DOI resolver (works for preprints/patents that
 //! carry no PMID); falls back to the PubMed article page when only a `pmid`
@@ -359,7 +359,7 @@ pub struct EuropePmcSearch;
 /// endpoint is fixed, and "no hits" is a `200` with `hitCount: 0` and an empty
 /// `resultList` — so a 404 is the endpoint gone (or a WAF page), never "no
 /// publications by this author". Before this a 404 was mapped to an empty result,
-/// a clean negative about the named person (`docs/PROVIDER_SWEEP_BACKLOG.md` #21).
+/// a clean negative about the named person (`docs/provider-sweep-backlog.md` #21).
 /// `url` is the fielded query [`build_url`] built.
 async fn search(client: &reqwest::Client, url: &str) -> Result<SearchResp> {
     let resp = client

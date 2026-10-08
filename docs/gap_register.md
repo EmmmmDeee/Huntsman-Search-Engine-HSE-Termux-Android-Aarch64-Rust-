@@ -1,6 +1,6 @@
 # Gap Register — Work Log
 
-Newest entries at top. Paired with `docs/PROBLEM_TREE.md` and `docs/SOLUTION_TREE.md`. Every line corresponds to one cycle (one commit, one logical change).
+Newest entries at top. Paired with `docs/problem-tree.md` and `docs/solution-tree.md`. Every line corresponds to one cycle (one commit, one logical change).
 
 ---
 
@@ -22,7 +22,7 @@ Newest entries at top. Paired with `docs/PROBLEM_TREE.md` and `docs/SOLUTION_TRE
 
 ## Backlog
 
-No deferred tasks remain for current cycle. Per PROBLEM_TREE.md §7, the following are correctly out-of-scope:
+No deferred tasks remain for current cycle. Per problem-tree.md §7, the following are correctly out-of-scope:
 
 - Performance optimization (Rule 0.7 priority 7) — deferred until P0-P2 clear ✓
 - Multi-platform ports (Rule 0.7 priority 9) — deferred unless strengthens Termux target ✓

@@ -194,7 +194,7 @@ use super::*;
         }
     }
 
-    /// REGRESSION (docs/PROVIDER_SWEEP_BACKLOG.md #31). Every RIPEstat
+    /// REGRESSION (docs/provider-sweep-backlog.md #31). Every RIPEstat
     /// sub-fetch was `.ok()`'d, so a total outage — no endpoint answered —
     /// returned an empty result that read as a clean "no network info, no
     /// abuse contact" negative. With every endpoint down the module must

@@ -149,4 +149,4 @@ self-heals this automatically before it starts building.
 Set `CARGO_BUILD_JOBS=1` before running the installer to limit parallel compilation.
 
 For SeekNow API errors (not install/runtime issues), see
-[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
+[`troubleshooting.md`](troubleshooting.md).

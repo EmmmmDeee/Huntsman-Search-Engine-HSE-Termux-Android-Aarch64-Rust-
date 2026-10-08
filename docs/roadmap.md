@@ -10,9 +10,9 @@
 >
 > Governing companions (authoritative, not duplicated here): [`CLAUDE.md`](../CLAUDE.md)
 > (project memory + jurisdiction), [`RULE.md`](../RULE.md) &
-> [`OPERATIONAL_CONSTITUTION.md`](OPERATIONAL_CONSTITUTION.md) (doctrine),
-> [`REQUIREMENTS_LEDGER.md`](REQUIREMENTS_LEDGER.md) (the correctness backlog and
-> its falsification transcripts), [`GLOSSARY.md`](GLOSSARY.md) (one spelling per
+> [`operational-constitution.md`](operational-constitution.md) (doctrine),
+> [`requirements-ledger.md`](requirements-ledger.md) (the correctness backlog and
+> its falsification transcripts), [`glossary.md`](glossary.md) (one spelling per
 > concept). The per-module catalogue is the **registry itself**
 > (`src/modules/mod.rs`) plus each module's `ProviderDescriptor`
 > (`src/core/module/provider.rs`) — machine-readable and canonical, so this
@@ -271,7 +271,7 @@ correlations they unlock, not by count.
   stealer-log, DeHashed CSV), batch/query-pack generation, export/redaction.
 - `src/cli/` (39) — the `hse` command surface (`scan`, `query`, `dorkus`, `sf`
   SpiderFoot-compat, `batch`, `query-pack`, `keys`, `import`, `radar`), one
-  spelling per concept (locked against `GLOSSARY.md`).
+  spelling per concept (locked against `glossary.md`).
 - `src/api/` (24) — the HTTP surface: scan lifecycle, coverage endpoint,
   operator-only batch download, auth middleware, redaction boundary.
 - `src/web/` — the console (server-rendered + `wasm-ui/` browser bundle);
@@ -301,7 +301,7 @@ correlations they unlock, not by count.
   harness: the pre-push hook that refuses a tree the gate has not passed, and
   the `hse-falsifier` / `hse-drift-watcher` subagents; `tests/agent_harness.rs`
   fails on any part Claude Code would silently ignore (REQ-HARNESS-001). How
-  it fits the whole loop: [`OPERATING_ARCHITECTURE.md`](OPERATING_ARCHITECTURE.md).
+  it fits the whole loop: [`operating-architecture.md`](operating-architecture.md).
 
 ---
 
@@ -381,11 +381,11 @@ Progress is ranked by **PERMANENT RETURN = (functional value × production
 reachability × defect elimination × dependency unlock × future leverage ×
 confidence) ÷ (complexity × regression risk × lifecycle cost)**. The active
 ranked queue of concrete items lives in the session task list and the
-`REQUIREMENTS_LEDGER.md`; the *tracks* below are stable.
+`requirements-ledger.md`; the *tracks* below are stable.
 
 **T1 — Correctness (root-cause elimination).** Drive the fabrication/false-clean
 backlog to zero. Each fix is test-first (lock observed failing on the baseline),
-falsified (revert reproduces), and recorded in `REQUIREMENTS_LEDGER.md`. Shipped
+falsified (revert reproduces), and recorded in `requirements-ledger.md`. Shipped
 this wave: the SSRF gate closures (REQ-SSRF-001/002), stolen-credential pool
 hygiene (REQ-KEYPOOL-001), the PGP forged-UID correlation (REQ-PGP-001), the
 sanctions-linked mis-designation (REQ-OPENSANCTIONS-001), the cert_intel
@@ -1066,7 +1066,7 @@ authority per concept, everywhere. Every remaining "same bug, sibling module"
 finding (a validator ported to one place but not its twin; a weaker
 `is_valid_coords` where `is_plausible_provider_coord` is meant) is a
 canonicalisation debt: consolidate on the single authority and redirect callers.
-Extends to spellings (`GLOSSARY.md`), tags (`hse-core::tags`), and outcome
+Extends to spellings (`glossary.md`), tags (`hse-core::tags`), and outcome
 types (one typed `SkipClass`/error per provider state).
 
 **T3 — Cleanup & consolidation (standing initiative).** See §5. Remove stale
@@ -1265,7 +1265,7 @@ Ordered cycles:
    reads through `util::x509_field`. Full detail, the mid-cycle disk-exhaustion incident that
    forced a GitHub-API relay push (and the compile regression that relay
    caused), and the security-hardening fixes a subsequent review found in
-   that relayed push: `docs/REQUIREMENTS_LEDGER.md`, REQ-RESILIENCE-003.
+   that relayed push: `docs/requirements-ledger.md`, REQ-RESILIENCE-003.
 4. **A session the OS kills is one tap from resumed.** (Likewise: its own
    id and ledger entry land with the implementation, not before it.)
    `core::live` says plainly: "Sessions are in-memory only. Restart →
@@ -1315,7 +1315,7 @@ point-in-time autonomous-run reports; their disposition, **after verification**
 | Path | Verified status | Action |
 |---|---|---|
 | `docs/*_2026-08-27{,_czrqs1}.md` (AUTONOMOUS_DECISIONS, BENCHMARK_RESULTS, CREDENTIAL_AUDIT, DEPENDENCY_GRAPH, EXCEPTION_LEDGER, FINAL_REPORT, ISSUE_LEDGER, RUST_MIGRATION_AUDIT) | **Referenced** by README, CHANGELOG, PROBLEM_TREE, REQUIREMENTS_LEDGER, gap_register, `.gitleaks.toml`, `.agent/history.json`, and some module source | **Retain.** Not junk — a referenced historical audit trail. Do not delete. |
-| `CREDENTIAL_AUDIT_2026-08-27.md` vs `…_czrqs1.md`; `RUST_MIGRATION_AUDIT_2026-08-27.md` vs `…_czrqs1.md` | **Not** identical (182 / 606 differing lines) — two distinct reports, both referenced | **Retain both.** The "duplicate pair" hypothesis was falsified; merging would lose content and break references. |
+| `credential-audit-2026-08-27-base.md` vs `…_czrqs1.md`; `rust-migration-audit-2026-08-27-base.md` vs `…_czrqs1.md` | **Not** identical (182 / 606 differing lines) — two distinct reports, both referenced | **Retain both.** The "duplicate pair" hypothesis was falsified; merging would lose content and break references. |
 | `docs/OATHNET_API_GUIDE.txt` | `.txt` amid `.md`; referenced by the `oathnet` provider source | Normalise to `.md` only as part of a reference-updating pass, not a bare rename. |
 
 **Outcome of the reassessment:** there is no safe, high-value doc deletion or
@@ -1346,7 +1346,7 @@ On **each** iteration, before proceeding:
    change. Update the "Last realigned" date.
 
 A change that improves a pivot pathway or removes a duplicate authority updates
-§3 and §2; a shipped fix updates the `REQUIREMENTS_LEDGER.md` (detail) and, if
+§3 and §2; a shipped fix updates the `requirements-ledger.md` (detail) and, if
 it changed a contract, §2 here (structure). This file holds the *map*; the
 ledger holds the *transcripts*; the registry holds the *catalogue*.
 
@@ -1360,7 +1360,7 @@ the answer is the same one applied to the sixteen breaker resets — make the
 drift fail the suite.
 
 Two guards in `tests/doc_drift.rs` now hold the organising documents to each
-other, with **`REQUIREMENTS_LEDGER.md` as the single authority** for what a
+other, with **`requirements-ledger.md` as the single authority** for what a
 requirement is:
 
 | Guard | What it refuses |

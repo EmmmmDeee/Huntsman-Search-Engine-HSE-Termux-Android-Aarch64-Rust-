@@ -86,7 +86,7 @@ fn detection_strength(platform: &Platform) -> (f64, bool) {
 ///   an empty body simply "contained no marker", and the probe minted a 0.92
 ///   `verified-detection` profile for any handle on any of these platforms
 ///   whose not-found page exceeds the download cap
-///   (`docs/PROVIDER_SWEEP_BACKLOG.md` #38).
+///   (`docs/provider-sweep-backlog.md` #38).
 pub(super) fn classify_probe(platform: &Platform, url: &str, answer: &StatusProbe) -> ProbeResult {
     if !platform.exists_codes.contains(&answer.status) {
         return classify_non_matching_status(answer.status);

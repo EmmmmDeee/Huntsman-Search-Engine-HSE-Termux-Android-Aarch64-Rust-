@@ -2,7 +2,7 @@
 
 > **⚠️ Not implemented — never built.** The three `/enterprise/discord/*`
 > endpoints this guide documents are Enterprise-plan-gated and, per
-> `docs/SEEKNOW_SETUP.md`'s endpoint reference table, were never built: no
+> `docs/seeknow-setup.md`'s endpoint reference table, were never built: no
 > code in `src/modules/see_know/` calls them. Their 5-credit prices below are
 > real (tracked in `ENDPOINT_COSTS`, `src/util/see_know/config.rs`, for
 > budgeting purposes and CI-checked against this doc), but the "automatically
@@ -58,7 +58,7 @@ them.
 
 ## Notes for whoever implements this
 
-- `SEEKNOW_SETUP.md` documents the real, currently-dispatched endpoints and
+- `seeknow-setup.md` documents the real, currently-dispatched endpoints and
   their actual priority/dispatch order — start there to see how a new
   endpoint gets wired into the module.
 - `src/util/see_know/enterprise_config.rs` previously carried hardcoded

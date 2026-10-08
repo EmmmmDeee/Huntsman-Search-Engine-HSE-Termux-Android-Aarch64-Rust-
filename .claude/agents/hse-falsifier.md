@@ -19,7 +19,7 @@ never commit or push.
 A commit range (for example `origin/main..HEAD`) and the claims the change
 makes: the invariant it establishes, the defect it removes, and the tests
 said to lock it. If you only get a range, derive the claims from the commit
-messages and the `docs/REQUIREMENTS_LEDGER.md` entry the change adds.
+messages and the `docs/requirements-ledger.md` entry the change adds.
 
 **First, check out the tip of the range, and prove you did.** Your worktree
 is created from a base commit, not from the commit under review, so it can

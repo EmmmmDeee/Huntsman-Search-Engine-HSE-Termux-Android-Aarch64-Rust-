@@ -58,7 +58,7 @@
 //! - `Module::attack_techniques()` / module→technique maps
 //! - [`crate::core::attack::Coverage`] collection-reach / entity_count heat
 //! - [`crate::core::attack::navigator_layer`] coverage heatmap export
-//! - `docs/REQUIREMENTS_LEDGER.md` human `VERIFIED` rows
+//! - `docs/requirements-ledger.md` human `VERIFIED` rows
 //! - [`crate::core::assurance`] maturity ladder (`Assured`, etc.)
 //!
 //! ATT&CK is the **canonical interoperability map**, not a methodological

@@ -201,7 +201,7 @@ install. Knobs: `HSE_PREBUILT=/path/to/hse`, `HSE_PREBUILT_TAG=vX.Y.Z`,
 `HSE_NO_DOWNLOAD=1`, `HSE_PREFER_BUILD=1`, `HSE_KEEP_MIRROR=1`.
 
 Also works on Debian/Ubuntu and macOS. Full log at `~/.cache/hse-install.log`.
-See `docs/INSTALL.md` for every install path, knob, and Termux quirk.
+See `docs/install.md` for every install path, knob, and Termux quirk.
 
 ### After Install
 
@@ -315,7 +315,7 @@ hse scan --kind email --value test@example.com --depth 1
 
 Seen on Termux 0.118.x where `df -m $HOME` emits a row with too few fields.
 Fixed in commit `4ee49ec`. If you still hit it, you're on an older `install.sh`.
-Pull the latest and retry, or use the manual install path in `docs/INSTALL.md`
+Pull the latest and retry, or use the manual install path in `docs/install.md`
 which skips the probe.
 
 **`pkg update: failed`**

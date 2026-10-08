@@ -15,7 +15,7 @@ drift.
 | **kind** | The category of a seed or entity: `email`, `username`, `phone`, `name`, `domain`, `ip`, `url`, … (`hse scan --kind`). | type |
 | **entity** | One thing a scan found: a kind, a value, a confidence, and its evidence. | record, node |
 | **evidence** | One observation attached to an entity: the **source** that produced it, a summary, and attributes. | proof |
-| **source** | The provider a piece of evidence came from, as its evidence carries it — a corpus name, never the module that happened to read it (see `docs/REQUIREMENTS_LEDGER.md`, REQ-SRC-002). | |
+| **source** | The provider a piece of evidence came from, as its evidence carries it — a corpus name, never the module that happened to read it (see `docs/requirements-ledger.md`, REQ-SRC-002). | |
 | **module** | A unit of HSE code that queries one provider or performs one derivation (`hse modules`). | plugin, collector |
 | **provider** | The external service a module queries (OathNet, SeekNow, DeHashed, WiGLE, …). | vendor, site, service |
 | **finding** | A correlation the engine raised across entities, numbered `AU-nnn`, with a confidence and the entities it rests on. | correlation (the engine's internal name), alert |

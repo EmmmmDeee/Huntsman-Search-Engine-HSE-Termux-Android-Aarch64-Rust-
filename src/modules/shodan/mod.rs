@@ -214,7 +214,7 @@ impl Shodan {
     /// or an unreadable body is a failed lookup and is the module's error:
     /// before this every one of them was swallowed with a debug line and the
     /// scan recorded "no open ports, no CVEs" for the address
-    /// (`docs/PROVIDER_SWEEP_BACKLOG.md` #39).
+    /// (`docs/provider-sweep-backlog.md` #39).
     async fn query_internetdb(
         &self,
         base: &str,

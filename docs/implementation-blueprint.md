@@ -6,7 +6,7 @@
 split landed; most of the rest of the To-Be structure did not.
 
 > **2026-08-26 status note:** this blueprint's sibling doc from the same
-> date/branch, [`HIGH_VALUE_QUERY_SYSTEM.md`](HIGH_VALUE_QUERY_SYSTEM.md),
+> date/branch, [`high-value-query.md`](high-value-query.md),
 > already carries a "Superseded" correction; this one never did. Verified
 > against current source: Part 2's `src/modules/see_know/query_optimizer/{mod,
 > types,roi_router,value_scorer,cost_analyzer}.rs` and `endpoints/{mod,
@@ -46,8 +46,8 @@ src/
 └── (other modules...)
 
 docs/
-├── SEEKNOW_SETUP.md (596 lines) — Setup guide
-├── OSINT_API_REFERENCE.md — API reference
+├── seeknow-setup.md (596 lines) — Setup guide
+├── osint-api-reference.md — API reference
 ├── SEEKNOW_GAP_ANALYSIS.md (873 lines) — Gap analysis report
 └── README.md — Project overview
 ```
@@ -101,13 +101,13 @@ src/
 └── (other modules...)
 
 docs/
-├── SEEKNOW_SETUP.md — UPDATED: Phase 1-4 integration
+├── seeknow-setup.md — UPDATED: Phase 1-4 integration
 ├── SEEKNOW_GAP_ANALYSIS.md — UNCHANGED: Reference document
-├── IMPLEMENTATION_BLUEPRINT.md — NEW: This file
-├── OSINT_API_REFERENCE.md — UPDATED: All 24 endpoints
-├── ENTERPRISE_GUIDE.md — NEW: Enterprise feature walkthrough (Phase 2.4)
+├── implementation-blueprint.md — NEW: This file
+├── osint-api-reference.md — UPDATED: All 24 endpoints
+├── enterprise-guide.md — NEW: Enterprise feature walkthrough (Phase 2.4)
 ├── OPENAPI_SCHEMA.yaml — NEW: Full OpenAPI 3.1 spec (Phase 4.1)
-├── TROUBLESHOOTING.md — NEW: Expanded guide (Phase 4.2)
+├── troubleshooting.md — NEW: Expanded guide (Phase 4.2)
 └── SECURITY_AUDIT.md — NEW: Security review findings (Phase 4.3)
 
 tests/
@@ -343,7 +343,7 @@ config/
 #### Task 2.4: Document enterprise features
 
 **Files Created:**
-1. `docs/ENTERPRISE_GUIDE.md` — **NEW**
+1. `docs/enterprise-guide.md` — **NEW**
    - Enterprise upgrade flow
    - Discord history/messages/export examples
    - Budget allocation for enterprise
@@ -351,7 +351,7 @@ config/
    - Billing integration guide
    - FAQ for enterprise users
 
-2. `docs/SEEKNOW_SETUP.md` — **UPDATED**
+2. `docs/seeknow-setup.md` — **UPDATED**
    - Add enterprise section
    - Update budget calculator examples
    - Add tier-specific recommendations
@@ -490,7 +490,7 @@ config/
 #### Task 4.2: Expand troubleshooting guide
 
 **Files Created:**
-1. `docs/TROUBLESHOOTING.md` — **NEW**
+1. `docs/troubleshooting.md` — **NEW**
    - 15+ troubleshooting scenarios
    - Common error codes + fixes
    - Timeout debugging

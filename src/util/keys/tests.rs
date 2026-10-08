@@ -127,7 +127,7 @@ fn signup_hint_is_defined_for_every_known_key() {
 }
 
 /// Regression: the SeekNow signup hint printed by `hse doctor` named the
-/// `see-know.eu` alias — a host `docs/SEEKNOW_WEB_AUTOMATION.md` records as
+/// `see-know.eu` alias — a host `docs/seeknow-web-automation.md` records as
 /// "Not responding | 000" — while the live API base
 /// (`see_know::client`'s `DEFAULT_BASE`) is `see-know.ru`. A fresh operator was
 /// sent to a dead domain to sign up, and `hse doctor` printed two different

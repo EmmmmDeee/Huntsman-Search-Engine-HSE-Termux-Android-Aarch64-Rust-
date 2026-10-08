@@ -9,7 +9,7 @@
 //! cargo run --bin architecture-audit -- --from-dir captured/   # reproducible in CI
 //! ```
 //!
-//! Why the binary and not the source: `docs/AUTONOMY_CHARTER.md`'s SENSE
+//! Why the binary and not the source: `docs/autonomy-charter.md`'s SENSE
 //! stage makes the running software the source of truth ("derive current
 //! state from authoritative sources only, never from recall: build and query
 //! the binary"), because a static doc — or a hand-copied vocabulary list —
@@ -19,7 +19,7 @@
 //! files; this sees the system.
 //!
 //! Replaces the former `scripts/architecture_audit.py` (tracked as an
-//! accepted non-Rust exception in `docs/RUST_MIGRATION_AUDIT_2026-08-27.md`)
+//! accepted non-Rust exception in `docs/rust-migration-audit-2026-08-27-base.md`)
 //! with an equivalent Rust tool, verified to produce identical JSON output
 //! against the Python original on a real captured graph before it was
 //! removed. See [`audit`] for the ported logic and exactly where this

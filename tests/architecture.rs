@@ -235,12 +235,12 @@ fn removed_integration_references(root: &Path) -> Vec<String> {
 }
 
 fn is_historical_record(rel: &str) -> bool {
-    rel == "docs/REQUIREMENTS_LEDGER.md"
+    rel == "docs/requirements-ledger.md"
         // The programme's execution ledger is a dated checkpoint record: it
         // names the PRs, commits and removals that happened — the integration's
         // removal included — and must not launder that history to satisfy a
         // guard whose own doctrine grants history that right.
-        || rel == "docs/EXECUTION_LEDGER.md"
+        || rel == "docs/execution-ledger.md"
         || rel.starts_with("docs/audit/")
         || rel.contains("_2026-")
 }
@@ -351,7 +351,7 @@ fn module_consumes_probe_loop_has_one_implementation() {
     );
 }
 
-/// One scheduler. `docs/DEVELOPMENT_RULES.md`: "use the existing ROI/frontier
+/// One scheduler. `docs/development-rules.md`: "use the existing ROI/frontier
 /// system wherever viable; consolidate rather than introducing another
 /// scheduler". The existing one is `core::roi` plus the engine round loop.
 ///
@@ -427,7 +427,7 @@ fn relation_builders_share_one_pairwise_loop() {
     }
 }
 
-/// One spelling per term on the operator surface — `docs/GLOSSARY.md`.
+/// One spelling per term on the operator surface — `docs/glossary.md`.
 ///
 /// Walks every `hse … --help` page from the built binary (the whole command
 /// tree, nested subcommands included) and fails on a retired spelling, so a
@@ -529,8 +529,8 @@ fn cli_help_uses_canonical_terminology() {
         pages.len()
     );
     let glossary =
-        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/GLOSSARY.md"))
-            .expect("docs/GLOSSARY.md");
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/glossary.md"))
+            .expect("docs/glossary.md");
     // (retired spelling, what it should be). Matched on whole words in prose;
     // flag names and value placeholders are checked separately below.
     let retired: &[(&str, &str)] = &[
@@ -574,7 +574,7 @@ fn cli_help_uses_canonical_terminology() {
     }
     assert!(
         offenders.is_empty(),
-        "retired terminology on the operator surface (see docs/GLOSSARY.md):\n{}",
+        "retired terminology on the operator surface (see docs/glossary.md):\n{}",
         offenders.join("\n")
     );
     // The glossary defines every visible command's flags it claims to.
@@ -590,7 +590,7 @@ fn cli_help_uses_canonical_terminology() {
     ] {
         assert!(
             glossary.contains(term),
-            "docs/GLOSSARY.md must cover `{term}`"
+            "docs/glossary.md must cover `{term}`"
         );
     }
 }
@@ -1179,7 +1179,7 @@ fn core_does_not_import_util_directly() {
     // Un-blinding `scan_dir` (#355) surfaced four real violations here, all in
     // `core/engine/mod.rs`: three `util::egress` calls and one
     // `util::scraper_health` import. They were frozen in a shrink-only list
-    // rather than allow-listed, because docs/AUTONOMY_CHARTER.md's INV-3 is
+    // rather than allow-listed, because docs/autonomy-charter.md's INV-3 is
     // explicit that a tripped invariant is a design decision to raise, not
     // silence ("No deleted assertion, no new `#[allow]`/`#[ignore]` ... unless
     // replaced by a strictly stronger check in the same commit").

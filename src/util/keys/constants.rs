@@ -262,7 +262,7 @@ pub(super) const COMPROMISED_EMBEDDED_DIGESTS: &[(&str, &str)] = &[
         "2b2fc2d5c3b4262ef29788c1298d50dca103b82108d4d1a4998b2ee637c771c7",
     ),
     // Never an embedded default — this one was published as a copy-pasteable
-    // "Example ~/.huntsman.env" in docs/SEEKNOW_SETUP.md, so any operator who
+    // "Example ~/.huntsman.env" in docs/seeknow-setup.md, so any operator who
     // followed that guide literally has it in their env file today. Same
     // exposure, same remedy.
     (

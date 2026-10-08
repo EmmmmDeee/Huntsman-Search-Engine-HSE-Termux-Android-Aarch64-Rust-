@@ -63,7 +63,7 @@ source build with `HSE_PREFER_BUILD=1`, or keep your own Termux mirror with
 `HSE_KEEP_MIRROR=1`.
 
 Also works on Debian/Ubuntu and macOS. Full log at `~/.cache/hse-install.log`.
-See [`docs/INSTALL.md`](docs/INSTALL.md) for every install path, knobs
+See [`docs/install.md`](docs/install.md) for every install path, knobs
 (`HSE_REF`, `HSE_INSTALL_DIR`, …) and Termux quirks.
 
 Then launch the Web UI:
@@ -185,7 +185,7 @@ Railway builds the repo's `Dockerfile` automatically. Before your first
 deploy: attach a **Volume at `/data`** (state doesn't survive a redeploy
 without one) and set `HSE_AUTH_TOKEN` (Railway binds a public, non-loopback
 address, which HSE gates behind a bearer token). See
-[`docs/RAILWAY.md`](docs/RAILWAY.md) for the full walkthrough, what's already
+[`docs/railway.md`](docs/railway.md) for the full walkthrough, what's already
 wired up (health check, `$PORT` binding, volume-ownership handling), and the
 single-instance constraint (local SQLite — do not scale replicas above 1).
 
@@ -207,7 +207,7 @@ hse scan --kind domain --value example.com --depth 2        # domain recon
 hse scan --kind email --value user@example.com --free-only  # email pivot (free only)
 hse scan --kind ip --value 1.1.1.1                          # IP geolocation
 hse scan --kind domain --value example.com --format json    # machine-readable output
-hse scan                                                    # bare scan: uses HUNTSMAN_DEFAULT_SEED (optional, see docs/INSTALL.md)
+hse scan                                                    # bare scan: uses HUNTSMAN_DEFAULT_SEED (optional, see docs/install.md)
 hse serve                                                   # Web UI → http://127.0.0.1:8080
 hse live --kind domain --value example.com --interval 60    # continuous monitoring
 ```
@@ -625,24 +625,24 @@ diagnostic bundle") for the complete engine state in one file.
 
 **New to HSE?** Start with these comprehensive integration guides:
 
-- **[`docs/ALL_IN_ONE_SETUP.md`](docs/ALL_IN_ONE_SETUP.md)** — **Complete end-to-end setup** combining HSE, SeekNow authentication (API key or manual browser login), and Web UI. Includes prerequisites, one-line installation, background service setup for Termux, and troubleshooting for all common issues. **This is the recommended starting point.**
+- **[`docs/install-all-in-one.md`](docs/install-all-in-one.md)** — **Complete end-to-end setup** combining HSE, SeekNow authentication (API key or manual browser login), and Web UI. Includes prerequisites, one-line installation, background service setup for Termux, and troubleshooting for all common issues. **This is the recommended starting point.**
 
-- **[`docs/ADVANCED_TECHNIQUES.md`](docs/ADVANCED_TECHNIQUES.md)** — **SeekNow credential & session hygiene** — token rotation, multi-device session isolation, and API key segmentation for your own account.
+- **[`docs/advanced-techniques.md`](docs/advanced-techniques.md)** — **SeekNow credential & session hygiene** — token rotation, multi-device session isolation, and API key segmentation for your own account.
 
 ### Core Reference
 
 | Document | Content |
 |----------|---------|
-| [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks + install/runtime troubleshooting |
-| [`docs/RAILWAY.md`](docs/RAILWAY.md) | Deploying to Railway — Volume setup, `HSE_AUTH_TOKEN`, health check, single-instance constraint |
-| [`docs/AUTONOMY.md`](docs/AUTONOMY.md) | Running HSE unattended: `hse-bg`/`hse-watch`, boot persistence, scheduled sweeps |
-| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | SeekNow API error troubleshooting (connectivity, auth, budget, rate limits) — for install/runtime issues see `docs/INSTALL.md`'s own Troubleshooting section instead |
-| [`docs/OSINT_API_REFERENCE.md`](docs/OSINT_API_REFERENCE.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
-| [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
-| [`docs/SEEKNOW_WEB_AUTOMATION.md`](docs/SEEKNOW_WEB_AUTOMATION.md) | SeekNow web automation, Turnstile analysis, manual login workflow, browser automation framework evaluation |
+| [`docs/install.md`](docs/install.md) | All install paths + Termux quirks + install/runtime troubleshooting |
+| [`docs/railway.md`](docs/railway.md) | Deploying to Railway — Volume setup, `HSE_AUTH_TOKEN`, health check, single-instance constraint |
+| [`docs/autonomy.md`](docs/autonomy.md) | Running HSE unattended: `hse-bg`/`hse-watch`, boot persistence, scheduled sweeps |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | SeekNow API error troubleshooting (connectivity, auth, budget, rate limits) — for install/runtime issues see `docs/install.md`'s own Troubleshooting section instead |
+| [`docs/osint-api-reference.md`](docs/osint-api-reference.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
+| [`docs/seeknow-setup.md`](docs/seeknow-setup.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
+| [`docs/seeknow-web-automation.md`](docs/seeknow-web-automation.md) | SeekNow web automation, Turnstile analysis, manual login workflow, browser automation framework evaluation |
 | [`docs/OATHNET_API_GUIDE.txt`](docs/OATHNET_API_GUIDE.txt) | OathNet API contract reference |
-| [`docs/OPERATIONAL_CONSTITUTION.md`](docs/OPERATIONAL_CONSTITUTION.md) | Reasoning, evidence, and analysis standards governing HSE work |
-| [`docs/PERSISTENT_INTELLIGENCE.md`](docs/PERSISTENT_INTELLIGENCE.md) | How understanding accumulates across reasoning cycles (constitution companion) |
+| [`docs/operational-constitution.md`](docs/operational-constitution.md) | Reasoning, evidence, and analysis standards governing HSE work |
+| [`docs/persistent-intelligence.md`](docs/persistent-intelligence.md) | How understanding accumulates across reasoning cycles (constitution companion) |
 
 For everything else — module catalogue, CLI reference, architecture — the
 running software is the source of truth: `hse --help`, `hse modules`, the web

@@ -7,13 +7,13 @@
 //! [`IntelligenceLedger`] today — the engine still promotes on
 //! `Entity::confidence`, and adopting the ledger changes promotion semantics,
 //! which is the maintainer's call (REQ-CLAIM-001 in
-//! `docs/REQUIREMENTS_LEDGER.md`). Provider coverage, the one part of this
+//! `docs/requirements-ledger.md`). Provider coverage, the one part of this
 //! design the product already exercises on every scan, lives in
 //! [`crate::core::coverage`], and the ledger records its outcomes per claim.
 //!
 //! It no longer carries a path frontier. `BoundedFrontier` was a second
 //! scheduler with a third ranking formula beside the live `core::roi` and the
-//! engine round loop — which `docs/DEVELOPMENT_RULES.md` forbids — and the
+//! engine round loop — which `docs/development-rules.md` forbids — and the
 //! restart checkpoint that justified keeping it had no caller: the engine's
 //! own entity checkpoint is the exercised recovery path.
 

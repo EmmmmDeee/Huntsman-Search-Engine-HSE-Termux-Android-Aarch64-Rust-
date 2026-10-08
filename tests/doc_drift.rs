@@ -4,8 +4,8 @@
 //! Motivating regression: PR #326 corrected `see_know`'s `ENDPOINT_COSTS` after
 //! the table was found to over-bill three endpoints against the SeekNow
 //! contract (`/search/deep` 3→1, `/username/social` 2→1, `/username/history`
-//! 2→1). Nothing pointed at the operator docs, so `ENTERPRISE_GUIDE.md` and
-//! `HIGH_VALUE_QUERY_SYSTEM.md` kept quoting the OLD prices — and, worse, kept
+//! 2→1). Nothing pointed at the operator docs, so `enterprise-guide.md` and
+//! `high-value-query.md` kept quoting the OLD prices — and, worse, kept
 //! ROI worked examples computed from them. A reader budgeting a scan would have
 //! planned around a 3× overstatement of `/search/deep`.
 //!
@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 /// Docs that quote SeekNow per-endpoint credit prices.
 const COST_QUOTING_DOCS: &[&str] = &[
-    "docs/ENTERPRISE_GUIDE.md",
-    "docs/HIGH_VALUE_QUERY_SYSTEM.md",
+    "docs/enterprise-guide.md",
+    "docs/high-value-query.md",
 ];
 
 fn doc_path(rel: &str) -> PathBuf {
@@ -209,7 +209,7 @@ fn doc_roi_examples_use_the_real_credit_costs() {
 /// `seeknow_signup_hint_names_the_live_ru_host_not_the_dead_eu_alias` already
 /// guards `hse doctor`'s own signup hint against this class of drift — its
 /// doc comment records that `see-know.eu` is a dead host
-/// (`docs/SEEKNOW_WEB_AUTOMATION.md` logs it "Not responding | 000") and that
+/// (`docs/seeknow-web-automation.md` logs it "Not responding | 000") and that
 /// `see_know::client::DEFAULT_BASE` (the actual live API base) is
 /// `see-know.ru`. `RULE.md`'s "Setup & Configuration: SeekNow API" and "OSINT
 /// API Reference" sections independently told operators to sign up and find
@@ -252,7 +252,7 @@ fn rule_md_names_the_live_seeknow_host_not_the_dead_eu_alias() {
         assert!(
             !section.contains("see-know.eu"),
             "RULE.md's {heading:?} section must not point an operator at the dead \
-             .eu host (docs/SEEKNOW_WEB_AUTOMATION.md logs it \"Not responding | 000\")"
+             .eu host (docs/seeknow-web-automation.md logs it \"Not responding | 000\")"
         );
     }
 }
@@ -390,9 +390,9 @@ fn ci_msrv_job_pins_the_version_cargo_toml_declares() {
 // The same defect as the credit tables above, one level up. Three documents
 // make claims about each other's contents and nothing checked them:
 //
-//   * `docs/REQUIREMENTS_LEDGER.md` is the authority — the transcript of what
+//   * `docs/requirements-ledger.md` is the authority — the transcript of what
 //     each requirement IS and what happened to it.
-//   * `docs/ROADMAP.md` is the living map. `CLAUDE.md` requires it to be
+//   * `docs/roadmap.md` is the living map. `CLAUDE.md` requires it to be
 //     "re-assessed and realigned on each iteration", and its own header says a
 //     claim it makes that the code does not honour is a defect in it.
 //   * `CHANGELOG.md` is the per-release record a reader consults to find out
@@ -408,8 +408,8 @@ fn ci_msrv_job_pins_the_version_cargo_toml_declares() {
 // what these guards replace: the ledger defines the vocabulary, the map may not
 // cite outside it, and the changelog must account for every entry it holds.
 
-const LEDGER_DOC: &str = "docs/REQUIREMENTS_LEDGER.md";
-const ROADMAP_DOC: &str = "docs/ROADMAP.md";
+const LEDGER_DOC: &str = "docs/requirements-ledger.md";
+const ROADMAP_DOC: &str = "docs/roadmap.md";
 const CHANGELOG_DOC: &str = "CHANGELOG.md";
 
 fn read_doc(rel: &str) -> String {

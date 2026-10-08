@@ -383,7 +383,7 @@ impl Module for SeekNow {
             // Deep search trawls slower, higher-yield databases fast search
             // skips (server cap ~40s vs. fast's ~5s typical) — the largest
             // documented, previously-unwired SeekNow coverage gap
-            // (`docs/SEEKNOW_SETUP.md`: "HSE always calls fast /search, never
+            // (`docs/seeknow-setup.md`: "HSE always calls fast /search, never
             // deep"). Only worth the extra latency on a genuine miss (never
             // spent when fast already found something) and only for TYPED
             // queries (`qtype` non-empty) — the auto/name path already

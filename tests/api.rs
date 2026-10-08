@@ -226,7 +226,7 @@ async fn modules_list_returns_array() {
         first.get("accepts").is_some(),
         "every module entry must have an accepts array"
     );
-    // Provider capability + economics descriptor (docs/REQUIREMENTS_LEDGER.md
+    // Provider capability + economics descriptor (docs/requirements-ledger.md
     // Section 11): must be present on every entry, and — since this handler
     // is now built from `Module::info()`, the same struct the CLI's
     // `hse modules --json` serializes — every field on it must exactly match
@@ -2282,7 +2282,7 @@ async fn settings_toggles_put_succeeds_and_persists_the_flip() {
     // unknown key); nothing exercised the success path through
     // `crate::util::settings::set_bool` — the actual persistence primitive
     // both this handler and `hse config` funnel through had zero coverage of
-    // its own (see REQ-API-MISC-003 in docs/REQUIREMENTS_LEDGER.md).
+    // its own (see REQ-API-MISC-003 in docs/requirements-ledger.md).
     let app = test_app("toggles_put_success");
     let put = |enabled: bool| {
         let mut req = Request::builder()
@@ -3293,7 +3293,7 @@ async fn scan_cancel_stops_a_real_in_flight_scan_and_status_becomes_aborted() {
     // registered). Nothing had ever driven a REAL in-flight scan through the
     // actual HTTP `scan_cancel` handler and confirmed the engine finalizes it
     // as "aborted", visible on a subsequent GET (see REQ-API-SCAN-002 in
-    // docs/REQUIREMENTS_LEDGER.md) — `wall_time_budget_stops_promptly_and_
+    // docs/requirements-ledger.md) — `wall_time_budget_stops_promptly_and_
     // preserves_findings` in tests/halting.rs proves the same downstream
     // engine mechanism, but triggered by a wall-time deadline, never by this
     // endpoint, and it drives the engine directly, never through HTTP.
@@ -3554,7 +3554,7 @@ async fn scan_entities_pagination_rejects_invalid_offset_and_limit() {
     // the three `bad_request` branches in `scan_entities` (non-numeric
     // offset, non-numeric limit, and limit=0) had never been driven through
     // the real HTTP handler (see REQ-API-SCAN-007 in
-    // docs/REQUIREMENTS_LEDGER.md).
+    // docs/requirements-ledger.md).
     let (app, store) = test_app_with_store("entities_paginate_invalid");
     let sid = "s-paginate-invalid";
     store

@@ -29,7 +29,7 @@ checked.
   not `core`. For web JS, it counts imports of the file name.
 - **defects**: commits whose subject reads as a fix and that touched the
   file, over the full history of 3010 commits. Plus the
-  `## REQ-` entries in `docs/REQUIREMENTS_LEDGER.md` that name the file or
+  `## REQ-` entries in `docs/requirements-ledger.md` that name the file or
   its module.
 - **lines**: line count, 0 for a binary file.
 
@@ -896,9 +896,9 @@ checked.
 | 859 | `src/modules/pgp/tests.rs` | test | 5.10 | 0 | 4 | 0 | 264 |
 | 860 | `src/core/assurance/gap.rs` | prod-rust | 5.09 | 0 | 0 | 0 | 160 |
 | 861 | `src/modules/ip_registry/tests.rs` | test | 5.09 | 0 | 3 | 0 | 440 |
-| 862 | `docs/SOLUTION_TREE.md` | docs | 5.08 | 0 | 255 | 0 | 175 |
+| 862 | `docs/solution-tree.md` | docs | 5.08 | 0 | 255 | 0 | 175 |
 | 863 | `src/modules/builtwith/tests.rs` | test | 5.08 | 0 | 3 | 0 | 435 |
-| 864 | `docs/REQUIREMENTS_LEDGER.md` | docs | 5.07 | 0 | 10 | 0 | 20894 |
+| 864 | `docs/requirements-ledger.md` | docs | 5.07 | 0 | 10 | 0 | 20894 |
 | 865 | `src/core/correlator/tests/part04.rs` | test | 5.05 | 0 | 2 | 0 | 964 |
 | 866 | `src/core/correlator/tests/part10.rs` | test | 5.04 | 0 | 2 | 0 | 957 |
 | 867 | `src/modules/steam_profile/tests.rs` | test | 5.04 | 0 | 3 | 0 | 415 |
@@ -952,7 +952,7 @@ checked.
 | 915 | `tests/cli_seed_validation.rs` | test | 4.74 | 0 | 3 | 0 | 291 |
 | 916 | `src/modules/nostr/tests.rs` | test | 4.74 | 0 | 3 | 0 | 290 |
 | 917 | `src/modules/cpan_user/tests.rs` | test | 4.73 | 0 | 3 | 0 | 287 |
-| 918 | `docs/PROBLEM_TREE.md` | docs | 4.73 | 0 | 265 | 0 | 118 |
+| 918 | `docs/problem-tree.md` | docs | 4.73 | 0 | 265 | 0 | 118 |
 | 919 | `src/modules/whoisxml/tests.rs` | test | 4.72 | 0 | 3 | 0 | 283 |
 | 920 | `src/modules/sourceforge_user/tests.rs` | test | 4.72 | 0 | 3 | 0 | 281 |
 | 921 | `src/modules/pypi_user/tests.rs` | test | 4.71 | 0 | 3 | 0 | 280 |
@@ -1123,7 +1123,7 @@ checked.
 | 1086 | `wasm-ui/src/scan_info/correlations.rs` | wasm-ui | 3.34 | 0 | 0 | 0 | 116 |
 | 1087 | `wasm-ui/src/scan_info/metrics.rs` | wasm-ui | 3.34 | 0 | 0 | 0 | 116 |
 | 1088 | `wasm-ui/src/scan_info/path.rs` | wasm-ui | 3.34 | 0 | 0 | 0 | 116 |
-| 1089 | `docs/ROADMAP.md` | docs | 3.33 | 0 | 3 | 4 | 1344 |
+| 1089 | `docs/roadmap.md` | docs | 3.33 | 0 | 3 | 4 | 1344 |
 | 1090 | `src/modules/crossref_search/tests.rs` | test | 3.31 | 0 | 1 | 0 | 263 |
 | 1091 | `src/util/abn/tests.rs` | test | 3.31 | 0 | 0 | 1 | 263 |
 | 1092 | `src/core/cancel/tests.rs` | test | 3.31 | 0 | 1 | 1 | 88 |
@@ -1151,7 +1151,7 @@ checked.
 | 1114 | `src/modules/europepmc_search/tests.rs` | test | 3.09 | 0 | 1 | 0 | 181 |
 | 1115 | `wasm-ui/src/scan_info/identities.rs` | wasm-ui | 3.08 | 0 | 0 | 0 | 80 |
 | 1116 | `src/modules/xposed_or_not/tests.rs` | test | 3.07 | 0 | 1 | 0 | 177 |
-| 1117 | `docs/SEEKNOW_SETUP.md` | docs | 3.07 | 0 | 8 | 0 | 600 |
+| 1117 | `docs/seeknow-setup.md` | docs | 3.07 | 0 | 8 | 0 | 600 |
 | 1118 | `src/core/classify_module_tests.rs` | test | 3.06 | 0 | 1 | 0 | 174 |
 | 1119 | `tests/query_floor_skips.rs` | test | 3.05 | 0 | 1 | 0 | 171 |
 | 1120 | `src/core/profiles/tests.rs` | test | 3.05 | 0 | 1 | 0 | 169 |
@@ -1198,27 +1198,27 @@ checked.
 | 1161 | `src/modules/api_discovery/tests.rs` | test | 2.48 | 0 | 0 | 0 | 1181 |
 | 1162 | `src/selftest/tests.rs` | test | 2.46 | 0 | 1 | 0 | 62 |
 | 1163 | `src/core/correlator/tests/part15.rs` | test | 2.44 | 0 | 1 | 0 | 59 |
-| 1164 | `docs/TROUBLESHOOTING.md` | docs | 2.40 | 0 | 6 | 0 | 228 |
+| 1164 | `docs/troubleshooting.md` | docs | 2.40 | 0 | 6 | 0 | 228 |
 | 1165 | `src/util/gravatar/tests.rs` | test | 2.40 | 0 | 1 | 0 | 55 |
 | 1166 | `src/util/mediawiki/tests.rs` | test | 2.40 | 0 | 1 | 0 | 55 |
 | 1167 | `src/util/regional/tests.rs` | test | 2.34 | 0 | 1 | 0 | 50 |
-| 1168 | `docs/INSTALL.md` | docs | 2.33 | 0 | 7 | 0 | 152 |
+| 1168 | `docs/install.md` | docs | 2.33 | 0 | 7 | 0 | 152 |
 | 1169 | `wasm-ui/src/scan_info/mod.rs` | wasm-ui | 2.22 | 0 | 0 | 0 | 22 |
 | 1170 | `src/util/oathnet_batch/tests.rs` | test | 2.21 | 0 | 0 | 0 | 557 |
 | 1171 | `src/core/assurance/tests.rs` | test | 2.20 | 0 | 0 | 0 | 531 |
 | 1172 | `tests/reconciler_harness/mod.rs` | test | 2.19 | 0 | 1 | 0 | 38 |
-| 1173 | `docs/SEEKNOW_QUICK_START.md` | docs | 2.16 | 0 | 3 | 0 | 413 |
-| 1174 | `docs/ALL_IN_ONE_SETUP.md` | docs | 2.14 | 0 | 4 | 0 | 234 |
+| 1173 | `docs/seeknow-quick-start.md` | docs | 2.16 | 0 | 3 | 0 | 413 |
+| 1174 | `docs/install-all-in-one.md` | docs | 2.14 | 0 | 4 | 0 | 234 |
 | 1175 | `src/modules/bluesky_user/tests.rs` | test | 2.14 | 0 | 0 | 0 | 447 |
 | 1176 | `src/app/import/kml_tests.rs` | test | 2.13 | 0 | 0 | 0 | 440 |
-| 1177 | `docs/IMPLEMENTATION_BLUEPRINT.md` | docs | 2.07 | 0 | 2 | 0 | 718 |
+| 1177 | `docs/implementation-blueprint.md` | docs | 2.07 | 0 | 2 | 0 | 718 |
 | 1178 | `src/core/graph/tests.rs` | test | 2.07 | 0 | 0 | 0 | 369 |
 | 1179 | `src/bin/architecture_audit/audit_tests.rs` | test | 2.06 | 0 | 0 | 0 | 356 |
 | 1180 | `src/bin/dep_cooldown/lockfile.rs` | tool | 2.06 | 0 | 0 | 0 | 59 |
 | 1181 | `src/core/metrics/tests.rs` | test | 2.05 | 0 | 0 | 0 | 349 |
 | 1182 | `src/core/community/tests.rs` | test | 2.05 | 0 | 0 | 0 | 343 |
-| 1183 | `docs/OSINT_API_REFERENCE.md` | docs | 2.04 | 0 | 3 | 0 | 294 |
-| 1184 | `docs/SEEKNOW_WEB_AUTOMATION.md` | docs | 2.04 | 0 | 3 | 0 | 294 |
+| 1183 | `docs/osint-api-reference.md` | docs | 2.04 | 0 | 3 | 0 | 294 |
+| 1184 | `docs/seeknow-web-automation.md` | docs | 2.04 | 0 | 3 | 0 | 294 |
 | 1185 | `src/util/preflight/tests.rs` | test | 2.03 | 0 | 0 | 0 | 332 |
 | 1186 | `src/core/roi/utility_tests.rs` | test | 2.03 | 0 | 0 | 0 | 327 |
 | 1187 | `hse-core/src/coords/tests.rs` | test | 2.01 | 0 | 0 | 0 | 312 |
@@ -1237,7 +1237,7 @@ checked.
 | 1200 | `src/modules/tests.rs` | test | 1.87 | 0 | 0 | 0 | 206 |
 | 1201 | `src/modules/wifidb/tests.rs` | test | 1.85 | 0 | 0 | 0 | 196 |
 | 1202 | `src/core/crypto/tests.rs` | test | 1.84 | 0 | 0 | 0 | 191 |
-| 1203 | `docs/HIGH_VALUE_QUERY_SYSTEM.md` | docs | 1.83 | 0 | 2 | 0 | 334 |
+| 1203 | `docs/high-value-query.md` | docs | 1.83 | 0 | 2 | 0 | 334 |
 | 1204 | `src/bin/dep_cooldown/policy_tests.rs` | test | 1.83 | 0 | 0 | 0 | 185 |
 | 1205 | `src/modules/chronicling_america/tests.rs` | test | 1.81 | 0 | 0 | 0 | 173 |
 | 1206 | `src/modules/wikidata_geo/tests.rs` | test | 1.80 | 0 | 0 | 0 | 167 |
@@ -1264,23 +1264,23 @@ checked.
 | 1227 | `wasm-ui/src/views/mod.rs` | wasm-ui | 1.61 | 0 | 0 | 0 | 8 |
 | 1228 | `tests/autonomy_charter.rs` | test | 1.60 | 0 | 0 | 0 | 96 |
 | 1229 | `Cargo.lock` | lockfile | 1.59 | 0 | 16 | 1 | 3608 |
-| 1230 | `docs/AUTONOMY_CHARTER.md` | docs | 1.59 | 0 | 2 | 0 | 154 |
+| 1230 | `docs/autonomy-charter.md` | docs | 1.59 | 0 | 2 | 0 | 154 |
 | 1231 | `src/util/wifi/tests.rs` | test | 1.59 | 0 | 0 | 0 | 91 |
 | 1232 | `src/modules/numverify/tests.rs` | test | 1.56 | 0 | 0 | 0 | 85 |
 | 1233 | `src/api/settings_handlers/tests.rs` | test | 1.55 | 0 | 0 | 0 | 82 |
 | 1234 | `tests/module_runtime_seam.rs` | test | 1.55 | 0 | 0 | 0 | 82 |
-| 1235 | `docs/EXECUTION_LEDGER.md` | docs | 1.54 | 0 | 1 | 0 | 434 |
+| 1235 | `docs/execution-ledger.md` | docs | 1.54 | 0 | 1 | 0 | 434 |
 | 1236 | `src/util/log_capture/tests.rs` | test | 1.54 | 0 | 0 | 0 | 80 |
-| 1237 | `docs/ENTERPRISE_GUIDE.md` | docs | 1.54 | 0 | 3 | 0 | 72 |
+| 1237 | `docs/enterprise-guide.md` | docs | 1.54 | 0 | 3 | 0 | 72 |
 | 1238 | `src/bin/dep_cooldown/lockfile_tests.rs` | test | 1.53 | 0 | 0 | 0 | 78 |
-| 1239 | `docs/RUST_MIGRATION_AUDIT_2026-08-27.md` | docs | 1.53 | 0 | 1 | 0 | 410 |
+| 1239 | `docs/rust-migration-audit-2026-08-27-base.md` | docs | 1.53 | 0 | 1 | 0 | 410 |
 | 1240 | `src/modules/search_engines/health/tests.rs` | test | 1.51 | 0 | 0 | 0 | 72 |
 | 1241 | `.github/workflows/copilot-setup-steps.yml` | ci/tooling | 1.50 | 0 | 0 | 0 | 18 |
 | 1242 | `src/util/key_roi/tests.rs` | test | 1.47 | 0 | 0 | 0 | 64 |
 | 1243 | `src/core/data_broker/tests.rs` | test | 1.45 | 0 | 0 | 0 | 61 |
 | 1244 | `src/core/xml_tests.rs` | test | 1.45 | 0 | 0 | 0 | 61 |
 | 1245 | `src/core/engine/ledger/tests.rs` | test | 1.44 | 0 | 0 | 0 | 60 |
-| 1246 | `docs/ADVANCED_TECHNIQUES.md` | docs | 1.44 | 0 | 2 | 0 | 96 |
+| 1246 | `docs/advanced-techniques.md` | docs | 1.44 | 0 | 2 | 0 | 96 |
 | 1247 | `docs/audit/2026-08-27-risky-constructs.md` | docs | 1.41 | 0 | 1 | 0 | 252 |
 | 1248 | `src/app/signal_tests.rs` | test | 1.38 | 0 | 0 | 0 | 49 |
 | 1249 | `docs/issue-ledger-2026-08-27.md` | docs | 1.37 | 0 | 1 | 0 | 221 |
@@ -1288,14 +1288,14 @@ checked.
 | 1251 | `docs/rust-migration-audit-2026-08-27.md` | docs | 1.36 | 0 | 1 | 0 | 208 |
 | 1252 | `docs/audit/2026-08-27-architecture.md` | docs | 1.35 | 0 | 1 | 0 | 204 |
 | 1253 | `run/FINAL_REPORT.md` | docs | 1.33 | 0 | 2 | 0 | 66 |
-| 1254 | `docs/AUTONOMY.md` | docs | 1.32 | 0 | 1 | 0 | 182 |
+| 1254 | `docs/autonomy.md` | docs | 1.32 | 0 | 1 | 0 | 182 |
 | 1255 | `src/core/stealer_row/tests.rs` | test | 1.32 | 0 | 0 | 0 | 41 |
 | 1256 | `docs/final-report-2026-08-27.md` | docs | 1.30 | 0 | 1 | 0 | 162 |
 | 1257 | `docs/autonomous-decisions-2026-08-27.md` | docs | 1.28 | 0 | 1 | 0 | 155 |
 | 1258 | `src/util/freq/tests.rs` | test | 1.25 | 0 | 0 | 0 | 34 |
 | 1259 | `docs/audit/2026-08-27-benchmarks.md` | docs | 1.24 | 0 | 1 | 0 | 129 |
 | 1260 | `run/PHASE0_AUDIT.md` | docs | 1.22 | 0 | 1 | 0 | 118 |
-| 1261 | `docs/CREDENTIAL_AUDIT_2026-08-27.md` | docs | 1.21 | 0 | 1 | 0 | 115 |
+| 1261 | `docs/credential-audit-2026-08-27-base.md` | docs | 1.21 | 0 | 1 | 0 | 115 |
 | 1262 | `HUNTSMAN_UNIVERSAL_CODING_AGENT_DIRECTIVE_CLAUDE_CODE_OPTIMIZED-1.txt` | docs | 1.20 | 0 | 0 | 0 | 2929 |
 | 1263 | `.claude/commands/ci.md` | docs | 1.18 | 0 | 1 | 1 | 40 |
 | 1264 | `fuzz/fuzz_targets/ingest_text.rs` | bench/fuzz | 1.16 | 0 | 0 | 0 | 46 |
@@ -1306,26 +1306,26 @@ checked.
 | 1269 | `docs/dependency-graph-2026-08-27.md` | docs | 1.10 | 0 | 1 | 0 | 74 |
 | 1270 | `docs/credential-audit-2026-08-27.md` | docs | 1.08 | 0 | 1 | 0 | 69 |
 | 1271 | `src/main_tests.rs` | test | 1.07 | 0 | 0 | 0 | 19 |
-| 1272 | `docs/GLOSSARY.md` | docs | 1.06 | 0 | 1 | 0 | 64 |
+| 1272 | `docs/glossary.md` | docs | 1.06 | 0 | 1 | 0 | 64 |
 | 1273 | `.env.example` | data | 1.05 | 0 | 9 | 0 | 579 |
 | 1274 | `run/RUNSTATE.md` | docs | 1.00 | 0 | 2 | 0 | 22 |
 | 1275 | `fuzz/fuzz_targets/cert_der.rs` | bench/fuzz | 1.00 | 0 | 0 | 0 | 26 |
 | 1276 | `proptest-regressions/core/entity/tests.txt` | docs | 0.97 | 0 | 4 | 0 | 10 |
 | 1277 | `docs/exception-ledger-2026-08-27.md` | docs | 0.95 | 0 | 1 | 0 | 40 |
-| 1278 | `docs/OPERATIONAL_CONSTITUTION.md` | docs | 0.91 | 0 | 0 | 0 | 423 |
+| 1278 | `docs/operational-constitution.md` | docs | 0.91 | 0 | 0 | 0 | 423 |
 | 1279 | `wasm-ui/pkg/hse_wasm_ui.js` | data | 0.87 | 0 | 3 | 0 | 1528 |
-| 1280 | `docs/PERSISTENT_INTELLIGENCE.md` | docs | 0.83 | 0 | 0 | 0 | 244 |
+| 1280 | `docs/persistent-intelligence.md` | docs | 0.83 | 0 | 0 | 0 | 244 |
 | 1281 | `src/util/domains/public_suffix_list.dat` | data | 0.82 | 0 | 1 | 0 | 16491 |
-| 1282 | `docs/DEVELOPMENT_RULES.md` | docs | 0.82 | 0 | 0 | 0 | 230 |
+| 1282 | `docs/development-rules.md` | docs | 0.82 | 0 | 0 | 0 | 230 |
 | 1283 | `.claude/UPGRADE_SUMMARY.md` | docs | 0.80 | 0 | 0 | 0 | 206 |
-| 1284 | `docs/ENGINEERING_REFERENCE.md` | docs | 0.78 | 0 | 0 | 0 | 174 |
+| 1284 | `docs/engineering-reference.md` | docs | 0.78 | 0 | 0 | 0 | 174 |
 | 1285 | `.claude/QUICK_REFERENCE.md` | docs | 0.76 | 0 | 0 | 0 | 161 |
 | 1286 | `src/cli/env_template.txt` | data | 0.76 | 0 | 7 | 0 | 140 |
 | 1287 | `proptest-regressions/core/relation/graph.txt` | docs | 0.72 | 0 | 2 | 0 | 8 |
 | 1288 | `fuzz/Cargo.lock` | lockfile | 0.68 | 0 | 1 | 0 | 3231 |
-| 1289 | `docs/PROVIDER_SWEEP_BACKLOG.md` | docs | 0.67 | 0 | 0 | 0 | 85 |
-| 1290 | `docs/RAILWAY.md` | docs | 0.66 | 0 | 0 | 0 | 78 |
-| 1291 | `docs/OPERATING_JURISDICTION.md` | docs | 0.65 | 0 | 0 | 0 | 74 |
+| 1289 | `docs/provider-sweep-backlog.md` | docs | 0.67 | 0 | 0 | 0 | 85 |
+| 1290 | `docs/railway.md` | docs | 0.66 | 0 | 0 | 0 | 78 |
+| 1291 | `docs/operating-jurisdiction.md` | docs | 0.65 | 0 | 0 | 0 | 74 |
 | 1292 | `fuzz/README.md` | docs | 0.62 | 0 | 0 | 0 | 60 |
 | 1293 | `proptest-regressions/cli/export/tests.txt` | docs | 0.58 | 0 | 1 | 0 | 8 |
 | 1294 | `src/modules/search_engines/fetch/testdata/startpage_kylo4kylo.html` | data | 0.57 | 0 | 1 | 0 | 813 |

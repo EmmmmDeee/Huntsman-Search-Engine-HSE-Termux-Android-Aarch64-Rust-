@@ -221,7 +221,7 @@ fn no_provider_credential_is_embedded_in_source() {
 /// outside `src/`. `no_provider_credential_is_embedded_in_source` above only
 /// scans `.rs` files under `src/` — a live-shaped SeekNow key leaked into
 /// `.agent/state.json` for 17 days specifically because that file is neither
-/// (see `docs/CREDENTIAL_AUDIT_2026-08-27.md`). Two new `gitleaks` rules
+/// (see `docs/credential-audit-2026-08-27-base.md`). Two new `gitleaks` rules
 /// closed the detection gap at the repo-scanning layer; this is the same
 /// SHAPE check ([`looks_like_provider_key`]) made a `cargo test`-gated, always
 /// -local complement, per that audit's own follow-up recommendation.
@@ -259,7 +259,7 @@ fn no_provider_credential_is_embedded_in_narrative_files() {
     assert!(
         offenders.is_empty(),
         "credential-shaped literal(s) in a narrative file — rotate the credential \
-         immediately and see docs/CREDENTIAL_AUDIT_2026-08-27.md for the response \
+         immediately and see docs/credential-audit-2026-08-27-base.md for the response \
          playbook: {offenders:?}"
     );
 }
@@ -561,8 +561,8 @@ fn key_env_reads(content: &str, out: &mut std::collections::HashSet<String>) {
 /// `hse provision` template), `util::keys::constants::KNOWN_KEYS` (drives the
 /// Settings-page paste grid), `install.sh`'s own hand-maintained
 /// `~/.huntsman.env` heredoc (what a fresh `curl | bash` install writes), and
-/// the repo-root `.env.example` (the browsable provider catalogue `AUTONOMY.md`
-/// and `OSINT_API_REFERENCE.md` both point operators at) — all stay in sync
+/// the repo-root `.env.example` (the browsable provider catalogue `autonomy.md`
+/// and `osint-api-reference.md` both point operators at) — all stay in sync
 /// with the modules that actually exist.
 ///
 /// This is the inverse direction of `env_template_keys_are_all_consumed`
@@ -645,8 +645,8 @@ fn key_gated_modules_are_documented_everywhere_an_operator_would_look() {
     );
 
     // 4. The repo-root `.env.example` — the browsable provider catalogue
-    //    (signup links, free-tier notes, key formats) that `docs/AUTONOMY.md`
-    //    and `docs/OSINT_API_REFERENCE.md` both send operators to. It was the
+    //    (signup links, free-tier notes, key formats) that `docs/autonomy.md`
+    //    and `docs/osint-api-reference.md` both send operators to. It was the
     //    one provisioning surface with NO guard at all, and had already drifted:
     //    `HUNTSMAN_ALIENVAULT_KEY` was consumed by `ip_reputation`, listed in
     //    `KNOWN_KEYS` AND in `env_template.txt`, yet missing here.
@@ -1515,7 +1515,7 @@ fn collect_all_raw_env_reads(dir: &Path, out: &mut std::collections::HashSet<Str
 /// after being parsed (`oathnet::BUDGET`, `src/util/oathnet/mod.rs:51`); the
 /// other three are parsed and then never consumed by anything (see the
 /// module's own corrected doc comment, and REQ-ENV-003 in
-/// `docs/REQUIREMENTS_LEDGER.md`).
+/// `docs/requirements-ledger.md`).
 #[test]
 fn non_huntsman_env_reads_are_known() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

@@ -530,7 +530,7 @@ pub(crate) fn au_locality_anchor_at(lat: f64, lon: f64) -> Option<(&'static str,
 /// 2025 administrative reform — Hà Nội, TP. Hồ Chí Minh, Hải Phòng, Đà Nẵng,
 /// Cần Thơ and Huế — as `(name, lat, lon)` at their city centres, in the
 /// official Vietnamese spelling. HSE operates from Vietnam
-/// (`docs/OPERATING_JURISDICTION.md`), so a coordinate there deserves a place
+/// (`docs/operating-jurisdiction.md`), so a coordinate there deserves a place
 /// name exactly as an Australian one gets [`nearest_au_locality`]'s. The list
 /// is deliberately short: these are the six first-tier centres, each a
 /// well-known, stable point, and [`nearest_vn_locality`] only answers within

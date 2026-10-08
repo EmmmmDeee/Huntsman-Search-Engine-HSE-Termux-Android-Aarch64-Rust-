@@ -9,7 +9,7 @@
  * bearing is a stable place to find the same device again, NOT a measured
  * direction: no on-device sensor reports one, and drawing one would fabricate
  * it. Distance is not shown for the same reason: HSE never re-derives a
- * distance from a level (docs/ROADMAP.md T5). */
+ * distance from a level (docs/roadmap.md T5). */
 import { API } from '/static/js/api.js';
 import { $, $$, attr, esc, fmtClock, fmtDate, statusPill, toast, triggerBlobDownload } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';

@@ -331,7 +331,7 @@ fn an_empty_record_set_is_never_screenable_by_any_route() {
 
 // ── List of origin ───────────────────────────────────────────────────────────
 
-/// REGRESSION (docs/PROVIDER_SWEEP_BACKLOG.md #35). Consolidated-list rows are
+/// REGRESSION (docs/provider-sweep-backlog.md #35). Consolidated-list rows are
 /// screened alongside SDN rows but are NOT SDN designations: a sectoral / FSE /
 /// NS-ISA / PLC listing is a sanction, not a full-blocking one. Every finding
 /// off such a row used to be stamped `register = "OFAC Specially Designated

@@ -1,7 +1,7 @@
 # Performance snapshot — 2026-08-27
 
 No pre-migration baseline exists to diff against: the audit
-(`docs/RUST_MIGRATION_AUDIT_2026-08-27.md`) found nothing to migrate — the
+(`docs/rust-migration-audit-2026-08-27-base.md`) found nothing to migrate — the
 codebase was already 100% Rust. What follows is a **current-state
 performance snapshot**, captured with the project's own existing harnesses,
 recorded here as the baseline any *future* change should be diffed against.
@@ -121,7 +121,7 @@ throughout (§4 of the main report) — every non-obvious choice, including
 performance-motivated ones, is measured and guarded, not assumed. This
 run's own before/after is, honestly, N/A: nothing was ported, so there is
 no legacy implementation to diff these numbers against — see
-`docs/RUST_MIGRATION_AUDIT_2026-08-27.md` §1.
+`docs/rust-migration-audit-2026-08-27-base.md` §1.
 
 CI's `bench-smoke.yml` independently compiles and smoke-runs both benches on
 every relevant change as a perf-path API drift guard, regardless of this

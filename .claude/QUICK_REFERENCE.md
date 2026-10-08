@@ -1,7 +1,7 @@
 # Claude Code in HSE — quick reference
 
 Everything here is wired, and `tests/agent_harness.rs` fails if it stops being
-wired. The loop it belongs to: [`docs/OPERATING_ARCHITECTURE.md`](../docs/OPERATING_ARCHITECTURE.md).
+wired. The loop it belongs to: [`docs/operating-architecture.md`](../docs/operating-architecture.md).
 
 ## Before you push
 

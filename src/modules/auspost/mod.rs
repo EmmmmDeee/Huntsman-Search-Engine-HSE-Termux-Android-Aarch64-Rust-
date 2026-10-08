@@ -84,7 +84,7 @@ const ADDRESS_CONFIDENCE: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 /// `latitude`, `longitude`, which this module does not model. Before this the
 /// struct expected a `locality` field and a string postcode at the top-level
 /// `localities` array — a shape the API never sends — so every real answer
-/// failed to decode (`docs/PROVIDER_SWEEP_BACKLOG.md` #5). `locality` is kept as
+/// failed to decode (`docs/provider-sweep-backlog.md` #5). `locality` is kept as
 /// an alias so a captured answer in that spelling still reads.
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct AusPostAddress {

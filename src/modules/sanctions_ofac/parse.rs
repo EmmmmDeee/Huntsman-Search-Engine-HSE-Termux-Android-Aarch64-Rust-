@@ -27,7 +27,7 @@
 /// sectoral / FSE / NS-ISA / PLC / … sanction that is NOT full blocking. Every
 /// finding names its list, so a consolidated-list row can never be reported
 /// as an SDN match (which is what happened when the two lists were merged into
-/// one unlabelled set — `docs/PROVIDER_SWEEP_BACKLOG.md` #35).
+/// one unlabelled set — `docs/provider-sweep-backlog.md` #35).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OfacList {
     /// `SDN.CSV` — the Specially Designated Nationals list (full blocking).

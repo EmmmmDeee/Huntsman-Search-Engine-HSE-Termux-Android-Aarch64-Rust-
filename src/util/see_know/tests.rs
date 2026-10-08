@@ -156,7 +156,7 @@ mod status_code_auth_classification_tests {
 
     #[test]
     fn http_403_does_not_latch_key_invalid() {
-        // The documented behaviour (docs/SEEKNOW_SETUP.md) is "Plan doesn't
+        // The documented behaviour (docs/seeknow-setup.md) is "Plan doesn't
         // allow endpoint — skips endpoint, continues with others": a 403 must
         // NEVER globally disable SeekNow, or one plan-gated endpoint would
         // wrongly silence every other, currently-working endpoint for the rest
@@ -621,7 +621,7 @@ fn quota_probe_must_not_clobber_operator_scan_cap() {
     // The first seed then fires the non-billable `/credits` probe, which
     // reports a large plan. Scaling the cap to the plan must NOT overrule the
     // operator: they asked for 50 and the documented reason for asking
-    // (docs/SEEKNOW_SETUP.md, "Temporarily limit to 50 credits for testing")
+    // (docs/seeknow-setup.md, "Temporarily limit to 50 credits for testing")
     // is precisely to stop a big plan from being spent.
     scale_scan_cap_from_daily(15_000);
 
@@ -1129,7 +1129,7 @@ fn deep_search_cache_key_namespace_is_distinct_from_fast_search() {
 #[test]
 fn deep_search_reuses_the_same_verified_request_body_contract_as_fast_search() {
     // `search_deep`'s only documented difference from `search`
-    // (`docs/SEEKNOW_SETUP.md`'s endpoint table + FAQ) is the URL path and
+    // (`docs/seeknow-setup.md`'s endpoint table + FAQ) is the URL path and
     // corpus depth searched server-side — request shape and credit cost are
     // identical. Reusing `build_search_body` (already covered by
     // `search_body_includes_limit_and_optional_type`) rather than a second,

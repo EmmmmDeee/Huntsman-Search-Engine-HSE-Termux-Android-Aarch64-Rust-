@@ -116,7 +116,7 @@ summarized in the commit messages of:
    recovery point, `.gitleaks.toml` detection gap closed, full writeup in
    `docs/credential-audit-2026-08-27.md`. This was found and fixed
    independently on the concurrent session's branch too (see that PR's own
-   `docs/CREDENTIAL_AUDIT_2026-08-27.md`); both branches now carry
+   `docs/credential-audit-2026-08-27-base.md`); both branches now carry
    equivalent fixes, since this branch forked before the other's redaction
    commit and so still carried the live value.
 

@@ -471,7 +471,7 @@ fn each_profile_is_looked_for_where_cargo_puts_it() {
 }
 
 /// The binary is where cargo put it. With `CARGO_TARGET_DIR` set, as
-/// docs/INSTALL.md suggests (`~/.cache/hse-build`), the runner looked in the
+/// docs/install.md suggests (`~/.cache/hse-build`), the runner looked in the
 /// checkout's `target/`, found no binary, and rejected a good build. A
 /// relative value is resolved as cargo resolves it.
 #[test]

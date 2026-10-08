@@ -1,5 +1,5 @@
 //! Honest coverage ledger for SeekNow's documented API surface (24 endpoints
-//! per `docs/SEEKNOW_SETUP.md`) against
+//! per `docs/seeknow-setup.md`) against
 //! what HSE actually calls.
 //!
 //! This file previously claimed ("Comprehensive integration tests for all 24
@@ -69,7 +69,7 @@ mod seeknow_full_integration {
     /// response shape, and REAL wiring status (see [`Wired`]).
     ///
     /// `path`/`method`/`description` are the ledger's documentation payload —
-    /// read by a human auditing this ledger against `docs/SEEKNOW_SETUP.md`,
+    /// read by a human auditing this ledger against `docs/seeknow-setup.md`,
     /// not by any assertion below — so `#[expect(dead_code)]` on them is
     /// deliberate rather than a fixable lint; deleting the fields would
     /// silently drop the citation each `ENDPOINTS` entry exists to record.
@@ -84,7 +84,7 @@ mod seeknow_full_integration {
         wired: Wired,
     }
 
-    /// The 24 SeekNow API endpoints named in `docs/SEEKNOW_SETUP.md`, each
+    /// The 24 SeekNow API endpoints named in `docs/seeknow-setup.md`, each
     /// with its REAL,
     /// live-verified-or-code-confirmed wiring status — not an assumption.
     const ENDPOINTS: &[EndpointSpec] = &[
@@ -322,7 +322,7 @@ mod seeknow_full_integration {
         assert_eq!(
             ENDPOINTS.len(),
             24,
-            "docs/SEEKNOW_SETUP.md documents exactly 24 endpoints"
+            "docs/seeknow-setup.md documents exactly 24 endpoints"
         );
         let wired = ENDPOINTS.iter().filter(|e| e.wired == Wired::Yes).count();
         let removed_404 = ENDPOINTS

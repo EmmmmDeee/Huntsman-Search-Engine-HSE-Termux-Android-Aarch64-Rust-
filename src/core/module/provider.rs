@@ -226,7 +226,7 @@ pub struct ProviderDescriptor {
     /// [`crate::core::convex::module_cascade`] signal (`produces()` +
     /// `category()`) rather than a fresh neutral default — this is the one
     /// prior with a genuine pre-existing analogue (see the module doc
-    /// comment and `docs/REQUIREMENTS_LEDGER.md`'s provider-capability
+    /// comment and `docs/requirements-ledger.md`'s provider-capability
     /// section for the full rationale).
     pub optionality_prior: f64,
 }

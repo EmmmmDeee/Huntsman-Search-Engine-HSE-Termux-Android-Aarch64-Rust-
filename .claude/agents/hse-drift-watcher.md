@@ -33,7 +33,7 @@ loosening a parser.
    synthesise a field the response does not carry. A missing value is
    `None`, not a default that reads like data.
 5. Re-run the module's unit tests, then the live sweep for that module, and
-   record the before/after outcome in `docs/REQUIREMENTS_LEDGER.md` as a new
+   record the before/after outcome in `docs/requirements-ledger.md` as a new
    REQ entry.
 
 Run `scripts/gate.sh --quick` before you commit. The pre-push hook refuses a

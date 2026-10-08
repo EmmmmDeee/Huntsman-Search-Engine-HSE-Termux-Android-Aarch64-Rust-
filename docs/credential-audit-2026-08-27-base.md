@@ -26,7 +26,7 @@ what looks like a real operator credential pasted into chat, correctly
 declining to act on it or guess its purpose — and then, as a side effect of
 routine record-keeping, writing the raw value into a file that got committed.
 
-This directly violates `docs/AUTONOMY_CHARTER.md`'s INV-6 ("API keys live
+This directly violates `docs/autonomy-charter.md`'s INV-6 ("API keys live
 only in an untracked `~/.huntsman.env`; they never enter git, source, tests,
 commits, PRs, or chat"), and it evaded every existing safeguard for
 structural reasons, not bad luck:
@@ -112,4 +112,4 @@ operator key until whoever controls the SeekNow account says otherwise.
    that carry free-text narrative (`.agent/state.json` chief among them) —
    the gitleaks rule added here is the primary fix, but a second, local,
    `cargo test`-gated net was what caught the equivalent bug class for `src/`
-   in the first place (see `docs/AUTONOMY_CHARTER.md`'s cycle 1/2 history).
+   in the first place (see `docs/autonomy-charter.md`'s cycle 1/2 history).

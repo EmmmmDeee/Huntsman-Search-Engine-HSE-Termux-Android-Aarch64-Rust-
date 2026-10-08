@@ -593,7 +593,7 @@ pub struct StatusProbe {
 /// exceed the cap; treating its body as complete — what this function did before
 /// `truncated` existed — let a not-found page curl never delivered pass a
 /// negative-marker check and mint a "verified" profile (`social_probe`,
-/// `docs/PROVIDER_SWEEP_BACKLOG.md` #38). `timeout_ms` is reserved for future
+/// `docs/provider-sweep-backlog.md` #38). `timeout_ms` is reserved for future
 /// use; the current implementation encodes a 4-second curl `--max-time`
 /// internally.
 ///

@@ -173,7 +173,7 @@ async fn stat<T: DeserializeOwned>(
 /// others returned — but an answer built from NO endpoint is not an answer:
 /// with every sub-fetch failed, `or_hard_failure` turns the empty result into
 /// the first failure instead of the clean "no network info / no abuse
-/// contact" negative it used to read as (`docs/PROVIDER_SWEEP_BACKLOG.md`
+/// contact" negative it used to read as (`docs/provider-sweep-backlog.md`
 /// #31).
 async fn lookup(source: &dyn StatSource, target: &Target, scan_id: &str) -> Result<ModuleResult> {
     let mut result = ModuleResult::new();

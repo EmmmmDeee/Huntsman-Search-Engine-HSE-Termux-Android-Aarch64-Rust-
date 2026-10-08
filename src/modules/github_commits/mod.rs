@@ -142,7 +142,7 @@ impl Module for GithubCommits {
 /// module's error. A configured token is reported to the key pool on every
 /// rejection so a dead or exhausted token can be rotated. Before this every
 /// non-2xx collapsed into an empty result — a clean negative about the named
-/// email (`docs/PROVIDER_SWEEP_BACKLOG.md` #23).
+/// email (`docs/provider-sweep-backlog.md` #23).
 async fn search_commits(
     ctx: &ModuleContext,
     api_base: &str,

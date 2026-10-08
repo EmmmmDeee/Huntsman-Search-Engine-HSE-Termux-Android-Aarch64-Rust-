@@ -1,6 +1,6 @@
 # Huntsman Solution Tree — Built & Remaining Gaps
 
-Paired with `docs/PROBLEM_TREE.md`. Same-commit rule: every code change and tree update happen together (git history is authoritative).
+Paired with `docs/problem-tree.md`. Same-commit rule: every code change and tree update happen together (git history is authoritative).
 
 ---
 
@@ -8,8 +8,8 @@ Paired with `docs/PROBLEM_TREE.md`. Same-commit rule: every code change and tree
 
 Every change ships as one commit with:
 1. Code changes (new features, bug fixes, refactoring)
-2. Updated `PROBLEM_TREE.md` status markers (`[ ]` → `[x]`/`[~]`, or new node)
-3. Updated `SOLUTION_TREE.md` paired node
+2. Updated `problem-tree.md` status markers (`[ ]` → `[x]`/`[~]`, or new node)
+3. Updated `solution-tree.md` paired node
 4. Dated log entry in both trees' §5 / §8 (cross-references)
 5. `CHANGELOG.md` [Unreleased] entry
 6. Hand-maintained count updates (if module count, rule count, test count quoted in prose anywhere)
@@ -22,7 +22,7 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 
 ### Rule 0-0.7 Engineering Baseline
 
-**Built:** `docs/DEVELOPMENT_RULES.md` (160 lines, 7 rules)
+**Built:** `docs/development-rules.md` (160 lines, 7 rules)
 
 - Rule 0: Target platform (Android Termux AArch64 non-root)
 - Rule 0.1: Rust-first implementation policy
@@ -33,7 +33,7 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 - Rule 0.6: Portability preservation (Termux-first, don't weaken correctness/performance/maintainability)
 - Rule 0.7: Decision hierarchy (10 priorities: Correctness > Evidence Integrity > Safety > Determinism > Reproducibility > Simplicity > Performance > Maintainability > Portability > Convenience)
 
-**Built:** `docs/ENGINEERING_REFERENCE.md` (174 lines)
+**Built:** `docs/engineering-reference.md` (174 lines)
 
 - Rule summaries by topic
 - Decision matrix (8 questions → rule + action)
@@ -92,7 +92,7 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 
 ## 2. Remaining Open Work
 
-**None.** All P0-P2 defects are closed (PROBLEM_TREE.md §3). CAP (capability program) is correctly deferred per Rule 0.7.
+**None.** All P0-P2 defects are closed (problem-tree.md §3). CAP (capability program) is correctly deferred per Rule 0.7.
 
 ### T3 Quality — Evidence Integrity in Correlator Rules
 
@@ -158,18 +158,18 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 
 ## 5. Cycle Log
 
-**2026-07-16 16:05 UTC** — T4 quality deliverable: cross-scan co-occurrence + relation-recall evidence accumulation fixed (T4.170), completing the class opened by T4.169. Both sibling summaries made count-free; AU-080 count-parse removed (severity from tag). Gate passing. 4994 tests (+1 regression); selftest 9/9. Paired with PROBLEM_TREE.md §8.
+**2026-07-16 16:05 UTC** — T4 quality deliverable: cross-scan co-occurrence + relation-recall evidence accumulation fixed (T4.170), completing the class opened by T4.169. Both sibling summaries made count-free; AU-080 count-parse removed (severity from tag). Gate passing. 4994 tests (+1 regression); selftest 9/9. Paired with problem-tree.md §8.
 
-**2026-07-16 15:40 UTC** — T4 quality deliverable: cross-scan-history recurrence evidence accumulation fixed (T4.169). Count-free summary via `recurrence_summary()`; re-scans now dedup to one record; hub magnitude preserved via tag. Root cause found from a live end-to-end run (a re-scanned seed had 16 stale snapshots). Gate passing. 4993 tests passing (+1 regression). Paired with PROBLEM_TREE.md §8.
+**2026-07-16 15:40 UTC** — T4 quality deliverable: cross-scan-history recurrence evidence accumulation fixed (T4.169). Count-free summary via `recurrence_summary()`; re-scans now dedup to one record; hub magnitude preserved via tag. Root cause found from a live end-to-end run (a re-scanned seed had 16 stale snapshots). Gate passing. 4993 tests passing (+1 regression). Paired with problem-tree.md §8.
 
-**2026-07-16 14:30 UTC** — T4 quality deliverable: AU-031 adjacency entity truncation fixed (T4.168). All neighbors now included in entity_uids per evidence integrity (Rule 0.7 priority 2). Gate passing. 4992 tests passing. Paired with PROBLEM_TREE.md §8.
+**2026-07-16 14:30 UTC** — T4 quality deliverable: AU-031 adjacency entity truncation fixed (T4.168). All neighbors now included in entity_uids per evidence integrity (Rule 0.7 priority 2). Gate passing. 4992 tests passing. Paired with problem-tree.md §8.
 
-**2026-07-16 14:15 UTC** — T3 quality deliverables complete: AU-002 and AU-092 fixed (T3.001, T3.002). Correlator evidence integrity strengthened per Rule 0.7 priority 2. Gate passing (cargo fmt, clippy, doc, test). 4992 tests passing. Paired with PROBLEM_TREE.md §8.
+**2026-07-16 14:15 UTC** — T3 quality deliverables complete: AU-002 and AU-092 fixed (T3.001, T3.002). Correlator evidence integrity strengthened per Rule 0.7 priority 2. Gate passing (cargo fmt, clippy, doc, test). 4992 tests passing. Paired with problem-tree.md §8.
 
-**2026-07-16 13:57 UTC** — Autonomous cycle infrastructure initialized. Paired with PROBLEM_TREE.md §8. Project state: P0-P2 defects closed (T2.136-T2.165 error surfacing, see_know module name, AU-098 geo-consensus), Rule 0-0.7 baseline established, 242 tests passing, gate passing. No open defects remain. CAP work correctly deferred per Rule 0.7. See gap_register.md for detailed work log.
+**2026-07-16 13:57 UTC** — Autonomous cycle infrastructure initialized. Paired with problem-tree.md §8. Project state: P0-P2 defects closed (T2.136-T2.165 error surfacing, see_know module name, AU-098 geo-consensus), Rule 0-0.7 baseline established, 242 tests passing, gate passing. No open defects remain. CAP work correctly deferred per Rule 0.7. See gap_register.md for detailed work log.
 
 ---
 
 ## Glossary
 
-See PROBLEM_TREE.md §9.
+See problem-tree.md §9.

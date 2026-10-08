@@ -1,6 +1,6 @@
 # Huntsman Problem Tree — Defects & Foundations
 
-Reference: `docs/DEVELOPMENT_RULES.md` (Rule 0-0.7), `docs/ENGINEERING_REFERENCE.md` (quick lookup)
+Reference: `docs/development-rules.md` (Rule 0-0.7), `docs/engineering-reference.md` (quick lookup)
 
 ---
 
@@ -87,23 +87,23 @@ Per Rule 0.7 (priorities 1-5 are correctness, evidence integrity, safety, determ
 - **Performance optimization** (priority 7): Correct to defer until correctness + determinism are guaranteed. CPU/memory profiling deferred to CAP phase.
 - **Multi-platform ports** (priority 9): Rule 0.6 defers porting unless it strengthens Termux AArch64 target. Desktop/Web builds not in scope.
 - **Feature expansion** (priority 10): New modules, new schemas, new correlations deferred pending P0-P2 closure.
-- **Documentation expansion**: OSINT_API_REFERENCE.md, SEEKNOW_SETUP.md, OATHNET_API_GUIDE.txt are complete. Further docs deferred.
+- **Documentation expansion**: osint-api-reference.md, seeknow-setup.md, OATHNET_API_GUIDE.txt are complete. Further docs deferred.
 
 ---
 
 ## 8. Cycle Log
 
-**2026-07-16 16:05 UTC** — T4.170 fixed: completed the cross-scan evidence-accumulation class opened by T4.169. The two sibling passes — `link_cross_scan_cooccurrence` and `link_cross_scan_relations` (`core::engine::history`) — embedded a rising `shared` prior-scan count in their summaries ("across N earlier scan(s)"), defeating the same `(source, summary)` dedup at persist and accumulating stale records (bounded by MAX_PRIOR_SCANS_PER_ENTITY=8, but still an integrity regression). Fix: both summaries are now count-free; magnitude is carried by the `hub-cooccurrence` and `cross-scan-relation` tags. Verified no count consumer breaks — relation-recall is tag-consumed only (metrics/leads); AU-080's severity comes from the `hub-cooccurrence` tag, so its count-parse was removed and its description de-counted. +1 regression test (4994 total). Gate passing; selftest 9/9. Paired: SOLUTION_TREE.md.
+**2026-07-16 16:05 UTC** — T4.170 fixed: completed the cross-scan evidence-accumulation class opened by T4.169. The two sibling passes — `link_cross_scan_cooccurrence` and `link_cross_scan_relations` (`core::engine::history`) — embedded a rising `shared` prior-scan count in their summaries ("across N earlier scan(s)"), defeating the same `(source, summary)` dedup at persist and accumulating stale records (bounded by MAX_PRIOR_SCANS_PER_ENTITY=8, but still an integrity regression). Fix: both summaries are now count-free; magnitude is carried by the `hub-cooccurrence` and `cross-scan-relation` tags. Verified no count consumer breaks — relation-recall is tag-consumed only (metrics/leads); AU-080's severity comes from the `hub-cooccurrence` tag, so its count-parse was removed and its description de-counted. +1 regression test (4994 total). Gate passing; selftest 9/9. Paired: solution-tree.md.
 
-**2026-07-16 15:40 UTC** — T4.169 fixed: cross-scan-history recurrence evidence (`core::engine::history`) embedded the prior-scan count in its summary string. The count rises every re-scan of a subject, so each scan produced a DIFFERENT `(source, summary)` key and the persist-time `Entity::absorb` dedup kept every snapshot — a re-scanned identifier accumulated stale, mutually-contradictory records (observed live: one seed had 16, reading "1 earlier"…"16 earlier" simultaneously). Fix: centralised a count-free `recurrence_summary()`; magnitude is carried by the existing `hub-entity` tag (AU-078 reads the tag, not the text) and the store-derived leverage degree — verified no consumer parses the count from this summary. Evidence integrity restored (Rule 0.7 priority 2); the module's documented idempotency now holds across re-scans, not just within one slice. Proven on a fresh DB: 6 scans across the non-hub→hub boundary → exactly 1 record + correct hub tag. +1 regression test (4993 total). Gate passing. Paired: SOLUTION_TREE.md.
+**2026-07-16 15:40 UTC** — T4.169 fixed: cross-scan-history recurrence evidence (`core::engine::history`) embedded the prior-scan count in its summary string. The count rises every re-scan of a subject, so each scan produced a DIFFERENT `(source, summary)` key and the persist-time `Entity::absorb` dedup kept every snapshot — a re-scanned identifier accumulated stale, mutually-contradictory records (observed live: one seed had 16, reading "1 earlier"…"16 earlier" simultaneously). Fix: centralised a count-free `recurrence_summary()`; magnitude is carried by the existing `hub-entity` tag (AU-078 reads the tag, not the text) and the store-derived leverage degree — verified no consumer parses the count from this summary. Evidence integrity restored (Rule 0.7 priority 2); the module's documented idempotency now holds across re-scans, not just within one slice. Proven on a fresh DB: 6 scans across the non-hub→hub boundary → exactly 1 record + correct hub tag. +1 regression test (4993 total). Gate passing. Paired: solution-tree.md.
 
 **2026-07-16 14:30 UTC** — T4.168 fixed: AU-031 adjacency rule (infra.rs) was silently truncating entity_uids to first 12 neighbors while reporting full count in description (lines 450-454). Now includes all neighbors per evidence integrity (Rule 0.7 priority 2). Removed unused AGG_SAMPLE constant. Tests updated to verify all 30 neighbors included. Gate passing.
 
-**2026-07-16 14:15 UTC** — T3.002 fixed: AU-092 breach-locality-footprint-conflict case (lines 758-773) distinguished with separate rule_id "AU-092-CONFLICT" instead of reusing "AU-092". Per Rule 0.7 priority 2 (Evidence Integrity), fundamentally different claims (corroboration vs conflict) must not share the same rule_id. Evidence integrity preserved: operator can now distinguish agreement from disagreement cases. Tests updated. Gate passing. Paired: SOLUTION_TREE.md.
+**2026-07-16 14:15 UTC** — T3.002 fixed: AU-092 breach-locality-footprint-conflict case (lines 758-773) distinguished with separate rule_id "AU-092-CONFLICT" instead of reusing "AU-092". Per Rule 0.7 priority 2 (Evidence Integrity), fundamentally different claims (corroboration vs conflict) must not share the same rule_id. Evidence integrity preserved: operator can now distinguish agreement from disagreement cases. Tests updated. Gate passing. Paired: solution-tree.md.
 
-**2026-07-16 14:XX UTC** — T3.001 fixed: AU-002 identity-cluster implausibility rejection now surfaced as AU-002-REJECT finding (Medium severity) instead of silent drop. Per Rule 0.7 priority 2 (Evidence Integrity) and T2 quality doctrine, operator informed of rejected candidates. Tests updated. Gate passing. Paired: SOLUTION_TREE.md.
+**2026-07-16 14:XX UTC** — T3.001 fixed: AU-002 identity-cluster implausibility rejection now surfaced as AU-002-REJECT finding (Medium severity) instead of silent drop. Per Rule 0.7 priority 2 (Evidence Integrity) and T2 quality doctrine, operator informed of rejected candidates. Tests updated. Gate passing. Paired: solution-tree.md.
 
-**2026-07-16 13:57 UTC** — Initial tree created. Project state: all P0-P2 defects closed, Rule 0-0.7 baseline established, gate passing, 242 tests passing. Marked ready for autonomous cycle. Deferred work correctly out-of-scope per Rule 0.7. See SOLUTION_TREE.md for paired solution state.
+**2026-07-16 13:57 UTC** — Initial tree created. Project state: all P0-P2 defects closed, Rule 0-0.7 baseline established, gate passing, 242 tests passing. Marked ready for autonomous cycle. Deferred work correctly out-of-scope per Rule 0.7. See solution-tree.md for paired solution state.
 
 ---
 

@@ -18,7 +18,7 @@ use super::*;
 
     #[test]
     fn merge_preserves_a_real_value_written_with_an_export_prefix() {
-        // `docs/SEEKNOW_SETUP.md` tells operators to add a key by appending
+        // `docs/seeknow-setup.md` tells operators to add a key by appending
         //     echo 'export HUNTSMAN_SEEKNOW_KEY="…"' >> ~/.huntsman.env
         // and `dotenvy` (util::keys::io) accepts that form, so the key WORKS —
         // right up until the next `curl … | bash`. `parse_kv` took everything

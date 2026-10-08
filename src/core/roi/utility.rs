@@ -245,7 +245,7 @@ fn quota_penalty(remaining: Option<bool>) -> (f64, String) {
 
 /// Pure evaluation: maps [`DispatchUtilityInputs`] to a [`DispatchUtility`].
 /// See the module doc for the additive/log-space rationale and the crate's
-/// design notes (`docs/REQUIREMENTS_LEDGER.md`, Section 12) for the exact
+/// design notes (`docs/requirements-ledger.md`, Section 12) for the exact
 /// per-factor source mapping this implements.
 #[must_use]
 pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtility {

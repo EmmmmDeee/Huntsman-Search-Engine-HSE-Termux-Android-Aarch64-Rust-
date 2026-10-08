@@ -21,8 +21,8 @@ have overestimated costs by 3×. Doc drift can silently break operator ROI calcu
 
 ## Guarded Values
 Docs that quote SeekNow prices:
-- `docs/ENTERPRISE_GUIDE.md`
-- `docs/HIGH_VALUE_QUERY_SYSTEM.md`
+- `docs/enterprise-guide.md`
+- `docs/high-value-query.md`
 
 ## When to Run
 - After any code constant change

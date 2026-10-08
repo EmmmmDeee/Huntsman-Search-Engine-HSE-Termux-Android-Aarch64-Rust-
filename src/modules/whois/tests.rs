@@ -381,7 +381,7 @@ fn a_registry_without_a_whois_server_is_a_typed_not_applicable_skip() {
     );
 }
 
-/// REGRESSION (docs/PROVIDER_SWEEP_BACKLOG.md #47, verified). When the
+/// REGRESSION (docs/provider-sweep-backlog.md #47, verified). When the
 /// authoritative hop fails the lookup used to fall back to IANA's TLD record:
 /// `example.com` came back "created 1985-01-01, status ACTIVE" with the gTLD
 /// root servers minted as its nameservers. A failed hop is a failed lookup,

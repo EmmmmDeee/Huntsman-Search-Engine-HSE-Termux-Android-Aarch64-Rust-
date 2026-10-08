@@ -324,7 +324,7 @@ impl Module for Bitcoin {
 /// failure the module's error. The transaction list (`/address/{a}/txs`) is a
 /// separate endpoint whose failure must not discard the ledger reading already
 /// in hand — before this the `?` on that call did exactly that, contrary to the
-/// comment beside it (`docs/PROVIDER_SWEEP_BACKLOG.md` #6). Nor may it quietly
+/// comment beside it (`docs/provider-sweep-backlog.md` #6). Nor may it quietly
 /// become "no co-spends found": the anchor's evidence says the co-spend lookup
 /// failed, so a wallet cluster that was never read is not mistaken for one
 /// that is empty.

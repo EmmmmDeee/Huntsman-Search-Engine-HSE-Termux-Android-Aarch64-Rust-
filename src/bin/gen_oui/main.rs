@@ -6,7 +6,7 @@
 //! ```
 //!
 //! Replaces the former `scripts/gen_oui.py` (tracked as an accepted non-Rust
-//! exception in `docs/RUST_MIGRATION_AUDIT_2026-08-27.md`) with an equivalent
+//! exception in `docs/rust-migration-audit-2026-08-27-base.md`) with an equivalent
 //! Rust tool, verified to produce byte-identical output against the live
 //! registry before the Python original was removed.
 //!

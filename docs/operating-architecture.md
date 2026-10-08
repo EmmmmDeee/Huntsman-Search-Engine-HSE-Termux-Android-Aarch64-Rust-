@@ -1,7 +1,7 @@
 # Operating architecture — Huntsman × Claude Code
 
 How work on HSE is coordinated, executed, checked and accepted. The directive
-([`RULE.md`](../RULE.md), [`OPERATIONAL_CONSTITUTION.md`](OPERATIONAL_CONSTITUTION.md))
+([`RULE.md`](../RULE.md), [`operational-constitution.md`](operational-constitution.md))
 defines what must be true. This document says which mechanism makes each part
 of it happen. For every part it also says whether this repository enforces it,
 Claude Code provides it, or only a person or a device can supply it.
@@ -30,7 +30,7 @@ works on Android, in Termux, on aarch64.
 |---|---|---|
 | Global objective, constraints, acceptance policy | Claude Code [Project](https://code.claude.com/docs/en/claude-projects.md) instructions | Native. Set in claude.ai, not in git. |
 | Durable lessons across sessions | Project memory; for repository facts, [`CLAUDE.md`](../CLAUDE.md) | Native, plus checked-in `CLAUDE.md`. |
-| Repository map, invariants, where a change fits | [`CLAUDE.md`](../CLAUDE.md), [`ROADMAP.md`](ROADMAP.md), [`REQUIREMENTS_LEDGER.md`](REQUIREMENTS_LEDGER.md) | Enforced. `tests/doc_drift.rs` holds the map, ledger and changelog to each other. |
+| Repository map, invariants, where a change fits | [`CLAUDE.md`](../CLAUDE.md), [`roadmap.md`](roadmap.md), [`requirements-ledger.md`](requirements-ledger.md) | Enforced. `tests/doc_drift.rs` holds the map, ledger and changelog to each other. |
 | Bounded completion ("done" is judged by evidence) | [`/goal`](https://code.claude.com/docs/en/goal.md) with a condition the gate can check (§4) | Native. |
 | Whole-codebase sweeps, audits, cross-checked research | [Dynamic workflows](https://code.claude.com/docs/en/workflows.md) | Native. The orchestration script is outside HSE, so the Rust-only rule is untouched. |
 | Parallel investigation | Cloud sessions / [subagents](https://code.claude.com/docs/en/sub-agents.md) / [agent teams](https://code.claude.com/docs/en/agents.md) | Native. |

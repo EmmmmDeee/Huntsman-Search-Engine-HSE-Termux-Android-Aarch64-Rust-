@@ -157,7 +157,7 @@ impl Module for CombSearch {
 /// endpoint moved, a WAF page), a 429 or a 5xx is a failed lookup. Before this
 /// the call went through `fetch_json_or_404`, whose `404 → Ok(None)` the caller
 /// mapped to an empty result — an outage read as "not in COMB", a clean-negative
-/// breach claim about a named subject (`docs/PROVIDER_SWEEP_BACKLOG.md` #12).
+/// breach claim about a named subject (`docs/provider-sweep-backlog.md` #12).
 async fn query_comb(client: &reqwest::Client, api_base: &str, value: &str) -> Result<CombResp> {
     let url = format!(
         "{api_base}?query={}&start=0&limit={FETCH_LIMIT}",

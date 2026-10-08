@@ -21,7 +21,7 @@ useDefault = true
 # SeekNow key sat in .agent/state.json (a git-tracked file outside src/, so also
 # outside tests/architecture.rs's `no_provider_credential_is_embedded_in_source`,
 # which only scans src/**/*.rs) for ~17 days undetected before a 2026-08-27
-# credential audit found and redacted it (docs/CREDENTIAL_AUDIT_2026-08-27.md).
+# credential audit found and redacted it (docs/credential-audit-2026-08-27-base.md).
 # These rules mirror that same test's `looks_like_provider_key` shapes, but
 # scanned repo-wide — gitleaks' actual job — rather than only Rust source.
 [[rules]]
@@ -67,7 +67,7 @@ paths = [
 # ── Documentation placeholders ────────────────────────────────────────────────
 # These are the strings the setup guides now tell operators to REPLACE. Matching
 # them would train reviewers to ignore this scan's output — the failure mode that
-# let a real key sit in docs/SEEKNOW_SETUP.md across many releases.
+# let a real key sit in docs/seeknow-setup.md across many releases.
 [[allowlists]]
 description = "Obvious documentation placeholders"
 regexes = [

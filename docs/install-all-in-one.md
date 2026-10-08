@@ -23,9 +23,9 @@ curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HS
 
 **Re-run anytime to upgrade** — idempotent, preserves your keys. For exactly
 what this does, the no-build prebuilt-binary fast path, private-repo auth,
-environment knobs, and troubleshooting, see [`docs/INSTALL.md`](INSTALL.md)
+environment knobs, and troubleshooting, see [`docs/install.md`](install.md)
 — this guide picks up from there with the SeekNow/Web-UI setup
-`INSTALL.md` doesn't cover.
+`install.md` doesn't cover.
 
 ---
 
@@ -54,7 +54,7 @@ hse doctor
 > **⚠️ Not currently wired into a scan** — the code exists
 > (`web_client_advanced.rs`/`web_dispatcher.rs`) but nothing in
 > `src/modules/see_know/` calls it yet, so a saved session token below is
-> not read by HSE today. Full detail: `docs/SEEKNOW_WEB_AUTOMATION.md`.
+> not read by HSE today. Full detail: `docs/seeknow-web-automation.md`.
 
 **Problem:** Cloudflare Turnstile blocks all HTTP-only login attempts.
 
@@ -96,7 +96,7 @@ cat ~/.huntsman/seeknow_session.txt
 
 **Saved — but see the warning above.** HSE does not yet load or reuse this
 token for any search; `hse doctor` will still report SeekNow unavailable
-until it's wired in. See `docs/SEEKNOW_WEB_AUTOMATION.md` for the current
+until it's wired in. See `docs/seeknow-web-automation.md` for the current
 state and what's blocking it. If you need SeekNow working today, use
 Option A (API key) instead.
 
@@ -188,7 +188,7 @@ echo 'export HUNTSMAN_SEEKNOW_SCAN_CAP=250' >> ~/.huntsman.env
 
 ### "SeekNow: All authentication methods failed"
 
-See `docs/SEEKNOW_WEB_AUTOMATION.md`'s Troubleshooting section ("All SeekNow
+See `docs/seeknow-web-automation.md`'s Troubleshooting section ("All SeekNow
 authentication methods failed") — same fix (re-login, re-extract the token,
 re-save it to `~/.huntsman/seeknow_session.txt`), kept in one place.
 
@@ -218,9 +218,9 @@ hse serve  # Watch Live tab for events
 
 ## 🔗 Additional Resources
 
-- **SeekNow integration:** `docs/SEEKNOW_SETUP.md`
-- **Turnstile workaround:** `docs/SEEKNOW_WEB_AUTOMATION.md`
-- **Credential & session hygiene:** `docs/ADVANCED_TECHNIQUES.md`
+- **SeekNow integration:** `docs/seeknow-setup.md`
+- **Turnstile workaround:** `docs/seeknow-web-automation.md`
+- **Credential & session hygiene:** `docs/advanced-techniques.md`
 - **Architecture details:** README.md → Architecture section
 
 ---

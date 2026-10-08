@@ -428,7 +428,7 @@ pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
         )));
     }
     // HTTP 401 is unambiguous per both HTTP semantics and SeekNow's own
-    // documented mapping (docs/SEEKNOW_SETUP.md: "401 Unauthorized — Invalid/
+    // documented mapping (docs/seeknow-setup.md: "401 Unauthorized — Invalid/
     // expired API key"): the whole key is bad, independent of how the JSON
     // body happens to word it. Without this status-code check, a 401 body that
     // didn't use one of the three exact substrings `is_auth_error` checks (e.g.

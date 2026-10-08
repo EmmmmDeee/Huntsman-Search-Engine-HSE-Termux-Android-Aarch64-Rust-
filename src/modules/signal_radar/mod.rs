@@ -5,7 +5,7 @@
 //! real-vs-placeholder addresses, the RSSI reliability tiers, the 802.11
 //! channel, the coarse proximity band — are owned by the **HSE BLE Radar**
 //! (`bleradar-core::sweep`, the one authority; see
-//! `docs/REPOSITORY_BOUNDARY.md`). This module only parses the Termux tools'
+//! `docs/repository-boundary.md`). This module only parses the Termux tools'
 //! output and maps the radar's answers onto HSE entities — never a fabricated
 //! distance, and no second copy of a rule.
 //!

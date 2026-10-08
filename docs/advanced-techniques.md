@@ -5,14 +5,14 @@
 This document covers hardening practices for *your own* SeekNow account and
 credentials. It does not cover, and HSE does not provide, techniques for
 defeating another party's bot detection, rate limiting, or authentication —
-see [`docs/SEEKNOW_WEB_AUTOMATION.md`](SEEKNOW_WEB_AUTOMATION.md) for the
+see [`docs/seeknow-web-automation.md`](seeknow-web-automation.md) for the
 supported, ToS-compliant authentication paths (API key, or manual browser
 login with local session persistence).
 
 > **⚠️ §1 and §3 below describe mechanisms HSE does not have**, verified
 > against current `src/`: no `--verbose` flag exists on `hse doctor` (its
 > only flag is `--live`), so it cannot show a session-age line; more
-> fundamentally, per `SEEKNOW_WEB_AUTOMATION.md`'s own warning, nothing in
+> fundamentally, per `seeknow-web-automation.md`'s own warning, nothing in
 > `src/modules/see_know/` reads `~/.huntsman/seeknow_session.txt` at all yet
 > — there is no session to refresh or force-expire. §3's
 > `HUNTSMAN_SEEKNOW_KEY_EMAIL`/`_USERNAME`/`_INFRASTRUCTURE` env vars and
@@ -48,7 +48,7 @@ hse doctor
 ```
 
 If you use the web-automation login path instead of an API key, see
-[`docs/SEEKNOW_WEB_AUTOMATION.md`](SEEKNOW_WEB_AUTOMATION.md) — re-running
+[`docs/seeknow-web-automation.md`](seeknow-web-automation.md) — re-running
 that login flow is currently a manual step, not something HSE triggers
 automatically on a schedule.
 
@@ -83,7 +83,7 @@ If a key is leaked, revoke and rotate it — see §1 above.
 
 Credentials (API keys, the web-automation email/password) belong in
 environment variables or `~/.huntsman.env`, never in source. See
-[`docs/SEEKNOW_SETUP.md`](SEEKNOW_SETUP.md) for the supported configuration
+[`docs/seeknow-setup.md`](seeknow-setup.md) for the supported configuration
 variables. If a credential is ever committed by mistake, treat it as
 compromised: rotate it immediately (deleting the line does not remove it
 from git history).

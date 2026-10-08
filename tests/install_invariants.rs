@@ -161,7 +161,7 @@ fn generated_wrappers_never_release_the_shared_wake_lock_directly() {
     // Termux's `termux-wake-lock` / `termux-wake-unlock` act on ONE app-wide
     // lock — they are not reference counted. `hse-bg` and `hse-watch` are
     // designed to run at the same time (the Termux:Boot script starts BOTH, and
-    // docs/AUTONOMY.md documents that as the set-and-forget configuration), so a
+    // docs/autonomy.md documents that as the set-and-forget configuration), so a
     // direct `termux-wake-unlock` in either one releases the lock the OTHER is
     // still relying on. The observable failure is silent and severe: stop the
     // web UI with `hse-bg stop` and the still-running `hse-watch` loses wake-lock

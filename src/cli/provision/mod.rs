@@ -50,7 +50,7 @@ fn parse_kv(line: &str) -> Option<(String, String)> {
         return None;
     }
     // `export KEY=value` is a real shell idiom, it is what
-    // `docs/SEEKNOW_SETUP.md` instructs operators to append, and `dotenvy`
+    // `docs/seeknow-setup.md` instructs operators to append, and `dotenvy`
     // (util::keys::io) accepts it — so the key WORKS, right up until the next
     // `curl … | bash`. Without stripping the keyword the name below parses as
     // `export HUNTSMAN_…`, fails the `HUNTSMAN_` test, and the line becomes

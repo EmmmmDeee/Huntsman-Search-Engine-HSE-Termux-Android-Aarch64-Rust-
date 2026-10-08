@@ -4,7 +4,7 @@
 > **This guide is about the SeekNow (see-know.ru) API only** — connectivity,
 > authentication, budget, and rate-limit errors from that integration. For
 > install or runtime issues (build, permissions, RAM, `cargo: not found`),
-> see [`INSTALL.md`](INSTALL.md)'s own Troubleshooting section instead —
+> see [`install.md`](install.md)'s own Troubleshooting section instead —
 > that content lives there, not here.
 
 > ⚠️ **Not yet implemented.** This is a Phase 4.2 design spec, not a record of
