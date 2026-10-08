@@ -150,11 +150,14 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/huntsman-recon-target}
 install_rev="${HUNTSMAN_REV:-}"
 if [[ -z "$install_rev" ]]; then
   install_ref=""
-  if ! IFS=$'\t ' read -r install_rev install_ref < <(
-    git ls-remote --exit-code "$REPO" refs/heads/main
-  ); then
+  # A temp file, not process substitution: this host may not have /dev/fd.
+  rev_file="$(mktemp "${TMPDIR:-$TERMUX_PREFIX/tmp}/huntsman-main-rev.XXXXXX")"
+  if ! git ls-remote --exit-code "$REPO" refs/heads/main > "$rev_file"; then
+    rm -f "$rev_file"
     die "unable to resolve repository main revision"
   fi
+  IFS=$'\t ' read -r install_rev install_ref < "$rev_file" || true
+  rm -f "$rev_file"
   [[ "$install_ref" == "refs/heads/main" ]] ||
     die "repository main revision was not returned"
 fi
