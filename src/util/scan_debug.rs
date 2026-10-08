@@ -48,10 +48,15 @@ fn upload(repo: &str, scan_id: &str, body: &str) -> Result<(), String> {
 }
 
 fn put(token: &str, repo: &str, path: &str, body: &str) -> Result<(), String> {
-    let payload = format!(
-        "{{\"message\":\"scan debug\",\"content\":\"{}\",\"branch\":\"scan-debug\"}}",
+    let sha = existing_sha(token, repo, path);
+    let mut payload = format!(
+        "{{\"message\":\"scan debug\",\"content\":\"{}\",\"branch\":\"scan-debug\"",
         b64(body)
     );
+    if let Some(sha) = sha {
+        payload.push_str(&format!(",\"sha\":\"{sha}\""));
+    }
+    payload.push('}');
     let status = Command::new("curl")
         .args([
             "-fsS",
@@ -74,6 +79,28 @@ fn put(token: &str, repo: &str, path: &str, body: &str) -> Result<(), String> {
     } else {
         Err(format!("upload of {path} exited {}", status.code().unwrap_or(-1)))
     }
+}
+
+fn existing_sha(token: &str, repo: &str, path: &str) -> Option<String> {
+    let output = Command::new("curl")
+        .args([
+            "-fsS",
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            &format!("Authorization: Bearer {token}"),
+            &format!("https://api.github.com/repos/{repo}/contents/{path}?ref=scan-debug"),
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let key = "\"sha\":\"";
+    let start = text.find(key)? + key.len();
+    let end = text[start..].find('"')? + start;
+    Some(text[start..end].to_string())
 }
 
 fn b64(body: &str) -> String {
