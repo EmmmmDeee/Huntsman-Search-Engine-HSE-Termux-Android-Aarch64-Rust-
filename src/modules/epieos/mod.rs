@@ -15,6 +15,22 @@
 #[cfg(test)]
 mod tests;
 
+fn route_gone(body: &str) -> bool {
+    let low = body.to_ascii_lowercase();
+    low.contains("route") && low.contains("not found")
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::route_gone;
+
+    #[test]
+    fn a_missing_route_is_not_a_clean_miss() {
+        assert!(route_gone("Route POST:/api/v1/email not found"));
+        assert!(!route_gone("email not in dataset"));
+    }
+}
+
 use std::collections::HashSet;
 
 use async_trait::async_trait;
@@ -402,6 +418,20 @@ impl Module for Epieos {
             .json(&serde_json::json!({ "email": email }))
             .send_tagged(SRC)
             .await?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            let text = resp.text().await.unwrap_or_default();
+            if route_gone(&text) {
+                let mut result = ModuleResult::new();
+                result.mark_truncated(
+                    0,
+                    None,
+                    "the Epieos route is gone",
+                );
+                return Ok(result);
+            }
+            return Ok(ModuleResult::new());
+        }
 
         let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
             return Ok(ModuleResult::new());
