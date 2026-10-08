@@ -1,21 +1,92 @@
 //! One capture path for a scan debug log.
 //!
-//! `log_capture::dump` is the only source. This module writes that text
-//! unchanged and uploads the same bytes. It does not redact.
+//! `log_capture::dump` is the log body. This module adds the runtime record
+//! around it and uploads both unchanged. It does not redact the scan log.
+//! The upload token is not copied into the bundle.
 
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Header plus the captured log, byte-for-byte after the header.
+/// Header, runtime record, then the captured log byte for byte.
 pub fn bundle(scan_id: &str, raw: &str) -> String {
-    format!("# hse scan debug\n# scan_id={scan_id}\n\n{raw}")
+    let mut out = String::new();
+    out.push_str("# hse scan debug\n");
+    out.push_str(&format!("# scan_id={scan_id}\n"));
+    out.push_str(&format!("# version={}\n", crate::VERSION));
+    out.push_str(&format!("# unix={}\n", unix_now()));
+    out.push_str(&format!("# cwd={}\n", cwd()));
+    out.push_str("# args=");
+    out.push_str(&args());
+    out.push('\n');
+    out.push_str("# runtime\n");
+    out.push_str(&runtime_env());
+    out.push_str("\n# log\n");
+    out.push_str(raw);
+    if !raw.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn cwd() -> String {
+    env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| String::new())
+}
+
+fn args() -> String {
+    env::args().collect::<Vec<_>>().join(" ")
+}
+
+fn runtime_env() -> String {
+    const KEYS: &[&str] = &[
+        "PREFIX",
+        "HSE_REF",
+        "HSE_REQUIRE_SHA",
+        "HUNTSMAN_REV",
+        "HUNTSMAN_HOME",
+        "RUST_LOG",
+        "HSE_DEBUG_REPO",
+        "HSE_DEBUG_DIR",
+    ];
+    let mut out = String::new();
+    for key in KEYS {
+        if let Ok(value) = env::var(key) {
+            out.push_str(key);
+            out.push('=');
+            out.push_str(&value);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Write the raw bundle, then upload it to `debug/scans/` in the repository.
 /// A failed upload does not discard the local file.
 pub fn publish(scan_id: &str, raw: &str) -> Result<PathBuf, String> {
     let text = bundle(scan_id, raw);
+    let dir = debug_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{scan_id}.log"));
+    fs::write(&path, &text).map_err(|e| e.to_string())?;
+    let repo = env::var("HSE_DEBUG_REPO").unwrap_or_else(|_| {
+        "EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-".into()
+    });
+    if let Err(err) = upload(&repo, scan_id, &text) {
+        eprintln!("scan debug upload skipped: {err}");
+    }
+    Ok(path)
+}
     let dir = debug_dir();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("{scan_id}.log"));
@@ -137,6 +208,9 @@ mod tests {
     fn bundle_keeps_every_captured_byte() {
         let raw = "target alice@example.com token=abcdEFGH1234567890zz\nengine bing up\n";
         let text = bundle("scan-1", raw);
+        assert!(text.contains("scan_id=scan-1"));
+        assert!(text.contains("# version="));
+        assert!(text.contains("# args="));
         assert!(text.contains(raw));
         assert!(!text.contains("[redacted]"));
     }
