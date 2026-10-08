@@ -18,7 +18,7 @@ pub(super) async fn cmd_update(check: bool, ref_: Option<String>) -> Result<()> 
                     println!(
                         "HEAD is detached: pinned to one commit and following no branch, so \
                          nothing is behind and nothing updates it automatically. `hse update` \
-                         installs main."
+                         installs legacy-hse."
                     );
                     return Ok(());
                 }
@@ -68,13 +68,13 @@ pub(super) async fn maybe_auto_update(command: &Command) {
     match update::maybe_auto_update().await {
         AutoUpdateOutcome::None => {}
         AutoUpdateOutcome::Applying { commits, log } => eprintln!(
-            "hse: {commits} commit(s) behind GitHub main — applying the update in the \
+            "hse: {commits} commit(s) behind legacy-hse — applying the update in the \
              background (log: {}). This run uses the current build; the next run \
              picks up the rebuilt one. Disable with `hse config feature.auto_update off`.",
             log.display()
         ),
         AutoUpdateOutcome::Available { commits } => eprintln!(
-            "hse: {commits} commit(s) available on GitHub main — run `hse update` to install \
+            "hse: {commits} commit(s) available on legacy-hse — run `hse update` to install \
              (auto-update is off; silence with `hse config feature.update_notify off`)."
         ),
     }

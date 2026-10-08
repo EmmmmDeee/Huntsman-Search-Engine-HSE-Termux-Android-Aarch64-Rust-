@@ -6,7 +6,7 @@
 # in place.
 #
 # Usage (Termux or any Unix):
-#   curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/legacy-hse/install.sh | bash
 #
 # Or, if you've already cloned the repo:
 #   ./install.sh
@@ -14,7 +14,7 @@
 # Environment knobs (all optional):
 #   HSE_INSTALL_DIR   Where to clone the source (default: $HOME/.local/share/hse)
 #   HSE_BIN_DIR       Where to install the binary (default: $PREFIX/bin on Termux, $HOME/.local/bin elsewhere)
-#   HSE_REF           Git ref to install (branch / tag / SHA). Default: main
+#   HSE_REF           Git ref to install (branch / tag / SHA). Default: legacy-hse
 #   HSE_REPO_URL      Upstream URL (default: the GitHub repo)
 #   HSE_INSTALL_DEBUG Set to 1 to enable shell trace (set -x)
 #   HSE_SKIP_BUILD    Set to 1 to clone-only and stop before cargo build
@@ -212,7 +212,7 @@ trap on_exit EXIT
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 HSE_REPO_URL="${HSE_REPO_URL:-https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git}"
-HSE_REF="${HSE_REF:-main}"
+HSE_REF="${HSE_REF:-legacy-hse}"
 # If invoked from inside an existing HSE clone (`./install.sh` from `~/hse`),
 # upgrade THAT clone in place — so a manual `git clone` install and the
 # scripted / curl-pipe install converge on one source tree instead of leaving
@@ -222,7 +222,8 @@ if [[ -z "${HSE_INSTALL_DIR:-}" && -d .git && -f Cargo.toml ]] \
     HSE_INSTALL_DIR="$(pwd)"
 fi
 HSE_INSTALL_DIR="${HSE_INSTALL_DIR:-$HOME/.local/share/hse}"
-RUST_MIN_VERSION="1.88"
+# Must equal Cargo.toml package.rust-version; tests/installer_msrv.rs locks the contract.
+RUST_MIN_VERSION="1.98"
 
 # ─── Stale-install cleanup (definitions; invoked after the new binary lands) ──
 # Signature stamped into every wrapper this installer generates, and present for
@@ -648,16 +649,16 @@ maybe_download_prebuilt() {
 
     # Which releases could hold the revision we want, best first.
     #
-    # release.yml publishes every main commit past the current version tag as
-    # pre-release `main-<sha7>`, and GitHub's `releases/latest` deliberately
-    # skips pre-releases. So when main is ahead of the last version tag, the
+    # release.yml publishes every legacy-hse commit past the current version tag as
+    # pre-release `hse-<sha7>`, and GitHub's `releases/latest` deliberately
+    # skips pre-releases. So when legacy-hse is ahead of the last version tag, the
     # exact artifact lives under the per-commit tag and `latest` is stale; when
-    # main IS the last version tag, only `latest` exists. Trying both, in that
+    # legacy-hse IS the last version tag, only `latest` exists. Trying both, in that
     # order, covers each case — and `_prebuilt_sha_matches` is what decides,
     # so a wrong guess costs a download, never a wrong install.
     candidates=("$tag")
     if [[ "$tag" == "latest" && -n "$TARGET_SHA" ]]; then
-        candidates=("main-${TARGET_SHA:0:7}" "latest")
+        candidates=("hse-${TARGET_SHA:0:7}" "latest")
     fi
 
     for tag in "${candidates[@]}"; do
@@ -971,6 +972,17 @@ if ! git -C "$HSE_INSTALL_DIR" fetch --depth 1 origin "$FETCH_TARGET" 2>>"$LOG_F
 fi
 git -C "$HSE_INSTALL_DIR" checkout -B "$HSE_REF" FETCH_HEAD \
     || die "git checkout failed"
+
+# Product-line boundary: this installer owns the full legacy HSE monolith only.
+# Repository main contains the reconstructed `huntsman-recon` crate. Reject any
+# ref that does not resolve to the legacy package before building or replacing
+# the installed `hse` binary.
+if [[ ! -f "$HSE_INSTALL_DIR/Cargo.toml" ]]; then
+    die "ref '$HSE_REF' has no Cargo.toml; refusing cross-product install"
+fi
+if ! grep -Eq '^name[[:space:]]*=[[:space:]]*"huntsman-search-engine"[[:space:]]*$' "$HSE_INSTALL_DIR/Cargo.toml"; then
+    die "ref '$HSE_REF' is not the legacy HSE monolith (expected package huntsman-search-engine); refusing cross-product install"
+fi
 
 # What we actually got. If TARGET_SHA was unresolvable earlier (no network at
 # that moment, say) this is the first point at which the revision is known, so

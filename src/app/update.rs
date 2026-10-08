@@ -17,7 +17,7 @@ use crate::core::error::{Error, Result};
 pub const INSTALL_CMD: &str = concat!(
     "curl -fsSL https://raw.githubusercontent.com/",
     "EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/",
-    "main/install.sh | bash"
+    "legacy-hse/install.sh | bash"
 );
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -98,7 +98,17 @@ fn build_tree_of(exe: &Path) -> Option<PathBuf> {
 }
 
 fn is_hse_source(p: &Path) -> bool {
-    p.join("Cargo.toml").exists() && p.join("install.sh").exists()
+    let manifest = p.join("Cargo.toml");
+    if !manifest.is_file() || !p.join("install.sh").is_file() {
+        return false;
+    }
+    std::fs::read_to_string(manifest).ok().is_some_and(|body| {
+        body.lines().any(|line| {
+            line.trim().split_once('=').is_some_and(|(key, value)| {
+                key.trim() == "name" && value.trim() == "\"huntsman-search-engine\""
+            })
+        })
+    })
 }
 
 /// The repository the installer fetches from; `HSE_REPO_URL` overrides it
@@ -114,9 +124,9 @@ fn repo_url() -> String {
     env_non_empty("HSE_REPO_URL").unwrap_or_else(|| REPO_URL.to_string())
 }
 
-/// The ref the installer checks out (`HSE_REF`, default `main`).
+/// The ref the installer checks out (`HSE_REF`, default `legacy-hse`).
 fn install_ref() -> String {
-    env_non_empty("HSE_REF").unwrap_or_else(|| "main".to_string())
+    env_non_empty("HSE_REF").unwrap_or_else(|| "legacy-hse".to_string())
 }
 
 /// The install directory, bootstrapping a source tree there when the
@@ -137,7 +147,7 @@ pub fn ensure_install_dir() -> Option<PathBuf> {
 /// [`ensure_install_dir`] does it. Never the source tree the running binary
 /// was built in. That tree is a build: `cargo run`, a test suite, CI, an
 /// acceptance run. Updating it in the background ran `install.sh` against it,
-/// and the installer upgrades a clone it is started in to `main`, then
+/// and the installer upgrades a clone it is started in to `legacy-hse`, then
 /// installs over the system `hse`. A test suite did that to a CI checkout
 /// mid-run (REQ-UPDATE-001). On a branch behind its origin, it still could
 /// until this. An explicit `hse update` still finds the build tree
@@ -1101,7 +1111,11 @@ mod tests {
         let recorded = tmp.path().join("hse"); // does not exist yet
         std::fs::create_dir(&remote).expect("should succeed");
         git_fixture(&remote, &["init", "-q", "--initial-branch=main"]);
-        std::fs::write(remote.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write");
+        std::fs::write(
+            remote.join("Cargo.toml"),
+            "[package]\nname = \"huntsman-search-engine\"\n",
+        )
+        .expect("write");
         std::fs::write(remote.join("install.sh"), "#!/bin/bash\n").expect("write");
         git_fixture(&remote, &["add", "."]);
         git_fixture(&remote, &["commit", "-q", "-m", "source"]);
@@ -1134,6 +1148,31 @@ mod tests {
         assert!(
             bootstrap_source(&tmp.path().join("bad"), "/nonexistent/repo.git", "main").is_err(),
             "an unreachable repository is an error, not a silent empty directory"
+        );
+    }
+
+    #[test]
+    fn source_identity_rejects_the_reconstructed_crate() {
+        let tmp = tempfile::tempdir().expect("should succeed");
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"huntsman-recon\"\n",
+        )
+        .expect("write");
+        std::fs::write(tmp.path().join("install.sh"), "#!/bin/bash\n").expect("write");
+        assert!(
+            !is_hse_source(tmp.path()),
+            "a huntsman-recon tree must never be accepted as a legacy hse updater"
+        );
+
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"huntsman-search-engine\"\n",
+        )
+        .expect("write");
+        assert!(
+            is_hse_source(tmp.path()),
+            "the legacy hse package identity should be accepted"
         );
     }
 

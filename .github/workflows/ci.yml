@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [legacy-hse]
   pull_request:
-    branches: [main]
+    branches: [legacy-hse]
   workflow_dispatch:
 
 env:

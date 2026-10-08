@@ -9,18 +9,18 @@ name: Release (prebuilt Termux aarch64 binary)
 #
 # It fires three ways:
 #   • push a version tag `v*`            → publish to that tag
-#   • push to main                       → publish v<Cargo.toml version> if that
+#   • push to legacy-hse                 → publish v<Cargo.toml version> if that
 #                                          tag does not exist yet (a version
 #                                          bump cuts the STABLE release), else
 #                                          publish this commit as pre-release
-#                                          `main-<sha7>` so merged work is
+#                                          `hse-<sha7>` so merged work is
 #                                          installable immediately instead of
 #                                          shipping to nobody until the next bump
 #   • manual workflow_dispatch(tag)      → (re)build + publish to that tag
 #
 # Two channels, one artifact. GitHub's "latest release" ignores pre-releases, so
 # `install.sh`'s default path still serves the last version tag; a per-commit tag
-# is what makes "install exactly this main commit" resolvable without a source
+# is what makes "install exactly this legacy-hse commit" resolvable without a source
 # build. Every published binary carries its source commit (build.rs → `hse
 # build-sha`), an SBOM, a provenance record, and a Sigstore attestation.
 #
@@ -34,7 +34,7 @@ on:
     tags:
       - "v*"
     branches:
-      - main
+      - legacy-hse
   workflow_dispatch:
     inputs:
       tag:
@@ -53,23 +53,18 @@ on:
 permissions:
   contents: read
 
-# Serialise ALL release runs (one group for the whole workflow, NOT per-ref) so
-# they can't race to build + create + upload the same release. A version-bump
-# push fires two runs with DIFFERENT refs for the SAME version — the branch push
-# (refs/heads/main) and, with --follow-tags, the tag push (refs/tags/v<ver>). A
-# per-ref group put those in separate lanes, so both cross-built and raced the
-# asset upload to one release. A single group makes the second queue behind the
-# first; don't cancel an in-flight publish — let it finish, and the queued
-# follow-up no-ops once the version's tag exists (exactly as intended). Distinct
-# versions serialise too, but releases are infrequent and the build cost is the
-# same, so correctness wins over the lost parallelism.
+# Serialise ALL release runs through one lane so branch pushes and version-tag
+# pushes cannot cross-build and race the same release assets. Never cancel an
+# in-flight publication when a newer commit lands: let it finish, then allow the
+# queued run to verify/publish its own immutable commit build. Releases are
+# infrequent enough that correctness is worth the lost parallelism.
 concurrency:
-  group: release-${{ github.workflow }}
+  group: legacy-hse-release
   cancel-in-progress: false
 
 jobs:
   # Decide the target tag and whether there's anything to publish. Splitting this
-  # out keeps the (slow) cross-build from even starting on a routine main push
+  # out keeps the (slow) cross-build from even starting on a routine legacy-hse push
   # whose version was already released.
   resolve:
     name: Resolve release tag
@@ -104,7 +99,7 @@ jobs:
               if [[ "$GH_REF_TYPE" == "tag" ]]; then
                 tag="$GH_REF_NAME"
               else
-                # main push: derive v<version> from Cargo.toml and publish only
+                # legacy-hse push: derive v<version> from Cargo.toml and publish only
                 # if that tag doesn't already exist (idempotent per version).
                 ver="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)"
                 tag="v${ver}"
@@ -118,28 +113,28 @@ jobs:
                   # shipped nowhere.
                   #
                   # So publish it, to a per-commit PRE-RELEASE instead of the
-                  # version tag. That gives every green main commit an immutable,
+                  # version tag. That gives every green legacy-hse commit an immutable,
                   # installable artifact keyed to its exact SHA, which is what
-                  # `install.sh` asks for when it resolves origin/main and then
+                  # `install.sh` asks for when it resolves origin/legacy-hse and then
                   # demands a prebuilt built from that commit.
                   #
                   # Pre-release, deliberately: GitHub's "latest release" ignores
                   # pre-releases, so the stable channel still points at the last
                   # version tag and a version bump remains the act that cuts a
-                  # release. This adds a main channel; it does not redefine the
+                  # release. This adds a legacy-hse channel; it does not redefine the
                   # stable one.
                   ahead="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${tag}...${GITHUB_SHA}" \
                             --jq '.ahead_by' 2>/dev/null || echo unknown)"
                   if [[ "$ahead" == "0" ]]; then
                     publish=false
-                    echo "Tag ${tag} already exists and main is level with it — nothing to publish."
+                    echo "Tag ${tag} already exists and legacy-hse is level with it — nothing to publish."
                   else
                     prerelease=true
-                    tag="main-${GITHUB_SHA:0:7}"
+                    tag="hse-${GITHUB_SHA:0:7}"
                     {
-                      echo "### Publishing a main-channel build"
+                      echo "### Publishing a legacy-hse channel build"
                       echo
-                      echo "\`main\` is **${ahead} commit(s)** past \`v${ver}\`, and \`Cargo.toml\` still says \`${ver}\`."
+                      echo "\`legacy-hse\` is **${ahead} commit(s)** past \`v${ver}\`, and \`Cargo.toml\` still says \`${ver}\`."
                       echo "Publishing this commit as pre-release \`${tag}\` so it is installable now."
                       echo
                       echo "The **stable** channel still serves \`v${ver}\`; bump \`version\` in"
@@ -168,9 +163,32 @@ jobs:
           echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
           echo "Resolved tag=${tag} publish=${publish} prerelease=${prerelease}"
 
+  quality:
+    name: Release quality gate
+    needs: resolve
+    if: needs.resolve.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ (github.event_name == 'push' && github.ref_type == 'tag') && github.ref_name || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.98.0
+          components: rustfmt
+      - name: Installer syntax
+        run: bash -n install.sh
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Unit and integration tests
+        run: cargo test --locked --features dep-cooldown --lib --bins --tests
+
   termux-binary:
     name: Build + publish aarch64 Termux binary
-    needs: resolve
+    needs: [resolve, quality]
     if: needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
     # Scoped here rather than workflow-wide: this is the only job that writes.
@@ -181,7 +199,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          # Tag push → check out the tag. main push / manual dispatch → check out
+          # Tag push → check out the tag. legacy-hse push / manual dispatch → check out
           # the launching commit (github.sha); the resolved tag may not exist yet
           # — the publish step creates it from this same commit. (Checking out a
           # not-yet-existent tag would fail the run.)
@@ -197,7 +215,7 @@ jobs:
       - name: Install Rust + aarch64 Android target
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.0
           targets: aarch64-linux-android
 
       - name: Cache cargo
@@ -287,7 +305,7 @@ jobs:
       # Retried up to 3 times: the persist call is a network round-trip to
       # GitHub's attestation/Sigstore backend, which occasionally answers a
       # well-formed request with a transient "Server Error" (observed on the
-      # 2026-09-10 01:29 UTC main push, run 34425701536 — predicate generation
+      # 2026-09-10 01:29 UTC legacy-hse push, run 34425701536 — predicate generation
       # succeeded in 246ms, then the persist step failed after 97s). Retrying
       # the exact same trusted, already-pinned action in place (rather than
       # adding a new third-party retry-wrapper dependency to a job holding
@@ -364,7 +382,7 @@ jobs:
           # closing that gap for both workflow_dispatch against a non-default
           # branch/older tag and the rarer main-push race against a later commit.
           target_commitish: ${{ github.sha }}
-          # A per-commit main build is a PRE-RELEASE: GitHub's "latest release"
+          # A per-commit legacy-hse build is a PRE-RELEASE: GitHub's "latest release"
           # skips those, so `install.sh`'s default stable channel keeps pointing
           # at the last version tag while this commit is still installable by tag.
           prerelease: ${{ needs.resolve.outputs.prerelease == 'true' }}

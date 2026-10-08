@@ -34,9 +34,13 @@ pub(super) struct EngineHealthSummary {
 
 impl EngineHealthSummary {
     pub fn state(self) -> EngineFleetState {
-        if self.enabled == 0 || self.up == 0 {
+        // No enabled/usable engine is an obvious failure. A fleet with less
+        // than 25% of its enabled engines usable is also operationally failed:
+        // it has lost most of the independent retrieval paths diagnostics is
+        // meant to verify. Exactly 25% remains degraded rather than failed.
+        if self.enabled == 0 || self.up == 0 || self.up.saturating_mul(4) < self.enabled {
             EngineFleetState::Failed
-        } else if self.blocked > 0 || self.down > 0 {
+        } else if self.up < self.enabled {
             EngineFleetState::Degraded
         } else {
             EngineFleetState::Healthy
@@ -157,8 +161,18 @@ mod tests {
     }
 
     #[test]
-    fn fleet_state_fails_when_no_enabled_engine_is_usable() {
+    fn fleet_state_fails_when_usable_capacity_is_below_one_quarter() {
         assert_eq!(summary(0, 4, 2, 0).state(), EngineFleetState::Failed);
         assert_eq!(summary(0, 0, 0, 16).state(), EngineFleetState::Failed);
+        assert_eq!(
+            summary(3, 7, 6, 0).state(),
+            EngineFleetState::Failed,
+            "the observed 3/16 handset state must not pass diagnostics"
+        );
+        assert_eq!(
+            summary(4, 7, 5, 0).state(),
+            EngineFleetState::Degraded,
+            "exactly 25% usable remains degraded, not failed"
+        );
     }
 }
