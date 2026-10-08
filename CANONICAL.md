@@ -4,9 +4,24 @@ One operator repository. One crate. One installed binary.
 
 - Repository: `EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-`
 - Binary: `huntsman-recon`
-- Target: Termux Android `aarch64-linux-android`, no root
+- Package: `huntsman-recon` 0.2.0, edition 2024, rust-version 1.87
+- Dependencies: serde, serde_json, thiserror, ureq
+- Target: Termux Android `aarch64-linux-android`, no root, no ports below 1024
 - Identity module: `src/repository_identity.rs`
 - Value normaliser: `src/canonical.rs`
+- Verified on 2026-10-08: `cargo check --locked` finished on commit 4aff3d7. Full `cargo test` can be SIGKILL under low memory; that is a host limit, not a second engine.
+
+Lifecycle, from a clone:
+
+```sh
+bash scripts/lifecycle.sh build
+bash scripts/lifecycle.sh run
+HUNTSMAN_SYNC=1 bash scripts/lifecycle.sh all
+```
+
+`sync` pushes `main` only. A dirty tree is committed only when `HUNTSMAN_SYNC_COMMIT=1`. Failures append to `~/.huntsman/lifecycle.log`.
+
+Phone install remains `install.sh` (pins `main` to one SHA, installs `huntsman-recon`, runs offline acceptance).
 
 `hse` is the legacy monolith. It is not a second current engine.
 
