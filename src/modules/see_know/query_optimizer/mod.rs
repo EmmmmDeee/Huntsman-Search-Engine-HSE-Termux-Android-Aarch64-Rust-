@@ -30,33 +30,3 @@ pub mod cost_analyzer;
 pub mod roi_router;
 pub mod types;
 pub mod value_scorer;
-
-/// Optimal SeekNow bulk list, generated before a scan spends credits.
-/// Highest pivot per credit first. A zero-cost path sorts last so a free
-/// miss cannot outrank a cheap pivot.
-pub fn optimal_bulk(limit: usize) -> Vec<&'static str> {
-    let registry = types::EndpointRegistry::new();
-    let mut rows: Vec<(&str, f32)> = registry
-        .all_endpoints()
-        .into_iter()
-        .map(|path| {
-            let credit = registry.credit_cost(path).max(1.0);
-            let score = registry.pivot_potential(path) / credit;
-            (path, score)
-        })
-        .collect();
-    rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    rows.into_iter().take(limit).map(|(path, _)| path).collect()
-}
-
-#[cfg(test)]
-mod bulk_tests {
-    use super::optimal_bulk;
-
-    #[test]
-    fn bulk_plan_is_ordered_and_bounded() {
-        let plan = optimal_bulk(5);
-        assert_eq!(plan.len(), 5);
-        assert!(plan.windows(2).all(|w| w[0] != w[1]));
-    }
-}
