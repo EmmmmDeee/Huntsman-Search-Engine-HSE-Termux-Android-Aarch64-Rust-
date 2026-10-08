@@ -322,3 +322,59 @@ fn legacy_hse_update_contract_routes_to_legacy_channel_without_building_recon() 
 
     let _ = fs::remove_dir_all(&temp);
 }
+
+#[test]
+fn legacy_hse_parent_without_ref_routes_before_recon_install() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let installer = root.join("install.sh");
+    let temp = scratch();
+    let prefix = PathBuf::from("/data/data/com.termux/files/usr");
+    let fake_bin = temp.join("fake-bin");
+    let fake_target_libdir = temp.join("rustlib");
+    let log = temp.join("install.log");
+    let tmpdir = temp.join("tmp");
+    let proc_root = temp.join("proc");
+    fs::create_dir_all(&tmpdir).unwrap();
+    fs::create_dir_all(proc_root.join("100")).unwrap();
+    fs::write(proc_root.join("100/status"), "Name:\thse\nPPid:\t1\n").unwrap();
+    fs::write(proc_root.join("100/cmdline"), b"hse\0update\0").unwrap();
+    install_fake_termux_toolchain(&fake_bin, &fake_target_libdir);
+
+    let compat = temp.join("legacy-channel.sh");
+    write_executable(
+        &compat,
+        "#!/bin/sh\nprintf 'compat ref=%s require=%s\\n' \"${HSE_REF:-unset}\" \"${HSE_REQUIRE_SHA:-unset}\" >> \"$INSTALL_LOG\"\nexit 0\n",
+    );
+
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    let output = Command::new("bash")
+        .arg(&installer)
+        .env("PATH", format!("{}:{existing_path}", fake_bin.display()))
+        .env("PREFIX", &prefix)
+        .env("INSTALL_LOG", &log)
+        .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
+        .env("HOME", &temp)
+        .env("TMPDIR", &tmpdir)
+        .env("HUNTSMAN_PROC_ROOT", &proc_root)
+        .env("HUNTSMAN_LEGACY_CALLER", "hse")
+        .env("HUNTSMAN_LEGACY_CHANNEL_INSTALLER", &compat)
+        .env_remove("HUNTSMAN_REV")
+        .env_remove("HSE_REF")
+        .env_remove("HSE_REQUIRE_SHA")
+        .output()
+        .expect("parent hse route must execute");
+
+    assert!(
+        output.status.success(),
+        "parent hse route failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(calls.contains("compat ref=legacy-hse require=unset"), "{calls}");
+    assert!(!calls.contains("cargo install"), "must not install recon: {calls}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("huntsman-recon was not substituted for hse"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&temp);
+}

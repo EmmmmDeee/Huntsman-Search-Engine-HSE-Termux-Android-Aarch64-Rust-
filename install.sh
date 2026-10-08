@@ -40,12 +40,33 @@ case "$TERMUX_PREFIX" in
   *) die "non-standard Termux PREFIX: $TERMUX_PREFIX" ;;
 esac
 
-# Compatibility boundary for the maintained legacy `hse` monolith. Its
-# historical updater invokes repository `main/install.sh` with HSE_REQUIRE_SHA
-# or HSE_REF. Current main owns `huntsman-recon`, so those legacy-only variables
-# are a product-line handoff, never permission to substitute one binary family
-# for the other.
-if [[ -z "${HUNTSMAN_REV:-}" && ( -n "${HSE_REQUIRE_SHA:-}" || -n "${HSE_REF:-}" ) ]]; then
+# Compatibility boundary for the maintained legacy `hse` monolith.
+# Current main owns `huntsman-recon`. A legacy `hse update` must never install
+# that binary over the `hse` product line.
+#
+# The maintained updater sets HSE_REQUIRE_SHA or HSE_REF. The installed 1.41.0
+# updater does not: it executes this script with neither variable, which is the
+# observed failure (cargo install huntsman-recon, `hse` left at 1.41.0). A
+# parent process named `hse` is the same handoff. HUNTSMAN_REV remains the
+# explicit recon pin and is never redirected.
+legacy_hse_caller=0
+if [[ -n "${HSE_REQUIRE_SHA:-}" || -n "${HSE_REF:-}" || "${HUNTSMAN_LEGACY_CALLER:-}" == "hse" ]]; then
+  legacy_hse_caller=1
+fi
+proc_root="${HUNTSMAN_PROC_ROOT:-/proc}"
+pid="$$"
+for _ in 1 2 3 4 5; do
+  [[ -r "$proc_root/$pid/status" ]] || break
+  ppid="$(awk '/^PPid:/ { print $2; exit }' "$proc_root/$pid/status" 2>/dev/null || true)"
+  [[ -n "$ppid" && "$ppid" != "$pid" && "$ppid" != "0" ]] || break
+  pid="$ppid"
+  [[ -r "$proc_root/$pid/cmdline" ]] || continue
+  cmd="$(tr '\0' ' ' < "$proc_root/$pid/cmdline")"
+  case " $cmd " in
+    *" /hse "*|*" hse "*|*" hse") legacy_hse_caller=1; break ;;
+  esac
+done
+if [[ -z "${HUNTSMAN_REV:-}" && "$legacy_hse_caller" -eq 1 ]]; then
   printf 'Detected legacy hse self-update contract; routing to the maintained legacy-hse branch.\n'
   command -v bash >/dev/null 2>&1 || die "bash is required for the legacy hse handoff"
   if [[ -z "${HUNTSMAN_LEGACY_CHANNEL_INSTALLER:-}" ]]; then
