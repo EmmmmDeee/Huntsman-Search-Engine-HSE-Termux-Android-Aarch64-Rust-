@@ -55,6 +55,7 @@ jobs:
           fi
       - name: Dual-pass plan then red-green
         env:
+          # Built-in workflow token only. No model secret. No provider key.
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
           REPO: ${{ github.repository }}

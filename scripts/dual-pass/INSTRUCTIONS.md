@@ -31,6 +31,14 @@ There is no prompt cache. Pass 1 records sha256 of `static-context.md`, `Cargo.t
 
 On green, only declared targets, generated tests, the plan, and the report are committed. The branch is `dual-pass/issue-<n>`. On exhaustion, the same narrow set is committed to `dual-pass/issue-<n>-wip`, the issue is labeled `needs-human-review`, and the failure trace is commented. Protected files are restored before either commit.
 
-## Non-methods
+## Secrets
+
+The runner receives one secret: `GH_TOKEN`, set from `github.token`. It is used to read the issue, push the branch, open the pull request, add `needs-human-review`, and comment the trace. It is not an LLM credential.
+
+Do not add a model secret. Do not add `XAI_API_KEY`, an OpenAI key, or an Anthropic key. The workflow rejects a live model URL or `secrets.XAI` reference.
+
+Do not pass provider keys into this job. Issue-authored tests run in the same environment, so `HUNTSMAN_*` keys, breach keys, and registry tokens would be readable by the patch under test. Those keys stay out of dual-pass. Release and CI already use their own tokens; this workflow does not import them.
+
+No secret value is written to the plan, the report, or the pull request body.
 
 Do not add a model secret to the workflow. Do not let a patch edit the existing suite to make itself pass. Do not treat a green generated test on untouched main as success.
