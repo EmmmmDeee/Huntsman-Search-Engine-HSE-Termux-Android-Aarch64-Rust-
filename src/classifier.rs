@@ -5,7 +5,9 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::au_id;
-use crate::canonical::{canonical_domain, canonical_email, canonical_phone, canonical_url};
+use crate::canonical::{
+    canonical_domain, canonical_email, canonical_handle, canonical_phone, canonical_url,
+};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 
 pub const ACTIONABLE_FLOOR: f64 = 0.50;
@@ -36,11 +38,11 @@ pub fn classify(raw: &str) -> Classified {
             signal: "empty",
         };
     }
-    if canonical_url(value).is_some() {
-        return classified(EntityKind::Url, value, 0.90, "scheme");
+    if let Some(url) = canonical_url(value) {
+        return classified(EntityKind::Url, &url, 0.90, "scheme");
     }
-    if canonical_email(value).is_some() {
-        return classified(EntityKind::Email, value, 0.85, "rfc-shape");
+    if let Some(email) = canonical_email(value) {
+        return classified(EntityKind::Email, &email, 0.85, "rfc-shape");
     }
     if parse_ipv4(value) {
         return classified(EntityKind::IpAddress, value, 0.92, "parsed");
@@ -48,17 +50,18 @@ pub fn classify(raw: &str) -> Classified {
     if let Some(coordinates) = parse_decimal_coordinates(value) {
         return classified(EntityKind::Coordinates, &coordinates, 0.85, "lat-lon");
     }
-    if canonical_domain(value).is_some() {
-        return classified(EntityKind::Domain, value, 0.75, "domain-shape");
+    if let Some(domain) = canonical_domain(value) {
+        return classified(EntityKind::Domain, &domain, 0.75, "domain-shape");
     }
-    if canonical_phone(value).is_some() {
-        return classified(EntityKind::Phone, value, 0.80, "dialable-shape");
+    if let Some(phone) = canonical_phone(value) {
+        return classified(EntityKind::Phone, &phone, 0.80, "dialable-shape");
     }
     if au_id::classify(value).is_ok() {
         return classified(EntityKind::AbnAcn, value, 0.95, "checksum");
     }
     if value.starts_with('@') {
-        return classified(EntityKind::Username, value, 0.40, "handle");
+        let handle = canonical_handle(value).unwrap_or_else(|| value.trim().to_owned());
+        return classified(EntityKind::Username, &handle, 0.40, "handle");
     }
     let lowered = value.to_ascii_lowercase();
     if ["pty ltd", "llc", "inc", "corp", "gmbh"]
@@ -192,6 +195,13 @@ mod tests {
         let entities = extract_entities("see https://example.com and ada@example.com", "scan");
         assert_eq!(entities.len(), 2);
         assert!(entities.iter().all(|entity| entity.has_tag("classified")));
+    }
+
+    #[test]
+    fn stored_value_is_canonical() {
+        assert_eq!(classify("  Example.COM ").value, "example.com");
+        assert_eq!(classify("  Ada@Example.COM ").value, "ada@example.com");
+        assert_eq!(classify("@Ada").value, "ada");
     }
 
     #[test]
