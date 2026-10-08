@@ -25,14 +25,14 @@ the completion criteria actually call for against a codebase that's already
 fully ported: an audit, a dependency graph, a credential-retention manifest,
 an issue census, and end-to-end remediation of every issue the census found.
 
-Full detail: `RUST_MIGRATION_AUDIT_2026-08-27_czrqs1.md` (architecture map,
+Full detail: `rust-migration-audit-2026-08-27.md` (architecture map,
 high-risk-construct inventory, retention-manifest summary, issue census,
-gate results, known risks) and `DEPENDENCY_GRAPH_2026-08-27_czrqs1.md`
+gate results, known risks) and `dependency-graph-2026-08-27.md`
 (internal layering + external supply-chain graph).
 
 ## 2. What was fixed
 
-Nine issues opened and closed with evidence (`ISSUE_LEDGER_2026-08-27_czrqs1.md`,
+Nine issues opened and closed with evidence (`issue-ledger-2026-08-27.md`,
 IL-1 through IL-9), each with its own commit:
 
 | ID | What | Severity | Commit |
@@ -91,7 +91,7 @@ head — see the PR for live status.
 branch's HEAD (after): **zero regressions** (every delta within ±18%,
 consistent with `--sample-size 10` run-to-run noise; none of this run's
 actual code changes touch a benchmarked path). Full data and method:
-`BENCHMARK_RESULTS_2026-08-27_czrqs1.md`.
+`benchmark-results-2026-08-27.md`.
 
 ## 6. Retention manifest — credential wiring
 
@@ -108,8 +108,8 @@ authorization).
 
 ## 7. What's explicitly NOT done, and why (not silently dropped)
 
-All recorded in `ISSUE_LEDGER_2026-08-27_czrqs1.md`'s won't-fix section and
-`AUTONOMOUS_DECISIONS_2026-08-27_czrqs1.md`:
+All recorded in `issue-ledger-2026-08-27.md`'s won't-fix section and
+`autonomous-decisions-2026-08-27.md`:
 
 - **~30 other modules** sharing IL-2's `ctx.key_opt()`-without-filter
   pattern — real, but sized as its own remediation batch, not rushed here.

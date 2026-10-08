@@ -2,7 +2,7 @@
 
 Phase 0 of the run's mandate calls for a dependency graph as part of the
 migration-planning inventory. Since Phase 0 also found the codebase already
-100% Rust (see `RUST_MIGRATION_AUDIT_2026-08-27_czrqs1.md`), there is no
+100% Rust (see `rust-migration-audit-2026-08-27.md`), there is no
 legacy-vs-ported module graph to plan batching over. What follows instead is
 the graph that actually matters for this codebase's own stated architecture
 rules and for the external supply-chain surface `cargo audit`/`cargo deny`
@@ -53,7 +53,7 @@ Headline facts drawn from these trees, cross-referenced against
   additionally pulls in `image`'s `ravif`/AV1 encode path
   (`ravif → rav1e → paste`), which is where the one pre-existing waived
   `RUSTSEC-2024-0436` (`paste`, unmaintained) advisory originates — see
-  `deny.toml`'s own comment and `ISSUE_LEDGER_2026-08-27_czrqs1.md`.
+  `deny.toml`'s own comment and `issue-ledger-2026-08-27.md`.
 - No dependency cycles (Cargo's resolver forbids them structurally; nothing
   to verify here beyond what `cargo tree` would already fail to render).
 - No banned/duplicate-version crates flagged by `cargo deny check`

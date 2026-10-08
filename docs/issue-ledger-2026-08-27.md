@@ -22,7 +22,7 @@ disposition | commit.
   (`pre-secret-redaction-huntsman-consolidation-czrqs1`) before any edit;
   value redacted in place with a dated note; `.gitleaks.toml` gained
   `hse-seeknow-key`/`hse-wigle-api-name` rules. Full writeup:
-  `docs/CREDENTIAL_AUDIT_2026-08-27_czrqs1.md`.
+  `docs/credential-audit-2026-08-27.md`.
 - **Disposition**: FIXED. Follow-up for the account owner (not performed
   here): rotate the credential at SeekNow; decide on a history-rewrite
   pass (coordinated across this branch and PR #483's, which found and
