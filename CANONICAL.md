@@ -9,17 +9,16 @@ One operator repository. One crate. One installed binary.
 - Target: Termux Android `aarch64-linux-android`, no root, no ports below 1024
 - Identity module: `src/repository_identity.rs`
 - Value normaliser: `src/canonical.rs`
-- Verified on 2026-10-08: `cargo check --locked` finished on commit 4aff3d7. Full `cargo test` can be SIGKILL under low memory; that is a host limit, not a second engine.
 
-Lifecycle, from a clone:
+One command from a clone of `main`:
 
 ```sh
-bash scripts/lifecycle.sh build
-bash scripts/lifecycle.sh run
-HUNTSMAN_SYNC=1 bash scripts/lifecycle.sh all
+bash scripts/lifecycle.sh
 ```
 
-`sync` pushes `main` only. A dirty tree is committed only when `HUNTSMAN_SYNC_COMMIT=1`. Failures append to `~/.huntsman/lifecycle.log`.
+That builds the locked binary, runs `huntsman-recon check`, runs lib tests, commits non-secret worktree changes, and pushes `main`. No `HUNTSMAN_SYNC` flag. A SIGKILL during tests (low memory) is recorded as degraded and does not block a build that already checked. A real test failure stops the push.
+
+State is `~/.huntsman/lifecycle-state` (mode 600). The log is `~/.huntsman/lifecycle.log`. Secret-looking paths (`*.env`, `*.pem`, `*.key`, `credentials`, `secret`) are refused. Non-main branches and force-push are refused. A failed push leaves the local commit and a failed state file.
 
 Phone install remains `install.sh` (pins `main` to one SHA, installs `huntsman-recon`, runs offline acceptance).
 
