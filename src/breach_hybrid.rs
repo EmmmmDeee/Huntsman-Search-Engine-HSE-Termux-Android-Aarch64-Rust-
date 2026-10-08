@@ -48,6 +48,13 @@ pub fn command_allowed(subcommand: &str, has_operator_key: bool) -> bool {
     }
 }
 
+
+/// `recon stolen-tax` is a keyed leg. No key means it is not in the order.
+#[must_use]
+pub fn stolen_tax_allowed(has_operator_key: bool) -> bool {
+    exposure_order(has_operator_key).contains(&BreachLeg::StolenTax)
+}
+
 /// A password count is a lead. Do not admit it as verified.
 #[must_use]
 pub const fn count_is_lead(count: u64) -> bool {
@@ -95,5 +102,11 @@ mod tests {
         assert!(command_allowed("breaches", false));
         assert!(!command_allowed("account", false));
         assert!(command_allowed("account", true));
+    }
+
+    #[test]
+    fn stolen_tax_follows_the_same_order() {
+        assert!(!stolen_tax_allowed(false));
+        assert!(stolen_tax_allowed(true));
     }
 }
