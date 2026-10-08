@@ -27,7 +27,7 @@ No deferred tasks remain for current cycle. Per problem-tree.md §7, the followi
 - Performance optimization (Rule 0.7 priority 7) — deferred until P0-P2 clear ✓
 - Multi-platform ports (Rule 0.7 priority 9) — deferred unless strengthens Termux target ✓
 - Feature expansion (Rule 0.7 priority 10) — deferred pending CAP phase ✓
-- Documentation expansion — OSINT_API_REFERENCE, SEEKNOW_SETUP, OATHNET_API_GUIDE complete ✓
+- Documentation expansion — osint-api-reference, seeknow-setup, oathnet-api-guide complete ✓
 
 ---
 

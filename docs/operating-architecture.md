@@ -94,7 +94,7 @@ before REQ-HARNESS-001.
 - no test, capability or provider was removed to obtain that;
 - every changed behaviour has a test that fails on the previous source;
 - `git status` shows only intentional changes;
-- the change has a REQUIREMENTS_LEDGER entry and a CHANGELOG line;
+- the change has a requirements-ledger entry and a CHANGELOG line;
 - hse-falsifier has reviewed the commit range and nothing it reported
   REFUTED is still open.
 ```
