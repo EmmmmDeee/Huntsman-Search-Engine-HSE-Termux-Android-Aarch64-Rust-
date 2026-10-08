@@ -13,4 +13,4 @@ Do not treat this file as evidence. Do not treat a model sentence as a verified 
 9. Do not set `ClaimState::Verified`, the content hash, or `classify_fetch` from model text.
 10. Admit a plan only through `runtime::admit_round`. Missing field means refusal, not a static fallback.
 11. Reverse the action order when a collector is quarantined, returns a valid zero, or the question is keyed exposure.
-12. `runtime::admit_round` is the caller. It refuses an inherited plan. `investigate_offline` still uses `planner` and must not be described as the determination.
+12. `runtime::investigate_gated` is the caller. It admits through `admit_round` and does not call `planner`. `investigate_offline` still uses `planner` and must not be described as the determination.
