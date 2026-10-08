@@ -39,25 +39,40 @@ fn debug_dir() -> PathBuf {
 }
 
 fn upload(repo: &str, scan_id: &str, body: &str) -> Result<(), String> {
-    let status = Command::new("gh")
+    let token = std::env::var("GH_TOKEN")
+        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+        .map_err(|_| "GH_TOKEN is not set".to_string())?;
+    put(&token, repo, &format!("debug/scans/{scan_id}.log"), body)?;
+    put(&token, repo, "debug/scans/latest.log", body)?;
+    Ok(())
+}
+
+fn put(token: &str, repo: &str, path: &str, body: &str) -> Result<(), String> {
+    let payload = format!(
+        "{{\"message\":\"scan debug\",\"content\":\"{}\",\"branch\":\"scan-debug\"}}",
+        b64(body)
+    );
+    let status = Command::new("curl")
         .args([
-            "api",
-            "--method",
+            "-fsS",
+            "-X",
             "PUT",
-            &format!("repos/{repo}/contents/debug/scans/{scan_id}.log"),
-            "-f",
-            &format!("message=scan debug {scan_id}"),
-            "-f",
-            &format!("content={}", b64(body)),
-            "-f",
-            "branch=scan-debug",
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            &format!("Authorization: Bearer {token}"),
+            "-H",
+            "Content-Type: application/json",
+            "--data",
+            &payload,
+            &format!("https://api.github.com/repos/{repo}/contents/{path}"),
         ])
         .status()
         .map_err(|e| e.to_string())?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("debug upload exited {}", status.code().unwrap_or(-1)))
+        Err(format!("upload of {path} exited {}", status.code().unwrap_or(-1)))
     }
 }
 
