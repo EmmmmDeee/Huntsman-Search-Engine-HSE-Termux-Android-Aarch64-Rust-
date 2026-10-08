@@ -1179,3 +1179,10 @@ async fn api_discovery_live() {
             .any(|e| attr(e, "resource_name") == Some("Asana MCP"))
     );
 }
+
+#[test]
+fn an_mcp_resource_name_is_recognised() {
+    assert!(super::is_mcp("https://mcp.stripe.com"));
+    assert!(super::is_mcp("Linear MCP"));
+    assert!(!super::is_mcp("https://example.com"));
+}

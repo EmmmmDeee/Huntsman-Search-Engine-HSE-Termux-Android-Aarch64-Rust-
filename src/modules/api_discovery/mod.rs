@@ -597,6 +597,9 @@ impl Discovery {
             );
             e.tag("api-discovery");
             e.tag("oauth-protected-resource");
+            if is_mcp(resource) || facts.name.as_deref().is_some_and(is_mcp) {
+                e.tag("mcp");
+            }
             let label = facts.name.as_deref().unwrap_or(resource);
             let mut ev = Evidence::new(
                 SRC,
@@ -674,6 +677,10 @@ impl Discovery {
             );
         }
     }
+}
+
+fn is_mcp(value: &str) -> bool {
+    value.to_ascii_lowercase().contains("mcp")
 }
 
 #[async_trait]
