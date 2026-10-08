@@ -6,12 +6,10 @@ IFS=$'\n\t'
 
 : "${ISSUE_NUMBER:?issue number required}"
 : "${REPO:?owner/repo required}"
-MODEL="${XAI_MODEL:-grok-4}"
 MAX_TURNS=3
 WORKDIR="$(pwd)"
 REPORT="$WORKDIR/dual-pass-report.md"
 PLAN="$WORKDIR/execution-plan.json"
-PROTECTED=(tests Cargo.toml Cargo.lock .github/workflows/ci.yml .github/workflows/release.yml)
 
 log() { printf '%s\n' "$*"; }
 
@@ -31,8 +29,6 @@ fail_human() {
 }
 
 snapshot() {
-  git stash push -u -m dual-pass-base --quiet || true
-  git stash apply --quiet
   mkdir -p .dual-pass-base
   git ls-files tests Cargo.toml Cargo.lock .github/workflows/ci.yml .github/workflows/release.yml \
     | while read -r f; do
@@ -43,23 +39,28 @@ snapshot() {
 
 restore_protected() {
   local f
-  for f in tests Cargo.toml Cargo.lock .github/workflows/ci.yml .github/workflows/release.yml; do
-    if [[ -d ".dual-pass-base/$f" || -f ".dual-pass-base/$f" ]]; then
-      rm -rf "$f"
-      mkdir -p "$(dirname "$f")"
-      cp -a ".dual-pass-base/$f" "$f"
+  if [[ -d .dual-pass-base/tests ]]; then
+    find .dual-pass-base/tests -type f | while read -r src; do
+      rel="${src#.dual-pass-base/}"
+      mkdir -p "$(dirname "$rel")"
+      cp "$src" "$rel"
+    done
+  fi
+  for f in Cargo.toml Cargo.lock .github/workflows/ci.yml .github/workflows/release.yml; do
+    if [[ -f ".dual-pass-base/$f" ]]; then
+      cp ".dual-pass-base/$f" "$f"
     fi
   done
 }
 
 ask() {
-  local kind="$1" body="$2"
+  local body="$1"
   if [[ -z "${XAI_API_KEY:-}" ]]; then
     fail_human "XAI_API_KEY secret is not set; pass 1 cannot run"
   fi
-  python3 - "$kind" "$body" <<'PY'
+  python3 - "$body" <<'PY'
 import json, os, sys, urllib.request
-kind, body = sys.argv[1], sys.argv[2]
+body = sys.argv[1]
 payload = {
   "model": os.environ.get("XAI_MODEL", "grok-4"),
   "temperature": 0,
@@ -71,7 +72,7 @@ payload = {
 req = urllib.request.Request(
   "https://api.x.ai/v1/chat/completions",
   data=json.dumps(payload).encode(),
-  headers={"Authorization": f"Bearer {os.environ['XAI_API_KEY']}", "Content-Type": "application/json"},
+  headers={"Authorization": "Bearer " + os.environ["XAI_API_KEY"], "Content-Type": "application/json"},
 )
 with urllib.request.urlopen(req, timeout=120) as resp:
     data = json.load(resp)
@@ -85,35 +86,37 @@ m=re.search(r"\{[\s\S]*\}\s*$", t);
 print(m.group(0) if m else t)'
 }
 
-mkdir -p tests/generated
 printf '# Dual-pass report for issue %s\n\n' "$ISSUE_NUMBER" > "$REPORT"
 snapshot
 
 ISSUE_BODY="$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json title,body,labels --jq '{title,body,labels}')"
 DEPS="$(python3 - <<'PY'
-import tomllib
+import json, tomllib
 from pathlib import Path
 data = tomllib.loads(Path("Cargo.toml").read_text())
-print(json_dump := __import__("json").dumps({"package": data.get("package", {}), "dependencies": data.get("dependencies", {})}))
+print(json.dumps({"package": data.get("package", {}), "dependencies": data.get("dependencies", {})}))
 PY
 )"
-IFACES="$(rg -n --glob 'src/*.rs' '^pub (fn|struct|enum|trait) ' src | head -n 200 || true)"
+IFACES="$(grep -R -n -E '^pub (fn|struct|enum|trait) ' src --include='*.rs' | head -n 200 || true)"
 
 log "pass 1: plan"
-PLAN_TEXT="$(ask plan "Issue ${ISSUE_NUMBER}: ${ISSUE_BODY}
+PLAN_TEXT="$(ask "Issue ${ISSUE_NUMBER}: ${ISSUE_BODY}
 Dependencies: ${DEPS}
 Public interfaces:
 ${IFACES}
-Return only JSON: {\"targets\": \"new_tests\": \"forbidden\"}. new_tests paths must be under tests/generated/. Do not list tests/, Cargo.toml, Cargo.lock, or .github/ as targets.")"
+Return only JSON with keys targets, new_tests, forbidden. Each new_tests path must be tests/generated_<issue>.rs so Cargo runs it as an integration test. source is the full test file. Do not list tests/, Cargo.toml, Cargo.lock, or .github/ as targets.")"
 printf '%s\n' "$PLAN_TEXT" | extract_json > "$PLAN"
-python3 - <<'PY'
+python3 - <<PY
 import json
 from pathlib import Path
 plan = json.loads(Path("execution-plan.json").read_text())
+issue = "${ISSUE_NUMBER}"
 for item in plan.get("new_tests", []):
     path = item["path"]
-    if not path.startswith("tests/generated/"):
-        raise SystemExit(f"test path outside tests/generated: {path}")
+    if not path.startswith("tests/generated_") or not path.endswith(".rs"):
+        raise SystemExit(f"test path must be tests/generated_*.rs: {path}")
+    if "/" in path[len("tests/"):]:
+        raise SystemExit(f"nested test path is not a Cargo integration test: {path}")
 for item in plan.get("targets", []):
     path = item["path"]
     if path.startswith(("tests/", ".github/", "Cargo")):
@@ -128,11 +131,12 @@ from pathlib import Path
 plan = json.loads(Path("execution-plan.json").read_text())
 for item in plan.get("new_tests", []):
     path = Path(item["path"])
-    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(item["source"], encoding="utf-8")
+    print(path.stem)
 PY
+mapfile -t TEST_BINS < <(python3 -c 'import json; print("\n".join(Path["path"].split("/")[-1][:-3] for Path in json.load(open("execution-plan.json"))["new_tests"]))')
 set +e
-red_log="$(cargo test --locked --test '*' -- --test-threads=1 2>&1)"
+red_log="$(cargo test --locked --test "${TEST_BINS[0]}" -- --test-threads=1 2>&1)"
 red_status=$?
 set -e
 printf '\n## Red\n\n```\n%s\n```\n' "$(printf '%s\n' "$red_log" | tail -n 40)" >> "$REPORT"
@@ -146,7 +150,7 @@ green=0
 while [[ "$turn" -le "$MAX_TURNS" ]]; do
   log "green turn $turn"
   diag="$(tail -n 60 "$REPORT")"
-  reply="$(ask green "execution-plan.json follows. Implement only declared targets. Return JSON {\"diff\": \"ops\"}. diff is a unified git patch. ops is the tree-sitter fallback: [{path, kind: replace_fn, name, body}]. Plan: $(cat "$PLAN")
+  reply="$(ask "execution-plan.json follows. Implement only declared targets. Return JSON with diff and ops. diff is a unified git patch. ops is the tree-sitter fallback: path, kind replace_fn, name, body. Plan: $(cat "$PLAN")
 Diagnostics:
 $diag")"
   if ! printf '%s\n' "$reply" | extract_json | python3 scripts/dual-pass/apply_change.py; then
@@ -165,7 +169,7 @@ $diag")"
     continue
   fi
   set +e
-  unit="$(cargo test --locked --manifest-path Cargo.toml -- tests::generated 2>&1)"
+  unit="$(cargo test --locked --test "${TEST_BINS[0]}" -- --test-threads=1 2>&1)"
   unit_status=$?
   set -e
   printf '\n## Turn %s unit\n\n```\n%s\n```\n' "$turn" "$(printf '%s\n' "$unit" | tail -n 40)" >> "$REPORT"
@@ -180,10 +184,10 @@ if [[ "$green" -ne 1 ]]; then
   fail_human "self-correction budget exhausted after ${MAX_TURNS} turns"
 fi
 
-rustfmt --edition 2024 src tests/generated >/dev/null 2>&1 || true
+rustfmt --edition 2024 src tests/generated_*.rs >/dev/null 2>&1 || true
 restore_protected
 git checkout -B "dual-pass/issue-${ISSUE_NUMBER}"
-git add execution-plan.json dual-pass-report.md tests/generated src
+git add execution-plan.json dual-pass-report.md tests/generated_*.rs src
 git -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
   -c user.name="github-actions[bot]" \
   commit -m "dual-pass: issue ${ISSUE_NUMBER}"

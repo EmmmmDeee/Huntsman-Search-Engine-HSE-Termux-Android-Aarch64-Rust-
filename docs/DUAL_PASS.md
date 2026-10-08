@@ -2,15 +2,15 @@
 
 Label a GitHub issue `dual-pass`, or run the `dual-pass` workflow with an issue number.
 
-Pass 1 asks the model for `execution-plan.json`: target files, signatures, and new tests under `tests/generated/` only.
+Pass 1 asks the model for `execution-plan.json`: target files, signatures, and new tests. New tests must be `tests/generated_<issue>.rs` so Cargo runs them as integration tests. Existing files under `tests/` are snapshotted and restored.
 
 Pass 2 writes those tests and runs them against untouched code. A pass is rejected. A failure is the red gate. The model may then patch only declared files, at most 3 turns.
 
 Apply order: `git apply`, then a tree-sitter Rust function replace if that import is present, then a brace-matched `fn` replace.
 
-Gates: `cargo check --locked`, then the generated tests. `tsc` and `mypy` are not used; this crate is Rust. `rustfmt` runs before the pull request.
+Gates: `cargo check --locked`, then the generated integration test. `tsc` and `mypy` are not used; this crate is Rust. `rustfmt` runs before the pull request.
 
-Protected and restored if mutated: `tests/` except the generated write that the runner itself adds, `Cargo.toml`, `Cargo.lock`, `ci.yml`, `release.yml`.
+Protected and restored if mutated: snapshotted `tests/` files, `Cargo.toml`, `Cargo.lock`, `ci.yml`, `release.yml`. Generated `tests/generated_*.rs` files are new, so restore does not delete them.
 
 Success opens a pull request to `main` with `dual-pass-report.md`. Failure pushes `dual-pass/issue-N-wip`, labels `needs-human-review`, and comments the trace.
 

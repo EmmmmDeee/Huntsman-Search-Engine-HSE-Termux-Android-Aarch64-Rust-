@@ -20,7 +20,7 @@ fn dual_pass_workflow_is_issue_scoped_and_red_green() {
         "red gate rejected",
         "self-correction budget exhausted",
         "needs-human-review",
-        "tests/generated/",
+        "tests/generated_",
         "restore_protected",
         "MAX_TURNS=3",
         "gh pr create",
