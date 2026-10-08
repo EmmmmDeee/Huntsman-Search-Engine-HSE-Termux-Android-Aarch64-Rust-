@@ -1,6 +1,11 @@
 name: dual-pass
 
 on:
+  pull_request:
+    paths:
+      - scripts/dual-pass/**
+      - .github/workflows/dual-pass.yml
+      - .github/ISSUE_TEMPLATE/dual-pass.yml
   issues:
     types: [labeled]
   workflow_dispatch:
@@ -16,6 +21,18 @@ permissions:
   pull-requests: write
 
 jobs:
+  self-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        with:
+          toolchain: 1.87.0
+      - name: Install tree-sitter fallback
+        run: python3 -m pip install --disable-pip-version-check tree-sitter tree-sitter-rust
+      - name: Dual-pass self-check
+        run: bash scripts/dual-pass/self-check.sh
   plan-and-execute:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'dual-pass'
     runs-on: ubuntu-latest
@@ -30,8 +47,15 @@ jobs:
           components: rustfmt
       - name: Install tree-sitter fallback
         run: python3 -m pip install --disable-pip-version-check tree-sitter tree-sitter-rust
+      - name: Reject model endpoints in the runner
+        run: |
+          if grep -R -n -E 'https?://api\.x\.ai|secrets\.XAI|openai\.com|anthropic\.com' scripts/dual-pass .github/workflows/dual-pass.yml; then
+            echo "LLM API reference is forbidden"
+            exit 1
+          fi
       - name: Dual-pass plan then red-green
         env:
+          # Built-in workflow token only. No model secret. No provider key.
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
           REPO: ${{ github.repository }}
