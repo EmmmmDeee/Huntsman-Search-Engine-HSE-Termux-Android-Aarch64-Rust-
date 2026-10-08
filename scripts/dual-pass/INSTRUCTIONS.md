@@ -21,7 +21,7 @@ The runner writes the generated tests and runs them before applying a patch. A p
 
 ## Method 3 — Patch, then type, then unit
 
-Turn order is the patch array order, maximum three. `git apply` is first. If the diff misses, the runner replaces the named function node with tree-sitter, then a brace scan. After each apply it restores protected files, runs `cargo check --locked --tests --bins`, then the generated tests. A turn that fails does not call out. The next declared patch is the only correction.
+Turn order is the patch array order, maximum three. These are declared fallbacks, not a model correction loop. A failed turn does not call out and does not rewrite the next patch. `git apply` is first. If the diff misses, the runner replaces the named function node with tree-sitter, then a brace scan. After each apply it restores protected files, runs `cargo check --locked --tests --bins` with `GH_TOKEN` unset, then every generated test with `GH_TOKEN` unset. After the generated tests pass, the existing locked suite must also pass before a pull request is opened.
 
 ## Method 4 — Context is a digest
 
@@ -33,12 +33,6 @@ On green, only declared targets, generated tests, the plan, and the report are c
 
 ## Secrets
 
-The runner receives one secret: `GH_TOKEN`, set from `github.token`. It is used to read the issue, push the branch, open the pull request, add `needs-human-review`, and comment the trace. It is not an LLM credential.
-
-Do not add a model secret. Do not add `XAI_API_KEY`, an OpenAI key, or an Anthropic key. The workflow rejects a live model URL or `secrets.XAI` reference.
-
-Do not pass provider keys into this job. Issue-authored tests run in the same environment, so `HUNTSMAN_*` keys, breach keys, and registry tokens would be readable by the patch under test. Those keys stay out of dual-pass. Release and CI already use their own tokens; this workflow does not import them.
-
-No secret value is written to the plan, the report, or the pull request body.
+The runner receives one secret, `GH_TOKEN` from `github.token`, and only for issue read, push, pull request, label, and comment. Cargo check and cargo test run with that token unset, so a generated test cannot read it. Do not add a model secret. Do not add `XAI_API_KEY`, an OpenAI key, or an Anthropic key. Do not pass `HUNTSMAN_*` keys, breach keys, or registry tokens into this job. No secret value is written to the plan, the report, or the pull request body.
 
 Do not add a model secret to the workflow. Do not let a patch edit the existing suite to make itself pass. Do not treat a green generated test on untouched main as success.

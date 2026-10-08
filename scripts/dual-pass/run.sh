@@ -128,10 +128,23 @@ for item in plan["new_tests"]:
 Path(".dual-pass-tests").write_text("\n".join(names) + "\n", encoding="utf-8")
 PY
 mapfile -t TEST_BINS < .dual-pass-tests
+saved_token="${GH_TOKEN-}"
+unset GH_TOKEN
 set +e
-red_log="$(cargo test --locked --test "${TEST_BINS[0]}" -- --test-threads=1 2>&1)"
-red_status=$?
+red_log=""
+red_status=0
+for bin in "${TEST_BINS[@]}"; do
+  one="$(cargo test --locked --test "$bin" -- --test-threads=1 2>&1)"
+  one_status=$?
+  red_log="${red_log}"$'\n'"${one}"
+  if [[ "$one_status" -eq 0 ]]; then
+    red_status=0
+    break
+  fi
+  red_status=$one_status
+done
 set -e
+if [[ -n "$saved_token" ]]; then export GH_TOKEN="$saved_token"; fi
 printf '\n## Red\n\nstatus=%s\n\n```\n%s\n```\n' "$red_status" "$(printf '%s\n' "$red_log" | tail -n 40)" >> "$REPORT"
 if [[ "$red_status" -eq 0 ]]; then
   fail_human "red gate rejected the plan: generated tests passed on untouched main"
@@ -174,10 +187,13 @@ PY
     continue
   fi
   restore_protected
+  saved_token="${GH_TOKEN-}"
+  unset GH_TOKEN
   set +e
   syntax="$(cargo check --locked --message-format=short --tests --bins 2>&1)"
   syntax_status=$?
   set -e
+  if [[ -n "$saved_token" ]]; then export GH_TOKEN="$saved_token"; fi
   if [[ "$syntax_status" -ne 0 ]]; then
     printf '\n## Turn %s syntax-type\n\n```\n%s\n```\n' "$turn" "$(diagnostic syntax "$syntax")" >> "$REPORT"
     turn=$((turn + 1))
@@ -185,6 +201,8 @@ PY
   fi
   unit_status=0
   unit=""
+  saved_token="${GH_TOKEN-}"
+  unset GH_TOKEN
   for bin in "${TEST_BINS[@]}"; do
     set +e
     one="$(cargo test --locked --test "$bin" -- --test-threads=1 2>&1)"
@@ -195,6 +213,7 @@ PY
       unit_status=$one_status
     fi
   done
+  if [[ -n "$saved_token" ]]; then export GH_TOKEN="$saved_token"; fi
   printf '\n## Turn %s unit\n\n```\n%s\n```\n' "$turn" "$(diagnostic unit "$unit")" >> "$REPORT"
   if [[ "$unit_status" -eq 0 ]]; then
     if python3 - <<'PY'
@@ -222,14 +241,25 @@ PY
 done
 
 if [[ "$green" -ne 1 ]]; then
-  fail_human "self-correction budget exhausted after ${MAX_TURNS} declared patches"
+  fail_human "declared patch budget exhausted after ${MAX_TURNS} patches; diagnostics are not sent to a model"
 fi
 
 python3 -c 'import json; open(".dual-pass-targets","w").write("\n".join(i["path"] for i in json.load(open("execution-plan.json"))["targets"])+"\n")'
 mapfile -t TOUCHED < .dual-pass-targets
 rustfmt --edition 2021 "${TOUCHED[@]}" tests/generated_*.rs >/dev/null 2>&1 || true
 restore_protected
-printf '\n## Green\n\nCoverage tool not invoked. Gate evidence is cargo check plus cargo test. Initial red status=%s. Final unit status=0.\n' "$red_status" >> "$REPORT"
+printf '\n## Green\n\nCoverage tool not invoked. Gate evidence is cargo check, generated tests, and the existing locked suite. Initial red status=%s.\n' "$red_status" >> "$REPORT"
+saved_token="${GH_TOKEN-}"
+unset GH_TOKEN
+set +e
+suite="$(cargo test --locked -- --test-threads=1 2>&1)"
+suite_status=$?
+set -e
+if [[ -n "$saved_token" ]]; then export GH_TOKEN="$saved_token"; fi
+printf '\n## Existing suite\n\nstatus=%s\n\n```\n%s\n```\n' "$suite_status" "$(diagnostic suite "$suite")" >> "$REPORT"
+if [[ "$suite_status" -ne 0 ]]; then
+  fail_human "generated tests passed but the existing locked suite failed"
+fi
 if [[ "$OFFLINE" == "1" ]]; then
   log "offline green"
   exit 0
