@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Header, runtime record, then the captured log byte for byte.
+/// Header, runtime record, host probes, then the captured log byte for byte.
 pub fn bundle(scan_id: &str, raw: &str) -> String {
     let mut out = String::new();
     out.push_str("# hse scan debug\n");
@@ -23,6 +23,9 @@ pub fn bundle(scan_id: &str, raw: &str) -> String {
     out.push('\n');
     out.push_str("# runtime\n");
     out.push_str(&runtime_env());
+    out.push_str("# host\n");
+    out.push_str(&probe("uname", &["-a"]));
+    out.push_str(&probe("rustc", &["--version"]));
     out.push_str("\n# log\n");
     out.push_str(raw);
     if !raw.ends_with('\n') {
@@ -71,6 +74,16 @@ fn runtime_env() -> String {
     out
 }
 
+fn probe(cmd: &str, args: &[&str]) -> String {
+    match Command::new(cmd).args(args).output() {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout);
+            format!("{cmd}={}\n", text.trim())
+        }
+        _ => format!("{cmd}=\n"),
+    }
+}
+
 /// Write the raw bundle, then upload it to `debug/scans/` in the repository.
 /// A failed upload does not discard the local file.
 pub fn publish(scan_id: &str, raw: &str) -> Result<PathBuf, String> {
@@ -87,31 +100,19 @@ pub fn publish(scan_id: &str, raw: &str) -> Result<PathBuf, String> {
     }
     Ok(path)
 }
-    let dir = debug_dir();
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{scan_id}.log"));
-    fs::write(&path, &text).map_err(|e| e.to_string())?;
-    let repo = std::env::var("HSE_DEBUG_REPO").unwrap_or_else(|_| {
-        "EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-".into()
-    });
-    if let Err(err) = upload(&repo, scan_id, &text) {
-        eprintln!("scan debug upload skipped: {err}");
-    }
-    Ok(path)
-}
 
 fn debug_dir() -> PathBuf {
-    std::env::var("HSE_DEBUG_DIR")
+    env::var("HSE_DEBUG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            let home = env::var("HOME").unwrap_or_else(|_| ".".into());
             PathBuf::from(home).join(".huntsman").join("debug-scans")
         })
 }
 
 fn upload(repo: &str, scan_id: &str, body: &str) -> Result<(), String> {
-    let token = std::env::var("GH_TOKEN")
-        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+    let token = env::var("GH_TOKEN")
+        .or_else(|_| env::var("GITHUB_TOKEN"))
         .map_err(|_| "GH_TOKEN is not set".to_string())?;
     put(&token, repo, &format!("debug/scans/{scan_id}.log"), body)?;
     put(&token, repo, "debug/scans/latest.log", body)?;
@@ -148,7 +149,10 @@ fn put(token: &str, repo: &str, path: &str, body: &str) -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err(format!("upload of {path} exited {}", status.code().unwrap_or(-1)))
+        Err(format!(
+            "upload of {path} exited {}",
+            status.code().unwrap_or(-1)
+        ))
     }
 }
 
@@ -210,7 +214,7 @@ mod tests {
         let text = bundle("scan-1", raw);
         assert!(text.contains("scan_id=scan-1"));
         assert!(text.contains("# version="));
-        assert!(text.contains("# args="));
+        assert!(text.contains("# host"));
         assert!(text.contains(raw));
         assert!(!text.contains("[redacted]"));
     }
