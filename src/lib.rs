@@ -28,6 +28,7 @@ pub mod au_electoral;
 pub mod au_id;
 pub mod au_people;
 pub mod benchmark;
+pub mod breach_hybrid;
 pub mod bluesky_user;
 pub mod breach;
 pub mod canonical;
