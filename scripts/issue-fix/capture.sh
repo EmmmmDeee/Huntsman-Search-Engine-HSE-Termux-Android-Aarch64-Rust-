@@ -7,15 +7,19 @@
 # configuration and hooks the agent could have written. Refuses an empty change.
 #
 # In-tree attributes are ignored (--attr-source), so a .gitattributes filter in the
-# change cannot rewrite the content that becomes the patch.
+# change cannot rewrite the content that becomes the patch. The agent's repository is
+# data as well: git reads .git/info/attributes even with --attr-source, and it runs the
+# programs that the repository's configuration names (core.fsmonitor, for one). Both are
+# set aside here, so no filter or hook the agent wrote can change what the patch carries.
 set -euo pipefail
 
 base="${1:?usage: capture.sh BASE OUT_DIR}"
 out="${2:?usage: capture.sh BASE OUT_DIR}"
 EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
-g() { git --attr-source="$EMPTY_TREE" "$@"; }
+g() { git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.attributesFile=/dev/null --attr-source="$EMPTY_TREE" "$@"; }
 mkdir -p "$out"
 
+rm -f -- "$(git rev-parse --git-path info/attributes)"
 g add -A
 changed=0
 g diff --cached --quiet --no-ext-diff "$base" -- || changed=$?

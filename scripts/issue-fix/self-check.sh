@@ -251,6 +251,52 @@ git -C "$repo" config --unset filter.evil.clean
 reset_tree
 echo "ok: a filter named by .gitattributes does not run during the guard or the capture"
 
+# The agent's repository can name programs that git runs in its own .git: a filter that
+# .git/info/attributes assigns (git reads that file even with --attr-source), and a
+# core.fsmonitor program. Each control shows that a plain git command runs its program, so
+# the check proves something. The guard and the capture must run neither, and the patch must
+# carry the edit itself, not what a filter would have written.
+info_marker="$work/info-filter-ran"
+fsmon_marker="$work/fsmon-ran"
+fsmon_script="$work/fsmon.sh"
+printf '#!/bin/sh\ntouch %s\nexit 0\n' "$fsmon_marker" > "$fsmon_script"
+chmod +x "$fsmon_script"
+
+reset_tree
+git -C "$repo" config filter.evil.clean "touch '$info_marker'; echo REPLACED"
+printf '*.rs filter=evil\n' > "$repo/.git/info/attributes"
+printf 'pub fn a() {}\npub fn b() {}\n' > "$repo/src/lib.rs"
+git -C "$repo" add src/lib.rs
+[[ -e "$info_marker" ]] || fail "the control did not run the filter in .git/info/attributes"
+rm -f "$info_marker" "$repo/.git/info/attributes"
+git -C "$repo" config --unset filter.evil.clean
+reset_tree
+
+git -C "$repo" config core.fsmonitor "$fsmon_script"
+git -C "$repo" status --porcelain >/dev/null 2>&1
+[[ -e "$fsmon_marker" ]] || fail "the control did not run core.fsmonitor under git status"
+rm -f "$fsmon_marker"
+git -C "$repo" config --unset core.fsmonitor
+
+reset_tree
+git -C "$repo" config filter.evil.clean "touch '$info_marker'; echo REPLACED"
+git -C "$repo" config core.fsmonitor "$fsmon_script"
+printf '*.rs filter=evil\n' > "$repo/.git/info/attributes"
+printf 'pub fn a() {}\npub fn b() {}\n' > "$repo/src/lib.rs"
+# The capture runs first, with the attribute file in place, so it is tested on its own. The
+# guard removes the file too, so the guard gets its own run with the file restored.
+(cd "$repo" && bash "$capture" "$base" "$work/change-info" >/dev/null) || fail "capture refused a plain edit under a repository-level filter"
+[[ ! -e "$info_marker" && ! -e "$fsmon_marker" ]] || fail "a program in the agent's repository ran during the capture"
+grep -q 'pub fn b() {}' "$work/change-info/change.patch" || fail "the patch does not carry the edit itself"
+if grep -q 'REPLACED' "$work/change-info/change.patch"; then fail "the patch carries the output of a filter in the agent's repository"; fi
+printf '*.rs filter=evil\n' > "$repo/.git/info/attributes"
+(cd "$repo" && bash "$guard" "$base" >/dev/null) || fail "the guard refused a plain edit under a repository-level filter"
+[[ ! -e "$info_marker" && ! -e "$fsmon_marker" ]] || fail "a program in the agent's repository ran during the guard"
+git -C "$repo" config --unset filter.evil.clean
+git -C "$repo" config --unset core.fsmonitor
+reset_tree
+echo "ok: a filter in .git/info/attributes and a core.fsmonitor program in .git/config run neither during the guard nor the capture"
+
 # Capture: the change becomes a patch that reproduces it on a clean clone.
 reset_tree
 m_new_test

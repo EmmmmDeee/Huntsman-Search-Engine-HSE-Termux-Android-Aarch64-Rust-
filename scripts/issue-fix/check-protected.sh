@@ -22,9 +22,11 @@
 #   - a symbolic link or submodule, added or removed.
 #
 # Every git command ignores in-tree attributes (--attr-source), so a .gitattributes file
-# in the change cannot run a filter or hide a hunk, and every diff is read as text. Git
-# output is read NUL-separated, so no file name can be split. A git failure is a refusal,
-# never a pass.
+# in the change cannot run a filter or hide a hunk, and every diff is read as text. The
+# agent's own repository is data too: git reads .git/info/attributes even with --attr-source,
+# and it runs the programs that .git/config names (core.fsmonitor). That file is removed, and
+# those settings are overridden on the command line. Git output is read NUL-separated, so no
+# file name can be split. A git failure is a refusal, never a pass.
 #
 # A marker inside a string literal also starts test code, so an edit below it is refused
 # even when it is not test code. That refusal is safe, and it can be a false one.
@@ -36,12 +38,15 @@ bad=()
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 
-g() { git --attr-source="$EMPTY_TREE" "$@"; }
+g() { git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.attributesFile=/dev/null --attr-source="$EMPTY_TREE" "$@"; }
 
 die() {
   echo "check-protected: $*; refusing" >&2
   exit 1
 }
+
+# Removed before any git command reads the repository, so no filter it names can run.
+rm -f -- "$(git rev-parse --git-path info/attributes)"
 
 if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
   die "$base is not a commit"
