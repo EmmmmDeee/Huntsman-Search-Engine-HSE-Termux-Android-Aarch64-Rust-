@@ -16,3 +16,7 @@ target/
 # It is generated output and must never be committed.
 __pycache__/
 *.pyc
+
+# Local agent worktrees that the automation creates under .claude/. They are checkouts of
+# other commits, and they must never be committed to this repository.
+/.claude/
