@@ -7,9 +7,12 @@
 
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::process::ExitCode;
+use std::time::Duration;
+
+use crate::error::{self, Error, Result};
+use crate::proc::{git_stdout, repository_root, run_step};
 
 const USAGE: &str = "usage: cargo run --locked -p xtask -- gate [fast|msrv|full]
 
@@ -53,21 +56,14 @@ pub fn run(args: &[String]) -> ExitCode {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
         }
-        _ => {
-            eprintln!("{USAGE}");
-            return ExitCode::from(64);
-        }
+        _ => return error::usage(USAGE),
     };
     if args.len() > 1 {
-        eprintln!("{USAGE}");
-        return ExitCode::from(64);
+        return error::usage(USAGE);
     }
     let limit = match timeout_from_env() {
         Ok(limit) => limit,
-        Err(message) => {
-            eprintln!("repair-gate: {message}");
-            return ExitCode::from(64);
-        }
+        Err(problem) => return error::report("repair-gate", &problem),
     };
     let root = repository_root();
     match execute(mode, &root, limit) {
@@ -79,40 +75,31 @@ pub fn run(args: &[String]) -> ExitCode {
             );
             ExitCode::SUCCESS
         }
-        Err(message) => {
-            eprintln!("repair-gate: FAIL: {message}");
-            ExitCode::from(1)
-        }
+        Err(problem) => error::report("repair-gate: FAIL", &problem),
     }
 }
 
 /// `REPAIR_GATE_TIMEOUT_SECONDS`, read as the shell did: unset or empty means the default, and
 /// anything but whole seconds of at least one is a usage error.
-fn timeout_from_env() -> Result<Duration, String> {
+fn timeout_from_env() -> Result<Duration> {
     let raw = match std::env::var("REPAIR_GATE_TIMEOUT_SECONDS") {
         Ok(value) if !value.is_empty() => value,
         _ => return Ok(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS)),
     };
+    let invalid = || Error::Invalid(format!("invalid REPAIR_GATE_TIMEOUT_SECONDS={raw}"));
     if !raw.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(format!("invalid REPAIR_GATE_TIMEOUT_SECONDS={raw}"));
+        return Err(invalid());
     }
-    let seconds: u64 = raw
-        .parse()
-        .map_err(|_| format!("invalid REPAIR_GATE_TIMEOUT_SECONDS={raw}"))?;
+    let seconds: u64 = raw.parse().map_err(|_| invalid())?;
     if seconds < 1 {
-        return Err("REPAIR_GATE_TIMEOUT_SECONDS must be >= 1".to_owned());
+        return Err(Error::Invalid(
+            "REPAIR_GATE_TIMEOUT_SECONDS must be >= 1".to_owned(),
+        ));
     }
     Ok(Duration::from_secs(seconds))
 }
 
-/// The repository root: this crate lives in `<root>/xtask`.
-fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
-}
-
-fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<(), String> {
+fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<()> {
     if mode == Mode::Msrv {
         check_msrv_toolchain(root)?;
     }
@@ -120,16 +107,16 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<(), String> {
 
     for script in tracked_shell_scripts(root)? {
         if script == "scripts/railway-entrypoint.sh" {
-            step(root, limit, "sh", &["-n", &script])?;
+            run_step(root, limit, "sh", &["-n", &script])?;
         } else {
-            step(root, limit, "bash", &["-n", &script])?;
+            run_step(root, limit, "bash", &["-n", &script])?;
         }
     }
     if matches!(mode, Mode::Fast | Mode::Full) {
-        step(root, limit, "cargo", &["fmt", "--check"])?;
+        run_step(root, limit, "cargo", &["fmt", "--check"])?;
     }
     if mode == Mode::Full {
-        step(
+        run_step(
             root,
             limit,
             "cargo",
@@ -145,7 +132,7 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<(), String> {
         )?;
     }
     if matches!(mode, Mode::Msrv | Mode::Full) {
-        step(root, limit, "cargo", &["test", "--locked", "--workspace"])?;
+        run_step(root, limit, "cargo", &["test", "--locked", "--workspace"])?;
     } else {
         for test in [
             "functional_code_contract",
@@ -153,39 +140,47 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<(), String> {
             "deployment_targets",
             "repair_contract",
         ] {
-            step(root, limit, "cargo", &["test", "--locked", "--test", test])?;
+            run_step(root, limit, "cargo", &["test", "--locked", "--test", test])?;
         }
-        step(root, limit, "cargo", &["test", "--locked", "-p", "xtask"])?;
+        run_step(root, limit, "cargo", &["test", "--locked", "-p", "xtask"])?;
     }
-    step(root, limit, "cargo", &["run", "--locked", "--", "check"])?;
+    run_step(root, limit, "cargo", &["run", "--locked", "--", "check"])?;
 
     let after = snapshot(root)?;
     if before != after {
-        let _ = Command::new("git")
+        let _ = std::process::Command::new("git")
             .args(["status", "--short", "--untracked-files=all"])
             .current_dir(root)
             .status();
-        return Err("verification mutated tracked or untracked repository content".to_owned());
+        return Err(Error::Refused(
+            "verification mutated tracked or untracked repository content".to_owned(),
+        ));
     }
     Ok(())
 }
 
 /// `msrv` checks the crate on the toolchain it declares. A newer rustc would accept code that
 /// the declared floor rejects, so the mode refuses to run on any other compiler.
-fn check_msrv_toolchain(root: &Path) -> Result<(), String> {
-    let manifest = fs::read_to_string(root.join("Cargo.toml"))
-        .map_err(|error| format!("cannot read Cargo.toml: {error}"))?;
+fn check_msrv_toolchain(root: &Path) -> Result<()> {
+    let path = root.join("Cargo.toml");
+    let manifest = fs::read_to_string(&path).map_err(|source| Error::Io {
+        path: path.clone(),
+        source,
+    })?;
     let declared = manifest
         .lines()
         .find_map(|line| {
             line.strip_prefix("rust-version = \"")
                 .and_then(|rest| rest.strip_suffix('"'))
         })
-        .ok_or("Cargo.toml declares no rust-version")?;
-    let output = Command::new("rustc")
+        .ok_or_else(|| Error::Invalid("Cargo.toml declares no rust-version".to_owned()))?;
+    let output = std::process::Command::new("rustc")
         .arg("--version")
         .output()
-        .map_err(|error| format!("cannot run rustc: {error}"))?;
+        .map_err(|source| Error::Command {
+            shown: "rustc --version".to_owned(),
+            reason: format!("could not start: {source}"),
+        })?;
     let version = String::from_utf8_lossy(&output.stdout)
         .split_whitespace()
         .nth(1)
@@ -195,15 +190,15 @@ fn check_msrv_toolchain(root: &Path) -> Result<(), String> {
         .rsplit_once('.')
         .map_or(version.as_str(), |(head, _)| head);
     if major_minor != declared {
-        return Err(format!(
+        return Err(Error::Refused(format!(
             "msrv needs the declared rust-version {declared}, but rustc is {version}. Run: rustup run {declared} cargo run --locked -p xtask -- gate msrv"
-        ));
+        )));
     }
     Ok(())
 }
 
 /// The shell scripts git tracks, so every one of them must still parse.
-fn tracked_shell_scripts(root: &Path) -> Result<Vec<String>, String> {
+fn tracked_shell_scripts(root: &Path) -> Result<Vec<String>> {
     let listing = git_stdout(root, &["ls-files", "-z", "--", "*.sh"])?;
     let mut scripts: Vec<String> = listing
         .split(|byte| *byte == 0)
@@ -216,7 +211,7 @@ fn tracked_shell_scripts(root: &Path) -> Result<Vec<String>, String> {
 
 /// The repository content verification must leave unchanged: the tracked diff against HEAD,
 /// then every untracked file (by path, in byte order) with its bytes, or its link target.
-fn snapshot(root: &Path) -> Result<Vec<u8>, String> {
+fn snapshot(root: &Path) -> Result<Vec<u8>> {
     let mut out = git_stdout(root, &["diff", "--binary", "--no-ext-diff", "HEAD", "--"])?;
     let listing = git_stdout(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
     let mut paths: Vec<&[u8]> = listing
@@ -229,70 +224,31 @@ fn snapshot(root: &Path) -> Result<Vec<u8>, String> {
         out.extend_from_slice(path);
         out.push(0);
         let full = root.join(std::ffi::OsStr::from_bytes(path));
-        let metadata = fs::symlink_metadata(&full)
-            .map_err(|error| format!("cannot inspect {}: {error}", full.display()))?;
+        let metadata = fs::symlink_metadata(&full).map_err(|source| Error::Io {
+            path: full.clone(),
+            source,
+        })?;
         if metadata.file_type().is_symlink() {
-            let target = fs::read_link(&full)
-                .map_err(|error| format!("cannot read link {}: {error}", full.display()))?;
+            let target = fs::read_link(&full).map_err(|source| Error::Io {
+                path: full.clone(),
+                source,
+            })?;
             out.extend_from_slice(target.as_os_str().as_bytes());
         } else {
-            let bytes = fs::read(&full)
-                .map_err(|error| format!("cannot read {}: {error}", full.display()))?;
+            let bytes = fs::read(&full).map_err(|source| Error::Io {
+                path: full.clone(),
+                source,
+            })?;
             out.extend_from_slice(&bytes);
         }
     }
     Ok(out)
 }
 
-fn git_stdout(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|error| format!("cannot run git: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "`git {}` failed: {}",
-            args.join(" "),
-            output.status
-        ));
-    }
-    Ok(output.stdout)
-}
-
-/// Runs one command in the root under `limit`. A command still running at the limit is killed,
-/// and the step fails. Its output goes to the gate's own output, as it did under the shell.
-fn step(root: &Path, limit: Duration, program: &str, args: &[&str]) -> Result<(), String> {
-    let shown = std::iter::once(program)
-        .chain(args.iter().copied())
-        .collect::<Vec<_>>()
-        .join(" ");
-    println!("repair-gate: RUN: {shown}");
-    let mut child = Command::new(program)
-        .args(args)
-        .current_dir(root)
-        .spawn()
-        .map_err(|error| format!("cannot start `{shown}`: {error}"))?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(status)) => return Err(format!("`{shown}` exited with {status}")),
-            Ok(None) => {}
-            Err(error) => return Err(format!("cannot wait for `{shown}`: {error}")),
-        }
-        if started.elapsed() >= limit {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("`{shown}` timed out after {}s", limit.as_secs()));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::process::Command;
 
     /// A fresh repository with one commit, under the system temporary directory.

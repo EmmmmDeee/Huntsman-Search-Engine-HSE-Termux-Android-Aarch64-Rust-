@@ -82,6 +82,20 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
 
+      - name: Build the trusted xtask before the model runs
+        run: |
+          set -euo pipefail
+          # The model edits this checkout, so the tools that check its change are built from a copy of
+          # the base commit, taken here and never written by the model. The copy is an archive of the
+          # commit the run started from, so the model cannot reach it through the checkout.
+          trusted="$RUNNER_TEMP/trusted"
+          rm -rf "$trusted" && mkdir -p "$trusted"
+          git archive "$BASE_SHA" | tar -x -C "$trusted"
+          cargo build --release --locked -p xtask --manifest-path "$trusted/Cargo.toml" --target-dir "$RUNNER_TEMP/trusted-target"
+          # Later steps run this copy as "$RUNNER_TEMP/trusted-xtask", the one path every policy step uses.
+          cp "$RUNNER_TEMP/trusted-target/release/xtask" "$RUNNER_TEMP/trusted-xtask"
+          test -x "$RUNNER_TEMP/trusted-xtask"
+
       - name: Install the pinned Claude Code CLI
         run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 

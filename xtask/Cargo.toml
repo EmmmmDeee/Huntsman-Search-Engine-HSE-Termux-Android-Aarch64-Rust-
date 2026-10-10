@@ -6,5 +6,14 @@ rust-version = "1.87"
 description = "Repository automation: the verification gate and the other tools CI runs"
 publish = false
 
+# The Rust syntax that the issue-fix guard and the dual-pass function replace read. These are
+# build-time tools of xtask only; the product crate does not depend on them.
+[dependencies]
+proc-macro2 = { version = "1", features = ["span-locations"] }
+syn = { version = "2", default-features = false, features = ["full", "parsing", "visit"] }
+# Report and plan JSON, and the plan context digest.
+serde_json = "1"
+sha2 = "0.10"
+
 [lints.rust]
 unsafe_code = "forbid"
