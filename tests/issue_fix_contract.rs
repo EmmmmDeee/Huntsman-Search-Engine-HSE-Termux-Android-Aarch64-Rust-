@@ -194,26 +194,42 @@ fn publish_runs_only_scripts_copied_before_the_patch_arrived() {
 }
 
 #[test]
-fn fix_runs_the_policy_and_the_capture_from_a_copy_made_before_the_model() {
+fn fix_runs_the_guard_and_the_capture_from_the_trusted_xtask_built_before_the_model() {
     let wf = workflow();
     let fix = job(&wf, "fix");
-    let copy = fix
-        .find("Keep a copy of the policy scripts")
-        .expect("fix must copy the policy scripts");
+    let build = fix
+        .find("Build the trusted xtask before the model runs")
+        .expect("fix must build the trusted xtask");
     let model = fix
         .find("Run the model under the tool allowlist")
         .expect("fix must run the model");
-    assert!(copy < model, "the copy must be made before the model runs");
+    let guard = fix
+        .find("\"$RUNNER_TEMP/trusted-xtask\" issue-fix guard \"$BASE_SHA\"")
+        .expect("the guard must run from the trusted xtask with the base commit");
+    let capture = fix
+        .find("\"$RUNNER_TEMP/trusted-xtask\" issue-fix capture \"$BASE_SHA\" \"$RUNNER_TEMP/change\"")
+        .expect("the capture must run from the trusted xtask with the base commit and the change directory");
+    assert!(
+        build < model,
+        "the trusted xtask must be built before the model runs"
+    );
+    assert!(model < guard, "the guard must run after the model");
+    assert!(guard < capture, "the capture must run after the guard");
+    assert!(
+        fix.contains("steps.agent.outcome == 'success'")
+            && fix.contains("steps.guard.outcome == 'success'"),
+        "the guard and the capture must keep their outcome conditions"
+    );
     for script in ["check-protected.sh", "capture.sh"] {
         assert!(
-            fix.contains(&format!("issue-fix-scripts/{script}")),
-            "{script} must run from the copy"
-        );
-        assert!(
-            !fix.contains(&format!("bash scripts/issue-fix/{script}")),
-            "{script} must not run from the workspace, which the model can change"
+            !fix.contains(script),
+            "{script} must not run in fix: the trusted xtask does its work"
         );
     }
+    assert!(
+        !fix.contains("issue-fix-scripts"),
+        "fix must not keep a copy of the policy scripts that nothing runs"
+    );
 }
 
 #[test]

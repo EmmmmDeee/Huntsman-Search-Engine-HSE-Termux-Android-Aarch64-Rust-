@@ -117,12 +117,6 @@ jobs:
           set -euo pipefail
           test -n "$ANTHROPIC_API_KEY" || { echo "::error::ANTHROPIC_API_KEY is not set"; exit 1; }
 
-      - name: Keep a copy of the policy scripts
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/issue-fix-scripts"
-          cp -a scripts/issue-fix/. "$RUNNER_TEMP/issue-fix-scripts/"
-
       - name: Run the model under the tool allowlist
         id: agent
         env:
@@ -255,12 +249,14 @@ jobs:
       - name: Check the change against the path policy
         id: guard
         if: steps.agent.outcome == 'success'
-        run: bash "$RUNNER_TEMP/issue-fix-scripts/check-protected.sh" "$BASE_SHA"
+        run: |
+          "$RUNNER_TEMP/trusted-xtask" issue-fix guard "$BASE_SHA"
 
       - name: Capture the change as a patch
         id: capture
         if: steps.guard.outcome == 'success'
-        run: bash "$RUNNER_TEMP/issue-fix-scripts/capture.sh" "$BASE_SHA" "$RUNNER_TEMP/change"
+        run: |
+          "$RUNNER_TEMP/trusted-xtask" issue-fix capture "$BASE_SHA" "$RUNNER_TEMP/change"
 
       - name: Upload the change
         if: always()
