@@ -50,3 +50,4 @@ The push replaces the bot's own branch only under a lease on the tip it saw. The
 - The plan job's network access is not restricted by the runner.
 - The gates prove the tests fail on untouched `main` and pass after the patch. They do not prove the patch is the right fix.
 - The path policy's test-code rules (`#[cfg(test)]` modules and test-only files in `src/`) are applied by `check-protected.sh` at publish. Plan refuses a target by its path only.
+- The red verdict is not a boundary. Generated tests run in the plan job's working tree as the same user that runs `red_class.py` and `run.sh`, so nothing stops a generated test from overwriting them before the judgement. Copying the scripts to the runner's temporary directory does not help, because that directory is writable by the same user. Human review of the pull request is the control for that case.
