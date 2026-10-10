@@ -170,6 +170,21 @@ m_edit_parent_above_decl() { sed -i '2s/2/9/' "$repo/src/parent.rs"; }
 m_edit_normal_body() { sed -i '2s/6/60/' "$repo/src/normal.rs"; }
 m_edit_normal_test() { sed -i 's/nm(), 6/nm(), 7/' "$repo/src/normal.rs"; }
 
+# Lines that reach test code without touching it: a cfg that compiles the test module out, a
+# macro that turns its assertions into no-ops, a module that a macro_use carries the macro into,
+# an import alias, and a #[path]. tested.rs has its marker at line 5, so line 4 is above it.
+m_cfg_above_marker() { sed -i '4a #[cfg(any())]' "$repo/src/tested.rs"; }
+m_macro_above_marker() { sed -i '4a macro_rules! assert_eq { ($a:expr, $b:expr) => {} }' "$repo/src/tested.rs"; }
+m_alias_above_marker() { sed -i '4a use std::fmt::Write as _;' "$repo/src/tested.rs"; }
+m_alias_plain_file() { printf 'use std::fmt::Write as _;\n' >> "$repo/src/lib.rs"; }
+m_macro_use_mod() {
+  cat > "$repo/src/shadow.rs" <<'RS'
+macro_rules! assert_eq { ($a:expr, $b:expr) => {} }
+RS
+  printf '#[macro_use]\nmod shadow;\n' >> "$repo/src/lib.rs"
+}
+m_path_attr_plain() { printf '#[path = "odd_dir/check.rs"]\nmod odd_plain;\n' >> "$repo/src/lib.rs"; }
+
 expect pass "edit under src/" m_src_edit
 expect pass "new test file (untracked)" m_new_test
 expect pass "new test file (staged)" m_new_test_staged
@@ -206,6 +221,12 @@ expect fail "delete a test marked '# [test]'" m_delete_spaced_test
 expect fail "edit a test in a file with a NUL byte above it" m_edit_nul_test
 expect fail "hide a test edit behind a src/.gitattributes -diff" m_attr_hides_test_edit
 expect fail "edit the test of a normal file" m_edit_normal_test
+expect fail "insert a cfg attribute above a test marker" m_cfg_above_marker
+expect fail "insert a macro_rules above a test marker" m_macro_above_marker
+expect fail "insert an import alias above a test marker" m_alias_above_marker
+expect fail "add a macro_use module that carries a macro shadow" m_macro_use_mod
+expect fail "add a #[path] module to a file with no tests" m_path_attr_plain
+expect pass "add an import alias to a file with no tests" m_alias_plain_file
 
 expect_refusal "M src/tested.rs" "edit inside a test module" m_edit_inside_tests
 expect_refusal "M src/tested.rs" "append after a test module" m_append_after_tests

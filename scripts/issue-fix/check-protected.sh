@@ -19,6 +19,10 @@
 #   - a change to test code in src/, including deleting or renaming away a file that
 #     holds test code;
 #   - any change outside src/ and tests/, including untracked files;
+#   - a line added to src/ that defines or imports a macro, or that adds a macro_use,
+#     macro_export, #[path], or include!, since that reaches code it does not sit on;
+#   - in a file that has test code at BASE, a line added that carries a cfg attribute, an
+#     extern crate, or an import alias, since the marker does not stop it reaching the tests;
 #   - a symbolic link or submodule, added or removed.
 #
 # Every git command ignores in-tree attributes (--attr-source), so a .gitattributes file
@@ -126,6 +130,31 @@ touches_tests() {
     END { exit (hit ? 0 : 1) }' "$scratch/diff"
 }
 
+# True (status 0) when a change to PATH adds a line that reaches beyond the lines it sits on. A
+# macro definition, a macro_use, a macro_export, a #[path], or an include! can shadow an
+# assertion or load code from elsewhere, so it is refused in any src/ file. In a file that holds
+# test code, a cfg attribute, an extern crate, or an import alias is refused too, because the
+# marker does not bound what those reach. MODE is tracked (a change to a file in the base) or
+# new (a file that is not in the base). A read that fails counts as a match, so it is refused.
+adds_scope_change() {
+  local path="$1" mode="$2"
+  if [[ "$mode" == tracked ]]; then
+    g diff -U0 --text --no-ext-diff "$base" -- "$path" > "$scratch/diff" || return 0
+    awk '/^\+\+\+/ { next } /^\+/ { print substr($0, 2) }' "$scratch/diff" > "$scratch/added" || return 0
+  else
+    cp -- "$path" "$scratch/added" 2>/dev/null || return 0
+  fi
+  if grep -q -E 'macro_rules!|macro_use|macro_export|include!|#!?\[[[:space:]]*path' "$scratch/added"; then
+    return 0
+  fi
+  # A new file has no test code at BASE for these to reach. A tracked file does when its base
+  # holds a test marker, and the added lines must not reach across that marker.
+  [[ "$mode" == tracked ]] || return 1
+  test_start "$path"
+  [[ "$START" -gt 0 ]] || return 1
+  grep -q -E '#!?\[[[:space:]]*cfg|extern[[:space:]]+crate|\buse\b[^;]*\bas\b' "$scratch/added"
+}
+
 test_files=()
 test_dirs=()
 modules_loaded=0
@@ -189,9 +218,14 @@ allowed() {
   case "$path" in
     src/*)
       case "$status" in
-        A) return 0 ;;
+        A)
+          if adds_scope_change "$path" new; then
+            return 1
+          fi
+          return 0
+          ;;
         M)
-          if wholly_test_code "$path" || touches_tests "$path"; then
+          if wholly_test_code "$path" || touches_tests "$path" || adds_scope_change "$path" tracked; then
             return 1
           fi
           return 0
