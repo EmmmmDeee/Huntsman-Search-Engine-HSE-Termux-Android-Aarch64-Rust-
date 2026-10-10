@@ -6,6 +6,11 @@ import re
 import sys
 from pathlib import Path
 
+# Run with -I, which keeps the working directory off sys.path, so a generated test
+# cannot shadow this module. The helper sits beside this file, so it is imported by path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from patchpaths import PatchError, patch_paths  # noqa: E402
+
 SCHEMA = "huntsman-dual-pass/1"
 PROTECTED_PREFIXES = ("tests/", ".github/", "Cargo")
 PROTECTED_EXACT = {
@@ -148,16 +153,15 @@ def validate(plan: dict, root: Path) -> dict:
         if re.search(r"assert_eq!\(\s*([^,()]+)\s*,\s*\1\s*\)", source):
             die(f"tautological equality rejected: {path}")
     for index, patch in enumerate(patches, 1):
-        diff = patch.get("diff") or ""
-        for line in diff.splitlines():
-            if line.startswith("+++ b/") or line.startswith("--- a/"):
-                touched = line.split("/", 1)[-1] if line.startswith("---") else line[6:]
-                touched = line[6:] if line.startswith("+++") or line.startswith("---") else touched
-                rel = line.split(" b/", 1)[-1] if " b/" in line else line.split(" a/", 1)[-1]
-                if rel.startswith(PROTECTED_PREFIXES) or rel in PROTECTED_EXACT:
-                    die(f"patch {index} touches protected path {rel}")
-                if rel not in allowed and not rel.startswith("tests/generated_"):
-                    die(f"patch {index} touches undeclared path {rel}")
+        try:
+            touched = patch_paths(patch.get("diff") or "")
+        except PatchError as exc:
+            die(f"patch {index}: {exc}")
+        for rel in sorted(touched):
+            if rel.startswith(PROTECTED_PREFIXES) or rel in PROTECTED_EXACT:
+                die(f"patch {index} touches protected path {rel}")
+            if rel not in allowed:
+                die(f"patch {index} touches undeclared path {rel}")
         for op in patch.get("ops") or []:
             if op.get("kind") != "replace_fn":
                 die(f"patch {index} has unsupported op {op.get('kind')}")

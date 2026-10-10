@@ -8,6 +8,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Run with -I, so the working directory is not on sys.path. The helper is imported by path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from patchpaths import PatchError, patch_paths  # noqa: E402
+
 
 def git_apply(diff: str) -> bool:
     path = Path(".dual-pass.patch")
@@ -78,12 +82,13 @@ def main() -> int:
     payload = json.loads(sys.stdin.read() or "{}")
     allowed = set(payload.get("allowed") or [])
     diff = payload.get("diff") or ""
-    touched = []
-    for line in diff.splitlines():
-        if line.startswith("+++ b/"):
-            touched.append(line[6:])
+    try:
+        touched = patch_paths(diff)
+    except PatchError as exc:
+        print(json.dumps({"error": str(exc)}))
+        return 1
     if any(path not in allowed for path in touched):
-        print(json.dumps({"error": "diff escapes declared targets", "paths": touched}))
+        print(json.dumps({"error": "diff escapes declared targets", "paths": sorted(touched)}))
         return 1
     if diff and git_apply(diff):
         print(json.dumps({"applied": "git-apply"}))
