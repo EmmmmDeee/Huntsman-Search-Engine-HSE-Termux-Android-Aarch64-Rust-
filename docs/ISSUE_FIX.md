@@ -38,8 +38,9 @@ or any script that the patch could have written.
 
 ## Path policy
 
-`scripts/issue-fix/check-protected.sh` decides what the change may touch. It runs in
-`fix` for early feedback and again in `publish`, which is the authority.
+`xtask issue-fix guard` decides what the change may touch. It is the Rust port of
+`scripts/issue-fix/check-protected.sh`, which the port replaces. The workflow runs the
+guard in `fix` for early feedback, and `publish` runs it again, as the authority.
 
 Allowed:
 
@@ -49,7 +50,12 @@ Allowed:
 Test code in a file starts at its first test marker and runs to the end of the file.
 A marker is `#[cfg(test)]`, `#[test]`, `#[rstest]`, or any attribute whose name ends in
 `test` or `test_case` (for example `#[tokio::test]`). Spacing does not matter, so
-`# [test]` is a marker too.
+`# [test]` is a marker too. The test code starts at the first attribute of the marker's
+run of attributes, because an attribute belongs to the item after it: an attribute above
+`#[test]` is part of the test. A commented-out test still counts, since deleting the
+delimiters of a block comment, or the `//` of a line comment, activates it. So a marker
+anywhere in a block comment counts, and a marker in a line comment counts when the
+comment's text starts with it. A marker in a string literal does not count.
 
 A file is wholly test code, and no change to it is allowed, when:
 
@@ -65,8 +71,42 @@ Refused:
 - a change to an existing file under `tests/`, including a rename or deletion;
 - a change to test code in `src/`, including deleting or renaming away a file that
   holds test code;
+- a change that reaches the line directly above the test code of a file, since an
+  attribute added there would become part of the test;
 - any change outside `src/` and `tests/`, including untracked files;
-- a symbolic link or submodule, added or removed.
+- a symbolic link or submodule, added or removed, including a directory that holds a
+  repository of its own, which git lists as untracked and which becomes a submodule
+  when it is added;
+- a macro definition, a `path`, `macro_use`, or `macro_export` attribute, or an
+  `include!` in `src/` that the change adds or changes, or that the change makes live,
+  such as by deleting the delimiters of a block comment, or the `//` of a line comment,
+  around it. Removing one is allowed. In a file with test code, a cfg attribute, an
+  `extern crate` item, or an import alias that is added is refused too;
+- a `mod NAME;` in test code that the guard cannot follow, because it sits inside the
+  tokens of a macro, or inside a comment (a line comment counts when its text starts
+  with the declaration). In `src/`, that refuses every change. So does a file that an
+  `include!` compiles and that declares a module, and an `include!` whose file cannot
+  be named.
+
+## Where the port is stricter than the shell guard
+
+The port refuses these, and `scripts/issue-fix/check-protected.sh` allowed them:
+
+- an edit or a deletion inside an existing macro definition above a test marker. The
+  shell guard checks only the lines a change adds for a macro definition, so an edited
+  definition could shadow `assert_eq!` for the tests below it;
+- a line added directly above the test code of a file, or above the attributes of a
+  test;
+- a deletion that makes a commented-out macro definition, path attribute, or include
+  live, such as removing the delimiters of a block comment, or the `//` of a line comment,
+  around it;
+- a nested repository under `tests/`;
+- a `mod NAME;` that the guard cannot follow in test code, and an `include!` whose file
+  the guard cannot name, in any position.
+
+The port counts a marker in a line comment that starts with it, such as `// #[test]`, which
+the shell guard does not. The shell guard counts a marker in a block comment only where a
+line starts with it, where the port counts it anywhere in the comment.
 
 How the change is read:
 
@@ -77,10 +117,10 @@ How the change is read:
 - Git output is read NUL-separated, so no file name can be split, and a git command
   that fails is a refusal, never a pass.
 
-Known false refusal: a marker inside a string literal, such as a raw string with a line
-that starts with `#[cfg(test)]`, starts test code early. An edit below that line is
-refused even when it is not test code. The refusal fails closed. Move the literal, or
-split the line, to make the edit.
+Known false refusal of the shell guard: a marker inside a string literal, such as a raw
+string with a line that starts with `#[cfg(test)]`, starts test code early. An edit below
+that line is refused even when it is not test code. The refusal fails closed. The port
+does not count a marker in a string literal.
 
 ## Publish
 

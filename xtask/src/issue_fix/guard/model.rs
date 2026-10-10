@@ -1,9 +1,12 @@
-//! The test code of the base commit. Every Rust file under src/ at BASE is read with syn. A file
-//! is wholly test code when its name says so, when it sits under a tests/ directory, when it has
-//! an inner `#![cfg(test)]`, or when test code loads it. A module declaration is test code from
-//! the first test marker of its file on, or everywhere in a file that is wholly test code. Test
-//! code loads the files of its module declarations and of its include! calls, and those files
-//! are test code too, so the loading is repeated until it adds nothing.
+//! The test code of the base commit. Every file under src/ at BASE is read: a Rust file with syn,
+//! and any other file as text. A file is wholly test code when its name says so, when it sits under
+//! a tests/ directory, when it has an inner `#![cfg(test)]`, or when test code loads it. A module
+//! declaration is test code from the first test marker of its file on, or everywhere in a file that
+//! is wholly test code. Test code loads the files of its module declarations and of its include!
+//! calls, and those files are test code too, so the loading is repeated until it adds nothing. An
+//! include! call compiles its file, whatever its position, so a file that an include! names is read
+//! for its test markers. Its module declarations resolve as the including module's would, which the
+//! guard does not model, so a compiled file with module declarations makes every file test code.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,7 +17,8 @@ use crate::error::{Error, Result};
 /// The test code of one base commit.
 pub struct Model {
     base: String,
-    /// The Rust files under src/ at BASE, and the files that test code loads, read with syn.
+    /// The files under src/ at BASE, and the files that an include! call names, read for their
+    /// facts.
     files: BTreeMap<String, FileFacts>,
     /// Files that test code loads, by their path. A file in this set is wholly test code.
     loaded: BTreeSet<String>,
@@ -23,7 +27,7 @@ pub struct Model {
     /// Files that a path attribute loads. Their own module declarations resolve in their
     /// directory, as a crate root's do.
     path_loaded: BTreeSet<String>,
-    /// Files that test code includes with include!.
+    /// Files that an include! call names, in any position, so that the build compiles them.
     included: BTreeSet<String>,
     /// Set when test code loads a path that the guard cannot follow. Then every file under src/
     /// is wholly test code.
@@ -38,14 +42,15 @@ enum Protect {
     File(String),
     /// A file that a path attribute loads.
     PathFile(String),
-    /// A file that test code includes.
-    Included(String),
+    /// A file that an include! call names. The call is test code when TEST is set, and then the
+    /// file is test code too.
+    Included { file: String, test: bool },
     /// A directory that test code loads from.
     Dir(String),
 }
 
 impl Model {
-    /// Reads the Rust files under src/ at BASE and works out the test code. A file that does not
+    /// Reads the files under src/ at BASE and works out the test code. A Rust file that does not
     /// parse is an error, which refuses the change: the guard cannot tell what that file loads.
     pub fn load(base: &str) -> Result<Self> {
         let mut model = Self {
@@ -58,18 +63,24 @@ impl Model {
             everything: false,
         };
         for path in git::src_paths(base)? {
-            if path.ends_with(".rs") {
-                model.read(&path)?;
-            }
+            model.read(&path)?;
         }
         model.expand()?;
         Ok(model)
     }
 
-    /// The first line of test code in PATH at BASE, or 0 when it has none or is not a Rust file
-    /// that the model reads.
+    /// The first line of test code in PATH at BASE, or 0 when it has none or is not a file that the
+    /// model reads.
     pub fn start(&self, path: &str) -> usize {
         self.files.get(path).map_or(0, |facts| facts.start)
+    }
+
+    /// The texts of the constructs of PATH at BASE that the guard compares with the working tree:
+    /// the scope constructs, and the cfg constructs when the file has test code.
+    pub fn constructs(&self, path: &str) -> Vec<&str> {
+        self.files
+            .get(path)
+            .map_or_else(Vec::new, |facts| facts.construct_texts(facts.start > 0))
     }
 
     /// True when PATH at BASE is wholly test code.
@@ -85,8 +96,10 @@ impl Model {
                 .is_some_and(|facts| facts.inner_cfg_test)
     }
 
-    /// Reads PATH at BASE with syn, unless it is read already. A file that is absent at BASE is
-    /// not read. The return value says whether this call read it.
+    /// Reads PATH at BASE, unless it is read already. A file that is absent at BASE is not read,
+    /// and neither is a file that is not UTF-8, which cannot be compiled. A Rust file is read with
+    /// its syntax tree, and any other file as text. The return value says whether this call read
+    /// it.
     fn read(&mut self, path: &str) -> Result<bool> {
         if self.files.contains_key(path) {
             return Ok(false);
@@ -94,12 +107,24 @@ impl Model {
         let Some(bytes) = git::blob(&self.base, path)? else {
             return Ok(false);
         };
-        let text = String::from_utf8(bytes).map_err(|_| {
-            Error::Refused(format!("cannot parse {path} at {}: not UTF-8", self.base))
-        })?;
-        let facts = syntax::read(&text).map_err(|reason| {
-            Error::Refused(format!("cannot parse {path} at {}: {reason}", self.base))
-        })?;
+        let rust = path.ends_with(".rs");
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) if rust => {
+                return Err(Error::Refused(format!(
+                    "cannot parse {path} at {}: not UTF-8",
+                    self.base
+                )));
+            }
+            Err(_) => return Ok(false),
+        };
+        let facts = if rust {
+            syntax::read(&text).map_err(|reason| {
+                Error::Refused(format!("cannot parse {path} at {}: {reason}", self.base))
+            })?
+        } else {
+            syntax::read_text(&text)
+        };
         self.files.insert(path.to_owned(), facts);
         Ok(true)
     }
@@ -117,13 +142,17 @@ impl Model {
                     }
                 }
                 for include in &facts.includes {
-                    if test_at(include.line) {
-                        self.include_target(path, include.path.as_deref(), &mut wanted);
-                    }
+                    let test = test_at(include.line);
+                    self.include_target(path, include.path.as_deref(), test, &mut wanted);
                 }
-                if self.included.contains(path) && !facts.mods.is_empty() {
-                    // An included file's module declarations resolve as the including module's
-                    // would, which the guard does not model. Every file is test code instead.
+                // A module declaration that the syntax tree does not give loads a file that the
+                // guard cannot name. In test code of a Rust file, that refuses the change. In a
+                // file that the build compiles, every module declaration does the same, as an
+                // included file's declarations resolve as the including module's would.
+                let unnamed_test = facts.unfollowed_mods.iter().any(|&line| test_at(line));
+                let declares = !facts.mods.is_empty() || !facts.unfollowed_mods.is_empty();
+                let compiled = self.included.contains(path);
+                if (unnamed_test && path.ends_with(".rs")) || (compiled && declares) {
                     wanted.push(Protect::Everything);
                 }
             }
@@ -148,9 +177,13 @@ impl Model {
                 let grew_file = self.load_file(file)?;
                 Ok(grew_path || grew_dir || grew_file)
             }
-            Protect::Included(file) => {
+            Protect::Included { file, test } => {
                 let grew_included = self.included.insert(file.clone());
-                let grew_file = self.load_file(file)?;
+                let grew_file = if test {
+                    self.load_file(file)?
+                } else {
+                    self.read(&file)?
+                };
                 Ok(grew_included || grew_file)
             }
             Protect::Dir(dir) => Ok(self.dirs.insert(dir)),
@@ -203,14 +236,18 @@ impl Model {
         }
     }
 
-    /// The facts that include! call FILE in PATH adds, when the call is test code.
-    fn include_target(&self, path: &str, file: Option<&str>, out: &mut Vec<Protect>) {
+    /// The facts that include! call FILE in PATH adds. A call in test code (TEST) makes its file
+    /// test code, and every call compiles its file. A call that names no file, or a file that
+    /// cannot be named, protects every file.
+    fn include_target(&self, path: &str, file: Option<&str>, test: bool, out: &mut Vec<Protect>) {
         let Some(file) = file else {
             out.push(Protect::Everything);
             return;
         };
         match relative_target(dir_of(path), file) {
-            Some(target) if target.starts_with("src/") => out.push(Protect::Included(target)),
+            Some(target) if target.starts_with("src/") => {
+                out.push(Protect::Included { file: target, test });
+            }
             Some(_) => {}
             None => out.push(Protect::Everything),
         }
