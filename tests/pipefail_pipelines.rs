@@ -49,7 +49,10 @@ fn files_to_scan() -> Vec<PathBuf> {
 /// is. In a workflow only the `run:` blocks are shell, so other YAML (`value: |` text,
 /// `path: |` lists) cannot hide quotes or `|` from the lexer. Other lines become empty.
 fn shell_source(path: &Path, text: &str) -> String {
-    if matches!(path.extension().and_then(|e| e.to_str()), Some("yml" | "yaml")) {
+    if matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("yml" | "yaml")
+    ) {
         run_blocks(text)
     } else {
         text.to_owned()
@@ -106,11 +109,13 @@ fn run_blocks(text: &str) -> String {
                     break;
                 }
                 let base = *content_indent.get_or_insert(indent);
-                out[i] = line.get(base.min(indent)..).unwrap_or_default().to_owned();
+                line.get(base.min(indent)..)
+                    .unwrap_or_default()
+                    .clone_into(&mut out[i]);
                 i += 1;
             }
         } else {
-            out[i] = unquote(value).to_owned();
+            unquote(value).clone_into(&mut out[i]);
             i += 1;
         }
     }
@@ -960,7 +965,6 @@ impl<'a> Parser<'a> {
         self.pos += 1;
         loop {
             match self.peek() {
-                None | Some(Tok::Sep(_)) => return,
                 Some(Tok::OpenSubst(_)) => self.parse_subst(),
                 Some(Tok::Word { .. }) => {
                     let subject_done = self.at_word("in");
@@ -969,7 +973,7 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 }
-                Some(_) => return,
+                _ => return,
             }
         }
         loop {
