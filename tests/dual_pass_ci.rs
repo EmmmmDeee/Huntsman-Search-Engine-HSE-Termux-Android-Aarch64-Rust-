@@ -1,11 +1,15 @@
 //! Contract for the dual-pass runner. It does not call a model. The plan job holds no
-//! credential, because the Rust it runs can read its process's environment. The publish
-//! job holds the write token and applies only what the plan job wrote, after the path
-//! policy has checked it.
+//! credential, because the Rust it runs can read its process's environment. The gate job
+//! holds the read token and finishes before the plan starts. The publish job holds the
+//! write token and applies only what the plan job wrote, after the path policy has
+//! checked it. The red classification runs on fixture logs, so its verdicts are tested.
 
 use std::fs;
+use std::process::Command;
 
 const WORKFLOW: &str = ".github/workflows/dual-pass.yml";
+const RED_CLASS: &str = "scripts/dual-pass/red_class.py";
+const RED_FIXTURES: &str = "scripts/dual-pass/fixtures/red";
 
 fn read(path: &str) -> String {
     fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"))
@@ -41,6 +45,28 @@ fn step(wf: &str, name: &str) -> String {
 /// True when a line of a script is code, not a comment.
 fn code_lines(text: &str) -> impl Iterator<Item = &str> {
     text.lines().filter(|l| !l.trim_start().starts_with('#'))
+}
+
+/// Token, secret, and write-permission references in the text of one job, at job level or
+/// step level. Generated Rust reads the environment, so the plan job must contain none.
+fn credential_refs(job: &str) -> Vec<&'static str> {
+    const NAMED: [&str; 5] = [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "github.token",
+        "secrets.",
+        "ISSUE_FIX_TOKEN",
+    ];
+    const WRITES: [&str; 2] = [": write", "write-all"];
+    let mut found: Vec<&'static str> = NAMED
+        .into_iter()
+        .chain(WRITES)
+        .filter(|needle| job.contains(*needle))
+        .collect();
+    if job.to_ascii_lowercase().contains("token") {
+        found.push("token");
+    }
+    found
 }
 
 #[test]
@@ -103,35 +129,64 @@ fn dual_pass_workflow_has_no_llm_api() {
 fn plan_job_holds_no_credential_and_runs_generated_code_without_one() {
     let wf = read(WORKFLOW);
     let plan = job(&wf, "plan");
-    for write in ["contents: write", "issues: write", "pull-requests: write"] {
-        assert!(
-            !plan.contains(write),
-            "the plan job runs generated Rust and must not hold {write}"
-        );
-    }
+    let refs = credential_refs(&plan);
+    assert!(
+        refs.is_empty(),
+        "the plan job runs generated Rust and must hold no token, secret, or write permission, at job or step level; found {refs:?}"
+    );
+    assert!(
+        plan.contains("needs: gate"),
+        "plan must wait for the gate job, which holds the read token"
+    );
     assert!(
         plan.contains("persist-credentials: false"),
         "the plan checkout must not persist credentials"
     );
-    let run = step(&wf, "Plan, then red and green, with no credential");
-    assert!(
-        !run.contains("GH_TOKEN") && !run.contains("github.token") && !run.contains("secrets."),
-        "the step that runs generated Rust must hold no credential"
-    );
+    let fetch = plan
+        .find("actions/download-artifact")
+        .expect("plan receives the issue body from the gate job");
     let toolchain = plan
         .find("dtolnay/rust-toolchain")
         .expect("plan toolchain step");
-    let gate = plan
-        .find("Require a plan written by the owner or a member")
-        .expect("author gate step");
-    let fetch = plan.find("Fetch the issue body").expect("issue fetch step");
+    let run = plan.find("Plan, then red and green").expect("run step");
     assert!(
-        gate < toolchain && fetch < toolchain,
-        "the token-holding steps run, and exit, before any toolchain or code"
+        fetch < toolchain && toolchain < run,
+        "the issue body is received, then the toolchain is set up, then the runner runs"
+    );
+}
+
+#[test]
+fn a_job_level_token_added_to_the_plan_job_is_refused() {
+    let wf = read(WORKFLOW);
+    let plan = job(&wf, "plan");
+    let job_env = "\n    env:\n";
+    assert!(
+        plan.contains(job_env),
+        "the plan job has a job-level env block to tamper with"
+    );
+    let tampered = plan.replacen(job_env, "\n    env:\n      GH_TOKEN: ${{ github.token }}\n", 1);
+    let refs = credential_refs(&tampered);
+    assert!(
+        refs.contains(&"GH_TOKEN") && refs.contains(&"github.token"),
+        "a job-level GH_TOKEN added to the plan job must be caught, found {refs:?}"
+    );
+}
+
+#[test]
+fn the_gate_job_holds_the_read_token_and_no_write_permission() {
+    let wf = read(WORKFLOW);
+    let gate = job(&wf, "gate");
+    assert!(
+        gate.contains("GH_TOKEN: ${{ github.token }}"),
+        "the gate job reads the issue with the workflow token"
     );
     assert!(
-        plan.find("Plan, then red and green").expect("run step") > toolchain,
-        "the runner runs after the toolchain is set up"
+        !gate.contains(": write") && !gate.contains("write-all"),
+        "the gate job must not hold a write permission"
+    );
+    assert!(
+        step(&wf, "Require a plan written by the owner or a member").contains("gh api"),
+        "the author check runs in the gate job"
     );
 }
 
@@ -227,15 +282,95 @@ fn every_python_call_in_the_plan_stage_runs_in_isolated_mode() {
     );
 }
 
+/// Runs the red classifier on fixture logs, as run.sh does. Returns whether it accepted
+/// the run, and the verdict lines it printed.
+fn judge_red(logs: &[&str]) -> (bool, String) {
+    let mut command = Command::new("python3");
+    command.args(["-I", RED_CLASS]);
+    for log in logs {
+        command.arg(format!("{RED_FIXTURES}/{log}.log"));
+    }
+    let output = command
+        .output()
+        .expect("python3 must run the red classifier");
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).trim_end().to_owned(),
+    )
+}
+
 #[test]
 fn a_red_gate_accepts_only_a_missing_symbol_or_a_failed_assertion() {
+    // Each log is one failing generated test binary, judged on its own. The verdicts are
+    // the classifier's output, line for line.
+    let single = [
+        ("missing-symbol", "missing-symbol: missing-symbol"),
+        ("assertion", "assertion: assertion-failed"),
+        (
+            "assertion-with-message",
+            "assertion-with-message: assertion-failed",
+        ),
+        (
+            "custom-assert",
+            "custom-assert: rejected (a panic that is not an assertion: answer must be one)",
+        ),
+        (
+            "unwrap-on-err",
+            "unwrap-on-err: rejected (a panic that is not an assertion: called `Result::unwrap()` on an `Err` value: ParseIntError { kind: InvalidDigit })",
+        ),
+        (
+            "err-return",
+            "err-return: rejected (the test failed without an assertion panic)",
+        ),
+        (
+            "lone-mismatch",
+            "lone-mismatch: rejected (the build failed on an error other than a missing symbol)",
+        ),
+        (
+            "mismatch-and-missing",
+            "mismatch-and-missing: rejected (the build failed on an error other than a missing symbol)",
+        ),
+        (
+            "does-not-parse",
+            "does-not-parse: rejected (the generated test does not parse)",
+        ),
+    ];
+    for (log, verdict) in single {
+        let (accepted, printed) = judge_red(&[log]);
+        assert_eq!(printed, verdict, "verdict for {log}");
+        assert_eq!(
+            accepted,
+            !verdict.contains("rejected"),
+            "exit status for {log}"
+        );
+    }
+    // A run is a valid red only when every binary is one. A lone E0308 next to a valid
+    // missing symbol, or next to a valid assertion, refuses the whole run.
+    let runs: [(&[&str], bool, &str); 3] = [
+        (
+            &["missing-symbol", "assertion"],
+            true,
+            "missing-symbol: missing-symbol\nassertion: assertion-failed",
+        ),
+        (
+            &["lone-mismatch", "missing-symbol"],
+            false,
+            "lone-mismatch: rejected (the build failed on an error other than a missing symbol)\nmissing-symbol: missing-symbol",
+        ),
+        (
+            &["lone-mismatch", "assertion"],
+            false,
+            "lone-mismatch: rejected (the build failed on an error other than a missing symbol)\nassertion: assertion-failed",
+        ),
+    ];
+    for (logs, accepted, verdict) in runs {
+        let (got, printed) = judge_red(logs);
+        assert_eq!(printed, verdict, "verdicts for {logs:?}");
+        assert_eq!(got, accepted, "exit status for {logs:?}");
+    }
     let runner = read("scripts/dual-pass/run.sh");
     assert!(
-        runner.contains("red_class=\"rejected\""),
-        "the red classification must default to rejected"
-    );
-    assert!(
-        runner.contains("neither failed an assertion nor referenced a missing symbol"),
-        "a red result that is neither must be refused"
+        runner.contains("python3 -I scripts/dual-pass/red_class.py"),
+        "the runner must judge red with the classifier, not a copy of it"
     );
 }
