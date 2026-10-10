@@ -6,8 +6,9 @@
 //!
 //! The check lexes each shell file and parses the tokens into pipelines. A grep that
 //! reads a pipe and can exit early (`-q`, `--quiet`, `--silent`, `-m`, `--max-count`,
-//! `-l`, `--files-with-matches`) is flagged unless `|| true` follows its pipeline. A
-//! workflow is checked through its `run:` blocks only.
+//! `-l`, `--files-with-matches`, or a long name that getopt would resolve to one of
+//! them, such as `--qui`) is flagged unless `|| true` follows its pipeline. A workflow
+//! is checked through its `run:` blocks only.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -122,6 +123,11 @@ fn run_blocks(text: &str) -> String {
     out.join("\n")
 }
 
+/// Reserved words that may come before the name of a command, as in `then cmd` or `! cmd`.
+const COMMAND_KEYWORDS: &[&str] = &[
+    "then", "do", "else", "elif", "if", "while", "until", "!", "time", "{",
+];
+
 /// A shell token. The lexer resolves quotes, escapes, comments, here-document bodies,
 /// and the text of substitutions, so the parser sees words and operators only.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +157,9 @@ enum Tok {
     OpenSubst(usize),
     /// The close of a substitution opened by `OpenSubst`.
     CloseSubst(usize),
+    /// A redirection operator, such as `>`, `2>&`, or `&>`, other than a here-document.
+    /// The word or substitution after it is its target, not a command word.
+    Redirect(usize),
 }
 
 impl Tok {
@@ -165,7 +174,8 @@ impl Tok {
             | Tok::LParen(line)
             | Tok::RParen(line)
             | Tok::OpenSubst(line)
-            | Tok::CloseSubst(line) => *line,
+            | Tok::CloseSubst(line)
+            | Tok::Redirect(line) => *line,
         }
     }
 }
@@ -177,6 +187,26 @@ struct Pending {
     line: usize,
     /// The word begins a command, so a keyword in it would be one.
     at_command: bool,
+}
+
+impl Pending {
+    /// A word that names a file descriptor: a number, or a `{name}` that allocates one.
+    /// Directly before `<` or `>`, it is the descriptor of the redirection, not a word.
+    fn is_fd_number(&self) -> bool {
+        if self.quoted {
+            return false;
+        }
+        let number = !self.text.is_empty() && self.text.bytes().all(|b| b.is_ascii_digit());
+        let named = self
+            .text
+            .strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix('}'))
+            .is_some_and(|name| {
+                name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            });
+        number || named
+    }
 }
 
 /// A here-document whose body starts on the line after the one that opened it.
@@ -288,6 +318,15 @@ impl Lexer {
                 self.bump();
                 self.substitution(Close::Backtick);
             }
+            '(' if self.peek(1) == Some('(')
+                && clauses.last() != Some(&Clause::Pattern)
+                && self.closes_arithmetic(self.pos + 2) =>
+            {
+                // `((...))` is an arithmetic command, not a subshell.
+                self.end_word(clauses);
+                self.pos += 2;
+                self.arithmetic_command();
+            }
             '(' => {
                 self.end_word(clauses);
                 self.open_paren(clauses);
@@ -308,8 +347,18 @@ impl Lexer {
                 self.end_word(clauses);
                 self.semicolon(clauses);
             }
+            '<' | '>' if self.in_let_command() => {
+                // In `let`, `<` and `>` are operators of arithmetic, so they are word text.
+                self.add(c, false);
+                self.bump();
+            }
             '<' | '>' => {
-                self.end_word(clauses);
+                // A descriptor number right before the operator belongs to the redirection.
+                if self.word.as_ref().is_some_and(Pending::is_fd_number) {
+                    self.word = None;
+                } else {
+                    self.end_word(clauses);
+                }
                 self.redirect();
             }
             _ => {
@@ -354,9 +403,14 @@ impl Lexer {
         }
     }
 
-    /// True when the next word would begin a command.
+    /// True when the next word would begin a command. A redirection and its target do not
+    /// change where a command begins, so they are looked past.
     fn at_command_start(&self) -> bool {
-        match self.toks.last() {
+        let mut end = self.toks.len();
+        while let Some(operator) = self.redirection_ending_at(end) {
+            end = operator;
+        }
+        match end.checked_sub(1).map(|i| &self.toks[i]) {
             None
             | Some(
                 Tok::Sep(_)
@@ -372,12 +426,69 @@ impl Lexer {
                 text,
                 quoted: false,
                 ..
-            }) => matches!(
-                text.as_str(),
-                "then" | "do" | "else" | "elif" | "if" | "while" | "until" | "!" | "time" | "{"
-            ),
+            }) => COMMAND_KEYWORDS.contains(&text.as_str()),
             Some(_) => false,
         }
+    }
+
+    /// True when the command being read is `let`, whose operands are arithmetic. There `<`
+    /// and `>` are shift and comparison operators, not redirections. Keywords before the
+    /// command name, and redirections, are looked past.
+    fn in_let_command(&self) -> bool {
+        let mut words = Vec::new();
+        let mut end = self.toks.len();
+        loop {
+            if let Some(operator) = self.redirection_ending_at(end) {
+                end = operator;
+            } else if let Some(Tok::Word {
+                text,
+                quoted: false,
+                ..
+            }) = end.checked_sub(1).map(|i| &self.toks[i])
+            {
+                words.push(text.as_str());
+                end -= 1;
+            } else {
+                break;
+            }
+        }
+        words
+            .iter()
+            .rev()
+            .copied()
+            .find(|word| !COMMAND_KEYWORDS.contains(word))
+            == Some("let")
+    }
+
+    /// The index of the operator of a redirection whose target ends just before `end`, if
+    /// there is one.
+    fn redirection_ending_at(&self, end: usize) -> Option<usize> {
+        let last = end.checked_sub(1)?;
+        let target = match &self.toks[last] {
+            Tok::Word { .. } => last,
+            Tok::CloseSubst(_) => self.substitution_opening(last)?,
+            _ => return None,
+        };
+        let operator = target.checked_sub(1)?;
+        matches!(self.toks[operator], Tok::Redirect(_)).then_some(operator)
+    }
+
+    /// The index of the `OpenSubst` that the `CloseSubst` at `close` ends.
+    fn substitution_opening(&self, close: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        for i in (0..=close).rev() {
+            match self.toks[i] {
+                Tok::CloseSubst(_) => depth += 1,
+                Tok::OpenSubst(_) => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     fn word_mut(&mut self) -> &mut Pending {
@@ -461,12 +572,7 @@ impl Lexer {
                         self.keep('\\', quoted);
                     }
                 },
-                '$' if self.peek(1) == Some('(') => {
-                    self.flush_word();
-                    self.bump();
-                    self.bump();
-                    self.substitution(Close::Paren);
-                }
+                '$' if self.peek(1) == Some('(') => self.dollar_paren(),
                 '`' => {
                     self.flush_word();
                     self.bump();
@@ -513,12 +619,86 @@ impl Lexer {
         }
     }
 
+    /// `$(` opens a substitution, and `$((` opens an arithmetic expansion. The cursor is on
+    /// the `$`, and the word in progress ends before either.
+    fn dollar_paren(&mut self) {
+        self.flush_word();
+        if self.peek(2) == Some('(') && self.closes_arithmetic(self.pos + 3) {
+            self.pos += 3;
+            self.arithmetic();
+        } else {
+            self.pos += 2;
+            self.substitution(Close::Paren);
+        }
+    }
+
+    /// True when the arithmetic whose body starts at `body` ends in `))`. Without one, the
+    /// `((` opens a subshell or a substitution instead, as it does in bash.
+    fn closes_arithmetic(&self, body: usize) -> bool {
+        let mut depth = 0usize;
+        for (i, &c) in self.chars.iter().enumerate().skip(body) {
+            match c {
+                '(' => depth += 1,
+                ')' if depth == 0 => return self.chars.get(i + 1) == Some(&')'),
+                ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// `((...))` is a command, so it is a word of its own. Without one, a pipe after it
+    /// would have no stage in front of it.
+    fn arithmetic_command(&mut self) {
+        let line = self.line;
+        self.arithmetic();
+        self.toks.push(Tok::Word {
+            text: String::new(),
+            quoted: true,
+            line,
+        });
+    }
+
+    /// Consumes an arithmetic body and its `))`, as in `$((...))` or `((...))`. Its `<`,
+    /// `>`, `|`, `&`, and `;` are operators of arithmetic, not of the shell, so they
+    /// neither open a here-document nor end a command. A substitution inside it is lexed
+    /// as code. The expansion itself leaves no token, so it does not join a command.
+    fn arithmetic(&mut self) {
+        let mut depth = 0usize;
+        while let Some(c) = self.peek(0) {
+            match c {
+                '(' => {
+                    depth += 1;
+                    self.bump();
+                }
+                ')' if depth > 0 => {
+                    depth -= 1;
+                    self.bump();
+                }
+                // `closes_arithmetic` has seen the second `)`, so both are consumed here.
+                ')' => {
+                    self.bump();
+                    self.bump();
+                    return;
+                }
+                '$' if self.peek(1) == Some('(') => self.dollar_paren(),
+                '`' => {
+                    self.flush_word();
+                    self.bump();
+                    self.substitution(Close::Backtick);
+                }
+                _ => {
+                    self.bump();
+                }
+            }
+        }
+    }
+
     fn dollar(&mut self, clauses: &mut Vec<Clause>) {
         match self.peek(1) {
             Some('(') => {
                 self.end_word(clauses);
-                self.pos += 2;
-                self.substitution(Close::Paren);
+                self.dollar_paren();
             }
             Some('\'') => {
                 self.bump();
@@ -595,7 +775,10 @@ impl Lexer {
                 self.pos += 2;
                 self.toks.push(Tok::AndIf(line));
             }
-            Some('>') => self.pos += 2,
+            Some('>') => {
+                self.pos += 2;
+                self.toks.push(Tok::Redirect(line));
+            }
             _ => {
                 self.bump();
                 self.toks.push(Tok::Sep(line));
@@ -617,11 +800,15 @@ impl Lexer {
         }
     }
 
-    /// A redirection, a here-string, a here-document, or a process substitution.
+    /// A redirection, a here-string, a here-document, or a process substitution. A
+    /// here-document is read as its body, and a process substitution is lexed as code. The
+    /// other operators become a `Redirect` token, which the parser reads past with its target.
     fn redirect(&mut self) {
+        let line = self.line;
         if self.peek(0) == Some('<') && self.peek(1) == Some('<') {
             if self.peek(2) == Some('<') {
                 self.pos += 3;
+                self.toks.push(Tok::Redirect(line));
             } else {
                 self.heredoc_operator();
             }
@@ -633,6 +820,7 @@ impl Lexer {
             if matches!(self.peek(0), Some('>' | '|' | '&')) {
                 self.bump();
             }
+            self.toks.push(Tok::Redirect(line));
         }
     }
 
@@ -870,10 +1058,11 @@ impl<'a> Parser<'a> {
                 }
                 Some(Tok::OrIf(_)) => {
                     self.pos += 1;
+                    // The fallback may begin on the next line, as in `grep -q x ||` + `true`.
+                    self.skip_newlines();
                     if self.at_word("true") {
                         self.pipelines[last].guarded = true;
                     }
-                    self.skip_newlines();
                     last = self.parse_pipeline(piped);
                 }
                 _ => return,
@@ -937,7 +1126,7 @@ impl<'a> Parser<'a> {
     fn group(&mut self, piped: Option<usize>, until: Until) {
         self.pos += 1;
         self.parse_list(piped, until);
-        self.skip_redirects();
+        self.skip_redirects(piped);
     }
 
     /// `name ( )`, the start of a function definition.
@@ -950,20 +1139,32 @@ impl<'a> Parser<'a> {
 
     /// Skips the words and redirections that trail a compound command, such as the
     /// `< <(...)` after `done`.
-    fn skip_redirects(&mut self) {
+    fn skip_redirects(&mut self, piped: Option<usize>) {
         loop {
             match self.peek() {
-                Some(Tok::Word { .. }) => self.pos += 1,
-                Some(Tok::OpenSubst(_)) => self.parse_subst(),
+                Some(Tok::Word { .. } | Tok::Redirect(_)) => self.pos += 1,
+                Some(Tok::OpenSubst(_)) => self.parse_subst(piped),
                 _ => return,
             }
         }
     }
 
-    /// A substitution is a separate script. Its stdin is not the enclosing pipe.
-    fn parse_subst(&mut self) {
+    /// A substitution is a script of its own, but it runs in a subshell that inherits the
+    /// stdin of the stage it sits in. So a pipe that feeds that stage feeds the commands
+    /// inside it too, and `piped` is passed on.
+    fn parse_subst(&mut self, piped: Option<usize>) {
         self.pos += 1;
-        self.parse_list(None, Until::Subst);
+        self.parse_list(piped, Until::Subst);
+    }
+
+    /// The target of a redirection: the word or substitution after its operator. It is not
+    /// a command word.
+    fn redirect_target(&mut self, piped: Option<usize>) {
+        match self.peek() {
+            Some(Tok::Word { .. }) => self.pos += 1,
+            Some(Tok::OpenSubst(_)) => self.parse_subst(piped),
+            _ => {}
+        }
     }
 
     /// A `case` statement. Its patterns are not commands, and `|` between them is not a
@@ -972,7 +1173,7 @@ impl<'a> Parser<'a> {
         self.pos += 1;
         loop {
             match self.peek() {
-                Some(Tok::OpenSubst(_)) => self.parse_subst(),
+                Some(Tok::OpenSubst(_)) => self.parse_subst(piped),
                 Some(Tok::Word { .. }) => {
                     let subject_done = self.at_word("in");
                     self.pos += 1;
@@ -980,6 +1181,8 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 }
+                // A newline may come between the subject and `in`.
+                Some(Tok::Sep(_)) => self.pos += 1,
                 _ => return,
             }
         }
@@ -1001,7 +1204,7 @@ impl<'a> Parser<'a> {
                         self.pos += 1;
                         break;
                     }
-                    Some(Tok::OpenSubst(_)) => self.parse_subst(),
+                    Some(Tok::OpenSubst(_)) => self.parse_subst(piped),
                     Some(_) => self.pos += 1,
                 }
             }
@@ -1012,8 +1215,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// A simple command: its words, with any substitutions in them parsed as separate
-    /// scripts.
+    /// A simple command: its words, with any substitutions in them parsed as scripts. A
+    /// redirection and its target are skipped, so neither is taken for the command name.
     fn parse_simple(&mut self, piped: Option<usize>) {
         let mut words = Vec::new();
         loop {
@@ -1022,7 +1225,11 @@ impl<'a> Parser<'a> {
                     words.push(text.clone());
                     self.pos += 1;
                 }
-                Some(Tok::OpenSubst(_)) => self.parse_subst(),
+                Some(Tok::OpenSubst(_)) => self.parse_subst(piped),
+                Some(Tok::Redirect(_)) => {
+                    self.pos += 1;
+                    self.redirect_target(piped);
+                }
                 _ => break,
             }
         }
@@ -1155,9 +1362,96 @@ fn command_of(words: &[String]) -> Option<(&str, &[String])> {
     None
 }
 
+/// The long options of GNU grep, as `(name, takes_value, early_exit)`. A required value
+/// is given after `=` or as the next word. `--color` takes its value only after `=`, so
+/// it is listed as taking none.
+///
+/// `--files-without-match` is not marked as an early exit, which matches the detector's
+/// short-option set (`-L` is not listed either). GNU grep also stops reading there, so
+/// this is a known gap.
+const GREP_LONG_OPTIONS: &[(&str, bool, bool)] = &[
+    ("after-context", true, false),
+    ("basic-regexp", false, false),
+    ("before-context", true, false),
+    ("binary", false, false),
+    ("binary-files", true, false),
+    ("byte-offset", false, false),
+    ("color", false, false),
+    ("colour", false, false),
+    ("context", true, false),
+    ("count", false, false),
+    ("dereference-recursive", false, false),
+    ("devices", true, false),
+    ("directories", true, false),
+    ("exclude", true, false),
+    ("exclude-dir", true, false),
+    ("exclude-from", true, false),
+    ("extended-regexp", false, false),
+    ("file", true, false),
+    ("files-with-matches", false, true),
+    ("files-without-match", false, false),
+    ("fixed-regexp", false, false),
+    ("fixed-strings", false, false),
+    ("group-separator", true, false),
+    ("help", false, false),
+    ("ignore-case", false, false),
+    ("include", true, false),
+    ("initial-tab", false, false),
+    ("invert-match", false, false),
+    ("label", true, false),
+    ("line-buffered", false, false),
+    ("line-number", false, false),
+    ("line-regexp", false, false),
+    ("max-count", true, true),
+    ("no-filename", false, false),
+    ("no-group-separator", false, false),
+    ("no-ignore-case", false, false),
+    ("no-messages", false, false),
+    ("null", false, false),
+    ("null-data", false, false),
+    ("only-matching", false, false),
+    ("perl-regexp", false, false),
+    ("quiet", false, true),
+    ("recursive", false, false),
+    ("regexp", true, false),
+    ("silent", false, true),
+    ("text", false, false),
+    ("unix-byte-offsets", false, false),
+    ("version", false, false),
+    ("with-filename", false, false),
+    ("word-regexp", false, false),
+];
+
+/// Resolves a long option name the way getopt does: an exact name, or else the one option
+/// it is a prefix of, so `--qui` is `--quiet`. A prefix of several options resolves only
+/// when they agree on taking a value and on stopping early. Any other ambiguous prefix is
+/// an error in grep, and it counts as an early exit. Returns `(takes_value, early_exit)`,
+/// and a name that matches no option takes no value and does not stop grep early.
+fn grep_long_option(name: &str) -> (bool, bool) {
+    if let Some(&(_, takes_value, early)) = GREP_LONG_OPTIONS
+        .iter()
+        .find(|(known, _, _)| *known == name)
+    {
+        return (takes_value, early);
+    }
+    let mut prefixed = GREP_LONG_OPTIONS
+        .iter()
+        .filter(|(known, _, _)| known.starts_with(name))
+        .map(|&(_, takes_value, early)| (takes_value, early));
+    let Some(first) = prefixed.next() else {
+        return (false, false);
+    };
+    if prefixed.all(|option| option == first) {
+        first
+    } else {
+        (false, true)
+    }
+}
+
 /// True when grep's arguments include an option that lets it stop early: `-q`,
-/// `--quiet`, `--silent`, `-m`, `--max-count`, `-l`, or `--files-with-matches`. The
-/// value of an option such as `-e PATTERN` or `-A 2` is not an option.
+/// `--quiet`, `--silent`, `-m`, `--max-count`, `-l`, `--files-with-matches`, or a long
+/// name that resolves to one of them. The value of an option such as `-e PATTERN` or
+/// `-A 2` is not an option.
 fn has_early_exit_flag(args: &[String]) -> bool {
     let mut early = false;
     let mut i = 0;
@@ -1172,22 +1466,10 @@ fn has_early_exit_flag(args: &[String]) -> bool {
                 Some((name, _)) => (name, true),
                 None => (long, false),
             };
-            match name {
-                "quiet" | "silent" | "files-with-matches" => early = true,
-                "max-count" => {
-                    early = true;
-                    if !has_value {
-                        i += 1;
-                    }
-                }
-                "regexp" | "file" | "label" | "after-context" | "before-context" | "context"
-                | "binary-files" | "devices" | "directories" | "exclude" | "exclude-from"
-                | "exclude-dir" | "include" | "group-separator"
-                    if !has_value =>
-                {
-                    i += 1;
-                }
-                _ => {}
+            let (takes_value, option_early) = grep_long_option(name);
+            early |= option_early;
+            if takes_value && !has_value {
+                i += 1;
             }
         } else if let Some(shorts) = arg.strip_prefix('-').filter(|s| !s.is_empty()) {
             for (offset, flag) in shorts.char_indices() {
@@ -1414,5 +1696,171 @@ fn no_pipeline_feeds_grep_quiet_under_pipefail() {
         hits.is_empty(),
         "producer | grep -q can report SIGPIPE under pipefail; capture the output or use a here-string:\n{}",
         hits.join("\n")
+    );
+}
+
+// Regression tests for the six findings in the detector's audit. Each one fails on the
+// detector as it was before its fix.
+
+#[test]
+fn f1_shift_inside_an_arithmetic_expansion_opens_no_here_document() {
+    assert_eq!(
+        flagged_lines("x=$((1 << 3))\na | grep -q y\n"),
+        [2],
+        "the shift is arithmetic, so the pipeline on line 2 is code"
+    );
+    assert_eq!(
+        flagged_lines("echo \"$((n<<2))\"\na | grep -q y\n"),
+        [2],
+        "inside double quotes"
+    );
+    assert_eq!(
+        flagged_lines("cat <<EOF\n$((1 << 2))\nEOF\na | grep -q y\n"),
+        [4],
+        "inside an unquoted here-document body"
+    );
+    assert_eq!(
+        flagged_lines("x=$(( (1 + 2) << 1 ))\na | grep -q y\n"),
+        [2],
+        "nested parentheses inside the arithmetic"
+    );
+}
+
+#[test]
+fn f1_shift_inside_an_arithmetic_command_opens_no_here_document() {
+    assert_eq!(
+        flagged_lines("(( x = 1 << 3 ))\na | grep -q y\n"),
+        [2],
+        "arithmetic command"
+    );
+    assert_eq!(
+        flagged_lines("for ((i=0; i<<3; i++)); do :; done\na | grep -q y\n"),
+        [2],
+        "arithmetic in a C-style for"
+    );
+    assert_eq!(
+        flagged_lines("(( x )) | grep -q y\n"),
+        [1],
+        "an arithmetic command is a command, so a pipe can feed the grep after it"
+    );
+}
+
+#[test]
+fn f1_shift_in_let_opens_no_here_document() {
+    assert_eq!(
+        flagged_lines("let x=1<<3\na | grep -q y\n"),
+        [2],
+        "let's operands are arithmetic"
+    );
+    assert_eq!(
+        flagged_lines("if let x<<2; then a | grep -q y; fi\n"),
+        [1],
+        "a keyword before let does not change that"
+    );
+    assert_eq!(
+        flagged_lines("cat x<<EOF\nbody\nEOF\na | grep -q y\n"),
+        [4],
+        "outside let, << still opens a here-document"
+    );
+}
+
+#[test]
+fn f1_a_parenthesised_group_that_is_not_arithmetic_stays_a_subshell() {
+    assert_eq!(
+        flagged_lines("((cd x; ls) | grep -q y)\n"),
+        [1],
+        "the first `)` is not followed by a second one, so this is a subshell"
+    );
+    assert_eq!(flagged_lines("(( a ) | grep -q y)\n"), [1]);
+}
+
+#[test]
+fn f2_a_substitution_in_a_piped_stage_reads_the_pipe() {
+    assert_eq!(
+        flagged_lines("strings -a x | echo \"$(grep -q y)\"\n"),
+        [1],
+        "a command substitution inherits the stage's stdin"
+    );
+    assert_eq!(
+        flagged_lines("strings -a x | echo `grep -q y`\n"),
+        [1],
+        "a backtick substitution inherits the stage's stdin"
+    );
+    assert_eq!(
+        flagged_lines("a | cat <(grep -q y)\n"),
+        [1],
+        "a process substitution inherits the stage's stdin"
+    );
+    assert_eq!(
+        flagged_lines("a | while read -r l; do :; done < <(grep -q y)\n"),
+        [1],
+        "a substitution that redirects a piped loop"
+    );
+    assert!(
+        !pipes_into_grep_quiet("x=\"$(grep -q y)\"\n"),
+        "a substitution that no pipe feeds reads no pipe"
+    );
+}
+
+#[test]
+fn f3_a_redirection_before_the_command_name_keeps_the_command() {
+    assert_eq!(flagged_lines("a | 2>/dev/null grep -q x\n"), [1]);
+    assert_eq!(flagged_lines("a | >out grep -q x\n"), [1]);
+    assert_eq!(flagged_lines("a | 2>&1 grep -q x\n"), [1]);
+    assert_eq!(flagged_lines("a | &>out grep -q x\n"), [1]);
+    assert_eq!(flagged_lines("a | 2>$(mktemp) grep -q x\n"), [1]);
+    assert_eq!(flagged_lines("a | 2>/dev/null env -i grep -q x\n"), [1]);
+}
+
+#[test]
+fn f4_gnu_long_option_prefixes_are_early_exits() {
+    assert!(pipes_into_grep_quiet("a | grep --qui x"));
+    assert!(pipes_into_grep_quiet("a | grep --sil x"));
+    assert!(pipes_into_grep_quiet("a | grep --max=1 x"));
+    assert!(pipes_into_grep_quiet("a | grep --max 1 x"));
+    assert!(pipes_into_grep_quiet("a | grep --files-with-m x"));
+}
+
+#[test]
+fn f4_a_long_option_that_is_not_an_early_exit_stays_unflagged() {
+    assert!(!pipes_into_grep_quiet("a | grep --file=pats x"));
+    assert!(!pipes_into_grep_quiet("a | grep --file pats x"));
+    assert!(!pipes_into_grep_quiet("a | grep --null x"));
+    assert!(!pipes_into_grep_quiet("a | grep --regexp -q x"));
+}
+
+#[test]
+fn f5_a_newline_before_in_keeps_the_case_arms_in_the_pipeline() {
+    assert_eq!(
+        flagged_lines("a | case $x\nin\n  y) grep -q z;;\nesac\n"),
+        [1],
+        "the arms are commands of the piped case"
+    );
+    assert_eq!(
+        flagged_lines("a | case $x\n\nin\n  y) grep -q z;;\nesac\n"),
+        [1],
+        "blank lines between the word and in"
+    );
+}
+
+#[test]
+fn f6_or_true_on_the_next_line_guards_the_pipeline() {
+    assert!(!pipes_into_grep_quiet("a | grep -q x ||\n  true\n"));
+    assert!(!pipes_into_grep_quiet(
+        "a | grep -q x || # fall back\n  true\n"
+    ));
+    assert_eq!(
+        flagged_lines("a | grep -q x ||\n  echo none\n"),
+        [1],
+        "a fallback other than true is not a guard"
+    );
+}
+
+#[test]
+fn a_pipe_continued_past_a_here_document_body_reaches_its_consumer() {
+    assert_eq!(
+        flagged_lines("cat <<EOF |\n$(x)\nEOF\ngrep -q y\n"),
+        [1],
+        "the body is not a command, so the pipe runs on to grep"
     );
 }
