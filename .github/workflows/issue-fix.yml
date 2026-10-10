@@ -1,0 +1,144 @@
+name: issue-fix
+
+# Automated issue fixer that uses a model. It is separate from the model-free
+# dual-pass runner, which stays model-free. A person with triage access adds the
+# ai-fix label to an issue, or dispatches the workflow with an issue number. The
+# job runs the pinned Claude Code CLI in bare mode, under a tool allowlist and a
+# spend cap. It then checks the diff against the path policy, runs the full repair
+# gate itself, and opens a pull request. It never merges.
+#
+# Secrets: ANTHROPIC_API_KEY (required). ISSUE_FIX_TOKEN (optional; a token with
+# contents and pull-requests write, so that CI starts on the pull request). Without
+# it the pull request is opened with the workflow token, and GitHub does not start
+# its CI. Variables: ISSUE_FIX_MODEL (default opus), ISSUE_FIX_BUDGET_USD (default 10).
+#
+# Residual risk: the model's Bash tool can run cargo, and cargo can run code from the
+# repository. The API key is in the model step's environment, so a tool call could
+# read it. GitHub masks the value in logs, but a test could still send it out. Only
+# maintainers with triage access can apply the label, and that is the control.
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: issue-fix-${{ github.event.issue.number || inputs.issue }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'ai-fix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+      REPO: ${{ github.repository }}
+      CLAUDE_CODE_VERSION: "2.1.283"
+      ISSUE_FIX_MODEL: ${{ vars.ISSUE_FIX_MODEL || 'opus' }}
+      ISSUE_FIX_BUDGET_USD: ${{ vars.ISSUE_FIX_BUDGET_USD || '10' }}
+      HAS_PAT: ${{ secrets.ISSUE_FIX_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Install the pinned Claude Code CLI
+        run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+      - name: Fetch the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue view "$ISSUE" --repo "$REPO" --json number,title,body,state > "$RUNNER_TEMP/issue.json"
+          test "$(jq -r .state "$RUNNER_TEMP/issue.json")" = "OPEN"
+
+      - name: Build the agent prompt
+        run: bash scripts/issue-fix/build-prompt.sh "$RUNNER_TEMP/issue.json" "$RUNNER_TEMP/prompt.md"
+
+      - name: Require the model key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$ANTHROPIC_API_KEY" || { echo "::error::ANTHROPIC_API_KEY is not set"; exit 1; }
+
+      - name: Record the base commit
+        run: echo "BASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Run the model under the tool allowlist
+        id: agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
+            --bare \
+            --model "$ISSUE_FIX_MODEL" \
+            --permission-mode acceptEdits \
+            --permission-prompts none \
+            --max-budget-usd "$ISSUE_FIX_BUDGET_USD" \
+            --output-format json \
+            --allowedTools Read Edit Write Glob Grep \
+              "Bash(cargo *)" "Bash(git diff *)" "Bash(git status *)" "Bash(git log *)" \
+              "Bash(bash scripts/repair-gate.sh fast)" \
+            --disallowedTools WebFetch WebSearch "Bash(curl *)" "Bash(wget *)" \
+              "Bash(gh *)" "Bash(env)" "Bash(printenv*)" "Bash(git commit *)" "Bash(git push *)" \
+            > "$RUNNER_TEMP/agent.json"
+
+      - name: Check the change against the path policy
+        id: guard
+        if: steps.agent.outcome == 'success'
+        run: bash scripts/issue-fix/check-protected.sh "$BASE_SHA"
+
+      - name: Run the full repair gate
+        id: gate
+        if: steps.guard.outcome == 'success'
+        run: bash scripts/repair-gate.sh full > "$RUNNER_TEMP/gate.log" 2>&1
+
+      - name: Commit, push, and open the pull request
+        id: publish
+        if: steps.gate.outcome == 'success'
+        env:
+          PUSH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
+        run: bash scripts/issue-fix/publish.sh "$RUNNER_TEMP/issue.json" "$RUNNER_TEMP/agent.json"
+
+      - name: Report a stopped attempt
+        if: always() && steps.publish.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AGENT_OUTCOME: ${{ steps.agent.outcome }}
+          GUARD_OUTCOME: ${{ steps.guard.outcome }}
+          GATE_OUTCOME: ${{ steps.gate.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+        run: bash scripts/issue-fix/report.sh "$ISSUE" "$RUNNER_TEMP/gate.log"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: issue-fix-${{ env.ISSUE }}
+          path: |
+            ${{ runner.temp }}/issue.json
+            ${{ runner.temp }}/agent.json
+            ${{ runner.temp }}/gate.log
+          if-no-files-found: ignore
+          retention-days: 14
