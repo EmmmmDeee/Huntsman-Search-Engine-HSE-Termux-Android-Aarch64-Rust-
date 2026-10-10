@@ -502,6 +502,21 @@ fn the_trust_note_does_not_say_the_model_cannot_change_the_scanner() {
     );
 }
 
+/// The build step's note on the checking tools must not say that the model never writes them or
+/// cannot reach them. The copy in RUNNER_TEMP is writable by code that the model's cargo commands run.
+#[test]
+fn the_build_step_does_not_say_the_model_cannot_reach_the_checking_tools() {
+    let workflow = prose(&fs::read_to_string(WORKFLOW).expect("the issue-fix workflow exists"));
+    assert!(
+        !workflow.contains("never written by the model"),
+        "the build step says the model never writes the checking tools"
+    );
+    assert!(
+        !workflow.contains("cannot reach it through the checkout"),
+        "the build step says the model cannot reach the checking tools through the checkout"
+    );
+}
+
 #[test]
 fn the_wrong_number_of_arguments_is_a_usage_error() {
     let output = Command::new(env!("CARGO_BIN_EXE_xtask"))

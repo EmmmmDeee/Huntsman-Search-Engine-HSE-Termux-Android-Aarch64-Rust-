@@ -217,7 +217,8 @@ fn an_object_title_keeps_jq_layout_with_sorted_keys_and_a_number_prints_its_valu
 }
 
 /// jq exited 2 for a missing file. This port exits 1, the status of an input that cannot be read, and
-/// writes no prompt either way.
+/// writes no prompt either way. This is a pin, not a regression test: the parent commit already exits
+/// 1 here, so the test passes on it.
 #[test]
 fn a_missing_issue_file_is_refused_and_writes_no_prompt() {
     let scratch = Scratch::new("missing-issue");
@@ -229,7 +230,8 @@ fn a_missing_issue_file_is_refused_and_writes_no_prompt() {
 }
 
 /// jq replaced the invalid byte with U+FFFD and wrote the prompt. This port refuses the file as
-/// malformed JSON, which fails closed, and writes no prompt.
+/// malformed JSON, which fails closed, and writes no prompt. This is a pin, not a regression test: the
+/// parent commit already refuses this file, so the test passes on it.
 #[test]
 fn a_title_that_is_not_utf_8_is_malformed_json_and_writes_no_prompt() {
     let scratch = Scratch::new("not-utf8");
@@ -246,7 +248,8 @@ fn a_title_that_is_not_utf_8_is_malformed_json_and_writes_no_prompt() {
 }
 
 /// jq kept the text of 1e400 and wrote it. A number outside the range of a 64-bit float is malformed
-/// JSON here, so it exits 64 and writes no prompt.
+/// JSON here, so it exits 64 and writes no prompt. This is a pin, not a regression test: the parent
+/// commit already refuses this number, so the test passes on it.
 #[test]
 fn a_number_outside_the_float_range_is_malformed_json() {
     let scratch = Scratch::new("big-number");

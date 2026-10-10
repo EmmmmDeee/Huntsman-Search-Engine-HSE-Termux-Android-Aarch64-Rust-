@@ -86,9 +86,14 @@ jobs:
       - name: Build the trusted xtask before the model runs
         run: |
           set -euo pipefail
-          # The model edits this checkout, so the tools that check its change are built from a copy of
-          # the base commit, taken here and never written by the model. The copy is an archive of the
-          # commit the run started from, so the model cannot reach it through the checkout.
+          # The model edits this checkout. The checking tools (the scan, the guard and the capture) run one
+          # copy of this build, "$RUNNER_TEMP/trusted-xtask", which is made here before the model runs.
+          # What is enforced: the build reads an archive of the base commit, not the checkout, so the
+          # model's edits there cannot change what is built. What is not enforced: the copy sits in
+          # RUNNER_TEMP, and code that the model's cargo commands run, as the same runner user, can
+          # overwrite it while the model runs. The scan, the guard and the capture would then run the
+          # overwritten file. Keeping the checking tools out of the model's reach is the open trust-chain
+          # item; see the Limits and residual risk section of docs/ISSUE_FIX.md.
           trusted="$RUNNER_TEMP/trusted"
           rm -rf "$trusted" && mkdir -p "$trusted"
           git archive "$BASE_SHA" | tar -x -C "$trusted"
