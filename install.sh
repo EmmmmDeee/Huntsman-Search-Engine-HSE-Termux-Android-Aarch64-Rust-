@@ -112,7 +112,11 @@ if [[ -z "$rust_pkg_version" || -z "$rust_std_version" || "$rust_pkg_version" !=
 fi
 
 rust_target_libdir="$(rustc --print target-libdir)"
-if [[ ! -d "$rust_target_libdir" ]] || ! find "$rust_target_libdir" -maxdepth 1 -type f -name '*.rlib' -print -quit | grep -q .; then
+rlib_found=""
+if [[ -d "$rust_target_libdir" ]]; then
+  rlib_found="$(find "$rust_target_libdir" -maxdepth 1 -type f -name '*.rlib' -print -quit)"
+fi
+if [[ -z "$rlib_found" ]]; then
   printf 'error: Rust host stdlib rlibs are unavailable after installing %s\n' "$rust_std_pkg" >&2
   printf '       rustc: %s\n' "$(rustc --version)" >&2
   printf '       target libdir: %s\n' "$rust_target_libdir" >&2
