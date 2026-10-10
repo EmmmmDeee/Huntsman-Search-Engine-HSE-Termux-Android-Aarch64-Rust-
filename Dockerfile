@@ -9,6 +9,10 @@ ENV HUNTSMAN_HIBP_NO_EMBED=1 \
 
 COPY Cargo.toml Cargo.lock build.rs capabilities.json benchmarks.json HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md ./
 COPY src ./src
+# The root manifest declares xtask as a workspace member, so cargo reads its manifest and
+# source while loading the workspace. This build does not compile xtask.
+COPY xtask/Cargo.toml ./xtask/Cargo.toml
+COPY xtask/src ./xtask/src
 
 RUN cargo build --release --locked --bin huntsman-recon
 
