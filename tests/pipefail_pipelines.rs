@@ -133,11 +133,13 @@ const COMMAND_KEYWORDS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Tok {
     /// A word with its quotes and escapes removed. `quoted` is true if any part of it
-    /// was quoted.
+    /// was quoted. `joined` is true if no whitespace or operator comes between it and the
+    /// piece before it, as with `.log` in `"$(mktemp)".log`.
     Word {
         text: String,
         quoted: bool,
         line: usize,
+        joined: bool,
     },
     /// `|` or `|&`.
     Pipe(usize),
@@ -153,12 +155,13 @@ enum Tok {
     LParen(usize),
     /// `)`, which closes a `(` group or a case pattern.
     RParen(usize),
-    /// `$(`, a backtick, `<(`, or `>(`.
-    OpenSubst(usize),
+    /// `$(`, a backtick, `<(`, or `>(`. `joined` is as for `Word`.
+    OpenSubst(usize, bool),
     /// The close of a substitution opened by `OpenSubst`.
     CloseSubst(usize),
-    /// A redirection operator, such as `>`, `2>&`, or `&>`, other than a here-document.
-    /// The word or substitution after it is its target, not a command word.
+    /// A redirection operator, such as `>`, `2>&`, `&>`, or `<<`. The word or substitution
+    /// after it, and the pieces joined to that, are its target, not command words. The
+    /// target of `<<` is its delimiter.
     Redirect(usize),
 }
 
@@ -173,7 +176,7 @@ impl Tok {
             | Tok::DSemi(line)
             | Tok::LParen(line)
             | Tok::RParen(line)
-            | Tok::OpenSubst(line)
+            | Tok::OpenSubst(line, _)
             | Tok::CloseSubst(line)
             | Tok::Redirect(line) => *line,
         }
@@ -187,6 +190,8 @@ struct Pending {
     line: usize,
     /// The word begins a command, so a keyword in it would be one.
     at_command: bool,
+    /// The word continues the piece before it, as for `Tok::Word`.
+    joined: bool,
 }
 
 impl Pending {
@@ -215,6 +220,8 @@ struct Heredoc {
     strip_tabs: bool,
     /// The delimiter was unquoted, so the body is expanded.
     expand: bool,
+    /// The index of the token after the delimiter. The body's substitutions go there.
+    at: usize,
 }
 
 /// What ends a run of code.
@@ -246,6 +253,10 @@ struct Lexer {
     toks: Vec<Tok>,
     word: Option<Pending>,
     heredocs: Vec<Heredoc>,
+    /// No whitespace or operator has been read since the last piece began or ended.
+    separated: bool,
+    /// The character index at which each recorded arithmetic body ends.
+    arithmetic_ends: Vec<usize>,
 }
 
 impl Lexer {
@@ -257,6 +268,8 @@ impl Lexer {
             toks: Vec::new(),
             word: None,
             heredocs: Vec::new(),
+            separated: true,
+            arithmetic_ends: Vec::new(),
         }
     }
 
@@ -288,6 +301,9 @@ impl Lexer {
     /// Lexes one character of code. Returns false once the close has been consumed.
     fn code_step(&mut self, c: char, close: Close, clauses: &mut Vec<Clause>) -> bool {
         let line = self.line;
+        if self.separates(c) {
+            self.separated = true;
+        }
         match c {
             ' ' | '\t' | '\r' => {
                 self.end_word(clauses);
@@ -318,16 +334,12 @@ impl Lexer {
                 self.bump();
                 self.substitution(Close::Backtick);
             }
-            '(' if self.peek(1) == Some('(')
-                && clauses.last() != Some(&Clause::Pattern)
-                && self.closes_arithmetic(self.pos + 2) =>
-            {
-                // `((...))` is an arithmetic command, not a subshell.
-                self.end_word(clauses);
-                self.pos += 2;
-                self.arithmetic_command();
-            }
             '(' => {
+                // `((` may be an arithmetic command. It is lexed as a subshell either way,
+                // but its `<` and `>` are operators of arithmetic when it closes.
+                if self.peek(1) == Some('(') && clauses.last() != Some(&Clause::Pattern) {
+                    self.register_arithmetic(self.pos + 2, false);
+                }
                 self.end_word(clauses);
                 self.open_paren(clauses);
             }
@@ -347,8 +359,9 @@ impl Lexer {
                 self.end_word(clauses);
                 self.semicolon(clauses);
             }
-            '<' | '>' if self.in_let_command() => {
-                // In `let`, `<` and `>` are operators of arithmetic, so they are word text.
+            '<' | '>' if self.in_arithmetic() => {
+                // In arithmetic, `<` and `>` are operators of shifts and comparisons, so they
+                // are word text and open no redirection.
                 self.add(c, false);
                 self.bump();
             }
@@ -399,6 +412,7 @@ impl Lexer {
                 text: word.text,
                 quoted: word.quoted,
                 line: word.line,
+                joined: word.joined,
             });
         }
     }
@@ -419,7 +433,7 @@ impl Lexer {
                 | Tok::Pipe(_)
                 | Tok::LParen(_)
                 | Tok::RParen(_)
-                | Tok::OpenSubst(_)
+                | Tok::OpenSubst(..)
                 | Tok::DSemi(_),
             ) => true,
             Some(Tok::Word {
@@ -431,45 +445,37 @@ impl Lexer {
         }
     }
 
-    /// True when the command being read is `let`, whose operands are arithmetic. There `<`
-    /// and `>` are shift and comparison operators, not redirections. Keywords before the
-    /// command name, and redirections, are looked past.
-    fn in_let_command(&self) -> bool {
-        let mut words = Vec::new();
-        let mut end = self.toks.len();
-        loop {
-            if let Some(operator) = self.redirection_ending_at(end) {
-                end = operator;
-            } else if let Some(Tok::Word {
-                text,
-                quoted: false,
-                ..
-            }) = end.checked_sub(1).map(|i| &self.toks[i])
-            {
-                words.push(text.as_str());
-                end -= 1;
-            } else {
-                break;
-            }
+    /// The index of the first token of the piece that ends just before `end`, if a piece
+    /// ends there: a word, or a whole substitution.
+    fn piece_before(&self, end: usize) -> Option<usize> {
+        let last = end.checked_sub(1)?;
+        match &self.toks[last] {
+            Tok::Word { .. } => Some(last),
+            Tok::CloseSubst(_) => self.substitution_opening(last),
+            _ => None,
         }
-        words
-            .iter()
-            .rev()
-            .copied()
-            .find(|word| !COMMAND_KEYWORDS.contains(word))
-            == Some("let")
+    }
+
+    /// True when the piece at `index` is joined to the piece before it.
+    fn is_joined(&self, index: usize) -> bool {
+        matches!(
+            self.toks[index],
+            Tok::Word { joined: true, .. } | Tok::OpenSubst(_, true)
+        )
     }
 
     /// The index of the operator of a redirection whose target ends just before `end`, if
-    /// there is one.
+    /// there is one. A target is a run of pieces, each joined to the one before it, so the
+    /// run is walked back to its first piece.
     fn redirection_ending_at(&self, end: usize) -> Option<usize> {
-        let last = end.checked_sub(1)?;
-        let target = match &self.toks[last] {
-            Tok::Word { .. } => last,
-            Tok::CloseSubst(_) => self.substitution_opening(last)?,
-            _ => return None,
-        };
-        let operator = target.checked_sub(1)?;
+        let mut first = self.piece_before(end)?;
+        while self.is_joined(first) {
+            match self.piece_before(first) {
+                Some(previous) => first = previous,
+                None => break,
+            }
+        }
+        let operator = first.checked_sub(1)?;
         matches!(self.toks[operator], Tok::Redirect(_)).then_some(operator)
     }
 
@@ -479,7 +485,7 @@ impl Lexer {
         for i in (0..=close).rev() {
             match self.toks[i] {
                 Tok::CloseSubst(_) => depth += 1,
-                Tok::OpenSubst(_) => {
+                Tok::OpenSubst(..) => {
                     depth = depth.checked_sub(1)?;
                     if depth == 0 {
                         return Some(i);
@@ -492,14 +498,35 @@ impl Lexer {
     }
 
     fn word_mut(&mut self) -> &mut Pending {
-        let at_command = self.at_command_start();
-        let line = self.line;
-        self.word.get_or_insert_with(|| Pending {
-            text: String::new(),
-            quoted: false,
-            line,
-            at_command,
-        })
+        if self.word.is_none() {
+            let word = Pending {
+                text: String::new(),
+                quoted: false,
+                line: self.line,
+                at_command: self.at_command_start(),
+                joined: self.starts_piece(),
+            };
+            self.word = Some(word);
+        }
+        self.word.as_mut().expect("a word was started above")
+    }
+
+    /// Starts a piece, a word or a substitution. Returns whether it is joined to the piece
+    /// before it, with no separator between them, and clears the separator flag.
+    fn starts_piece(&mut self) -> bool {
+        let joined = !self.separated;
+        self.separated = false;
+        joined
+    }
+
+    /// True when `c` separates pieces: whitespace, or an operator. In arithmetic, `<` and
+    /// `>` are text, so they do not.
+    fn separates(&self, c: char) -> bool {
+        match c {
+            ' ' | '\t' | '\r' | '\n' | '(' | ')' | '|' | '&' | ';' => true,
+            '<' | '>' => !self.in_arithmetic(),
+            _ => false,
+        }
     }
 
     fn add(&mut self, c: char, quoted: bool) {
@@ -586,12 +613,15 @@ impl Lexer {
         }
     }
 
-    /// Lexes the code of a substitution whose opener has been consumed.
+    /// Lexes the code of a substitution whose opener has been consumed. The close ends a
+    /// piece, so the piece after it is joined to it only if no separator follows.
     fn substitution(&mut self, close: Close) {
         let line = self.line;
-        self.toks.push(Tok::OpenSubst(line));
+        let joined = self.starts_piece();
+        self.toks.push(Tok::OpenSubst(line, joined));
         self.lex_code(close);
         self.toks.push(Tok::CloseSubst(line));
+        self.separated = false;
     }
 
     /// A backslash outside quotes: a line continuation, or an escaped character.
@@ -619,82 +649,57 @@ impl Lexer {
         }
     }
 
-    /// `$(` opens a substitution, and `$((` opens an arithmetic expansion. The cursor is on
-    /// the `$`, and the word in progress ends before either.
+    /// `$(` opens a substitution. `$((` is lexed the same way, so the pipes and separators
+    /// in its body keep their meaning, and its `<` and `>` are recorded as arithmetic. The
+    /// cursor is on the `$`, and the word in progress ends before it.
     fn dollar_paren(&mut self) {
         self.flush_word();
-        if self.peek(2) == Some('(') && self.closes_arithmetic(self.pos + 3) {
-            self.pos += 3;
-            self.arithmetic();
-        } else {
-            self.pos += 2;
-            self.substitution(Close::Paren);
+        if self.peek(2) == Some('(') {
+            self.register_arithmetic(self.pos + 3, false);
         }
+        self.pos += 2;
+        self.substitution(Close::Paren);
     }
 
-    /// True when the arithmetic whose body starts at `body` ends in `))`. Without one, the
-    /// `((` opens a subshell or a substitution instead, as it does in bash.
-    fn closes_arithmetic(&self, body: usize) -> bool {
+    /// The index of the character that ends the arithmetic whose body starts at `body`: the
+    /// first `)` at the body's depth when another `)` follows it, or for `$[` the first `]`
+    /// at the body's depth. None when the arithmetic does not close.
+    fn arithmetic_end(&self, body: usize, bracket: bool) -> Option<usize> {
+        let (open, close) = if bracket { ('[', ']') } else { ('(', ')') };
         let mut depth = 0usize;
         for (i, &c) in self.chars.iter().enumerate().skip(body) {
-            match c {
-                '(' => depth += 1,
-                ')' if depth == 0 => return self.chars.get(i + 1) == Some(&')'),
-                ')' => depth -= 1,
-                _ => {}
+            if c == open {
+                depth += 1;
+            } else if c == close && depth > 0 {
+                depth -= 1;
+            } else if c == close {
+                let closes = bracket || self.chars.get(i + 1) == Some(&')');
+                return closes.then_some(i);
             }
         }
-        false
+        None
     }
 
-    /// `((...))` is a command, so it is a word of its own. Without one, a pipe after it
-    /// would have no stage in front of it.
-    fn arithmetic_command(&mut self) {
-        let line = self.line;
-        self.arithmetic();
-        self.toks.push(Tok::Word {
-            text: String::new(),
-            quoted: true,
-            line,
-        });
-    }
-
-    /// Consumes an arithmetic body and its `))`, as in `$((...))` or `((...))`. Its `<`,
-    /// `>`, `|`, `&`, and `;` are operators of arithmetic, not of the shell, so they
-    /// neither open a here-document nor end a command. A substitution inside it is lexed
-    /// as code. The expansion itself leaves no token, so it does not join a command.
-    fn arithmetic(&mut self) {
-        let mut depth = 0usize;
-        while let Some(c) = self.peek(0) {
-            match c {
-                '(' => {
-                    depth += 1;
-                    self.bump();
-                }
-                ')' if depth > 0 => {
-                    depth -= 1;
-                    self.bump();
-                }
-                // `closes_arithmetic` has seen the second `)`, so both are consumed here.
-                ')' => {
-                    self.bump();
-                    self.bump();
-                    return;
-                }
-                '$' if self.peek(1) == Some('(') => self.dollar_paren(),
-                '`' => {
-                    self.flush_word();
-                    self.bump();
-                    self.substitution(Close::Backtick);
-                }
-                _ => {
-                    self.bump();
-                }
-            }
+    /// Records the arithmetic whose body starts at `body`, if it closes. Until its end, `<`
+    /// and `>` are operators of arithmetic, so they are word text and open no redirection.
+    /// The `|`, `&`, and `;` in it are lexed as they are elsewhere, so a pipeline into a
+    /// quiet grep inside arithmetic is still seen.
+    fn register_arithmetic(&mut self, body: usize, bracket: bool) {
+        if let Some(end) = self.arithmetic_end(body, bracket) {
+            self.arithmetic_ends.push(end);
         }
+    }
+
+    /// True when the cursor is inside an arithmetic body that was recorded.
+    fn in_arithmetic(&self) -> bool {
+        self.arithmetic_ends.iter().any(|&end| self.pos < end)
     }
 
     fn dollar(&mut self, clauses: &mut Vec<Clause>) {
+        if self.peek(1) == Some('[') {
+            // `$[` is the legacy arithmetic expansion. Its `$` and `[` are ordinary text.
+            self.register_arithmetic(self.pos + 2, true);
+        }
         match self.peek(1) {
             Some('(') => {
                 self.end_word(clauses);
@@ -824,9 +829,12 @@ impl Lexer {
         }
     }
 
-    /// The `<<` of a here-document. Its delimiter is read now, and its body starts on the
-    /// line after this one.
+    /// The `<<` of a here-document. It is a redirection whose target is the delimiter, so
+    /// the delimiter is a word here. The body starts on the line after this one, and its
+    /// substitutions are inserted after the delimiter when the body is read.
     fn heredoc_operator(&mut self) {
+        let line = self.line;
+        self.toks.push(Tok::Redirect(line));
         self.pos += 2;
         let strip_tabs = self.peek(0) == Some('-');
         if strip_tabs {
@@ -836,10 +844,18 @@ impl Lexer {
             self.pos += 1;
         }
         let (delim, quoted) = self.delimiter();
+        let joined = self.starts_piece();
+        self.toks.push(Tok::Word {
+            text: delim.clone(),
+            quoted: true,
+            line,
+            joined,
+        });
         self.heredocs.push(Heredoc {
             delim,
             strip_tabs,
             expand: !quoted,
+            at: self.toks.len(),
         });
     }
 
@@ -878,8 +894,10 @@ impl Lexer {
     }
 
     /// Consumes the bodies of the here-documents opened on the line that just ended.
-    /// An unquoted body is lexed for its substitutions.
+    /// An unquoted body is lexed for its substitutions, and they go in after the delimiter
+    /// of the operator that opened the body, so they belong to that command.
     fn read_heredocs(&mut self) {
+        let mut bodies = Vec::new();
         for heredoc in std::mem::take(&mut self.heredocs) {
             let start = self.line;
             let mut body = Vec::new();
@@ -898,8 +916,12 @@ impl Lexer {
             if heredoc.expand {
                 let mut inner = Lexer::new(&body.join("\n"), start);
                 inner.expansions(false);
-                self.toks.extend(inner.toks);
+                bodies.push((heredoc.at, inner.toks));
             }
+        }
+        // The last body goes in first, so the positions of the earlier ones still hold.
+        for (at, toks) in bodies.into_iter().rev() {
+            self.toks.splice(at..at, toks);
         }
     }
 
@@ -1143,7 +1165,7 @@ impl<'a> Parser<'a> {
         loop {
             match self.peek() {
                 Some(Tok::Word { .. } | Tok::Redirect(_)) => self.pos += 1,
-                Some(Tok::OpenSubst(_)) => self.parse_subst(piped),
+                Some(Tok::OpenSubst(..)) => self.parse_subst(piped),
                 _ => return,
             }
         }
@@ -1157,13 +1179,32 @@ impl<'a> Parser<'a> {
         self.parse_list(piped, Until::Subst);
     }
 
-    /// The target of a redirection: the word or substitution after its operator. It is not
-    /// a command word.
+    /// The target of a redirection: the word or substitution after its operator, and the
+    /// pieces joined to it, as in `"$(mktemp)".log`. It is not a command word.
     fn redirect_target(&mut self, piped: Option<usize>) {
+        if self.piece(piped) {
+            while matches!(
+                self.peek(),
+                Some(Tok::Word { joined: true, .. } | Tok::OpenSubst(_, true))
+            ) {
+                self.piece(piped);
+            }
+        }
+    }
+
+    /// Reads one piece of a word: a word, or a substitution with its script. Returns false
+    /// when the cursor is on neither.
+    fn piece(&mut self, piped: Option<usize>) -> bool {
         match self.peek() {
-            Some(Tok::Word { .. }) => self.pos += 1,
-            Some(Tok::OpenSubst(_)) => self.parse_subst(piped),
-            _ => {}
+            Some(Tok::Word { .. }) => {
+                self.pos += 1;
+                true
+            }
+            Some(Tok::OpenSubst(..)) => {
+                self.parse_subst(piped);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1173,7 +1214,7 @@ impl<'a> Parser<'a> {
         self.pos += 1;
         loop {
             match self.peek() {
-                Some(Tok::OpenSubst(_)) => self.parse_subst(piped),
+                Some(Tok::OpenSubst(..)) => self.parse_subst(piped),
                 Some(Tok::Word { .. }) => {
                     let subject_done = self.at_word("in");
                     self.pos += 1;
@@ -1204,7 +1245,7 @@ impl<'a> Parser<'a> {
                         self.pos += 1;
                         break;
                     }
-                    Some(Tok::OpenSubst(_)) => self.parse_subst(piped),
+                    Some(Tok::OpenSubst(..)) => self.parse_subst(piped),
                     Some(_) => self.pos += 1,
                 }
             }
@@ -1225,7 +1266,7 @@ impl<'a> Parser<'a> {
                     words.push(text.clone());
                     self.pos += 1;
                 }
-                Some(Tok::OpenSubst(_)) => self.parse_subst(piped),
+                Some(Tok::OpenSubst(..)) => self.parse_subst(piped),
                 Some(Tok::Redirect(_)) => {
                     self.pos += 1;
                     self.redirect_target(piped);
@@ -1699,8 +1740,9 @@ fn no_pipeline_feeds_grep_quiet_under_pipefail() {
     );
 }
 
-// Regression tests for the six findings in the detector's audit. Each one fails on the
-// detector as it was before its fix.
+// Regression tests for the findings in the detector's audit. A finding's test fails on
+// the detector as it was before its fix. A guard test passes on that detector by design:
+// it pins a result the fix must keep, and its comment says so.
 
 #[test]
 fn f1_shift_inside_an_arithmetic_expansion_opens_no_here_document() {
@@ -1747,15 +1789,21 @@ fn f1_shift_inside_an_arithmetic_command_opens_no_here_document() {
 
 #[test]
 fn f1_shift_in_let_opens_no_here_document() {
-    assert_eq!(
-        flagged_lines("let x=1<<3\na | grep -q y\n"),
-        [2],
-        "let's operands are arithmetic"
+    // Guard. Bash reads the unquoted `<<` of a `let` operand as a here-document, so the
+    // pipeline on the next line is its body, and bash does not run it.
+    assert!(
+        !pipes_into_grep_quiet("let x=1<<3\na | grep -q y\n"),
+        "the line after the operator is the body of a here-document"
     );
     assert_eq!(
-        flagged_lines("if let x<<2; then a | grep -q y; fi\n"),
+        flagged_lines("let \"x=1<<3\"\na | grep -q y\n"),
+        [2],
+        "a quoted operand opens no here-document, so the pipeline runs"
+    );
+    assert_eq!(
+        flagged_lines("if let x=1<<2; then a | grep -q y; fi\n"),
         [1],
-        "a keyword before let does not change that"
+        "the pipeline is on the line that opens the here-document, so it is code"
     );
     assert_eq!(
         flagged_lines("cat x<<EOF\nbody\nEOF\na | grep -q y\n"),
@@ -1862,5 +1910,122 @@ fn a_pipe_continued_past_a_here_document_body_reaches_its_consumer() {
         flagged_lines("cat <<EOF |\n$(x)\nEOF\ngrep -q y\n"),
         [1],
         "the body is not a command, so the pipe runs on to grep"
+    );
+}
+
+#[test]
+fn legacy_arithmetic_expansion_opens_no_here_document() {
+    // `$[` is the legacy form of `$((`. Bash evaluates the shift as arithmetic, so the
+    // pipeline on the next line runs.
+    assert_eq!(
+        flagged_lines("x=$[1 << 3]\na | grep -q y\n"),
+        [2],
+        "the shift is arithmetic, so the pipeline on line 2 is code"
+    );
+    assert_eq!(
+        flagged_lines("x=$[ a[1] << 2 ]\na | grep -q y\n"),
+        [2],
+        "a [ ] inside the arithmetic is balanced, so the arithmetic still closes"
+    );
+}
+
+#[test]
+fn legacy_arithmetic_expansion_lexes_its_substitutions_as_code() {
+    // Guard: the detector before this fix flagged these too.
+    assert_eq!(
+        flagged_lines("x=$[ $(a | grep -q y) + 1 ]\n"),
+        [1],
+        "bash runs the substitution inside the arithmetic"
+    );
+    assert_eq!(
+        flagged_lines("x=$[ `a | grep -q y` + 1 ]\n"),
+        [1],
+        "a backtick inside the arithmetic is code too"
+    );
+}
+
+#[test]
+fn an_unclosed_legacy_arithmetic_expansion_keeps_the_base_lexing() {
+    // Guard. Bash rejects the unclosed `$[` with a syntax error before it runs anything,
+    // and the detector reads it as it did before the fix.
+    assert_eq!(flagged_lines("echo $[ a | grep -q y\n"), [1]);
+}
+
+#[test]
+fn a_redirect_target_is_the_whole_joined_word() {
+    // Bash takes `"$(mktemp)".log` as one target, so grep is the command and it runs.
+    assert_eq!(
+        flagged_lines("a | >\"$(mktemp)\".log grep -q x\n"),
+        [1],
+        "the target is the file `<mktemp output>.log`, and grep runs"
+    );
+}
+
+#[test]
+fn a_separated_word_after_a_redirect_target_is_a_command_word() {
+    // Guard. The space ends the target, so `.log` is the command and grep is its argument.
+    assert!(
+        !pipes_into_grep_quiet("a | > \"$(mktemp)\" .log grep -q x\n"),
+        "`.log` is the command, so grep never runs"
+    );
+}
+
+#[test]
+fn a_redirect_to_an_arithmetic_expansion_keeps_grep_as_the_command() {
+    // Guard. `$((1))` is one word, so grep after it is the command, as in bash.
+    assert_eq!(flagged_lines("a | >$((1)) grep -q x\n"), [1]);
+}
+
+#[test]
+fn a_pipe_in_double_parens_keeps_its_base_flag() {
+    // Guard. Bash evaluates `((...))` as arithmetic, where `a | grep -q y` is a syntax
+    // error, so no command in it runs. The detector keeps the flag it had before the
+    // arithmetic rules.
+    assert_eq!(flagged_lines("((a | grep -q y))\n"), [1]);
+}
+
+#[test]
+fn a_pipe_in_an_arithmetic_expansion_keeps_its_base_flag() {
+    // Guard. As for `((...))`, bash's arithmetic error comes before grep runs.
+    assert_eq!(flagged_lines("echo $((a | grep -q y))\n"), [1]);
+}
+
+#[test]
+fn a_command_list_in_double_parens_keeps_its_base_flag() {
+    // Guard. Bash rejects the `;` in arithmetic before grep runs.
+    assert_eq!(flagged_lines("((cd x; a | grep -q y))\n"), [1]);
+}
+
+#[test]
+fn a_bit_or_in_double_parens_keeps_its_base_flag() {
+    // Guard. `a | grep - q` is valid arithmetic, so bash evaluates it and runs no grep.
+    // The detector keeps the flag it had before the arithmetic rules. That is a false
+    // positive, kept so that no flag is dropped without a reason.
+    assert_eq!(flagged_lines("((a | grep -q))\n"), [1]);
+}
+
+#[test]
+fn a_shift_beside_a_bit_or_in_arithmetic_opens_no_here_document() {
+    // Bash evaluates `(1 << 3) | 4` as arithmetic, so the pipeline on the next line runs.
+    assert_eq!(
+        flagged_lines("echo $(( (1 << 3) | 4 ))\na | grep -q y\n"),
+        [2],
+        "the shift is arithmetic, so line 2 is code"
+    );
+}
+
+#[test]
+fn a_command_after_an_unquoted_here_document_body_starts_its_own_line() {
+    // The substitution in the body belongs to `cat`, and the command after the body is
+    // a separate command. The detector before this fix reported line 2 for the first.
+    assert_eq!(
+        flagged_lines("cat <<EOF\n$(x)\nEOF\na | grep -q y\n"),
+        [4],
+        "the pipeline after the body is on line 4"
+    );
+    assert_eq!(
+        flagged_lines("cat <<EOF\n$(a | grep -q y)\nEOF\na | grep -q z\n"),
+        [2, 4],
+        "the pipeline in the body and the one after it, each on its own line"
     );
 }
