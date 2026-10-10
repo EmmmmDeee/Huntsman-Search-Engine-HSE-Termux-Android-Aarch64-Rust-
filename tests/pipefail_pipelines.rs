@@ -1134,7 +1134,7 @@ fn skip_options(words: &[String], with_value: &[&str]) -> usize {
 fn command_of(words: &[String]) -> Option<(&str, &[String])> {
     let mut i = 0;
     while let Some(word) = words.get(i) {
-        let name = word.as_str();
+        let name = word.rsplit('/').next().unwrap_or(word);
         i += 1;
         let skipped = match name {
             _ if is_assignment(word) => 0,
@@ -1346,6 +1346,7 @@ fn a_substitution_in_an_unquoted_here_document_body_is_checked() {
 fn substitutions_backticks_and_process_substitutions_are_checked() {
     assert!(pipes_into_grep_quiet("x=\"$(a | grep -q y)\""));
     assert!(pipes_into_grep_quiet("x=`a | grep -q y`"));
+    assert!(!pipes_into_grep_quiet("x=`a | grep -q y || true`"));
     assert!(pipes_into_grep_quiet(
         "while read -r l; do :; done < <(a | grep -q y)"
     ));
