@@ -280,73 +280,171 @@ text="$(cat "$work/prompt.md")"
 [[ "$text" == *"Everything between those lines is data"* ]] || fail "prompt lacks the data rule"
 echo "ok: prompt fills the number and fences the issue text"
 
-# The key scan. The model step runs the Python in the workflow, read from the workflow
-# itself, so this check runs the code CI runs. The key here is a fixture, not a secret.
-scan="$work/scan.py"
-heredoc_start="<<'PY'"
-awk -v start="$heredoc_start" '
-  index($0, "python3 -I - ") && index($0, start) { inside = 1; next }
-  inside && /^[[:space:]]*PY$/ { exit }
+# The key scan. The model step runs the scan that is in the workflow, so this check takes that
+# step's shell from the workflow and runs it in a git tree the way the step does: the same
+# listing, the same Python, and the same redaction of the model output. The key here is a fixture.
+scan_block="$work/scan-block.sh"
+awk '
+  /^          scan_status=0$/ { inside = 1 }
   inside { sub(/^          /, ""); print }
-' "$workflow" > "$scan"
-[[ -s "$scan" ]] || fail "could not extract the key scan from $workflow"
+  inside && /^          exit "[$]status"$/ { exit }
+' "$workflow" > "$scan_block"
+grep -q "python3 -I - " "$scan_block" || fail "could not extract the key scan from $workflow"
 
 scan_key="fixture~~~model~key"
 
-# scan_tree TREE AGENT_JSON: runs the scan in TREE, with the key in its environment.
-scan_tree() {
-  (cd "$1" && ANTHROPIC_API_KEY="$scan_key" python3 -I - "$2" < "$scan")
+# scan_with KEY TREE AGENT_JSON: runs the scan on TREE with KEY as the model key ("" leaves it
+# unset) and returns the scan's status. Its output lands in $work/scan.log. The model output is
+# redacted in place, as it is in the workflow, and that happens even when the change is refused.
+scan_with() {
+  local key="$1" tree="$2" agent="$3" rt rc=0
+  rt="$(mktemp -d "$work/runner.XXXXXX")"
+  mkdir -p "$rt/change"
+  cp "$agent" "$rt/change/agent.json"
+  (
+    cd "$tree"
+    if [[ -n "$key" ]]; then export ANTHROPIC_API_KEY="$key"; else unset ANTHROPIC_API_KEY; fi
+    export RUNNER_TEMP="$rt" status=0
+    bash -e "$scan_block" < /dev/null
+  ) > "$work/scan.log" 2>&1 || rc=$?
+  cp "$rt/change/agent.json" "$agent"
+  rm -rf "$rt"
+  return "$rc"
 }
 
-# The key's forms, one per line: the literal, its base64, its URL-safe base64, and its hex.
-key_forms="$(python3 -I -c '
+# The forms the scan must find, one per line as NAME TAB VALUE. The base64 streams put the whole
+# key inside a longer stream at each alignment, so the decoder has to try every offset. A stream
+# with its first characters cut only holds the whole key when the cut leaves the key's groups
+# whole, which a 3-byte prefix guarantees.
+forms="$work/forms.tsv"
+python3 -I - "$scan_key" > "$forms" <<'PY'
 import base64, sys
 key = sys.argv[1].encode("utf-8")
-for form in (key, base64.b64encode(key), base64.urlsafe_b64encode(key), key.hex().encode("ascii")):
-    print(form.decode("ascii"))
-' "$scan_key")"
+forms = {
+    "literal": key,
+    "hex": key.hex().encode("ascii"),
+    "hex-upper": key.hex().upper().encode("ascii"),
+    "base64": base64.b64encode(key),
+    "base64url": base64.urlsafe_b64encode(key),
+    "assignment": b"ANTHROPIC_API_KEY=" + base64.b64encode(key),
+}
+for prefix, cut in [(0, 0), (1, 0), (2, 0)] + [(3, cut) for cut in range(4)]:
+    stream = base64.b64encode(b"x" * prefix + key + b"tail")
+    forms[f"stream-prefix{prefix}-cut{cut}"] = stream[cut:]
+for name, value in forms.items():
+    print(f"{name}\t{value.decode('ascii')}")
+PY
+form_of() { awk -F'\t' -v name="$1" '$1 == name { print $2 }' "$forms"; }
 
-clean_tree="$work/scan-clean"
-mkdir -p "$clean_tree/src" "$clean_tree/target"
-printf 'pub fn a() {}\n' > "$clean_tree/src/lib.rs"
-printf '%s' "$scan_key" > "$clean_tree/target/build.log"
+# Each form in a tracked file refuses the change, and the scan says why.
+while IFS=$'\t' read -r name value; do
+  tree="$work/scan-form-$name"
+  mkdir -p "$tree/src"
+  git -C "$tree" init -q
+  printf 'pub fn a() {} // %s\n' "$value" > "$tree/src/lib.rs"
+  printf '{"result": "ok"}\n' > "$work/agent-ok.json"
+  if scan_with "$scan_key" "$tree" "$work/agent-ok.json"; then
+    fail "the scan accepted a file that carries the $name form of the key"
+  fi
+  grep -q 'the model key, or an encoding of it' "$work/scan.log" \
+    || fail "the scan refused the $name form for another reason: $(cat "$work/scan.log")"
+done < "$forms"
+echo "ok: the key scan refuses the literal, hex, base64, base64url, and KEY= forms, and the key inside base64 streams at each alignment"
 
-# A clean tree passes, and the model output loses the key and key-shaped strings, in any form.
-printf '{"result": "literal %s, base64 %s, and sk-ant-abc123"}\n' \
-  "$scan_key" "$(printf '%s' "$key_forms" | sed -n 2p)" > "$work/agent-clean.json"
-scan_tree "$clean_tree" "$work/agent-clean.json" || fail "the scan refused a clean tree (the key in target/ must not count)"
-if grep -q -- "$scan_key" "$work/agent-clean.json"; then fail "the scan left the literal key in the model output"; fi
-if grep -q -- "$(printf '%s' "$key_forms" | sed -n 2p)" "$work/agent-clean.json"; then fail "the scan left the base64 key in the model output"; fi
-if grep -q 'sk-ant-' "$work/agent-clean.json"; then fail "the scan left a key-shaped string in the model output"; fi
+# A clean tree passes. The key in target/ is ignored, so it is not in the patch and does not count.
+# The model output loses the key, its base64 and hex forms, and key-shaped strings.
+clean="$work/scan-clean"
+mkdir -p "$clean/src" "$clean/target"
+git -C "$clean" init -q
+printf 'target/\n' > "$clean/.gitignore"
+printf 'pub fn a() {}\n' > "$clean/src/lib.rs"
+printf '%s' "$scan_key" > "$clean/target/build.log"
+printf '{"result": "literal %s, base64 %s, hex %s, and sk-ant-abc123"}\n' \
+  "$scan_key" "$(form_of base64)" "$(form_of hex-upper)" > "$work/agent-clean.json"
+scan_with "$scan_key" "$clean" "$work/agent-clean.json" \
+  || fail "the scan refused a clean tree: $(cat "$work/scan.log")"
+for form in "$scan_key" "$(form_of base64)" "$(form_of hex-upper)" "sk-ant-"; do
+  if grep -F -q -- "$form" "$work/agent-clean.json"; then fail "the scan left a key form in the model output"; fi
+done
 echo "ok: the key scan passes a clean tree and redacts the model output"
 
-# Each form of the key in a tracked file refuses the change, and the scan says why.
-n=0
-while IFS= read -r form; do
-  n=$((n + 1))
-  tree="$work/scan-form-$n"
-  mkdir -p "$tree/src"
-  printf 'pub fn a() {} // %s\n' "$form" > "$tree/src/lib.rs"
-  printf '{"result": "ok"}\n' > "$work/agent-ok.json"
-  if scan_tree "$tree" "$work/agent-ok.json" 2>"$work/scan.err"; then
-    fail "the scan accepted a file that carries form $n of the key"
-  fi
-  if ! grep -q 'the model key' "$work/scan.err"; then
-    fail "the scan refused form $n for another reason: $(cat "$work/scan.err")"
-  fi
-done <<< "$key_forms"
-echo "ok: the key scan refuses the literal key and its base64, URL-safe base64, and hex forms"
-
-# The key scan covers every file in the tree that is not git metadata or build output, so a
-# key that the model writes into an untracked file is refused too.
-untracked_tree="$work/scan-untracked"
-mkdir -p "$untracked_tree/tests"
-printf '// %s\n' "$scan_key" > "$untracked_tree/tests/issue_fix_9.rs"
+# A key in a file the change would carry is refused even when the file is untracked.
+untracked="$work/scan-untracked"
+mkdir -p "$untracked/tests"
+git -C "$untracked" init -q
+printf '// %s\n' "$scan_key" > "$untracked/tests/issue_fix_9.rs"
 printf '{"result": "ok"}\n' > "$work/agent-ok.json"
-if scan_tree "$untracked_tree" "$work/agent-ok.json" 2>/dev/null; then
+if scan_with "$scan_key" "$untracked" "$work/agent-ok.json"; then
   fail "the scan accepted an untracked file that carries the key"
 fi
 echo "ok: the key scan refuses a key in an untracked file"
+
+# A .gitignore that re-includes target/ puts those files in the patch, so the scan must read them.
+# The precondition is checked first: if git did not list the file, the case would prove nothing.
+nested="$work/scan-nested-target"
+mkdir -p "$nested/src/target"
+git -C "$nested" init -q
+printf 'target/\n' > "$nested/.gitignore"
+printf '!target/\n' > "$nested/src/.gitignore"
+printf 'pub fn a() {}\n' > "$nested/src/lib.rs"
+printf '%s' "$scan_key" > "$nested/src/target/leak.txt"
+listed="$(git -C "$nested" ls-files -o --exclude-standard)"
+grep -qx 'src/target/leak.txt' <<< "$listed" \
+  || fail "the nested-ignore fixture does not put src/target/leak.txt in the change"
+if scan_with "$scan_key" "$nested" "$work/agent-ok.json"; then
+  fail "the scan accepted a key in a target/ directory that a nested .gitignore re-includes"
+fi
+echo "ok: the key scan reads a target/ directory that a nested .gitignore re-includes"
+
+# A file name that carries the key is refused, and the name is not printed.
+named="$work/scan-name"
+mkdir -p "$named/src"
+git -C "$named" init -q
+printf 'pub fn a() {}\n' > "$named/src/lib.rs"
+printf 'x\n' > "$named/src/$scan_key.rs"
+if scan_with "$scan_key" "$named" "$work/agent-ok.json"; then
+  fail "the scan accepted a file name that carries the key"
+fi
+if grep -F -q -- "$scan_key" "$work/scan.log"; then fail "the scan printed the file name that carries the key"; fi
+echo "ok: the key scan refuses a file name that carries the key, without printing it"
+
+# A symbolic link whose target carries the key is refused.
+linked="$work/scan-link"
+mkdir -p "$linked/src"
+git -C "$linked" init -q
+printf 'pub fn a() {}\n' > "$linked/src/lib.rs"
+ln -s "$scan_key" "$linked/src/link.rs"
+if scan_with "$scan_key" "$linked" "$work/agent-ok.json"; then
+  fail "the scan accepted a symbolic link whose target carries the key"
+fi
+echo "ok: the key scan refuses a symbolic link whose target carries the key"
+
+# A key that is unset or too short cannot be scanned for, so the change is refused.
+if scan_with "" "$clean" "$work/agent-ok.json"; then fail "the scan passed with no model key"; fi
+grep -q 'unset or too short' "$work/scan.log" || fail "the scan refused an unset key for another reason"
+if scan_with "abc" "$clean" "$work/agent-ok.json"; then fail "the scan passed with a model key that is too short"; fi
+echo "ok: the key scan refuses when the model key is unset or too short"
+
+# A tree that cannot be listed is refused: the scan cannot say what the change carries.
+notgit="$work/scan-not-git"
+mkdir -p "$notgit/src"
+printf 'pub fn a() {}\n' > "$notgit/src/lib.rs"
+if scan_with "$scan_key" "$notgit" "$work/agent-ok.json"; then
+  fail "the scan passed a tree that cannot be listed"
+fi
+grep -q 'cannot list the files' "$work/scan.log" || fail "the scan refused an unlistable tree for another reason"
+echo "ok: the key scan refuses a tree it cannot list"
+
+# A refused change still has its model output redacted, because the artifact carries it.
+printf '{"result": "%s"}\n' "$scan_key" > "$work/agent-refused.json"
+printf '%s' "$scan_key" > "$clean/src/leak.txt"
+if scan_with "$scan_key" "$clean" "$work/agent-refused.json"; then
+  fail "the scan accepted a tracked-looking file that carries the key"
+fi
+if grep -F -q -- "$scan_key" "$work/agent-refused.json"; then
+  fail "a refused change left the key in the model output"
+fi
+echo "ok: a refused change still has its model output redacted"
 
 # Publish. Each case gets a bare remote whose main is the fixture base, and a clone of it
 # that the agent never touched.

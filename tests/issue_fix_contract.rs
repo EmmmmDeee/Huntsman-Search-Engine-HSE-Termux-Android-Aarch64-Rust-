@@ -335,12 +335,24 @@ fn the_key_scan_runs_in_the_model_step_before_the_change_is_checked() {
     let wf = workflow();
     let model = step(&wf, "Run the model under the tool allowlist");
     assert!(
-        model.contains("python3 -I - \"$RUNNER_TEMP/change/agent.json\" <<'PY'"),
-        "the key scan runs in isolated mode, from the workflow file"
+        model.contains(
+            "python3 -I - \"$RUNNER_TEMP/change/agent.json\" \"$RUNNER_TEMP/scan-paths\" <<'PY'"
+        ),
+        "the key scan runs in isolated mode, from the workflow file, over the paths git would carry"
     );
     assert!(
-        model.contains("os.walk(\".\")") && model.contains("sys.exit(1 if found else 0)"),
-        "the key scan walks the working tree and refuses when it finds the key"
+        model.contains(
+            "git -c core.fsmonitor=false -c core.hooksPath=/dev/null ls-files -z -c -o --exclude-standard > \"$RUNNER_TEMP/scan-paths\""
+        ),
+        "the scan lists the change with the ignore rules that git add -A applies, so no .gitignore hides a file from it"
+    );
+    assert!(
+        !model.contains("os.walk"),
+        "the scan does not walk the tree, because a walk skips a target/ directory that a nested .gitignore re-includes"
+    );
+    assert!(
+        model.contains("sys.exit(1 if found else 0)"),
+        "the key scan refuses when it finds the key"
     );
     assert!(
         model.contains("exit \"$status\""),

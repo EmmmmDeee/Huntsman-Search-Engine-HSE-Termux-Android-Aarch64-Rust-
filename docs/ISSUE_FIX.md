@@ -23,7 +23,7 @@ jobs that run code the model wrote hold no write permission.
 
 | Job | Runs | Holds | Passes on |
 | --- | --- | --- | --- |
-| `fix` | The model, the key scan, the path policy, and the capture of the change | `ANTHROPIC_API_KEY`, in the model step only. No write permission. | A patch file and the redacted model output |
+| `fix` | The model, the key scan, the path policy, and the capture of the change | `ANTHROPIC_API_KEY`, in the require and model steps only. No write permission. | A patch file and the redacted model output |
 | `gate` | `git apply` of the patch on the commit the run started from, then the full repair gate | Nothing | The gate log |
 | `publish` | `publish.sh`, from a copy of the scripts made before the patch arrived | `ISSUE_FIX_TOKEN` or the workflow token, in the publish step only | Nothing |
 | `report` | `report.sh`, when an attempt stops before a pull request | Issue write permission | Nothing |
@@ -101,18 +101,27 @@ After the model step's CLI exits, the scan in `issue-fix.yml` runs in isolated P
 mode. It reads the Python from the workflow file itself, which the model cannot write.
 It does two things:
 
-- It redacts the model output: the literal key, its base64, URL-safe base64, and hex
-  forms, and any `sk-ant-*` string.
-- It searches every file in the working tree, except `.git` and `target/`, for the key
-  in those four forms. A file with any form refuses the change, so a key in a source
-  file, a test, or an untracked file never reaches the patch.
+- It redacts the model output: the literal key, its hex forms, every base64 run that
+  decodes to the key, and any `sk-ant-*` string.
+- It lists the files the change would carry with
+  `git ls-files -c -o --exclude-standard`, the same ignore rules that `git add -A`
+  applies in `capture.sh`, and it searches each listed file, each symbolic-link target,
+  and each file name for the key. A hit refuses the change. A key in a source file, a
+  test, an untracked file, or a directory that a nested `.gitignore` re-includes (such
+  as `target/`) never reaches the patch. A key in an ignored file does not, because
+  the patch does not carry that file. The name of a file is not printed when it holds
+  the key.
 
-`self-check.sh` extracts this code from the workflow and runs it on fixtures, so CI
-and the check run the same code.
+The key forms the scan finds are the literal key, lower- and upper-case hex, base64 in
+either alphabet, the key after `KEY=`, and the key inside a longer base64 stream at each
+of the four alignments. `self-check.sh` extracts this step's shell from the workflow and
+runs it in a git tree, so CI and the check run the same code.
 
 ## Secrets and variables
 
-- `ANTHROPIC_API_KEY` (required, secret). Read only by the model step.
+- `ANTHROPIC_API_KEY` (required, secret). Read by the require step, which checks that it
+  is set, and by the model step, which passes it to the CLI and runs the key scan. No
+  other step receives it.
 - `ISSUE_FIX_TOKEN` (optional, secret). A token with contents and pull-requests write,
   read only by the publish step. Without it the pull request is opened with the
   workflow token, and GitHub does not start CI for it. Start CI from the Actions tab, or
@@ -126,9 +135,12 @@ and the check run the same code.
   code runs in the model step while the model key is in the environment, so a test
   could read the key and send it out over the network. The key scan does not catch
   that. The control is that only triage-level maintainers can apply the label.
-- The scan knows four forms of the key. A key that is split, reversed, or encoded some
-  other way is not caught, and the redaction covers only the same forms.
-- `.git` and `target/` are not scanned. The patch never carries them.
+- The scan finds the whole key in the forms listed above. A key that is split across
+  lines, reversed, cut so that only part of it appears, or encoded some other way is not
+  caught, and the redaction covers only the same forms. The model step holds the key in
+  its environment, so a partial key is a leak the scan cannot rule out.
+- Files the patch does not carry, such as `.git` and ignored files, are not scanned.
+  The patch never carries them.
 - Model output is published in the pull request body, labelled unreviewed, redacted as
   above, and truncated to 4000 characters.
 - The gate runs model-written tests with no secrets, so a test can make the gate pass.
