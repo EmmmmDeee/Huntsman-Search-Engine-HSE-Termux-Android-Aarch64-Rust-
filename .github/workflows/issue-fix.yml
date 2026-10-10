@@ -1,21 +1,32 @@
 name: issue-fix
 
-# Automated issue fixer that uses a model. It is separate from the model-free
-# dual-pass runner, which stays model-free. A person with triage access adds the
+# An automated issue fixer that uses a model. A person with triage access adds the
 # ai-fix label to an issue, or dispatches the workflow with an issue number. The
-# job runs the pinned Claude Code CLI in bare mode, under a tool allowlist and a
-# spend cap. It then checks the diff against the path policy, runs the full repair
-# gate itself, and opens a pull request. It never merges.
+# work runs in four jobs, and only one of them holds a write token:
+#
+#   fix      runs the pinned Claude Code CLI under a tool allowlist and a spend cap,
+#            then captures the change as a patch. Only its model step holds the model
+#            key. It holds no write token.
+#   gate     applies the patch to main and runs the full repair gate. It holds no
+#            secrets. Its tests run code the model wrote, so it is untrusted too.
+#   publish  applies the patch to a checkout of main, checks the result against the
+#            path policy, and opens the pull request. It holds the write token. It
+#            runs only scripts copied from the checkout before the patch was applied.
+#   report   comments on the issue when an attempt stops before a pull request.
+#
+# The jobs pass files, never code. The patch and the redacted model output are the
+# only things that cross from the untrusted jobs into publish, and publish treats
+# them as data.
 #
 # Secrets: ANTHROPIC_API_KEY (required). ISSUE_FIX_TOKEN (optional; a token with
-# contents and pull-requests write, so that CI starts on the pull request). Without
-# it the pull request is opened with the workflow token, and GitHub does not start
-# its CI. Variables: ISSUE_FIX_MODEL (default opus), ISSUE_FIX_BUDGET_USD (default 10).
+# contents and pull-requests write, so that CI starts on the pull request).
+# Variables: ISSUE_FIX_MODEL (default opus), ISSUE_FIX_BUDGET_USD (default 10).
 #
-# Residual risk: the model's Bash tool can run cargo, and cargo can run code from the
-# repository. The API key is in the model step's environment, so a tool call could
-# read it. GitHub masks the value in logs, but a test could still send it out. Only
-# maintainers with triage access can apply the label, and that is the control.
+# Residual risk: the model's Bash tool can run cargo, and cargo runs code the model
+# wrote. That code can read the model key in the model step and send it out. GitHub
+# masks the value in logs, and redaction removes the key from the output that is
+# published, but a key encoded some other way is not caught. Only maintainers with
+# triage access can apply the label, and that is the control.
 
 on:
   issues:
@@ -27,10 +38,7 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: issue-fix-${{ github.event.issue.number || inputs.issue }}
@@ -41,19 +49,26 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'ai-fix'
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
+      issues: read
     env:
       ISSUE: ${{ github.event.issue.number || inputs.issue }}
       REPO: ${{ github.repository }}
       CLAUDE_CODE_VERSION: "2.1.283"
       ISSUE_FIX_MODEL: ${{ vars.ISSUE_FIX_MODEL || 'opus' }}
       ISSUE_FIX_BUDGET_USD: ${{ vars.ISSUE_FIX_BUDGET_USD || '10' }}
-      HAS_PAT: ${{ secrets.ISSUE_FIX_TOKEN != '' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: main
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Check the issue number
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue number is not numeric: $ISSUE"; exit 1; }
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
@@ -84,12 +99,20 @@ jobs:
       - name: Record the base commit
         run: echo "BASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
+      - name: Keep a copy of the policy scripts
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/issue-fix-scripts"
+          cp -a scripts/issue-fix/. "$RUNNER_TEMP/issue-fix-scripts/"
+
       - name: Run the model under the tool allowlist
         id: agent
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/change"
+          status=0
           claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
             --bare \
             --model "$ISSUE_FIX_MODEL" \
@@ -102,43 +125,150 @@ jobs:
               "Bash(bash scripts/repair-gate.sh fast)" \
             --disallowedTools WebFetch WebSearch "Bash(curl *)" "Bash(wget *)" \
               "Bash(gh *)" "Bash(env)" "Bash(printenv*)" "Bash(git commit *)" "Bash(git push *)" \
-            > "$RUNNER_TEMP/agent.json"
+            > "$RUNNER_TEMP/change/agent.json" || status=$?
+          bash "$RUNNER_TEMP/issue-fix-scripts/redact.sh" "$RUNNER_TEMP/change/agent.json"
+          exit "$status"
 
       - name: Check the change against the path policy
         id: guard
         if: steps.agent.outcome == 'success'
-        run: bash scripts/issue-fix/check-protected.sh "$BASE_SHA"
+        run: bash "$RUNNER_TEMP/issue-fix-scripts/check-protected.sh" "$BASE_SHA"
 
-      - name: Run the full repair gate
-        id: gate
+      - name: Capture the change as a patch
+        id: capture
         if: steps.guard.outcome == 'success'
-        run: bash scripts/repair-gate.sh full > "$RUNNER_TEMP/gate.log" 2>&1
+        run: bash "$RUNNER_TEMP/issue-fix-scripts/capture.sh" "$BASE_SHA" "$RUNNER_TEMP/change"
 
-      - name: Commit, push, and open the pull request
-        id: publish
-        if: steps.gate.outcome == 'success'
-        env:
-          PUSH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
-          GH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
-        run: bash scripts/issue-fix/publish.sh "$RUNNER_TEMP/issue.json" "$RUNNER_TEMP/agent.json"
-
-      - name: Report a stopped attempt
-        if: always() && steps.publish.outcome != 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          AGENT_OUTCOME: ${{ steps.agent.outcome }}
-          GUARD_OUTCOME: ${{ steps.guard.outcome }}
-          GATE_OUTCOME: ${{ steps.gate.outcome }}
-          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
-        run: bash scripts/issue-fix/report.sh "$ISSUE" "$RUNNER_TEMP/gate.log"
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - name: Upload the change
         if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: issue-fix-${{ env.ISSUE }}
-          path: |
-            ${{ runner.temp }}/issue.json
-            ${{ runner.temp }}/agent.json
-            ${{ runner.temp }}/gate.log
+          name: issue-fix-change
+          path: ${{ runner.temp }}/change
           if-no-files-found: ignore
           retention-days: 14
+
+  gate:
+    needs: fix
+    if: needs.fix.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: issue-fix-change
+          path: ${{ runner.temp }}/change
+
+      - name: Apply the patch to main
+        run: git apply --index "$RUNNER_TEMP/change/change.patch"
+
+      - name: Run the full repair gate
+        run: bash scripts/repair-gate.sh full > "$RUNNER_TEMP/gate.log" 2>&1
+
+      - name: Upload the gate log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: issue-fix-gate
+          path: ${{ runner.temp }}/gate.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  publish:
+    needs: [fix, gate]
+    if: needs.fix.result == 'success' && needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+      issues: write
+      pull-requests: write
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+      REPO: ${{ github.repository }}
+      PUSH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
+      GH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
+      HAS_PAT: ${{ secrets.ISSUE_FIX_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Keep a copy of the publish scripts
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/trusted-scripts"
+          cp -a scripts/issue-fix/. "$RUNNER_TEMP/trusted-scripts/"
+
+      - name: Check the issue number
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue number is not numeric: $ISSUE"; exit 1; }
+
+      - name: Fetch the issue
+        run: |
+          set -euo pipefail
+          gh issue view "$ISSUE" --repo "$REPO" --json number,title,state > "$RUNNER_TEMP/issue.json"
+          test "$(jq -r .state "$RUNNER_TEMP/issue.json")" = "OPEN"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: issue-fix-change
+          path: ${{ runner.temp }}/change
+
+      - name: Publish the pull request
+        run: bash "$RUNNER_TEMP/trusted-scripts/publish.sh" "$RUNNER_TEMP/issue.json" "$RUNNER_TEMP/change"
+
+  report:
+    needs: [fix, gate, publish]
+    if: always() && needs.publish.result != 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      FIX_OUTCOME: ${{ needs.fix.result }}
+      GATE_OUTCOME: ${{ needs.gate.result }}
+      PUBLISH_OUTCOME: ${{ needs.publish.result }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check the issue number
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue number is not numeric: $ISSUE"; exit 1; }
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: issue-fix-gate
+          path: ${{ runner.temp }}/gate
+
+      - name: Report a stopped attempt
+        run: bash scripts/issue-fix/report.sh "$ISSUE" "$RUNNER_TEMP/gate/gate.log"

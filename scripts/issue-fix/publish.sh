@@ -1,50 +1,96 @@
 #!/usr/bin/env bash
-# publish.sh ISSUE_JSON AGENT_JSON
+# publish.sh ISSUE_JSON CHANGE_DIR
 #
-# Commits the change on ai-fix/issue-N, pushes that branch, and opens a pull
+# Applies the agent's patch to a checkout of main, checks the result against the
+# path policy, commits it on ai-fix/issue-N, pushes that branch, and opens a pull
 # request against main. It never merges.
 #
-# Environment: REPO (owner/name). PUSH_TOKEN and GH_TOKEN for the push and for gh.
-# HAS_PAT is "true" when PUSH_TOKEN is a personal or app token rather than the
-# workflow token; the pull request body says so when it is not.
-# DRY_RUN=1 pushes to REMOTE_URL and skips gh, so the offline self-check can run it.
+# Run this from a checkout that the agent never touched, using a copy of the
+# scripts made before the patch was applied. The patch is data. The policy check
+# reads what the patch does to main, and nothing from the patch is executed.
+# A patch that touches anything the policy refuses is never committed.
+#
+# Environment: REPO (owner/name). PUSH_TOKEN and GH_TOKEN carry the push and gh.
+# HAS_PAT is "true" when PUSH_TOKEN is a personal or app token, not the workflow
+# token. REMOTE_URL pushes to that URL instead of origin, and DRY_RUN=1 skips gh;
+# the offline self-check uses both.
 set -euo pipefail
 
-issue_json="${1:?usage: publish.sh ISSUE_JSON AGENT_JSON}"
-agent_json="${2:?usage: publish.sh ISSUE_JSON AGENT_JSON}"
+here="$(cd "$(dirname "$0")" && pwd)"
+issue_json="${1:?usage: publish.sh ISSUE_JSON CHANGE_DIR}"
+change_dir="${2:?usage: publish.sh ISSUE_JSON CHANGE_DIR}"
 repo="${REPO:?REPO must be set}"
+patch="$change_dir/change.patch"
+agent_json="$change_dir/agent.json"
 
 number=$(jq -r '.number' "$issue_json")
 title=$(jq -r '.title' "$issue_json")
+if [[ ! "$number" =~ ^[0-9]+$ ]]; then
+  echo "publish: issue number is not numeric: $number" >&2
+  exit 1
+fi
 branch="ai-fix/issue-$number"
+remote="${REMOTE_URL:-origin}"
 
-if [[ -z "$(git status --porcelain)" ]]; then
-  echo "publish: the agent left no changes" >&2
+# Runs git against the remote. The token travels in an extra header, so neither the
+# URL nor the checkout's configuration keeps it.
+remote_git() {
+  if [[ -n "${REMOTE_URL:-}" ]]; then
+    git "$@"
+  else
+    local auth
+    auth="$(printf 'x-access-token:%s' "${PUSH_TOKEN:?PUSH_TOKEN must be set}" | base64 | tr -d '\n')"
+    git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" "$@"
+  fi
+}
+
+if [[ ! -s "$patch" ]]; then
+  echo "publish: there is no patch at $patch" >&2
   exit 1
 fi
 
+# An existing branch is never overwritten. The maintainer decides what to do with it.
+set +e
+remote_git ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1
+status=$?
+set -e
+case "$status" in
+  0) echo "publish: $branch already exists on the remote; delete or rename it, then label the issue again" >&2; exit 1 ;;
+  2) ;;
+  *) echo "publish: could not read the remote heads (exit $status)" >&2; exit 1 ;;
+esac
+
+main_sha="$(git rev-parse --short HEAD)"
 git checkout -q -b "$branch"
-git add -A
+if ! git apply --index "$patch"; then
+  echo "publish: the patch does not apply to $(git rev-parse --short HEAD)" >&2
+  exit 1
+fi
+if git diff --cached --quiet --no-ext-diff; then
+  echo "publish: the patch changes nothing" >&2
+  exit 1
+fi
+bash "$here/check-protected.sh" HEAD
+
 git -c user.name="issue-fix" -c user.email="issue-fix@users.noreply.github.com" \
   commit -q -m "Fix #$number: $title" \
   -m "Refs #$number. Produced by the issue-fix workflow. It passed the path policy and the full repair gate. It needs review before merge."
 
-remote="${REMOTE_URL:-https://x-access-token:${PUSH_TOKEN:?PUSH_TOKEN must be set}@github.com/${repo}.git}"
-git remote set-url origin "$remote"
-git push -q -u origin "$branch"
+remote_git push -q "$remote" "$branch"
 
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
   echo "publish: dry run pushed $branch and skipped the pull request"
   exit 0
 fi
 
-summary=$(jq -r '.result // "(no summary returned)"' "$agent_json")
+summary=$(jq -r '((.result // "(no summary returned)") | tostring)[0:4000]' "$agent_json")
 body_file="$(mktemp)"
 {
   printf 'Closes #%s\n\n' "$number"
   printf '## Model summary (unreviewed)\n\n%s\n\n' "$summary"
   printf '## What the workflow checked\n\n'
-  printf -- '- Path policy: changes only under src/, plus new files under tests/.\n'
+  printf -- '- Built on main at %s.\n' "$main_sha"
+  printf -- '- Path policy, applied to the patch on main: changes only under src/, outside the test code, plus new files under src/ and tests/.\n'
   # The backticks are literal Markdown, not command substitution.
   # shellcheck disable=SC2016
   printf -- '- `scripts/repair-gate.sh full` passed on the runner.\n\n'

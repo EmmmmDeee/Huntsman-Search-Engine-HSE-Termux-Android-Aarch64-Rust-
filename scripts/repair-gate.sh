@@ -79,6 +79,9 @@ run bash -n scripts/railway-live-acceptance.sh
 run bash -n scripts/validate-railway-iac.sh
 run bash -n scripts/termux-runtime-acceptance.sh
 run sh -n scripts/railway-entrypoint.sh
+for script in scripts/issue-fix/*.sh; do
+  run bash -n "$script"
+done
 
 if [[ "$mode" == "fast" || "$mode" == "full" ]]; then
   run cargo fmt --check

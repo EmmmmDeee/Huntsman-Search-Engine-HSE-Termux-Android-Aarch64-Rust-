@@ -5,8 +5,8 @@
 # reports each stage's outcome and the tail of the repair gate log, which holds
 # compiler and test output only. It never includes model output.
 #
-# Environment: REPO, GH_TOKEN, and the stage outcomes AGENT_OUTCOME, GUARD_OUTCOME,
-# GATE_OUTCOME, PUBLISH_OUTCOME.
+# Environment: REPO, GH_TOKEN, and the job outcomes FIX_OUTCOME (the model, the path
+# policy, and the capture), GATE_OUTCOME (the repair gate), and PUBLISH_OUTCOME.
 set -euo pipefail
 
 number="${1:?usage: report.sh ISSUE_NUMBER [GATE_LOG]}"
@@ -16,9 +16,8 @@ body="$(mktemp)"
 
 {
   printf 'The issue-fix attempt stopped before it opened a pull request.\n\n'
-  printf 'Stage outcomes: agent=%s, path policy=%s, repair gate=%s, publish=%s.\n\n' \
-    "${AGENT_OUTCOME:-unknown}" "${GUARD_OUTCOME:-unknown}" \
-    "${GATE_OUTCOME:-unknown}" "${PUBLISH_OUTCOME:-unknown}"
+  printf 'Stage outcomes: fix (model, path policy, capture)=%s, repair gate=%s, publish=%s.\n\n' \
+    "${FIX_OUTCOME:-unknown}" "${GATE_OUTCOME:-unknown}" "${PUBLISH_OUTCOME:-unknown}"
   if [[ -s "$gate_log" ]]; then
     printf 'Last 40 lines of the repair gate:\n\n```\n'
     tail -n 40 "$gate_log" | tr '`' "'"
