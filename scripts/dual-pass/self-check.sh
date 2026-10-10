@@ -63,7 +63,11 @@ expect_outcome() {
   fi
 }
 
-root=$(mktemp -d)
+# Every fixture lives under one scratch directory, removed on exit, so a run leaves nothing
+# behind in the temporary directory.
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+root=$(mktemp -d "$scratch/XXXXXX")
 new_fixture "$root"
 body="$root/issue.md"
 cat > "$body" <<'EOF'
@@ -294,7 +298,7 @@ expect_red_run 1 lone-mismatch missing-symbol-colored
 expect_red_run 1 lone-mismatch assertion
 
 # The red gate in the runner. A lone E0308 next to a valid missing symbol refuses the run.
-mixed="$(mktemp -d)"
+mixed="$(mktemp -d "$scratch/XXXXXX")"
 new_fixture "$mixed"
 plan_md "$mixed/issue.md" <<'JSON'
 {
@@ -322,7 +326,7 @@ grep -q 'red gate rejected the plan' "$mixed/out/dual-pass-report.md" \
 echo "ok: a run with a lone E0308 is refused, though the other binary is a valid missing symbol"
 
 # The red gate in the runner. A test that panics on unwrap() of an Err is not a red.
-unwrap="$(mktemp -d)"
+unwrap="$(mktemp -d "$scratch/XXXXXX")"
 new_fixture "$unwrap"
 plan_md "$unwrap/issue.md" <<'JSON'
 {
@@ -341,7 +345,7 @@ echo "ok: a test that panics on unwrap() of an Err is not a red"
 
 # A generated test that an earlier plan merged stays in the existing suite. A patch that
 # breaks it must fail the suite, and the tracked file must still be on disk, unchanged.
-merged="$(mktemp -d)"
+merged="$(mktemp -d "$scratch/XXXXXX")"
 new_fixture "$merged"
 cat > "$merged/tests/generated_1.rs" <<'RS'
 use fixture::answer;
@@ -399,7 +403,7 @@ git -C "$merged" diff --quiet HEAD -- tests/generated_1.rs \
 echo "ok: a patch that breaks a merged generated test fails the existing suite, and the test stays on disk"
 
 # A docs/ target stops the run in pass 1, before any build.
-docs="$(mktemp -d)"
+docs="$(mktemp -d "$scratch/XXXXXX")"
 new_fixture "$docs"
 plan_md "$docs/issue.md" <<'JSON'
 {

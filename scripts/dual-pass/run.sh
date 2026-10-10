@@ -151,6 +151,7 @@ mapfile -t TEST_BINS < .dual-pass-tests
 # and one that is not a valid red refuses the plan. The classifier is a file that the
 # offline self-check also runs on fixture logs, so both judge red the same way.
 red_dir="$(mktemp -d)"
+trap 'rm -rf "$red_dir"' EXIT
 red_logs=()
 red_passed=()
 set +e
