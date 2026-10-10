@@ -94,16 +94,34 @@ pub(crate) fn hunks(base: &str, path: &str) -> Option<Vec<u8>> {
     output.status.success().then_some(output.stdout)
 }
 
-/// Every path under src/ that BASE tracks.
+/// Every path under src/ that BASE tracks as a file: a blob, and a symbolic link is one too. A
+/// submodule is an entry of BASE that is not a file, so it is left out.
 pub(crate) fn src_paths(base: &str) -> Result<Vec<String>> {
-    let output = run(
-        &["ls-tree", "-r", "-z", "--name-only", base, "--", "src"],
-        false,
-    )?;
+    let output = run(&["ls-tree", "-r", "-z", base, "--", "src"], false)?;
     if !output.status.success() {
         return Err(Error::Refused(format!("git ls-tree failed against {base}")));
     }
-    names(&output.stdout)
+    let mut paths = Vec::new();
+    for entry in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        // Each entry is `MODE TYPE OBJECT TAB PATH`, so the path follows the first tab.
+        let Some(tab) = entry.iter().position(|byte| *byte == b'\t') else {
+            return Err(Error::Refused(format!(
+                "malformed tree listing against {base}"
+            )));
+        };
+        let meta = entry.get(..tab).unwrap_or_default();
+        let is_blob = std::str::from_utf8(meta)
+            .is_ok_and(|meta| meta.split_whitespace().nth(1) == Some("blob"));
+        if is_blob {
+            let path = entry.get(tab + 1..).unwrap_or_default();
+            paths.extend(names(path)?);
+        }
+    }
+    Ok(paths)
 }
 
 /// The untracked files of the working tree that the ignore rules do not hide.

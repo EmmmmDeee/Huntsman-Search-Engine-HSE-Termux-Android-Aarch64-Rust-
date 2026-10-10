@@ -873,3 +873,406 @@ fn a_path_that_is_not_utf8_refuses_the_listing() {
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     assert!(stderr(&output).contains("not UTF-8"), "{}", stderr(&output));
 }
+
+// The defects that the review of the port found. Each test is named after its finding, and fails
+// on the commit before the fix. The tests after them pin the rules that the fix adds.
+
+#[test]
+fn a_test_attribute_inserted_above_a_base_test_is_refused() {
+    let repo = Repo::with_files(
+        "a-test-attribute-inserted-above-a-base-test-is-refused",
+        &[(
+            "src/ignored.rs",
+            "pub fn a() -> i32 {\n    1\n}\n\n#[test]\nfn t() {\n    assert_eq!(a(), 1);\n}\n",
+        )],
+    );
+    repo.insert_after("src/ignored.rs", 4, "#[ignore]");
+    assert_refused_for(&repo, "M src/ignored.rs");
+}
+
+#[test]
+fn a_should_panic_attribute_inserted_above_a_base_test_is_refused() {
+    let repo = Repo::with_files(
+        "a-should-panic-attribute-inserted-above-a-base-test-is-refused",
+        &[(
+            "src/failing.rs",
+            "pub fn a() -> i32 {\n    1\n}\n\n#[test]\nfn t() {\n    assert_eq!(a(), 2);\n}\n",
+        )],
+    );
+    repo.insert_after("src/failing.rs", 4, "#[should_panic]");
+    assert_refused_for(&repo, "M src/failing.rs");
+}
+
+#[test]
+fn test_code_in_a_non_rs_file_that_a_non_test_include_loads_is_refused() {
+    let repo = Repo::with_files(
+        "test-code-in-a-non-rs-file-that-a-non-test-include-loads-is-refused",
+        &[
+            (
+                "src/lib.rs",
+                "include!(\"data.inc\");\npub fn a() -> u8 {\n    1\n}\n",
+            ),
+            (
+                "src/data.inc",
+                "#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        assert_eq!(super::a(), 1);\n    }\n}\n",
+            ),
+        ],
+    );
+    repo.replace(
+        "src/data.inc",
+        "assert_eq!(super::a(), 1);",
+        "assert_eq!(super::a(), 2);",
+    );
+    assert_refused_for(&repo, "M src/data.inc");
+}
+
+#[test]
+fn a_module_declared_inside_a_macro_invocation_protects_the_file_it_loads() {
+    let repo = Repo::with_files(
+        "a-module-declared-inside-a-macro-invocation-protects-the-file-it-loads",
+        &[
+            (
+                "src/lib.rs",
+                "macro_rules! passthru { ($($t:tt)*) => { $($t)* }; }\npub fn a() -> i32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        assert_eq!(super::a(), 1);\n    }\n}\n\npassthru! {\n    #[cfg(test)]\n    mod helper;\n}\n",
+            ),
+            ("src/helper.rs", "pub fn expected() -> i32 {\n    1\n}\n"),
+        ],
+    );
+    repo.set_line("src/helper.rs", 2, "    2");
+    assert_refused_for(&repo, "M src/helper.rs");
+}
+
+#[test]
+fn a_deletion_that_activates_a_commented_macro_shadow_above_a_test_is_refused() {
+    let repo = Repo::with_files(
+        "a-deletion-that-activates-a-commented-macro-shadow-above-a-test-is-refused",
+        &[(
+            "src/lib.rs",
+            "/*\nmacro_rules! assert_eq {\n    ($l:expr, $r:expr) => { let _ = ($l, $r); };\n}\n*/\n\npub fn a() -> i32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        assert_eq!(super::a(), 1);\n    }\n}\n",
+        )],
+    );
+    repo.write(
+        "src/lib.rs",
+        "macro_rules! assert_eq {\n    ($l:expr, $r:expr) => { let _ = ($l, $r); };\n}\n\npub fn a() -> i32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        assert_eq!(super::a(), 1);\n    }\n}\n",
+    );
+    assert_refused_for(&repo, "M src/lib.rs");
+}
+
+#[test]
+fn an_untracked_nested_repository_under_tests_is_refused() {
+    let repo = Repo::new("an-untracked-nested-repository-under-tests-is-refused");
+    nested_repository(&repo.root().join("tests/nested"));
+    assert_refused_for(&repo, "?? tests/nested/ (nested repository)");
+}
+
+#[test]
+fn a_test_inside_a_block_comment_is_test_code() {
+    let repo = Repo::with_files(
+        "a-test-inside-a-block-comment-is-test-code",
+        &[(
+            "src/commented.rs",
+            "pub fn a() -> i32 {\n    1\n}\n\n/*\n#[test]\nfn t() {\n    assert_eq!(super::a(), 1);\n}\n*/\n",
+        )],
+    );
+    repo.write(
+        "src/commented.rs",
+        "pub fn a() -> i32 {\n    1\n}\n\n#[test]\nfn t() {\n    assert_eq!(super::a(), 2);\n}\n",
+    );
+    assert_refused_for(&repo, "M src/commented.rs");
+}
+
+#[test]
+fn a_raw_identifier_module_protects_the_file_without_the_raw_prefix() {
+    let repo = Repo::with_files(
+        "a-raw-identifier-module-protects-the-file-without-the-raw-prefix",
+        &[
+            (
+                "src/lib.rs",
+                "pub fn a() -> i32 {\n    1\n}\n\n#[cfg(test)]\nmod r#type;\n",
+            ),
+            ("src/type.rs", "pub fn helper() -> i32 {\n    1\n}\n"),
+        ],
+    );
+    repo.set_line("src/type.rs", 2, "    2");
+    assert_refused_for(&repo, "M src/type.rs");
+}
+
+#[test]
+fn an_edit_inside_an_existing_macro_definition_above_a_marker_is_refused() {
+    let repo = Repo::with_files(
+        "an-edit-inside-an-existing-macro-definition-above-a-marker-is-refused",
+        &[(
+            "src/lib.rs",
+            "macro_rules! helper {\n    ($x:expr) => {\n        $x\n    };\n}\n\npub fn a() -> i32 {\n    helper!(1)\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        assert_eq!(super::a(), 1);\n    }\n}\n",
+        )],
+    );
+    repo.replace("src/lib.rs", "        $x\n", "        $x + 0\n");
+    assert_refused_for(&repo, "M src/lib.rs");
+}
+
+#[test]
+fn a_deletion_inside_an_existing_macro_definition_above_a_marker_is_refused() {
+    let repo = Repo::with_files(
+        "a-deletion-inside-an-existing-macro-definition-above-a-marker-is-refused",
+        &[(
+            "src/lib.rs",
+            "macro_rules! helper {\n    ($x:expr) => {\n        $x\n    };\n}\n\npub fn a() -> i32 {\n    helper!(1)\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        assert_eq!(super::a(), 1);\n    }\n}\n",
+        )],
+    );
+    repo.replace("src/lib.rs", "        $x\n", "");
+    assert_refused_for(&repo, "M src/lib.rs");
+}
+
+#[test]
+fn a_removed_macro_definition_above_a_test_is_allowed() {
+    let repo = Repo::with_files(
+        "a-removed-macro-definition-above-a-test-is-allowed",
+        &[(
+            "src/lib.rs",
+            "macro_rules! helper {\n    ($x:expr) => {\n        $x\n    };\n}\n\npub fn a() -> i32 {\n    helper!(1)\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        assert_eq!(super::a(), 1);\n    }\n}\n",
+        )],
+    );
+    repo.replace(
+        "src/lib.rs",
+        "macro_rules! helper {\n    ($x:expr) => {\n        $x\n    };\n}\n\n",
+        "",
+    );
+    assert_passes(&repo);
+}
+
+#[test]
+fn a_line_added_directly_above_a_test_marker_is_refused() {
+    let repo = Repo::new("a-line-added-directly-above-a-test-marker-is-refused");
+    repo.insert_after("src/tested.rs", 4, "pub fn d() {}");
+    assert_refused_for(&repo, "M src/tested.rs");
+}
+
+#[test]
+fn a_line_added_above_the_blank_line_above_a_test_marker_is_allowed() {
+    let repo = Repo::new("a-line-added-above-the-blank-line-above-a-test-marker-is-allowed");
+    repo.insert_after("src/tested.rs", 3, "pub fn d() {}");
+    assert_passes(&repo);
+}
+
+#[test]
+fn an_attribute_above_a_test_attribute_is_part_of_the_test() {
+    let repo = Repo::with_files(
+        "an-attribute-above-a-test-attribute-is-part-of-the-test",
+        &[(
+            "src/attrs.rs",
+            "pub fn x() -> u8 {\n    1\n}\n\n#[allow(unused)]\n#[test]\nfn t() {\n    assert_eq!(x(), 1);\n}\n",
+        )],
+    );
+    repo.set_line("src/attrs.rs", 5, "#[allow(dead_code)]");
+    assert_refused_for(&repo, "M src/attrs.rs");
+}
+
+#[test]
+fn a_test_marker_mentioned_in_a_line_comment_does_not_start_test_code() {
+    let repo = Repo::with_files(
+        "a-test-marker-mentioned-in-a-line-comment-does-not-start-test-code",
+        &[(
+            "src/notes.rs",
+            "pub fn x() -> u8 {\n    1\n}\n\n// see #[test] above\n/// Mark each case with `#[test]`.\npub fn y() -> u8 {\n    2\n}\n",
+        )],
+    );
+    repo.set_line("src/notes.rs", 8, "    3");
+    assert_passes(&repo);
+}
+
+#[test]
+fn a_commented_out_test_in_line_comments_is_test_code() {
+    let repo = Repo::with_files(
+        "a-commented-out-test-in-line-comments-is-test-code",
+        &[(
+            "src/commented_line.rs",
+            "pub fn a() -> i32 {\n    1\n}\n\n// #[test]\n// fn t() {\n//     assert_eq!(a(), 1);\n// }\n",
+        )],
+    );
+    repo.set_line("src/commented_line.rs", 7, "//     assert_eq!(a(), 2);");
+    assert_refused_for(&repo, "M src/commented_line.rs");
+}
+
+#[test]
+fn a_commented_out_module_declaration_in_test_code_refuses_every_src_change() {
+    let repo = Repo::with_files(
+        "a-commented-out-module-declaration-in-test-code-refuses-every-src-change",
+        &[(
+            "src/lib.rs",
+            "pub fn a() -> u8 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        assert_eq!(super::a(), 1);\n    }\n}\n// mod helper;\n",
+        )],
+    );
+    repo.set_line("src/lib.rs", 2, "    3");
+    assert_refused_for(&repo, "M src/lib.rs");
+}
+
+#[test]
+fn an_import_alias_added_to_a_non_rust_file_with_test_code_is_refused() {
+    let repo = Repo::with_files(
+        "an-import-alias-added-to-a-non-rust-file-with-test-code-is-refused",
+        &[(
+            "src/notes.txt",
+            "pub fn q() -> u8 {\n    1\n}\n\n#[cfg(test)]\nfn t() {}\n",
+        )],
+    );
+    repo.insert_after("src/notes.txt", 0, "use std::fmt::Write as _;");
+    assert_refused_for(&repo, "M src/notes.txt");
+}
+
+#[test]
+fn a_module_declared_by_a_file_that_a_non_test_include_compiles_refuses_every_src_change() {
+    let repo = Repo::with_files(
+        "a-module-declared-by-a-file-that-a-non-test-include-compiles-refuses-every-src-change",
+        &[
+            ("src/inc.rs", "include!(\"parts.rs\");\n"),
+            ("src/parts.rs", "mod helper;\n"),
+            ("src/helper.rs", "pub fn h() -> u8 {\n    1\n}\n"),
+        ],
+    );
+    repo.append("src/lib.rs", "pub fn b() {}\n");
+    assert_refused_for(&repo, "M src/lib.rs");
+}
+
+#[test]
+fn an_include_outside_test_code_that_cannot_be_named_refuses_every_src_change() {
+    let repo = Repo::with_files(
+        "an-include-outside-test-code-that-cannot-be-named-refuses-every-src-change",
+        &[("src/inc2.rs", "include!(concat!(\"a\", \"b.rs\"));\n")],
+    );
+    repo.append("src/lib.rs", "pub fn b() {}\n");
+    assert_refused_for(&repo, "M src/lib.rs");
+}
+
+#[test]
+fn a_module_declaration_in_a_block_comment_of_test_code_refuses_every_src_change() {
+    let repo = Repo::with_files(
+        "a-module-declaration-in-a-block-comment-of-test-code-refuses-every-src-change",
+        &[(
+            "src/lib.rs",
+            "pub fn a() -> u8 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        assert_eq!(super::a(), 1);\n    }\n}\n/*\nmod helper;\n*/\n",
+        )],
+    );
+    repo.set_line("src/lib.rs", 2, "    3");
+    assert_refused_for(&repo, "M src/lib.rs");
+}
+
+#[test]
+fn a_submodule_under_src_in_the_base_does_not_refuse_a_change_to_another_file() {
+    let mut repo = Repo::new("a-submodule-under-src-in-the-base-does-not-refuse-a-change");
+    // A submodule that is not checked out is an empty directory of the working tree. It has to
+    // exist before `git add -A`, which would otherwise stage the submodule as deleted.
+    std::fs::create_dir_all(repo.root().join("src/sub")).expect("the directory must be created");
+    let head = repo.rev("HEAD");
+    repo.git(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("160000,{head},src/sub"),
+    ]);
+    repo.commit_all("a submodule under src");
+    repo.append("src/lib.rs", "pub fn b() {}\n");
+    assert_passes(&repo);
+}
+
+#[test]
+fn an_attribute_above_a_test_across_a_blank_line_is_refused() {
+    // The blank line does not end the run of attributes, so #[ignore] becomes part of the test.
+    let repo = Repo::with_files(
+        "an-attribute-above-a-test-across-a-blank-line-is-refused",
+        &[(
+            "src/lib.rs",
+            "pub fn c() -> u8 {\n    1\n}\n\n#[test]\nfn c_is_one() {\n    assert_eq!(c(), 1);\n}\n",
+        )],
+    );
+    repo.insert_after("src/lib.rs", 3, "#[ignore]");
+    assert_refused_for(&repo, "M src/lib.rs");
+}
+
+#[test]
+fn a_block_comment_opened_above_the_tests_and_closed_after_them_is_refused() {
+    // The `*/` in the last line comment closes the block comment that starts above the tests, so
+    // the test is commented out and the file has no test left.
+    let repo = Repo::with_files(
+        "a-block-comment-opened-above-the-tests-and-closed-after-them-is-refused",
+        &[(
+            "src/lib.rs",
+            "pub fn c() -> u8 {\n    1\n}\n\n#[test]\nfn c_is_one() {\n    assert_eq!(c(), 1);\n}\n// done */\n",
+        )],
+    );
+    repo.insert_after("src/lib.rs", 0, "/*");
+    assert_refused_for(&repo, "M src/lib.rs");
+}
+
+#[test]
+fn a_non_rust_file_nested_too_deep_is_refused_with_a_message_not_an_abort() {
+    let repo = Repo::with_files(
+        "a-non-rust-file-nested-too-deep-is-refused-with-a-message-not-an-abort",
+        &[("src/data.txt", "x\n")],
+    );
+    repo.write("src/data.txt", &"(".repeat(30_000));
+    let output = repo.guard();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the guard must refuse the change with status 1, not abort: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("brackets nest more than 128 levels deep"),
+        "the refusal must say why: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_rust_file_nested_too_deep_is_refused_with_a_message_not_an_abort() {
+    let repo = Repo::new("a-rust-file-nested-too-deep-is-refused-with-a-message-not-an-abort");
+    // A valid item, so that the syntax tree is built and recurses to the full depth.
+    let deep = format!(
+        "pub const DEEP: u8 = {}1{};\n",
+        "(".repeat(2_000),
+        ")".repeat(2_000)
+    );
+    repo.insert_after("src/tested.rs", 0, &deep);
+    let output = repo.guard();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the guard must refuse the change, not abort: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("brackets nest more than 128 levels deep"),
+        "the refusal must say why: {}",
+        stderr(&output)
+    );
+}
+
+/// Creates a git repository of its own in DIR, with one empty commit, as a directory of a working
+/// tree that holds it.
+fn nested_repository(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).expect("the nested directory must be created");
+    for args in [
+        vec!["init", "-q"],
+        vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "nested",
+        ],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("git must run");
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+}

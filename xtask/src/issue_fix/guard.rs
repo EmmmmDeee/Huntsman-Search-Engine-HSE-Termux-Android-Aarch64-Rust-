@@ -1,7 +1,9 @@
 //! The path guard: refuses a change that the issue-fix agent may not make. It reads the working
 //! tree against BASE, the commit the run started from, and applies the rules of the shell guard
-//! it replaces (scripts/issue-fix/check-protected.sh), whose header lists them. Test code is
-//! decided with syn, from each Rust file at BASE (see `model` and `syntax`).
+//! it replaces (scripts/issue-fix/check-protected.sh), whose header lists them, and the stricter
+//! rules that docs/ISSUE_FIX.md lists for the port. Test code is decided from the files at BASE,
+//! with the token stream and syn (see `model` and `syntax`). A file whose brackets nest deeper than
+//! `syntax::MAX_NESTING` is refused with a message, because reading it would overflow the stack.
 //!
 //! The guard runs from the trusted xtask that the workflow builds from BASE before the model
 //! runs. It reads the checkout as data and never runs anything the checkout names: every git
@@ -12,7 +14,7 @@ pub(super) mod git;
 mod model;
 mod syntax;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::ExitCode;
 
 use model::Model;
@@ -68,6 +70,10 @@ fn check(base: &str) -> Result<Vec<String>> {
     for path in git::untracked()? {
         if is_symlink(&path) {
             refused.push(format!("?? {path} (symbolic link)"));
+        } else if is_nested_repository(&path) {
+            // git lists a directory that holds a repository of its own with a trailing slash.
+            // Added, it becomes a submodule entry, which the guard refuses.
+            refused.push(format!("?? {path} (nested repository)"));
         } else if !guard.allowed('A', &path)? {
             refused.push(format!("?? {path}"));
         }
@@ -253,7 +259,9 @@ impl Guard<'_> {
     }
 
     /// True when a modification of PATH is allowed: it is not test code, it leaves the test code
-    /// of the base alone, and it adds no line that reaches code beyond its own.
+    /// of the base alone, it does not reach the line above the test code, it keeps every test
+    /// marker of the base where it was, it adds no line that reaches code beyond its own, and it
+    /// keeps every construct of the base that reaches code beyond its own lines.
     fn modified_allowed(&self, path: &str) -> Result<bool> {
         if self.model.is_test_file(path) {
             return Ok(false);
@@ -262,11 +270,23 @@ impl Guard<'_> {
             return Ok(false);
         };
         let start = self.model.start(path);
-        if start > 0 && hunks.iter().any(|hunk| hunk.old_last() >= start) {
+        // The test code starts at the first attribute of its run, so a change that reaches the line
+        // above that attribute can add one to the test, and it is refused.
+        if start > 0 && hunks.iter().any(|hunk| hunk.old_last() + 1 >= start) {
+            return Ok(false);
+        }
+        // A change further above moves the test code without touching it. It stays allowed only
+        // while every test marker of BASE survives at the line that the hunks move it to. An
+        // attribute added above the run joins it across a blank line or a comment, and a delimiter
+        // that comments a test out removes its marker.
+        if start > 0 && !self.markers_kept(path, &hunks)? {
             return Ok(false);
         }
         let added = Added::from_hunks(&hunks);
-        Ok(!self.scope_refused(path, &added, start)?)
+        if self.scope_refused(path, &added, start)? {
+            return Ok(false);
+        }
+        self.constructs_kept(path, start)
     }
 
     /// True when the lines that PATH adds (every line, for a new file) reach beyond their own
@@ -279,7 +299,16 @@ impl Guard<'_> {
             return Ok(true);
         };
         if !path.ends_with(".rs") {
-            return Ok(text_reaches(&String::from_utf8_lossy(&bytes), added));
+            let text = String::from_utf8_lossy(&bytes);
+            if text_reaches(&text, added) {
+                return Ok(true);
+            }
+            let facts = working_text(path, &text)?;
+            return Ok(start > 0
+                && facts
+                    .cfg_constructs
+                    .iter()
+                    .any(|construct| added.touches(construct.first, construct.last)));
         }
         let Ok(text) = String::from_utf8(bytes) else {
             return Ok(true);
@@ -290,7 +319,7 @@ impl Guard<'_> {
         if facts
             .scope_constructs
             .iter()
-            .any(|&(first, last)| added.touches(first, last))
+            .any(|construct| added.touches(construct.first, construct.last))
         {
             return Ok(true);
         }
@@ -298,8 +327,79 @@ impl Guard<'_> {
             && facts
                 .cfg_constructs
                 .iter()
-                .any(|&(first, last)| added.touches(first, last)))
+                .any(|construct| added.touches(construct.first, construct.last)))
     }
+
+    /// True when the working-tree PATH keeps every construct of BASE that the guard compares: the
+    /// scope constructs, and the cfg constructs when BASE has test code. A construct that the
+    /// working tree has and BASE does not is live now, which an edit can do with no added line,
+    /// such as deleting the delimiters of a comment around a macro definition. A file that does
+    /// not read as text cannot be compiled, so it activates nothing.
+    fn constructs_kept(&self, path: &str, start: usize) -> Result<bool> {
+        let Ok(bytes) = std::fs::read(path) else {
+            return Ok(false);
+        };
+        let now = working_text(path, &String::from_utf8_lossy(&bytes))?;
+        let now_texts = now.construct_texts(start > 0);
+        Ok(contained(&now_texts, &self.model.constructs(path)))
+    }
+
+    /// True when every test marker of BASE in PATH is still a marker of the working tree, at the
+    /// line that the hunks move it to. A marker is the first attribute of a run that names test, or
+    /// a line of a comment that does. So an attribute that joins the run moves the marker up, and a
+    /// delimiter that comments the test out removes it. Every hunk lies above the test code here,
+    /// so the test code moves by the net number of lines that the hunks add and remove. A working
+    /// tree that is not UTF-8 is refused.
+    fn markers_kept(&self, path: &str, hunks: &[Hunk]) -> Result<bool> {
+        let Ok(bytes) = std::fs::read(path) else {
+            return Ok(false);
+        };
+        let Ok(text) = String::from_utf8(bytes) else {
+            return Ok(false);
+        };
+        let now = working_text(path, &text)?;
+        let added = hunks
+            .iter()
+            .fold(0usize, |sum, hunk| sum.saturating_add(hunk.new_count));
+        let removed = hunks
+            .iter()
+            .fold(0usize, |sum, hunk| sum.saturating_add(hunk.old_count));
+        let (tokens, comments) = self.model.markers(path);
+        Ok(moved_into(tokens, &now.token_markers, added, removed)
+            && moved_into(comments, &now.comment_markers, added, removed))
+    }
+}
+
+/// The facts of TEXT, the working-tree file at PATH. A text nested too deeply to read is an error
+/// that names the file, so the guard refuses the change with a message and does not abort.
+fn working_text(path: &str, text: &str) -> Result<syntax::FileFacts> {
+    syntax::read_text_checked(text)
+        .map_err(|reason| Error::Refused(format!("cannot read {path}: {reason}")))
+}
+
+/// True when every line of BEFORE, moved by ADDED lines added above it and REMOVED lines removed
+/// above it, is a line of NOW. A line that the arithmetic cannot place is not in NOW.
+fn moved_into(before: &[usize], now: &[usize], added: usize, removed: usize) -> bool {
+    before.iter().all(|&line| {
+        line.checked_add(added)
+            .and_then(|moved| moved.checked_sub(removed))
+            .is_some_and(|moved| now.contains(&moved))
+    })
+}
+
+/// True when every text of NOW is in BEFORE, each one as often as it occurs in BEFORE.
+fn contained(now: &[&str], before: &[&str]) -> bool {
+    let mut left: BTreeMap<&str, usize> = BTreeMap::new();
+    for text in before {
+        *left.entry(text).or_default() += 1;
+    }
+    now.iter().all(|text| match left.get_mut(text) {
+        Some(count) if *count > 0 => {
+            *count -= 1;
+            true
+        }
+        _ => false,
+    })
 }
 
 /// True when an added line of a non-Rust file has a construct that reaches beyond its own line.
@@ -329,4 +429,10 @@ fn has_path_attribute(line: &str) -> bool {
 /// True when PATH is a symbolic link in the working tree. A path that cannot be read is not.
 fn is_symlink(path: &str) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+}
+
+/// True when PATH is a directory of the working tree, which git lists with a trailing slash when
+/// the directory holds a repository of its own.
+fn is_nested_repository(path: &str) -> bool {
+    path.ends_with('/') || std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
 }

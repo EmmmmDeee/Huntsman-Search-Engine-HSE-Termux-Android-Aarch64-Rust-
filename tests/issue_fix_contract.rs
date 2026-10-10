@@ -520,3 +520,18 @@ fn offline_self_check_of_the_issue_fix_scripts_passes() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn the_issue_fix_doc_lists_where_the_port_is_stricter_than_the_shell_guard() {
+    let doc = fs::read_to_string("docs/ISSUE_FIX.md").expect("the issue-fix doc must be read");
+    assert!(
+        doc.contains("## Where the port is stricter than the shell guard"),
+        "the doc must list the rules that the port adds to the shell guard"
+    );
+    assert!(
+        doc.contains(
+            "an edit or a deletion inside an existing macro definition above a test marker"
+        ),
+        "the doc must state that an edit inside an existing macro definition above a test is refused"
+    );
+}
