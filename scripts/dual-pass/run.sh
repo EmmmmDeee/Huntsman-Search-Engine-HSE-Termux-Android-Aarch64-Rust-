@@ -71,13 +71,18 @@ snapshot() {
       done
 }
 
+# Restores the protected files from the snapshot of untouched main. Every tracked file
+# under tests/ is copied back and none is deleted, so a generated test that main already
+# has still runs in the existing suite. Only an untracked generated test is removed,
+# because the patch or an earlier turn wrote it. The declared new tests are written last.
 restore_protected() {
-  local f rel src
+  local f rel
+  local tracked=() stale=()
   if [[ -d .dual-pass-base/tests ]]; then
-    find .dual-pass-base/tests -type f | while read -r src; do
-      rel="${src#.dual-pass-base/}"
+    mapfile -t tracked < <(cd .dual-pass-base && find tests -type f)
+    for rel in "${tracked[@]}"; do
       mkdir -p "$(dirname "$rel")"
-      cp "$src" "$rel"
+      cp ".dual-pass-base/$rel" "$rel"
     done
   fi
   for f in Cargo.toml Cargo.lock .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/dual-pass.yml; do
@@ -85,7 +90,12 @@ restore_protected() {
       cp ".dual-pass-base/$f" "$f"
     fi
   done
-  find tests -type f -name 'generated_*.rs' -delete 2>/dev/null || true
+  mapfile -t stale < <(find tests -type f -name 'generated_*.rs' 2>/dev/null || true)
+  for rel in "${stale[@]}"; do
+    if [[ ! -e ".dual-pass-base/$rel" ]]; then
+      rm -f -- "$rel"
+    fi
+  done
   if [[ -f execution-plan.json ]]; then
     python3 -I - <<'PY'
 import json
@@ -136,45 +146,41 @@ for item in plan["new_tests"]:
 Path(".dual-pass-tests").write_text("\n".join(names) + "\n", encoding="utf-8")
 PY
 mapfile -t TEST_BINS < .dual-pass-tests
+# Every generated test binary runs on untouched main, and each log is kept. A binary that
+# passes refuses the plan. Each failing binary is then judged on its own by red_class.py,
+# and one that is not a valid red refuses the plan. The classifier is a file that the
+# offline self-check also runs on fixture logs, so both judge red the same way.
+red_dir="$(mktemp -d)"
+red_logs=()
+red_passed=()
 set +e
-red_log=""
-red_status=0
 for bin in "${TEST_BINS[@]}"; do
-  one="$(cargo test --locked --test "$bin" -- --test-threads=1 2>&1)"
-  one_status=$?
-  red_log="${red_log}"$'\n'"${one}"
-  if [[ "$one_status" -eq 0 ]]; then
-    red_status=0
-    break
+  red_logs+=("$red_dir/$bin.log")
+  if cargo test --locked --test "$bin" -- --test-threads=1 > "$red_dir/$bin.log" 2>&1; then
+    red_passed+=("$bin")
   fi
-  red_status=$one_status
 done
 set -e
-printf '\n## Red\n\nstatus=%s\n\n```\n%s\n```\n' "$red_status" "$(printf '%s\n' "$red_log" | tail -n 40)" >> "$REPORT"
-if [[ "$red_status" -eq 0 ]]; then
+{
+  printf '\n## Red\n\npassed on untouched main: %s\n' "${red_passed[*]:-none}"
+  for red_log_file in "${red_logs[@]}"; do
+    printf '\n### %s\n\n```\n' "$(basename "$red_log_file" .log)"
+    tail -n 40 "$red_log_file"
+    printf '```\n'
+  done
+} >> "$REPORT"
+if [[ "${#red_passed[@]}" -gt 0 ]]; then
   fail_human "red gate rejected the plan: generated tests passed on untouched main"
 fi
-# Here-strings, not `printf | grep -q`: under pipefail a long log would make the
-# pipeline report SIGPIPE and silently skip these classifications.
-if grep -q 'expected one of' <<< "$red_log"; then
-  fail_human "red gate rejected the plan: generated test does not parse"
-fi
-# A valid red is a missing symbol (the build fails on `cannot find`) or a failed
-# assertion (the test runs and panics). Any other compile error is rejected, because
-# it shows nothing about the defect.
-red_class="rejected"
-if grep -q 'could not compile' <<< "$red_log"; then
-  if grep -q 'cannot find' <<< "$red_log"; then
-    red_class="missing-symbol"
-  fi
-elif grep -q -E 'panicked|test result: FAILED' <<< "$red_log"; then
-  red_class="assertion-failed"
-fi
-if [[ "$red_class" == "rejected" ]]; then
+set +e
+red_verdict="$(python3 -I scripts/dual-pass/red_class.py "${red_logs[@]}")"
+red_ok=$?
+set -e
+printf '\n## Red class\n\n```\n%s\n```\n' "$red_verdict" >> "$REPORT"
+if [[ "$red_ok" -ne 0 ]]; then
   fail_human "red gate rejected the plan: the generated test neither failed an assertion nor referenced a missing symbol"
 fi
-printf '\nRed class: %s\n' "$red_class" >> "$REPORT"
-log "red confirmed ($red_class)"
+log "red confirmed"
 
 turn=1
 green=0
@@ -257,7 +263,7 @@ python3 -I -c 'import json; open(".dual-pass-targets","w").write("\n".join(i["pa
 mapfile -t TOUCHED < .dual-pass-targets
 rustfmt --edition 2021 "${TOUCHED[@]}" tests/generated_*.rs >/dev/null 2>&1 || true
 restore_protected
-printf '\n## Green\n\nCoverage tool not invoked. Gate evidence is cargo check, generated tests, and the existing locked suite. Initial red status=%s.\n' "$red_status" >> "$REPORT"
+printf '\n## Green\n\nCoverage tool not invoked. Gate evidence is cargo check, generated tests, and the existing locked suite. Every generated test was a valid red.\n' >> "$REPORT"
 set +e
 suite="$(cargo test --locked -- --test-threads=1 2>&1)"
 suite_status=$?

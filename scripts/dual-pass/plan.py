@@ -112,6 +112,15 @@ def extract_plan(body: str) -> dict:
         die(f"plan json is not parseable: {exc}")
 
 
+def target_allowed(root: Path, path: str) -> bool:
+    """The path policy's rule for a target, as check-protected.sh applies it: a path under
+    src/, or a new file under tests/. Any other target would be refused at publish, so it
+    is refused here, before any build or model work."""
+    if path.startswith("src/"):
+        return True
+    return path.startswith("tests/") and not (root / path).exists()
+
+
 def validate(plan: dict, root: Path) -> dict:
     forbidden = []
     walk_keys(plan, forbidden)
@@ -131,10 +140,10 @@ def validate(plan: dict, root: Path) -> dict:
     allowed = set()
     for item in targets:
         path = item.get("path") or ""
-        if not path or path.startswith(PROTECTED_PREFIXES) or path in PROTECTED_EXACT:
-            die(f"target touches a protected path: {path}")
-        if ".." in Path(path).parts or path.startswith("/"):
-            die(f"target path escapes the repo: {path}")
+        if not path or ".." in Path(path).parts or path.startswith("/"):
+            die(f"target path is empty or escapes the repo: {path!r}")
+        if not target_allowed(root, path):
+            die(f"target is outside the path policy (a path under src/, or a new file under tests/): {path}")
         if "signatures" not in item:
             die(f"target missing signatures: {path}")
         allowed.add(path)
@@ -143,6 +152,8 @@ def validate(plan: dict, root: Path) -> dict:
         name = path[len("tests/") :] if path.startswith("tests/") else path
         if not path.startswith("tests/generated_") or not path.endswith(".rs") or "/" in name:
             die(f"test path must be tests/generated_*.rs: {path}")
+        if (root / path).exists():
+            die(f"new test path already exists on main: {path}")
         if "source" not in item or "signatures" not in item:
             die(f"test missing source or signatures: {path}")
         source = item["source"]
