@@ -2,6 +2,17 @@
 //! in, then the issue's title and body between two lines that carry a random token. The title and
 //! body are untrusted, and the token is not known in advance, so the body cannot close the fence
 //! early. An issue that carries the token is refused.
+//!
+//! Differences from build-prompt.sh that are kept on purpose:
+//! - An object in the title or body prints its keys in sorted order, where jq -r keeps the order
+//!   of the issue's JSON.
+//! - A number prints as its value, where jq -r prints the text the issue wrote: 1.50 prints as
+//!   1.5, and 1E+2 as 100.0.
+//! - A number outside the range of a 64-bit float, such as 1e400, is malformed JSON and exits 64.
+//!   jq kept its text and wrote it.
+//! - A missing issue file exits 1, where jq exited 2. Both refuse, and no prompt is written.
+//! - A file that is not UTF-8 is malformed JSON, so it exits 64 and no prompt is written. jq
+//!   replaced the invalid bytes with U+FFFD and wrote the prompt.
 
 use std::fs::{self, File};
 use std::io::Read;
@@ -76,7 +87,7 @@ pub fn read_issue(path: &Path) -> Result<Value> {
 }
 
 /// One text field of the issue, as the shell captured `jq -r` output. A string is taken as it is,
-/// any other value as its JSON text, and a missing or null field as "null". The capture drops
+/// any other value as `raw_text` prints it, and a missing or null field as "null". The capture drops
 /// trailing newlines and NUL bytes, as command substitution does.
 pub fn issue_text(issue: &Value, field: &str) -> String {
     capture(&raw_text(issue.get(field)))
@@ -90,12 +101,18 @@ fn issue_body(issue: &Value) -> String {
     }
 }
 
-/// What `jq -r` prints for a value. A missing field is null, which prints as "null".
+/// What `jq -r` prints for a value. A missing field is null, which prints as "null". A string prints
+/// as it is. An array or an object prints the way jq pretty-prints it, one element or member a line,
+/// indented by two spaces. jq writes DEL (U+007F) inside a string as an escape, and so does this.
+/// Any other value prints as its JSON text.
 fn raw_text(value: Option<&Value>) -> String {
     match value {
         None | Some(Value::Null) => "null".to_owned(),
         Some(Value::String(text)) => text.clone(),
-        Some(other) => other.to_string(),
+        Some(other) => serde_json::to_string_pretty(other).map_or_else(
+            |_| other.to_string(),
+            |pretty| pretty.replace('\u{7f}', "\\u007f"),
+        ),
     }
 }
 

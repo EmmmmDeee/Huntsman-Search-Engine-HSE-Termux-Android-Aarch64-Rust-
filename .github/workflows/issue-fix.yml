@@ -27,11 +27,12 @@ name: issue-fix
 # Variables: ISSUE_FIX_MODEL (default opus), ISSUE_FIX_BUDGET_USD (default 10).
 #
 # Residual risk: the model's Bash tool can run cargo, and cargo runs code the model
-# wrote. That code can read the model key in the model step and send it out. The step's
-# scan refuses a change that carries the key, or a base64 or hex form of it, anywhere in
-# the working tree, and it redacts the model output. A key hidden some other way, and a
-# process that outlives the model step, are not caught. Only maintainers with triage
-# access can apply the label, and that is the control.
+# wrote. That code can read the model key in the model step and send it out, and it can
+# overwrite the trusted xtask copy in RUNNER_TEMP that runs the scan. The step's scan
+# refuses a change that carries the key, or a base64 or hex form of it, anywhere in the
+# working tree, and it redacts the model output. A key hidden some other way, a scanner
+# that was overwritten, and a process that outlives the model step, are not caught. Only
+# maintainers with triage access can apply the label, and that is the control.
 
 on:
   issues:
@@ -139,8 +140,10 @@ jobs:
             --disallowedTools WebFetch WebSearch "Bash(curl *)" "Bash(wget *)" \
               "Bash(gh *)" "Bash(env)" "Bash(printenv*)" "Bash(git commit *)" "Bash(git push *)" \
             > "$RUNNER_TEMP/change/agent.json" || status=$?
-          # The scan is the trusted binary that the workflow built before the model ran, so the model
-          # cannot change it, and it runs while the key is still in this step's environment. The model
+          # The scan is the copy of the trusted binary that the workflow built before the model ran. The
+          # copy sits in RUNNER_TEMP, and code that the model's cargo commands run can overwrite it while
+          # the model runs, so the scan is not yet protected from the model; the trust architecture is a
+          # later change. The scan runs while the key is still in this step's environment. The model
           # output is redacted first, so it is clean even when the change is refused. The change is
           # refused when the key, or an encoding of it, is in anything git would carry in the patch: file
           # contents, file names, and symbolic-link targets. git lists those files with the same ignore

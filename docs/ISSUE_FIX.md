@@ -97,8 +97,10 @@ are never used.
 
 ## Key scan
 
-After the model step's CLI exits, the scan in `issue-fix.yml` runs in isolated Python
-mode. It reads the Python from the workflow file itself, which the model cannot write.
+After the model step's CLI exits, the scan in `issue-fix.yml` runs. It is the copy of the
+trusted `xtask` binary that the workflow built before the model ran, at
+`$RUNNER_TEMP/trusted-xtask`. Code that the model's `cargo` commands run can overwrite it
+while the model runs, so the scan is not yet protected from the model (see Limits).
 It does two things:
 
 - It redacts the model output: the literal key, its hex forms, every base64 run that
@@ -135,6 +137,11 @@ runs it in a git tree, so CI and the check run the same code.
   code runs in the model step while the model key is in the environment, so a test
   could read the key and send it out over the network. The key scan does not catch
   that. The control is that only triage-level maintainers can apply the label.
+- The scan's own binary is not protected from that code. It sits at
+  `$RUNNER_TEMP/trusted-xtask`, and a test or build script that the model's `cargo`
+  commands run can replace it before the scan runs. The scan then runs whatever was
+  written there. Keeping the scanner out of the model's reach is a later change to the
+  trust architecture.
 - The scan finds the whole key in the forms listed above. A key that is split across
   lines, reversed, cut so that only part of it appears, or encoded some other way is not
   caught, and the redaction covers only the same forms. The model step holds the key in

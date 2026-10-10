@@ -207,6 +207,8 @@ impl Forms {
 
     /// Whether RUN, read in either base64 alphabet at each of the four alignments, decodes to a
     /// stream that holds the key. The key can begin at any of the four offsets of a longer stream.
+    /// Each candidate is decoded to its end, including a final group that has no padding: the key
+    /// can end in that group, as the unpadded base64 of a key does.
     fn decodes_to_key(&self, run: &[u8]) -> bool {
         let url_to_standard: Vec<u8> = run
             .iter()
@@ -219,9 +221,7 @@ impl Forms {
         [run, url_to_standard.as_slice()].into_iter().any(|text| {
             (0..4).any(|offset| {
                 let body = text.get(offset..).unwrap_or_default();
-                let usable = body.len() - body.len() % 4;
-                let decoded = decode_base64(body.get(..usable).unwrap_or_default());
-                contains(&decoded, &self.raw)
+                contains(&decode_base64(body), &self.raw)
             })
         })
     }
@@ -694,6 +694,17 @@ mod tests {
         assert!(forms.carried_by(b"x Zml4dHVyZX5+fm1vZGVsfmtleQ== y"));
         assert!(forms.carried_by(b"x ANTHROPIC_API_KEY=Zml4dHVyZX5+fm1vZGVsfmtleQ== y"));
         assert!(!forms.carried_by(b"pub fn a() -> u8 { 1 }\n"));
+    }
+
+    /// The key's last group has no padding. The 19 bytes of the key are 26 characters of unpadded
+    /// base64, and the last two characters decode to the final byte. The scan must read that group,
+    /// in either alphabet, and after a one-byte prefix that makes the run 27 characters long.
+    #[test]
+    fn an_unpadded_base64_key_at_the_end_of_a_run_is_carried() {
+        let forms = Forms::new(KEY.to_vec());
+        assert!(forms.carried_by(b"const X: &str = \"Zml4dHVyZX5+fm1vZGVsfmtleQ\";\n"));
+        assert!(forms.carried_by(b"Zml4dHVyZX5-fm1vZGVsfmtleQ"));
+        assert!(forms.carried_by(b"x eGZpeHR1cmV+fn5tb2RlbH5rZXk y"));
     }
 
     /// A run that holds the key at an alignment where CPython's decoder raises "Incorrect padding"

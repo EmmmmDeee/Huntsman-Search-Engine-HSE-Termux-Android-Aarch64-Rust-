@@ -13,6 +13,7 @@ const WORKFLOW: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../.github/workflows/issue-fix.yml"
 );
+const DOCS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/ISSUE_FIX.md");
 const REFUSAL: &str = "the model key, or an encoding of it, is in";
 
 /// The forms of the fixture key that the scan must find, as Python's base64 module writes them. The
@@ -179,6 +180,38 @@ fn the_scan_refuses_each_form_of_the_key_in_a_source_file() {
             &[(
                 "src/lib.rs",
                 format!("pub fn a() {{}} // {value}\n").as_bytes(),
+            )],
+        );
+        let outcome = run_block(name, &dir, Some(KEY), "{\"result\": \"ok\"}\n");
+        assert_eq!(
+            outcome.status, 1,
+            "the {name} form must refuse: {}",
+            outcome.log
+        );
+        assert!(
+            outcome.log.contains(REFUSAL) && outcome.log.contains("src/lib.rs"),
+            "the {name} form must name the file: {}",
+            outcome.log
+        );
+        fs::remove_dir_all(&dir).expect("the tree can be removed");
+    }
+}
+
+/// The unpadded base64 forms of the key: the standard and the URL-safe alphabet, and the key after a
+/// one-byte prefix. Each is the last thing in its run, so the run's final group has no padding.
+#[test]
+fn unpadded_base64_of_the_key_at_the_end_of_a_run_is_refused() {
+    let scratch = Scratch::new("unpadded");
+    for (name, value) in [
+        ("unpadded-standard", "Zml4dHVyZX5+fm1vZGVsfmtleQ"),
+        ("unpadded-url-safe", "Zml4dHVyZX5-fm1vZGVsfmtleQ"),
+        ("unpadded-after-prefix", "eGZpeHR1cmV+fn5tb2RlbH5rZXk"),
+    ] {
+        let dir = tree(
+            scratch.path(),
+            &[(
+                "src/lib.rs",
+                format!("pub const X: &str = \"{value}\";\n").as_bytes(),
             )],
         );
         let outcome = run_block(name, &dir, Some(KEY), "{\"result\": \"ok\"}\n");
@@ -432,6 +465,40 @@ fn a_missing_listing_is_an_error_and_a_missing_model_output_is_left_alone() {
     assert!(
         !agent.exists(),
         "a model output that was not there must not be created"
+    );
+}
+
+/// The text with each line's comment marker and indentation removed, and the lines joined by spaces, so
+/// a sentence that the source breaks across lines can be searched for as one.
+fn prose(text: &str) -> String {
+    text.lines()
+        .map(|line| line.trim().trim_start_matches('#').trim())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The trust notes of the key scan must describe what is enforced. The scanner is a copy in
+/// RUNNER_TEMP, and code that the model's cargo commands run can overwrite it, so no note may say
+/// that the model cannot change it.
+#[test]
+fn the_trust_note_does_not_say_the_model_cannot_change_the_scanner() {
+    let workflow = prose(&fs::read_to_string(WORKFLOW).expect("the issue-fix workflow exists"));
+    let docs = prose(&fs::read_to_string(DOCS).expect("the issue-fix document exists"));
+    assert!(
+        !workflow.contains("so the model cannot change it"),
+        "the workflow's scan note says the model cannot change the scanner"
+    );
+    assert!(
+        !docs.contains("which the model cannot write"),
+        "the document's key scan note says the model cannot write the scanner"
+    );
+    assert!(
+        workflow.contains("can overwrite it"),
+        "the workflow's scan note must say that the scanner copy can be overwritten"
+    );
+    assert!(
+        docs.contains("can overwrite it"),
+        "the document's key scan note must say that the scanner copy can be overwritten"
     );
 }
 
