@@ -11,3 +11,8 @@ target/
 /*.tar.bz2
 /*.tar.xz
 /*.tar.zst
+
+# Python bytecode is written when the dual-pass runner and its helpers run locally.
+# It is generated output and must never be committed.
+__pycache__/
+*.pyc
