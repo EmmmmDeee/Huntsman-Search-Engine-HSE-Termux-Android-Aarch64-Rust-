@@ -26,14 +26,12 @@ pub fn exposure_order(has_operator_key: bool) -> Vec<BreachLeg> {
     order
 }
 
-
 /// Hudson Rock v3 requires a key and can carry credential fields.
 /// The only allowed path is the keyed `stolen.tax` cascade, which does not declare those fields.
 #[must_use]
 pub const fn keyless_hudson_rock() -> Option<BreachLeg> {
     None
 }
-
 
 /// Whether this HIBP subcommand is in the current order.
 #[must_use]
@@ -47,7 +45,6 @@ pub fn command_allowed(subcommand: &str, has_operator_key: bool) -> bool {
         _ => false,
     }
 }
-
 
 /// `recon stolen-tax` is a keyed leg. No key means it is not in the order.
 #[must_use]
@@ -78,10 +75,7 @@ mod tests {
         let order = exposure_order(true);
         assert_eq!(order[0], BreachLeg::PwnedPasswords);
         assert_eq!(order[1], BreachLeg::HibpCatalog);
-        assert_eq!(
-            &order[2..],
-            &[BreachLeg::HibpAccount, BreachLeg::StolenTax]
-        );
+        assert_eq!(&order[2..], &[BreachLeg::HibpAccount, BreachLeg::StolenTax]);
     }
 
     #[test]

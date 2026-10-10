@@ -694,8 +694,8 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
         .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(66));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("HUNTSMAN_STOLEN_TAX_KEY"));
+    assert_eq!(out.status.code(), Some(77));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("keyed leg is not in the free order"));
     assert_eq!(out.stdout.len(), 0);
 
     let dir = scratch("recon");
@@ -710,14 +710,16 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&keys, fs::Permissions::from_mode(0o600)).unwrap();
     }
-    for file in [keys.clone(), dir.join("absent.env")] {
+    // A readable file without the slot is refused by the order gate; an absent
+    // file is an input error raised before the gate.
+    for (file, code) in [(keys.clone(), 77), (dir.join("absent.env"), 66)] {
         let out = bin()
             .args(["recon", "stolen-tax", "a@example.com", "--keys"])
             .arg(&file)
             .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
             .output()
             .unwrap();
-        assert_eq!(out.status.code(), Some(66), "{}", file.display());
+        assert_eq!(out.status.code(), Some(code), "{}", file.display());
     }
     let _ = fs::remove_dir_all(&dir);
 }

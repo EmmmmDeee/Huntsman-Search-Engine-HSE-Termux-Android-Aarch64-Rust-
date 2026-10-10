@@ -193,7 +193,6 @@ pub fn canonical_url(raw: &str) -> Option<String> {
     Some(out)
 }
 
-
 /// One selector, one stored form. Email, phone, URL, domain, handle and
 /// coordinates win before a name. Empty after normalisation is `None`.
 #[must_use]
@@ -221,7 +220,10 @@ pub fn canonicalise_token(raw: &str) -> Option<String> {
     if token.is_empty() || token.chars().any(char::is_whitespace) {
         return None;
     }
-    if !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !token
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return None;
     }
     Some(token)
@@ -281,7 +283,10 @@ mod tests {
             canonicalise_selector("  Ada@Example.COM "),
             Some("ada@example.com".into())
         );
-        assert_eq!(canonicalise_selector("  Example.COM "), Some("example.com".into()));
+        assert_eq!(
+            canonicalise_selector("  Example.COM "),
+            Some("example.com".into())
+        );
         assert_eq!(canonicalise_selector("   "), None);
         assert_eq!(canonicalise_token(" CrtSh "), Some("crtsh".into()));
         assert_eq!(canonicalise_token("has space"), None);

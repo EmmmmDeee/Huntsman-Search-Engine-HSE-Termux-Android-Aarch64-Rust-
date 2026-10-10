@@ -10,11 +10,11 @@
 use std::fmt::Write;
 use std::path::PathBuf;
 
-use crate::canonical::canonical_name;
 use crate::asic_director;
 use crate::asic_persons;
 use crate::au_electoral;
 use crate::au_people;
+use crate::canonical::canonical_name;
 use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::evidence_ancestry::EvidenceNodeId;

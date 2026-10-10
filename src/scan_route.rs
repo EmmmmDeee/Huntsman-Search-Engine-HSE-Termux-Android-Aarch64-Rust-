@@ -40,7 +40,6 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
     }
 }
 
-
 /// Canonical selector for a route. `None` means the route cannot run.
 #[must_use]
 pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
@@ -48,9 +47,11 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
         ScanKind::Email => canonical_email(raw),
         ScanKind::Username => canonical_handle(raw),
         ScanKind::Phone => canonical_phone(raw),
+        // The people command owns the two-token rule and its offline skip path;
+        // here only an empty name is non-canonical.
         ScanKind::People => {
             let name = canonical_name(raw);
-            (name.split_whitespace().count() >= 2).then_some(name)
+            (!name.is_empty()).then_some(name)
         }
     }
 }
@@ -108,6 +109,10 @@ mod tests {
             canonical_selector(ScanKind::People, " Ada   Lovelace "),
             Some("ada lovelace".into())
         );
-        assert_eq!(canonical_selector(ScanKind::People, "Ada"), None);
+        assert_eq!(
+            canonical_selector(ScanKind::People, "Ada"),
+            Some("ada".into())
+        );
+        assert_eq!(canonical_selector(ScanKind::People, "   "), None);
     }
 }

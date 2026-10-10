@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE, RECON_USAGE, fail};
-use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::canonical::{canonical_domain, canonical_email, canonical_url};
+use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::crtsh::{self, CrtShError};
 use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
@@ -24,15 +24,12 @@ use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::textnorm::escape_controls;
 
 pub(super) fn hibp_cmd(args: &[String]) -> ExitCode {
-    let subcommand = args.first().map(String::as_str).unwrap_or("help");
+    let subcommand = args.first().map_or("help", String::as_str);
     let has_key = huntsman_recon::hibp::KeyLoader::default_chain(None)
         .load()
         .is_some();
     if !huntsman_recon::breach_hybrid::command_allowed(subcommand, has_key) {
-        return fail(
-            EX_NOPERM,
-            "hibp: keyed leg is not in the free order",
-        );
+        return fail(EX_NOPERM, "hibp: keyed leg is not in the free order");
     }
     ExitCode::from(HibpCommand::production().run(
         args,
@@ -88,6 +85,9 @@ fn print_entities(entities: &[huntsman_recon::entity::Entity]) {
 }
 
 fn dns_cmd(target: &str) -> ExitCode {
+    if target.trim().is_empty() {
+        return fail(EX_USAGE, RECON_USAGE);
+    }
     let Some(target) = canonical_domain(target) else {
         return fail(EX_DATAERR, &format!("bad domain: {}", target.trim()));
     };
@@ -155,7 +155,8 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
         },
         None => Keys::from_env(),
     };
-    if !huntsman_recon::breach_hybrid::stolen_tax_allowed(keys.get(stolen_tax::KEY_SLOT).is_some()) {
+    if !huntsman_recon::breach_hybrid::stolen_tax_allowed(keys.get(stolen_tax::KEY_SLOT).is_some())
+    {
         return fail(EX_NOPERM, "stolen-tax: keyed leg is not in the free order");
     }
     let now = SystemTime::now()

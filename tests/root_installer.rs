@@ -371,10 +371,19 @@ fn legacy_hse_parent_without_ref_routes_before_recon_install() {
         String::from_utf8_lossy(&output.stderr)
     );
     let calls = fs::read_to_string(&log).unwrap();
-    assert!(calls.contains("compat ref=legacy-hse require=unset"), "{calls}");
-    assert!(!calls.contains("cargo install"), "must not install recon: {calls}");
+    assert!(
+        calls.contains("compat ref=legacy-hse require=unset"),
+        "{calls}"
+    );
+    assert!(
+        !calls.contains("cargo install"),
+        "must not install recon: {calls}"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("huntsman-recon was not substituted for hse"), "{stdout}");
+    assert!(
+        stdout.contains("huntsman-recon was not substituted for hse"),
+        "{stdout}"
+    );
 
     let _ = fs::remove_dir_all(&temp);
 }

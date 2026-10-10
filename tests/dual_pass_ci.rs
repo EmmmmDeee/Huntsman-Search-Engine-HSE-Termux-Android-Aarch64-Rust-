@@ -5,8 +5,15 @@ use std::fs;
 #[test]
 fn dual_pass_workflow_has_no_llm_api() {
     let workflow = fs::read_to_string(".github/workflows/dual-pass.yml").expect("workflow");
-    assert!(!workflow.contains("XAI_API_KEY"), "workflow must not require an LLM secret");
-    assert!(!workflow.to_ascii_lowercase().contains("openai"), "workflow must not call OpenAI");
+    assert!(
+        !workflow.contains("XAI_API_KEY"),
+        "workflow must not require an LLM secret"
+    );
+    // The workflow's own egress guard names openai.com, so match the endpoint a call would use.
+    assert!(
+        !workflow.contains("api.openai.com"),
+        "workflow must not call OpenAI"
+    );
     for required in [
         "types: [labeled]",
         "github.event.label.name == 'dual-pass'",
@@ -17,12 +24,18 @@ fn dual_pass_workflow_has_no_llm_api() {
         assert!(workflow.contains(required), "missing {required}");
     }
     let runner = fs::read_to_string("scripts/dual-pass/run.sh").expect("runner");
-    assert!(!runner.contains("api.x.ai"), "runner must not call an LLM API");
-    assert!(!runner.contains("XAI_API_KEY"), "runner must not read an LLM secret");
+    assert!(
+        !runner.contains("api.x.ai"),
+        "runner must not call an LLM API"
+    );
+    assert!(
+        !runner.contains("XAI_API_KEY"),
+        "runner must not read an LLM secret"
+    );
     for required in [
         "execution-plan.json",
         "red gate rejected",
-        "self-correction budget exhausted",
+        "declared patch budget exhausted",
         "needs-human-review",
         "tests/generated_",
         "restore_protected",

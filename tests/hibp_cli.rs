@@ -654,8 +654,11 @@ fn binary_registers_hibp_and_keyed_lookups_need_a_key() {
             &["hibp", "subscription"],
         ] {
             let out = bin(&home).args(args).output().unwrap();
-            assert_eq!(out.status.code(), Some(66), "{args:?}");
-            assert!(String::from_utf8_lossy(&out.stderr).contains("no API key configured"));
+            // The exposure-order gate refuses a keyed leg before any key lookup.
+            assert_eq!(out.status.code(), Some(77), "{args:?}");
+            assert!(
+                String::from_utf8_lossy(&out.stderr).contains("keyed leg is not in the free order")
+            );
         }
     }
     let _ = fs::remove_dir_all(&home);
