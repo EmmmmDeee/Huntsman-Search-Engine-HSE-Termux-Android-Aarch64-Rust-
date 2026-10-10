@@ -14,7 +14,7 @@ name: issue-fix
 #   publish  applies the patch to a checkout of main, but only while main is still the
 #            commit the gate tested. It checks the result against the path policy and
 #            opens the pull request. It holds the write token, and only its publish step
-#            receives it. It runs only scripts copied before the patch was applied.
+#            receives it. It runs only a binary built before the patch arrived.
 #   report   comments on the issue when an attempt stops before a pull request.
 #
 # The jobs pass files, never code. The patch and the redacted model output are the
@@ -108,7 +108,8 @@ jobs:
           test "$(jq -r .state "$RUNNER_TEMP/issue.json")" = "OPEN"
 
       - name: Build the agent prompt
-        run: bash scripts/issue-fix/build-prompt.sh "$RUNNER_TEMP/issue.json" "$RUNNER_TEMP/prompt.md"
+        run: |
+          "$RUNNER_TEMP/trusted-xtask" issue-fix build-prompt "$RUNNER_TEMP/issue.json" "$RUNNER_TEMP/prompt.md"
 
       - name: Require the model key
         env:
@@ -138,108 +139,20 @@ jobs:
             --disallowedTools WebFetch WebSearch "Bash(curl *)" "Bash(wget *)" \
               "Bash(gh *)" "Bash(env)" "Bash(printenv*)" "Bash(git commit *)" "Bash(git push *)" \
             > "$RUNNER_TEMP/change/agent.json" || status=$?
-          # The scan below is read from this workflow file, which the model cannot write, and it runs
-          # while the key is still in this step's environment. The model output is redacted first, so
-          # it is clean even when the change is refused. The change is refused when the key, or an
-          # encoding of it, is in anything git would carry in the patch: file contents, file names, and
-          # symbolic-link targets. git lists those files with the same ignore rules that git add -A
-          # applies to the patch, so a .gitignore cannot hide a file from the scan, and no directory
-          # name is special.
+          # The scan is the trusted binary that the workflow built before the model ran, so the model
+          # cannot change it, and it runs while the key is still in this step's environment. The model
+          # output is redacted first, so it is clean even when the change is refused. The change is
+          # refused when the key, or an encoding of it, is in anything git would carry in the patch: file
+          # contents, file names, and symbolic-link targets. git lists those files with the same ignore
+          # rules that git add -A applies to the patch, so a .gitignore cannot hide a file from the scan,
+          # and no directory name is special.
           scan_status=0
           if ! git -c core.fsmonitor=false -c core.hooksPath=/dev/null ls-files -z -c -o --exclude-standard > "$RUNNER_TEMP/scan-paths"; then
             : > "$RUNNER_TEMP/scan-paths"
             echo "::error::cannot list the files the change would carry"
             scan_status=1
           fi
-          python3 -I - "$RUNNER_TEMP/change/agent.json" "$RUNNER_TEMP/scan-paths" <<'PY' || scan_status=$?
-          import base64
-          import os
-          import re
-          import sys
-          from pathlib import Path
-
-          key = os.environ.get("ANTHROPIC_API_KEY", "")
-          if len(key.encode("utf-8")) < 8:
-              print("::error::the model key is unset or too short to scan for", file=sys.stderr)
-              sys.exit(1)
-
-          raw = key.encode("utf-8")
-          hex_lower = raw.hex().encode("ascii")
-          hex_upper = hex_lower.upper()
-          # Any base64 run that holds the key is at least this long, whatever its alignment.
-          min_run = 4 * (len(raw) // 3)
-          # Padding is only at the end of a base64 stream. An equals sign inside a run would end the
-          # decode early, so "KEY=" followed by an encoded key would hide it.
-          run_pattern = re.compile(rb"[A-Za-z0-9+/_-]+={0,2}")
-          to_standard = bytes.maketrans(b"-_", b"+/")
-
-
-          def decodes_to_key(run):
-              # The key can start at any of four alignments inside a larger base64 stream, and the
-              # stream can use either alphabet. Every combination is decoded and searched.
-              for text in (run, run.translate(to_standard)):
-                  for offset in range(4):
-                      body = text[offset:]
-                      body = body[: len(body) - len(body) % 4]
-                      try:
-                          decoded = base64.b64decode(body)
-                      except ValueError:
-                          continue
-                      if raw in decoded:
-                          return True
-              return False
-
-
-          def carries_key(blob):
-              if raw in blob or hex_lower in blob or hex_upper in blob:
-                  return True
-              return any(
-                  len(run.group(0)) >= min_run and decodes_to_key(run.group(0))
-                  for run in run_pattern.finditer(blob)
-              )
-
-
-          def redact(blob):
-              for form in (raw, hex_lower, hex_upper):
-                  blob = blob.replace(form, b"[redacted]")
-              blob = run_pattern.sub(
-                  lambda run: b"[redacted]"
-                  if len(run.group(0)) >= min_run and decodes_to_key(run.group(0))
-                  else run.group(0),
-                  blob,
-              )
-              return re.sub(rb"sk-ant-[A-Za-z0-9_-]+", b"[redacted]", blob)
-
-
-          agent = Path(sys.argv[1])
-          if agent.is_file():
-              agent.write_bytes(redact(agent.read_bytes()))
-
-          found = []
-          entries = [entry for entry in Path(sys.argv[2]).read_bytes().split(b"\0") if entry]
-          for number, name in enumerate(entries, start=1):
-              if carries_key(name):
-                  # The name is not printed, because the name carries the key.
-                  found.append(f"the file name of entry {number}")
-                  continue
-              path = os.fsdecode(name)
-              try:
-                  if os.path.islink(path):
-                      if carries_key(os.fsencode(os.readlink(path))):
-                          found.append(path)
-                      continue
-                  if not os.path.isfile(path):
-                      continue
-                  if carries_key(Path(path).read_bytes()):
-                      found.append(path)
-              except OSError as error:
-                  print(f"::error::cannot read {path}: {error.strerror}", file=sys.stderr)
-                  found.append(path)
-
-          for hit in found:
-              print(f"::error::the model key, or an encoding of it, is in {hit}", file=sys.stderr)
-          sys.exit(1 if found else 0)
-          PY
+          "$RUNNER_TEMP/trusted-xtask" issue-fix key-scan "$RUNNER_TEMP/change/agent.json" "$RUNNER_TEMP/scan-paths" || scan_status=$?
           if [[ "$scan_status" -ne 0 ]]; then
             echo "::error::the change is refused: it carries the model key, or the scan could not run"
             status=1
@@ -328,11 +241,22 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Keep a copy of the publish scripts
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        with:
+          toolchain: stable
+
+      - name: Build the trusted xtask before the patch arrives
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/trusted-scripts"
-          cp -a scripts/issue-fix/. "$RUNNER_TEMP/trusted-scripts/"
+          # The publish step applies the change with this binary. It is built from an archive of the
+          # checkout of main, taken here before the change is downloaded, so no step can reach it
+          # through the checkout. The build step holds no secret.
+          trusted="$RUNNER_TEMP/trusted"
+          rm -rf "$trusted" && mkdir -p "$trusted"
+          git archive HEAD | tar -x -C "$trusted"
+          cargo build --release --locked -p xtask --manifest-path "$trusted/Cargo.toml" --target-dir "$RUNNER_TEMP/trusted-target"
+          cp "$RUNNER_TEMP/trusted-target/release/xtask" "$RUNNER_TEMP/trusted-xtask"
+          test -x "$RUNNER_TEMP/trusted-xtask"
 
       - name: Check the issue number
         run: |
@@ -357,7 +281,8 @@ jobs:
           PUSH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
           GH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
           HAS_PAT: ${{ secrets.ISSUE_FIX_TOKEN != '' }}
-        run: bash "$RUNNER_TEMP/trusted-scripts/publish.sh" "$RUNNER_TEMP/issue.json" "$RUNNER_TEMP/change"
+        run: |
+          "$RUNNER_TEMP/trusted-xtask" issue-fix publish "$RUNNER_TEMP/issue.json" "$RUNNER_TEMP/change"
 
   report:
     needs: [fix, gate, publish]
@@ -371,7 +296,6 @@ jobs:
     env:
       ISSUE: ${{ github.event.issue.number || inputs.issue }}
       REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
       FIX_OUTCOME: ${{ needs.fix.result }}
       GATE_OUTCOME: ${{ needs.gate.result }}
       PUBLISH_OUTCOME: ${{ needs.publish.result }}
@@ -387,6 +311,22 @@ jobs:
           set -euo pipefail
           [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue number is not numeric: $ISSUE"; exit 1; }
 
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        with:
+          toolchain: stable
+
+      - name: Build the trusted xtask
+        run: |
+          set -euo pipefail
+          # The report step runs this binary, so it is built from an archive of the checkout of main. The
+          # build step holds no secret; the token reaches only the report step.
+          trusted="$RUNNER_TEMP/trusted"
+          rm -rf "$trusted" && mkdir -p "$trusted"
+          git archive HEAD | tar -x -C "$trusted"
+          cargo build --release --locked -p xtask --manifest-path "$trusted/Cargo.toml" --target-dir "$RUNNER_TEMP/trusted-target"
+          cp "$RUNNER_TEMP/trusted-target/release/xtask" "$RUNNER_TEMP/trusted-xtask"
+          test -x "$RUNNER_TEMP/trusted-xtask"
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         continue-on-error: true
         with:
@@ -394,4 +334,7 @@ jobs:
           path: ${{ runner.temp }}/gate
 
       - name: Report a stopped attempt
-        run: bash scripts/issue-fix/report.sh "$ISSUE" "$RUNNER_TEMP/gate/gate.log"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$RUNNER_TEMP/trusted-xtask" issue-fix report "$ISSUE" "$RUNNER_TEMP/gate/gate.log"
