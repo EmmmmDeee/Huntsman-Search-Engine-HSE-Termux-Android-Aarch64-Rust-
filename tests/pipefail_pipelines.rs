@@ -1740,9 +1740,10 @@ fn no_pipeline_feeds_grep_quiet_under_pipefail() {
     );
 }
 
-// Regression tests for the findings in the detector's audit. A finding's test fails on
-// the detector as it was before its fix. A guard test passes on that detector by design:
-// it pins a result the fix must keep, and its comment says so.
+// Regression tests for the detector's audit findings and for the later fixes. Each one
+// fails on the detector as it was before these fixes, unless its comment begins with
+// `Guard.`. A guard test passes on that detector by design: it pins a result that the
+// fixes must keep, and its comment says why the earlier detector already gives it.
 
 #[test]
 fn f1_shift_inside_an_arithmetic_expansion_opens_no_here_document() {
@@ -1814,6 +1815,9 @@ fn f1_shift_in_let_opens_no_here_document() {
 
 #[test]
 fn f1_a_parenthesised_group_that_is_not_arithmetic_stays_a_subshell() {
+    // Guard. The first `)` is not followed by a second one, so bash runs this as a subshell.
+    // The earlier detector also reads `((` as two nested groups, so the pipe after the
+    // inner `)` feeds grep.
     assert_eq!(
         flagged_lines("((cd x; ls) | grep -q y)\n"),
         [1],
@@ -1871,6 +1875,10 @@ fn f4_gnu_long_option_prefixes_are_early_exits() {
 
 #[test]
 fn f4_a_long_option_that_is_not_an_early_exit_stays_unflagged() {
+    // Guard. None of these options stops grep early. `--file` and `--regexp` take a value,
+    // and in `--regexp -q` the `-q` is the pattern. The earlier detector matches a long
+    // option by its exact name and already skips such a value, so it leaves each one
+    // unflagged.
     assert!(!pipes_into_grep_quiet("a | grep --file=pats x"));
     assert!(!pipes_into_grep_quiet("a | grep --file pats x"));
     assert!(!pipes_into_grep_quiet("a | grep --null x"));
@@ -1906,6 +1914,8 @@ fn f6_or_true_on_the_next_line_guards_the_pipeline() {
 
 #[test]
 fn a_pipe_continued_past_a_here_document_body_reaches_its_consumer() {
+    // Guard. The newline that ends line 1 reads the body as data. The earlier detector also
+    // skips the newline after a pipe, so grep on line 4 is the consumer, as in bash.
     assert_eq!(
         flagged_lines("cat <<EOF |\n$(x)\nEOF\ngrep -q y\n"),
         [1],
@@ -1931,7 +1941,7 @@ fn legacy_arithmetic_expansion_opens_no_here_document() {
 
 #[test]
 fn legacy_arithmetic_expansion_lexes_its_substitutions_as_code() {
-    // Guard: the detector before this fix flagged these too.
+    // Guard. The detector before this fix flagged these too.
     assert_eq!(
         flagged_lines("x=$[ $(a | grep -q y) + 1 ]\n"),
         [1],
