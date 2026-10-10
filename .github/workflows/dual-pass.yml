@@ -8,7 +8,7 @@ name: dual-pass
 #               from the repository, and finishes before plan starts.
 #   plan        compiles and runs the Rust that an issue's plan describes. That Rust
 #               can read the environment and the memory of its own process, so this
-#               job holds no credential at all. It writes a patch and a report.
+#               job is given no credential. It writes a patch and a report.
 #   publish     applies the patch to a fresh checkout of main, checks it against the
 #               path policy, and only then pushes, labels, or opens a pull request. It
 #               holds the write token, and it runs nothing the plan job wrote.

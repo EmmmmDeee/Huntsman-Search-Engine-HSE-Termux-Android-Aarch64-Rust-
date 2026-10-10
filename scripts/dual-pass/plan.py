@@ -31,6 +31,7 @@ FORBIDDEN_KEYS = {
     "endpoint",
     "base_url",
 }
+ASSERT_CALL = re.compile(r"\b(?:debug_)?assert(?:_eq|_ne)?!\s*\(")
 SIG_RE = re.compile(
     r"^(?:pub(?:\([^)]+\))?\s+)?(?:async\s+)?(?:fn|struct|enum|trait|type)\s+(\w+)",
     re.M,
@@ -102,14 +103,41 @@ def context_digest(root: Path) -> str:
     return hashlib.sha256(b"\n".join(parts)).hexdigest()
 
 
+def fenced_blocks(body: str) -> list[tuple[str, str]]:
+    """Each fenced block as (language, text). A fence opened and never closed is refused, so
+    a stray fence cannot hide the plan that follows it."""
+    blocks = []
+    lang = None
+    lines: list[str] = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if lang is None:
+            if stripped.startswith("```"):
+                lang = stripped[3:].strip()
+                lines = []
+        elif stripped == "```":
+            blocks.append((lang, "\n".join(lines)))
+            lang = None
+        else:
+            lines.append(line)
+    if lang is not None:
+        die("issue body has a code fence that is never closed")
+    return blocks
+
+
 def extract_plan(body: str) -> dict:
-    match = re.search(r"```json\s*(\{.*?\})\s*```", body, re.S)
-    if not match:
+    plans = [text for lang, text in fenced_blocks(body) if lang == "json"]
+    if not plans:
         die("issue body has no fenced json plan")
+    if len(plans) > 1:
+        die(f"issue body has {len(plans)} fenced json blocks; keep exactly one plan")
     try:
-        return json.loads(match.group(1))
+        plan = json.loads(plans[0])
     except json.JSONDecodeError as exc:
         die(f"plan json is not parseable: {exc}")
+    if not isinstance(plan, dict):
+        die("plan json must be an object")
+    return plan
 
 
 def target_allowed(root: Path, path: str) -> bool:
@@ -157,8 +185,10 @@ def validate(plan: dict, root: Path) -> dict:
         if "source" not in item or "signatures" not in item:
             die(f"test missing source or signatures: {path}")
         source = item["source"]
-        if "assert" not in source and "panic" not in source and "todo!" not in source:
-            die(f"test source has no assertion: {path}")
+        # Only an assertion macro call counts. The word alone does not, and a comment is not code.
+        code = re.sub(r"//[^\n]*", "", source)
+        if not ASSERT_CALL.search(code):
+            die(f"test source has no assertion macro call: {path}")
         if re.search(r"assert!\(\s*true\s*\)", source):
             die(f"tautological assertion rejected: {path}")
         if re.search(r"assert_eq!\(\s*([^,()]+)\s*,\s*\1\s*\)", source):

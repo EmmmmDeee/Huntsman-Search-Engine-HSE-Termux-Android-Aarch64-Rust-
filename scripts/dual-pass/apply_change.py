@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""Apply a unified diff, then fall back to a Rust function-node replace.
+"""Apply a unified diff, or else replace named Rust functions through the Rust grammar.
 
-Patches may only touch paths declared by the caller. No network.
+Patches may only touch paths declared by the caller. No network. The function replace
+needs tree-sitter and tree-sitter-rust, and it refuses rather than guesses: a name that
+matches no function, or more than one, is an error, and a file is edited only as bytes
+that the grammar placed.
 """
 import json
 import subprocess
@@ -30,52 +33,46 @@ def git_apply(diff: str) -> bool:
         path.unlink(missing_ok=True)
 
 
-def replace_fn(path: Path, name: str, body: str) -> bool:
-    text = path.read_text(encoding="utf-8")
+class ReplaceError(Exception):
+    pass
+
+
+def function_spans(source: bytes, name: str) -> list[tuple[int, int]]:
+    """Byte spans of every function named NAME, from its visibility through its closing brace.
+    A trait's declaration without a body is a function_signature_item, and it is matched too."""
     try:
         from tree_sitter import Language, Parser
         import tree_sitter_rust
+    except ImportError as exc:
+        raise ReplaceError(f"function replace needs tree-sitter and tree-sitter-rust: {exc}") from exc
+    tree = Parser(Language(tree_sitter_rust.language())).parse(source)
+    wanted = name.encode("utf-8")
+    spans = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type in {"function_item", "function_signature_item"} and any(
+            child.type == "identifier" and source[child.start_byte : child.end_byte] == wanted
+            for child in node.children
+        ):
+            spans.append((node.start_byte, node.end_byte))
+        stack.extend(node.children)
+    return sorted(spans)
 
-        parser = Parser(Language(tree_sitter_rust.language()))
-        tree = parser.parse(text.encode())
-        target = None
 
-        def walk(node):
-            nonlocal target
-            if node.type in {"function_item", "function_signature_item"}:
-                for child in node.children:
-                    if child.type == "identifier" and text[child.start_byte : child.end_byte] == name:
-                        target = node
-            for child in node.children:
-                walk(child)
-
-        walk(tree.root_node)
-        if target is not None:
-            updated = text[: target.start_byte] + body.rstrip() + "\n" + text[target.end_byte :]
-            path.write_text(updated, encoding="utf-8")
-            return True
-    except Exception:
-        pass
-    start = text.find(f"fn {name}")
-    if start < 0:
-        return False
-    brace = text.find("{", start)
-    if brace < 0:
-        return False
-    depth = 0
-    end = None
-    for i, ch in enumerate(text[brace:], brace):
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    if end is None:
-        return False
-    path.write_text(text[:start] + body.rstrip() + "\n" + text[end:], encoding="utf-8")
-    return True
+def replace_fn(path: Path, name: str, body: str) -> None:
+    # The file is read and spliced as bytes, because the grammar reports byte offsets. A
+    # str slice at a byte offset would move the edit inside any non-ASCII text above it.
+    raw = path.read_bytes()
+    raw.decode("utf-8")
+    spans = function_spans(raw, name)
+    if not spans:
+        raise ReplaceError(f"function {name} not found in {path}")
+    if len(spans) > 1:
+        raise ReplaceError(f"function {name} matches {len(spans)} functions in {path}; name one")
+    start, end = spans[0]
+    # The text after the closing brace keeps its own line ending, so a second replace adds nothing.
+    path.write_bytes(raw[:start] + body.rstrip().encode("utf-8") + raw[end:])
 
 
 def main() -> int:
@@ -106,12 +103,14 @@ def main() -> int:
         if not path.is_file():
             print(json.dumps({"error": f"missing {path}"}))
             return 1
-        if not replace_fn(path, op["name"], op["body"]):
-            print(json.dumps({"error": f"function {op['name']} not found in {path}"}))
+        try:
+            replace_fn(path, op["name"], op["body"])
+        except (ReplaceError, UnicodeError, OSError) as exc:
+            print(json.dumps({"error": str(exc)}))
             return 1
         done += 1
     if done:
-        print(json.dumps({"applied": "ast-fallback", "ops": done}))
+        print(json.dumps({"applied": "function-replace", "ops": done}))
         return 0
     print(json.dumps({"error": "neither git apply nor function replace applied"}))
     return 1

@@ -1,4 +1,4 @@
-//! Contract for the dual-pass runner. It does not call a model. The plan job holds no
+//! Contract for the dual-pass runner. It does not call a model. The plan job is given no
 //! credential, because the Rust it runs can read its process's environment. The gate job
 //! holds the read token and finishes before the plan starts. The publish job holds the
 //! write token and applies only what the plan job wrote, after the path policy has

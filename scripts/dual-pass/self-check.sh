@@ -2,6 +2,10 @@
 # shellcheck disable=SC2016 # printf formats carry literal Markdown backticks
 set -Eeuo pipefail
 
+# The fixtures must not depend on whoever runs the check: a global push.negotiate setting
+# changes how the fixture remotes are pushed to, as the issue-fix self-check also guards.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+
 # new_fixture ROOT: a crate whose answer() is 0, with the runner's scripts copied in and a
 # committed main. ROOT must exist. The runner runs inside the fixture, never in the
 # checkout, so a fixture cannot change the scripts that judge it.
@@ -189,6 +193,47 @@ if python3 -I "$root/scripts/dual-pass/plan.py" "$root" "$root/bad4.md"; then
 fi
 echo "ok: a rename to an undeclared path is refused"
 
+# The plan's fence: exactly one json block, and no fence left open. A stray fence used to hide
+# the plan after it, and two plans used to leave the first one silently in charge.
+PLAN_JSON='{"targets":[{"path":"src/lib.rs","signatures":["pub fn answer"]}],"new_tests":[{"path":"tests/generated_1.rs","signatures":["fn t"],"source":"#[test]\nfn t() { assert_eq!(1, 2); }\n"}],"patches":[{"diff":"","ops":[]}]}'
+printf 'First plan.\n\n```json\n%s\n```\n\nA second:\n\n```json\n%s\n```\n' "$PLAN_JSON" "$PLAN_JSON" > "$root/two-plans.md"
+if python3 -I "$root/scripts/dual-pass/plan.py" "$root" "$root/two-plans.md" > "$root/two-plans.out" 2>&1; then
+  echo "two fenced json plans were accepted" >&2
+  exit 1
+fi
+grep -q 'keep exactly one plan' "$root/two-plans.out" \
+  || { echo "two plans were refused for the wrong reason" >&2; cat "$root/two-plans.out" >&2; exit 1; }
+echo "ok: two fenced json plans are refused"
+
+printf 'A fence that is never closed:\n\n```json\n%s\n' "$PLAN_JSON" > "$root/unclosed.md"
+if python3 -I "$root/scripts/dual-pass/plan.py" "$root" "$root/unclosed.md" > "$root/unclosed.out" 2>&1; then
+  echo "a plan in an unclosed fence was accepted" >&2
+  exit 1
+fi
+grep -q 'never closed' "$root/unclosed.out" \
+  || { echo "an unclosed fence was refused for the wrong reason" >&2; cat "$root/unclosed.out" >&2; exit 1; }
+echo "ok: a fence that is never closed is refused"
+
+printf 'A stray fence before the plan:\n\n```json\nnot a plan\n\n```json\n%s\n```\n' "$PLAN_JSON" > "$root/stray.md"
+if python3 -I "$root/scripts/dual-pass/plan.py" "$root" "$root/stray.md" > /dev/null 2>&1; then
+  echo "a stray fence in front of a plan was accepted" >&2
+  exit 1
+fi
+echo "ok: a stray fence in front of a plan is refused"
+
+# An assertion is a macro call in code. The word in a comment, or in an identifier, is not one.
+for source in '#[test]\nfn t() {\n    // assert_eq!(1, 2);\n}\n' '#[test]\nfn assert_it() {\n    let assert = 1;\n}\n'; do
+  printf '{"targets":[{"path":"src/lib.rs","signatures":["pub fn answer"]}],"new_tests":[{"path":"tests/generated_1.rs","signatures":["fn t"],"source":"%s"}],"patches":[{"diff":"","ops":[]}]}' "$source" > "$root/nomacro.json"
+  printf '```json\n%s\n```\n' "$(cat "$root/nomacro.json")" > "$root/nomacro.md"
+  if python3 -I "$root/scripts/dual-pass/plan.py" "$root" "$root/nomacro.md" > "$root/nomacro.out" 2>&1; then
+    echo "a test with no assertion macro call was accepted: $source" >&2
+    exit 1
+  fi
+  grep -q 'no assertion macro call' "$root/nomacro.out" \
+    || { echo "a test with no macro was refused for the wrong reason" >&2; cat "$root/nomacro.out" >&2; exit 1; }
+done
+echo "ok: a test whose assertion is only a comment or an identifier is refused"
+
 echo "offline red-green"
 out="$root/out"
 set +e
@@ -235,6 +280,61 @@ PY
 )
 grep -q '7' "$root/src/lib.rs"
 echo "ast fallback applied"
+
+# The function replace works on bytes from the grammar. Non-ASCII text above the function
+# must not move the edit, a name must match whole identifiers only, a CRLF file keeps its
+# line endings, and a name that matches two functions is refused rather than guessed.
+echo "function replace on the grammar"
+python3 - "$root" "$root/scripts/dual-pass/apply_change.py" <<'PY'
+import json, subprocess, sys
+from pathlib import Path
+
+root, helper = Path(sys.argv[1]), sys.argv[2]
+
+
+def replace(path, name, body):
+    payload = {"allowed": [path], "diff": "",
+               "ops": [{"kind": "replace_fn", "path": path, "name": name, "body": body}]}
+    return subprocess.run([sys.executable, "-I", helper], input=json.dumps(payload),
+                          capture_output=True, text=True, cwd=root)
+
+
+target = root / "src" / "unicode.rs"
+target.write_bytes(
+    'pub const LABEL: &str = "héllo ✓ 日本";\n\n'
+    "pub fn answer_more() -> i32 {\n    9\n}\n\n"
+    "pub fn answer() -> i32 {\n    0\n}\n".encode("utf-8")
+)
+got = replace("src/unicode.rs", "answer", "pub fn answer() -> i32 {\n    7\n}\n")
+assert got.returncode == 0, got.stdout + got.stderr
+text = target.read_text(encoding="utf-8")
+assert 'pub const LABEL: &str = "héllo ✓ 日本";' in text, text
+assert "pub fn answer_more() -> i32 {\n    9\n}" in text, text
+assert "pub fn answer() -> i32 {\n    7\n}\n" in text and "pub pub" not in text, text
+assert text.endswith("}\n"), repr(text)
+again = replace("src/unicode.rs", "answer", "pub fn answer() -> i32 {\n    7\n}\n")
+assert again.returncode == 0, again.stdout + again.stderr
+assert target.read_text(encoding="utf-8") == text, "a second replace of the same body changed the file"
+
+crlf = root / "src" / "crlf.rs"
+crlf.write_bytes(b"pub const X: u8 = 1;\r\n\r\npub fn answer() -> i32 {\r\n    0\r\n}\r\n")
+got = replace("src/crlf.rs", "answer", "pub fn answer() -> i32 {\n    7\n}\n")
+assert got.returncode == 0, got.stdout + got.stderr
+assert crlf.read_bytes().startswith(b"pub const X: u8 = 1;\r\n\r\n"), crlf.read_bytes()
+
+impls = root / "src" / "impls.rs"
+impls.write_text("struct A;\nimpl A {\n    pub fn new() -> A {\n        A\n    }\n}\n"
+                 "struct B;\nimpl B {\n    pub fn new() -> B {\n        B\n    }\n}\n", encoding="utf-8")
+before = impls.read_bytes()
+got = replace("src/impls.rs", "new", "pub fn new() -> A {\n    A\n}\n")
+assert got.returncode == 1 and "matches 2 functions" in got.stdout, got.stdout + got.stderr
+assert impls.read_bytes() == before, "an ambiguous replace edited the file"
+
+got = replace("src/unicode.rs", "absent", "pub fn absent() {}\n")
+assert got.returncode == 1 and "not found" in got.stdout, got.stdout + got.stderr
+print("function replace ok")
+PY
+echo "ok: the function replace edits by byte, keeps non-ASCII text and CRLF, and refuses ambiguity"
 
 # The red classes. The classifier is one file, run here on the same fixture logs that the
 # contract test reads. Each log is judged on its own, and the exact verdict is required.

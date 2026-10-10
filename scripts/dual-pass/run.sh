@@ -2,8 +2,8 @@
 # shellcheck disable=SC2016 # printf formats carry literal Markdown backticks
 # Dual-pass plan stage. No LLM API, no model secret, and no token.
 #
-# This stage compiles and runs Rust written from the issue, so it holds no credential
-# at all. A generated test could read any credential this process was started with,
+# This stage compiles and runs Rust written from the issue, so it is given no credential.
+# A generated test could read any credential this process was started with,
 # from its parent's environment, so none is passed in. The stage writes its result to
 # DUAL_PASS_OUT: the outcome, the change as a patch, the plan, and the report. The
 # publish stage (scripts/dual-pass/publish.sh) runs in a separate job that holds the
@@ -53,11 +53,28 @@ finish() {
   exit 0
 }
 
+# Restores every declared target to its state on main. Each patch is tried on untouched main,
+# so an attempt that failed leaves no edit for the next patch, and none for the human review.
+restore_targets() {
+  local path
+  [[ -f execution-plan.json ]] || return 0
+  while IFS= read -r path; do
+    if git cat-file -e "HEAD:$path" 2>/dev/null; then
+      git show "HEAD:$path" > "$path"
+    else
+      rm -f -- "$path"
+    fi
+  done < <(python3 -I -c 'import json; [print(t["path"]) for t in json.load(open("execution-plan.json")).get("targets", [])]')
+}
+
 fail_human() {
   local reason="$1"
   log "needs-human-review: $reason"
   printf '\n## Needs human review\n\n%s\n' "$reason" >> "$REPORT"
   printf '%s\n' "$reason" > "$OUT/reason.md"
+  # The hand-off branch carries the generated tests, which passed red, and no source edit from
+  # an attempt that failed. The reason and the report say what was tried.
+  restore_targets
   write_change
   finish needs-human-review
 }
@@ -117,7 +134,7 @@ print("\n".join(lines[-25:] or text.splitlines()[-15:]))
 PY
 }
 
-printf '# Dual-pass report for issue %s\n\nNo LLM API. No prompt cache. Context is a sha256 digest. The plan stage holds no credential.\n\n' "$ISSUE_NUMBER" > "$REPORT"
+printf '# Dual-pass report for issue %s\n\nNo LLM API. No prompt cache. Context is a sha256 digest. The plan stage is given no credential.\n\n' "$ISSUE_NUMBER" > "$REPORT"
 snapshot
 
 log "pass 1: bind issue plan to live interfaces"
@@ -187,6 +204,7 @@ turn=1
 green=0
 while [[ "$turn" -le "$MAX_TURNS" ]]; do
   log "green turn $turn"
+  restore_targets
   set +e
   apply_out="$(python3 -I - "$turn" <<'PY' | python3 -I scripts/dual-pass/apply_change.py
 import json, sys

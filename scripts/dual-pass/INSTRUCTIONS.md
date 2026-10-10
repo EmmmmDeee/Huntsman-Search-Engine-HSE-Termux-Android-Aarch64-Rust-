@@ -21,7 +21,7 @@ The runner writes the generated tests and runs them before applying a patch. A p
 
 ## Method 3 — Patch, then type, then unit
 
-Turn order is the patch array order, maximum three. These are declared fallbacks, not a model correction loop. A failed turn does not call out and does not rewrite the next patch. `git apply` is first. If the diff misses, the runner replaces the named function node with tree-sitter, then a brace scan. After each apply it restores protected files, runs `cargo check --locked --tests --bins`, then every generated test. After the generated tests pass, the existing locked suite must also pass before the change is handed to the publish stage.
+Turn order is the patch array order, maximum three. These are declared fallbacks, not a model correction loop. A failed turn does not call out and does not rewrite the next patch. `git apply` is first. If the diff misses, the runner replaces the named function node through the tree-sitter Rust grammar, which is required; a name that matches no function, or more than one, refuses the patch. Each attempt starts from the declared targets as they are on main. After each apply it restores protected files, runs `cargo check --locked --tests --bins`, then every generated test. After the generated tests pass, the existing locked suite must also pass before the change is handed to the publish stage.
 
 ## Method 4 — Context is a digest
 
@@ -33,6 +33,6 @@ The plan stage writes `change.patch` with only declared targets and generated te
 
 ## Secrets
 
-The plan job holds no credential. The Rust it runs can read its process's environment and its parent's, so a token in any step of that job would be readable. The publish job holds `github.token`, and it runs only the scripts it copied before the plan's output arrived. Do not add a model secret. Do not add `XAI_API_KEY`, an OpenAI key, or an Anthropic key. Do not pass `HUNTSMAN_*` keys, breach keys, or registry tokens into either job. No secret value is written to the plan, the report, or the pull request body.
+The plan job is given no credential. The Rust it runs can read its process's environment and its parent's, so a token in any step of that job would be readable. The publish job holds `github.token`, and it runs only the scripts it copied before the plan's output arrived. Do not add a model secret. Do not add `XAI_API_KEY`, an OpenAI key, or an Anthropic key. Do not pass `HUNTSMAN_*` keys, breach keys, or registry tokens into either job. No secret value is written to the plan, the report, or the pull request body.
 
 Do not add a model secret to the workflow. Do not let a patch edit the existing suite to make itself pass. Do not treat a green generated test on untouched main as success.
