@@ -790,15 +790,21 @@ jobs:
               *) echo "::error::latest (${cur}) and ${GITHUB_SHA} are ${status}; refusing to move latest"; exit 1 ;;
             esac
           fi
-          # `latest` must carry exactly the bytes of the immutable main-<sha7> release. A
-          # re-run rebuilds, and a rebuild can differ from what was published, so the bytes
-          # promoted here are compared with the published tag's digests before anything moves.
+          # `latest` carries the published bytes of the immutable main-<sha7> release, not
+          # this run's rebuild. A re-run rebuilds, and the rebuild's provenance (a build time
+          # and a run URL) never matches what was published, so the local files are not the
+          # reference. The published files are downloaded instead. Each one must match the
+          # digest GitHub recorded for it, and the binary must match its own .sha256 file.
+          promote="$RUNNER_TEMP/promote"
+          rm -rf "$promote" && mkdir -p "$promote"
           tag_rel="$(gh api "$api/releases/tags/${TAG}")" || { echo "::error::${TAG} has no published release to promote from; refusing"; exit 1; }
           for a in "$ASSET" "$ASSET.sha256" "$ASSET.provenance.json" key-scan-report.txt install-termux.sh; do
+            gh release download "$TAG" --pattern "$a" --dir "$promote"
             d="$(jq -r --arg a "$a" '[.assets[] | select(.name == $a)] | if length == 1 then (.[0].digest // "") else "" end' <<<"$tag_rel")"
-            want="sha256:$(sha256sum "dist/$a" | cut -d' ' -f1)"
-            [ "$d" = "$want" ] || { echo "::error::dist/${a} (${want}) is not the published ${TAG} asset (${d}); refusing to promote latest"; exit 1; }
+            got="sha256:$(sha256sum "$promote/$a" | cut -d' ' -f1)"
+            [[ "$d" =~ ^sha256:[0-9a-f]{64}$ && "$got" == "$d" ]] || { echo "::error::the downloaded ${a} (${got}) is not the published ${TAG} digest (${d}); refusing to promote latest"; exit 1; }
           done
+          ( cd "$promote" && sha256sum --strict -c "$ASSET.sha256" ) || { echo "::error::the published ${ASSET} does not match its own ${ASSET}.sha256; refusing to promote latest"; exit 1; }
           if pre="$(gh release view latest --json isPrerelease --jq .isPrerelease 2>/dev/null)"; then
             [ "$pre" = "true" ] || { echo "::error::release 'latest' exists and is NOT a pre-release; refusing"; exit 1; }
             gh release delete latest --yes --cleanup-tag
@@ -808,7 +814,7 @@ jobs:
             gh api -X DELETE "$api/git/refs/tags/latest"
           fi
           gh release create latest \
-            "dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" dist/key-scan-report.txt dist/install-termux.sh \
+            "$promote/$ASSET" "$promote/$ASSET.sha256" "$promote/$ASSET.provenance.json" "$promote/key-scan-report.txt" "$promote/install-termux.sh" \
             --target "$GITHUB_SHA" --prerelease --latest=false \
             --title "latest main build (${TAG})" \
             --notes "Rolling pre-release: huntsman-recon build \`${GITHUB_SHA}\` (also \`${TAG}\`), promoted via PROMOTE_RECON_TO_LATEST. Not a stable release."
@@ -830,13 +836,17 @@ jobs:
           # mode=local: each digest must equal this run's downloaded file.
           # mode=self (an earlier run published it): the binary's digest must
           # equal the one its own .sha256 asset records.
+          # mode=tag: each digest must equal the one the published ${TAG} release records.
+          # `latest` is promoted from those published bytes, not from this run's rebuild.
           check_release() {
-            local t="$1" mode="$2" rel sha a d want
+            local t="$1" mode="$2" rel sha a d want published
             rel="$(gh api "$api/releases/tags/${t}")" || fail "${t}: no published release"
             [ "$(jq -r .prerelease <<<"$rel")" = "true" ] || fail "${t} is not a pre-release"
             [ "$(jq -r .draft <<<"$rel")" = "false" ] || fail "${t} is a draft"
             sha="$(gh api "$api/commits/refs/tags/${t}" --jq .sha)"
             [ "$sha" = "$GITHUB_SHA" ] || fail "${t} points at ${sha}, not ${GITHUB_SHA}"
+            published=""
+            if [ "$mode" = tag ]; then published="$(gh api "$api/releases/tags/${TAG}")"; fi
             for a in "${files[@]}"; do
               d="$(jq -r --arg a "$a" '[.assets[] | select(.name == $a)] | if length == 1 then (.[0].digest // "") else "" end' <<<"$rel")"
               [ -n "$d" ] || fail "${t} has no digest for asset ${a}"
@@ -844,6 +854,10 @@ jobs:
               if [ "$mode" = local ]; then
                 want="sha256:$(sha256sum "dist/$a" | cut -d' ' -f1)"
                 [ "$d" = "$want" ] || fail "${t} asset ${a} digest ${d} != ${want}"
+              fi
+              if [ "$mode" = tag ]; then
+                want="$(jq -r --arg a "$a" '[.assets[] | select(.name == $a)] | if length == 1 then (.[0].digest // "") else "" end' <<<"$published")"
+                [ "$d" = "$want" ] || fail "${t} asset ${a} digest ${d} != the published ${TAG} digest ${want}"
               fi
             done
             if [ "$mode" = self ]; then
@@ -860,7 +874,7 @@ jobs:
           }
           if [ "$EXISTS" = "true" ]; then check_release "$TAG" self; else check_release "$TAG" local; fi
           if [ "${MOVED:-}" = "true" ]; then
-            check_release latest local
+            check_release latest tag
           elif [ "$PROMOTE" != "true" ]; then
             # Not promoted: `latest` must not point at this build.
             lsha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>/dev/null || echo absent)"

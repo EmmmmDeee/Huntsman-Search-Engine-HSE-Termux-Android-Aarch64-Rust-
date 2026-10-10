@@ -1282,3 +1282,20 @@ fn both_scanner_copies_fail_closed_when_find_or_sort_fails_or_truncates() {
     }
     let _ = fs::remove_dir_all(&root);
 }
+
+/// The promotion of `latest` is checked offline, against a stub `gh` that serves a fixture
+/// release. A re-run whose rebuilt provenance differs from the published one must still
+/// promote the published bytes, and a tampered download must be refused.
+#[test]
+fn promoting_latest_takes_the_published_bytes_offline() {
+    let out = Command::new("bash")
+        .arg("scripts/release-promote-self-check.sh")
+        .output()
+        .expect("bash must run the promotion self-check");
+    assert!(
+        out.status.success(),
+        "promotion self-check failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
