@@ -149,13 +149,15 @@ printf '\n## Red\n\nstatus=%s\n\n```\n%s\n```\n' "$red_status" "$(printf '%s\n' 
 if [[ "$red_status" -eq 0 ]]; then
   fail_human "red gate rejected the plan: generated tests passed on untouched main"
 fi
-if printf '%s\n' "$red_log" | grep -q 'expected one of'; then
+# Here-strings, not `printf | grep -q`: under pipefail a long log would make the
+# pipeline report SIGPIPE and silently skip these classifications.
+if grep -q 'expected one of' <<< "$red_log"; then
   fail_human "red gate rejected the plan: generated test does not parse"
 fi
 red_class="assertion-or-compile"
-if printf '%s\n' "$red_log" | grep -q 'cannot find'; then
+if grep -q 'cannot find' <<< "$red_log"; then
   red_class="missing-symbol"
-elif printf '%s\n' "$red_log" | grep -q 'assertion'; then
+elif grep -q 'assertion' <<< "$red_log"; then
   red_class="assertion-failed"
 fi
 printf '\nRed class: %s\n' "$red_class" >> "$REPORT"

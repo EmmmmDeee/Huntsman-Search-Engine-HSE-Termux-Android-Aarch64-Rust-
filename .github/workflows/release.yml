@@ -326,7 +326,10 @@ jobs:
           # prove identity from the exact bytes: the hand-written CLI usage line.
           usage="$(strings -a -n 8 "dist/$ASSET" | grep -o -m1 'usage: huntsman-recon \[check.*verify LEDGER\]' || true)"
           [ -n "$usage" ] || { echo "::error::dist/${ASSET} does not contain the huntsman-recon usage line"; exit 1; }
-          strings -a -n 8 "dist/$ASSET" | grep -Fq "$GITHUB_SHA" \
+          # Capture first: `strings | grep -q` under pipefail reports SIGPIPE (141)
+          # once grep exits at the match, even though the commit is embedded.
+          strings -a -n 8 "dist/$ASSET" > "$RUNNER_TEMP/strings.txt"
+          grep -Fq "$GITHUB_SHA" "$RUNNER_TEMP/strings.txt" \
             || { echo "::error::dist/${ASSET} does not embed exact build commit ${GITHUB_SHA}"; exit 1; }
           {
             echo "binary_identity: ${usage}"
