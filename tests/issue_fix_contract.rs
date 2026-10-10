@@ -170,12 +170,12 @@ fn only_publish_and_report_can_write_and_only_publish_holds_the_token() {
 }
 
 #[test]
-fn publish_runs_only_scripts_copied_before_the_patch_arrived() {
+fn publish_runs_only_a_binary_built_before_the_patch_arrived() {
     let wf = workflow();
     let publish = job(&wf, "publish");
-    let copy = publish
-        .find("Keep a copy of the publish scripts")
-        .expect("publish must copy its scripts");
+    let build = publish
+        .find("Build the trusted xtask before the patch arrives")
+        .expect("publish must build its binary");
     let download = publish
         .find("actions/download-artifact")
         .expect("publish must download the change");
@@ -183,13 +183,35 @@ fn publish_runs_only_scripts_copied_before_the_patch_arrived() {
         .find("Publish the pull request")
         .expect("publish must have its publish step");
     assert!(
-        copy < download && download < run,
-        "the scripts are copied, then the patch is downloaded, then publish runs"
+        build < download && download < run,
+        "the binary is built, then the patch is downloaded, then publish runs"
     );
-    assert!(publish.contains("bash \"$RUNNER_TEMP/trusted-scripts/publish.sh\""));
+    assert!(publish.contains("\"$RUNNER_TEMP/trusted-xtask\" issue-fix publish"));
     assert!(
-        !publish.contains("scripts/issue-fix/publish.sh"),
-        "publish must not run the script from the checkout, which the patch can change"
+        !publish.contains("scripts/issue-fix/publish.sh") && !publish.contains("trusted-scripts"),
+        "publish must not run a script from the checkout, which the patch can change"
+    );
+}
+
+#[test]
+fn the_report_token_reaches_only_the_report_step() {
+    let wf = workflow();
+    let report = job(&wf, "report");
+    let header = report
+        .split("\n    steps:")
+        .next()
+        .expect("the report job has a steps list");
+    assert!(
+        !header.contains("github.token"),
+        "the report job's env must hold no token: job-level env reaches every step"
+    );
+    assert!(
+        step(&wf, "Report a stopped attempt").contains("GH_TOKEN: ${{ github.token }}"),
+        "the report step holds the token that gh uses"
+    );
+    assert!(
+        !step(&report, "Build the trusted xtask").contains("github.token"),
+        "the build step must not see the token"
     );
 }
 
@@ -282,9 +304,9 @@ fn publish_is_tied_to_the_commit_the_gate_tested() {
         job(&wf, "publish").contains("GATED_SHA: ${{ github.sha }}"),
         "publish must receive the commit the gate tested"
     );
-    let script = fs::read_to_string("scripts/issue-fix/publish.sh").expect("the publish script");
+    let source = fs::read_to_string("xtask/src/issue_fix/publish.rs").expect("the publish step");
     assert!(
-        script.contains("GATED_SHA") && script.contains("main moved"),
+        source.contains("GATED_SHA") && source.contains("main moved"),
         "publish must refuse when main is not the commit the gate tested"
     );
 }
@@ -315,7 +337,7 @@ fn only_the_publish_step_sees_a_write_token() {
         "the publish step holds the push token"
     );
     for name in [
-        "Keep a copy of the publish scripts",
+        "Build the trusted xtask before the patch arrives",
         "Check the issue number",
         "Fetch the issue",
     ] {
@@ -336,9 +358,13 @@ fn the_key_scan_runs_in_the_model_step_before_the_change_is_checked() {
     let model = step(&wf, "Run the model under the tool allowlist");
     assert!(
         model.contains(
-            "python3 -I - \"$RUNNER_TEMP/change/agent.json\" \"$RUNNER_TEMP/scan-paths\" <<'PY'"
+            "\"$RUNNER_TEMP/trusted-xtask\" issue-fix key-scan \"$RUNNER_TEMP/change/agent.json\" \"$RUNNER_TEMP/scan-paths\" || scan_status=$?"
         ),
-        "the key scan runs in isolated mode, from the workflow file, over the paths git would carry"
+        "the key scan is the trusted xtask binary, over the paths git would carry"
+    );
+    assert!(
+        !model.contains("python3"),
+        "the key scan does not depend on the python that the runner happens to have"
     );
     assert!(
         model.contains(
@@ -351,8 +377,8 @@ fn the_key_scan_runs_in_the_model_step_before_the_change_is_checked() {
         "the scan does not walk the tree, because a walk skips a target/ directory that a nested .gitignore re-includes"
     );
     assert!(
-        model.contains("sys.exit(1 if found else 0)"),
-        "the key scan refuses when it finds the key"
+        model.contains("if [[ \"$scan_status\" -ne 0 ]]"),
+        "the model step refuses the change when the key scan refuses"
     );
     assert!(
         model.contains("exit \"$status\""),
