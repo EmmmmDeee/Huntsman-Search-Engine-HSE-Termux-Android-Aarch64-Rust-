@@ -14,6 +14,14 @@ OFFLINE="${DUAL_PASS_OFFLINE:-0}"
 
 log() { printf '%s\n' "$*"; }
 
+# Pushes pass the token explicitly. The checkout persists no credential, so the
+# generated tests that cargo runs cannot read one from .git/config.
+git_push() {
+  local auth
+  auth="$(printf 'x-access-token:%s' "${GH_TOKEN:?GH_TOKEN required to push}" | base64 | tr -d '\n')"
+  git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" push "$@"
+}
+
 fail_human() {
   local reason="$1"
   log "needs-human-review: $reason"
@@ -43,7 +51,7 @@ PY
   git -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
     -c user.name="github-actions[bot]" \
     commit -m "dual-pass WIP for issue ${ISSUE_NUMBER}" --allow-empty
-  git push -u origin "dual-pass/issue-${ISSUE_NUMBER}-wip" --force-with-lease
+  git_push -u origin "dual-pass/issue-${ISSUE_NUMBER}-wip" --force-with-lease
   gh label create needs-human-review --repo "$REPO" --color B60205 --description "Dual-pass budget exhausted" 2>/dev/null || true
   gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --add-label needs-human-review
   gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "$(printf '%s\n\n```\n%s\n```\n' "$reason" "$(tail -n 80 "$REPORT" 2>/dev/null || true)")"
@@ -271,7 +279,7 @@ git add execution-plan.json dual-pass-report.md tests/generated_*.rs "${TOUCHED[
 git -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
   -c user.name="github-actions[bot]" \
   commit -m "dual-pass: issue ${ISSUE_NUMBER}"
-git push -u origin "dual-pass/issue-${ISSUE_NUMBER}" --force-with-lease
+git_push -u origin "dual-pass/issue-${ISSUE_NUMBER}" --force-with-lease
 gh pr create --repo "$REPO" --base main --head "dual-pass/issue-${ISSUE_NUMBER}" \
   --title "dual-pass: issue ${ISSUE_NUMBER}" \
   --body "$(cat "$REPORT")"

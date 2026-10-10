@@ -45,6 +45,19 @@ jobs:
         with:
           fetch-depth: 1
           ref: main
+          persist-credentials: false
+      - name: Require a collaborator-authored issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          association="$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq .author_association)"
+          case "$association" in
+            OWNER|MEMBER|COLLABORATOR) echo "issue author association: ${association}" ;;
+            *) echo "::error::refusing to run a plan from an issue authored by association ${association}"; exit 1 ;;
+          esac
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
           toolchain: 1.87.0
