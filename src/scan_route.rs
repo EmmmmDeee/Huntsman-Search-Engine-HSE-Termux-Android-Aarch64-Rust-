@@ -86,9 +86,35 @@ pub fn inferred_people_is_name(positionals: &[String]) -> bool {
         .is_some_and(|selector| crate::people_cli::is_name(selector))
 }
 
+/// Whether an explicit `-k people` has a name to look up. The people command joins every
+/// positional into its name, so an explicit request is judged on that joined name, as the people
+/// command judges it. A single token is refused here rather than reaching the people command's
+/// skip path, which exits 0: a refused lookup must not report success. Input the people command
+/// rejects as a usage error passes here, so that command reports the error.
+#[must_use]
+pub fn explicit_people_is_name(positionals: &[String]) -> bool {
+    match crate::people_cli::PeopleArgs::parse(positionals) {
+        Ok(args) => crate::people_cli::is_name(&args.name),
+        Err(_) => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_people_route_needs_a_joined_name() {
+        // An explicit request names the person as the people command reads it: quoted or unquoted.
+        assert!(explicit_people_is_name(&words(&["Ada Lovelace"])));
+        assert!(explicit_people_is_name(&words(&["Ada", "Lovelace"])));
+        // A single token is a refusal (65), not a skip that reports success.
+        assert!(!explicit_people_is_name(&words(&["Madonna"])));
+        assert!(!explicit_people_is_name(&words(&["0412345678"])));
+        // No name and an unknown option are the people command's usage errors, which it reports.
+        assert!(explicit_people_is_name(&[]));
+        assert!(explicit_people_is_name(&words(&["Ada", "--bogus"])));
+    }
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()

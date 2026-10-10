@@ -274,14 +274,29 @@ fn scan_does_not_report_a_mistyped_phone_as_a_skipped_name() {
 }
 
 #[test]
-fn scan_with_an_explicit_people_kind_keeps_the_people_skip_path() {
+fn scan_with_an_explicit_people_kind_refuses_a_single_token_instead_of_skipping() {
+    // A skip exits 0, which would report a refused lookup as a success. The scan refuses it (65),
+    // as main did, and the people command is not reached.
     let out = bin()
         .args(["scan", "-k", "people", "Madonna"])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(0));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("scan_route=people"));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("skipped"));
+    assert_eq!(out.status.code(), Some(65));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("scan_route=people"), "{err}");
+    assert!(err.contains("needs a name"), "{err}");
+    assert!(String::from_utf8_lossy(&out.stdout).is_empty());
+}
+
+#[test]
+fn scan_refuses_an_option_that_a_leading_space_hides_from_the_check() {
+    let out = bin().args(["scan", " --bogus", "Ada"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("needs SELECTOR before options"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]

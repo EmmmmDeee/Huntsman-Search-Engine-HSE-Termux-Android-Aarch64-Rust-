@@ -76,12 +76,18 @@ fn dual_pass_workflow_has_no_llm_api() {
         !workflow.contains("XAI_API_KEY"),
         "workflow must not require an LLM secret"
     );
-    // The egress guard names openai.com in its own grep, so that one line is excluded.
-    // Any other line that mentions openai, in any case, is an SDK, a secret, or an endpoint.
+    // The egress guard names openai.com in its own grep, so exactly that line is excluded. Excluding
+    // every line that mentions openai.com would let a step that sets an OpenAI endpoint through.
+    const EGRESS_GUARD: &str = "grep -R -n -E 'https?://api\\.x\\.ai|secrets\\.XAI|openai\\.com|anthropic\\.com' scripts/dual-pass";
+    assert_eq!(
+        workflow.matches(EGRESS_GUARD).count(),
+        1,
+        "the egress guard must appear exactly once"
+    );
     assert!(
         !workflow
             .lines()
-            .filter(|line| !line.contains("openai\\.com"))
+            .filter(|line| !line.contains(EGRESS_GUARD))
             .any(|line| line.to_ascii_lowercase().contains("openai")),
         "workflow must not install, read, or call an OpenAI SDK, key, or endpoint"
     );

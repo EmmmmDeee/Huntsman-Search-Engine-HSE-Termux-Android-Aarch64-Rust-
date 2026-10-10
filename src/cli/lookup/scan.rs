@@ -8,7 +8,8 @@ use huntsman_recon::error::Error;
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::scan_batch::parse_seed_list;
 use huntsman_recon::scan_route::{
-    ScanKind, canonical_selector, infer_kind, inferred_people_is_name, parse_kind,
+    ScanKind, canonical_selector, explicit_people_is_name, infer_kind, inferred_people_is_name,
+    parse_kind,
 };
 use huntsman_recon::textnorm::escape_controls;
 
@@ -107,7 +108,9 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
             "usage: huntsman-recon scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone]",
         );
     };
-    if selector.starts_with("--") {
+    // A leading space must not hide an option from this check, or the selector would be judged
+    // one name and the option passed on as part of it.
+    if selector.trim_start().starts_with("--") {
         return fail(EX_USAGE, "scan needs SELECTOR before options");
     }
 
@@ -118,15 +121,23 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
         },
         None => infer_kind(selector),
     };
-    // An inferred people route is a guess. Without two alphabetic tokens in the name the
-    // people command would skip it and exit 0, and the input may be a mistyped phone or
-    // handle, so the scan refuses it. An explicit `-k people` keeps the people command's
-    // own skip path.
-    if kind.is_none() && route == ScanKind::People && !inferred_people_is_name(forwarded) {
-        return fail(
-            EX_DATAERR,
-            "scan selector is not canonical: it is not a name, phone, email, or handle; pass -k people to look it up as a name",
-        );
+    // A people route needs a name with two alphabetic tokens. The people command would skip one
+    // and exit 0, which would report a refused lookup as a success, so the scan refuses it here.
+    // An inferred route is a guess, so it is judged on the selector alone, as on main; an explicit
+    // `-k people` is judged on the name it joins, as the people command reads it.
+    if route == ScanKind::People {
+        if kind.is_none() && !inferred_people_is_name(forwarded) {
+            return fail(
+                EX_DATAERR,
+                "scan selector is not canonical: it is not a name, phone, email, or handle; pass -k people to look it up as a name",
+            );
+        }
+        if kind.is_some() && !explicit_people_is_name(forwarded) {
+            return fail(
+                EX_DATAERR,
+                "scan -k people needs a name: two alphabetic tokens, quoted or as separate words",
+            );
+        }
     }
 
     let Some(selector) = canonical_selector(route, selector) else {
