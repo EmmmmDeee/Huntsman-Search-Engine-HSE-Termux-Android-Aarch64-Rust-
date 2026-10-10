@@ -688,6 +688,9 @@ fn identifier_geohash_and_coarsen_commands() {
 
 #[test]
 fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
+    // stolen-tax reads $HOME/.huntsman.env. An empty home keeps a developer's real key out of
+    // the run, so the missing-key refusal happens here and no paid request can be made.
+    let home = scratch("recon-home");
     for args in [
         &["recon"][..],
         &["recon", "nope", "x"],
@@ -696,7 +699,7 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
         &["recon", "stolen-tax", "  "],
         &["recon", "stolen-tax", "a@example.com", "--bogus", "f"],
     ] {
-        let out = bin().args(args).output().unwrap();
+        let out = bin().args(args).env("HOME", &home).output().unwrap();
         assert_eq!(out.status.code(), Some(64), "{args:?}");
     }
 
@@ -712,6 +715,7 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
     let out = bin()
         .args(["recon", "stolen-tax", "a@example.com"])
         .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
+        .env("HOME", &home)
         .output()
         .unwrap();
     // The README documents a missing key as exit 66, before any request.
@@ -743,9 +747,11 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
             .args(["recon", "stolen-tax", "a@example.com", "--keys"])
             .arg(&file)
             .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
+            .env("HOME", &home)
             .output()
             .unwrap();
         assert_eq!(out.status.code(), Some(code), "{}", file.display());
     }
     let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&home);
 }

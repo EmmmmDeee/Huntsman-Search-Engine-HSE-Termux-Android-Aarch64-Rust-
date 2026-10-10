@@ -6,9 +6,10 @@ use std::process::ExitCode;
 use crate::cli::{EX_DATAERR, EX_NOINPUT, EX_USAGE, MAX_ARTIFACT_BYTES, fail};
 use huntsman_recon::error::Error;
 use huntsman_recon::fsio::read_bounded;
-use huntsman_recon::people_cli;
 use huntsman_recon::scan_batch::parse_seed_list;
-use huntsman_recon::scan_route::{ScanKind, canonical_selector, infer_kind, parse_kind};
+use huntsman_recon::scan_route::{
+    ScanKind, canonical_selector, infer_kind, inferred_people_is_name, parse_kind,
+};
 use huntsman_recon::textnorm::escape_controls;
 
 use super::profiles::{email_cmd, people_cmd, phone_cmd, username_cmd};
@@ -117,11 +118,11 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
         },
         None => infer_kind(selector),
     };
-    // An inferred people route is a guess. A string without two alphabetic tokens may
-    // be a mistyped phone or handle, and the people command would skip it and exit 0,
-    // so the scan refuses it. An explicit `-k people` keeps the people command's own
-    // skip path.
-    if kind.is_none() && route == ScanKind::People && !people_cli::is_name(selector) {
+    // An inferred people route is a guess. Without two alphabetic tokens in the name the
+    // people command would skip it and exit 0, and the input may be a mistyped phone or
+    // handle, so the scan refuses it. An explicit `-k people` keeps the people command's
+    // own skip path.
+    if kind.is_none() && route == ScanKind::People && !inferred_people_is_name(forwarded) {
         return fail(
             EX_DATAERR,
             "scan selector is not canonical: it is not a name, phone, email, or handle; pass -k people to look it up as a name",

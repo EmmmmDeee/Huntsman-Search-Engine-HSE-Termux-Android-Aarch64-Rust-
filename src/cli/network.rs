@@ -155,8 +155,9 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
     if query.trim().is_empty() {
         return fail(EX_USAGE, RECON_USAGE);
     }
-    // Without --keys, the keys come from $HOME/.huntsman.env and then the environment,
-    // as the README documents. An explicit --keys file is read alone.
+    // Without --keys, the keys come from $HOME/.huntsman.env and then the environment.
+    // An explicit --keys file comes first, and a slot it lacks falls back to the
+    // environment, as the README documents.
     let resolved = match Keys::resolve(
         keys_file.map(|path| Path::new(path.as_str())),
         env::var_os("HOME").as_deref(),

@@ -74,9 +74,42 @@ pub fn infer_kind(selector: &str) -> ScanKind {
     }
 }
 
+/// Whether an inferred people route has a name to look up. The people command joins every
+/// positional token into its name, so the guess is judged on that joined name, not on the
+/// first token alone. Input that the people command rejects as a usage error passes here,
+/// so that command reports the error.
+#[must_use]
+pub fn inferred_people_is_name(positionals: &[String]) -> bool {
+    match crate::people_cli::PeopleArgs::parse(positionals) {
+        Ok(args) => crate::people_cli::is_name(&args.name),
+        Err(_) => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn words(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn inferred_people_route_judges_the_joined_name() {
+        // Unquoted, the two words are two arguments; quoted, they are one. Both are a name.
+        assert!(inferred_people_is_name(&words(&["Ada", "Lovelace"])));
+        assert!(inferred_people_is_name(&words(&["Ada Lovelace"])));
+        // --save takes a path, which is not part of the name.
+        assert!(inferred_people_is_name(&words(&[
+            "Ada", "--save", "out.json", "Lovelace"
+        ])));
+        assert!(!inferred_people_is_name(&words(&["Ada"])));
+        assert!(!inferred_people_is_name(&words(&[
+            "Ada", "--save", "out.json"
+        ])));
+        // An unknown option is a usage error, and the people command reports it.
+        assert!(inferred_people_is_name(&words(&["Ada", "--bogus"])));
+    }
 
     #[test]
     fn explicit_aliases_are_stable() {
