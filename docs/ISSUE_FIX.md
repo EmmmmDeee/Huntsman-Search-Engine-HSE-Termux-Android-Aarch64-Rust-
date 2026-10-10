@@ -73,6 +73,11 @@ Refused:
   holds test code;
 - a change that reaches the line directly above the test code of a file, since an
   attribute added there would become part of the test;
+- a change further above the test code that moves a test marker without keeping it. An
+  attribute added above a test is part of the test even across a blank line or a
+  comment, so it is refused when it joins the test's run. A delimiter that comments a test
+  out is refused too, such as a `/*` opened above the tests and closed by a line comment
+  after them;
 - any change outside `src/` and `tests/`, including untracked files;
 - a symbolic link or submodule, added or removed, including a directory that holds a
   repository of its own, which git lists as untracked and which becomes a submodule
@@ -85,8 +90,15 @@ Refused:
 - a `mod NAME;` in test code that the guard cannot follow, because it sits inside the
   tokens of a macro, or inside a comment (a line comment counts when its text starts
   with the declaration). In `src/`, that refuses every change. So does a file that an
-  `include!` compiles and that declares a module, and an `include!` whose file cannot
-  be named.
+  `include!` compiles and that declares a module;
+- an `include!` in `src/` whose file the guard cannot name, such as
+  `include!(concat!(...))`, or whose argument is not one string literal, in any position.
+  It refuses every change to an existing file under `src/`, because the guard cannot tell
+  which file the build compiles. This is an over-refusal that the port keeps on purpose;
+- a file whose brackets nest deeper than 128 levels, Rust or not. It is refused with a
+  message. The token walk recurses once per level, so a deeper file overflowed the stack
+  and aborted the process. A file of that kind at BASE refuses every change under `src/`,
+  since every file under `src/` at BASE is read;
 
 ## Where the port is stricter than the shell guard
 
@@ -102,7 +114,15 @@ The port refuses these, and `scripts/issue-fix/check-protected.sh` allowed them:
   around it;
 - a nested repository under `tests/`;
 - a `mod NAME;` that the guard cannot follow in test code, and an `include!` whose file
-  the guard cannot name, in any position.
+  the guard cannot name, in any position;
+- an attribute added above a test across a blank line or a comment, which joins the test's
+  run, and a block comment or delimiter above the tests that comments them out. The shell
+  guard refuses a change only where it touches the test code itself, so it allows both;
+- a file whose brackets nest deeper than 128 levels, Rust or not. The shell guard does not
+  limit the nesting. The port refuses such a file with a message, where a Rust file, or a
+  text file under `src/`, that nests this deep used to abort the process. A file nested
+  this deep at BASE refuses every change under `src/`, since the guard reads every file
+  under `src/` at BASE.
 
 The port counts a marker in a line comment that starts with it, such as `// #[test]`, which
 the shell guard does not. The shell guard counts a marker in a block comment only where a

@@ -1174,6 +1174,80 @@ fn a_submodule_under_src_in_the_base_does_not_refuse_a_change_to_another_file() 
     assert_passes(&repo);
 }
 
+#[test]
+fn an_attribute_above_a_test_across_a_blank_line_is_refused() {
+    // The blank line does not end the run of attributes, so #[ignore] becomes part of the test.
+    let repo = Repo::with_files(
+        "an-attribute-above-a-test-across-a-blank-line-is-refused",
+        &[(
+            "src/lib.rs",
+            "pub fn c() -> u8 {\n    1\n}\n\n#[test]\nfn c_is_one() {\n    assert_eq!(c(), 1);\n}\n",
+        )],
+    );
+    repo.insert_after("src/lib.rs", 3, "#[ignore]");
+    assert_refused_for(&repo, "M src/lib.rs");
+}
+
+#[test]
+fn a_block_comment_opened_above_the_tests_and_closed_after_them_is_refused() {
+    // The `*/` in the last line comment closes the block comment that starts above the tests, so
+    // the test is commented out and the file has no test left.
+    let repo = Repo::with_files(
+        "a-block-comment-opened-above-the-tests-and-closed-after-them-is-refused",
+        &[(
+            "src/lib.rs",
+            "pub fn c() -> u8 {\n    1\n}\n\n#[test]\nfn c_is_one() {\n    assert_eq!(c(), 1);\n}\n// done */\n",
+        )],
+    );
+    repo.insert_after("src/lib.rs", 0, "/*");
+    assert_refused_for(&repo, "M src/lib.rs");
+}
+
+#[test]
+fn a_non_rust_file_nested_too_deep_is_refused_with_a_message_not_an_abort() {
+    let repo = Repo::with_files(
+        "a-non-rust-file-nested-too-deep-is-refused-with-a-message-not-an-abort",
+        &[("src/data.txt", "x\n")],
+    );
+    repo.write("src/data.txt", &"(".repeat(30_000));
+    let output = repo.guard();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the guard must refuse the change with status 1, not abort: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("brackets nest more than 128 levels deep"),
+        "the refusal must say why: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_rust_file_nested_too_deep_is_refused_with_a_message_not_an_abort() {
+    let repo = Repo::new("a-rust-file-nested-too-deep-is-refused-with-a-message-not-an-abort");
+    // A valid item, so that the syntax tree is built and recurses to the full depth.
+    let deep = format!(
+        "pub const DEEP: u8 = {}1{};\n",
+        "(".repeat(2_000),
+        ")".repeat(2_000)
+    );
+    repo.insert_after("src/tested.rs", 0, &deep);
+    let output = repo.guard();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the guard must refuse the change, not abort: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("brackets nest more than 128 levels deep"),
+        "the refusal must say why: {}",
+        stderr(&output)
+    );
+}
+
 /// Creates a git repository of its own in DIR, with one empty commit, as a directory of a working
 /// tree that holds it.
 fn nested_repository(dir: &std::path::Path) {

@@ -22,6 +22,15 @@ pub struct FileFacts {
     /// the first outer attribute of its run, because an attribute belongs to the item after it. A
     /// marker in a comment starts it at the line of that marker.
     pub start: usize,
+    /// The lines where a marker of the token walk starts: the first attribute of each run of
+    /// outer attributes that names test. Each marker counts once for every marker attribute in its
+    /// run, which is harmless, since only the lines are compared.
+    pub token_markers: Vec<usize>,
+    /// The lines of the markers that the comments of the file hold, as `comment_facts` finds them.
+    pub comment_markers: Vec<usize>,
+    /// The text nests its brackets deeper than `MAX_NESTING`, so it was not read, and every other
+    /// field is empty. `read_text_checked` refuses such a text.
+    pub too_deep: bool,
     /// The file has an inner `#![cfg(...)]` that names test. Every line of such a file is test
     /// code.
     pub inner_cfg_test: bool,
@@ -107,6 +116,7 @@ pub struct Include {
 
 /// Reads TEXT as a Rust file, which must parse. The error is a reason for a person.
 pub fn read(text: &str) -> Result<FileFacts, String> {
+    check_nesting(text)?;
     let file = syn::parse_file(text).map_err(|error| error.to_string())?;
     let tokens: TokenStream = text.parse().map_err(|error| format!("{error}"))?;
     let mut scan = Scan::default();
@@ -120,13 +130,81 @@ pub fn read(text: &str) -> Result<FileFacts, String> {
 
 /// Reads TEXT as a file that is not read with its syntax tree, which is any file that is not Rust
 /// source. It has no module declarations that the guard follows, so every `mod NAME;` in it is
-/// unfollowed. A text that does not lex has only the markers in its comments.
+/// unfollowed. A text that does not lex has only the markers in its comments. A text nested deeper
+/// than `MAX_NESTING` is not walked: its facts are empty, with `too_deep` set.
 pub fn read_text(text: &str) -> FileFacts {
+    if bracket_depth(text) > MAX_NESTING {
+        return FileFacts {
+            too_deep: true,
+            ..FileFacts::default()
+        };
+    }
     let mut scan = Scan::default();
     if let Ok(tokens) = text.parse::<TokenStream>() {
         scan.stream(tokens, true);
     }
     scan.into_facts(text)
+}
+
+/// `read_text` for a file that the guard must read. A text nested deeper than `MAX_NESTING` is an
+/// error, which refuses the change with a message.
+pub fn read_text_checked(text: &str) -> Result<FileFacts, String> {
+    let facts = read_text(text);
+    if facts.too_deep {
+        return Err(nesting_error());
+    }
+    Ok(facts)
+}
+
+/// The deepest bracket nesting that the guard reads. The token walk, the syntax tree, and the drop
+/// of a token stream recurse once per level, so a file nested more deeply would overflow the stack
+/// and abort the process. A file nested deeper than this is refused with a message instead.
+pub const MAX_NESTING: usize = 128;
+
+/// The reason for refusing a file nested deeper than `MAX_NESTING`.
+fn nesting_error() -> String {
+    format!("its brackets nest more than {MAX_NESTING} levels deep, which the guard does not read")
+}
+
+/// Refuses TEXT when its brackets nest deeper than `MAX_NESTING`.
+fn check_nesting(text: &str) -> Result<(), String> {
+    if bracket_depth(text) > MAX_NESTING {
+        return Err(nesting_error());
+    }
+    Ok(())
+}
+
+/// The deepest nesting of brackets in code. Strings, character literals and comments are skipped
+/// the way `comments` skips them, so a bracket inside one of them does not count. The walk is
+/// iterative, so it cannot overflow the stack whatever the depth.
+fn bracket_depth(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut deepest = 0usize;
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
+        at = match byte {
+            b'/' if bytes.get(at + 1) == Some(&b'/') => bytes[at..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(bytes.len(), |offset| at + offset),
+            b'/' if bytes.get(at + 1) == Some(&b'*') => block_end(bytes, at + 2).1,
+            b'"' => string_end(bytes, at + 1),
+            b'\'' => char_end(bytes, at),
+            b'r' => raw_string_end(bytes, at).unwrap_or(at + 1),
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                deepest = deepest.max(depth);
+                at + 1
+            }
+            b')' | b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                at + 1
+            }
+            _ => at + 1,
+        };
+    }
+    deepest
 }
 
 /// The facts that the token walk collects.
@@ -272,12 +350,20 @@ impl Scan {
     /// block comments of TEXT.
     fn into_facts(self, text: &str) -> FileFacts {
         let (comment_markers, comment_mods) = comment_facts(text);
-        let mut markers = self.markers;
-        markers.extend(comment_markers);
+        let start = self
+            .markers
+            .iter()
+            .chain(&comment_markers)
+            .min()
+            .copied()
+            .unwrap_or(0);
         let mut unfollowed_mods = self.unfollowed_mods;
         unfollowed_mods.extend(comment_mods);
         FileFacts {
-            start: markers.iter().min().copied().unwrap_or(0),
+            start,
+            token_markers: self.markers,
+            comment_markers,
+            too_deep: false,
             inner_cfg_test: self.inner_cfg_test,
             mods: Vec::new(),
             includes: self.includes,
@@ -816,5 +902,19 @@ mod tests {
                 .unfollowed_mods
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_bracket_in_a_string_or_a_comment_is_not_nesting() {
+        assert_eq!(bracket_depth("let s = \"((((\"; // ((((\n/* (((( */ ()"), 1);
+        assert_eq!(bracket_depth(&"(".repeat(5)), 5);
+    }
+
+    #[test]
+    fn a_text_nested_past_the_limit_is_refused_and_not_walked() {
+        assert!(read_text_checked(&"(".repeat(MAX_NESTING)).is_ok());
+        assert!(read_text_checked(&"(".repeat(MAX_NESTING + 1)).is_err());
+        assert!(read_text(&"(".repeat(30_000)).too_deep);
+        assert!(read(&"(".repeat(30_000)).is_err());
     }
 }

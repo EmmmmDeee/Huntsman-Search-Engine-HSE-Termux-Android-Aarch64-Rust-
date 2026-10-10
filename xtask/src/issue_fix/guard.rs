@@ -2,7 +2,8 @@
 //! tree against BASE, the commit the run started from, and applies the rules of the shell guard
 //! it replaces (scripts/issue-fix/check-protected.sh), whose header lists them, and the stricter
 //! rules that docs/ISSUE_FIX.md lists for the port. Test code is decided from the files at BASE,
-//! with the token stream and syn (see `model` and `syntax`).
+//! with the token stream and syn (see `model` and `syntax`). A file whose brackets nest deeper than
+//! `syntax::MAX_NESTING` is refused with a message, because reading it would overflow the stack.
 //!
 //! The guard runs from the trusted xtask that the workflow builds from BASE before the model
 //! runs. It reads the checkout as data and never runs anything the checkout names: every git
@@ -258,8 +259,9 @@ impl Guard<'_> {
     }
 
     /// True when a modification of PATH is allowed: it is not test code, it leaves the test code
-    /// of the base alone, it adds no line that reaches code beyond its own, and it keeps every
-    /// construct of the base that reaches code beyond its own lines.
+    /// of the base alone, it does not reach the line above the test code, it keeps every test
+    /// marker of the base where it was, it adds no line that reaches code beyond its own, and it
+    /// keeps every construct of the base that reaches code beyond its own lines.
     fn modified_allowed(&self, path: &str) -> Result<bool> {
         if self.model.is_test_file(path) {
             return Ok(false);
@@ -271,6 +273,13 @@ impl Guard<'_> {
         // The test code starts at the first attribute of its run, so a change that reaches the line
         // above that attribute can add one to the test, and it is refused.
         if start > 0 && hunks.iter().any(|hunk| hunk.old_last() + 1 >= start) {
+            return Ok(false);
+        }
+        // A change further above moves the test code without touching it. It stays allowed only
+        // while every test marker of BASE survives at the line that the hunks move it to. An
+        // attribute added above the run joins it across a blank line or a comment, and a delimiter
+        // that comments a test out removes its marker.
+        if start > 0 && !self.markers_kept(path, &hunks)? {
             return Ok(false);
         }
         let added = Added::from_hunks(&hunks);
@@ -294,8 +303,9 @@ impl Guard<'_> {
             if text_reaches(&text, added) {
                 return Ok(true);
             }
+            let facts = working_text(path, &text)?;
             return Ok(start > 0
-                && syntax::read_text(&text)
+                && facts
                     .cfg_constructs
                     .iter()
                     .any(|construct| added.touches(construct.first, construct.last)));
@@ -329,10 +339,52 @@ impl Guard<'_> {
         let Ok(bytes) = std::fs::read(path) else {
             return Ok(false);
         };
-        let now = syntax::read_text(&String::from_utf8_lossy(&bytes));
+        let now = working_text(path, &String::from_utf8_lossy(&bytes))?;
         let now_texts = now.construct_texts(start > 0);
         Ok(contained(&now_texts, &self.model.constructs(path)))
     }
+
+    /// True when every test marker of BASE in PATH is still a marker of the working tree, at the
+    /// line that the hunks move it to. A marker is the first attribute of a run that names test, or
+    /// a line of a comment that does. So an attribute that joins the run moves the marker up, and a
+    /// delimiter that comments the test out removes it. Every hunk lies above the test code here,
+    /// so the test code moves by the net number of lines that the hunks add and remove. A working
+    /// tree that is not UTF-8 is refused.
+    fn markers_kept(&self, path: &str, hunks: &[Hunk]) -> Result<bool> {
+        let Ok(bytes) = std::fs::read(path) else {
+            return Ok(false);
+        };
+        let Ok(text) = String::from_utf8(bytes) else {
+            return Ok(false);
+        };
+        let now = working_text(path, &text)?;
+        let added = hunks
+            .iter()
+            .fold(0usize, |sum, hunk| sum.saturating_add(hunk.new_count));
+        let removed = hunks
+            .iter()
+            .fold(0usize, |sum, hunk| sum.saturating_add(hunk.old_count));
+        let (tokens, comments) = self.model.markers(path);
+        Ok(moved_into(tokens, &now.token_markers, added, removed)
+            && moved_into(comments, &now.comment_markers, added, removed))
+    }
+}
+
+/// The facts of TEXT, the working-tree file at PATH. A text nested too deeply to read is an error
+/// that names the file, so the guard refuses the change with a message and does not abort.
+fn working_text(path: &str, text: &str) -> Result<syntax::FileFacts> {
+    syntax::read_text_checked(text)
+        .map_err(|reason| Error::Refused(format!("cannot read {path}: {reason}")))
+}
+
+/// True when every line of BEFORE, moved by ADDED lines added above it and REMOVED lines removed
+/// above it, is a line of NOW. A line that the arithmetic cannot place is not in NOW.
+fn moved_into(before: &[usize], now: &[usize], added: usize, removed: usize) -> bool {
+    before.iter().all(|&line| {
+        line.checked_add(added)
+            .and_then(|moved| moved.checked_sub(removed))
+            .is_some_and(|moved| now.contains(&moved))
+    })
 }
 
 /// True when every text of NOW is in BEFORE, each one as often as it occurs in BEFORE.

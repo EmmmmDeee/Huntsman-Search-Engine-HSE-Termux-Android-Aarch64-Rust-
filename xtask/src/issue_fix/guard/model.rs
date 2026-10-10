@@ -7,6 +7,8 @@
 //! include! call compiles its file, whatever its position, so a file that an include! names is read
 //! for its test markers. Its module declarations resolve as the including module's would, which the
 //! guard does not model, so a compiled file with module declarations makes every file test code.
+//! An include! whose file cannot be named, such as `include!(concat!(...))`, protects every file in
+//! the same way: every change to an existing file under src/ is refused, whatever the file holds.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -83,6 +85,15 @@ impl Model {
             .map_or_else(Vec::new, |facts| facts.construct_texts(facts.start > 0))
     }
 
+    /// The lines of the test markers of PATH at BASE: those of its token walk, and those in its
+    /// comments. Both are empty when the model holds no facts for PATH.
+    pub fn markers(&self, path: &str) -> (&[usize], &[usize]) {
+        match self.files.get(path) {
+            Some(facts) => (&facts.token_markers, &facts.comment_markers),
+            None => (&[], &[]),
+        }
+    }
+
     /// True when PATH at BASE is wholly test code.
     pub fn is_test_file(&self, path: &str) -> bool {
         self.everything
@@ -123,7 +134,9 @@ impl Model {
                 Error::Refused(format!("cannot parse {path} at {}: {reason}", self.base))
             })?
         } else {
-            syntax::read_text(&text)
+            syntax::read_text_checked(&text).map_err(|reason| {
+                Error::Refused(format!("cannot read {path} at {}: {reason}", self.base))
+            })?
         };
         self.files.insert(path.to_owned(), facts);
         Ok(true)
