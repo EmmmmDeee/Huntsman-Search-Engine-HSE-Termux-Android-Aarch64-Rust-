@@ -1299,3 +1299,25 @@ fn promoting_latest_takes_the_published_bytes_offline() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn release_reads_of_the_latest_tag_fail_on_anything_but_a_missing_tag() {
+    // A read that fails for any reason other than a 404 must stop the release. A masked read
+    // reads as "no latest tag", which skips the never-move-backwards check and the verification.
+    let wf = fs::read_to_string(".github/workflows/release.yml").expect("release workflow");
+    for masked in [
+        "commits/refs/tags/latest\" --jq .sha 2>/dev/null || true",
+        "commits/refs/tags/latest\" --jq .sha 2>/dev/null || echo absent",
+        "releases/latest\" --jq .tag_name 2>/dev/null || true",
+        "git/ref/tags/latest\" >/dev/null 2>&1; then",
+    ] {
+        assert!(
+            !wf.contains(masked),
+            "release.yml masks a failed read: {masked}"
+        );
+    }
+    assert!(
+        wf.contains("echo \"reason=${status}\" >> \"$GITHUB_OUTPUT\""),
+        "the latest step must say why it did not move latest, for the verify step"
+    );
+}

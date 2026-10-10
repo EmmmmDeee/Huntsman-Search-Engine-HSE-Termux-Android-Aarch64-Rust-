@@ -29,11 +29,11 @@ cat > "$work/bin/gh" <<'GH'
 # files that `gh release create latest` receives in $FAKE_DIR/created.
 case "$*" in
   "api repos/"*"/git/ref/heads/main --jq .object.sha") echo "$GITHUB_SHA" ;;
-  "api repos/"*"/commits/refs/tags/latest --jq .sha") exit 1 ;;
+  "api repos/"*"/commits/refs/tags/latest --jq .sha") echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   "api repos/"*"/releases/tags/"*) cat "$FAKE_DIR/release.json" ;;
   "release download "*) cp "$FAKE_DIR/published/${5}" "${7}/" ;;
   "release view latest"*) exit 1 ;;
-  "api repos/"*"/git/ref/tags/latest") exit 1 ;;
+  "api repos/"*"/git/ref/tags/latest") echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   "release create latest"*)
     for arg in "$@"; do
       if [ -f "$arg" ]; then cp "$arg" "$FAKE_DIR/created/"; fi

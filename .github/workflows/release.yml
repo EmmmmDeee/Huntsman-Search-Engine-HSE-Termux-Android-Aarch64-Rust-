@@ -780,7 +780,14 @@ jobs:
             echo "moved=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          cur="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>/dev/null || true)"
+          # Only a 404 means there is no latest tag. Any other failure stops the step: an empty
+          # answer here would skip the never-move-backwards check below.
+          cur=""
+          if tag_sha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>"$RUNNER_TEMP/latest-tag.err")"; then
+            cur="$tag_sha"
+          elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/latest-tag.err"; then
+            echo "::error::could not read the latest tag: $(cat "$RUNNER_TEMP/latest-tag.err")"; exit 1
+          fi
           if [ -n "$cur" ]; then
             if [ "$cur" = "$GITHUB_SHA" ]; then status=identical; else
               status="$(gh api "$api/compare/${cur}...${GITHUB_SHA}" --jq .status)"
@@ -790,6 +797,7 @@ jobs:
               identical | behind)
                 echo "latest already points at ${cur} (${status}); never moving it backwards." | tee -a "$GITHUB_STEP_SUMMARY"
                 echo "moved=false" >> "$GITHUB_OUTPUT"
+                echo "reason=${status}" >> "$GITHUB_OUTPUT"
                 exit 0 ;;
               *) echo "::error::latest (${cur}) and ${GITHUB_SHA} are ${status}; refusing to move latest"; exit 1 ;;
             esac
@@ -814,8 +822,10 @@ jobs:
             gh release delete latest --yes --cleanup-tag
           fi
           # A leftover `latest` tag would make the new release reuse it instead of --target.
-          if gh api "$api/git/ref/tags/latest" >/dev/null 2>&1; then
+          if gh api "$api/git/ref/tags/latest" >/dev/null 2>"$RUNNER_TEMP/ref-latest.err"; then
             gh api -X DELETE "$api/git/refs/tags/latest"
+          elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/ref-latest.err"; then
+            echo "::error::could not read the latest tag ref: $(cat "$RUNNER_TEMP/ref-latest.err")"; exit 1
           fi
           gh release create latest \
             "$promote/$ASSET" "$promote/$ASSET.sha256" "$promote/$ASSET.provenance.json" "$promote/key-scan-report.txt" "$promote/install-termux.sh" \
@@ -831,6 +841,7 @@ jobs:
           PROMOTE: ${{ vars.PROMOTE_RECON_TO_LATEST == 'true' }}
           EXISTS: ${{ steps.existing.outputs.exists }}
           MOVED: ${{ steps.latest.outputs.moved }}
+          REASON: ${{ steps.latest.outputs.reason }}
         run: |
           set -euo pipefail
           api="repos/${GITHUB_REPOSITORY}"
@@ -877,13 +888,18 @@ jobs:
             echo "${t}: prerelease=true target=${sha} assets=${#files[@]} digests verified (${mode})" | tee -a "$GITHUB_STEP_SUMMARY"
           }
           if [ "$EXISTS" = "true" ]; then check_release "$TAG" self; else check_release "$TAG" local; fi
-          if [ "${MOVED:-}" = "true" ]; then
+          if [ "${MOVED:-}" = "true" ] || { [ "$PROMOTE" = "true" ] && [ "${REASON:-}" = "identical" ]; }; then
+            # Promoted now, or already identical to this build: its digests must match the published bytes.
             check_release latest tag
           elif [ "$PROMOTE" != "true" ]; then
-            # Not promoted: `latest` must not point at this build.
-            lsha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>/dev/null || echo absent)"
+            # Not promoted: `latest` must not point at this build. Only a 404 means it is absent.
+            if lsha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>"$RUNNER_TEMP/verify-latest.err")"; then :
+            elif grep -q 'HTTP 404' "$RUNNER_TEMP/verify-latest.err"; then lsha=absent
+            else fail "could not read the latest tag: $(cat "$RUNNER_TEMP/verify-latest.err")"; fi
             [ "$lsha" != "$GITHUB_SHA" ] || fail "latest moved to this build without PROMOTE_RECON_TO_LATEST"
             echo "latest: not moved (currently ${lsha})" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
-          latest="$(gh api "$api/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          if latest="$(gh api "$api/releases/latest" --jq .tag_name 2>"$RUNNER_TEMP/latest-release.err")"; then :
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/latest-release.err"; then latest=""
+          else fail "could not read the GitHub latest release: $(cat "$RUNNER_TEMP/latest-release.err")"; fi
           case "$latest" in main-*|latest) fail "GitHub 'Latest release' is ${latest}" ;; esac
