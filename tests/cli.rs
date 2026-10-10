@@ -687,9 +687,42 @@ fn identifier_geohash_and_coarsen_commands() {
 }
 
 #[test]
+fn stolen_tax_ignores_a_key_in_the_default_file() {
+    // The default file serves the other keyed lookups. stolen-tax reads only --keys FILE or the
+    // environment, so a valid key placed in the default file is still a missing key here, and
+    // the refusal happens before any request.
+    let home = scratch("stolen-default-file");
+    let default_file = home.join(".huntsman.env");
+    fs::write(
+        &default_file,
+        "HUNTSMAN_STOLEN_TAX_KEY=fixture-not-a-key-0001\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&default_file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let out = bin()
+        .args(["recon", "stolen-tax", "a@example.com"])
+        .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(66),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout.len(), 0);
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
 fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
-    // stolen-tax reads $HOME/.huntsman.env. An empty home keeps a developer's real key out of
-    // the run, so the missing-key refusal happens here and no paid request can be made.
+    // An empty home keeps a developer's real key out of the run, so the missing-key refusal
+    // happens here and no paid request can be made.
     let home = scratch("recon-home");
     for args in [
         &["recon"][..],

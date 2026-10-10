@@ -33,39 +33,6 @@ pub const fn keyless_hudson_rock() -> Option<BreachLeg> {
     None
 }
 
-/// Whether this HIBP subcommand is in the current order.
-#[must_use]
-pub fn command_allowed(subcommand: &str, has_operator_key: bool) -> bool {
-    let order = exposure_order(has_operator_key);
-    match subcommand {
-        "password" | "password-range" => order.contains(&BreachLeg::PwnedPasswords),
-        "breach" | "breaches" => order.contains(&BreachLeg::HibpCatalog),
-        "account" | "pastes" | "subscription" => order.contains(&BreachLeg::HibpAccount),
-        "help" | "-h" | "--help" => true,
-        _ => false,
-    }
-}
-
-/// Every HIBP subcommand the CLI knows, free or keyed. An unknown name is a usage
-/// error for the HIBP command itself, not a missing key, so the order gate leaves it
-/// alone.
-#[must_use]
-pub fn is_known_subcommand(subcommand: &str) -> bool {
-    matches!(
-        subcommand,
-        "password"
-            | "password-range"
-            | "breach"
-            | "breaches"
-            | "account"
-            | "pastes"
-            | "subscription"
-            | "help"
-            | "-h"
-            | "--help"
-    )
-}
-
 /// `recon stolen-tax` is a keyed leg. No key means it is not in the order.
 #[must_use]
 pub fn stolen_tax_allowed(has_operator_key: bool) -> bool {
@@ -111,11 +78,11 @@ mod tests {
     }
 
     #[test]
-    fn keyed_command_requires_a_key() {
-        assert!(command_allowed("password", false));
-        assert!(command_allowed("breaches", false));
-        assert!(!command_allowed("account", false));
-        assert!(command_allowed("account", true));
+    fn keyed_leg_is_in_the_order_only_with_a_key() {
+        assert!(exposure_order(false).contains(&BreachLeg::PwnedPasswords));
+        assert!(exposure_order(false).contains(&BreachLeg::HibpCatalog));
+        assert!(!exposure_order(false).contains(&BreachLeg::HibpAccount));
+        assert!(exposure_order(true).contains(&BreachLeg::HibpAccount));
     }
 
     #[test]

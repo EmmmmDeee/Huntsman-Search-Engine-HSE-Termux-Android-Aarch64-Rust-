@@ -248,7 +248,7 @@ is parsed as DNS JSON. Quoted TXT presentation is decoded before SPF (RFC 7208),
 DMARC (RFC 7489) and TLSRPT (RFC 8460) parsing. Output is
 `type<TAB>name<TAB>rdata<TAB>resolver` lines, then `spf_all=`, `dmarc_policy=`
 and `tlsrpt_emails=` when those records parse, plus `failed` rows. An invalid
-selector exits 65 before any request; no usable answer exits 69. DoH is
+selector exits 65 before any request, and a blank target is a usage error (exit 64); no usable answer exits 69. DoH is
 keyless. There is no live receipt in CI.
 
 `recon stolen-tax QUERY [--keys FILE]` is an explicit paid lookup requiring

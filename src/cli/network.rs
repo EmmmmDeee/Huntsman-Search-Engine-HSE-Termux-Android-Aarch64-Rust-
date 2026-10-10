@@ -24,20 +24,9 @@ use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::textnorm::escape_controls;
 
 pub(super) fn hibp_cmd(args: &[String]) -> ExitCode {
-    let subcommand = args.first().map_or("help", String::as_str);
-    let has_key = huntsman_recon::hibp::KeyLoader::default_chain(None)
-        .load()
-        .is_some();
-    // An unknown subcommand is a usage error from the HIBP command. Only a known keyed
-    // subcommand, run without a key, is refused here, as a missing key (66).
-    if huntsman_recon::breach_hybrid::is_known_subcommand(subcommand)
-        && !huntsman_recon::breach_hybrid::command_allowed(subcommand, has_key)
-    {
-        return fail(
-            EX_NOINPUT,
-            "hibp: no API key for this keyed lookup (set HIBP_API_KEY, HUNTSMAN_HIBP_KEY or ~/.config/hibp/api_key)",
-        );
-    }
+    // The HIBP command checks the arguments first, so bad arguments are a usage error (64). A
+    // keyed subcommand with well-formed arguments and no key is refused by its keyed leg, before
+    // any request, as a missing key (66).
     ExitCode::from(HibpCommand::production().run(
         args,
         &mut std::io::stdin().lock(),
@@ -155,20 +144,17 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
     if query.trim().is_empty() {
         return fail(EX_USAGE, RECON_USAGE);
     }
-    // Without --keys, the keys come from $HOME/.huntsman.env and then the environment.
-    // An explicit --keys file comes first, and a slot it lacks falls back to the
-    // environment, as the README documents.
-    let resolved = match Keys::resolve(
-        keys_file.map(|path| Path::new(path.as_str())),
-        env::var_os("HOME").as_deref(),
-    ) {
-        Ok(resolved) => resolved,
-        Err(e) => return fail(EX_NOINPUT, &e.to_string()),
+    // The key comes from the --keys file when one is given, and from the environment
+    // otherwise. A slot the file lacks falls back to the environment, as the README documents.
+    // The default file $HOME/.huntsman.env is not read here: this lookup combines breach and
+    // tax records, so its key has to be named where the caller names it, as on main.
+    let keys = match keys_file {
+        Some(path) => match Keys::resolve(Some(Path::new(path.as_str())), None) {
+            Ok(resolved) => resolved.keys,
+            Err(e) => return fail(EX_NOINPUT, &e.to_string()),
+        },
+        None => Keys::from_env(),
     };
-    if let Some(warning) = &resolved.warning {
-        eprintln!("{warning}");
-    }
-    let keys = resolved.keys;
     if !huntsman_recon::breach_hybrid::stolen_tax_allowed(keys.get(stolen_tax::KEY_SLOT).is_some())
     {
         return fail(

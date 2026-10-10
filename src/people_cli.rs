@@ -265,7 +265,7 @@ fn usable(report: &Report) -> bool {
 
 fn name_tokens(name: &str) -> Vec<String> {
     name.split(|c: char| !c.is_alphabetic())
-        .filter(|token| token.len() >= 2)
+        .filter(|token| token.chars().count() >= 2)
         .map(str::to_ascii_lowercase)
         .collect()
 }
@@ -357,6 +357,15 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::HashMap;
+
+    #[test]
+    fn a_name_needs_two_alphabetic_tokens_of_at_least_two_characters() {
+        assert!(is_name("Émile Zola"));
+        // One accented letter is one character, so it is not a token of a name, though it is
+        // two bytes in UTF-8.
+        assert!(!is_name("É Lovelace"));
+        assert!(!is_name("Ada"));
+    }
 
     use crate::http::{Request, Response, TransportFailure};
     use crate::source_outcome::SourceOutcomeKind;

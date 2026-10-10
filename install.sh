@@ -114,7 +114,8 @@ fi
 rust_target_libdir="$(rustc --print target-libdir)"
 rlib_found=""
 if [[ -d "$rust_target_libdir" ]]; then
-  rlib_found="$(find "$rust_target_libdir" -maxdepth 1 -type f -name '*.rlib' -print -quit)"
+  # A failed find must still reach the diagnostic below, so it is not allowed to end the script.
+  rlib_found="$(find "$rust_target_libdir" -maxdepth 1 -type f -name '*.rlib' -print -quit)" || rlib_found=""
 fi
 if [[ -z "$rlib_found" ]]; then
   printf 'error: Rust host stdlib rlibs are unavailable after installing %s\n' "$rust_std_pkg" >&2

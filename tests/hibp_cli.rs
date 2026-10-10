@@ -472,6 +472,19 @@ fn subscription_prints_every_status_field_and_the_key_source_not_the_key() {
 }
 
 #[test]
+fn hibp_bad_arguments_are_a_usage_error_even_without_a_key() {
+    // The arguments are checked before the key, so a keyed subcommand with the wrong shape is
+    // usage (64), not a missing key (66), and it sends nothing.
+    let (cmd, fake) = command(None);
+    for args in [&["account"][..], &["pastes"], &["subscription", "extra"]] {
+        let out = run(&cmd, args, "");
+        assert_eq!(out.code, 64, "{args:?}: {}", out.stderr);
+        assert_eq!(out.stdout, "");
+    }
+    assert_eq!(fake.requests().len(), 0, "a request was sent");
+}
+
+#[test]
 fn t1589_002_keyed_subcommands_without_a_key_fail_cleanly_and_send_nothing() {
     let (cmd, fake) = command(None);
     for args in [
@@ -483,7 +496,8 @@ fn t1589_002_keyed_subcommands_without_a_key_fail_cleanly_and_send_nothing() {
         assert_eq!(out.code, 66, "{args:?}: {}", out.stderr);
         assert_eq!(out.stdout, "");
         assert!(
-            out.stderr.contains("no API key configured") && out.stderr.contains("HIBP_API_KEY"),
+            out.stderr.contains("no API key for this keyed lookup")
+                && out.stderr.contains("HIBP_API_KEY"),
             "{}",
             out.stderr
         );
