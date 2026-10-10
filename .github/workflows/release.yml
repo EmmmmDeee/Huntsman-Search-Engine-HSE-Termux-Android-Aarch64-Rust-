@@ -325,7 +325,9 @@ jobs:
       - name: Prove the artifact is huntsman-recon, not the legacy hse
         run: |
           set -euo pipefail
-          pkg="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[0].name')"
+          # Select the default member by id. Cargo lists workspace packages in name order, so the first
+          # package is not the product once xtask is a workspace member.
+          pkg="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '. as $m | .packages[] | select(.id == $m.workspace_default_members[0]) | .name')"
           [ "$pkg" = "huntsman-recon" ] || { echo "::error::package is ${pkg}, expected huntsman-recon"; exit 1; }
           # The aarch64 Android binary cannot execute on the x86_64 runner, so
           # prove identity from the exact bytes: the hand-written CLI usage line.
