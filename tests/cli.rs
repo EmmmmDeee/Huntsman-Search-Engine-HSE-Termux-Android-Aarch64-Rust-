@@ -257,8 +257,28 @@ fn people_skips_single_token_without_network() {
 }
 
 #[test]
-fn scan_routes_single_token_to_people_without_network() {
+fn scan_refuses_an_inferred_single_word_instead_of_skipping_it() {
     let out = bin().args(["scan", "Madonna"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("scan_route=people"), "{err}");
+    assert!(err.contains("pass -k people"), "{err}");
+    assert!(String::from_utf8_lossy(&out.stdout).is_empty());
+}
+
+#[test]
+fn scan_does_not_report_a_mistyped_phone_as_a_skipped_name() {
+    let out = bin().args(["scan", "0412"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("scan_route=people"));
+}
+
+#[test]
+fn scan_with_an_explicit_people_kind_keeps_the_people_skip_path() {
+    let out = bin()
+        .args(["scan", "-k", "people", "Madonna"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&out.stderr).contains("scan_route=people"));
     assert!(String::from_utf8_lossy(&out.stdout).contains("skipped"));
@@ -694,9 +714,10 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
         .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(77));
+    // The README documents a missing key as exit 66, before any request.
+    assert_eq!(out.status.code(), Some(66));
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("keyed leg is not in the free order"), "{err}");
+    assert!(err.contains("no API key for this keyed lookup"), "{err}");
     assert!(
         err.contains("HUNTSMAN_STOLEN_TAX_KEY"),
         "refusal must name the key to set: {err}"
@@ -715,9 +736,9 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&keys, fs::Permissions::from_mode(0o600)).unwrap();
     }
-    // A readable file without the slot is refused by the order gate; an absent
-    // file is an input error raised before the gate.
-    for (file, code) in [(keys.clone(), 77), (dir.join("absent.env"), 66)] {
+    // A readable file without the slot is a missing key, and so is an absent file: both
+    // are exit 66, before any request.
+    for (file, code) in [(keys.clone(), 66), (dir.join("absent.env"), 66)] {
         let out = bin()
             .args(["recon", "stolen-tax", "a@example.com", "--keys"])
             .arg(&file)

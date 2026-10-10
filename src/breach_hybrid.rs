@@ -46,6 +46,26 @@ pub fn command_allowed(subcommand: &str, has_operator_key: bool) -> bool {
     }
 }
 
+/// Every HIBP subcommand the CLI knows, free or keyed. An unknown name is a usage
+/// error for the HIBP command itself, not a missing key, so the order gate leaves it
+/// alone.
+#[must_use]
+pub fn is_known_subcommand(subcommand: &str) -> bool {
+    matches!(
+        subcommand,
+        "password"
+            | "password-range"
+            | "breach"
+            | "breaches"
+            | "account"
+            | "pastes"
+            | "subscription"
+            | "help"
+            | "-h"
+            | "--help"
+    )
+}
+
 /// `recon stolen-tax` is a keyed leg. No key means it is not in the order.
 #[must_use]
 pub fn stolen_tax_allowed(has_operator_key: bool) -> bool {

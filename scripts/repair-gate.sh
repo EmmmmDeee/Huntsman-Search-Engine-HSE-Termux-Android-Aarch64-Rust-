@@ -46,6 +46,16 @@ for required_tool in timeout sha256sum sort; do
     || fail "required verification tool is missing: $required_tool"
 done
 
+# msrv checks the crate on the toolchain it declares. A newer rustc would accept code
+# that the declared floor rejects, so the mode refuses to run on any other compiler.
+if [[ "$mode" == "msrv" ]]; then
+  declared="$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)"
+  active="$(rustc --version | awk '{print $2}')"
+  if [[ -z "$declared" || "${active%.*}" != "$declared" ]]; then
+    fail "msrv needs the declared rust-version $declared, but rustc is $active. Run: rustup run $declared bash scripts/repair-gate.sh msrv"
+  fi
+fi
+
 repo_fingerprint() {
   {
     git diff --binary --no-ext-diff HEAD --

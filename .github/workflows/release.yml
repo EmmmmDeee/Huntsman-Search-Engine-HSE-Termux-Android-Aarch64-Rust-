@@ -2,8 +2,10 @@ name: Release (prebuilt Termux aarch64 binary)
 
 # Main-channel pre-releases for the reconstructed `huntsman-recon` crate.
 #
-# Every push to main (and a manual workflow_dispatch on main) cross-builds and
-# verifies the aarch64 Android/Termux `huntsman-recon` binary. A build is
+# A push to main that comes from a merged pull request (and a manual
+# workflow_dispatch on main) cross-builds and verifies the aarch64 Android/Termux
+# `huntsman-recon` binary. A direct push with no merged pull request fails at the
+# origin check before anything is built. A build is
 # published as immutable `main-<sha7>` PRE-RELEASE only while that commit is
 # still the current main head. Superseded builds remain available as Actions
 # artifacts for their retention window instead of failing while trying to mint
@@ -20,10 +22,11 @@ name: Release (prebuilt Termux aarch64 binary)
 # GitHub's "Latest release". This workflow never creates, edits or deletes a
 # stable release: it has no tag trigger and no stable code path.
 #
-# Publish gate: the build must run on GitHub Actions with HSE_RELEASE=1 (which,
-# with CI and HUNTSMAN_HIBP_NO_EMBED, disables build.rs HIBP key embedding),
-# every build-time embed file must be empty, and the key scan of the exact
-# artifacts must report zero findings. Otherwise nothing is published.
+# Publish gate: the build must run on GitHub Actions with HSE_RELEASE=1, every
+# build-time embed file must be empty, and the key scan of the exact artifacts
+# must report zero findings. Otherwise nothing is published. build.rs registers
+# HSE_RELEASE, CI, and HUNTSMAN_HIBP_NO_EMBED for rebuilds, but it reads none of
+# them, and it writes an empty HIBP embed file on every build.
 #
 # Privilege split (same shape as HSE-BLE-API- release.yml):
 #   * `build` runs cargo, every dependency build script and proc-macro, and the
@@ -787,6 +790,15 @@ jobs:
               *) echo "::error::latest (${cur}) and ${GITHUB_SHA} are ${status}; refusing to move latest"; exit 1 ;;
             esac
           fi
+          # `latest` must carry exactly the bytes of the immutable main-<sha7> release. A
+          # re-run rebuilds, and a rebuild can differ from what was published, so the bytes
+          # promoted here are compared with the published tag's digests before anything moves.
+          tag_rel="$(gh api "$api/releases/tags/${TAG}")" || { echo "::error::${TAG} has no published release to promote from; refusing"; exit 1; }
+          for a in "$ASSET" "$ASSET.sha256" "$ASSET.provenance.json" key-scan-report.txt install-termux.sh; do
+            d="$(jq -r --arg a "$a" '[.assets[] | select(.name == $a)] | if length == 1 then (.[0].digest // "") else "" end' <<<"$tag_rel")"
+            want="sha256:$(sha256sum "dist/$a" | cut -d' ' -f1)"
+            [ "$d" = "$want" ] || { echo "::error::dist/${a} (${want}) is not the published ${TAG} asset (${d}); refusing to promote latest"; exit 1; }
+          done
           if pre="$(gh release view latest --json isPrerelease --jq .isPrerelease 2>/dev/null)"; then
             [ "$pre" = "true" ] || { echo "::error::release 'latest' exists and is NOT a pre-release; refusing"; exit 1; }
             gh release delete latest --yes --cleanup-tag

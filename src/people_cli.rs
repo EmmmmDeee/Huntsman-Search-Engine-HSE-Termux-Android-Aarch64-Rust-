@@ -270,6 +270,13 @@ fn name_tokens(name: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether NAME has the two alphabetic tokens a person lookup needs. The scan router
+/// uses this to tell a name from a mistyped phone or handle before it routes a guess.
+#[must_use]
+pub fn is_name(name: &str) -> bool {
+    name_tokens(&canonical_name(name)).len() >= 2
+}
+
 fn render(report: &Report) -> Result<String, String> {
     let mut out = format!("entities={}\n", report.entities.len());
     for entity in &report.entities {

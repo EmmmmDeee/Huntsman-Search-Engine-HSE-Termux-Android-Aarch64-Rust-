@@ -28,10 +28,14 @@ pub(super) fn hibp_cmd(args: &[String]) -> ExitCode {
     let has_key = huntsman_recon::hibp::KeyLoader::default_chain(None)
         .load()
         .is_some();
-    if !huntsman_recon::breach_hybrid::command_allowed(subcommand, has_key) {
+    // An unknown subcommand is a usage error from the HIBP command. Only a known keyed
+    // subcommand, run without a key, is refused here, as a missing key (66).
+    if huntsman_recon::breach_hybrid::is_known_subcommand(subcommand)
+        && !huntsman_recon::breach_hybrid::command_allowed(subcommand, has_key)
+    {
         return fail(
-            EX_NOPERM,
-            "hibp: keyed leg is not in the free order (set HIBP_API_KEY, HUNTSMAN_HIBP_KEY or ~/.config/hibp/api_key)",
+            EX_NOINPUT,
+            "hibp: no API key for this keyed lookup (set HIBP_API_KEY, HUNTSMAN_HIBP_KEY or ~/.config/hibp/api_key)",
         );
     }
     ExitCode::from(HibpCommand::production().run(
@@ -151,19 +155,25 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
     if query.trim().is_empty() {
         return fail(EX_USAGE, RECON_USAGE);
     }
-    let keys = match keys_file {
-        Some(path) => match Keys::load(Path::new(path)) {
-            Ok(keys) => keys,
-            Err(e) => return fail(EX_NOINPUT, &e.to_string()),
-        },
-        None => Keys::from_env(),
+    // Without --keys, the keys come from $HOME/.huntsman.env and then the environment,
+    // as the README documents. An explicit --keys file is read alone.
+    let resolved = match Keys::resolve(
+        keys_file.map(|path| Path::new(path.as_str())),
+        env::var_os("HOME").as_deref(),
+    ) {
+        Ok(resolved) => resolved,
+        Err(e) => return fail(EX_NOINPUT, &e.to_string()),
     };
+    if let Some(warning) = &resolved.warning {
+        eprintln!("{warning}");
+    }
+    let keys = resolved.keys;
     if !huntsman_recon::breach_hybrid::stolen_tax_allowed(keys.get(stolen_tax::KEY_SLOT).is_some())
     {
         return fail(
-            EX_NOPERM,
+            EX_NOINPUT,
             &format!(
-                "stolen-tax: keyed leg is not in the free order (set {})",
+                "stolen-tax: no API key for this keyed lookup (set {})",
                 stolen_tax::KEY_SLOT
             ),
         );

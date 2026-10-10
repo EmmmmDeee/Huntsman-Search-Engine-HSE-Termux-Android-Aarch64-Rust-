@@ -50,13 +50,14 @@ fn dual_pass_workflow_has_no_llm_api() {
         !workflow.contains("XAI_API_KEY"),
         "workflow must not require an LLM secret"
     );
+    // The egress guard names openai.com in its own grep, so that one line is excluded.
+    // Any other line that mentions openai, in any case, is an SDK, a secret, or an endpoint.
     assert!(
-        !workflow.contains("OPENAI_API_KEY"),
-        "workflow must not read an OpenAI secret"
-    );
-    assert!(
-        !workflow.contains("api.openai.com"),
-        "workflow must not call OpenAI"
+        !workflow
+            .lines()
+            .filter(|line| !line.contains("openai\\.com"))
+            .any(|line| line.to_ascii_lowercase().contains("openai")),
+        "workflow must not install, read, or call an OpenAI SDK, key, or endpoint"
     );
     for required in [
         "types: [labeled]",
