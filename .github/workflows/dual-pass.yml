@@ -30,7 +30,11 @@ jobs:
         with:
           toolchain: 1.87.0
       - name: Install tree-sitter fallback
-        run: python3 -m pip install --disable-pip-version-check tree-sitter tree-sitter-rust
+        run: |
+          # A venv keeps pip off the system interpreter, which PEP 668 blocks on Ubuntu 24.04.
+          python3 -m venv "$RUNNER_TEMP/dual-pass-venv"
+          "$RUNNER_TEMP/dual-pass-venv/bin/python" -m pip install --disable-pip-version-check tree-sitter tree-sitter-rust
+          echo "$RUNNER_TEMP/dual-pass-venv/bin" >> "$GITHUB_PATH"
       - name: Dual-pass self-check
         run: bash scripts/dual-pass/self-check.sh
   plan-and-execute:
@@ -46,7 +50,11 @@ jobs:
           toolchain: 1.87.0
           components: rustfmt
       - name: Install tree-sitter fallback
-        run: python3 -m pip install --disable-pip-version-check tree-sitter tree-sitter-rust
+        run: |
+          # A venv keeps pip off the system interpreter, which PEP 668 blocks on Ubuntu 24.04.
+          python3 -m venv "$RUNNER_TEMP/dual-pass-venv"
+          "$RUNNER_TEMP/dual-pass-venv/bin/python" -m pip install --disable-pip-version-check tree-sitter tree-sitter-rust
+          echo "$RUNNER_TEMP/dual-pass-venv/bin" >> "$GITHUB_PATH"
       - name: Reject model endpoints in the runner
         run: |
           if grep -R -n -E 'https?://api\.x\.ai|secrets\.XAI|openai\.com|anthropic\.com' scripts/dual-pass .github/workflows/dual-pass.yml; then
