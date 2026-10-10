@@ -64,6 +64,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # Keep the MSRV and stable verdicts independent: with fail-fast, a stable
+      # failure cancels the 1.87 leg before it reports.
+      fail-fast: false
       matrix:
         toolchain: ["1.87", stable]
     steps:
