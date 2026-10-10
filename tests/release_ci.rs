@@ -481,12 +481,12 @@ fn release_publish_requires_shared_quality_gate() {
 
     assert!(
         quality_msrv.contains("toolchain: \"1.87\"")
-            && quality_msrv.contains("bash scripts/repair-gate.sh msrv"),
+            && quality_msrv.contains("cargo run --locked -p xtask -- gate msrv"),
         "release must independently validate the repository MSRV before build/publish"
     );
 
     for required in [
-        "bash scripts/repair-gate.sh full",
+        "cargo run --locked -p xtask -- gate full",
         "docker build --pull --build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\" -f Dockerfile -t huntsman-recon:railway .",
         "bash scripts/railway-live-acceptance.sh",
         "persist-credentials: false",

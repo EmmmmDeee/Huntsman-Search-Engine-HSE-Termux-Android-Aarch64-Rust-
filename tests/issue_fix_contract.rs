@@ -221,7 +221,7 @@ fn the_gate_applies_the_patch_and_holds_no_secret() {
     let wf = workflow();
     let gate = job(&wf, "gate");
     assert!(gate.contains("git apply --index \"$RUNNER_TEMP/change/change.patch\""));
-    assert!(gate.contains("bash scripts/repair-gate.sh full"));
+    assert!(gate.contains("cargo run --locked -p xtask -- gate full"));
     assert!(
         !gate.contains("secrets."),
         "the gate job must hold no secret"
@@ -458,10 +458,10 @@ fn issue_fix_scripts_exist_and_are_executable() {
 
 #[test]
 fn the_repair_gate_checks_the_syntax_of_every_issue_fix_script() {
-    let gate = fs::read_to_string("scripts/repair-gate.sh").expect("the repair gate");
+    let gate = fs::read_to_string("xtask/src/gate.rs").expect("the repair gate");
     assert!(
-        gate.contains("for script in scripts/issue-fix/*.sh"),
-        "the repair gate must run bash -n on the issue-fix scripts"
+        gate.contains("\"*.sh\""),
+        "the repair gate must run a syntax check on every tracked shell script, the issue-fix scripts among them"
     );
 }
 

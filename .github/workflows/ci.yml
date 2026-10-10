@@ -77,10 +77,10 @@ jobs:
           components: clippy, rustfmt
       - name: Run deterministic repair gate (stable)
         if: matrix.toolchain == 'stable'
-        run: bash scripts/repair-gate.sh full
+        run: cargo run --locked -p xtask -- gate full
       - name: Run deterministic repair gate (MSRV)
         if: matrix.toolchain == '1.87'
-        run: bash scripts/repair-gate.sh msrv
+        run: cargo run --locked -p xtask -- gate msrv
 
 
   railway-container:

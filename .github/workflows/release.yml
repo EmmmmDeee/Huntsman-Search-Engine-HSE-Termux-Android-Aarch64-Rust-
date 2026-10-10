@@ -73,7 +73,8 @@ on:
       - "src/**"
       - "scripts/railway-entrypoint.sh"
       - "scripts/railway-live-acceptance.sh"
-      - "scripts/repair-gate.sh"
+      - "xtask/**"
+      - ".cargo/**"
       - "scripts/validate-railway-iac.sh"
   workflow_dispatch:
   # Dry run on PRs that touch the release path: same build, embed check and
@@ -95,7 +96,8 @@ on:
       - "src/**"
       - "scripts/railway-entrypoint.sh"
       - "scripts/railway-live-acceptance.sh"
-      - "scripts/repair-gate.sh"
+      - "xtask/**"
+      - ".cargo/**"
       - "scripts/validate-railway-iac.sh"
 
 permissions:
@@ -186,7 +188,7 @@ jobs:
         with:
           toolchain: "1.87"
       - name: Run shared MSRV repair acceptance
-        run: bash scripts/repair-gate.sh msrv
+        run: cargo run --locked -p xtask -- gate msrv
 
   quality:
     name: Shared repair and Railway acceptance
@@ -203,7 +205,7 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
       - name: Run shared host repair acceptance
-        run: bash scripts/repair-gate.sh full
+        run: cargo run --locked -p xtask -- gate full
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "22"

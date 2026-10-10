@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+description = "Repository automation: the verification gate and the other tools CI runs"
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"

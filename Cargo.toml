@@ -1,4 +1,9 @@
-# Reconstructed huntsman. Single package. No workspace.
+# Reconstructed huntsman. One package and the xtask automation crate, which is the only
+# workspace member. The package's own build and tests are unchanged.
+[workspace]
+members = ["xtask"]
+resolver = "3"
+
 # Blocking HTTP via ureq (rustls). No async runtime. Pure logic stays dependency-free.
 # sha256 is in-tree so the evidence hash does not need a crate.
 

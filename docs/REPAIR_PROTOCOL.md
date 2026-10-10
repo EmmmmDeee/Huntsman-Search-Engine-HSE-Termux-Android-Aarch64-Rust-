@@ -41,9 +41,9 @@ the source revision is releasable.
 Run one of:
 
 ```sh
-bash scripts/repair-gate.sh fast
-bash scripts/repair-gate.sh msrv
-bash scripts/repair-gate.sh full
+cargo gate fast
+cargo gate msrv
+cargo gate full
 ```
 
 Use `full` before declaring the host-side Rust/code repair complete. Use `msrv`

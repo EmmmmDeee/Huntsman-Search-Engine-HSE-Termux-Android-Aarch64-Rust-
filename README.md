@@ -57,7 +57,7 @@ repository inconsistency, follow [the repair protocol](docs/REPAIR_PROTOCOL.md).
 The terminal local verification command is:
 
 ```sh
-bash scripts/repair-gate.sh full
+cargo gate full
 ```
 
 CI runs the same gate, so local repair acceptance and automated acceptance use

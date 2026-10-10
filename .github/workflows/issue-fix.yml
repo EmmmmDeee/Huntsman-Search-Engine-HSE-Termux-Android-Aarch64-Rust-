@@ -126,7 +126,7 @@ jobs:
             --output-format json \
             --allowedTools Read Edit Write Glob Grep \
               "Bash(cargo *)" "Bash(git diff *)" "Bash(git status *)" "Bash(git log *)" \
-              "Bash(bash scripts/repair-gate.sh fast)" \
+              "Bash(cargo run --locked -p xtask -- gate fast)" \
             --disallowedTools WebFetch WebSearch "Bash(curl *)" "Bash(wget *)" \
               "Bash(gh *)" "Bash(env)" "Bash(printenv*)" "Bash(git commit *)" "Bash(git push *)" \
             > "$RUNNER_TEMP/change/agent.json" || status=$?
@@ -286,7 +286,7 @@ jobs:
         run: git apply --index "$RUNNER_TEMP/change/change.patch"
 
       - name: Run the full repair gate
-        run: bash scripts/repair-gate.sh full > "$RUNNER_TEMP/gate.log" 2>&1
+        run: cargo run --locked -p xtask -- gate full > "$RUNNER_TEMP/gate.log" 2>&1
 
       - name: Upload the gate log
         if: always()

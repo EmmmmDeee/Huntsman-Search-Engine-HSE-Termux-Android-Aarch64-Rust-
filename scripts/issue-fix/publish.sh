@@ -118,7 +118,7 @@ body_file="$(mktemp)"
   printf -- '- Path policy, applied to the patch on main: changes only under src/, outside the test code, plus new files under src/ and tests/.\n'
   # The backticks are literal Markdown, not command substitution.
   # shellcheck disable=SC2016
-  printf -- '- `scripts/repair-gate.sh full` passed on the runner.\n\n'
+  printf -- '- `cargo run --locked -p xtask -- gate full` passed on the runner.\n\n'
   if [[ "${HAS_PAT:-false}" != "true" ]]; then
     printf 'This pull request was opened with the workflow token. GitHub does not start CI for pull requests opened that way, so start CI from the Actions tab or set the ISSUE_FIX_TOKEN secret.\n\n'
   fi

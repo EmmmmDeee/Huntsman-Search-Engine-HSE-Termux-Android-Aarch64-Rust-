@@ -30,7 +30,7 @@ fail() { echo "issue-fix self-check: FAIL: $*" >&2; exit 1; }
 # a test marked with a space after #, a file with a NUL byte above its test, and a file
 # that a .gitattributes could hide a change in.
 repo="$work/repo"
-mkdir -p "$repo/src/parent" "$repo/src/odd_dir" "$repo/tests" "$repo/scripts" "$repo/.github/workflows"
+mkdir -p "$repo/src/parent" "$repo/src/odd_dir" "$repo/tests" "$repo/scripts" "$repo/xtask/src" "$repo/.github/workflows"
 printf 'pub fn a() {}\n' > "$repo/src/lib.rs"
 cat > "$repo/src/tested.rs" <<'RS'
 pub fn c() -> u8 {
@@ -71,7 +71,7 @@ printf 'pub fn at() -> u8 {\n    5\n}\n\n#[test]\nfn at_is_five() {\n    assert_
 printf 'pub fn nm() -> u8 {\n    6\n}\n\n#[test]\nfn nm_is_six() {\n    assert_eq!(nm(), 6);\n}\n' > "$repo/src/normal.rs"
 printf 'use fixture::a;\n' > "$repo/tests/existing.rs"
 printf 'name: ci\n' > "$repo/.github/workflows/ci.yml"
-printf 'set -e\n' > "$repo/scripts/repair-gate.sh"
+printf 'fn main() {}\n' > "$repo/xtask/src/gate.rs"
 printf '[package]\nname = "fixture"\n' > "$repo/Cargo.toml"
 git -C "$repo" init -q
 git -C "$repo" add -A
@@ -142,7 +142,7 @@ m_rename_test() { git -C "$repo" mv tests/existing.rs tests/renamed.rs; }
 m_edit_manifest() { printf '[package]\nname = "x"\n' > "$repo/Cargo.toml"; }
 m_edit_workflow() { printf 'name: weaker\n' > "$repo/.github/workflows/ci.yml"; }
 m_new_workflow() { printf 'name: extra\n' > "$repo/.github/workflows/extra.yml"; }
-m_edit_gate() { printf 'exit 0\n' > "$repo/scripts/repair-gate.sh"; }
+m_edit_gate() { printf 'fn main() { return; }\n' > "$repo/xtask/src/gate.rs"; }
 
 # Test code that a file name, a loading module, or a #! attribute marks as test code.
 m_edit_test_named_file() { printf 'pub fn t() -> u8 {\n    2\n}\n' > "$repo/src/tests.rs"; }

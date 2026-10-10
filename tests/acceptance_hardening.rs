@@ -2,7 +2,7 @@ use std::fs;
 use std::process::Command;
 
 const RELEASE: &str = ".github/workflows/release.yml";
-const REPAIR_GATE: &str = "scripts/repair-gate.sh";
+const REPAIR_GATE: &str = "xtask/src/gate.rs";
 
 #[test]
 fn failed_ci_prereleases_are_machine_quarantined() {
@@ -69,7 +69,7 @@ fn release_is_path_scoped_pr_origin_gated_and_validates_railway_iac() {
         "\"src/**\"",
         "\"Dockerfile\"",
         "\".railway/**\"",
-        "\"scripts/repair-gate.sh\"",
+        "\"xtask/**\"",
         "\"scripts/validate-railway-iac.sh\"",
         "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0",
         "node-version: \"22\"",
@@ -124,13 +124,7 @@ fn railway_iac_validation_and_live_plan_contracts_are_shell_valid() {
 #[test]
 fn repair_gate_covers_every_added_acceptance_script_and_current_termux_harness() {
     let gate = fs::read_to_string(REPAIR_GATE).expect("repair gate");
-    for required in [
-        "bash -n scripts/cleanup-unverified-prereleases.sh",
-        "bash -n scripts/railway-iac-plan.sh",
-        "bash -n scripts/validate-railway-iac.sh",
-        "bash -n scripts/termux-runtime-acceptance.sh",
-        "bash -n scripts/railway-live-acceptance.sh",
-    ] {
+    for required in ["\"*.sh\"", "\"sh\", &[\"-n\""] {
         assert!(
             gate.contains(required),
             "{REPAIR_GATE} must contain {required:?}"
