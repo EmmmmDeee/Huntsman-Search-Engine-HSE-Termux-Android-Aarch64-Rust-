@@ -154,3 +154,110 @@ fn a_missing_argument_is_a_usage_error() {
         .expect("xtask must run");
     assert_eq!(output.status.code(), Some(64));
 }
+
+/// An array title and an object body print as jq -r prints them: one element or member a line, with
+/// jq's escape for DEL. The prompt matches the original script apart from the fence.
+#[test]
+fn an_array_title_and_an_object_body_print_as_jq_r_prints_them() {
+    let scratch = Scratch::new("jq-array");
+    let issue = write_issue(
+        scratch.path(),
+        r#"{"number": 42, "title": ["a", "b\u007f"], "body": {"x": [1, {}]}, "state": "OPEN"}"#,
+    );
+    let mine = scratch.path().join("mine.md");
+    let theirs = scratch.path().join("theirs.md");
+    let ours = xtask_build_prompt(&issue, &mine);
+    assert!(
+        ours.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ours.stderr)
+    );
+    let original = original_build_prompt(&issue, &theirs);
+    assert!(
+        original.status.success(),
+        "{}",
+        String::from_utf8_lossy(&original.stderr)
+    );
+    let mine = fs::read_to_string(&mine).expect("the prompt was written");
+    let theirs = fs::read_to_string(&theirs).expect("the original prompt was written");
+    assert!(
+        mine.contains("Title: [\n  \"a\",\n  \"b\\u007f\"\n]\n"),
+        "{mine}"
+    );
+    assert_eq!(without_fences(&mine), without_fences(&theirs));
+}
+
+/// The two documented differences in how a value prints. jq keeps the order of an object's keys and
+/// the text of a number, and this port sorts the keys and prints the value. The layout is jq's.
+#[test]
+fn an_object_title_keeps_jq_layout_with_sorted_keys_and_a_number_prints_its_value() {
+    let scratch = Scratch::new("jq-object");
+    for (title, expected) in [
+        (
+            r#"{"b": 1, "a": 2}"#,
+            "Title: {\n  \"a\": 2,\n  \"b\": 1\n}\n\n",
+        ),
+        ("1.50", "Title: 1.5\n\n"),
+        ("1E+2", "Title: 100.0\n\n"),
+    ] {
+        let issue = write_issue(
+            scratch.path(),
+            &format!(r#"{{"number": 42, "title": {title}, "body": "x"}}"#),
+        );
+        let out = scratch.path().join("prompt.md");
+        let result = xtask_build_prompt(&issue, &out);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let text = fs::read_to_string(&out).expect("the prompt was written");
+        assert!(text.contains(expected), "title {title}: {text}");
+    }
+}
+
+/// jq exited 2 for a missing file. This port exits 1, the status of an input that cannot be read, and
+/// writes no prompt either way. This is a pin, not a regression test: the parent commit already exits
+/// 1 here, so the test passes on it.
+#[test]
+fn a_missing_issue_file_is_refused_and_writes_no_prompt() {
+    let scratch = Scratch::new("missing-issue");
+    let issue = scratch.path().join("absent.json");
+    let out = scratch.path().join("prompt.md");
+    let result = xtask_build_prompt(&issue, &out);
+    assert_eq!(result.status.code(), Some(1));
+    assert!(!out.exists(), "a refused prompt must not be written");
+}
+
+/// jq replaced the invalid byte with U+FFFD and wrote the prompt. This port refuses the file as
+/// malformed JSON, which fails closed, and writes no prompt. This is a pin, not a regression test: the
+/// parent commit already refuses this file, so the test passes on it.
+#[test]
+fn a_title_that_is_not_utf_8_is_malformed_json_and_writes_no_prompt() {
+    let scratch = Scratch::new("not-utf8");
+    let issue = scratch.path().join("issue.json");
+    fs::write(
+        &issue,
+        b"{\"number\": 42, \"title\": \"a\xffb\", \"body\": \"x\"}\n",
+    )
+    .expect("the issue can be written");
+    let out = scratch.path().join("prompt.md");
+    let result = xtask_build_prompt(&issue, &out);
+    assert_eq!(result.status.code(), Some(64));
+    assert!(!out.exists(), "a refused prompt must not be written");
+}
+
+/// jq kept the text of 1e400 and wrote it. A number outside the range of a 64-bit float is malformed
+/// JSON here, so it exits 64 and writes no prompt. This is a pin, not a regression test: the parent
+/// commit already refuses this number, so the test passes on it.
+#[test]
+fn a_number_outside_the_float_range_is_malformed_json() {
+    let scratch = Scratch::new("big-number");
+    let issue = write_issue(
+        scratch.path(),
+        r#"{"number": 42, "title": 1e400, "body": "x"}"#,
+    );
+    let out = scratch.path().join("prompt.md");
+    assert_eq!(xtask_build_prompt(&issue, &out).status.code(), Some(64));
+    assert!(!out.exists(), "a refused prompt must not be written");
+}
