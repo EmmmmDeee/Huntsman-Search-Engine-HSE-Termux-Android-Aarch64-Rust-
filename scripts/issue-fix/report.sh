@@ -2,8 +2,10 @@
 # report.sh ISSUE_NUMBER [GATE_LOG]
 #
 # Comments on the issue when an attempt stops before a pull request exists. It
-# reports each stage's outcome and the tail of the repair gate log, which holds
-# compiler and test output only. It never includes model output.
+# reports each stage's outcome and the tail of the repair gate log. The gate runs the
+# tests the model wrote, so that log can contain text the model chose. The tail is
+# therefore posted only as a code block, with backticks removed and each line cut to
+# 400 characters, and the model's own summary is never posted here.
 #
 # Environment: REPO, GH_TOKEN, and the job outcomes FIX_OUTCOME (the model, the path
 # policy, and the capture), GATE_OUTCOME (the repair gate), and PUBLISH_OUTCOME.
@@ -20,7 +22,7 @@ body="$(mktemp)"
     "${FIX_OUTCOME:-unknown}" "${GATE_OUTCOME:-unknown}" "${PUBLISH_OUTCOME:-unknown}"
   if [[ -s "$gate_log" ]]; then
     printf 'Last 40 lines of the repair gate:\n\n```\n'
-    tail -n 40 "$gate_log" | tr '`' "'"
+    tail -n 40 "$gate_log" | tr '`' "'" | cut -c1-400
     printf '```\n\n'
   fi
   printf 'Nothing was merged. A maintainer can fix the issue by hand, or label it again once the cause is addressed.\n\n'

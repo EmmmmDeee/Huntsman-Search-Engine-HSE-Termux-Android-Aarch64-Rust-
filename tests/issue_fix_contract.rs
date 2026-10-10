@@ -10,12 +10,11 @@ use std::path::Path;
 use std::process::Command;
 
 const WORKFLOW: &str = ".github/workflows/issue-fix.yml";
-const SCRIPTS: [&str; 8] = [
+const SCRIPTS: [&str; 7] = [
     "scripts/issue-fix/instructions.md",
     "scripts/issue-fix/build-prompt.sh",
     "scripts/issue-fix/check-protected.sh",
     "scripts/issue-fix/capture.sh",
-    "scripts/issue-fix/redact.sh",
     "scripts/issue-fix/publish.sh",
     "scripts/issue-fix/report.sh",
     "scripts/issue-fix/self-check.sh",
@@ -205,7 +204,7 @@ fn fix_runs_the_policy_and_the_capture_from_a_copy_made_before_the_model() {
         .find("Run the model under the tool allowlist")
         .expect("fix must run the model");
     assert!(copy < model, "the copy must be made before the model runs");
-    for script in ["check-protected.sh", "capture.sh", "redact.sh"] {
+    for script in ["check-protected.sh", "capture.sh"] {
         assert!(
             fix.contains(&format!("issue-fix-scripts/{script}")),
             "{script} must run from the copy"
@@ -250,6 +249,126 @@ fn every_job_checks_the_issue_number_before_using_it() {
             "the {name} job must check that the issue number is numeric"
         );
     }
+}
+
+#[test]
+fn every_job_reads_the_commit_the_run_started_from() {
+    let wf = workflow();
+    for name in ["fix", "gate"] {
+        assert!(
+            job(&wf, name).contains("ref: ${{ github.sha }}"),
+            "the {name} job must check out github.sha, the commit the run started from"
+        );
+    }
+    assert!(
+        job(&wf, "publish").contains("ref: main"),
+        "publish checks out main, and it refuses unless main is still the gated commit"
+    );
+    let fix = job(&wf, "fix");
+    assert!(
+        fix.contains("BASE_SHA: ${{ github.sha }}"),
+        "the fix job's base is github.sha, which no step can change"
+    );
+    assert!(
+        fix.contains("test \"$(git rev-parse HEAD)\" = \"$BASE_SHA\""),
+        "the fix job must refuse a checkout that is not the commit the run started from"
+    );
+}
+
+#[test]
+fn publish_is_tied_to_the_commit_the_gate_tested() {
+    let wf = workflow();
+    assert!(
+        job(&wf, "publish").contains("GATED_SHA: ${{ github.sha }}"),
+        "publish must receive the commit the gate tested"
+    );
+    let script = fs::read_to_string("scripts/issue-fix/publish.sh").expect("the publish script");
+    assert!(
+        script.contains("GATED_SHA") && script.contains("main moved"),
+        "publish must refuse when main is not the commit the gate tested"
+    );
+}
+
+#[test]
+fn no_step_passes_state_to_a_later_step_through_the_environment_file() {
+    assert!(
+        !workflow().contains("GITHUB_ENV"),
+        "the environment file is read by the steps after it, and the model can write it"
+    );
+}
+
+#[test]
+fn only_the_publish_step_sees_a_write_token() {
+    let wf = workflow();
+    let publish = job(&wf, "publish");
+    let header = publish
+        .split("\n    steps:")
+        .next()
+        .expect("the publish job has a steps list");
+    assert!(
+        !header.contains("secrets.") && !header.contains("github.token"),
+        "the publish job's env must hold no token: job-level env reaches every step"
+    );
+    let push = step(&wf, "Publish the pull request");
+    assert!(
+        push.contains("PUSH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}"),
+        "the publish step holds the push token"
+    );
+    for name in [
+        "Keep a copy of the publish scripts",
+        "Check the issue number",
+        "Fetch the issue",
+    ] {
+        assert!(
+            !step(&publish, name).contains("PUSH_TOKEN"),
+            "the {name} step must not see the push token"
+        );
+    }
+    assert!(
+        !publish.contains("issues: write"),
+        "publish reads the issue and opens a pull request; it does not write issues"
+    );
+}
+
+#[test]
+fn the_key_scan_runs_in_the_model_step_before_the_change_is_checked() {
+    let wf = workflow();
+    let model = step(&wf, "Run the model under the tool allowlist");
+    assert!(
+        model.contains("python3 -I - \"$RUNNER_TEMP/change/agent.json\" <<'PY'"),
+        "the key scan runs in isolated mode, from the workflow file"
+    );
+    assert!(
+        model.contains("os.walk(\".\")") && model.contains("sys.exit(1 if found else 0)"),
+        "the key scan walks the working tree and refuses when it finds the key"
+    );
+    assert!(
+        model.contains("exit \"$status\""),
+        "the model step must exit with the scan's refusal"
+    );
+    let fix = job(&wf, "fix");
+    let scanned = fix
+        .find("Run the model under the tool allowlist")
+        .expect("the fix job runs the model");
+    let checked = fix
+        .find("Check the change against the path policy")
+        .expect("the fix job checks the change");
+    assert!(
+        scanned < checked,
+        "the change is checked only after the key scan"
+    );
+}
+
+#[test]
+fn the_redaction_script_is_gone_and_the_workflow_does_not_call_it() {
+    assert!(
+        !Path::new("scripts/issue-fix/redact.sh").exists(),
+        "the key scan replaced redact.sh, which a copy in the runner temp directory could overwrite"
+    );
+    assert!(
+        !workflow().contains("redact.sh"),
+        "the workflow must not call redact.sh"
+    );
 }
 
 #[test]

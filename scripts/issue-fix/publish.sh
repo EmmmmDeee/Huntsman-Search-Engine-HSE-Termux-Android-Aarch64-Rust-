@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
 # publish.sh ISSUE_JSON CHANGE_DIR
 #
-# Applies the agent's patch to a checkout of main, checks the result against the
-# path policy, commits it on ai-fix/issue-N, pushes that branch, and opens a pull
-# request against main. It never merges.
+# Applies the agent's patch to a checkout of main, checks the result against the path
+# policy, commits it on ai-fix/issue-N, pushes that branch, and opens a pull request
+# against main. It never merges.
 #
-# Run this from a checkout that the agent never touched, using a copy of the
-# scripts made before the patch was applied. The patch is data. The policy check
-# reads what the patch does to main, and nothing from the patch is executed.
-# A patch that touches anything the policy refuses is never committed.
+# Run it from a checkout that the agent never touched, using a copy of the scripts made
+# before the patch arrived. The patch is data. Nothing from the patch is executed here,
+# and the policy checks what the patch does to main.
 #
-# Environment: REPO (owner/name). PUSH_TOKEN and GH_TOKEN carry the push and gh.
-# HAS_PAT is "true" when PUSH_TOKEN is a personal or app token, not the workflow
-# token. REMOTE_URL pushes to that URL instead of origin, and DRY_RUN=1 skips gh;
-# the offline self-check uses both.
+# The gate tested the commit GATED_SHA. The change is published only while main is still
+# that commit, so a pull request is never a combination the gate did not run on.
+#
+# Environment: REPO and GATED_SHA. PUSH_TOKEN and GH_TOKEN carry the push and gh.
+# HAS_PAT is "true" when PUSH_TOKEN is a personal or app token, not the workflow token.
+# REMOTE_URL pushes to that URL instead of origin, and DRY_RUN=1 skips gh; the offline
+# self-check uses both.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 issue_json="${1:?usage: publish.sh ISSUE_JSON CHANGE_DIR}"
 change_dir="${2:?usage: publish.sh ISSUE_JSON CHANGE_DIR}"
 repo="${REPO:?REPO must be set}"
+gated="${GATED_SHA:?GATED_SHA must name the commit the gate tested}"
 patch="$change_dir/change.patch"
 agent_json="$change_dir/agent.json"
 
@@ -49,27 +52,49 @@ if [[ ! -s "$patch" ]]; then
   exit 1
 fi
 
+# The gate tested GATED_SHA. Publishing from any other main would ship a change the gate
+# did not see, so main must still be that commit.
+main_sha="$(git rev-parse HEAD)"
+if [[ "$main_sha" != "$gated" ]]; then
+  echo "publish: main is $main_sha, but the gate tested $gated; main moved while the run was in progress, so label the issue again" >&2
+  exit 1
+fi
+
 # An existing branch is never overwritten. The maintainer decides what to do with it.
 set +e
 remote_git ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1
 status=$?
 set -e
 case "$status" in
-  0) echo "publish: $branch already exists on the remote; delete or rename it, then label the issue again" >&2; exit 1 ;;
+  0)
+    echo "publish: $branch already exists on the remote; delete or rename it, then label the issue again" >&2
+    exit 1
+    ;;
   2) ;;
-  *) echo "publish: could not read the remote heads (exit $status)" >&2; exit 1 ;;
+  *)
+    echo "publish: could not read the remote heads (exit $status)" >&2
+    exit 1
+    ;;
 esac
 
-main_sha="$(git rev-parse --short HEAD)"
 git checkout -q -b "$branch"
 if ! git apply --index "$patch"; then
   echo "publish: the patch does not apply to $(git rev-parse --short HEAD)" >&2
   exit 1
 fi
-if git diff --cached --quiet --no-ext-diff; then
-  echo "publish: the patch changes nothing" >&2
-  exit 1
-fi
+staged=0
+git diff --cached --quiet --no-ext-diff || staged=$?
+case "$staged" in
+  0)
+    echo "publish: the patch changes nothing" >&2
+    exit 1
+    ;;
+  1) ;;
+  *)
+    echo "publish: git diff failed (exit $staged)" >&2
+    exit 1
+    ;;
+esac
 bash "$here/check-protected.sh" HEAD
 
 git -c user.name="issue-fix" -c user.email="issue-fix@users.noreply.github.com" \
@@ -89,7 +114,7 @@ body_file="$(mktemp)"
   printf 'Closes #%s\n\n' "$number"
   printf '## Model summary (unreviewed)\n\n%s\n\n' "$summary"
   printf '## What the workflow checked\n\n'
-  printf -- '- Built on main at %s.\n' "$main_sha"
+  printf -- '- Built on main at %s, the commit the gate tested.\n' "$main_sha"
   printf -- '- Path policy, applied to the patch on main: changes only under src/, outside the test code, plus new files under src/ and tests/.\n'
   # The backticks are literal Markdown, not command substitution.
   # shellcheck disable=SC2016

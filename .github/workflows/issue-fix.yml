@@ -5,28 +5,33 @@ name: issue-fix
 # work runs in four jobs, and only one of them holds a write token:
 #
 #   fix      runs the pinned Claude Code CLI under a tool allowlist and a spend cap,
-#            then captures the change as a patch. Only its model step holds the model
-#            key. It holds no write token.
-#   gate     applies the patch to main and runs the full repair gate. It holds no
-#            secrets. Its tests run code the model wrote, so it is untrusted too.
-#   publish  applies the patch to a checkout of main, checks the result against the
-#            path policy, and opens the pull request. It holds the write token. It
-#            runs only scripts copied from the checkout before the patch was applied.
+#            then captures the change as a patch. Only the model step holds the model
+#            key, and that step scans the working tree for the key before it ends.
+#            It holds no write token.
+#   gate     applies the patch to the commit this run started from and runs the full
+#            repair gate. It holds no secrets. Its tests run code the model wrote, so
+#            it is untrusted too.
+#   publish  applies the patch to a checkout of main, but only while main is still the
+#            commit the gate tested. It checks the result against the path policy and
+#            opens the pull request. It holds the write token, and only its publish step
+#            receives it. It runs only scripts copied before the patch was applied.
 #   report   comments on the issue when an attempt stops before a pull request.
 #
 # The jobs pass files, never code. The patch and the redacted model output are the
 # only things that cross from the untrusted jobs into publish, and publish treats
-# them as data.
+# them as data. Every job reads the same commit, github.sha, which the runner sets from
+# the event and no job can change.
 #
 # Secrets: ANTHROPIC_API_KEY (required). ISSUE_FIX_TOKEN (optional; a token with
 # contents and pull-requests write, so that CI starts on the pull request).
 # Variables: ISSUE_FIX_MODEL (default opus), ISSUE_FIX_BUDGET_USD (default 10).
 #
 # Residual risk: the model's Bash tool can run cargo, and cargo runs code the model
-# wrote. That code can read the model key in the model step and send it out. GitHub
-# masks the value in logs, and redaction removes the key from the output that is
-# published, but a key encoded some other way is not caught. Only maintainers with
-# triage access can apply the label, and that is the control.
+# wrote. That code can read the model key in the model step and send it out. The step's
+# scan refuses a change that carries the key, or a base64 or hex form of it, anywhere in
+# the working tree, and it redacts the model output. A key hidden some other way, and a
+# process that outlives the model step, are not caught. Only maintainers with triage
+# access can apply the label, and that is the control.
 
 on:
   issues:
@@ -55,20 +60,22 @@ jobs:
     env:
       ISSUE: ${{ github.event.issue.number || inputs.issue }}
       REPO: ${{ github.repository }}
+      BASE_SHA: ${{ github.sha }}
       CLAUDE_CODE_VERSION: "2.1.283"
       ISSUE_FIX_MODEL: ${{ vars.ISSUE_FIX_MODEL || 'opus' }}
       ISSUE_FIX_BUDGET_USD: ${{ vars.ISSUE_FIX_BUDGET_USD || '10' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check the issue number
+      - name: Check the issue number and the base commit
         run: |
           set -euo pipefail
           [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue number is not numeric: $ISSUE"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$BASE_SHA" || { echo "::error::checkout is not the commit this run started from"; exit 1; }
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
@@ -95,9 +102,6 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$ANTHROPIC_API_KEY" || { echo "::error::ANTHROPIC_API_KEY is not set"; exit 1; }
-
-      - name: Record the base commit
-        run: echo "BASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Keep a copy of the policy scripts
         run: |
@@ -126,7 +130,61 @@ jobs:
             --disallowedTools WebFetch WebSearch "Bash(curl *)" "Bash(wget *)" \
               "Bash(gh *)" "Bash(env)" "Bash(printenv*)" "Bash(git commit *)" "Bash(git push *)" \
             > "$RUNNER_TEMP/change/agent.json" || status=$?
-          bash "$RUNNER_TEMP/issue-fix-scripts/redact.sh" "$RUNNER_TEMP/change/agent.json"
+          # The scan below is read from this workflow file, which the model cannot write,
+          # and it runs while the key is still in this step's environment. It redacts the
+          # model output, then refuses the change if the key, or a base64 or hex form of
+          # it, is in any file of the working tree.
+          scan_status=0
+          python3 -I - "$RUNNER_TEMP/change/agent.json" <<'PY' || scan_status=$?
+          import base64
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+
+          def forms(secret):
+              raw = secret.encode("utf-8")
+              candidates = {raw, raw.hex().encode("ascii"), base64.b64encode(raw), base64.urlsafe_b64encode(raw)}
+              return sorted(form for form in candidates if len(form) >= 8)
+
+
+          agent = Path(sys.argv[1])
+          if agent.is_file():
+              text = agent.read_text(encoding="utf-8", errors="surrogateescape")
+              if key:
+                  for form in forms(key):
+                      text = text.replace(form.decode("utf-8", "surrogateescape"), "[redacted]")
+              text = re.sub(r"sk-ant-[A-Za-z0-9_-]+", "[redacted]", text)
+              agent.write_text(text, encoding="utf-8", errors="surrogateescape")
+
+          found = []
+          if key:
+              needles = forms(key)
+              for root, dirs, files in os.walk("."):
+                  dirs[:] = [d for d in dirs if d not in (".git", "target")]
+                  for name in files:
+                      path = os.path.join(root, name)
+                      if os.path.islink(path) or not os.path.isfile(path):
+                          continue
+                      try:
+                          with open(path, "rb") as handle:
+                              data = handle.read()
+                      except OSError:
+                          continue
+                      if any(needle in data for needle in needles):
+                          found.append(path)
+
+          for path in found:
+              print(f"::error::the model key, or an encoding of it, is in {path}", file=sys.stderr)
+          sys.exit(1 if found else 0)
+          PY
+          if [[ "$scan_status" -ne 0 ]]; then
+            echo "::error::the change is refused: it carries the model key"
+            status=1
+          fi
           exit "$status"
 
       - name: Check the change against the path policy
@@ -159,7 +217,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -173,7 +231,7 @@ jobs:
           name: issue-fix-change
           path: ${{ runner.temp }}/change
 
-      - name: Apply the patch to main
+      - name: Apply the patch to the base commit
         run: git apply --index "$RUNNER_TEMP/change/change.patch"
 
       - name: Run the full repair gate
@@ -196,14 +254,12 @@ jobs:
     permissions:
       actions: read
       contents: write
-      issues: write
+      issues: read
       pull-requests: write
     env:
       ISSUE: ${{ github.event.issue.number || inputs.issue }}
       REPO: ${{ github.repository }}
-      PUSH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
-      GH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
-      HAS_PAT: ${{ secrets.ISSUE_FIX_TOKEN != '' }}
+      GATED_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -223,6 +279,8 @@ jobs:
           [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue number is not numeric: $ISSUE"; exit 1; }
 
       - name: Fetch the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh issue view "$ISSUE" --repo "$REPO" --json number,title,state > "$RUNNER_TEMP/issue.json"
@@ -234,6 +292,10 @@ jobs:
           path: ${{ runner.temp }}/change
 
       - name: Publish the pull request
+        env:
+          PUSH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
+          HAS_PAT: ${{ secrets.ISSUE_FIX_TOKEN != '' }}
         run: bash "$RUNNER_TEMP/trusted-scripts/publish.sh" "$RUNNER_TEMP/issue.json" "$RUNNER_TEMP/change"
 
   report:
