@@ -1789,7 +1789,7 @@ fn f1_shift_inside_an_arithmetic_command_opens_no_here_document() {
 }
 
 #[test]
-fn f1_shift_in_let_opens_no_here_document() {
+fn f1_unquoted_shift_in_let_opens_a_here_document_and_quoted_does_not() {
     // Guard. Bash reads the unquoted `<<` of a `let` operand as a here-document, so the
     // pipeline on the next line is its body, and bash does not run it.
     assert!(
@@ -1875,8 +1875,8 @@ fn f4_gnu_long_option_prefixes_are_early_exits() {
 
 #[test]
 fn f4_a_long_option_that_is_not_an_early_exit_stays_unflagged() {
-    // Guard. None of these options stops grep early. `--file` and `--regexp` take a value,
-    // and in `--regexp -q` the `-q` is the pattern. The earlier detector matches a long
+    // Guard. With an existing pattern file, none of these options stops grep early. `--file`
+    // and `--regexp` take a value, and in `--regexp -q` the `-q` is the pattern. The earlier detector matches a long
     // option by its exact name and already skips such a value, so it leaves each one
     // unflagged.
     assert!(!pipes_into_grep_quiet("a | grep --file=pats x"));
@@ -1908,7 +1908,7 @@ fn f6_or_true_on_the_next_line_guards_the_pipeline() {
     assert_eq!(
         flagged_lines("a | grep -q x ||\n  echo none\n"),
         [1],
-        "a fallback other than true is not a guard"
+        "only `|| true` is recognised as a guard, so another fallback is flagged"
     );
 }
 
