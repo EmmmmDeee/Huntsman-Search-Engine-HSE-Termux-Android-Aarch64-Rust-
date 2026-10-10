@@ -10,6 +10,9 @@ use std::process::Command;
 const WORKFLOW: &str = ".github/workflows/dual-pass.yml";
 const RED_CLASS: &str = "scripts/dual-pass/red_class.py";
 const RED_FIXTURES: &str = "scripts/dual-pass/fixtures/red";
+// The egress guard names openai.com in its own grep, so exactly that line is excluded. Excluding
+// every line that mentions openai.com would let a step that sets an OpenAI endpoint through.
+const EGRESS_GUARD: &str = "grep -R -n -E 'https?://api\\.x\\.ai|secrets\\.XAI|openai\\.com|anthropic\\.com' scripts/dual-pass";
 
 fn read(path: &str) -> String {
     fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"))
@@ -76,9 +79,6 @@ fn dual_pass_workflow_has_no_llm_api() {
         !workflow.contains("XAI_API_KEY"),
         "workflow must not require an LLM secret"
     );
-    // The egress guard names openai.com in its own grep, so exactly that line is excluded. Excluding
-    // every line that mentions openai.com would let a step that sets an OpenAI endpoint through.
-    const EGRESS_GUARD: &str = "grep -R -n -E 'https?://api\\.x\\.ai|secrets\\.XAI|openai\\.com|anthropic\\.com' scripts/dual-pass";
     assert_eq!(
         workflow.matches(EGRESS_GUARD).count(),
         1,
