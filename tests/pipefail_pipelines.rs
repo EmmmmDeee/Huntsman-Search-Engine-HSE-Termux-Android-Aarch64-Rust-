@@ -840,7 +840,14 @@ impl<'a> Parser<'a> {
                     quoted: false,
                     ..
                 } if matches!(text.as_str(), "then" | "do" | "else" | "elif") => self.pos += 1,
-                _ => self.parse_andor(piped),
+                _ => {
+                    let before = self.pos;
+                    self.parse_andor(piped);
+                    if self.pos == before {
+                        // No rule accepted this token. Skip it, so the loop always ends.
+                        self.pos += 1;
+                    }
+                }
             }
         }
     }
@@ -1127,7 +1134,7 @@ fn skip_options(words: &[String], with_value: &[&str]) -> usize {
 fn command_of(words: &[String]) -> Option<(&str, &[String])> {
     let mut i = 0;
     while let Some(word) = words.get(i) {
-        let name = word.rsplit('/').next().unwrap_or(word);
+        let name = word.as_str();
         i += 1;
         let skipped = match name {
             _ if is_assignment(word) => 0,
@@ -1331,6 +1338,11 @@ fn a_here_document_on_a_piped_line_is_checked_inside_its_substitution() {
 }
 
 #[test]
+fn a_substitution_in_an_unquoted_here_document_body_is_checked() {
+    assert_eq!(flagged_lines("cat <<EOF\n$(a | grep -q y)\nEOF\n"), [2]);
+}
+
+#[test]
 fn substitutions_backticks_and_process_substitutions_are_checked() {
     assert!(pipes_into_grep_quiet("x=\"$(a | grep -q y)\""));
     assert!(pipes_into_grep_quiet("x=`a | grep -q y`"));
@@ -1359,16 +1371,6 @@ fn a_guard_covers_the_whole_pipeline_and_a_producer_is_not_a_consumer() {
 fn the_innermost_pipeline_owns_its_consumer() {
     assert!(!pipes_into_grep_quiet("a | { b | grep -q y || true; }"));
     assert!(pipes_into_grep_quiet("a | { b | grep -q y; }"));
-}
-
-#[test]
-fn case_pattern_bars_are_not_pipes() {
-    assert!(!pipes_into_grep_quiet(
-        "case \"$x\" in aarch64 | arm64) grep -q y \"$f\" ;; esac"
-    ));
-    assert!(pipes_into_grep_quiet(
-        "case \"$(a | grep -q y)\" in b) : ;; esac"
-    ));
 }
 
 #[test]

@@ -282,10 +282,15 @@ expect_red err-return "err-return: rejected (the test failed without an assertio
 expect_red lone-mismatch "lone-mismatch: rejected (the build failed on an error other than a missing symbol)"
 expect_red mismatch-and-missing "mismatch-and-missing: rejected (the build failed on an error other than a missing symbol)"
 expect_red does-not-parse "does-not-parse: rejected (the generated test does not parse)"
+expect_red missing-symbol-colored "missing-symbol-colored: missing-symbol"
+expect_red missing-value "missing-value: missing-symbol"
+expect_red missing-type "missing-type: missing-symbol"
 echo "red runs: every failing binary must be a valid red"
 expect_red_run 0 missing-symbol assertion
 expect_red_run 0 assertion-with-message missing-symbol
+expect_red_run 0 missing-symbol-colored assertion
 expect_red_run 1 lone-mismatch missing-symbol
+expect_red_run 1 lone-mismatch missing-symbol-colored
 expect_red_run 1 lone-mismatch assertion
 
 # The red gate in the runner. A lone E0308 next to a valid missing symbol refuses the run.
@@ -306,8 +311,12 @@ plan_md "$mixed/issue.md" <<'JSON'
 JSON
 run_plan "$mixed" 12 "$mixed/issue.md" "$mixed/out"
 expect_outcome "$mixed/out" needs-human-review
-grep -q '^generated_1: rejected (the build failed on an error other than a missing symbol)$' "$mixed/out/dual-pass-report.md" \
-  || { echo "a lone E0308 was not refused by the run" >&2; cat "$mixed/out/dual-pass-report.md" >&2; exit 1; }
+# Each verdict is checked on its own line: the lone E0308 is refused as a build failure, and
+# the missing symbol next to it is a valid red. The run is refused because of the first.
+grep -Fxq 'generated_1: rejected (the build failed on an error other than a missing symbol)' "$mixed/out/dual-pass-report.md" \
+  || { echo "generated_1 (the lone E0308) was not judged as a refused build" >&2; cat "$mixed/out/dual-pass-report.md" >&2; exit 1; }
+grep -Fxq 'generated_2: missing-symbol' "$mixed/out/dual-pass-report.md" \
+  || { echo "generated_2 (the missing symbol) was not judged as a valid red" >&2; cat "$mixed/out/dual-pass-report.md" >&2; exit 1; }
 grep -q 'red gate rejected the plan' "$mixed/out/dual-pass-report.md" \
   || { echo "the run did not record the red refusal" >&2; exit 1; }
 echo "ok: a run with a lone E0308 is refused, though the other binary is a valid missing symbol"

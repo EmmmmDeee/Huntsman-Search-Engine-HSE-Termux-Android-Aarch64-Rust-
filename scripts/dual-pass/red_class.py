@@ -7,7 +7,8 @@ Each LOG is the cargo test output of one generated test binary that failed on un
 main. Each log is judged on its own, and the red is valid only when every log is valid.
 A valid red is one of these classes:
 
-  missing-symbol    the build failed, and every compile error is a `cannot find`
+  missing-symbol    the build failed, and every compile error is a `cannot find` error:
+                    E0425 for a function or a value, E0412 for a type, or no code
   assertion-failed  the test ran, and every panic is an assertion macro's default message
 
 The default messages begin with "assertion `left" (assert_eq!, assert_ne!) or with
@@ -16,6 +17,10 @@ refused. A custom message on assert_eq! or assert_ne! is added after it and is a
 Anything else is rejected: a build failure on another error, a parse error, a panic that
 is not an assertion (unwrap() on an Err, expect()), and a failure with no panic (a test
 that returns Err).
+
+Colour and link escape sequences are removed before a log is read. Cargo colours its
+diagnostics when CARGO_TERM_COLOR asks for it, and those sequences would otherwise hide
+the `error` and `could not compile` lines that the judgement depends on.
 
 Prints one line per log, `NAME: CLASS`, or `NAME: rejected (REASON)`, and exits 0 only
 when every log is valid. Run it with -I, as every Python call in the plan stage is run.
@@ -27,15 +32,24 @@ from pathlib import Path
 DEFAULT_MESSAGES = ("assertion `left", "assertion failed")
 PANIC_MARK = "panicked at "
 BUILD_FAILED = "error: could not compile "
-ERROR_LINE = re.compile(r"^error(\[E\d+\])?: ")
+ERROR_LINE = re.compile(r"error(\[E\d+\])?: ")
+MISSING_SYMBOL = re.compile(r"error(\[E\d+\])?: cannot find ")
+# Control sequences (colour, cursor movement) and OSC links that cargo or rustc may print.
+ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def plain(text):
+    """The log as plain text: no escape sequences, and LF line endings."""
+    return ANSI.sub("", text).replace("\r\n", "\n").replace("\r", "\n")
 
 
 def compile_errors(lines):
     """The rustc error lines of a failed build. The cargo summary line is not an error."""
     errors = []
     for line in lines:
-        if ERROR_LINE.match(line) and not line.startswith(BUILD_FAILED):
-            errors.append(line)
+        stripped = line.strip()
+        if ERROR_LINE.match(stripped) and not stripped.startswith(BUILD_FAILED):
+            errors.append(stripped)
     return errors
 
 
@@ -60,14 +74,14 @@ def panic_messages(lines):
 def classify(text):
     """Returns (class, reason) for one log. The class is missing-symbol, assertion-failed,
     or rejected. The reason is empty unless the class is rejected."""
-    lines = text.splitlines()
+    lines = plain(text).splitlines()
     # GUARD: a log whose build failed is judged by its compile errors alone. Panic text in
     # the same log never makes a failed build a red.
-    if any(line.startswith(BUILD_FAILED) for line in lines):
+    if any(line.strip().startswith(BUILD_FAILED) for line in lines):
         errors = compile_errors(lines)
         if any("expected one of" in error for error in errors):
             return "rejected", "the generated test does not parse"
-        if errors and all("cannot find" in error for error in errors):
+        if errors and all(MISSING_SYMBOL.match(error) for error in errors):
             return "missing-symbol", ""
         return "rejected", "the build failed on an error other than a missing symbol"
     messages = panic_messages(lines)

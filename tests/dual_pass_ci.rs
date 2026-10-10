@@ -164,7 +164,11 @@ fn a_job_level_token_added_to_the_plan_job_is_refused() {
         plan.contains(job_env),
         "the plan job has a job-level env block to tamper with"
     );
-    let tampered = plan.replacen(job_env, "\n    env:\n      GH_TOKEN: ${{ github.token }}\n", 1);
+    let tampered = plan.replacen(
+        job_env,
+        "\n    env:\n      GH_TOKEN: ${{ github.token }}\n",
+        1,
+    );
     let refs = credential_refs(&tampered);
     assert!(
         refs.contains(&"GH_TOKEN") && refs.contains(&"github.token"),
@@ -295,7 +299,9 @@ fn judge_red(logs: &[&str]) -> (bool, String) {
         .expect("python3 must run the red classifier");
     (
         output.status.success(),
-        String::from_utf8_lossy(&output.stdout).trim_end().to_owned(),
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_owned(),
     )
 }
 
@@ -334,6 +340,12 @@ fn a_red_gate_accepts_only_a_missing_symbol_or_a_failed_assertion() {
             "does-not-parse",
             "does-not-parse: rejected (the generated test does not parse)",
         ),
+        (
+            "missing-symbol-colored",
+            "missing-symbol-colored: missing-symbol",
+        ),
+        ("missing-value", "missing-value: missing-symbol"),
+        ("missing-type", "missing-type: missing-symbol"),
     ];
     for (log, verdict) in single {
         let (accepted, printed) = judge_red(&[log]);
@@ -346,11 +358,16 @@ fn a_red_gate_accepts_only_a_missing_symbol_or_a_failed_assertion() {
     }
     // A run is a valid red only when every binary is one. A lone E0308 next to a valid
     // missing symbol, or next to a valid assertion, refuses the whole run.
-    let runs: [(&[&str], bool, &str); 3] = [
+    let runs: [(&[&str], bool, &str); 4] = [
         (
             &["missing-symbol", "assertion"],
             true,
             "missing-symbol: missing-symbol\nassertion: assertion-failed",
+        ),
+        (
+            &["missing-symbol-colored", "assertion"],
+            true,
+            "missing-symbol-colored: missing-symbol\nassertion: assertion-failed",
         ),
         (
             &["lone-mismatch", "missing-symbol"],

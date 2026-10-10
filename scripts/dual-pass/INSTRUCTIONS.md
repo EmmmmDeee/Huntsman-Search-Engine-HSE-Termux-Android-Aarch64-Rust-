@@ -9,15 +9,15 @@ Write the change as one fenced `json` block in the issue. The runner binds it to
 Required keys: `targets`, `new_tests`, `patches`.
 Forbidden keys: `model`, `prompt`, `endpoint`, `api_key`, and `llm: true`.
 
-`targets` are existing source files. They must not be `tests/`, `Cargo.toml`, `Cargo.lock`, or workflow files.
-`new_tests` must be `tests/generated_<issue>.rs`, must assert a behavior that is false on untouched main, and must not be `assert!(true)` or `assert_eq!(x, x)`.
+`targets` are a path under `src/`, or a new file under `tests/`. Anything else, such as `docs/`, `Cargo.toml`, `Cargo.lock`, or a workflow file, is refused before any build.
+`new_tests` must be `tests/generated_<issue>.rs`, must not already exist on main, must assert a behavior that is false on untouched main, and must not be `assert!(true)` or `assert_eq!(x, x)`.
 `patches` has one to three items. Each item has a unified `diff` and a `replace_fn` fallback (`path`, `name`, `body`). Diffs may touch only declared targets. Every path a diff names is checked, including the source and destination of a rename or copy.
 
 Label the issue `dual-pass`, or run the workflow with the issue number.
 
 ## Method 2 — Red before any edit
 
-The runner writes the generated tests and runs them before applying a patch. A pass on untouched main is a rejected specification. A test that does not parse is also rejected. A valid red is a missing symbol (the build fails on `cannot find`) or a failed assertion (the test runs and panics). Any other compile error is rejected, because it shows nothing about the defect. The report records which class fired.
+The runner writes the generated tests and runs them before applying a patch. A pass on untouched main is a rejected specification, and so is a test that does not parse. Each failing binary is judged on its own by `red_class.py`. A valid red is a missing symbol (every compile error is `cannot find`) or a failed assertion (every panic is an assertion's default message, which begins ``assertion `left`` or ``assertion failed``). A custom message on `assert!` is refused, and a custom message on `assert_eq!` is accepted only when the default text stays at its start. Any other error or panic refuses the plan, because it shows nothing about the defect. The report records the class of each binary.
 
 ## Method 3 — Patch, then type, then unit
 
@@ -29,7 +29,7 @@ There is no prompt cache. Pass 1 records sha256 of `static-context.md`, `Cargo.t
 
 ## Method 5 — Green opens a PR; red budget hands off
 
-The plan stage writes `change.patch` with only declared targets and generated tests. The publish stage applies that patch to a fresh checkout of `main`, runs the path policy on the result, and only then commits. On green the branch is `dual-pass/issue-<n>` and a pull request opens. On exhaustion, when the patch has a change, the branch is `dual-pass/issue-<n>-wip`, the issue is labeled `needs-human-review`, and the failure trace is commented. A plan with no change pushes nothing. Protected files are restored before the change is written.
+The plan stage writes `change.patch` with only declared targets and generated tests. The publish stage applies that patch to a fresh checkout of `main`, runs the path policy on the result, and only then commits. On green the branch is `dual-pass/issue-<n>` and a pull request opens. On exhaustion, when the patch has a change, the branch is `dual-pass/issue-<n>-wip`, the issue is labeled `needs-human-review`, and the failure trace is commented. A plan with no change pushes nothing. A change that cannot be published (the patch does not apply, the path policy refuses it, or the push fails) still labels the issue and comments the reason, and publish exits non-zero. Protected files are restored before the change is written.
 
 ## Secrets
 
