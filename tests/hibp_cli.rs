@@ -656,8 +656,11 @@ fn binary_registers_hibp_and_keyed_lookups_need_a_key() {
             let out = bin(&home).args(args).output().unwrap();
             // The exposure-order gate refuses a keyed leg before any key lookup.
             assert_eq!(out.status.code(), Some(77), "{args:?}");
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(err.contains("keyed leg is not in the free order"), "{err}");
             assert!(
-                String::from_utf8_lossy(&out.stderr).contains("keyed leg is not in the free order")
+                err.contains("HUNTSMAN_HIBP_KEY"),
+                "refusal must name the key to set: {err}"
             );
         }
     }

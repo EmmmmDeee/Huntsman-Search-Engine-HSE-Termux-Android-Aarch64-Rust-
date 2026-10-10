@@ -29,7 +29,10 @@ pub(super) fn hibp_cmd(args: &[String]) -> ExitCode {
         .load()
         .is_some();
     if !huntsman_recon::breach_hybrid::command_allowed(subcommand, has_key) {
-        return fail(EX_NOPERM, "hibp: keyed leg is not in the free order");
+        return fail(
+            EX_NOPERM,
+            "hibp: keyed leg is not in the free order (set HIBP_API_KEY, HUNTSMAN_HIBP_KEY or ~/.config/hibp/api_key)",
+        );
     }
     ExitCode::from(HibpCommand::production().run(
         args,
@@ -157,7 +160,13 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
     };
     if !huntsman_recon::breach_hybrid::stolen_tax_allowed(keys.get(stolen_tax::KEY_SLOT).is_some())
     {
-        return fail(EX_NOPERM, "stolen-tax: keyed leg is not in the free order");
+        return fail(
+            EX_NOPERM,
+            &format!(
+                "stolen-tax: keyed leg is not in the free order (set {})",
+                stolen_tax::KEY_SLOT
+            ),
+        );
     }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

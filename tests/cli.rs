@@ -695,7 +695,12 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(77));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("keyed leg is not in the free order"));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("keyed leg is not in the free order"), "{err}");
+    assert!(
+        err.contains("HUNTSMAN_STOLEN_TAX_KEY"),
+        "refusal must name the key to set: {err}"
+    );
     assert_eq!(out.stdout.len(), 0);
 
     let dir = scratch("recon");

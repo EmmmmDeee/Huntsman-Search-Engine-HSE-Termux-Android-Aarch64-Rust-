@@ -11,6 +11,10 @@ fn dual_pass_workflow_has_no_llm_api() {
     );
     // The workflow's own egress guard names openai.com, so match the endpoint a call would use.
     assert!(
+        !workflow.contains("OPENAI_API_KEY"),
+        "workflow must not read an OpenAI secret"
+    );
+    assert!(
         !workflow.contains("api.openai.com"),
         "workflow must not call OpenAI"
     );
