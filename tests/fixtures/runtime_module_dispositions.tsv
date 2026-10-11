@@ -54,6 +54,7 @@ error	leaf	shared error type
 eval	leaf	evaluation statistics and helpers
 event	leaf	event primitive
 evidence_ancestry	runtime	independent-origin ancestry graph
+exit	leaf	process exit statuses shared by the binaries
 exposure	runtime	exposure analysis through intelligence report
 fetch	leaf	guarded causal fetch boundary
 fetch_cli	diagnostic	low-level fetch command parsing
