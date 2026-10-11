@@ -8,6 +8,18 @@ use super::oui;
 const DEPART_AFTER_MISSED_READS: u32 = 2;
 const DEFAULT_TRACK_CAPACITY: usize = 4_096;
 
+/// Whether a MAC can be held to one physical device over time: a
+/// globally-registered address (not randomized or locally-administered) on a
+/// device the operator has not bonded (so, not the operator's own kit). A
+/// randomized address rotates and must not be tracked across sweeps or
+/// locations, both because it cannot be and because treating it as one device
+/// would manufacture false links. This is the single home for that rule;
+/// `recurring_devices`, `follower_candidates`, and the live radar all use it.
+#[must_use]
+fn stable_identity(mac: &str, bonded: bool) -> bool {
+    !bonded && oui::is_locally_administered(mac) == Some(false)
+}
+
 pub struct SweepObservation {
     pub mac: String,
     pub name: Option<String>,
@@ -73,7 +85,7 @@ pub fn recurring_devices(sweeps: &[Sweep], min_sweeps: usize) -> Vec<RecurringDe
     let mut out: Vec<RecurringDevice> = by_mac
         .into_iter()
         .filter_map(|(mac, acc)| {
-            if acc.bonded_anywhere || oui::is_locally_administered(&mac) != Some(false) {
+            if !stable_identity(&mac, acc.bonded_anywhere) {
                 return None;
             }
             if acc.sweep_ids.len() < min_sweeps {
@@ -132,13 +144,19 @@ pub struct FollowerSighting {
 /// locations over time, which a stationary fixture (a neighbour's TV, a shop
 /// beacon) is not. This is a personal-safety signal about the operator —
 /// "something moved with you" — not a profile of the device's owner.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct FollowerCandidate {
     pub mac: String,
     pub vendor: Option<String>,
     pub device_class: Option<String>,
     pub distinct_cells: usize,
     pub sightings: usize,
+    /// Fraction of the operator's own distinct locations (over this window)
+    /// where the device co-occurred, in `0.0..=1.0`. A device present almost
+    /// everywhere the operator went (near 1.0) is the strong tail; a few shared
+    /// cells out of many (near 0.0) is likely coincidence. This separates a
+    /// real follower from overlap that raw cell counts alone cannot.
+    pub coverage: f64,
     pub first_ts: u64,
     pub last_ts: u64,
     pub span_secs: u64,
@@ -168,15 +186,23 @@ pub fn follower_candidates(
 
     let min_distinct_cells = min_distinct_cells.max(2);
     let mut by_mac: HashMap<String, Acc> = HashMap::new();
+    // Every cell with any observation is a place the operator was, so this is
+    // the denominator for coverage — including cells where only the operator's
+    // own kit or a randomized address was seen.
+    let mut operator_cells: HashSet<&str> = HashSet::new();
     for sighting in sightings {
-        let mac = sighting.mac.trim().to_ascii_lowercase();
         let cell = sighting.cell.trim();
-        if mac.is_empty() || cell.is_empty() {
+        if cell.is_empty() {
+            continue;
+        }
+        operator_cells.insert(cell);
+        let mac = sighting.mac.trim().to_ascii_lowercase();
+        if mac.is_empty() {
             continue;
         }
         // A device that cannot be re-identified across locations cannot be
         // shown to be following, and its owner is deliberately unidentifiable.
-        if sighting.bonded || oui::is_locally_administered(&mac) != Some(false) {
+        if !stable_identity(&mac, sighting.bonded) {
             continue;
         }
         let entry = by_mac.entry(mac).or_insert_with(|| Acc {
@@ -190,6 +216,7 @@ pub fn follower_candidates(
         entry.first_ts = entry.first_ts.min(sighting.ts);
         entry.last_ts = entry.last_ts.max(sighting.ts);
     }
+    let operator_cell_total = operator_cells.len().max(1);
 
     let mut out: Vec<FollowerCandidate> = by_mac
         .into_iter()
@@ -202,12 +229,16 @@ pub fn follower_candidates(
                 return None;
             }
             let (vendor, device_class) = classify(&mac);
+            let covered = u32::try_from(acc.cells.len()).unwrap_or(u32::MAX);
+            let total = u32::try_from(operator_cell_total).unwrap_or(u32::MAX);
+            let coverage = f64::from(covered) / f64::from(total);
             Some(FollowerCandidate {
                 mac,
                 vendor,
                 device_class,
                 distinct_cells: acc.cells.len(),
                 sightings: acc.sightings,
+                coverage,
                 first_ts: acc.first_ts,
                 last_ts: acc.last_ts,
                 span_secs: span,
@@ -215,6 +246,9 @@ pub fn follower_candidates(
         })
         .collect();
     out.sort_by(|left, right| {
+        // coverage is collinear with distinct_cells within one call (shared
+        // denominator), so distinct_cells is the primary order; coverage is the
+        // reported strength signal, not a re-ranker.
         right
             .distinct_cells
             .cmp(&left.distinct_cells)
@@ -322,7 +356,7 @@ impl BtRadarState {
     }
 
     fn is_trackable(mac: &str, bonded: bool) -> bool {
-        !bonded && oui::is_locally_administered(mac) == Some(false)
+        stable_identity(mac, bonded)
     }
 
     pub fn apply_tick(&mut self, sightings: &[SweepObservation], read: BtReadOutcome) -> TickDelta {
@@ -621,6 +655,43 @@ mod tests {
             sighting(HW1, false, 100_000, "cellB"),
         ];
         assert_eq!(follower_candidates(&tail, 2, 300).len(), 1);
+    }
+
+    #[test]
+    fn coverage_reports_the_fraction_of_operator_locations_shared() {
+        // The operator visited five cells (evidenced by their own bonded kit at
+        // each). HW1 was with them at three of the five -> coverage 0.6.
+        let own = "3C:5A:B4:77:88:99";
+        let mut sightings = Vec::new();
+        for (i, cell) in ["A", "B", "C", "D", "E"].iter().enumerate() {
+            sightings.push(sighting(own, true, i as u64 * 1000, cell));
+        }
+        for (i, cell) in ["A", "B", "C"].iter().enumerate() {
+            sightings.push(sighting(HW1, false, i as u64 * 1000, cell));
+        }
+        let out = follower_candidates(&sightings, 2, 60);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].distinct_cells, 3);
+        assert!(
+            (out[0].coverage - 0.6).abs() < 1e-9,
+            "coverage={}",
+            out[0].coverage
+        );
+
+        // With HW1 at all five, coverage is 1.0 — the strong-tail signal that an
+        // absolute cell count alone could not distinguish from the 0.6 case.
+        let mut everywhere = Vec::new();
+        for (i, cell) in ["A", "B", "C", "D", "E"].iter().enumerate() {
+            everywhere.push(sighting(own, true, i as u64 * 1000, cell));
+            everywhere.push(sighting(HW1, false, i as u64 * 1000, cell));
+        }
+        let out = follower_candidates(&everywhere, 2, 60);
+        assert_eq!(out.len(), 1);
+        assert!(
+            (out[0].coverage - 1.0).abs() < 1e-9,
+            "coverage={}",
+            out[0].coverage
+        );
     }
 
     #[test]
