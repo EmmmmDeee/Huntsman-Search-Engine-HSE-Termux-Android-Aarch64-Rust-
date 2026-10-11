@@ -32,7 +32,7 @@ pub const DEHASHED_API_BASE: &str = "https://api.dehashed.com/v2";
 /// Header that carries the API key. Redacted in `Debug` output by the HTTP layer.
 pub const API_KEY_HEADER: &str = "Dehashed-Api-Key";
 /// Environment variable holding the API key.
-pub const API_KEY_ENV: &str = "HUNTSMAN_DEHASHED_KEY";
+pub const API_KEY_ENV: &str = crate::environment::DEHASHED_KEY_ENV;
 /// Results per page used when the caller does not choose.
 pub const DEFAULT_PAGE_SIZE: u32 = 10;
 /// Largest page this client will request. Bounds one call's output.
@@ -278,12 +278,12 @@ fn decode(response: &Response) -> Result<SearchResponse, DehashedError> {
 /// [`DehashedError::MissingKey`] when neither source holds a valid key, or
 /// [`DehashedError::KeyFilePermissions`] when the file is too open.
 pub fn key_from_environment() -> Result<Secret, DehashedError> {
-    if let Ok(raw) = std::env::var(API_KEY_ENV) {
+    if let Some(raw) = crate::environment::variable(API_KEY_ENV) {
         if let Ok(secret) = Secret::new(raw) {
             return Ok(secret);
         }
     }
-    let Some(home) = std::env::var_os("HOME") else {
+    let Some(home) = crate::environment::home() else {
         return Err(DehashedError::MissingKey);
     };
     let path = std::path::PathBuf::from(home)

@@ -144,15 +144,12 @@ fn receipt(
     truncated: bool,
 ) -> ObservationReceipt {
     let found = outcome.entries.len();
-    let execution = SourceExecutionOutcome {
-        module: COLLECTOR_ID.into(),
-        kind,
-        observed_at_unix: now_unix,
-        http_status: Some(200),
-        found: Some(found),
-        retry_after_secs: None,
-        detail: None,
-    };
+    let execution = if matches!(kind, SourceOutcomeKind::ValidZero) {
+        SourceExecutionOutcome::valid_zero(COLLECTOR_ID, now_unix)
+    } else {
+        SourceExecutionOutcome::success(COLLECTOR_ID, now_unix, found)
+    }
+    .with_http_status(200);
     ObservationReceipt {
         source: COLLECTOR_ID.into(),
         dataset: single_dataset(&outcome.entries),
@@ -169,17 +166,13 @@ fn receipt(
 fn failure_receipt(error: &DehashedError, now_unix: u64) -> ObservationReceipt {
     let kind = failure_kind(error);
     let status = failure_status(error);
-    let execution = SourceExecutionOutcome {
-        module: COLLECTOR_ID.into(),
-        kind,
-        observed_at_unix: now_unix,
-        http_status: status,
-        found: None,
-        retry_after_secs: match error {
-            DehashedError::RateLimited { retry_after } => retry_after.map(|d| d.as_secs()),
-            _ => None,
-        },
-        detail: Some(error.to_string()),
+    let execution =
+        SourceExecutionOutcome::failed(COLLECTOR_ID, now_unix, kind, status, error.to_string());
+    let execution = match error {
+        DehashedError::RateLimited {
+            retry_after: Some(retry_after),
+        } => execution.with_retry_after(retry_after.as_secs()),
+        _ => execution,
     };
     ObservationReceipt {
         source: COLLECTOR_ID.into(),
