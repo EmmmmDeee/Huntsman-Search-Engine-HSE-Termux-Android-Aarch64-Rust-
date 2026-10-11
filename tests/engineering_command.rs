@@ -15,10 +15,13 @@ fn executable_contract_is_valid() {
     validate().unwrap();
     assert_eq!(
         COMMAND_INVARIANT,
-        "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER SYSTEMS"
+        "CHIEF VISIONARY -> CHIEF SYSTEMS ARCHITECT -> ALL OTHER SYSTEMS"
     );
     assert_eq!(COMMAND_CHAIN.len(), 16);
-    assert_eq!(COMMAND_CHAIN.last().unwrap().name, "JEW BOT");
+    assert_eq!(
+        COMMAND_CHAIN.last().unwrap().name,
+        "ECONOMIC OPTIMIZATION LEAD"
+    );
     assert_eq!(EXECUTION_PROTOCOLS.len(), 7);
 }
 
@@ -156,6 +159,6 @@ fn json_contract_matches_static_contract() {
         value["capability_owners"].as_array().map(Vec::len),
         Some(CAPABILITY_OWNERS.len())
     );
-    assert_eq!(value["roles"][0]["name"], "THE AUSTRIAN PAINTER");
-    assert_eq!(value["roles"][15]["name"], "JEW BOT");
+    assert_eq!(value["roles"][0]["name"], "CHIEF VISIONARY");
+    assert_eq!(value["roles"][15]["name"], "ECONOMIC OPTIMIZATION LEAD");
 }

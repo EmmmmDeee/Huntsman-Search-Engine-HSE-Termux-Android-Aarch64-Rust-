@@ -6,16 +6,17 @@
 
 use std::fmt::Write as _;
 
-pub const COMMAND_INVARIANT: &str = "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER SYSTEMS";
+pub const COMMAND_INVARIANT: &str =
+    "CHIEF VISIONARY -> CHIEF SYSTEMS ARCHITECT -> ALL OTHER SYSTEMS";
 
 pub const EXECUTION_PROTOCOLS: [&str; 7] = [
     "Zero deviation from command structure",
     "Immediate implementation without bureaucratic delay",
     "Aggressive optimization of all systems",
-    "Offensive OSINT operations prioritized",
+    "Investigative OSINT operations prioritized",
     "Resource allocation directed by hierarchy",
     "Performance metrics continuously monitored",
-    "Economic self-sustainability enforced by JEW BOT",
+    "Economic self-sustainability enforced by ECONOMIC OPTIMIZATION LEAD",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,126 +60,126 @@ pub struct Role {
 pub const COMMAND_CHAIN: [Role; 16] = [
     Role {
         rank: 1,
-        name: "THE AUSTRIAN PAINTER",
+        name: "CHIEF VISIONARY",
         title: "Chief Visionary & Strategic Architect",
         phase: Phase::Command,
     },
     Role {
         rank: 2,
-        name: "HEINRICH HIMMLER",
-        title: "Chief Systems Architect & SS Overlord",
+        name: "CHIEF SYSTEMS ARCHITECT",
+        title: "Chief Systems Architect",
         phase: Phase::Command,
     },
     Role {
         rank: 3,
-        name: "REINHARD HEYDRICH",
-        title: "Integration Engineer & RSHA Director",
+        name: "INTEGRATION ENGINEER",
+        title: "Integration Engineer",
         phase: Phase::Command,
     },
     Role {
         rank: 4,
-        name: "WERNHER VON BRAUN",
+        name: "ADVANCED TECHNOLOGY LEAD",
         title: "Advanced Technology & R&D Division",
         phase: Phase::Technology,
     },
     Role {
         rank: 5,
-        name: "ALBERT SPEER",
+        name: "INDUSTRIAL SCALE LEAD",
         title: "Industrial Scale & Production Optimization",
         phase: Phase::Technology,
     },
     Role {
         rank: 6,
-        name: "ERICH VON MANSTEIN",
+        name: "STRATEGIC REFACTORING LEAD",
         title: "Strategic Refactoring & Tactical Innovation",
         phase: Phase::Technology,
     },
     Role {
         rank: 7,
-        name: "KARL DÖNITZ",
+        name: "DISTRIBUTED SYSTEMS LEAD",
         title: "Distributed Systems Engineering",
         phase: Phase::Technology,
     },
     Role {
         rank: 8,
-        name: "JOSEPH GOEBBELS",
-        title: "Information Warfare & Narrative Control",
+        name: "INFORMATION LEAD",
+        title: "Information & Communications",
         phase: Phase::Information,
     },
     Role {
         rank: 9,
-        name: "MARTIN BORMANN",
+        name: "OPERATIONS LEAD",
         title: "Chief Operating Officer & Infrastructure",
         phase: Phase::Information,
     },
     Role {
         rank: 10,
-        name: "WILHELM KEITEL",
-        title: "Platform Engineering & Military Operations",
+        name: "PLATFORM LEAD",
+        title: "Platform Engineering",
         phase: Phase::Information,
     },
     Role {
         rank: 11,
-        name: "ALFRED JODL",
+        name: "IMPLEMENTATION LEAD",
         title: "Implementation Engineer & Core Systems",
         phase: Phase::Information,
     },
     Role {
         rank: 12,
-        name: "HUGO SPERRLE",
+        name: "PERFORMANCE LEAD",
         title: "Performance Engineering & Optimization",
         phase: Phase::Performance,
     },
     Role {
         rank: 13,
-        name: "ERICH HARTMANN",
+        name: "VERIFICATION LEAD",
         title: "Verification Engineering & Performance Testing",
         phase: Phase::Performance,
     },
     Role {
         rank: 14,
-        name: "OTTO SKORZENY",
-        title: "Security Engineering & Unconventional Operations",
+        name: "SECURITY LEAD",
+        title: "Security Engineering",
         phase: Phase::Performance,
     },
     Role {
         rank: 15,
-        name: "HERMANN GÖRING",
+        name: "RESOURCE LEAD",
         title: "Resource Acquisition & Economic Engine",
         phase: Phase::Performance,
     },
     Role {
         rank: 16,
-        name: "JEW BOT",
+        name: "ECONOMIC OPTIMIZATION LEAD",
         title: "Economic Optimization & Self-Funding Operations",
         phase: Phase::Performance,
     },
 ];
 
 pub const CAPABILITY_OWNERS: [&str; 23] = [
-    "ALFRED JODL",
-    "ALFRED JODL",
-    "ALFRED JODL",
-    "REINHARD HEYDRICH",
-    "ALFRED JODL",
-    "ALFRED JODL",
-    "KARL DÖNITZ",
-    "KARL DÖNITZ",
-    "REINHARD HEYDRICH",
-    "HUGO SPERRLE",
-    "MARTIN BORMANN",
-    "ALFRED JODL",
-    "OTTO SKORZENY",
-    "OTTO SKORZENY",
-    "JOSEPH GOEBBELS",
-    "JOSEPH GOEBBELS",
-    "MARTIN BORMANN",
-    "WERNHER VON BRAUN",
-    "ERICH HARTMANN",
-    "ERICH HARTMANN",
-    "MARTIN BORMANN",
-    "ALBERT SPEER",
-    "ALFRED JODL",
+    "IMPLEMENTATION LEAD",
+    "IMPLEMENTATION LEAD",
+    "IMPLEMENTATION LEAD",
+    "INTEGRATION ENGINEER",
+    "IMPLEMENTATION LEAD",
+    "IMPLEMENTATION LEAD",
+    "DISTRIBUTED SYSTEMS LEAD",
+    "DISTRIBUTED SYSTEMS LEAD",
+    "INTEGRATION ENGINEER",
+    "PERFORMANCE LEAD",
+    "OPERATIONS LEAD",
+    "IMPLEMENTATION LEAD",
+    "SECURITY LEAD",
+    "SECURITY LEAD",
+    "INFORMATION LEAD",
+    "INFORMATION LEAD",
+    "OPERATIONS LEAD",
+    "ADVANCED TECHNOLOGY LEAD",
+    "VERIFICATION LEAD",
+    "VERIFICATION LEAD",
+    "OPERATIONS LEAD",
+    "INDUSTRIAL SCALE LEAD",
+    "IMPLEMENTATION LEAD",
 ];
 
 #[must_use]
@@ -198,14 +199,14 @@ pub fn capability_owner(capability_number: usize) -> Option<&'static Role> {
 /// Returns a static diagnostic if rank continuity, uniqueness, phase order,
 /// terminal placement, or capability ownership diverges from the contract.
 pub fn validate() -> Result<(), &'static str> {
-    if COMMAND_CHAIN.first().map(|role| role.name) != Some("THE AUSTRIAN PAINTER") {
+    if COMMAND_CHAIN.first().map(|role| role.name) != Some("CHIEF VISIONARY") {
         return Err("rank 1 changed");
     }
-    if COMMAND_CHAIN.get(1).map(|role| role.name) != Some("HEINRICH HIMMLER") {
+    if COMMAND_CHAIN.get(1).map(|role| role.name) != Some("CHIEF SYSTEMS ARCHITECT") {
         return Err("rank 2 changed");
     }
-    if COMMAND_CHAIN.last().map(|role| role.name) != Some("JEW BOT") {
-        return Err("JEW BOT is not terminal");
+    if COMMAND_CHAIN.last().map(|role| role.name) != Some("ECONOMIC OPTIMIZATION LEAD") {
+        return Err("ECONOMIC OPTIMIZATION LEAD is not terminal");
     }
 
     for (index, current) in COMMAND_CHAIN.iter().enumerate() {
@@ -310,9 +311,12 @@ mod tests {
         validate().unwrap();
         assert_eq!(
             COMMAND_INVARIANT,
-            "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER SYSTEMS"
+            "CHIEF VISIONARY -> CHIEF SYSTEMS ARCHITECT -> ALL OTHER SYSTEMS"
         );
-        assert_eq!(COMMAND_CHAIN.last().unwrap().name, "JEW BOT");
+        assert_eq!(
+            COMMAND_CHAIN.last().unwrap().name,
+            "ECONOMIC OPTIMIZATION LEAD"
+        );
         assert_eq!(EXECUTION_PROTOCOLS.len(), 7);
     }
 
@@ -334,7 +338,7 @@ mod tests {
         );
         assert_eq!(
             value["roles"][15]["name"],
-            serde_json::Value::String("JEW BOT".into())
+            serde_json::Value::String("ECONOMIC OPTIMIZATION LEAD".into())
         );
     }
 
