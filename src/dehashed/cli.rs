@@ -22,18 +22,13 @@ use super::client::{
     DehashedClient, DehashedError, MAX_PAGE, MAX_PAGE_SIZE, SearchOutcome, SearchRequest,
 };
 use super::query::{Field, Purpose, Selector};
+use crate::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use crate::http::Transport;
 use crate::keys::Secret;
 use crate::textnorm::escape_controls;
 
 pub const DEHASHED_USAGE: &str = "usage: huntsman-recon dehashed search (--email ADDR | --username NAME | --domain DOMAIN) --purpose PURPOSE [--size N] [--page N] | help";
 
-const EX_USAGE: u8 = 64;
-const EX_DATAERR: u8 = 65;
-const EX_NOINPUT: u8 = 66;
-const EX_UNAVAILABLE: u8 = 69;
-const EX_NOPERM: u8 = 77;
-const EX_IOERR: u8 = 74;
 const ARTIFACT_FLAG: &str = "--save-artifact";
 
 /// Why a command stopped: an exit code and the stderr text.

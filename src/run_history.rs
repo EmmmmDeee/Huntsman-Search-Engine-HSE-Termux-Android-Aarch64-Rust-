@@ -345,12 +345,10 @@ pub mod cli {
     use std::path::PathBuf;
 
     use super::{RunRecord, Verdict, append, load, verdict};
+    use crate::exit::{EX_DATAERR, EX_IOERR, EX_USAGE};
 
     pub const USAGE: &str = "usage: huntsman-recon run-history (record --suite NAME (--passed N --failed N | --from-stdin) [--commit SHA] [--file PATH] | show [--suite NAME] [--file PATH])";
 
-    const EX_USAGE: u8 = 64;
-    const EX_REGRESSION: u8 = 65;
-    const EX_IO: u8 = 74;
     const DEFAULT_FILE: &str = "var/run_history.jsonl";
 
     /// Parsed `record` arguments, before any I/O.
@@ -456,7 +454,7 @@ pub mod cli {
             Ok(history) => history,
             Err(error) => {
                 let _ = writeln!(err, "run-history: {error}");
-                return EX_IO;
+                return EX_IOERR;
             }
         };
         let record = RunRecord {
@@ -469,7 +467,7 @@ pub mod cli {
         let verdict = verdict(&history, &record);
         if let Err(error) = append(&parsed.file, &record) {
             let _ = writeln!(err, "run-history: {error}");
-            return EX_IO;
+            return EX_IOERR;
         }
         let _ = writeln!(
             out,
@@ -480,7 +478,7 @@ pub mod cli {
             describe(&verdict)
         );
         match verdict {
-            Verdict::Regressed { .. } => EX_REGRESSION,
+            Verdict::Regressed { .. } => EX_DATAERR,
             _ => 0,
         }
     }
@@ -497,7 +495,7 @@ pub mod cli {
             Ok(history) => history,
             Err(error) => {
                 let _ = writeln!(err, "run-history: {error}");
-                return EX_IO;
+                return EX_IOERR;
             }
         };
         for record in history
@@ -577,7 +575,7 @@ pub mod cli {
                 &mut o,
                 &mut e,
             );
-            assert_eq!(code, EX_REGRESSION);
+            assert_eq!(code, EX_DATAERR);
             assert!(String::from_utf8(o).unwrap().contains("verdict=regressed"));
         }
 
