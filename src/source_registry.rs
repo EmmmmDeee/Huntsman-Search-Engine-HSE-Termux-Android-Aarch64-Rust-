@@ -231,12 +231,15 @@ pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
     let mut value = value.trim();
     if *kind == EntityKind::Username {
         // `@handle` is notation, not part of the account name the sources index.
-        value = value.strip_prefix('@').unwrap_or(value);
+        // Every leading `@` is stripped, so `@@x` routes `x` and `@@` is empty.
+        value = value.trim_start_matches('@');
         if value.chars().any(char::is_whitespace) {
             return Vec::new();
         }
     }
-    if value.is_empty() {
+    // A value made only of dots names nothing, and the encoder keeps `.`, so it
+    // would render a path-traversal-looking URL on path-style templates.
+    if value.is_empty() || value.chars().all(|c| c == '.') {
         return Vec::new();
     }
     let encoded = percent_encode_component(value);
