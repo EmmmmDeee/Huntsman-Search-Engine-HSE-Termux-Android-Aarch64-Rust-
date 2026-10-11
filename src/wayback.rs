@@ -12,7 +12,7 @@ use crate::canonical::canonical_domain;
 use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Transport, append_query_param};
-use crate::sha256::sha256;
+use crate::sha256::{hex32, sha256};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 const MODULE: &str = "wayback";
@@ -73,7 +73,7 @@ pub fn wayback_lookup<T: Transport + ?Sized>(
         });
     };
 
-    let response_sha256 = Some(hex_sha256(&response.body));
+    let response_sha256 = Some(hex32(&sha256(&response.body)));
     let truncated = response.truncated;
 
     if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
@@ -248,30 +248,22 @@ fn cell(row: &[Value], index: usize) -> Option<&str> {
     row.get(index)?.as_str()
 }
 
+/// A response whose body did not match the CDX contract. The status is kept, and no row count is
+/// claimed.
+fn drift_outcome(now_unix: u64, status: u16, detail: impl Into<String>) -> SourceExecutionOutcome {
+    SourceExecutionOutcome::failed(
+        MODULE,
+        now_unix,
+        SourceOutcomeKind::ParserDrift,
+        Some(status),
+        detail,
+    )
+}
+
 fn optional_cell(value: &str) -> Option<&str> {
     if value.is_empty() || value == "-" {
         None
     } else {
         Some(value)
     }
-}
-
-fn drift_outcome(now_unix: u64, status: u16, detail: impl Into<String>) -> SourceExecutionOutcome {
-    let mut outcome = SourceExecutionOutcome::success(MODULE, now_unix, 0)
-        .with_http_status(status)
-        .with_detail(detail);
-    outcome.kind = SourceOutcomeKind::ParserDrift;
-    outcome.found = None;
-    outcome
-}
-
-fn hex_sha256(body: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = sha256(body);
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        out.push(char::from(HEX[usize::from(byte >> 4)]));
-        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    out
 }

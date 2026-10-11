@@ -22,7 +22,7 @@ use crate::fetch::{self, FetchOptions, Fetched};
 use crate::http::{self, Request, Transport};
 use crate::postcode_au;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
-use crate::textnorm::{find_ascii_ci, title_case};
+use crate::textnorm::{decode_html_entities, find_ascii_ci, name_tokens, title_case};
 
 const SRC: &str = "au_people";
 const SEARCH_BASE: &str = "https://www.truepeoplesearch.com.au/results";
@@ -262,13 +262,6 @@ fn parse_fetched(
     (outcome, entities)
 }
 
-fn name_tokens(full: &str) -> Vec<String> {
-    full.split(|c: char| !c.is_alphabetic())
-        .filter(|token| token.len() >= 2)
-        .map(str::to_ascii_lowercase)
-        .collect()
-}
-
 fn provenance(scan_id: &str) -> EvidenceProvenance {
     EvidenceProvenance::for_scan(SRC, scan_id)
 }
@@ -277,16 +270,9 @@ fn state_tag_from_text(text: &str) -> Option<String> {
     address_au::state_code(text).map(|s| format!("au-state:{s}"))
 }
 
-fn tps_display_postcode(value: &str) -> bool {
-    postcode_au::is_shaped(value)
-        && value
-            .parse::<u32>()
-            .is_ok_and(|n| (2000..=7999).contains(&n))
-}
-
 fn postcode_in_line(line: &str) -> Option<&str> {
     line.split_whitespace()
-        .find(|tok| tps_display_postcode(tok))
+        .find(|tok| postcode_au::is_display_postcode(tok))
 }
 
 fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
@@ -487,7 +473,7 @@ fn is_word_bounded(hay: &str, start: usize, needle_len: usize) -> bool {
 }
 
 fn strip_html(html: &str) -> String {
-    decode_entities(&replace_tags_with_space(&drop_script_and_style(html)))
+    decode_html_entities(&replace_tags_with_space(&drop_script_and_style(html)))
 }
 
 fn drop_script_and_style(html: &str) -> String {
@@ -566,67 +552,6 @@ fn replace_tags_with_space(s: &str) -> String {
     out
 }
 
-fn decode_entities(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while !rest.is_empty() {
-        let decoded = if rest.as_bytes()[0] == b'&' {
-            decode_one_entity(rest)
-        } else {
-            None
-        };
-        if let Some((ch, consumed)) = decoded {
-            out.push(ch);
-            rest = &rest[consumed..];
-        } else {
-            let ch = rest.chars().next().expect("non-empty");
-            out.push(ch);
-            rest = &rest[ch.len_utf8()..];
-        }
-    }
-    out
-}
-
-fn decode_one_entity(rest: &str) -> Option<(char, usize)> {
-    let after_amp = rest.get(1..)?;
-    if after_amp.starts_with('#') {
-        let hex = after_amp
-            .as_bytes()
-            .get(1)
-            .is_some_and(|b| *b == b'x' || *b == b'X');
-        let digits = if hex {
-            after_amp.get(2..)?
-        } else {
-            after_amp.get(1..)?
-        };
-        let end = digits.find(';')?;
-        let raw = &digits[..end];
-        if raw.is_empty() {
-            return None;
-        }
-        let value = if hex {
-            u32::from_str_radix(raw, 16).ok()?
-        } else {
-            raw.parse::<u32>().ok()?
-        };
-        let ch = char::from_u32(value)?;
-        let consumed = 2 + usize::from(hex) + raw.len() + 1;
-        return Some((ch, consumed));
-    }
-    let end = after_amp.find(';')?;
-    let name = &after_amp[..end];
-    let ch = match name {
-        "amp" => '&',
-        "lt" => '<',
-        "gt" => '>',
-        "quot" => '"',
-        "apos" => '\'',
-        "nbsp" => ' ',
-        _ => return None,
-    };
-    Some((ch, 1 + name.len() + 1))
-}
-
 fn page_emails(text: &str) -> Vec<String> {
     let bytes = text.as_bytes();
     let mut seen = HashSet::new();
@@ -695,52 +620,15 @@ fn request_failed(html_read_ok: bool, found_any_entity: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
+    use crate::test_support::{ScriptedTransport, html_ok};
 
     use crate::entity;
-    use crate::http::{Response, TransportFailure};
+    use crate::http::Response;
     use crate::tags;
-
-    struct Fake {
-        script: RefCell<VecDeque<Result<Response, TransportFailure>>>,
-        seen: RefCell<Vec<Request>>,
-    }
-
-    impl Fake {
-        fn new(script: Vec<Result<Response, TransportFailure>>) -> Self {
-            Self {
-                script: RefCell::new(script.into()),
-                seen: RefCell::new(Vec::new()),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-            self.seen.borrow_mut().push(request.clone());
-            self.script.borrow_mut().pop_front().unwrap_or_else(|| {
-                Err(TransportFailure {
-                    kind: SourceOutcomeKind::ConnectFailure,
-                    detail: "unexpected request".into(),
-                    blocked: false,
-                })
-            })
-        }
-    }
-
-    fn html_ok(body: &str) -> Response {
-        Response {
-            status: 200,
-            headers: vec![("content-type".into(), "text/html".into())],
-            body: body.as_bytes().to_vec(),
-            truncated: false,
-        }
-    }
 
     #[test]
     fn single_token_name_makes_no_request() {
-        let fake = Fake::new(vec![Ok(html_ok("unused"))]);
+        let fake = ScriptedTransport::new(vec![Ok(html_ok("unused"))]);
         let report = lookup(&fake, "Haigen", "t", 1).expect("no-op");
         let empty = report.entities.is_empty();
         assert!(empty);
@@ -751,7 +639,7 @@ mod tests {
     #[test]
     fn lookup_emits_candidate_address_and_person_from_scripted_html() {
         let html = "<div>Results for Haigen Bamford</div><p>Sydney NSW 2000</p>";
-        let fake = Fake::new(vec![Ok(html_ok(html))]);
+        let fake = ScriptedTransport::new(vec![Ok(html_ok(html))]);
         let report = lookup(&fake, "Haigen Bamford", "scan", 1).expect("lookup");
         assert!(
             report
@@ -781,7 +669,7 @@ mod tests {
 
     #[test]
     fn challenge_page_is_not_a_directory_miss() {
-        let fake = Fake::new(vec![Ok(Response {
+        let fake = ScriptedTransport::new(vec![Ok(Response {
             status: 200,
             headers: vec![("content-type".into(), "text/html".into())],
             body: b"<html>Just a moment... cloudflare checking your browser</html>".to_vec(),
@@ -793,7 +681,7 @@ mod tests {
 
     #[test]
     fn http_404_is_valid_zero() {
-        let fake = Fake::new(vec![Ok(Response {
+        let fake = ScriptedTransport::new(vec![Ok(Response {
             status: 404,
             headers: Vec::new(),
             body: b"not found".to_vec(),
@@ -1034,7 +922,7 @@ mod tests {
         <li>Stephen R Moreau</li>
       </ul>
     ";
-        let fake = Fake::new(vec![Ok(html_ok(html))]);
+        let fake = ScriptedTransport::new(vec![Ok(html_ok(html))]);
         let report = lookup(&fake, "Fletcher Moreau", "scan", 1).expect("lookup");
         assert!(
             !report

@@ -106,6 +106,21 @@ pub fn is_challenge(body: &str) -> bool {
     challenge_signature_present(body) && (!is_json_body(body) || looks_like_document(body))
 }
 
+/// Largest saved document that can be an interstitial page. Interstitials are short, so a longer
+/// document that carries a vendor string or a phrase is a page that mentions one.
+pub const SAVED_CHALLENGE_MAX_BYTES: usize = 32 * 1024;
+
+/// Whether a saved operator document is a challenge page. Only a short HTML document with a
+/// signature qualifies. Markdown, prose and long pages that quote a vendor or a phrase are kept.
+/// Fetched responses still use [`classify_response`] with no size bound: a challenge missed there
+/// would read as an absent result.
+#[must_use]
+pub fn is_saved_challenge(body: &str) -> bool {
+    body.len() <= SAVED_CHALLENGE_MAX_BYTES
+        && looks_like_document(body)
+        && challenge_signature_present(body)
+}
+
 #[must_use]
 pub fn classify_response(status: u16, body: &str) -> FetchOutcome {
     if status == 429 {
@@ -168,6 +183,27 @@ mod tests {
         }
         assert!(!looks_like_document("é<html>"));
         assert!(looks_like_document("  <!DOCTYPE HTML><p>"));
+    }
+
+    #[test]
+    fn saved_challenge_must_be_a_short_html_document() {
+        assert!(is_saved_challenge("<html>just a moment cloudflare</html>"));
+        assert!(is_saved_challenge("  <!DOCTYPE html><p>datadome</p>"));
+        // Markdown and prose that quote a challenge are documents.
+        assert!(!is_saved_challenge(
+            "# Notes\n\n`<html>just a moment cloudflare</html>`\n"
+        ));
+        assert!(!is_saved_challenge("DataDome blocked the request"));
+        // Structured data that quotes a vendor path is not a page.
+        assert!(!is_saved_challenge(
+            r#"{"url":"https://challenges.cloudflare.com/x"}"#
+        ));
+        // A long page with a captcha widget is not an interstitial.
+        let long = format!(
+            "<html>{}<script src=\"https://www.google.com/recaptcha/api.js\"></script>",
+            "x".repeat(SAVED_CHALLENGE_MAX_BYTES)
+        );
+        assert!(!is_saved_challenge(&long));
     }
 
     #[test]

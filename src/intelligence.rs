@@ -8,6 +8,7 @@ use thiserror::Error;
 use crate::community::detect_communities;
 use crate::entity::Entity;
 use crate::exposure::{ExposureFinding, compute_exposure};
+use crate::geohash::haversine_km;
 use crate::graph::{EntityRelation, Graph};
 use crate::leads::{Lead, rank_leads};
 use crate::profiles::{EntityProfile, build_profiles};
@@ -37,8 +38,6 @@ string_id!(ClaimId);
 string_id!(EvidenceId);
 string_id!(InferenceId);
 string_id!(HypothesisId);
-
-const EARTH_RADIUS_M: f64 = 6_371_008.8;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemporalValidity {
@@ -86,21 +85,27 @@ impl GeoAssertion {
         self.uncertainty_radius_m.unwrap_or(25_000.0)
     }
 
+    /// Great-circle separation in metres on the sphere of [`crate::geohash::EARTH_RADIUS_KM`], the
+    /// crate's one distance model. It is finite for every pair of in-range coordinates.
     #[must_use]
     pub fn separation_m(&self, other: &Self) -> f64 {
-        let left_latitude = self.latitude.to_radians();
-        let right_latitude = other.latitude.to_radians();
-        let latitude_delta = (other.latitude - self.latitude).to_radians();
-        let longitude_delta = (other.longitude - self.longitude).to_radians();
-        let a = (latitude_delta / 2.0).sin().powi(2)
-            + left_latitude.cos() * right_latitude.cos() * (longitude_delta / 2.0).sin().powi(2);
-        let c = 2.0 * a.sqrt().asin();
-        EARTH_RADIUS_M * c
+        haversine_km(
+            self.latitude,
+            self.longitude,
+            other.latitude,
+            other.longitude,
+        ) * 1_000.0
     }
 
+    /// Whether the two assertions place the subject further apart than their uncertainties allow.
+    ///
+    /// A separation or allowance that cannot be computed, as an invalid coordinate or radius
+    /// causes, counts as a conflict. Bad input is reported, never read as agreement.
     #[must_use]
     pub fn conflicts_with(&self, other: &Self) -> bool {
-        self.separation_m(other) > self.effective_uncertainty_m() + other.effective_uncertainty_m()
+        let separation = self.separation_m(other);
+        let allowance = self.effective_uncertainty_m() + other.effective_uncertainty_m();
+        separation.is_nan() || allowance.is_nan() || separation > allowance
     }
 }
 
@@ -966,5 +971,50 @@ mod tests {
             }
             other => panic!("expected conflict, got {other:?}"),
         }
+    }
+
+    /// A location with the default 25 km uncertainty, for the separation tests.
+    fn location_at(latitude: f64, longitude: f64) -> GeoAssertion {
+        GeoAssertion {
+            latitude,
+            longitude,
+            label: None,
+            basis: LocationBasis::Subject,
+            method: "profile".to_string(),
+            confidence: 0.9,
+            uncertainty_radius_m: None,
+            temporal: TemporalValidity::default(),
+            competing_location_ids: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn near_antipodal_separation_is_finite_and_conflicts() {
+        // Rounding in the old asin form put the square root just above 1 for this pair, so the
+        // separation was NaN and the conflict was missed with no error. The exact value is below
+        // 1, so the separation is pi times the radius.
+        let west = location_at(-67.41, 0.0);
+        let east = location_at(67.409_999_999, 180.0);
+        let kilometres = west.separation_m(&east) / 1_000.0;
+        assert!(kilometres.is_finite(), "{kilometres}");
+        assert!((kilometres - 20_015.086_8).abs() < 0.01, "{kilometres}");
+        assert!(west.conflicts_with(&east));
+    }
+
+    #[test]
+    fn invalid_coordinates_conflict_instead_of_agreeing() {
+        // A NaN coordinate has no separation. It must surface as a conflict, never as agreement.
+        let broken = location_at(f64::NAN, 0.0);
+        let sound = location_at(-33.87, 151.21);
+        assert!(broken.conflicts_with(&sound));
+        assert!(sound.conflicts_with(&broken));
+    }
+
+    #[test]
+    fn separation_uses_the_geohash_sphere() {
+        // Sydney to Melbourne on the one sphere of geohash::EARTH_RADIUS_KM (6371 km), in metres.
+        let sydney = location_at(-33.87, 151.21);
+        let melbourne = location_at(-37.81, 144.96);
+        assert!((sydney.separation_m(&melbourne) - 713_376.748_691_9).abs() < 0.01);
     }
 }

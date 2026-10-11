@@ -7,7 +7,9 @@
 use std::fmt;
 use std::path::PathBuf;
 
-pub const HIBP_API_KEY_ENV: &str = "HIBP_API_KEY";
+use crate::environment;
+
+pub use crate::environment::HIBP_API_KEY_ENV;
 pub const REDACTED: &str = "<redacted>";
 
 #[derive(Clone)]
@@ -53,7 +55,7 @@ pub trait KeySource: Send + Sync {
 pub struct EnvSource(pub &'static str);
 impl KeySource for EnvSource {
     fn load(&self) -> Option<(ApiKey, KeyOrigin)> {
-        let raw = std::env::var(self.0).ok()?;
+        let raw = environment::variable(self.0)?;
         ApiKey::new(&raw).map(|k| (k, KeyOrigin::Env(self.0)))
     }
 }
@@ -100,7 +102,7 @@ impl EmbeddedSource {
 
 #[must_use]
 pub fn default_key_file() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
+    let home = environment::home()?;
     Some(
         PathBuf::from(home)
             .join(".config")
@@ -127,9 +129,9 @@ impl KeyLoader {
 
     #[must_use]
     pub fn default_chain(huntsman_slot: Option<&str>) -> Self {
-        let env_slot = std::env::var("HUNTSMAN_HIBP_KEY").ok();
+        let env_slot = environment::huntsman_hibp_key();
         Self::from_parts(
-            std::env::var(HIBP_API_KEY_ENV).ok(),
+            environment::hibp_api_key(),
             huntsman_slot.or(env_slot.as_deref()),
             default_key_file(),
             "",

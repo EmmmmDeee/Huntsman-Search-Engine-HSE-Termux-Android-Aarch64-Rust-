@@ -15,12 +15,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::environment;
+
 /// Default budget: 10 requests per minute, the lowest HIBP plan's rate.
 pub const DEFAULT_REQUESTS_PER_MINUTE: u32 = 10;
 
 /// Environment variable overriding [`DEFAULT_REQUESTS_PER_MINUTE`] for the
 /// process-wide limiter. `0` disables client-side limiting (429 handling stays).
-pub const RATE_LIMIT_ENV: &str = "HIBP_RATE_LIMIT_PER_MINUTE";
+pub use crate::environment::HIBP_RATE_LIMIT_ENV as RATE_LIMIT_ENV;
 
 /// A sliding-window limiter: at most `limit` acquisitions per `window`.
 #[derive(Debug)]
@@ -70,8 +72,7 @@ impl RateLimiter {
         static SHARED: OnceLock<Arc<RateLimiter>> = OnceLock::new();
         SHARED
             .get_or_init(|| {
-                let rpm = std::env::var("HIBP_RATE_LIMIT_PER_MINUTE")
-                    .ok()
+                let rpm = environment::hibp_rate_limit_per_minute()
                     .and_then(|v| v.trim().parse::<u32>().ok())
                     .unwrap_or(DEFAULT_REQUESTS_PER_MINUTE);
                 Arc::new(RateLimiter::per_minute(rpm))

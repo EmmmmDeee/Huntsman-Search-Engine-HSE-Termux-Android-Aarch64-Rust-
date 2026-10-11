@@ -2,22 +2,20 @@
 //!
 //! The selector is canonicalised once, legacy-compatible deterministic email
 //! derivations are produced locally, then the public Gravatar profile is queried
-//! through the shared transport. Evidence is rendered with lineage. Saving is
-//! handled by the L7 `email_save` module from the binary.
+//! through the shared transport. Evidence is rendered with lineage. Saving is handled by
+//! the L7 `lookup_save` module, and `lookup_args` reads the `--save` option.
 
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use crate::canonical::canonical_email;
 use crate::domains::{INFRA_PROVIDER_ROOTS, is_freemail, is_role_localpart, is_social_platform};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
-use crate::evidence_ancestry::EvidenceNodeId;
 use crate::gravatar;
 use crate::http::Transport;
-use crate::identity_resolution::AutoMergePolicy;
-use crate::lineage::{Lineage, Observation, ObservedLineage, UpstreamKind, resolve_with_lineage};
+use crate::lookup_args::LookupTokens;
+use crate::lookup_report;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::textnorm::upper_first;
 
@@ -48,35 +46,12 @@ impl EmailArgs {
     /// # Errors
     /// Invalid or missing address, repeated `--save`, or an unknown option.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let mut positional = Vec::new();
-        let mut save = None;
-        let mut it = args.iter();
-        while let Some(arg) = it.next() {
-            match arg.as_str() {
-                "--save" => {
-                    if save.is_some() {
-                        return Err(Error::Invalid("only one --save".into()));
-                    }
-                    let path = it
-                        .next()
-                        .cloned()
-                        .ok_or_else(|| Error::Invalid("--save needs a value".into()))?;
-                    if path.is_empty() || path.starts_with("--") {
-                        return Err(Error::Invalid("--save needs a file path".into()));
-                    }
-                    save = Some(PathBuf::from(path));
-                }
-                flag if flag.starts_with("--") => {
-                    return Err(Error::Invalid(format!("unknown option {flag}")));
-                }
-                value => positional.push(value.to_owned()),
-            }
-        }
+        let LookupTokens { positional, save } = LookupTokens::split(args)?;
         if positional.len() != 1 {
             return Err(Error::Invalid("email needs exactly one ADDR".into()));
         }
         let email = canonical_email(&positional[0])
-            .ok_or_else(|| Error::Invalid("invalid email address".into()))?;
+            .ok_or_else(|| Error::invalid_value("invalid email address"))?;
         Ok(Self { email, save })
     }
 }
@@ -110,7 +85,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> 
     }
     merge_by_uid(&mut report.entities);
 
-    match render(&report) {
+    match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => EmailRun::Printed { text, report },
         Err(msg) => EmailRun::Failed(msg),
     }
@@ -283,120 +258,12 @@ fn derive_person(
     entities.push(entity);
 }
 
-fn render(report: &Report) -> Result<String, String> {
-    let mut out = format!("entities={}\n", report.entities.len());
-    for entity in &report.entities {
-        writeln!(
-            out,
-            "{}\t{}\t{:.2}\t{}",
-            entity.kind,
-            entity.raw_value,
-            entity.confidence,
-            entity.tags.join(",")
-        )
-        .map_err(|err| err.to_string())?;
-    }
-    for outcome in &report.outcomes {
-        let found = outcome
-            .found
-            .map_or_else(|| "none".to_owned(), |count| count.to_string());
-        let kind = serde_json::to_value(outcome.kind)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "unknown".into());
-        writeln!(out, "{}\t{kind}\tfound={found}", outcome.module)
-            .map_err(|err| err.to_string())?;
-    }
-    append_lineage(report, &mut out)?;
-    Ok(out)
-}
-
-fn append_lineage(report: &Report, out: &mut String) -> Result<(), String> {
-    let observations = observations(report);
-    if observations.is_empty() {
-        return Ok(());
-    }
-    let resolution = resolve_with_lineage(observations, Vec::new(), AutoMergePolicy::default())
-        .map_err(|err| err.to_string())?;
-    writeln!(out, "lineage={}", resolution.observations.len()).map_err(|err| err.to_string())?;
-    for item in &resolution.observations {
-        writeln!(out, "{}", lineage_line(item)).map_err(|err| err.to_string())?;
-    }
-    Ok(())
-}
-
-fn observations(report: &Report) -> Vec<Observation> {
-    report
-        .entities
-        .iter()
-        .enumerate()
-        .flat_map(|(entity_index, entity)| {
-            entity
-                .evidence
-                .iter()
-                .enumerate()
-                .map(move |(evidence_index, evidence)| Observation {
-                    id: EvidenceNodeId(format!("{}:{entity_index}:{evidence_index}", entity.uid)),
-                    evidence: evidence.clone(),
-                })
-        })
-        .collect()
-}
-
-fn lineage_line(item: &ObservedLineage) -> String {
-    let id = &item.observation.id.0;
-    match &item.lineage {
-        Lineage::Upstream { kind, family, .. } => {
-            format!("{id}\t{}\t{family}", upstream_kind_label(*kind))
-        }
-        Lineage::Unattributed => format!("{id}\tunattributed"),
-        Lineage::Ambiguous { field, values } => {
-            format!("{id}\tambiguous\t{field}\t{}", values.join(";"))
-        }
-    }
-}
-
-const fn upstream_kind_label(kind: UpstreamKind) -> &'static str {
-    match kind {
-        UpstreamKind::Dataset => "dataset",
-        UpstreamKind::Registry => "registry",
-        UpstreamKind::Source => "source",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use crate::test_support::OneResponse;
 
-    use crate::http::{Request, Response, TransportFailure};
     use crate::source_outcome::SourceOutcomeKind;
-
-    struct Fake {
-        response: RefCell<Option<Result<Response, TransportFailure>>>,
-    }
-
-    impl Fake {
-        fn response(status: u16, body: &str) -> Self {
-            Self {
-                response: RefCell::new(Some(Ok(Response {
-                    status,
-                    headers: vec![("content-type".into(), "application/json".into())],
-                    body: body.as_bytes().to_vec(),
-                    truncated: false,
-                }))),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
-            self.response
-                .borrow_mut()
-                .take()
-                .expect("one request expected")
-        }
-    }
 
     #[test]
     fn parse_accepts_one_email_and_save() {
@@ -474,7 +341,7 @@ mod tests {
     #[test]
     fn run_combines_derivation_and_public_profile() {
         let body = r#"{"entry":[{"displayName":"Jane Doe","preferredUsername":"janed"}]}"#;
-        match run(&Fake::response(200, body), "jane.doe@acme.example", 1) {
+        match run(&OneResponse::json(200, body), "jane.doe@acme.example", 1) {
             EmailRun::Printed { text, report } => {
                 assert!(text.contains("gravatar\tsuccess"), "{text}");
                 assert!(text.contains("lineage="), "{text}");
@@ -491,7 +358,7 @@ mod tests {
 
     #[test]
     fn missing_public_profile_keeps_offline_derivations() {
-        match run(&Fake::response(404, ""), "jane.doe@gmail.com", 1) {
+        match run(&OneResponse::json(404, ""), "jane.doe@gmail.com", 1) {
             EmailRun::Printed { report, .. } => {
                 assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
                 assert!(!report.entities.is_empty());

@@ -54,18 +54,5 @@ fn trusted_url(url: &str) -> Result<(), HibpError> {
     Ok(())
 }
 
-fn encode(value: &str) -> String {
-    let mut out = String::new();
-    use std::fmt::Write;
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            out.push(char::from(byte));
-        } else {
-            let _ = write!(out, "%{byte:02X}");
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests;

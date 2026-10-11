@@ -84,8 +84,14 @@ pub fn is_valid_abn(raw: &str) -> bool {
 }
 
 /// Nine digits whose last is the ASIC check digit over the first eight.
-/// The check digit does not catch every single-digit error (weights 2, 4, 5, 6, 8
-/// share a factor with 10), so a valid ACN is weaker evidence than a valid ABN.
+///
+/// The check digit is the weighted sum mod 10, so a single-digit error in the body stays valid
+/// exactly when `weight * (new - old)` is a multiple of 10. For the eight body digits (weights 8,
+/// 7, 6, 5, 4, 3, 2, 1) that leaves one surviving replacement for each of digits 1, 3, 5 and 7, four
+/// for digit 4, and none for digits 2, 6 and 8. So exactly 8 of the 72 body substitutions yield
+/// another valid ACN, for every valid body. An error in the check digit is always caught. A valid
+/// ACN is therefore weaker evidence than a valid ABN, whose mod-89 check catches every single-digit
+/// error. The counts are checked by enumeration in the tests.
 #[must_use]
 pub fn is_valid_acn(raw: &str) -> bool {
     grouped_digits(raw).is_some_and(|d| acn_ok(&d))
@@ -400,6 +406,66 @@ mod tests {
         let mut shifted = base.clone();
         shifted[3] = (shifted[3] + 2) % 10;
         assert!(acn_ok(&shifted), "blind spot should exist: {shifted:?}");
+    }
+
+    /// The nine-digit ACN with the given eight body digits and its valid check digit.
+    fn acn_with_check(body: [u8; 8]) -> [u8; 9] {
+        let sum: u32 = ACN_WEIGHTS
+            .iter()
+            .zip(&body)
+            .map(|(w, &x)| w * u32::from(x))
+            .sum();
+        let mut acn = [0u8; 9];
+        acn[..8].copy_from_slice(&body);
+        acn[8] = u8::try_from((10 - sum % 10) % 10).unwrap();
+        acn
+    }
+
+    #[test]
+    fn acn_single_digit_blind_spot_is_exactly_eight_of_seventy_two() {
+        // Replacing body digit p (weight w) by x keeps the check digit exactly when w * (x - old)
+        // is a multiple of 10. That does not depend on the other digits. Enumerating every
+        // substitution gives 1, 0, 1, 4, 1, 0, 1, 0 surviving replacements for digits 1 through 8.
+        let per_digit = [1, 0, 1, 4, 1, 0, 1, 0];
+        // One body for each residue of the weighted sum, then pseudo-random bodies.
+        let mut bodies: Vec<[u8; 8]> = (0..10u8).map(|r| [0, 0, 0, 0, 0, 0, 0, r]).collect();
+        let mut rng = Lcg(0xacc0);
+        for _ in 0..200 {
+            let mut body = [0u8; 8];
+            for digit in &mut body {
+                *digit = u8::try_from(rng.next() % 10).unwrap();
+            }
+            bodies.push(body);
+        }
+        for &body in &bodies {
+            let valid = acn_with_check(body);
+            assert!(acn_ok(&valid), "{valid:?}");
+            let mut total = 0;
+            for (pos, &expected) in per_digit.iter().enumerate() {
+                let mut found = 0;
+                for replacement in 0..10u8 {
+                    if replacement == valid[pos] {
+                        continue;
+                    }
+                    let mut broken = valid;
+                    broken[pos] = replacement;
+                    if acn_ok(&broken) {
+                        found += 1;
+                    }
+                }
+                assert_eq!(found, expected, "{valid:?}, digit {}", pos + 1);
+                total += found;
+            }
+            assert_eq!(total, 8, "{valid:?}");
+            for replacement in 0..10u8 {
+                if replacement == valid[8] {
+                    continue;
+                }
+                let mut broken = valid;
+                broken[8] = replacement;
+                assert!(!acn_ok(&broken), "{valid:?}, check digit -> {replacement}");
+            }
+        }
     }
 
     #[test]
