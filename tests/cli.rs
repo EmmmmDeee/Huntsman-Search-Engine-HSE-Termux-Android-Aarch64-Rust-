@@ -117,7 +117,21 @@ fn failures_exit_nonzero() {
         .arg(dir.join("ledger.json"))
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(65));
+    assert_eq!(
+        out.status.code(),
+        Some(65),
+        "a malformed ledger is bad data"
+    );
+    let out = bin()
+        .arg("verify")
+        .arg(dir.join("absent-ledger.json"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(66),
+        "a missing ledger is unreadable input, not bad data"
+    );
     for query in ["", "a", "- !"] {
         let out = bin().args(["search", query]).output().unwrap();
         assert_eq!(out.status.code(), Some(64), "{query:?} is not hits=0");

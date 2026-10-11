@@ -346,6 +346,16 @@ pub(super) fn keys_cmd(path: Option<String>) -> ExitCode {
     }
 }
 
+/// A ledger that cannot be read (missing file, IO, size, symlink refusal) is unreadable input
+/// (66); a ledger that is read but malformed or whose chain is broken is bad data (65). This
+/// matches the README exit-code contract and the other file-reading commands.
+fn ledger_error_code(error: &Error) -> u8 {
+    match error {
+        Error::Store(_) => EX_NOINPUT,
+        _ => EX_DATAERR,
+    }
+}
+
 pub(super) fn verify(path: Option<String>) -> ExitCode {
     let Some(path) = path else {
         return fail(EX_USAGE, "usage: huntsman-recon verify LEDGER");
@@ -357,6 +367,6 @@ pub(super) fn verify(path: Option<String>) -> ExitCode {
             println!("tip={}", entries.last().map_or("none", |e| e.hash.as_str()));
             ExitCode::SUCCESS
         }
-        Err(e) => fail(EX_DATAERR, &e.to_string()),
+        Err(e) => fail(ledger_error_code(&e), &e.to_string()),
     }
 }
