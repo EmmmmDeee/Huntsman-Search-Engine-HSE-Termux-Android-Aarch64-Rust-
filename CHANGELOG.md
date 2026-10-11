@@ -14,6 +14,7 @@ release yet; relevant pushes to `main` are built and verified, and a current-hea
 
 - `search` treats a saved file as a challenge page only when it is an HTML document of at most 32 KiB that carries a challenge signature. Markdown, prose and longer pages that quote a vendor or phrase are now searched. The fetch path keeps its stricter rule.
 - `search` matches a query that is one email address or one domain as a whole name. `ada@example.com` no longer matches a document that holds "ada", "example" and "com" apart. A domain still matches its subdomains and the addresses at it.
+- Engineering-command role names are neutral titles (for example `CHIEF VISIONARY` and `ECONOMIC OPTIMIZATION LEAD`) instead of the earlier named-figure roles, and the command invariant is `CHIEF VISIONARY -> CHIEF SYSTEMS ARCHITECT -> ALL OTHER SYSTEMS`. Any consumer that keys on the old role `name` values in the JSON output must switch to the new names.
 
 ### Added
 
