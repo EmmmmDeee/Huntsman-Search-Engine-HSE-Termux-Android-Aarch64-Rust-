@@ -248,19 +248,22 @@ fn cell(row: &[Value], index: usize) -> Option<&str> {
     row.get(index)?.as_str()
 }
 
+/// A response whose body did not match the CDX contract. The status is kept, and no row count is
+/// claimed.
+fn drift_outcome(now_unix: u64, status: u16, detail: impl Into<String>) -> SourceExecutionOutcome {
+    SourceExecutionOutcome::failed(
+        MODULE,
+        now_unix,
+        SourceOutcomeKind::ParserDrift,
+        Some(status),
+        detail,
+    )
+}
+
 fn optional_cell(value: &str) -> Option<&str> {
     if value.is_empty() || value == "-" {
         None
     } else {
         Some(value)
     }
-}
-
-fn drift_outcome(now_unix: u64, status: u16, detail: impl Into<String>) -> SourceExecutionOutcome {
-    let mut outcome = SourceExecutionOutcome::success(MODULE, now_unix, 0)
-        .with_http_status(status)
-        .with_detail(detail);
-    outcome.kind = SourceOutcomeKind::ParserDrift;
-    outcome.found = None;
-    outcome
 }

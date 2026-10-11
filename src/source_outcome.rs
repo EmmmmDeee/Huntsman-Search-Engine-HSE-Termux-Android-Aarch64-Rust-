@@ -141,6 +141,43 @@ impl SourceExecutionOutcome {
         Self::new(module, SourceOutcomeKind::ValidZero, observed_at_unix, 0)
     }
 
+    /// A run that produced no answer. `kind` says why, `http_status` is the response status when
+    /// there was one, and `detail` is diagnostic text. No row count is recorded.
+    #[must_use]
+    pub fn failed(
+        module: impl Into<String>,
+        observed_at_unix: u64,
+        kind: SourceOutcomeKind,
+        http_status: Option<u16>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            module: module.into(),
+            kind,
+            observed_at_unix,
+            http_status,
+            found: None,
+            retry_after_secs: None,
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// The run completed without a verdict. `detail` says why.
+    #[must_use]
+    pub fn inconclusive(
+        module: impl Into<String>,
+        observed_at_unix: u64,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self::failed(
+            module,
+            observed_at_unix,
+            SourceOutcomeKind::Inconclusive,
+            None,
+            detail,
+        )
+    }
+
     #[must_use]
     pub fn with_http_status(mut self, status: u16) -> Self {
         self.http_status = Some(status);
@@ -242,6 +279,30 @@ pub fn classify_fetch(status: u16, body: &str) -> SourceOutcomeKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_constructors_record_no_row_count_and_keep_their_fields() {
+        let failed = SourceExecutionOutcome::failed(
+            "fixture",
+            7,
+            SourceOutcomeKind::ParserDrift,
+            Some(503),
+            "rows unusable",
+        );
+        assert_eq!(failed.module, "fixture");
+        assert_eq!(failed.kind, SourceOutcomeKind::ParserDrift);
+        assert_eq!(failed.observed_at_unix, 7);
+        assert_eq!(failed.http_status, Some(503));
+        assert_eq!(failed.found, None);
+        assert_eq!(failed.retry_after_secs, None);
+        assert_eq!(failed.detail.as_deref(), Some("rows unusable"));
+
+        let inconclusive = SourceExecutionOutcome::inconclusive("fixture", 7, "no verdict");
+        assert_eq!(inconclusive.kind, SourceOutcomeKind::Inconclusive);
+        assert_eq!(inconclusive.http_status, None);
+        assert_eq!(inconclusive.found, None);
+        assert_eq!(inconclusive.detail.as_deref(), Some("no verdict"));
+    }
 
     #[test]
     fn http_200_never_means_verified_success_by_itself() {

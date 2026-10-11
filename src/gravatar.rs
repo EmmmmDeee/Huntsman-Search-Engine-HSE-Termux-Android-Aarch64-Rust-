@@ -138,7 +138,8 @@ pub fn lookup<T: Transport + ?Sized>(
     if response.truncated {
         return Ok(Report {
             entities: Vec::new(),
-            outcome: failed_outcome(
+            outcome: SourceExecutionOutcome::failed(
+                SRC,
                 now_unix,
                 SourceOutcomeKind::ParserDrift,
                 Some(response.status),
@@ -152,7 +153,8 @@ pub fn lookup<T: Transport + ?Sized>(
     if classified != SourceOutcomeKind::Inconclusive {
         return Ok(Report {
             entities: Vec::new(),
-            outcome: failed_outcome(
+            outcome: SourceExecutionOutcome::failed(
+                SRC,
                 now_unix,
                 classified,
                 Some(response.status),
@@ -166,11 +168,12 @@ pub fn lookup<T: Transport + ?Sized>(
         Err(err) => {
             return Ok(Report {
                 entities: Vec::new(),
-                outcome: failed_outcome(
+                outcome: SourceExecutionOutcome::failed(
+                    SRC,
                     now_unix,
                     SourceOutcomeKind::ParserDrift,
                     Some(response.status),
-                    &format!("Gravatar JSON: {err}"),
+                    format!("Gravatar JSON: {err}"),
                 ),
             });
         }
@@ -178,7 +181,8 @@ pub fn lookup<T: Transport + ?Sized>(
     let Some(profiles) = envelope.entry else {
         return Ok(Report {
             entities: Vec::new(),
-            outcome: failed_outcome(
+            outcome: SourceExecutionOutcome::failed(
+                SRC,
                 now_unix,
                 SourceOutcomeKind::SchemaDrift,
                 Some(response.status),
@@ -205,20 +209,6 @@ pub fn lookup<T: Transport + ?Sized>(
         outcome: SourceExecutionOutcome::success(SRC, now_unix, profiles.len())
             .with_http_status(response.status),
     })
-}
-
-fn failed_outcome(
-    now_unix: u64,
-    kind: SourceOutcomeKind,
-    status: Option<u16>,
-    detail: &str,
-) -> SourceExecutionOutcome {
-    let mut outcome = SourceExecutionOutcome::success(SRC, now_unix, 0);
-    outcome.kind = kind;
-    outcome.found = None;
-    outcome.http_status = status;
-    outcome.detail = Some(detail.to_owned());
-    outcome
 }
 
 fn profile_evidence(hash: &str, profile: &Profile, scan_id: &str) -> Evidence {

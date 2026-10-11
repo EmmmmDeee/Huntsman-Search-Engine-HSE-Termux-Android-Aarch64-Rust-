@@ -10,7 +10,7 @@ use crate::github_user;
 use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::SourceExecutionOutcome;
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
 
@@ -132,9 +132,11 @@ fn collect_github<T: Transport + ?Sized>(
             report.entities.extend(found.entities);
             report.outcomes.push(found.outcome);
         }
-        Err(error) => report
-            .outcomes
-            .push(error_outcome(github_user::SRC, now_unix, &error)),
+        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
+            github_user::SRC,
+            now_unix,
+            error.to_string(),
+        )),
     }
 }
 
@@ -150,21 +152,11 @@ fn collect_bluesky<T: Transport + ?Sized>(
             report.entities.extend(found.entities);
             report.outcomes.push(found.outcome);
         }
-        Err(error) => report
-            .outcomes
-            .push(error_outcome(bluesky_user::SRC, now_unix, &error)),
-    }
-}
-
-fn error_outcome(module: &str, now_unix: u64, error: &Error) -> SourceExecutionOutcome {
-    SourceExecutionOutcome {
-        module: module.into(),
-        kind: SourceOutcomeKind::Inconclusive,
-        observed_at_unix: now_unix,
-        http_status: None,
-        found: None,
-        retry_after_secs: None,
-        detail: Some(error.to_string()),
+        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
+            bluesky_user::SRC,
+            now_unix,
+            error.to_string(),
+        )),
     }
 }
 
@@ -175,6 +167,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use crate::http::{Request, Response, TransportFailure};
+    use crate::source_outcome::SourceOutcomeKind;
 
     struct Fake {
         replies: RefCell<VecDeque<Result<Response, TransportFailure>>>,

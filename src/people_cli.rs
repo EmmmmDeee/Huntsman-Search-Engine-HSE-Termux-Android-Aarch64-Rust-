@@ -153,29 +153,32 @@ fn collect<R>(
         }
         Err(Error::Network(msg)) => {
             network.get_or_insert(msg.clone());
-            report.outcomes.push(failure_outcome(
+            report.outcomes.push(SourceExecutionOutcome::failed(
                 module,
                 now_unix,
                 SourceOutcomeKind::ConnectFailure,
+                None,
                 msg,
             ));
         }
         Err(Error::Invalid(msg)) => {
             failed.get_or_insert(msg.clone());
-            report.outcomes.push(failure_outcome(
+            report.outcomes.push(SourceExecutionOutcome::failed(
                 module,
                 now_unix,
                 SourceOutcomeKind::Inconclusive,
+                None,
                 msg,
             ));
         }
         Err(e) => {
             let msg = e.to_string();
             failed.get_or_insert(msg.clone());
-            report.outcomes.push(failure_outcome(
+            report.outcomes.push(SourceExecutionOutcome::failed(
                 module,
                 now_unix,
                 SourceOutcomeKind::Inconclusive,
+                None,
                 msg,
             ));
         }
@@ -220,19 +223,6 @@ impl IntoCollected for au_electoral::Report {
             outcomes: self.outcomes,
         }
     }
-}
-
-fn failure_outcome(
-    module: &'static str,
-    now_unix: u64,
-    kind: SourceOutcomeKind,
-    detail: String,
-) -> SourceExecutionOutcome {
-    let mut outcome = SourceExecutionOutcome::success(module, now_unix, 0);
-    outcome.kind = kind;
-    outcome.found = None;
-    outcome.detail = Some(detail);
-    outcome
 }
 
 fn usable(report: &Report) -> bool {

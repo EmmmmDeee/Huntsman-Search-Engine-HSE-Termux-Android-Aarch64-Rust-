@@ -293,6 +293,25 @@ pub fn merge_by_uid(entities: &mut Vec<Entity>) {
     *entities = merged;
 }
 
+/// Adds one entity observed with `evidence` and the given tags. Entities that end up with the same
+/// uid are folded together by [`merge_by_uid`].
+pub fn push_entity(
+    entities: &mut Vec<Entity>,
+    kind: EntityKind,
+    value: &str,
+    confidence: f64,
+    scan_id: &str,
+    evidence: Evidence,
+    tags: &[&str],
+) {
+    let mut entity = Entity::new(kind, value, confidence, scan_id);
+    for tag in tags {
+        entity.tag(*tag);
+    }
+    entity.add_evidence(evidence);
+    entities.push(entity);
+}
+
 impl Entity {
     #[must_use]
     pub fn new(
