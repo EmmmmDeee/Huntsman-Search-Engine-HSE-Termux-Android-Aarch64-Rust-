@@ -231,12 +231,15 @@ pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
     let mut value = value.trim();
     if *kind == EntityKind::Username {
         // `@handle` is notation, not part of the account name the sources index.
-        value = value.strip_prefix('@').unwrap_or(value);
+        // Every leading `@` is stripped, so `@@x` routes `x` and `@@` is empty.
+        value = value.trim_start_matches('@');
         if value.chars().any(char::is_whitespace) {
             return Vec::new();
         }
     }
-    if value.is_empty() {
+    // A value made only of dots names nothing, and the encoder keeps `.`, so it
+    // would render a path-traversal-looking URL on path-style templates.
+    if value.is_empty() || value.chars().all(|c| c == '.') {
         return Vec::new();
     }
     let encoded = crate::http::percent_encode_unreserved(value);
@@ -307,6 +310,63 @@ mod tests {
     fn malformed_handles_yield_no_routes() {
         assert_eq!(routes_for(&EntityKind::Username, "@"), []);
         assert_eq!(routes_for(&EntityKind::Username, "@ada lovelace"), []);
+    }
+
+    #[test]
+    fn every_leading_at_sign_is_notation() {
+        for raw in ["@@octocat", "@@@octocat", " @@octocat "] {
+            let routes = routes_for(&EntityKind::Username, raw);
+            let github = routes
+                .iter()
+                .find(|route| route.source_id == "github_users")
+                .unwrap_or_else(|| panic!("github_users route for {raw:?}"));
+            assert_eq!(
+                github.url, "https://github.com/search?q=octocat&type=users",
+                "{raw:?}"
+            );
+            assert!(
+                routes.iter().all(|route| !route.url.contains("%40")),
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_handle_of_only_at_signs_is_refused_like_empty() {
+        for raw in ["@@", "@@@", " @@ "] {
+            assert_eq!(routes_for(&EntityKind::Username, raw), [], "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn values_made_only_of_dots_are_refused() {
+        for kind in [
+            EntityKind::Domain,
+            EntityKind::IpAddress,
+            EntityKind::Username,
+            EntityKind::Person,
+        ] {
+            for raw in [".", "..", "...", " .. "] {
+                assert_eq!(routes_for(&kind, raw), [], "{kind:?} {raw:?}");
+            }
+        }
+        for raw in ["@.", "@..", "@@...", " @.. "] {
+            assert_eq!(routes_for(&EntityKind::Username, raw), [], "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn dots_inside_a_value_are_still_routed() {
+        assert_ne!(
+            routes_for(&EntityKind::Domain, "a.b.example.com"),
+            [] as [SourceRoute; 0]
+        );
+        let routes = routes_for(&EntityKind::Username, "@ada.lovelace");
+        assert!(
+            routes
+                .iter()
+                .any(|route| route.url == "https://github.com/search?q=ada.lovelace&type=users")
+        );
     }
 
     #[test]
