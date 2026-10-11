@@ -92,6 +92,34 @@ fn sources_refuses_a_bare_at_sign() {
 }
 
 #[test]
+fn sources_refuses_a_handle_of_only_at_signs() {
+    for raw in ["@@", "@@@"] {
+        let out = bin().args(["sources", raw]).output().unwrap();
+        assert_eq!(out.status.code(), Some(65), "{raw:?}");
+        assert_eq!(out.stdout, [] as [u8; 0], "{raw:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("no actionable source routes"),
+            "{raw:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn sources_refuses_values_made_only_of_dots() {
+    for raw in [".", "..", "...", "@.", "@..", "@...", "@@.."] {
+        let out = bin().args(["sources", raw]).output().unwrap();
+        assert_eq!(out.status.code(), Some(65), "{raw:?}");
+        assert_eq!(out.stdout, [] as [u8; 0], "{raw:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("no actionable source routes"),
+            "{raw:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
 fn sources_routes_decimal_coordinates_to_maps() {
     let out = bin()
         .args(["sources", "-27.4698, 153.0251"])

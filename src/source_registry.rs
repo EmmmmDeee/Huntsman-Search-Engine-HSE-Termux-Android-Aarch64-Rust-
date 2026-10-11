@@ -325,6 +325,63 @@ mod tests {
     }
 
     #[test]
+    fn every_leading_at_sign_is_notation() {
+        for raw in ["@@octocat", "@@@octocat", " @@octocat "] {
+            let routes = routes_for(&EntityKind::Username, raw);
+            let github = routes
+                .iter()
+                .find(|route| route.source_id == "github_users")
+                .unwrap_or_else(|| panic!("github_users route for {raw:?}"));
+            assert_eq!(
+                github.url, "https://github.com/search?q=octocat&type=users",
+                "{raw:?}"
+            );
+            assert!(
+                routes.iter().all(|route| !route.url.contains("%40")),
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_handle_of_only_at_signs_is_refused_like_empty() {
+        for raw in ["@@", "@@@", " @@ "] {
+            assert_eq!(routes_for(&EntityKind::Username, raw), [], "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn values_made_only_of_dots_are_refused() {
+        for kind in [
+            EntityKind::Domain,
+            EntityKind::IpAddress,
+            EntityKind::Username,
+            EntityKind::Person,
+        ] {
+            for raw in [".", "..", "...", " .. "] {
+                assert_eq!(routes_for(&kind, raw), [], "{kind:?} {raw:?}");
+            }
+        }
+        for raw in ["@.", "@..", "@@...", " @.. "] {
+            assert_eq!(routes_for(&EntityKind::Username, raw), [], "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn dots_inside_a_value_are_still_routed() {
+        assert_ne!(
+            routes_for(&EntityKind::Domain, "a.b.example.com"),
+            [] as [SourceRoute; 0]
+        );
+        let routes = routes_for(&EntityKind::Username, "@ada.lovelace");
+        assert!(
+            routes
+                .iter()
+                .any(|route| route.url == "https://github.com/search?q=ada.lovelace&type=users")
+        );
+    }
+
+    #[test]
     fn coordinates_route_to_maps() {
         let routes = routes_for(&EntityKind::Coordinates, "-27.4698,153.0251");
         assert_eq!(routes.len(), 1);
