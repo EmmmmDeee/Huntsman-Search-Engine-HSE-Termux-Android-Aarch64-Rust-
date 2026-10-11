@@ -22,6 +22,7 @@ use crate::identity_resolution::AutoMergePolicy;
 use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
 use crate::lookup_args::LookupTokens;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::textnorm::name_tokens;
 
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
@@ -231,13 +232,6 @@ fn usable(report: &Report) -> bool {
             .outcomes
             .iter()
             .any(|outcome| outcome.kind.is_accepted())
-}
-
-fn name_tokens(name: &str) -> Vec<String> {
-    name.split(|c: char| !c.is_alphabetic())
-        .filter(|token| token.chars().count() >= 2)
-        .map(str::to_ascii_lowercase)
-        .collect()
 }
 
 /// Whether NAME has the two alphabetic tokens a person lookup needs. The scan router
