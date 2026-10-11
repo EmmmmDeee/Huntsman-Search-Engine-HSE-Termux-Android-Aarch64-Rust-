@@ -54,6 +54,7 @@ A successful `full` gate requires:
 
 - shell syntax checks for the repository repair and Railway runtime harnesses;
 - `cargo fmt --check`;
+- no `unwrap()` in production code: `cargo clippy -p huntsman-recon --lib --bins --locked -- -D clippy::unwrap_used` and the same for the `xtask` binary (these targets compile without `cfg(test)`, so tests are not linted; `fast` runs this step too);
 - strict `cargo clippy --all-targets --locked -- -D warnings`;
 - `cargo test --locked`;
 - `huntsman-recon check`;

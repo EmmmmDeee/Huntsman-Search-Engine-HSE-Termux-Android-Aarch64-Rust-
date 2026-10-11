@@ -19,9 +19,9 @@ const USAGE: &str = "usage: cargo run --locked -p xtask -- gate [fast|msrv|full]
 Use after any error, bug, broken file, malfunctioning code path, failed refactor,
 or suspicious repository change.
 
-fast  - syntax/format + focused repository self-check
+fast  - syntax/format + no-unwrap lint of production code + focused repository self-check
 msrv  - full Rust test suite + repository self-check (for Rust 1.87)
-full  - host acceptance: format + strict clippy + full tests + self-check
+full  - host acceptance: format + no-unwrap lint + strict clippy + full tests + self-check
 
 A full host pass is necessary but not sufficient for platform-specific changes.
 Railway/container and Android/Termux changes require their platform gates too.";
@@ -114,6 +114,18 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<()> {
     }
     if matches!(mode, Mode::Fast | Mode::Full) {
         run_step(root, limit, "cargo", &["fmt", "--check"])?;
+        // Production code has no `unwrap()`: the library and both binaries compile without
+        // `cfg(test)` here, so inline tests are not linted. A manifest-level deny would reach
+        // the test binaries too, which is why the lint is a gate step instead.
+        for package in [
+            &["-p", "huntsman-recon", "--lib", "--bins"][..],
+            &["-p", "xtask", "--bins"][..],
+        ] {
+            let mut args = vec!["clippy"];
+            args.extend_from_slice(package);
+            args.extend_from_slice(&["--locked", "--", "-D", "clippy::unwrap_used"]);
+            run_step(root, limit, "cargo", &args)?;
+        }
     }
     if mode == Mode::Full {
         run_step(

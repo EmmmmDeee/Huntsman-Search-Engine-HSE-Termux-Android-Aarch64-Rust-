@@ -10,6 +10,9 @@ fn repair_protocol_is_executable_and_pins_required_gates() {
     for required in [
         "\"fmt\", \"--check\"",
         "\"clippy\"",
+        "\"clippy::unwrap_used\"",
+        "\"-p\", \"huntsman-recon\", \"--lib\", \"--bins\"",
+        "\"-p\", \"xtask\", \"--bins\"",
         "\"--workspace\",",
         "\"--all-targets\",",
         "\"warnings\"",
