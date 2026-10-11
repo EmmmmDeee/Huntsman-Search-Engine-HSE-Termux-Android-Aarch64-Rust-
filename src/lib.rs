@@ -124,6 +124,7 @@ pub mod resolve;
 pub mod retrieval_artifact;
 pub mod rf;
 pub mod roi;
+pub mod run_history;
 pub mod runtime;
 pub mod scan_batch;
 pub mod scan_route;

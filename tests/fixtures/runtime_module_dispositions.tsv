@@ -108,6 +108,7 @@ resolve	leaf	conservative automatic merge application for supplied decisions
 retrieval_artifact	leaf	stable retrieval artifact identifier for provenance evidence
 rf	leaf	radio-frequency model utility
 roi	runtime	dispatch utility scoring
+run_history	leaf	durable test-run history and regression verdict
 runtime	runtime	high-level investigation composition root
 scan_batch	leaf	bounded ordered scan seed-list parsing
 scan_route	runtime	deterministic lookup-front-end selector routing
