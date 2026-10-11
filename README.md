@@ -119,7 +119,7 @@ cargo run -- diagnostics --json        # offline build/runtime/module/provider s
 cargo run -- build-sha                 # exact embedded commit for provenance builds, otherwise unknown
 cargo run -- command                   # validate + print engineering command contract
 cargo run -- directive --help          # repository directive verifier/self-repair usage
-cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
+cargo run -- verify var/ledger.json    # entries, admitted count, tip, anchor; non-zero if broken
 cargo run -- search "brisbane port"    # built-in fixture
 cargo run -- search "brisbane port" docs/
 cargo run -- sources example.com       # classify + build curated routes; no network
@@ -149,6 +149,8 @@ cargo run -- modules --json               # only modules currently reachable fro
 cargo run -- attack status --json          # offline ATT&CK Reconnaissance capability posture
 cargo run -- recon crtsh https://example.com/
 ```
+
+`verify LEDGER` also prints `anchor=ENTRIES:TIP`. A hash chain cannot show that its newest entries were deleted, so record that line somewhere the ledger's writer cannot edit, and later run `verify LEDGER --anchor ENTRIES:TIP`: it exits 65 if the ledger is shorter than the anchor or its entry at the anchored position differs, and still accepts entries appended since. An anchor is unsigned; it is only as trustworthy as where it is stored.
 
 `attack status|coverage|gaps [--json]` restores the MITRE ATT&CK Reconnaissance reporting surface over currently reachable network modules. The TA0043 slice is reconciled through ATT&CK v19.2, including T1681 and T1682; the repository's complete embedded Enterprise matrix remains the older v17.1 baseline and is reported separately rather than mislabeled as current. `attack navigator` emits Reconnaissance Navigator JSON. Coverage is hierarchy-aware and evidence-backed: only module-mapped independent leaf techniques count as covered, parent techniques remain roll-ups, and coverage is not proof that a technique was executed or a measure of detection effectiveness.
 

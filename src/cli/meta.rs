@@ -13,7 +13,7 @@ use huntsman_recon::error::Error;
 use huntsman_recon::fsio::{read_bounded, write_atomic};
 use huntsman_recon::http::{TransportConfig, UreqTransport};
 use huntsman_recon::keys::Keys;
-use huntsman_recon::ledger::{admitted, load_chain};
+use huntsman_recon::ledger::{Anchor, admitted, check_anchor, load_chain};
 use huntsman_recon::module::reachable_modules;
 use huntsman_recon::provider_credentials;
 
@@ -356,15 +356,48 @@ fn ledger_error_code(error: &Error) -> u8 {
     }
 }
 
-pub(super) fn verify(path: Option<String>) -> ExitCode {
+const VERIFY_USAGE: &str = "usage: huntsman-recon verify LEDGER [--anchor ENTRIES:TIP]";
+
+/// `verify LEDGER [--anchor ENTRIES:TIP]`. Without an anchor the chain can only prove its
+/// own links, so a ledger whose newest entries were deleted still verifies. Every run prints
+/// the current `anchor=` so it can be recorded outside the ledger; a later run with
+/// `--anchor` then exposes truncation or a rewritten tail (exit 65).
+pub(super) fn verify(args: &[String]) -> ExitCode {
+    let mut path: Option<&str> = None;
+    let mut anchor: Option<Anchor> = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--anchor" {
+            let (None, Some(value)) = (&anchor, args.next()) else {
+                return fail(EX_USAGE, VERIFY_USAGE);
+            };
+            match Anchor::parse(value) {
+                Ok(parsed) => anchor = Some(parsed),
+                Err(e) => return fail(EX_USAGE, &e.to_string()),
+            }
+        } else if path.is_none() && !arg.starts_with("--") {
+            path = Some(arg);
+        } else {
+            return fail(EX_USAGE, VERIFY_USAGE);
+        }
+    }
     let Some(path) = path else {
-        return fail(EX_USAGE, "usage: huntsman-recon verify LEDGER");
+        return fail(EX_USAGE, VERIFY_USAGE);
     };
-    match load_chain(Path::new(&path)) {
+    match load_chain(Path::new(path)) {
         Ok(entries) => {
+            if let Some(anchor) = &anchor
+                && let Err(e) = check_anchor(&entries, anchor)
+            {
+                return fail(EX_DATAERR, &e.to_string());
+            }
             println!("entries={}", entries.len());
             println!("admitted={}", admitted(&entries).len());
             println!("tip={}", entries.last().map_or("none", |e| e.hash.as_str()));
+            println!("anchor={}", Anchor::of(&entries));
+            if anchor.is_some() {
+                println!("anchor_check=ok");
+            }
             ExitCode::SUCCESS
         }
         Err(e) => fail(ledger_error_code(&e), &e.to_string()),

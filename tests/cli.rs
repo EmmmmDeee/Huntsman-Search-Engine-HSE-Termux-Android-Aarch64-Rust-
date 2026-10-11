@@ -48,6 +48,61 @@ fn check_reproduces_committed_artifacts() {
 }
 
 #[test]
+fn verify_anchor_exposes_a_truncated_ledger() {
+    let dir = scratch("anchor");
+    let committed = Path::new(env!("CARGO_MANIFEST_DIR")).join("var/ledger.json");
+    let full = dir.join("full.json");
+    fs::copy(&committed, &full).unwrap();
+    let out = bin().arg("verify").arg(&full).output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let anchor = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("anchor="))
+        .expect("verify prints the anchor to record")
+        .to_owned();
+
+    let mut rows: Vec<serde_json::Value> =
+        serde_json::from_slice(&fs::read(&committed).unwrap()).unwrap();
+    assert!(rows.len() >= 2, "fixture needs a tail to delete");
+    rows.pop();
+    let cut = dir.join("cut.json");
+    fs::write(&cut, serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
+
+    assert!(
+        bin().arg("verify").arg(&cut).status().unwrap().success(),
+        "without an anchor a shortened chain still verifies; that is the documented gap"
+    );
+    let out = bin()
+        .arg("verify")
+        .arg(&cut)
+        .args(["--anchor", &anchor])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(65), "truncation is bad data");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("truncated"));
+    assert!(
+        out.stdout.is_empty(),
+        "a failed check prints no ledger summary"
+    );
+
+    let out = bin()
+        .arg("verify")
+        .arg(&full)
+        .args(["--anchor", &anchor])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("anchor_check=ok"));
+
+    for bad in [vec!["--anchor"], vec!["--anchor", "nonsense"]] {
+        let out = bin().arg("verify").arg(&full).args(bad).output().unwrap();
+        assert_eq!(out.status.code(), Some(64), "a bad anchor is a usage error");
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn directive_check_is_useful_outside_a_source_checkout() {
     let dir = scratch("directive-embedded");
     let out = bin()

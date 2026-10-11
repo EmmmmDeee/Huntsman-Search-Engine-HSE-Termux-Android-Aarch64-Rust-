@@ -1,5 +1,7 @@
 //! Hash-chained evidence ledger. Each hash covers the previous hash plus the claim.
-//! A dropped or reordered entry breaks `chain_intact`. Interop is still a binding, not a label.
+//! A dropped middle entry or a reordered entry breaks `chain_intact`; dropping the *newest*
+//! entries does not, which is what an `Anchor` recorded outside the file is for.
+//! Interop is still a binding, not a label.
 
 use std::path::Path;
 
@@ -182,6 +184,96 @@ pub fn load_chain(path: &Path) -> Result<Vec<LedgerEntry>, Error> {
     Ok(entries)
 }
 
+/// A recorded ledger head: how many entries existed and the hash of the last one.
+///
+/// A hash chain authenticates every earlier entry from the tip, but nothing inside
+/// the file authenticates the *end*: deleting the newest entries leaves a shorter
+/// chain that still verifies. Only a head recorded outside the ledger file can
+/// expose that. The same remedy is used by secure-audit-log schemes (Schneier and
+/// Kelsey 1999, a final MAC stored off-site) and by Certificate Transparency (RFC
+/// 6962, a signed tree head carrying the tree size). An anchor is that head without
+/// the signature; store it where the ledger's writer cannot edit it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Anchor {
+    pub entries: usize,
+    pub tip: String,
+}
+
+impl Anchor {
+    /// The head of `entries`. An empty ledger anchors at `GENESIS`.
+    #[must_use]
+    pub fn of(entries: &[LedgerEntry]) -> Self {
+        Self {
+            entries: entries.len(),
+            tip: entries
+                .last()
+                .map_or(GENESIS, |entry| entry.hash.as_str())
+                .to_owned(),
+        }
+    }
+
+    /// Parse `ENTRIES:TIP`, where TIP is 64 lowercase hex digits.
+    ///
+    /// # Errors
+    /// `Error::Invalid` when the text is not in that form.
+    pub fn parse(text: &str) -> Result<Self, Error> {
+        let bad = || {
+            Error::Invalid(format!(
+                "anchor must be ENTRIES:TIP (64 hex digits): {text:?}"
+            ))
+        };
+        let (count, tip) = text.split_once(':').ok_or_else(bad)?;
+        let entries = count.parse::<usize>().map_err(|_| bad())?;
+        let hex = tip.len() == GENESIS.len()
+            && tip
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if !hex {
+            return Err(bad());
+        }
+        Ok(Self {
+            entries,
+            tip: tip.to_owned(),
+        })
+    }
+}
+
+impl std::fmt::Display for Anchor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.entries, self.tip)
+    }
+}
+
+/// Check that `entries` still contains everything the anchor recorded.
+///
+/// `entries` must already be `chain_intact` (as `load_chain` guarantees). Because every
+/// hash covers its predecessor, a matching hash at the anchored position proves the whole
+/// prefix is unchanged; entries appended after the anchor are allowed.
+///
+/// # Errors
+/// `Error::Invalid` when the ledger is shorter than the anchor (truncated) or when its
+/// entry at the anchored position differs (rewritten).
+pub fn check_anchor(entries: &[LedgerEntry], anchor: &Anchor) -> Result<(), Error> {
+    if entries.len() < anchor.entries {
+        return Err(Error::Invalid(format!(
+            "ledger truncated: anchor records {} entries, found {}",
+            anchor.entries,
+            entries.len()
+        )));
+    }
+    let tip = match anchor.entries.checked_sub(1) {
+        None => GENESIS,
+        Some(index) => entries[index].hash.as_str(),
+    };
+    if tip != anchor.tip {
+        return Err(Error::Invalid(format!(
+            "ledger rewritten: entry {} does not match the anchor",
+            anchor.entries
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -312,6 +404,73 @@ mod tests {
         let second = append(&first.hash, &second_claim);
         assert!(chain_intact(&[first.clone(), second.clone()]));
         assert!(!chain_intact(&[second, first]));
+    }
+
+    fn three_entries() -> Vec<LedgerEntry> {
+        let mut entries: Vec<LedgerEntry> = Vec::new();
+        for name in ["one", "two", "three"] {
+            let mut claim = sample(Status::Verified, EvidenceLevel::DirectObservation, None);
+            claim.claim = name.into();
+            let prev = entries.last().map_or(GENESIS, |e| e.hash.as_str());
+            let next = append(prev, &claim);
+            entries.push(next);
+        }
+        entries
+    }
+
+    #[test]
+    fn chain_alone_cannot_see_tail_truncation_but_an_anchor_can() {
+        let full = three_entries();
+        let anchor = Anchor::of(&full);
+        let truncated = &full[..2];
+        assert!(
+            chain_intact(truncated),
+            "a shortened chain still verifies: this is the gap"
+        );
+        let err = check_anchor(truncated, &anchor).unwrap_err();
+        assert!(err.to_string().contains("truncated"), "{err}");
+        check_anchor(&full, &anchor).unwrap();
+    }
+
+    #[test]
+    fn anchor_allows_growth_and_rejects_a_rewritten_tail() {
+        let full = three_entries();
+        let anchor = Anchor::of(&full[..2]);
+        check_anchor(&full, &anchor).unwrap();
+        let mut rewritten = full[..2].to_vec();
+        let mut claim = full[2].claim.clone();
+        claim.claim = "forged".into();
+        rewritten.push(append(&full[1].hash, &claim));
+        assert!(chain_intact(&rewritten));
+        let longer_anchor = Anchor::of(&full);
+        let err = check_anchor(&rewritten, &longer_anchor).unwrap_err();
+        assert!(err.to_string().contains("rewritten"), "{err}");
+    }
+
+    #[test]
+    fn empty_ledger_anchors_at_genesis_and_round_trips() {
+        let empty = Anchor::of(&[]);
+        assert_eq!(empty.to_string(), format!("0:{GENESIS}"));
+        check_anchor(&three_entries(), &empty).unwrap();
+        let full = Anchor::of(&three_entries());
+        assert_eq!(Anchor::parse(&full.to_string()).unwrap(), full);
+    }
+
+    #[test]
+    fn malformed_anchors_are_refused() {
+        for bad in [
+            "",
+            "3",
+            ":",
+            "x:abc",
+            "-1:0000000000000000000000000000000000000000000000000000000000000000",
+            "3:abc",
+            "3:00000000000000000000000000000000000000000000000000000000000000G0",
+            "3:0000000000000000000000000000000000000000000000000000000000000000:",
+            "3:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ] {
+            assert!(Anchor::parse(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

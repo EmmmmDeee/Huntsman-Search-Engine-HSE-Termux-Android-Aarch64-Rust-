@@ -12,6 +12,7 @@ release yet; relevant pushes to `main` are built and verified, and a current-hea
 
 ### Added
 
+- Ledger tail-truncation detection: `verify LEDGER [--anchor ENTRIES:TIP]`. A hash chain cannot show that its newest entries were deleted, so `verify` now prints an `anchor=ENTRIES:TIP` line to record outside the ledger, and `--anchor` fails with exit 65 when the ledger is shorter than the anchor or its entry at the anchored position differs. Library: `ledger::Anchor` and `ledger::check_anchor`. An anchor is unsigned; its protection is only as strong as where it is stored.
 - Provider credential health automation: `credential-status [--probe] [FILE]` keeps ordinary status offline, resolves existing private runtime key sources without rendering values, and can run canonical live probes for configured single-slot providers. HIBP uses `/subscription/status` with the required `User-Agent` and reports non-secret plan/RPM/entitlement metadata.
 - `seeknow` command: opt-in SeekNow/See-Know lookups through guarded `fetch`,
   with typed entitlement/quota outcomes, a generic collector boundary, and

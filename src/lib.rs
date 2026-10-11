@@ -165,7 +165,8 @@ pub use entity::{Entity, EntityKind, EntityRef, Evidence, EvidenceProvenance};
 pub use error::Error;
 pub use graph::{EntityRelation, RelationKind};
 pub use ledger::{
-    Claim, LedgerEntry, admitted, append, chain_intact, load_chain, save_chain, seal,
+    Anchor, Claim, LedgerEntry, admitted, append, chain_intact, check_anchor, load_chain,
+    save_chain, seal,
 };
 pub use session::Session;
 pub use stage::{EvidenceLevel, Status};

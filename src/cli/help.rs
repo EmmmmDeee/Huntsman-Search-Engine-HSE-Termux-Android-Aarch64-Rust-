@@ -80,7 +80,7 @@ pub(super) fn print_command_help(command: &str) {
             "credential-status [--probe] [FILE]\nShow provider slot completeness without printing credential values. --probe performs canonical live health checks for configured providers that have a registered probe. FILE uses the existing private keys-file loader; otherwise the normal ~/.huntsman.env/environment resolution is used."
         }
         "verify" => {
-            "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
+            "verify LEDGER [--anchor ENTRIES:TIP]\nVerify a ledger file and print its entry count, admitted count, tip, and anchor. A hash chain cannot show that its newest entries were deleted; record the printed anchor outside the ledger and pass it back with --anchor to detect truncation or a rewritten tail (exit 65)."
         }
         _ => {
             println!("{HELP}\n{USAGE}");
