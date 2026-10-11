@@ -74,6 +74,7 @@ pub(super) fn print_command_help(command: &str) {
         "hibp" => HIBP_USAGE,
         "recon" => RECON_USAGE,
         "seeknow" => SEEKNOW_HELP,
+        "run-history" => huntsman_recon::run_history::cli::USAGE,
         "dehashed" => DEHASHED_USAGE,
         "keys" => {
             "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values."

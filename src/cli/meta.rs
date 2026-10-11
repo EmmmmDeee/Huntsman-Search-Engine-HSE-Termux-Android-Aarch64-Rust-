@@ -370,3 +370,16 @@ pub(super) fn verify(path: Option<String>) -> ExitCode {
         Err(e) => fail(ledger_error_code(&e), &e.to_string()),
     }
 }
+
+pub(super) fn run_history_cmd(args: &[String]) -> ExitCode {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    ExitCode::from(huntsman_recon::run_history::cli::run(
+        args,
+        now_unix,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    ))
+}

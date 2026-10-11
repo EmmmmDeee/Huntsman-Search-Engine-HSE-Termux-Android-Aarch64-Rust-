@@ -119,6 +119,7 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         Some("keys") => meta::keys_cmd(remaining.next()),
         Some("credential-status") => meta::credential_status_cmd(&remaining.collect::<Vec<_>>()),
         Some("verify") => meta::verify(remaining.next()),
+        Some("run-history") => meta::run_history_cmd(&remaining.collect::<Vec<_>>()),
         Some("check") | None => selfcheck::check(),
         Some(other) => fail(EX_USAGE, &format!("unknown command: {other}\n{USAGE}")),
     }

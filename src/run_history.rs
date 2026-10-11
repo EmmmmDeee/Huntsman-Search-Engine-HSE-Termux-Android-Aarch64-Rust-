@@ -176,3 +176,298 @@ mod tests {
         );
     }
 }
+
+/// Command-line surface over the run history. Kept in this module so argument
+/// parsing is unit-tested without the binary. The caller supplies the clock and
+/// the commit so a test is deterministic and nothing here reads global state.
+pub mod cli {
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    use super::{RunRecord, Verdict, append, load, verdict};
+
+    pub const USAGE: &str = "usage: huntsman-recon run-history (record --suite NAME --passed N --failed N [--commit SHA] [--file PATH] | show [--suite NAME] [--file PATH])";
+
+    const EX_USAGE: u8 = 64;
+    const EX_REGRESSION: u8 = 65;
+    const EX_IO: u8 = 74;
+    const DEFAULT_FILE: &str = "var/run_history.jsonl";
+
+    /// Parsed `record` arguments, before any I/O.
+    #[derive(Debug, PartialEq, Eq)]
+    struct RecordArgs {
+        suite: String,
+        passed: u64,
+        failed: u64,
+        commit: String,
+        file: PathBuf,
+    }
+
+    fn parse_record(args: &[String]) -> Result<RecordArgs, String> {
+        let (mut suite, mut passed, mut failed, mut commit, mut file) =
+            (None, None, None, None, None);
+        let mut iter = args.iter();
+        while let Some(flag) = iter.next() {
+            let mut value = || iter.next().ok_or_else(|| format!("{flag} needs a value"));
+            match flag.as_str() {
+                "--suite" => suite = Some(value()?.clone()),
+                "--passed" => {
+                    passed = Some(
+                        value()?
+                            .parse::<u64>()
+                            .map_err(|_| "--passed must be a number".to_string())?,
+                    );
+                }
+                "--failed" => {
+                    failed = Some(
+                        value()?
+                            .parse::<u64>()
+                            .map_err(|_| "--failed must be a number".to_string())?,
+                    );
+                }
+                "--commit" => commit = Some(value()?.clone()),
+                "--file" => file = Some(PathBuf::from(value()?)),
+                other => return Err(format!("unknown argument {other:?}")),
+            }
+        }
+        Ok(RecordArgs {
+            suite: suite.ok_or("record needs --suite")?,
+            passed: passed.ok_or("record needs --passed")?,
+            failed: failed.ok_or("record needs --failed")?,
+            commit: commit.unwrap_or_else(|| "unknown".to_string()),
+            file: file.unwrap_or_else(|| PathBuf::from(DEFAULT_FILE)),
+        })
+    }
+
+    fn parse_show(args: &[String]) -> Result<(Option<String>, PathBuf), String> {
+        let (mut suite, mut file) = (None, None);
+        let mut iter = args.iter();
+        while let Some(flag) = iter.next() {
+            let mut value = || iter.next().ok_or_else(|| format!("{flag} needs a value"));
+            match flag.as_str() {
+                "--suite" => suite = Some(value()?.clone()),
+                "--file" => file = Some(PathBuf::from(value()?)),
+                other => return Err(format!("unknown argument {other:?}")),
+            }
+        }
+        Ok((suite, file.unwrap_or_else(|| PathBuf::from(DEFAULT_FILE))))
+    }
+
+    /// Run the command. `now_unix` and the writers are injected so the whole
+    /// surface is deterministic under test. Returns the process exit code.
+    pub fn run(args: &[String], now_unix: u64, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
+        match args.first().map(String::as_str) {
+            Some("record") => record(&args[1..], now_unix, out, err),
+            Some("show") => show(&args[1..], out, err),
+            Some("help") => {
+                let _ = writeln!(out, "{USAGE}");
+                0
+            }
+            _ => {
+                let _ = writeln!(err, "{USAGE}");
+                EX_USAGE
+            }
+        }
+    }
+
+    fn record(args: &[String], now_unix: u64, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
+        let parsed = match parse_record(args) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                let _ = writeln!(err, "run-history: {message}\n{USAGE}");
+                return EX_USAGE;
+            }
+        };
+        let history = match load(&parsed.file) {
+            Ok(history) => history,
+            Err(error) => {
+                let _ = writeln!(err, "run-history: {error}");
+                return EX_IO;
+            }
+        };
+        let record = RunRecord {
+            commit: parsed.commit,
+            suite: parsed.suite,
+            passed: parsed.passed,
+            failed: parsed.failed,
+            recorded_at_unix: now_unix,
+        };
+        let verdict = verdict(&history, &record);
+        if let Err(error) = append(&parsed.file, &record) {
+            let _ = writeln!(err, "run-history: {error}");
+            return EX_IO;
+        }
+        let _ = writeln!(
+            out,
+            "suite={} passed={} failed={} verdict={}",
+            record.suite,
+            record.passed,
+            record.failed,
+            describe(&verdict)
+        );
+        match verdict {
+            Verdict::Regressed { .. } => EX_REGRESSION,
+            _ => 0,
+        }
+    }
+
+    fn show(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> u8 {
+        let (suite, file) = match parse_show(args) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                let _ = writeln!(err, "run-history: {message}\n{USAGE}");
+                return EX_USAGE;
+            }
+        };
+        let history = match load(&file) {
+            Ok(history) => history,
+            Err(error) => {
+                let _ = writeln!(err, "run-history: {error}");
+                return EX_IO;
+            }
+        };
+        for record in history
+            .iter()
+            .filter(|r| suite.as_deref().is_none_or(|s| s == r.suite))
+        {
+            let _ = writeln!(
+                out,
+                "commit={} suite={} passed={} failed={} at={}",
+                record.commit, record.suite, record.passed, record.failed, record.recorded_at_unix
+            );
+        }
+        0
+    }
+
+    fn describe(verdict: &Verdict) -> String {
+        match verdict {
+            Verdict::Baseline => "baseline".to_string(),
+            Verdict::Held => "held".to_string(),
+            Verdict::Regressed { reason } => format!("regressed ({reason})"),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn scratch(name: &str) -> PathBuf {
+            let dir = std::env::temp_dir().join(format!("rh-cli-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir.join("runs.jsonl")
+        }
+
+        fn argv(parts: &[&str]) -> Vec<String> {
+            parts.iter().map(|s| (*s).to_string()).collect()
+        }
+
+        #[test]
+        fn record_reports_baseline_then_held_then_regressed_with_exit_codes() {
+            let file = scratch("codes");
+            let f = file.to_str().unwrap();
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            assert_eq!(
+                run(
+                    &argv(&[
+                        "record", "--suite", "unit", "--passed", "10", "--failed", "0", "--file", f
+                    ]),
+                    1,
+                    &mut o,
+                    &mut e
+                ),
+                0
+            );
+            assert!(String::from_utf8(o).unwrap().contains("verdict=baseline"));
+
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            assert_eq!(
+                run(
+                    &argv(&[
+                        "record", "--suite", "unit", "--passed", "10", "--failed", "0", "--file", f
+                    ]),
+                    2,
+                    &mut o,
+                    &mut e
+                ),
+                0
+            );
+            assert!(String::from_utf8(o).unwrap().contains("verdict=held"));
+
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            let code = run(
+                &argv(&[
+                    "record", "--suite", "unit", "--passed", "10", "--failed", "1", "--file", f,
+                ]),
+                3,
+                &mut o,
+                &mut e,
+            );
+            assert_eq!(code, EX_REGRESSION);
+            assert!(String::from_utf8(o).unwrap().contains("verdict=regressed"));
+        }
+
+        #[test]
+        fn record_rejects_missing_flags_before_touching_the_file() {
+            let file = scratch("usage");
+            let f = file.to_str().unwrap();
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            let code = run(
+                &argv(&["record", "--suite", "unit", "--file", f]),
+                1,
+                &mut o,
+                &mut e,
+            );
+            assert_eq!(code, EX_USAGE);
+            assert!(String::from_utf8(e).unwrap().contains("--passed"));
+            assert!(!file.exists(), "no file should be created on a usage error");
+        }
+
+        #[test]
+        fn show_filters_by_suite() {
+            let file = scratch("show");
+            let f = file.to_str().unwrap();
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            run(
+                &argv(&[
+                    "record", "--suite", "unit", "--passed", "5", "--failed", "0", "--file", f,
+                ]),
+                1,
+                &mut o,
+                &mut e,
+            );
+            run(
+                &argv(&[
+                    "record",
+                    "--suite",
+                    "integration",
+                    "--passed",
+                    "3",
+                    "--failed",
+                    "0",
+                    "--file",
+                    f,
+                ]),
+                2,
+                &mut o,
+                &mut e,
+            );
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            run(
+                &argv(&["show", "--suite", "unit", "--file", f]),
+                0,
+                &mut o,
+                &mut e,
+            );
+            let text = String::from_utf8(o).unwrap();
+            assert!(text.contains("suite=unit"));
+            assert!(!text.contains("suite=integration"));
+        }
+
+        #[test]
+        fn unknown_subcommand_is_a_usage_error() {
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            assert_eq!(run(&argv(&["frobnicate"]), 0, &mut o, &mut e), EX_USAGE);
+        }
+    }
+}
