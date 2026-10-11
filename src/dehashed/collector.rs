@@ -80,7 +80,7 @@ pub fn collect(
     let mut batch = CollectionBatch::empty(COLLECTOR_ID, &selector.uid, CollectionOutcome::Failed);
     match client.search(&request) {
         Ok(outcome) => {
-            let truncated = outcome
+            let response_truncated = outcome
                 .total
                 .is_some_and(|total| total > outcome.entries.len() as u64);
             let kind = if outcome.entries.is_empty() {
@@ -88,10 +88,14 @@ pub fn collect(
             } else {
                 SourceOutcomeKind::Success
             };
+            // A local cap (max_entities/max_pivots) that drops kept data is a
+            // form of truncation too: fold it into the receipt and outcome so a
+            // lossy batch is never recorded as complete.
+            let dropped = append_entries(&mut batch, selector, &outcome, purpose, limits, now_unix);
+            let truncated = response_truncated || dropped;
             batch
                 .receipts
                 .push(receipt(&outcome, kind, now_unix, truncated));
-            append_entries(&mut batch, selector, &outcome, purpose, limits, now_unix);
             batch.outcome = match (kind, truncated) {
                 (_, true) => CollectionOutcome::Partial,
                 (SourceOutcomeKind::ValidZero, _) => CollectionOutcome::ValidZero,
@@ -200,6 +204,9 @@ const fn failure_status(error: &DehashedError) -> Option<u16> {
     }
 }
 
+/// Map a response's entries into entities and pivots. Returns `true` when a
+/// limit (`max_entities` or `max_pivots`) forced kept data to be dropped, so
+/// the caller can record the batch as truncated rather than complete.
 fn append_entries(
     batch: &mut CollectionBatch,
     selector: &Entity,
@@ -207,8 +214,13 @@ fn append_entries(
     purpose: Purpose,
     limits: &CollectionLimits,
     now_unix: u64,
-) {
+) -> bool {
+    let mut dropped = false;
     let mut positions: HashMap<String, usize> = HashMap::new();
+    // A value seen across many breach records shares one uid; without this set
+    // each repeat would push a duplicate pivot, exhausting max_pivots and
+    // crowding out distinct pivots.
+    let mut pivoted: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (index, entry) in outcome.entries.iter().enumerate() {
         let values = entry_values(entry);
         for (kind, value) in values {
@@ -226,25 +238,32 @@ fn append_entries(
                 purpose,
                 now_unix,
             ));
+            let uid = entity.uid.clone();
             if let Some(&position) = positions.get(&entity.uid) {
                 batch.entities[position].absorb(entity);
             } else if batch.entities.len() < limits.max_entities {
                 positions.insert(entity.uid.clone(), batch.entities.len());
                 batch.entities.push(entity);
             } else {
+                dropped = true;
                 continue;
             }
-            if batch.pivots.len() < limits.max_pivots
-                && (kind != selector.kind || value != selector.value)
-            {
-                batch.pivots.push(CollectorPivot {
-                    kind,
-                    value,
-                    parent_observation: None,
-                });
+            // Only a genuinely new, selector-distinct value is a candidate pivot.
+            if (kind != selector.kind || value != selector.value) && pivoted.insert(uid) {
+                if batch.pivots.len() < limits.max_pivots {
+                    batch.pivots.push(CollectorPivot {
+                        kind,
+                        value,
+                        parent_observation: None,
+                    });
+                } else {
+                    // A distinct pivot that the budget cannot hold is lost.
+                    dropped = true;
+                }
             }
         }
     }
+    dropped
 }
 
 /// Emails and usernames in one record, de-duplicated and blank-free.

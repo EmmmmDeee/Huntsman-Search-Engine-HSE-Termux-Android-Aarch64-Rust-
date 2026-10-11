@@ -7,7 +7,7 @@
 //! evidence: a new failure, or a suite that ran fewer tests than before.
 
 use std::fs::OpenOptions;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -40,14 +40,42 @@ pub enum HistoryError {
 }
 
 /// Append one run as a JSON line. Creates the file if it does not exist.
+///
+/// Before writing, a torn tail left by a previously interrupted append — bytes
+/// not ended by a newline, which are not a committed record — is truncated, so
+/// the new record is never fused onto a partial line. This assumes a single
+/// writer, which the regression store has (one CI step or one host).
 pub fn append(path: &Path, record: &RunRecord) -> Result<(), HistoryError> {
     let mut line = serde_json::to_string(record).map_err(|e| HistoryError::Malformed {
         line: 0,
         reason: e.to_string(),
     })?;
     line.push('\n');
+    heal_torn_tail(path)?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(line.as_bytes())?;
+    file.sync_data()?;
+    Ok(())
+}
+
+/// Drop an unterminated trailing fragment so the file stays a clean sequence of
+/// whole lines. A missing file, an empty file, or one already ending in a
+/// newline needs no repair.
+fn heal_torn_tail(path: &Path) -> Result<(), HistoryError> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(HistoryError::Io(e)),
+    };
+    if bytes.is_empty() || bytes.last() == Some(&b'\n') {
+        return Ok(());
+    }
+    let keep = bytes
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map_or(0, |index| index + 1);
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.set_len(keep as u64)?;
     file.sync_data()?;
     Ok(())
 }
@@ -57,18 +85,47 @@ pub fn load(path: &Path) -> Result<Vec<RunRecord>, HistoryError> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let reader = BufReader::new(std::fs::File::open(path)?);
+    // Read bytes, not lines: an append interrupted mid-write can leave a torn
+    // final line, possibly splitting a multi-byte character, which a UTF-8
+    // line reader would itself reject. A completed append always ends in '\n',
+    // so a file that does not is missing its last line's terminator — that
+    // final fragment is the torn write and is dropped, losing at most the line
+    // being written, exactly as this module guarantees. A malformed line that
+    // is *not* the unterminated tail is genuine corruption and still errors.
+    let bytes = std::fs::read(path)?;
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let complete = bytes.last() == Some(&b'\n');
+    let mut segments: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
+    if complete {
+        segments.pop(); // the empty segment after the final terminator
+    }
+    let last = segments.len().saturating_sub(1);
     let mut out = Vec::new();
-    for (index, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    for (index, segment) in segments.iter().enumerate() {
+        if segment.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let record = serde_json::from_str(&line).map_err(|e| HistoryError::Malformed {
-            line: index + 1,
-            reason: e.to_string(),
-        })?;
-        out.push(record);
+        let parsed = std::str::from_utf8(segment)
+            .ok()
+            .and_then(|text| serde_json::from_str::<RunRecord>(text.trim()).ok());
+        match parsed {
+            Some(record) => out.push(record),
+            None if index == last && !complete => break,
+            None => {
+                let reason = match std::str::from_utf8(segment) {
+                    Err(_) => "invalid UTF-8".to_string(),
+                    Ok(text) => serde_json::from_str::<RunRecord>(text.trim())
+                        .err()
+                        .map_or_else(|| "unparseable".to_string(), |e| e.to_string()),
+                };
+                return Err(HistoryError::Malformed {
+                    line: index + 1,
+                    reason,
+                });
+            }
+        }
     }
     Ok(out)
 }
@@ -246,6 +303,38 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; 
         let output = "test result: ok. 5 passed; 0 failed; 0 ignored; 7 measured; 9 filtered out";
         assert_eq!(parse_libtest_summary(output), Some((5, 0)));
     }
+
+    #[test]
+    fn a_torn_final_line_loses_only_itself_and_keeps_prior_records() {
+        // Simulate an append interrupted mid-write: a complete record, then a
+        // partial final line with no trailing newline.
+        let path = scratch("torn");
+        append(&path, &run("unit", 10, 0)).unwrap();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"commit\":\"a").unwrap();
+        drop(file);
+        let loaded = load(&path).expect("a torn tail must not wedge the whole history");
+        assert_eq!(loaded, vec![run("unit", 10, 0)]);
+        // And recording continues to work: the torn tail does not block appends.
+        append(&path, &run("unit", 11, 0)).unwrap();
+        assert_eq!(load(&path).unwrap().last().unwrap().passed, 11);
+    }
+
+    #[test]
+    fn interior_corruption_with_a_terminator_still_errors() {
+        // A malformed line that DID get its newline is genuine corruption, not a
+        // torn write, and must not be silently dropped.
+        let path = scratch("interior");
+        append(&path, &run("unit", 1, 0)).unwrap();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{garbage}\n").unwrap();
+        file.write_all(b"{\"commit\":\"c\",\"suite\":\"unit\",\"passed\":2,\"failed\":0,\"recorded_at_unix\":1}\n").unwrap();
+        drop(file);
+        assert!(matches!(
+            load(&path),
+            Err(HistoryError::Malformed { line: 2, .. })
+        ));
+    }
 }
 
 /// Command-line surface over the run history. Kept in this module so argument
@@ -279,7 +368,15 @@ pub mod cli {
             (None, None, None, None, None);
         let mut iter = args.iter();
         while let Some(flag) = iter.next() {
-            let mut value = || iter.next().ok_or_else(|| format!("{flag} needs a value"));
+            let mut value = || match iter.next() {
+                // A value beginning with "--" is the next flag, not this flag's
+                // value: reject it rather than silently swallowing it.
+                Some(next) if next.starts_with("--") => {
+                    Err(format!("{flag} needs a value, got the flag {next:?}"))
+                }
+                Some(next) => Ok(next),
+                None => Err(format!("{flag} needs a value")),
+            };
             match flag.as_str() {
                 "--suite" => suite = Some(value()?.clone()),
                 "--passed" => {
@@ -314,7 +411,13 @@ pub mod cli {
         let (mut suite, mut file) = (None, None);
         let mut iter = args.iter();
         while let Some(flag) = iter.next() {
-            let mut value = || iter.next().ok_or_else(|| format!("{flag} needs a value"));
+            let mut value = || match iter.next() {
+                Some(next) if next.starts_with("--") => {
+                    Err(format!("{flag} needs a value, got the flag {next:?}"))
+                }
+                Some(next) => Ok(next),
+                None => Err(format!("{flag} needs a value")),
+            };
             match flag.as_str() {
                 "--suite" => suite = Some(value()?.clone()),
                 "--file" => file = Some(PathBuf::from(value()?)),
@@ -539,6 +642,26 @@ pub mod cli {
         fn unknown_subcommand_is_a_usage_error() {
             let (mut o, mut e) = (Vec::new(), Vec::new());
             assert_eq!(run(&argv(&["frobnicate"]), 0, &mut o, &mut e), EX_USAGE);
+        }
+
+        #[test]
+        fn a_value_flag_does_not_swallow_the_following_flag() {
+            // `show --suite --file` must error, not let --suite eat --file and
+            // then silently load the default file for a bogus suite.
+            let err = parse_show(&argv(&["--suite", "--file"])).unwrap_err();
+            assert!(err.contains("--suite needs a value"), "{err}");
+
+            let err =
+                parse_record(&argv(&["--suite", "unit", "--passed", "--failed"])).unwrap_err();
+            assert!(err.contains("--passed needs a value"), "{err}");
+        }
+
+        #[test]
+        fn show_rejecting_a_missing_value_does_not_run_silently() {
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            let code = run(&argv(&["show", "--suite", "--file"]), 0, &mut o, &mut e);
+            assert_eq!(code, EX_USAGE);
+            assert!(o.is_empty(), "nothing should print on a usage error");
         }
     }
 }

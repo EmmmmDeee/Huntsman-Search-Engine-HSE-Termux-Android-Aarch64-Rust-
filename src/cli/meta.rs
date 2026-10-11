@@ -374,6 +374,10 @@ pub(super) fn verify(path: Option<String>) -> ExitCode {
 pub(super) fn run_history_cmd(args: &[String]) -> ExitCode {
     use std::io::Read;
     use std::time::{SystemTime, UNIX_EPOCH};
+    // Bound the --from-stdin read: every other external input in the crate is
+    // capped, and an unbounded read of a huge or endless producer would OOM on
+    // the memory-constrained Termux target. 16 MiB holds any real test log.
+    const MAX_STDIN_BYTES: u64 = 16 * 1024 * 1024;
     let now_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -386,9 +390,24 @@ pub(super) fn run_history_cmd(args: &[String]) -> ExitCode {
     if args.first().map(String::as_str) == Some("record")
         && args.iter().any(|a| a == "--from-stdin")
     {
+        // --from-stdin supplies the counts; explicit --passed/--failed would be
+        // silently overridden, so reject the combination instead.
+        if args.iter().any(|a| a == "--passed" || a == "--failed") {
+            eprintln!("run-history: --from-stdin cannot be combined with --passed/--failed");
+            return ExitCode::from(64);
+        }
         let mut buffer = String::new();
-        if std::io::stdin().read_to_string(&mut buffer).is_err() {
+        if std::io::stdin()
+            .lock()
+            .take(MAX_STDIN_BYTES + 1)
+            .read_to_string(&mut buffer)
+            .is_err()
+        {
             eprintln!("run-history: could not read test output from stdin");
+            return ExitCode::from(74);
+        }
+        if buffer.len() as u64 > MAX_STDIN_BYTES {
+            eprintln!("run-history: test output on stdin exceeds 16 MiB");
             return ExitCode::from(74);
         }
         let Some((passed, failed)) = huntsman_recon::run_history::parse_libtest_summary(&buffer)

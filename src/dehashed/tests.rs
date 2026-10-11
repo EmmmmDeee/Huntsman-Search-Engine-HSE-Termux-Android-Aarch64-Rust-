@@ -341,6 +341,70 @@ mod collector_tests {
     }
 
     #[test]
+    fn repeated_values_do_not_push_duplicate_pivots_or_crowd_out_distinct_ones() {
+        // "bob" appears twice, "alice" once. With max_pivots == 2, the old code
+        // pushed [bob, bob] and dropped alice. Dedup must keep [bob, alice].
+        let body = r#"{"entries": [
+            {"username": "bob"}, {"username": "bob"}, {"username": "alice"}
+        ], "total": 3}"#;
+        let fake = Fake::with(200, body, &[]);
+        let caps = CollectionLimits {
+            max_pivots: 2,
+            ..CollectionLimits::default()
+        };
+        let batch = collect(
+            &client(&fake),
+            &selector(EntityKind::Email, "a@example.com"),
+            purpose(),
+            &caps,
+            1,
+        )
+        .unwrap();
+        let pivots: Vec<&str> = batch.pivots.iter().map(|p| p.value.as_str()).collect();
+        assert!(pivots.contains(&"bob"), "{pivots:?}");
+        assert!(
+            pivots.contains(&"alice"),
+            "a distinct pivot must not be crowded out: {pivots:?}"
+        );
+        assert_eq!(
+            pivots.iter().filter(|v| **v == "bob").count(),
+            1,
+            "no duplicate pivot: {pivots:?}"
+        );
+    }
+
+    #[test]
+    fn dropping_an_entity_at_the_cap_marks_the_batch_truncated_not_complete() {
+        // total is absent and two distinct emails arrive, but max_entities == 1.
+        // The dropped entity must surface as Partial + receipt.truncated, never
+        // as a complete Success.
+        let body = r#"{"entries": [{"email": "a@example.com"}, {"email": "b@example.com"}]}"#;
+        let fake = Fake::with(200, body, &[]);
+        let caps = CollectionLimits {
+            max_entities: 1,
+            ..CollectionLimits::default()
+        };
+        let batch = collect(
+            &client(&fake),
+            &selector(EntityKind::Email, "a@example.com"),
+            purpose(),
+            &caps,
+            1,
+        )
+        .unwrap();
+        assert_eq!(batch.entities.len(), 1);
+        assert_eq!(
+            batch.outcome,
+            CollectionOutcome::Partial,
+            "a lossy cap must not report Success"
+        );
+        assert!(
+            batch.receipts[0].truncated,
+            "the receipt must record the drop"
+        );
+    }
+
+    #[test]
     fn maps_records_to_entities_pivots_and_evidence() {
         let fake = Fake::with(200, RECORDS, &[]);
         let client = client(&fake);
