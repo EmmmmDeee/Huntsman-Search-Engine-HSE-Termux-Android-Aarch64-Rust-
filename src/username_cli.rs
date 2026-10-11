@@ -1,6 +1,5 @@
 //! End-to-end front-end for `huntsman-recon username`.
 
-use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use crate::bluesky_user;
@@ -9,9 +8,8 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_u
 use crate::error::Error;
 use crate::github_user;
 use crate::http::Transport;
-use crate::identity_resolution::AutoMergePolicy;
-use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
 use crate::lookup_args::LookupTokens;
+use crate::lookup_report;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
@@ -69,7 +67,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, username: &str, now_unix: u64) 
     collect_bluesky(transport, &username, &scan_id, now_unix, &mut report);
     merge_by_uid(&mut report.entities);
 
-    match render(&report) {
+    match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => UsernameRun::Printed { text, report },
         Err(message) => UsernameRun::Failed(message),
     }
@@ -168,49 +166,6 @@ fn error_outcome(module: &str, now_unix: u64, error: &Error) -> SourceExecutionO
         retry_after_secs: None,
         detail: Some(error.to_string()),
     }
-}
-
-fn render(report: &Report) -> Result<String, String> {
-    let mut out = format!("entities={}\n", report.entities.len());
-    for entity in &report.entities {
-        writeln!(
-            out,
-            "{}\t{}\t{:.2}\t{}",
-            entity.kind,
-            entity.raw_value,
-            entity.confidence,
-            entity.tags.join(",")
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    for outcome in &report.outcomes {
-        let found = outcome
-            .found
-            .map_or_else(|| "none".to_owned(), |count| count.to_string());
-        let kind = serde_json::to_value(outcome.kind)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "unknown".into());
-        writeln!(out, "{}\t{kind}\tfound={found}", outcome.module)
-            .map_err(|error| error.to_string())?;
-    }
-    append_lineage(report, &mut out)?;
-    Ok(out)
-}
-
-fn append_lineage(report: &Report, out: &mut String) -> Result<(), String> {
-    let observations = observations_from(&report.entities);
-    if observations.is_empty() {
-        return Ok(());
-    }
-    let resolution = resolve_with_lineage(observations, Vec::new(), AutoMergePolicy::default())
-        .map_err(|error| error.to_string())?;
-    writeln!(out, "lineage={}", resolution.observations.len())
-        .map_err(|error| error.to_string())?;
-    for item in &resolution.observations {
-        writeln!(out, "{}", lineage_tsv_line(item)).map_err(|error| error.to_string())?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

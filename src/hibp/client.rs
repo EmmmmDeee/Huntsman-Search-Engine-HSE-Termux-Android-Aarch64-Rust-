@@ -413,7 +413,7 @@ impl HibpClient {
             url.push('?');
             let qs: Vec<String> = query
                 .iter()
-                .map(|(k, v)| format!("{k}={}", super::encode(v)))
+                .map(|(k, v)| format!("{k}={}", crate::http::percent_encode_unreserved(v)))
                 .collect();
             url.push_str(&qs.join("&"));
         }
@@ -506,7 +506,7 @@ fn retry_after(resp: &Response) -> Option<Duration> {
 }
 
 fn seg(s: &str) -> String {
-    super::encode(s.trim())
+    crate::http::percent_encode_unreserved(s.trim())
 }
 
 fn non_empty<'a>(s: &'a str, what: &str) -> Result<&'a str, HibpError> {

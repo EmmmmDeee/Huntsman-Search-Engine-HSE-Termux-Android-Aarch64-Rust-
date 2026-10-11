@@ -431,7 +431,13 @@ fn token_request(
     self::endpoint(endpoint)?;
     let body = form
         .iter()
-        .map(|(k, v)| format!("{}={}", super::encode(k), super::encode(v)))
+        .map(|(k, v)| {
+            format!(
+                "{}={}",
+                crate::http::percent_encode_unreserved(k),
+                crate::http::percent_encode_unreserved(v)
+            )
+        })
         .collect::<Vec<_>>()
         .join("&");
     let tokens: TokenSet = json_or_error(super::send(

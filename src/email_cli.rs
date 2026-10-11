@@ -6,7 +6,6 @@
 //! the L7 `lookup_save` module, and `lookup_args` reads the `--save` option.
 
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use crate::canonical::canonical_email;
@@ -15,9 +14,8 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_u
 use crate::error::Error;
 use crate::gravatar;
 use crate::http::Transport;
-use crate::identity_resolution::AutoMergePolicy;
-use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
 use crate::lookup_args::LookupTokens;
+use crate::lookup_report;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::textnorm::upper_first;
 
@@ -87,7 +85,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> 
     }
     merge_by_uid(&mut report.entities);
 
-    match render(&report) {
+    match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => EmailRun::Printed { text, report },
         Err(msg) => EmailRun::Failed(msg),
     }
@@ -258,48 +256,6 @@ fn derive_person(
             .inferred(),
     );
     entities.push(entity);
-}
-
-fn render(report: &Report) -> Result<String, String> {
-    let mut out = format!("entities={}\n", report.entities.len());
-    for entity in &report.entities {
-        writeln!(
-            out,
-            "{}\t{}\t{:.2}\t{}",
-            entity.kind,
-            entity.raw_value,
-            entity.confidence,
-            entity.tags.join(",")
-        )
-        .map_err(|err| err.to_string())?;
-    }
-    for outcome in &report.outcomes {
-        let found = outcome
-            .found
-            .map_or_else(|| "none".to_owned(), |count| count.to_string());
-        let kind = serde_json::to_value(outcome.kind)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "unknown".into());
-        writeln!(out, "{}\t{kind}\tfound={found}", outcome.module)
-            .map_err(|err| err.to_string())?;
-    }
-    append_lineage(report, &mut out)?;
-    Ok(out)
-}
-
-fn append_lineage(report: &Report, out: &mut String) -> Result<(), String> {
-    let observations = observations_from(&report.entities);
-    if observations.is_empty() {
-        return Ok(());
-    }
-    let resolution = resolve_with_lineage(observations, Vec::new(), AutoMergePolicy::default())
-        .map_err(|err| err.to_string())?;
-    writeln!(out, "lineage={}", resolution.observations.len()).map_err(|err| err.to_string())?;
-    for item in &resolution.observations {
-        writeln!(out, "{}", lineage_tsv_line(item)).map_err(|err| err.to_string())?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
