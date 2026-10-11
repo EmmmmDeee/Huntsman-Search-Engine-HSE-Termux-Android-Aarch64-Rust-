@@ -31,25 +31,27 @@ pub enum TargetKind {
 impl TargetKind {
     #[must_use]
     pub const fn canonical_str(self) -> &'static str {
+        // Every kind but `FullName` names an entity kind, so its text comes from the one table
+        // `EntityKind::as_str` keeps. `from_entity_kind` pairs the two enums.
         match self {
-            Self::Email => "email",
-            Self::Username => "username",
-            Self::Phone => "phone",
             Self::FullName => "full_name",
-            Self::IpAddress => "ip_address",
-            Self::Domain => "domain",
-            Self::Url => "url",
-            Self::Asn => "asn",
-            Self::Coordinates => "coordinates",
-            Self::Address => "address",
-            Self::Organisation => "organisation",
-            Self::AbnAcn => "abn_acn",
-            Self::MacAddress => "mac_address",
-            Self::ApiKey => "api_key",
-            Self::CryptoAddress => "crypto_address",
-            Self::DeviceId => "device_id",
-            Self::Ssid => "ssid",
-            Self::TrackingId => "tracking_id",
+            Self::Email => EntityKind::Email.as_str(),
+            Self::Username => EntityKind::Username.as_str(),
+            Self::Phone => EntityKind::Phone.as_str(),
+            Self::IpAddress => EntityKind::IpAddress.as_str(),
+            Self::Domain => EntityKind::Domain.as_str(),
+            Self::Url => EntityKind::Url.as_str(),
+            Self::Asn => EntityKind::Asn.as_str(),
+            Self::Coordinates => EntityKind::Coordinates.as_str(),
+            Self::Address => EntityKind::Address.as_str(),
+            Self::Organisation => EntityKind::Organisation.as_str(),
+            Self::AbnAcn => EntityKind::AbnAcn.as_str(),
+            Self::MacAddress => EntityKind::MacAddress.as_str(),
+            Self::ApiKey => EntityKind::ApiKey.as_str(),
+            Self::CryptoAddress => EntityKind::CryptoAddress.as_str(),
+            Self::DeviceId => EntityKind::DeviceId.as_str(),
+            Self::Ssid => EntityKind::Ssid.as_str(),
+            Self::TrackingId => EntityKind::TrackingId.as_str(),
         }
     }
 
@@ -623,6 +625,61 @@ pub fn fully_wired(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_kind_names_are_the_pinned_wire_names() {
+        // Planner, gap and benchmark outputs carry these names, so a change to one is a change to
+        // the output format.
+        let pinned = [
+            (TargetKind::Email, "email"),
+            (TargetKind::Username, "username"),
+            (TargetKind::Phone, "phone"),
+            (TargetKind::FullName, "full_name"),
+            (TargetKind::IpAddress, "ip_address"),
+            (TargetKind::Domain, "domain"),
+            (TargetKind::Url, "url"),
+            (TargetKind::Asn, "asn"),
+            (TargetKind::Coordinates, "coordinates"),
+            (TargetKind::Address, "address"),
+            (TargetKind::Organisation, "organisation"),
+            (TargetKind::AbnAcn, "abn_acn"),
+            (TargetKind::MacAddress, "mac_address"),
+            (TargetKind::ApiKey, "api_key"),
+            (TargetKind::CryptoAddress, "crypto_address"),
+            (TargetKind::DeviceId, "device_id"),
+            (TargetKind::Ssid, "ssid"),
+            (TargetKind::TrackingId, "tracking_id"),
+        ];
+        for (kind, name) in pinned {
+            assert_eq!(kind.canonical_str(), name, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn target_kinds_name_the_entity_kind_they_come_from() {
+        for kind in [
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Phone,
+            EntityKind::IpAddress,
+            EntityKind::Domain,
+            EntityKind::Url,
+            EntityKind::Asn,
+            EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Organisation,
+            EntityKind::AbnAcn,
+            EntityKind::MacAddress,
+            EntityKind::ApiKey,
+            EntityKind::CryptoAddress,
+            EntityKind::DeviceId,
+            EntityKind::Ssid,
+            EntityKind::TrackingId,
+        ] {
+            let target = TargetKind::from_entity_kind(&kind).expect("a target kind");
+            assert_eq!(target.canonical_str(), kind.as_str(), "{kind:?}");
+        }
+    }
 
     struct EmailToDomain;
     impl Module for EmailToDomain {

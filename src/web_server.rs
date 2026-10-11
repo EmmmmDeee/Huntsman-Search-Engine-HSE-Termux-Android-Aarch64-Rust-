@@ -69,7 +69,9 @@ impl ServeConfig {
             Some(token) => {
                 let token = token.trim().to_owned();
                 if token.is_empty() {
-                    return Err(Error::Invalid("HSE_AUTH_TOKEN must not be empty".into()));
+                    return Err(Error::missing_credential(
+                        "HSE_AUTH_TOKEN must not be empty",
+                    ));
                 }
                 Some(token)
             }
@@ -77,8 +79,8 @@ impl ServeConfig {
         };
 
         if !bind.ip().is_loopback() && bearer_token.is_none() {
-            return Err(Error::Invalid(
-                "non-loopback serve bind requires HSE_AUTH_TOKEN".into(),
+            return Err(Error::missing_credential(
+                "non-loopback serve bind requires HSE_AUTH_TOKEN",
             ));
         }
 

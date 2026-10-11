@@ -3,6 +3,7 @@
 use std::env;
 use std::process::ExitCode;
 
+use huntsman_recon::exit::{EX_DATAERR, EX_SOFTWARE, EX_USAGE};
 use huntsman_recon::pipeline::{InvestigationInput, InvestigationMode, PipelineLimits};
 use huntsman_recon::planner::PlannerPolicy;
 use huntsman_recon::runtime::investigate_offline;
@@ -28,7 +29,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.is_empty() {
-        return fail(64, USAGE);
+        return fail(EX_USAGE, USAGE);
     }
     let input = InvestigationInput {
         scan_id: "cli".to_string(),
@@ -43,10 +44,10 @@ fn main() -> ExitCode {
         &[],
     ) {
         Ok(outcome) => outcome,
-        Err(error) => return fail(70, &format!("investigation failed: {error}")),
+        Err(error) => return fail(EX_SOFTWARE, &format!("investigation failed: {error}")),
     };
     if outcome.normalization.accepted.is_empty() {
-        return fail(65, "no actionable seeds");
+        return fail(EX_DATAERR, "no actionable seeds");
     }
     println!(
         "accepted={} rejected={} entities={} relations={} planned={} termination={:?} truncated={}",

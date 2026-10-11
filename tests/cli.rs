@@ -557,7 +557,8 @@ fn serve_rejects_invalid_or_unconfigured_public_bind_before_listening() {
         .env_remove("HSE_AUTH_TOKEN")
         .output()
         .unwrap();
-    assert_eq!(public.status.code(), Some(65));
+    // A missing required credential exits 66, as ARCHITECTURE.md documents.
+    assert_eq!(public.status.code(), Some(66));
     assert!(String::from_utf8_lossy(&public.stderr).contains("HSE_AUTH_TOKEN"));
 }
 

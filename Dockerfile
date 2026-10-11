@@ -1,6 +1,7 @@
 # Current Huntsman Recon image for Railway and generic Linux container runtimes.
 # This is the single canonical container definition for Huntsman Recon.
-FROM rust:1.99-trixie AS builder
+# Base images are pinned by digest, so a moved tag cannot change the toolchain or OS under a build.
+FROM rust:1.99-trixie@sha256:6ff07edce8775d0f64be7aba9197229407301bddf2054d62c27b541a6238a181 AS builder
 WORKDIR /build
 
 ARG HUNTSMAN_BUILD_SHA=unknown
@@ -16,7 +17,7 @@ COPY xtask/src ./xtask/src
 
 RUN cargo build --release --locked --bin huntsman-recon
 
-FROM debian:trixie-slim AS runtime
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gosu \

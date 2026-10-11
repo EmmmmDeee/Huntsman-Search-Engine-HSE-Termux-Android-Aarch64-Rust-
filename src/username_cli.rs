@@ -1,18 +1,16 @@
 //! End-to-end front-end for `huntsman-recon username`.
 
-use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use crate::bluesky_user;
 use crate::canonical::canonical_handle;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
-use crate::evidence_ancestry::EvidenceNodeId;
 use crate::github_user;
 use crate::http::Transport;
-use crate::identity_resolution::AutoMergePolicy;
-use crate::lineage::{Lineage, Observation, ObservedLineage, UpstreamKind, resolve_with_lineage};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::lookup_args::LookupTokens;
+use crate::lookup_report;
+use crate::source_outcome::SourceExecutionOutcome;
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
 
@@ -37,30 +35,7 @@ impl UsernameArgs {
     /// # Errors
     /// Invalid/missing handle, repeated `--save`, or an unknown option.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let mut positional = Vec::new();
-        let mut save = None;
-        let mut it = args.iter();
-        while let Some(arg) = it.next() {
-            match arg.as_str() {
-                "--save" => {
-                    if save.is_some() {
-                        return Err(Error::Invalid("only one --save".into()));
-                    }
-                    let path = it
-                        .next()
-                        .cloned()
-                        .ok_or_else(|| Error::Invalid("--save needs a value".into()))?;
-                    if path.is_empty() || path.starts_with("--") {
-                        return Err(Error::Invalid("--save needs a file path".into()));
-                    }
-                    save = Some(PathBuf::from(path));
-                }
-                flag if flag.starts_with("--") => {
-                    return Err(Error::Invalid(format!("unknown option {flag}")));
-                }
-                value => positional.push(value.to_owned()),
-            }
-        }
+        let LookupTokens { positional, save } = LookupTokens::split(args)?;
         if positional.len() != 1 {
             return Err(Error::Invalid("username needs exactly one HANDLE".into()));
         }
@@ -92,7 +67,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, username: &str, now_unix: u64) 
     collect_bluesky(transport, &username, &scan_id, now_unix, &mut report);
     merge_by_uid(&mut report.entities);
 
-    match render(&report) {
+    match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => UsernameRun::Printed { text, report },
         Err(message) => UsernameRun::Failed(message),
     }
@@ -106,12 +81,12 @@ fn selector(raw: &str) -> Result<String, Error> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
-        return Err(Error::Invalid("invalid username selector".into()));
+        return Err(Error::invalid_value("invalid username selector"));
     }
     let canonical = canonical_handle(&value)
-        .ok_or_else(|| Error::Invalid("invalid username selector".into()))?;
+        .ok_or_else(|| Error::invalid_value("invalid username selector"))?;
     if is_placeholder_entity(&ValueKind::Username, &canonical) {
-        return Err(Error::Invalid("placeholder username selector".into()));
+        return Err(Error::invalid_value("placeholder username selector"));
     }
     Ok(value)
 }
@@ -157,9 +132,11 @@ fn collect_github<T: Transport + ?Sized>(
             report.entities.extend(found.entities);
             report.outcomes.push(found.outcome);
         }
-        Err(error) => report
-            .outcomes
-            .push(error_outcome(github_user::SRC, now_unix, &error)),
+        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
+            github_user::SRC,
+            now_unix,
+            error.to_string(),
+        )),
     }
 }
 
@@ -175,103 +152,11 @@ fn collect_bluesky<T: Transport + ?Sized>(
             report.entities.extend(found.entities);
             report.outcomes.push(found.outcome);
         }
-        Err(error) => report
-            .outcomes
-            .push(error_outcome(bluesky_user::SRC, now_unix, &error)),
-    }
-}
-
-fn error_outcome(module: &str, now_unix: u64, error: &Error) -> SourceExecutionOutcome {
-    SourceExecutionOutcome {
-        module: module.into(),
-        kind: SourceOutcomeKind::Inconclusive,
-        observed_at_unix: now_unix,
-        http_status: None,
-        found: None,
-        retry_after_secs: None,
-        detail: Some(error.to_string()),
-    }
-}
-
-fn render(report: &Report) -> Result<String, String> {
-    let mut out = format!("entities={}\n", report.entities.len());
-    for entity in &report.entities {
-        writeln!(
-            out,
-            "{}\t{}\t{:.2}\t{}",
-            entity.kind,
-            entity.raw_value,
-            entity.confidence,
-            entity.tags.join(",")
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    for outcome in &report.outcomes {
-        let found = outcome
-            .found
-            .map_or_else(|| "none".to_owned(), |count| count.to_string());
-        let kind = serde_json::to_value(outcome.kind)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "unknown".into());
-        writeln!(out, "{}\t{kind}\tfound={found}", outcome.module)
-            .map_err(|error| error.to_string())?;
-    }
-    append_lineage(report, &mut out)?;
-    Ok(out)
-}
-
-fn append_lineage(report: &Report, out: &mut String) -> Result<(), String> {
-    let observations = observations(report);
-    if observations.is_empty() {
-        return Ok(());
-    }
-    let resolution = resolve_with_lineage(observations, Vec::new(), AutoMergePolicy::default())
-        .map_err(|error| error.to_string())?;
-    writeln!(out, "lineage={}", resolution.observations.len())
-        .map_err(|error| error.to_string())?;
-    for item in &resolution.observations {
-        writeln!(out, "{}", lineage_line(item)).map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-fn observations(report: &Report) -> Vec<Observation> {
-    report
-        .entities
-        .iter()
-        .enumerate()
-        .flat_map(|(entity_index, entity)| {
-            entity
-                .evidence
-                .iter()
-                .enumerate()
-                .map(move |(evidence_index, evidence)| Observation {
-                    id: EvidenceNodeId(format!("{}:{entity_index}:{evidence_index}", entity.uid)),
-                    evidence: evidence.clone(),
-                })
-        })
-        .collect()
-}
-
-fn lineage_line(item: &ObservedLineage) -> String {
-    let id = &item.observation.id.0;
-    match &item.lineage {
-        Lineage::Upstream { kind, family, .. } => {
-            format!("{id}\t{}\t{family}", upstream_kind_label(*kind))
-        }
-        Lineage::Unattributed => format!("{id}\tunattributed"),
-        Lineage::Ambiguous { field, values } => {
-            format!("{id}\tambiguous\t{field}\t{}", values.join(";"))
-        }
-    }
-}
-
-const fn upstream_kind_label(kind: UpstreamKind) -> &'static str {
-    match kind {
-        UpstreamKind::Dataset => "dataset",
-        UpstreamKind::Registry => "registry",
-        UpstreamKind::Source => "source",
+        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
+            bluesky_user::SRC,
+            now_unix,
+            error.to_string(),
+        )),
     }
 }
 
@@ -282,6 +167,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use crate::http::{Request, Response, TransportFailure};
+    use crate::source_outcome::SourceOutcomeKind;
 
     struct Fake {
         replies: RefCell<VecDeque<Result<Response, TransportFailure>>>,

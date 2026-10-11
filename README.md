@@ -44,8 +44,9 @@ offline acceptance before serving, and drops from the container startup user to
 uid 10001 for the application process.
 
 Set `HSE_AUTH_TOKEN` as a Railway variable for a stable bearer token. If it is
-absent, the container generates a 256-bit token, stores it under
-`$HUNTSMAN_DATA_DIR/.huntsman/`, and prints it once to deployment logs.
+absent, the container generates a 256-bit token, stores it at
+`$HUNTSMAN_DATA_DIR/.huntsman/railway-auth-token`, and never writes its value to
+deployment logs; the log names that file instead.
 Attaching a Railway volume at `/data` makes that state durable; the service can
 also run without a volume. Current Railway Infrastructure as Code lives at
 `.railway/railway.ts`; see [`docs/RAILWAY.md`](docs/RAILWAY.md).

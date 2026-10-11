@@ -9,6 +9,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
+#[allow(dead_code)]
+#[path = "support/workflow.rs"]
+mod workflow;
+
+use workflow::{job, step};
+
 const WORKFLOW: &str = ".github/workflows/issue-fix.yml";
 const SCRIPTS: [&str; 7] = [
     "scripts/issue-fix/instructions.md",
@@ -22,33 +28,6 @@ const SCRIPTS: [&str; 7] = [
 
 fn workflow() -> String {
     fs::read_to_string(WORKFLOW).expect("the issue-fix workflow must exist at the repository root")
-}
-
-/// A job header is a line indented by exactly two spaces that ends with a colon.
-fn is_job_header(line: &str) -> bool {
-    line.starts_with("  ") && !line.starts_with("   ") && line.ends_with(':')
-}
-
-/// The text of one job, from its header to the next job header.
-fn job(wf: &str, name: &str) -> String {
-    let header = format!("  {name}:");
-    let mut lines = wf.lines().skip_while(|l| *l != header);
-    let first = lines
-        .next()
-        .unwrap_or_else(|| panic!("job {name:?} must exist in {WORKFLOW}"));
-    let body: Vec<&str> = lines.take_while(|l| !is_job_header(l)).collect();
-    format!("{first}\n{}", body.join("\n"))
-}
-
-/// The text of the named step: from its `- name:` line to the next step.
-fn step(wf: &str, name: &str) -> String {
-    let header = format!("      - name: {name}");
-    let mut lines = wf.lines().skip_while(|l| *l != header);
-    let first = lines
-        .next()
-        .unwrap_or_else(|| panic!("step {name:?} must exist in {WORKFLOW}"));
-    let body: Vec<&str> = lines.take_while(|l| !l.starts_with("      - ")).collect();
-    format!("{first}\n{}", body.join("\n"))
 }
 
 /// The names of the steps in a job's text that contain NEEDLE, in order.
