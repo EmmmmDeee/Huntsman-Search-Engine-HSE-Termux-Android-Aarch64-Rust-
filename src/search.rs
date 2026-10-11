@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use crate::classify::classify_response;
+use crate::classify::{classify_response, is_saved_challenge};
 use crate::error::Error;
 use crate::fsio::read_bounded;
 
@@ -96,7 +96,8 @@ fn for_each_token(text: &str, mut visit: impl FnMut(&str)) {
 }
 
 /// Load operator `.txt` and `.md` files from one directory, not recursive.
-/// Challenge pages, non-UTF-8, oversize files, and symlinks are reported as skipped.
+/// Short HTML challenge pages (see [`is_saved_challenge`]), non-UTF-8, oversize files, and
+/// symlinks are reported as skipped.
 ///
 /// # Errors
 /// `Error::Store` when the directory itself cannot be read. An unreadable
@@ -131,7 +132,7 @@ pub fn load_dir(dir: &Path) -> Result<Loaded, Error> {
                 continue;
             }
         };
-        if !classify_response(200, &body).is_result() {
+        if is_saved_challenge(&body) {
             loaded.skipped.push(skip("challenge page".into()));
             continue;
         }
@@ -261,6 +262,40 @@ mod tests {
             load_dir(&root).is_err(),
             "missing dir is an error, not hits=0"
         );
+    }
+
+    #[test]
+    fn saved_documents_that_quote_a_challenge_are_kept() {
+        let root = std::env::temp_dir().join(format!("huntsman-quotes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("README.md"),
+            "# Notes\n\nThe block page reads `<html>just a moment cloudflare</html>`.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("note.txt"),
+            "DataDome blocked our request on Tuesday.",
+        )
+        .unwrap();
+        let article = format!(
+            "<html>{}<script src=\"https://www.google.com/recaptcha/api.js\"></script></html>",
+            "x".repeat(40 * 1024)
+        );
+        std::fs::write(root.join("article.txt"), article).unwrap();
+        std::fs::write(
+            root.join("block.txt"),
+            "<html>just a moment cloudflare</html>",
+        )
+        .unwrap();
+        let loaded = load_dir(&root).unwrap();
+        let ids: Vec<&str> = loaded.docs.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["README.md", "article.txt", "note.txt"]);
+        let skipped: Vec<&str> = loaded.skipped.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
+        assert!(skipped[0].ends_with("block.txt"), "{skipped:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The count-per-document search before `for_each_token` replaced the token map. Kept here
