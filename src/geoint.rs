@@ -9,9 +9,6 @@ pub use crate::postcode_au;
 pub use crate::radar;
 pub use crate::rf;
 
-#[cfg(test)]
-const EARTH_M: f64 = 6_371_000.0;
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fix {
     pub id: String,
@@ -37,6 +34,7 @@ pub fn parse_latlon(raw: &str) -> Result<(f64, f64), Error> {
         .ok_or_else(|| Error::Invalid("coordinate out of range".into()))
 }
 
+/// Great-circle metres on the sphere of [`crate::geohash::EARTH_RADIUS_KM`].
 #[must_use]
 pub fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     crate::geohash::haversine_km(lat1, lon1, lat2, lon2) * 1000.0
@@ -105,7 +103,7 @@ mod tests {
 
     #[test]
     fn antipodes_are_half_circumference_not_nan() {
-        let half = std::f64::consts::PI * EARTH_M;
+        let half = std::f64::consts::PI * crate::geohash::EARTH_RADIUS_KM * 1_000.0;
         for (lat, lon) in [
             (-59.811_333_000_000_005, -55.338_965),
             (20.542_294, -6.566_629_000_000_006),
