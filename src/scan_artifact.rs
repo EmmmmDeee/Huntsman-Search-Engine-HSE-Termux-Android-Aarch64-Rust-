@@ -186,7 +186,17 @@ mod tests {
         );
         write(&path, &original).unwrap();
         let reloaded = read(&path).unwrap();
-        assert_eq!(reloaded.correlate(), in_memory);
+        // `ts` is a wall-clock stamp of when correlate() ran, not part of the
+        // stored scan's identity; the two calls can straddle a second boundary.
+        // The metamorphic property is that the correlations are otherwise
+        // identical, so normalise `ts` before comparing.
+        let strip_ts = |mut correlations: Vec<Correlation>| {
+            for correlation in &mut correlations {
+                correlation.ts = 0;
+            }
+            correlations
+        };
+        assert_eq!(strip_ts(reloaded.correlate()), strip_ts(in_memory));
     }
 
     #[test]
