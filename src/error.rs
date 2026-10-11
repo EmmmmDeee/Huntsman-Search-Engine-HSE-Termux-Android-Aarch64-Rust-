@@ -60,7 +60,10 @@ impl Error {
     /// True when this is a local contract failure, not a transport refusal.
     #[must_use]
     pub const fn is_local_contract(&self) -> bool {
-        matches!(self, Self::MissingField(_) | Self::Invalid(_) | Self::TerminateRefused(_))
+        matches!(
+            self,
+            Self::MissingField(_) | Self::Invalid(_) | Self::TerminateRefused(_)
+        )
     }
 }
 
@@ -83,7 +86,10 @@ mod tests {
             "invalid input: meta-plan refused: inherited fallback"
         );
         assert_eq!(Error::store("io").to_string(), "store: io");
-        assert_eq!(Error::network("egress-policy").to_string(), "network: egress-policy");
+        assert_eq!(
+            Error::network("egress-policy").to_string(),
+            "network: egress-policy"
+        );
     }
 
     #[test]

@@ -257,11 +257,46 @@ fn people_skips_single_token_without_network() {
 }
 
 #[test]
-fn scan_routes_single_token_to_people_without_network() {
+fn scan_refuses_an_inferred_single_word_instead_of_skipping_it() {
     let out = bin().args(["scan", "Madonna"]).output().unwrap();
-    assert_eq!(out.status.code(), Some(0));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("scan_route=people"));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("skipped"));
+    assert_eq!(out.status.code(), Some(65));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("scan_route=people"), "{err}");
+    assert!(err.contains("pass -k people"), "{err}");
+    assert!(String::from_utf8_lossy(&out.stdout).is_empty());
+}
+
+#[test]
+fn scan_does_not_report_a_mistyped_phone_as_a_skipped_name() {
+    let out = bin().args(["scan", "0412"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("scan_route=people"));
+}
+
+#[test]
+fn scan_with_an_explicit_people_kind_refuses_a_single_token_instead_of_skipping() {
+    // A skip exits 0, which would report a refused lookup as a success. The scan refuses it (65),
+    // as main did, and the people command is not reached.
+    let out = bin()
+        .args(["scan", "-k", "people", "Madonna"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("scan_route=people"), "{err}");
+    assert!(err.contains("needs a name"), "{err}");
+    assert!(String::from_utf8_lossy(&out.stdout).is_empty());
+}
+
+#[test]
+fn scan_refuses_an_option_that_a_leading_space_hides_from_the_check() {
+    let out = bin().args(["scan", " --bogus", "Ada"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("needs SELECTOR before options"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -667,7 +702,43 @@ fn identifier_geohash_and_coarsen_commands() {
 }
 
 #[test]
+fn stolen_tax_ignores_a_key_in_the_default_file() {
+    // The default file serves the other keyed lookups. stolen-tax reads only --keys FILE or the
+    // environment, so a valid key placed in the default file is still a missing key here, and
+    // the refusal happens before any request.
+    let home = scratch("stolen-default-file");
+    let default_file = home.join(".huntsman.env");
+    fs::write(
+        &default_file,
+        "HUNTSMAN_STOLEN_TAX_KEY=fixture-not-a-key-0001\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&default_file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let out = bin()
+        .args(["recon", "stolen-tax", "a@example.com"])
+        .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(66),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout.len(), 0);
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
 fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
+    // An empty home keeps a developer's real key out of the run, so the missing-key refusal
+    // happens here and no paid request can be made.
+    let home = scratch("recon-home");
     for args in [
         &["recon"][..],
         &["recon", "nope", "x"],
@@ -676,7 +747,7 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
         &["recon", "stolen-tax", "  "],
         &["recon", "stolen-tax", "a@example.com", "--bogus", "f"],
     ] {
-        let out = bin().args(args).output().unwrap();
+        let out = bin().args(args).env("HOME", &home).output().unwrap();
         assert_eq!(out.status.code(), Some(64), "{args:?}");
     }
 
@@ -692,10 +763,17 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
     let out = bin()
         .args(["recon", "stolen-tax", "a@example.com"])
         .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
+        .env("HOME", &home)
         .output()
         .unwrap();
+    // The README documents a missing key as exit 66, before any request.
     assert_eq!(out.status.code(), Some(66));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("HUNTSMAN_STOLEN_TAX_KEY"));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no API key for this keyed lookup"), "{err}");
+    assert!(
+        err.contains("HUNTSMAN_STOLEN_TAX_KEY"),
+        "refusal must name the key to set: {err}"
+    );
     assert_eq!(out.stdout.len(), 0);
 
     let dir = scratch("recon");
@@ -710,14 +788,18 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&keys, fs::Permissions::from_mode(0o600)).unwrap();
     }
-    for file in [keys.clone(), dir.join("absent.env")] {
+    // A readable file without the slot is a missing key, and so is an absent file: both
+    // are exit 66, before any request.
+    for (file, code) in [(keys.clone(), 66), (dir.join("absent.env"), 66)] {
         let out = bin()
             .args(["recon", "stolen-tax", "a@example.com", "--keys"])
             .arg(&file)
             .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
+            .env("HOME", &home)
             .output()
             .unwrap();
-        assert_eq!(out.status.code(), Some(66), "{}", file.display());
+        assert_eq!(out.status.code(), Some(code), "{}", file.display());
     }
     let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&home);
 }

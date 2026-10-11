@@ -1,0 +1,8 @@
+   Compiling fixture v0.1.0 (/work/fixture)
+error: expected one of `!`, `.`, `::`, `;`, `?`, `{`, `}`, or an operator, found `)`
+ --> tests/generated_1.rs:4:33
+  |
+4 |     assert_eq!(answer(), 1));
+  |                                 ^ expected one of 8 possible tokens
+
+error: could not compile `fixture` (test "generated_1") due to 1 previous error

@@ -481,12 +481,12 @@ fn release_publish_requires_shared_quality_gate() {
 
     assert!(
         quality_msrv.contains("toolchain: \"1.87\"")
-            && quality_msrv.contains("bash scripts/repair-gate.sh msrv"),
+            && quality_msrv.contains("cargo run --locked -p xtask -- gate msrv"),
         "release must independently validate the repository MSRV before build/publish"
     );
 
     for required in [
-        "bash scripts/repair-gate.sh full",
+        "cargo run --locked -p xtask -- gate full",
         "docker build --pull --build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\" -f Dockerfile -t huntsman-recon:railway .",
         "bash scripts/railway-live-acceptance.sh",
         "persist-credentials: false",
@@ -1281,4 +1281,43 @@ fn both_scanner_copies_fail_closed_when_find_or_sort_fails_or_truncates() {
         }
     }
     let _ = fs::remove_dir_all(&root);
+}
+
+/// The promotion of `latest` is checked offline, against a stub `gh` that serves a fixture
+/// release. A re-run whose rebuilt provenance differs from the published one must still
+/// promote the published bytes, and a tampered download must be refused.
+#[test]
+fn promoting_latest_takes_the_published_bytes_offline() {
+    let out = Command::new("bash")
+        .arg("scripts/release-promote-self-check.sh")
+        .output()
+        .expect("bash must run the promotion self-check");
+    assert!(
+        out.status.success(),
+        "promotion self-check failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn release_reads_of_the_latest_tag_fail_on_anything_but_a_missing_tag() {
+    // A read that fails for any reason other than a 404 must stop the release. A masked read
+    // reads as "no latest tag", which skips the never-move-backwards check and the verification.
+    let wf = fs::read_to_string(".github/workflows/release.yml").expect("release workflow");
+    for masked in [
+        "commits/refs/tags/latest\" --jq .sha 2>/dev/null || true",
+        "commits/refs/tags/latest\" --jq .sha 2>/dev/null || echo absent",
+        "releases/latest\" --jq .tag_name 2>/dev/null || true",
+        "git/ref/tags/latest\" >/dev/null 2>&1; then",
+    ] {
+        assert!(
+            !wf.contains(masked),
+            "release.yml masks a failed read: {masked}"
+        );
+    }
+    assert!(
+        wf.contains("echo \"reason=${status}\" >> \"$GITHUB_OUTPUT\""),
+        "the latest step must say why it did not move latest, for the verify step"
+    );
 }

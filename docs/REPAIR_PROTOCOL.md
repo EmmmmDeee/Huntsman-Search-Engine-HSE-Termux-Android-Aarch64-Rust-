@@ -41,9 +41,9 @@ the source revision is releasable.
 Run one of:
 
 ```sh
-bash scripts/repair-gate.sh fast
-bash scripts/repair-gate.sh msrv
-bash scripts/repair-gate.sh full
+cargo gate fast
+cargo gate msrv
+cargo gate full
 ```
 
 Use `full` before declaring the host-side Rust/code repair complete. Use `msrv`
@@ -54,6 +54,7 @@ A successful `full` gate requires:
 
 - shell syntax checks for the repository repair and Railway runtime harnesses;
 - `cargo fmt --check`;
+- no `unwrap()` in production code: `cargo clippy -p huntsman-recon --lib --bins --locked -- -D clippy::unwrap_used` and the same for the `xtask` binary (these targets compile without `cfg(test)`, so tests are not linted; `fast` runs this step too);
 - strict `cargo clippy --all-targets --locked -- -D warnings`;
 - `cargo test --locked`;
 - `huntsman-recon check`;

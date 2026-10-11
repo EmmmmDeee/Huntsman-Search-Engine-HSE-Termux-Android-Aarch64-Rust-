@@ -9,11 +9,11 @@ use crate::collection::{CollectionEvent, ObservationBatch, RawObservation, Upstr
 use crate::dependency::{Module, Target, TargetKind};
 use crate::error::Error;
 use crate::ledger::LedgerEntry;
+use crate::meta_plan::{MetaPlan, PlanReject};
 use crate::pipeline::{
     AnalysisSnapshot, InvestigationInput, PipelineLimits, SeedNormalization,
     normalize_observations, normalize_seeds,
 };
-use crate::meta_plan::{MetaPlan, PlanReject};
 use crate::planner::{DispatchPlan, PlannerPolicy, build_dispatch_plan};
 use crate::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
 use crate::source_outcome::SourceOutcomeKind;
@@ -76,16 +76,16 @@ fn seed_batch(normalization: &SeedNormalization, scan_id: &str) -> ObservationBa
     }
 }
 
-
 /// Admit one round plan. Refusal is the result when the plan is inherited or incomplete.
 ///
 /// # Errors
 /// Returns [`Error::Invalid`] for every [`PlanReject`]. Does not fall back to `planner`.
 pub fn admit_round(plan: MetaPlan) -> Result<MetaPlan, Error> {
-    plan.admit().map_err(|reject| Error::Invalid(reject_message(reject)))
+    plan.admit()
+        .map_err(|reject| Error::Invalid(reject_message(&reject)))
 }
 
-fn reject_message(reject: PlanReject) -> String {
+fn reject_message(reject: &PlanReject) -> String {
     match reject {
         PlanReject::EmptySeed => "meta-plan refused: empty seed".to_string(),
         PlanReject::MissingField(field) => format!("meta-plan refused: missing {field}"),
@@ -97,7 +97,6 @@ fn reject_message(reject: PlanReject) -> String {
         }
     }
 }
-
 
 /// One admitted round. `planner` is not called.
 #[derive(Debug, Clone, PartialEq, Eq)]

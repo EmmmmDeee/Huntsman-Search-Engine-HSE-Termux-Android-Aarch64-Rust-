@@ -291,7 +291,7 @@ mod tests {
         assert!(!policy.should_retry(2));
         assert_eq!(policy.base_delay_ms(0), 2_000);
         assert_eq!(policy.base_delay_ms(10), 8_000);
-        assert_eq!(policy.delay(1), Duration::from_millis(4_000));
+        assert_eq!(policy.delay(1), Duration::from_secs(4));
 
         let jittered = BackoffPolicy::new(3, 4_000, 8_000, true);
         let first = jittered.delay(0);

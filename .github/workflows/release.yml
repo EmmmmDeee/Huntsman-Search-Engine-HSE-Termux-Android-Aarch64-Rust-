@@ -2,8 +2,10 @@ name: Release (prebuilt Termux aarch64 binary)
 
 # Main-channel pre-releases for the reconstructed `huntsman-recon` crate.
 #
-# Every push to main (and a manual workflow_dispatch on main) cross-builds and
-# verifies the aarch64 Android/Termux `huntsman-recon` binary. A build is
+# A push to main that comes from a merged pull request (and a manual
+# workflow_dispatch on main) cross-builds and verifies the aarch64 Android/Termux
+# `huntsman-recon` binary. A direct push with no merged pull request fails at the
+# origin check before anything is built. A build is
 # published as immutable `main-<sha7>` PRE-RELEASE only while that commit is
 # still the current main head. Superseded builds remain available as Actions
 # artifacts for their retention window instead of failing while trying to mint
@@ -20,10 +22,11 @@ name: Release (prebuilt Termux aarch64 binary)
 # GitHub's "Latest release". This workflow never creates, edits or deletes a
 # stable release: it has no tag trigger and no stable code path.
 #
-# Publish gate: the build must run on GitHub Actions with HSE_RELEASE=1 (which,
-# with CI and HUNTSMAN_HIBP_NO_EMBED, disables build.rs HIBP key embedding),
-# every build-time embed file must be empty, and the key scan of the exact
-# artifacts must report zero findings. Otherwise nothing is published.
+# Publish gate: the build must run on GitHub Actions with HSE_RELEASE=1, every
+# build-time embed file must be empty, and the key scan of the exact artifacts
+# must report zero findings. Otherwise nothing is published. build.rs registers
+# HSE_RELEASE, CI, and HUNTSMAN_HIBP_NO_EMBED for rebuilds, but it reads none of
+# them, and it writes an empty HIBP embed file on every build.
 #
 # Privilege split (same shape as HSE-BLE-API- release.yml):
 #   * `build` runs cargo, every dependency build script and proc-macro, and the
@@ -70,7 +73,8 @@ on:
       - "src/**"
       - "scripts/railway-entrypoint.sh"
       - "scripts/railway-live-acceptance.sh"
-      - "scripts/repair-gate.sh"
+      - "xtask/**"
+      - ".cargo/**"
       - "scripts/validate-railway-iac.sh"
   workflow_dispatch:
   # Dry run on PRs that touch the release path: same build, embed check and
@@ -92,7 +96,8 @@ on:
       - "src/**"
       - "scripts/railway-entrypoint.sh"
       - "scripts/railway-live-acceptance.sh"
-      - "scripts/repair-gate.sh"
+      - "xtask/**"
+      - ".cargo/**"
       - "scripts/validate-railway-iac.sh"
 
 permissions:
@@ -183,7 +188,7 @@ jobs:
         with:
           toolchain: "1.87"
       - name: Run shared MSRV repair acceptance
-        run: bash scripts/repair-gate.sh msrv
+        run: cargo run --locked -p xtask -- gate msrv
 
   quality:
     name: Shared repair and Railway acceptance
@@ -200,7 +205,7 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
       - name: Run shared host repair acceptance
-        run: bash scripts/repair-gate.sh full
+        run: cargo run --locked -p xtask -- gate full
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "22"
@@ -320,13 +325,18 @@ jobs:
       - name: Prove the artifact is huntsman-recon, not the legacy hse
         run: |
           set -euo pipefail
-          pkg="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[0].name')"
+          # Select the default member by id. Cargo lists workspace packages in name order, so the first
+          # package is not the product once xtask is a workspace member.
+          pkg="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '. as $m | .packages[] | select(.id == $m.workspace_default_members[0]) | .name')"
           [ "$pkg" = "huntsman-recon" ] || { echo "::error::package is ${pkg}, expected huntsman-recon"; exit 1; }
           # The aarch64 Android binary cannot execute on the x86_64 runner, so
           # prove identity from the exact bytes: the hand-written CLI usage line.
           usage="$(strings -a -n 8 "dist/$ASSET" | grep -o -m1 'usage: huntsman-recon \[check.*verify LEDGER\]' || true)"
           [ -n "$usage" ] || { echo "::error::dist/${ASSET} does not contain the huntsman-recon usage line"; exit 1; }
-          strings -a -n 8 "dist/$ASSET" | grep -Fq "$GITHUB_SHA" \
+          # Capture first: `strings | grep -q` under pipefail reports SIGPIPE (141)
+          # once grep exits at the match, even though the commit is embedded.
+          strings -a -n 8 "dist/$ASSET" > "$RUNNER_TEMP/strings.txt"
+          grep -Fq "$GITHUB_SHA" "$RUNNER_TEMP/strings.txt" \
             || { echo "::error::dist/${ASSET} does not embed exact build commit ${GITHUB_SHA}"; exit 1; }
           {
             echo "binary_identity: ${usage}"
@@ -770,7 +780,14 @@ jobs:
             echo "moved=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          cur="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>/dev/null || true)"
+          # Only a 404 means there is no latest tag. Any other failure stops the step: an empty
+          # answer here would skip the never-move-backwards check below.
+          cur=""
+          if tag_sha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>"$RUNNER_TEMP/latest-tag.err")"; then
+            cur="$tag_sha"
+          elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/latest-tag.err"; then
+            echo "::error::could not read the latest tag: $(cat "$RUNNER_TEMP/latest-tag.err")"; exit 1
+          fi
           if [ -n "$cur" ]; then
             if [ "$cur" = "$GITHUB_SHA" ]; then status=identical; else
               status="$(gh api "$api/compare/${cur}...${GITHUB_SHA}" --jq .status)"
@@ -780,20 +797,38 @@ jobs:
               identical | behind)
                 echo "latest already points at ${cur} (${status}); never moving it backwards." | tee -a "$GITHUB_STEP_SUMMARY"
                 echo "moved=false" >> "$GITHUB_OUTPUT"
+                echo "reason=${status}" >> "$GITHUB_OUTPUT"
                 exit 0 ;;
               *) echo "::error::latest (${cur}) and ${GITHUB_SHA} are ${status}; refusing to move latest"; exit 1 ;;
             esac
           fi
+          # `latest` carries the published bytes of the immutable main-<sha7> release, not
+          # this run's rebuild. A re-run rebuilds, and the rebuild's provenance (a build time
+          # and a run URL) never matches what was published, so the local files are not the
+          # reference. The published files are downloaded instead. Each one must match the
+          # digest GitHub recorded for it, and the binary must match its own .sha256 file.
+          promote="$RUNNER_TEMP/promote"
+          rm -rf "$promote" && mkdir -p "$promote"
+          tag_rel="$(gh api "$api/releases/tags/${TAG}")" || { echo "::error::${TAG} has no published release to promote from; refusing"; exit 1; }
+          for a in "$ASSET" "$ASSET.sha256" "$ASSET.provenance.json" key-scan-report.txt install-termux.sh; do
+            gh release download "$TAG" --pattern "$a" --dir "$promote"
+            d="$(jq -r --arg a "$a" '[.assets[] | select(.name == $a)] | if length == 1 then (.[0].digest // "") else "" end' <<<"$tag_rel")"
+            got="sha256:$(sha256sum "$promote/$a" | cut -d' ' -f1)"
+            [[ "$d" =~ ^sha256:[0-9a-f]{64}$ && "$got" == "$d" ]] || { echo "::error::the downloaded ${a} (${got}) is not the published ${TAG} digest (${d}); refusing to promote latest"; exit 1; }
+          done
+          ( cd "$promote" && sha256sum --strict -c "$ASSET.sha256" ) || { echo "::error::the published ${ASSET} does not match its own ${ASSET}.sha256; refusing to promote latest"; exit 1; }
           if pre="$(gh release view latest --json isPrerelease --jq .isPrerelease 2>/dev/null)"; then
             [ "$pre" = "true" ] || { echo "::error::release 'latest' exists and is NOT a pre-release; refusing"; exit 1; }
             gh release delete latest --yes --cleanup-tag
           fi
           # A leftover `latest` tag would make the new release reuse it instead of --target.
-          if gh api "$api/git/ref/tags/latest" >/dev/null 2>&1; then
+          if gh api "$api/git/ref/tags/latest" >/dev/null 2>"$RUNNER_TEMP/ref-latest.err"; then
             gh api -X DELETE "$api/git/refs/tags/latest"
+          elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/ref-latest.err"; then
+            echo "::error::could not read the latest tag ref: $(cat "$RUNNER_TEMP/ref-latest.err")"; exit 1
           fi
           gh release create latest \
-            "dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" dist/key-scan-report.txt dist/install-termux.sh \
+            "$promote/$ASSET" "$promote/$ASSET.sha256" "$promote/$ASSET.provenance.json" "$promote/key-scan-report.txt" "$promote/install-termux.sh" \
             --target "$GITHUB_SHA" --prerelease --latest=false \
             --title "latest main build (${TAG})" \
             --notes "Rolling pre-release: huntsman-recon build \`${GITHUB_SHA}\` (also \`${TAG}\`), promoted via PROMOTE_RECON_TO_LATEST. Not a stable release."
@@ -806,6 +841,7 @@ jobs:
           PROMOTE: ${{ vars.PROMOTE_RECON_TO_LATEST == 'true' }}
           EXISTS: ${{ steps.existing.outputs.exists }}
           MOVED: ${{ steps.latest.outputs.moved }}
+          REASON: ${{ steps.latest.outputs.reason }}
         run: |
           set -euo pipefail
           api="repos/${GITHUB_REPOSITORY}"
@@ -815,13 +851,17 @@ jobs:
           # mode=local: each digest must equal this run's downloaded file.
           # mode=self (an earlier run published it): the binary's digest must
           # equal the one its own .sha256 asset records.
+          # mode=tag: each digest must equal the one the published ${TAG} release records.
+          # `latest` is promoted from those published bytes, not from this run's rebuild.
           check_release() {
-            local t="$1" mode="$2" rel sha a d want
+            local t="$1" mode="$2" rel sha a d want published
             rel="$(gh api "$api/releases/tags/${t}")" || fail "${t}: no published release"
             [ "$(jq -r .prerelease <<<"$rel")" = "true" ] || fail "${t} is not a pre-release"
             [ "$(jq -r .draft <<<"$rel")" = "false" ] || fail "${t} is a draft"
             sha="$(gh api "$api/commits/refs/tags/${t}" --jq .sha)"
             [ "$sha" = "$GITHUB_SHA" ] || fail "${t} points at ${sha}, not ${GITHUB_SHA}"
+            published=""
+            if [ "$mode" = tag ]; then published="$(gh api "$api/releases/tags/${TAG}")"; fi
             for a in "${files[@]}"; do
               d="$(jq -r --arg a "$a" '[.assets[] | select(.name == $a)] | if length == 1 then (.[0].digest // "") else "" end' <<<"$rel")"
               [ -n "$d" ] || fail "${t} has no digest for asset ${a}"
@@ -829,6 +869,10 @@ jobs:
               if [ "$mode" = local ]; then
                 want="sha256:$(sha256sum "dist/$a" | cut -d' ' -f1)"
                 [ "$d" = "$want" ] || fail "${t} asset ${a} digest ${d} != ${want}"
+              fi
+              if [ "$mode" = tag ]; then
+                want="$(jq -r --arg a "$a" '[.assets[] | select(.name == $a)] | if length == 1 then (.[0].digest // "") else "" end' <<<"$published")"
+                [ "$d" = "$want" ] || fail "${t} asset ${a} digest ${d} != the published ${TAG} digest ${want}"
               fi
             done
             if [ "$mode" = self ]; then
@@ -844,13 +888,18 @@ jobs:
             echo "${t}: prerelease=true target=${sha} assets=${#files[@]} digests verified (${mode})" | tee -a "$GITHUB_STEP_SUMMARY"
           }
           if [ "$EXISTS" = "true" ]; then check_release "$TAG" self; else check_release "$TAG" local; fi
-          if [ "${MOVED:-}" = "true" ]; then
-            check_release latest local
+          if [ "${MOVED:-}" = "true" ] || { [ "$PROMOTE" = "true" ] && [ "${REASON:-}" = "identical" ]; }; then
+            # Promoted now, or already identical to this build: its digests must match the published bytes.
+            check_release latest tag
           elif [ "$PROMOTE" != "true" ]; then
-            # Not promoted: `latest` must not point at this build.
-            lsha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>/dev/null || echo absent)"
+            # Not promoted: `latest` must not point at this build. Only a 404 means it is absent.
+            if lsha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>"$RUNNER_TEMP/verify-latest.err")"; then :
+            elif grep -q 'HTTP 404' "$RUNNER_TEMP/verify-latest.err"; then lsha=absent
+            else fail "could not read the latest tag: $(cat "$RUNNER_TEMP/verify-latest.err")"; fi
             [ "$lsha" != "$GITHUB_SHA" ] || fail "latest moved to this build without PROMOTE_RECON_TO_LATEST"
             echo "latest: not moved (currently ${lsha})" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
-          latest="$(gh api "$api/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          if latest="$(gh api "$api/releases/latest" --jq .tag_name 2>"$RUNNER_TEMP/latest-release.err")"; then :
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/latest-release.err"; then latest=""
+          else fail "could not read the GitHub latest release: $(cat "$RUNNER_TEMP/latest-release.err")"; fi
           case "$latest" in main-*|latest) fail "GitHub 'Latest release' is ${latest}" ;; esac

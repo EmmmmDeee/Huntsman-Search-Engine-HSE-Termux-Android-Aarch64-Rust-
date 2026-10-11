@@ -64,6 +64,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # Keep the MSRV and stable verdicts independent: with fail-fast, a stable
+      # failure cancels the 1.87 leg before it reports.
+      fail-fast: false
       matrix:
         toolchain: ["1.87", stable]
     steps:
@@ -74,10 +77,10 @@ jobs:
           components: clippy, rustfmt
       - name: Run deterministic repair gate (stable)
         if: matrix.toolchain == 'stable'
-        run: bash scripts/repair-gate.sh full
+        run: cargo run --locked -p xtask -- gate full
       - name: Run deterministic repair gate (MSRV)
         if: matrix.toolchain == '1.87'
-        run: bash scripts/repair-gate.sh msrv
+        run: cargo run --locked -p xtask -- gate msrv
 
 
   railway-container:

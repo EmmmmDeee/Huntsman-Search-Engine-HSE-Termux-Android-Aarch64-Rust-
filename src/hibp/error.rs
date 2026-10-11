@@ -8,7 +8,7 @@ use std::time::Duration;
 pub enum HibpError {
     /// No key configured for an endpoint that needs one.
     #[error(
-        "hibp: no API key configured (set HIBP_API_KEY, HUNTSMAN_HIBP_KEY or ~/.config/hibp/api_key)"
+        "hibp: no API key for this keyed lookup (set HIBP_API_KEY, HUNTSMAN_HIBP_KEY or ~/.config/hibp/api_key)"
     )]
     MissingKey,
     /// 401: the key or token was rejected.

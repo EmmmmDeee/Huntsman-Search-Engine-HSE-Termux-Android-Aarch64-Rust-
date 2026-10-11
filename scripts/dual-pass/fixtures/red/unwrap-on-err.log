@@ -1,0 +1,21 @@
+   Compiling fixture v0.1.0 (/work/fixture)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+     Running tests/generated_1.rs (target/debug/deps/generated_1-5c0f2a7e1b9d3f10)
+
+running 1 test
+test parses_the_answer ... FAILED
+
+failures:
+
+---- parses_the_answer stdout ----
+thread 'parses_the_answer' panicked at tests/generated_1.rs:4:38:
+called `Result::unwrap()` on an `Err` value: ParseIntError { kind: InvalidDigit }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    parses_the_answer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test generated_1`

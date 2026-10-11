@@ -255,7 +255,7 @@ fn silent(hold: Duration) -> (u16, thread::JoinHandle<()>) {
 
 #[test]
 fn a_request_cap_cuts_the_transport_timeout_short() {
-    let (port, hold) = silent(Duration::from_millis(3000));
+    let (port, hold) = silent(Duration::from_secs(3));
     let t = UreqTransport::new(&TransportConfig {
         timeout: Duration::from_secs(10),
         egress: EgressPolicy::Unrestricted,
@@ -279,7 +279,7 @@ fn a_request_cap_cuts_the_transport_timeout_short() {
 
 #[test]
 fn a_request_cap_never_raises_the_transport_timeout() {
-    let (port, hold) = silent(Duration::from_millis(3000));
+    let (port, hold) = silent(Duration::from_secs(3));
     let t = UreqTransport::new(&TransportConfig {
         timeout: Duration::from_millis(300),
         egress: EgressPolicy::Unrestricted,
@@ -310,7 +310,7 @@ fn a_request_cap_also_bounds_a_stalled_body() {
         read_request(&mut sock);
         let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial");
         let _ = sock.flush();
-        thread::sleep(Duration::from_millis(3000));
+        thread::sleep(Duration::from_secs(3));
     });
     let t = UreqTransport::new(&TransportConfig {
         timeout: Duration::from_secs(10),
@@ -369,7 +369,7 @@ fn slow_redirect_chain(delay: Duration) -> (u16, std::sync::Arc<std::sync::Mutex
 #[test]
 fn a_slow_redirect_chain_stops_at_the_request_cap() {
     let (port, seen) = slow_redirect_chain(Duration::from_millis(400));
-    let cap = Duration::from_millis(1000);
+    let cap = Duration::from_secs(1);
     let started = std::time::Instant::now();
     let fetched = fetch(
         &lab_transport(1024),
@@ -397,7 +397,7 @@ fn a_slow_redirect_chain_stops_at_the_request_cap() {
 #[test]
 fn a_slow_redirect_chain_stops_at_the_deadline() {
     let (port, seen) = slow_redirect_chain(Duration::from_millis(400));
-    let budget = Duration::from_millis(1000);
+    let budget = Duration::from_secs(1);
     let clock = SystemClock;
     let deadline = Deadline::start(&clock, budget);
     let fetched = fetch_within(

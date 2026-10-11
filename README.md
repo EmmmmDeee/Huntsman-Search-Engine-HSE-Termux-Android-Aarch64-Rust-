@@ -57,7 +57,7 @@ repository inconsistency, follow [the repair protocol](docs/REPAIR_PROTOCOL.md).
 The terminal local verification command is:
 
 ```sh
-bash scripts/repair-gate.sh full
+cargo gate full
 ```
 
 CI runs the same gate, so local repair acceptance and automated acceptance use
@@ -97,7 +97,7 @@ before using credentials or network access.
 
 | | `hse` (legacy v1.41.0 monolith) | `huntsman-recon` (this tree, in progress) |
 | --- | --- | --- |
-| Person lookups | Yes. Provider modules such as `asic_persons`, `asic_director`, `username_search`, `phone_au` and `bluesky_user` (195 `pub mod` entries in `src/modules/mod.rs` at `7dca720b`), plus `hse scan`, `hse investigate` and `hse serve`. Whether each provider works live has not been re-verified. | **Partial.** `people` calls `asic_persons`, `asic_director`, `au_people` and `au_electoral` for names with at least two alphabetic tokens. `email ADDR` canonicalises an address, derives deterministic email pivots, queries the public Gravatar profile, renders evidence lineage, and can save a ledger for `verify`. `username HANDLE` derives bounded normalization variants, queries the public GitHub and Bluesky profiles independently, renders lineage, and can save a ledger for `verify`. `phone NUMBER` canonicalises explicit international syntax or recognised Australian local syntax, resolves the dialling prefix offline, enriches Australian numbering-plan line type/region, and can save a ledger for `verify`. `scan SELECTOR` routes one selector to `people`, `email`, `username`, or `phone` automatically, with `-k` available for an explicit rebuilt kind. `scan --input-file FILE [-k KIND]` runs the same routing once per unique non-comment line, attempts every seed, and reports a non-zero final status if any seed fails. `sources` classifies an input (a person or organisation name, an email address, an `@username`, a domain, an IP address or coordinates) and only prints curated public search or browser URLs for it, offline and `LeadOnly`; nothing is fetched. `search` reads only local documents; `hibp` provides explicit opt-in HIBP lookups. |
+| Person lookups | Yes. Provider modules such as `asic_persons`, `asic_director`, `username_search`, `phone_au` and `bluesky_user` (195 `pub mod` entries in `src/modules/mod.rs` at `7dca720b`), plus `hse scan`, `hse investigate` and `hse serve`. Whether each provider works live has not been re-verified. | **Partial.** `people` calls `asic_persons`, `asic_director`, `au_people` and `au_electoral` for names with at least two alphabetic tokens. `email ADDR` canonicalises an address, derives deterministic email pivots, queries the public Gravatar profile, renders evidence lineage, and can save a ledger for `verify`. `username HANDLE` derives bounded normalization variants, queries the public GitHub and Bluesky profiles independently, renders lineage, and can save a ledger for `verify`. `phone NUMBER` canonicalises explicit international syntax or recognised Australian local syntax, resolves the dialling prefix offline, enriches Australian numbering-plan line type/region, and can save a ledger for `verify`. `scan SELECTOR` routes one selector to `people`, `email`, `username`, or `phone` automatically, with `-k` available for an explicit rebuilt kind. A selector that is not an email, handle, or recognised phone, and has fewer than two alphabetic tokens of at least two letters, is not inferred as a name: `scan` refuses it with exit 65 rather than reporting a skip as success. `scan -k people WORD` needs a name: a single token exits 65 and the people command is not reached. `people WORD` on its own still skips a single token with exit 0. `scan --input-file FILE [-k KIND]` runs the same routing once per unique non-comment line, attempts every seed, and reports a non-zero final status if any seed fails. `sources` classifies an input (a person or organisation name, an email address, an `@username`, a domain, an IP address or coordinates) and only prints curated public search or browser URLs for it, offline and `LeadOnly`; nothing is fetched. `search` reads only local documents; `hibp` provides explicit opt-in HIBP lookups. |
 | Source | Maintained branch `legacy-hse`, seeded from verified monolith commit `98c77fd8dac95082515f0f76cea8f4f0dc7a604b`. | `src/` |
 | Where to get it | Maintained `legacy-hse` branch via its installer; its release workflow publishes per-commit `hse-aarch64-linux-android` pre-releases. | A GitHub pre-release `main-<sha7>` (asset `huntsman-recon-aarch64-linux-android`), the CI artifact of the same name from a `main` push (see "Downloads"), or a source build |
 
@@ -135,7 +135,7 @@ cargo run -- credential-status --probe     # opt-in live checks for configured p
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
 cargo run -- hibp help                   # HIBP subcommands; offline
 cargo run -- seeknow --help              # SeekNow subcommands; offline
-cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens, no network
+cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens of at least two letters, no network
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
 cargo run -- email nobody@example.com     # deterministic pivots + public Gravatar lookup
 cargo run -- username octocat             # variants + public GitHub/Bluesky lookups
@@ -156,7 +156,7 @@ cargo run -- recon crtsh https://example.com/
 
 Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys file and the process environment. The file is `NAME=value` lines (`export`, quotes, blank lines and `#` comments allowed; placeholder values count as unset) and is parsed by `keys::Keys::parse`, the parser `--keys FILE` and `keys FILE` use through `Keys::load`.
 
-- `--keys FILE` loads exactly that file and nothing else. A file accessible by group/others is an error (exit 66, `run chmod 600`).
+- `--keys FILE` loads that file, and a slot the file lacks falls back to the process environment (see the `--keys FILE` row in the command table). A file accessible by group/others is an error (exit 66, `run chmod 600`).
 - Without `--keys`, `$HOME/.huntsman.env` is parsed with the same parser when it exists. If the file is missing (not found, or a `HOME` path component is not a directory), or `HOME` is unset, nothing changes: only the environment is used and nothing is printed. An empty or relative `HOME` (`HOME=.`, `HOME=relative/dir`, `HOME=`) behaves the same, except that it prints one warning (`HOME is not an absolute path`, without the value), so the default file never depends on the working directory. The path is checked with `lstat` and is never followed. The file is not read, and the run continues with the environment only after one stderr warning naming the path and the reason, if it is:
   - a symlink, even to a valid mode-600 file (fix: remove the symlink and create a regular file owned by you with mode 600, or pass `--keys`; `chmod` would follow the link);
   - not a regular file;
@@ -248,7 +248,7 @@ is parsed as DNS JSON. Quoted TXT presentation is decoded before SPF (RFC 7208),
 DMARC (RFC 7489) and TLSRPT (RFC 8460) parsing. Output is
 `type<TAB>name<TAB>rdata<TAB>resolver` lines, then `spf_all=`, `dmarc_policy=`
 and `tlsrpt_emails=` when those records parse, plus `failed` rows. An invalid
-selector exits 65 before any request; no usable answer exits 69. DoH is
+selector exits 65 before any request, and a blank target is a usage error (exit 64); no usable answer exits 69. DoH is
 keyless. There is no live receipt in CI.
 
 `recon stolen-tax QUERY [--keys FILE]` is an explicit paid lookup requiring
@@ -312,7 +312,7 @@ All CI HIBP integration evidence is offline fake-transport testing. Earlier deve
 `huntsman_recon::asic_persons::lookup` queries three keyless ASIC registers on
 data.gov.au CKAN (banned and disqualified persons, financial advisers, credit
 representatives) through the shared `fetch` boundary and an injected
-`http::Transport`. A name with fewer than two alphabetic tokens makes no
+`http::Transport`. A name with fewer than two alphabetic tokens of at least two letters makes no
 request. Challenge pages, truncated bodies, and CKAN `success: false` envelopes
 are not evidence of absence. The binary exposes `people NAME [--save FILE]`
 (unquoted words are joined) through `people_cli`, which also runs
@@ -321,7 +321,7 @@ feeds emitted evidence through `lineage::resolve_with_lineage`. One source
 `Invalid` or BotWaf does not abort the others. `--save FILE` writes an
 unverified hash-chained ledger of outcomes and entities that `verify FILE`
 reloads byte-identically (`admitted=0`; a register row is not identity
-resolution). Skip (fewer than two alphabetic tokens) makes no request and does
+resolution). Skip (fewer than two alphabetic tokens of at least two letters) makes no request and does
 not write. Tests use a scripted transport; the README examples are the skip
 path. Two-token names query those sources and are not run in CI. There is no
 live receipt. Live ASIC Connect is WAF-blocked.
