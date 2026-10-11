@@ -32,10 +32,12 @@ pub fn text_mentions_ip(text: &str, ip: &str) -> bool {
 #[must_use]
 pub fn source_family(source: &str) -> &'static str {
     let source = source.trim().to_ascii_lowercase();
+    // `seeknow` is the live SeekNow collector id. `see_know` is the id the legacy 7dca720 build
+    // wrote, and its consensus fixture still uses it.
     match source.as_str() {
         "comb_search" | "dehashed" | "hibp" | "hudsonrock" | "intelx" | "leakcheck_public"
         | "leakix" | "niamonx" | "osintcat" | "psbdmp" | "pwned_passwords" | "xposed_or_not"
-        | "oathnet_pro" | "see_know" => "breach",
+        | "oathnet_pro" | "seeknow" | "see_know" => "breach",
         "github_user" | "npm_author" | "crates_io" => "code",
         "reddit_user" | "hacker_news" => "forum",
         "social_probe" | "gravatar" => "social",

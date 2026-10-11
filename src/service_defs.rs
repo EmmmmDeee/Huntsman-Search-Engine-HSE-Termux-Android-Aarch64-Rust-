@@ -120,10 +120,11 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         success_indicates_valid_key: true,
     },
     ServiceDef {
-        name: "see_know",
-        env_var: "HUNTSMAN_SEE_KNOW_KEY",
+        name: "seeknow",
+        env_var: crate::seeknow::KEY_SLOT,
         category: "breach",
-        test_url: "https://api.see-know.eu/account",
+        // The free key check in docs/SEEKNOW_CONTRACT.md, on the origin the client uses.
+        test_url: "https://see-know.ru/api/v1/credits",
         probe_method: Method::Get,
         key_placement: KeyPlacement::Header("X-API-Key"),
         rate_limit_reset_secs: 60,
@@ -558,6 +559,21 @@ mod tests {
     }
 
     #[test]
+    fn seeknow_is_probed_on_the_client_origin_and_slot() {
+        let seeknow = find_service("seeknow").expect("seeknow is a registered service");
+        assert_eq!(seeknow.env_var, crate::seeknow::KEY_SLOT);
+        assert_eq!(
+            seeknow.test_url,
+            format!("{}/credits", crate::seeknow::API_BASE)
+        );
+        assert_eq!(seeknow.probe_method, Method::Get);
+        assert_eq!(
+            service_for_env(crate::seeknow::KEY_SLOT).map(|service| service.name),
+            Some("seeknow")
+        );
+    }
+
+    #[test]
     fn builds_probe_requests_with_correct_auth_placement() {
         let github = find_service("github").expect("github");
         let github_request = build_probe_request(github, "test-key");
@@ -566,9 +582,9 @@ mod tests {
             Some("Bearer test-key")
         );
 
-        let see_know = find_service("see_know").expect("see_know");
-        let see_know_request = build_probe_request(see_know, "test-key");
-        assert_eq!(see_know_request.header_value("x-api-key"), Some("test-key"));
+        let seeknow = find_service("seeknow").expect("seeknow");
+        let seeknow_request = build_probe_request(seeknow, "test-key");
+        assert_eq!(seeknow_request.header_value("x-api-key"), Some("test-key"));
 
         let opencnam = find_service("opencnam").expect("opencnam");
         let opencnam_request = build_probe_request(opencnam, "test-key");

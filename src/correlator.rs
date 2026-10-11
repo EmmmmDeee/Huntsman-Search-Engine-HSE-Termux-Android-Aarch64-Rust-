@@ -504,6 +504,8 @@ mod tests {
         assert!(!text_mentions_ip("aé1", "é"));
         assert_eq!(source_family("ip2location"), "infra");
         assert_eq!(source_family("hibp"), "breach");
+        assert_eq!(source_family("seeknow"), "breach");
+        assert_eq!(source_family("see_know"), "breach");
         assert_eq!(source_family("github_user"), "code");
         assert_eq!(date_diff_days("2024-06-15", "2024-06-15"), 0);
         assert!(crate::relation::is_generic_handle("support"));
