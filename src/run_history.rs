@@ -99,6 +99,49 @@ pub fn verdict(history: &[RunRecord], current: &RunRecord) -> Verdict {
     Verdict::Held
 }
 
+/// Sum the pass/fail counts across every `test result:` line in libtest output.
+///
+/// libtest prints one summary line per test binary, e.g.
+/// `test result: ok. 12 passed; 0 failed; 1 ignored; 0 measured; 3 filtered out`.
+/// A `cargo test --workspace` run prints many; this totals them. Returns `None`
+/// when no summary line is present, so an empty or unrelated input is an error
+/// at the call site rather than a silent zero.
+#[must_use]
+pub fn parse_libtest_summary(output: &str) -> Option<(u64, u64)> {
+    let mut passed = 0u64;
+    let mut failed = 0u64;
+    let mut seen = false;
+    for line in output.lines() {
+        let Some(rest) = line.trim().strip_prefix("test result:") else {
+            continue;
+        };
+        // rest looks like " ok. 12 passed; 0 failed; 1 ignored; ..."
+        let mut line_passed = None;
+        let mut line_failed = None;
+        for field in rest.split(';') {
+            let mut parts = field.split_whitespace();
+            // The first field carries the "ok."/"FAILED." verdict before the count,
+            // so scan for a <number> <label> pair rather than assuming position.
+            let tokens: Vec<&str> = parts.by_ref().collect();
+            for pair in tokens.windows(2) {
+                if let Ok(n) = pair[0].parse::<u64>() {
+                    match pair[1] {
+                        "passed" => line_passed = Some(n),
+                        "failed" => line_failed = Some(n),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if let (Some(p), Some(f)) = (line_passed, line_failed) {
+            passed += p;
+            failed += f;
+            seen = true;
+        }
+    }
+    seen.then_some((passed, failed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +218,34 @@ mod tests {
             Verdict::Baseline
         );
     }
+
+    #[test]
+    fn libtest_summary_sums_every_result_line() {
+        let output = "\
+running 2 tests
+test a ... ok
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 3 filtered out; finished in 0.01s
+
+running 3 tests
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+";
+        assert_eq!(parse_libtest_summary(output), Some((3, 2)));
+    }
+
+    #[test]
+    fn libtest_summary_is_none_without_a_result_line() {
+        assert_eq!(parse_libtest_summary(""), None);
+        assert_eq!(
+            parse_libtest_summary("Compiling huntsman-recon\nFinished\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn libtest_summary_ignores_measured_and_filtered_counts() {
+        let output = "test result: ok. 5 passed; 0 failed; 0 ignored; 7 measured; 9 filtered out";
+        assert_eq!(parse_libtest_summary(output), Some((5, 0)));
+    }
 }
 
 /// Command-line surface over the run history. Kept in this module so argument
@@ -186,7 +257,7 @@ pub mod cli {
 
     use super::{RunRecord, Verdict, append, load, verdict};
 
-    pub const USAGE: &str = "usage: huntsman-recon run-history (record --suite NAME --passed N --failed N [--commit SHA] [--file PATH] | show [--suite NAME] [--file PATH])";
+    pub const USAGE: &str = "usage: huntsman-recon run-history (record --suite NAME (--passed N --failed N | --from-stdin) [--commit SHA] [--file PATH] | show [--suite NAME] [--file PATH])";
 
     const EX_USAGE: u8 = 64;
     const EX_REGRESSION: u8 = 65;

@@ -372,10 +372,47 @@ pub(super) fn verify(path: Option<String>) -> ExitCode {
 }
 
 pub(super) fn run_history_cmd(args: &[String]) -> ExitCode {
+    use std::io::Read;
     use std::time::{SystemTime, UNIX_EPOCH};
     let now_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
+
+    // `--from-stdin` reads libtest output on stdin and injects the real
+    // passed/failed counts, so a persistent host can pipe `cargo test` straight
+    // into the regression store. The flag is resolved here, in the binary-only
+    // wrapper, because it is the only part that touches the process's stdin;
+    // the parser and the record logic it feeds are both unit-tested.
+    if args.first().map(String::as_str) == Some("record")
+        && args.iter().any(|a| a == "--from-stdin")
+    {
+        let mut buffer = String::new();
+        if std::io::stdin().read_to_string(&mut buffer).is_err() {
+            eprintln!("run-history: could not read test output from stdin");
+            return ExitCode::from(74);
+        }
+        let Some((passed, failed)) = huntsman_recon::run_history::parse_libtest_summary(&buffer)
+        else {
+            eprintln!("run-history: no 'test result:' line found in stdin");
+            return ExitCode::from(65);
+        };
+        let mut rewritten: Vec<String> = args
+            .iter()
+            .filter(|a| a.as_str() != "--from-stdin")
+            .cloned()
+            .collect();
+        rewritten.push("--passed".to_owned());
+        rewritten.push(passed.to_string());
+        rewritten.push("--failed".to_owned());
+        rewritten.push(failed.to_string());
+        return ExitCode::from(huntsman_recon::run_history::cli::run(
+            &rewritten,
+            now_unix,
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        ));
+    }
+
     ExitCode::from(huntsman_recon::run_history::cli::run(
         args,
         now_unix,
