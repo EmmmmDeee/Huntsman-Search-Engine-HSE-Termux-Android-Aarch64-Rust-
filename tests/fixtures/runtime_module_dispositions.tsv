@@ -36,6 +36,7 @@ credential_origin	leaf	authentication authority boundary
 cross_scan	runtime	bounded historical scan bridge analysis
 crtsh	adapter	Certificate Transparency source client
 deadline	leaf	shared per-lookup request budget
+dehashed	adapter	DeHashed exact-match source client and lineage-safe collector
 dependency	runtime	module dependency and dispatch graph
 diamond	leaf	analysis utility
 diff	leaf	diff analysis utility
