@@ -6,7 +6,7 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -46,6 +46,10 @@ pub fn resolve_serve_bind(
 }
 const MAX_REQUEST_BYTES: usize = 16 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
+/// Whole-request wall-clock budget. The per-read `IO_TIMEOUT` restarts on every successful
+/// read, so it alone cannot bound a client that dribbles a byte at a time; this absolute
+/// deadline caps the total time spent reading one request.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ServeConfig {
@@ -154,7 +158,8 @@ impl Server {
             .set_write_timeout(Some(IO_TIMEOUT))
             .map_err(|error| Error::Store(format!("serve write timeout: {error}")))?;
 
-        let request = read_request(&mut stream)?;
+        let deadline = Instant::now() + REQUEST_DEADLINE;
+        let request = read_request(&mut stream, deadline)?;
         let response = response_for_request(&request, self.config.bearer_token.as_deref());
         stream
             .write_all(response.as_bytes())
@@ -165,11 +170,21 @@ impl Server {
     }
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<String, Error> {
+fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Error> {
     let mut bytes = Vec::with_capacity(1024);
     let mut chunk = [0_u8; 1024];
 
     while bytes.len() < MAX_REQUEST_BYTES {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok("REQUEST_TIMEOUT".into());
+        }
+        // Bound each read by the time left in the whole-request budget (never longer than the
+        // per-read timeout), so a client that dribbles bytes cannot hold the connection open
+        // past the deadline.
+        stream
+            .set_read_timeout(Some(remaining.min(IO_TIMEOUT)))
+            .map_err(|error| Error::Store(format!("serve read timeout: {error}")))?;
         let read = stream
             .read(&mut chunk)
             .map_err(|error| Error::Store(format!("serve read: {error}")))?;
@@ -247,6 +262,10 @@ fn response_for_request(request: &str, bearer_token: Option<&str>) -> String {
             "request too large\n",
             false,
         );
+    }
+
+    if request == "REQUEST_TIMEOUT" {
+        return response(408, "text/plain; charset=utf-8", "request timeout\n", false);
     }
 
     let Some(parsed) = parse_request(request) else {
@@ -489,6 +508,29 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("huntsman-recon"));
+    }
+
+    #[test]
+    fn a_request_past_its_deadline_times_out_without_blocking() {
+        // A deadline already in the past makes read_request stop on the first iteration and
+        // return the timeout sentinel, before any blocking read. This is the whole-request
+        // bound that a per-read socket timeout alone does not give against a dribbling client.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _client = TcpStream::connect(addr).unwrap(); // connects, sends nothing
+        let (mut server, _) = listener.accept().unwrap();
+        // A deadline captured now is already elapsed when read_request re-reads the clock,
+        // so `remaining` saturates to zero on the first iteration.
+        let deadline = Instant::now();
+        assert_eq!(
+            read_request(&mut server, deadline).unwrap(),
+            "REQUEST_TIMEOUT",
+            "an elapsed deadline must stop the read, not block on the silent client"
+        );
+        assert!(
+            response_for_request("REQUEST_TIMEOUT", None).starts_with("HTTP/1.1 408"),
+            "the timeout sentinel renders as 408 Request Timeout"
+        );
     }
 
     #[test]
