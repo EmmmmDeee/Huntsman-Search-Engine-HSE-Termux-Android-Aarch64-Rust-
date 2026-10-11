@@ -218,89 +218,323 @@ pub fn char_window(s: &str, start: usize, end: usize) -> &str {
     &s[begin..finish]
 }
 
-/// Fold a Latin-ish string to lowercase ASCII `[a-z0-9]`, dropping the rest.
+/// The ASCII text that each lowercase Latin letter with a diacritic folds to, sorted by code point
+/// for the binary search in [`fold_latin`]. The rows with a canonical decomposition are the
+/// lowercase letters of U+00C0-U+024F and U+1E00-U+1EFF whose decomposition is one ASCII letter
+/// followed by combining marks. The other fifteen rows are letters with no decomposition that
+/// ASCII folding maps by convention, such as `ß` to `ss` and `ø` to `o`. Derived from the Unicode
+/// 15.1 canonical decompositions, and checked letter by letter against them.
+const LATIN_FOLDS: &[(char, &str)] = &[
+    ('ß', "ss"),
+    ('à', "a"),
+    ('á', "a"),
+    ('â', "a"),
+    ('ã', "a"),
+    ('ä', "a"),
+    ('å', "a"),
+    ('æ', "ae"),
+    ('ç', "c"),
+    ('è', "e"),
+    ('é', "e"),
+    ('ê', "e"),
+    ('ë', "e"),
+    ('ì', "i"),
+    ('í', "i"),
+    ('î', "i"),
+    ('ï', "i"),
+    ('ð', "d"),
+    ('ñ', "n"),
+    ('ò', "o"),
+    ('ó', "o"),
+    ('ô', "o"),
+    ('õ', "o"),
+    ('ö', "o"),
+    ('ø', "o"),
+    ('ù', "u"),
+    ('ú', "u"),
+    ('û', "u"),
+    ('ü', "u"),
+    ('ý', "y"),
+    ('þ', "th"),
+    ('ÿ', "y"),
+    ('ā', "a"),
+    ('ă', "a"),
+    ('ą', "a"),
+    ('ć', "c"),
+    ('ĉ', "c"),
+    ('ċ', "c"),
+    ('č', "c"),
+    ('ď', "d"),
+    ('đ', "d"),
+    ('ē', "e"),
+    ('ĕ', "e"),
+    ('ė', "e"),
+    ('ę', "e"),
+    ('ě', "e"),
+    ('ĝ', "g"),
+    ('ğ', "g"),
+    ('ġ', "g"),
+    ('ģ', "g"),
+    ('ĥ', "h"),
+    ('ħ', "h"),
+    ('ĩ', "i"),
+    ('ī', "i"),
+    ('ĭ', "i"),
+    ('į', "i"),
+    ('ı', "i"),
+    ('ĳ', "ij"),
+    ('ĵ', "j"),
+    ('ķ', "k"),
+    ('ĺ', "l"),
+    ('ļ', "l"),
+    ('ľ', "l"),
+    ('ŀ', "l"),
+    ('ł', "l"),
+    ('ń', "n"),
+    ('ņ', "n"),
+    ('ň', "n"),
+    ('ŋ', "n"),
+    ('ō', "o"),
+    ('ŏ', "o"),
+    ('ő', "o"),
+    ('œ', "oe"),
+    ('ŕ', "r"),
+    ('ŗ', "r"),
+    ('ř', "r"),
+    ('ś', "s"),
+    ('ŝ', "s"),
+    ('ş', "s"),
+    ('š', "s"),
+    ('ţ', "t"),
+    ('ť', "t"),
+    ('ŧ', "t"),
+    ('ũ', "u"),
+    ('ū', "u"),
+    ('ŭ', "u"),
+    ('ů', "u"),
+    ('ű', "u"),
+    ('ų', "u"),
+    ('ŵ', "w"),
+    ('ŷ', "y"),
+    ('ź', "z"),
+    ('ż', "z"),
+    ('ž', "z"),
+    ('ſ', "s"),
+    ('ơ', "o"),
+    ('ư', "u"),
+    ('ǎ', "a"),
+    ('ǐ', "i"),
+    ('ǒ', "o"),
+    ('ǔ', "u"),
+    ('ǖ', "u"),
+    ('ǘ', "u"),
+    ('ǚ', "u"),
+    ('ǜ', "u"),
+    ('ǟ', "a"),
+    ('ǡ', "a"),
+    ('ǧ', "g"),
+    ('ǩ', "k"),
+    ('ǫ', "o"),
+    ('ǭ', "o"),
+    ('ǰ', "j"),
+    ('ǵ', "g"),
+    ('ǹ', "n"),
+    ('ǻ', "a"),
+    ('ȁ', "a"),
+    ('ȃ', "a"),
+    ('ȅ', "e"),
+    ('ȇ', "e"),
+    ('ȉ', "i"),
+    ('ȋ', "i"),
+    ('ȍ', "o"),
+    ('ȏ', "o"),
+    ('ȑ', "r"),
+    ('ȓ', "r"),
+    ('ȕ', "u"),
+    ('ȗ', "u"),
+    ('ș', "s"),
+    ('ț', "t"),
+    ('ȟ', "h"),
+    ('ȧ', "a"),
+    ('ȩ', "e"),
+    ('ȫ', "o"),
+    ('ȭ', "o"),
+    ('ȯ', "o"),
+    ('ȱ', "o"),
+    ('ȳ', "y"),
+    ('ḁ', "a"),
+    ('ḃ', "b"),
+    ('ḅ', "b"),
+    ('ḇ', "b"),
+    ('ḉ', "c"),
+    ('ḋ', "d"),
+    ('ḍ', "d"),
+    ('ḏ', "d"),
+    ('ḑ', "d"),
+    ('ḓ', "d"),
+    ('ḕ', "e"),
+    ('ḗ', "e"),
+    ('ḙ', "e"),
+    ('ḛ', "e"),
+    ('ḝ', "e"),
+    ('ḟ', "f"),
+    ('ḡ', "g"),
+    ('ḣ', "h"),
+    ('ḥ', "h"),
+    ('ḧ', "h"),
+    ('ḩ', "h"),
+    ('ḫ', "h"),
+    ('ḭ', "i"),
+    ('ḯ', "i"),
+    ('ḱ', "k"),
+    ('ḳ', "k"),
+    ('ḵ', "k"),
+    ('ḷ', "l"),
+    ('ḹ', "l"),
+    ('ḻ', "l"),
+    ('ḽ', "l"),
+    ('ḿ', "m"),
+    ('ṁ', "m"),
+    ('ṃ', "m"),
+    ('ṅ', "n"),
+    ('ṇ', "n"),
+    ('ṉ', "n"),
+    ('ṋ', "n"),
+    ('ṍ', "o"),
+    ('ṏ', "o"),
+    ('ṑ', "o"),
+    ('ṓ', "o"),
+    ('ṕ', "p"),
+    ('ṗ', "p"),
+    ('ṙ', "r"),
+    ('ṛ', "r"),
+    ('ṝ', "r"),
+    ('ṟ', "r"),
+    ('ṡ', "s"),
+    ('ṣ', "s"),
+    ('ṥ', "s"),
+    ('ṧ', "s"),
+    ('ṩ', "s"),
+    ('ṫ', "t"),
+    ('ṭ', "t"),
+    ('ṯ', "t"),
+    ('ṱ', "t"),
+    ('ṳ', "u"),
+    ('ṵ', "u"),
+    ('ṷ', "u"),
+    ('ṹ', "u"),
+    ('ṻ', "u"),
+    ('ṽ', "v"),
+    ('ṿ', "v"),
+    ('ẁ', "w"),
+    ('ẃ', "w"),
+    ('ẅ', "w"),
+    ('ẇ', "w"),
+    ('ẉ', "w"),
+    ('ẋ', "x"),
+    ('ẍ', "x"),
+    ('ẏ', "y"),
+    ('ẑ', "z"),
+    ('ẓ', "z"),
+    ('ẕ', "z"),
+    ('ẖ', "h"),
+    ('ẗ', "t"),
+    ('ẘ', "w"),
+    ('ẙ', "y"),
+    ('ạ', "a"),
+    ('ả', "a"),
+    ('ấ', "a"),
+    ('ầ', "a"),
+    ('ẩ', "a"),
+    ('ẫ', "a"),
+    ('ậ', "a"),
+    ('ắ', "a"),
+    ('ằ', "a"),
+    ('ẳ', "a"),
+    ('ẵ', "a"),
+    ('ặ', "a"),
+    ('ẹ', "e"),
+    ('ẻ', "e"),
+    ('ẽ', "e"),
+    ('ế', "e"),
+    ('ề', "e"),
+    ('ể', "e"),
+    ('ễ', "e"),
+    ('ệ', "e"),
+    ('ỉ', "i"),
+    ('ị', "i"),
+    ('ọ', "o"),
+    ('ỏ', "o"),
+    ('ố', "o"),
+    ('ồ', "o"),
+    ('ổ', "o"),
+    ('ỗ', "o"),
+    ('ộ', "o"),
+    ('ớ', "o"),
+    ('ờ', "o"),
+    ('ở', "o"),
+    ('ỡ', "o"),
+    ('ợ', "o"),
+    ('ụ', "u"),
+    ('ủ', "u"),
+    ('ứ', "u"),
+    ('ừ', "u"),
+    ('ử', "u"),
+    ('ữ', "u"),
+    ('ự', "u"),
+    ('ỳ', "y"),
+    ('ỵ', "y"),
+    ('ỷ', "y"),
+    ('ỹ', "y"),
+];
+
+/// The ASCII text a lowercase Latin letter folds to, or `None` for every other character.
+/// Uppercase letters are not in the table, because [`normalise_token`] lowercases a word first.
+fn fold_latin(ch: char) -> Option<&'static str> {
+    LATIN_FOLDS
+        .binary_search_by_key(&ch, |&(letter, _)| letter)
+        .ok()
+        .map(|index| LATIN_FOLDS[index].1)
+}
+
+/// Characters that UAX #29 word rule WB4 ignores: combining marks (Extend) and the format
+/// characters that appear in extracted text. Such a character belongs to the word before it, so
+/// it never splits a word and is not kept in the token. The covered mark blocks are the Latin,
+/// Greek and Cyrillic combining blocks. The marks of other scripts are not covered.
 #[must_use]
-pub fn fold_ascii_lower(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            'a'..='z' | '0'..='9' => out.push(ch),
-            'A'..='Z' => out.push(ch.to_ascii_lowercase()),
-            'à'
-            | 'á'
-            | 'â'
-            | 'ã'
-            | 'ä'
-            | 'å'
-            | 'À'
-            | 'Á'
-            | 'Â'
-            | 'Ã'
-            | 'Ä'
-            | 'Å'
-            | 'ā'
-            | 'ă'
-            | 'ą'
-            | '\u{1EA0}'..='\u{1EB7}' => out.push('a'),
-            'ç' | 'Ç' | 'ć' | 'č' | 'ĉ' | 'ċ' => out.push('c'),
-            'è' | 'é' | 'ê' | 'ë' | 'È' | 'É' | 'Ê' | 'Ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' =>
-            {
-                out.push('e');
+pub fn is_word_extender(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{00AD}'
+            | '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{200B}'..='\u{200D}'
+            | '\u{2060}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+            | '\u{FEFF}'
+    )
+}
+
+/// One search token: the word lowercased, with extenders removed and each Latin letter with a
+/// diacritic folded to its base letter. Other letters are kept, so Greek and Cyrillic words stay
+/// whole. The whole word is lowercased at once, which keeps the Greek final sigma.
+#[must_use]
+pub fn normalise_token(word: &str) -> String {
+    let lower = word.to_lowercase();
+    if lower.is_ascii() {
+        return lower;
+    }
+    let mut out = String::with_capacity(lower.len());
+    for ch in lower.chars() {
+        if ch.is_ascii() {
+            out.push(ch);
+        } else if !is_word_extender(ch) {
+            match fold_latin(ch) {
+                Some(folded) => out.push_str(folded),
+                None => out.push(ch),
             }
-            'ì' | 'í' | 'î' | 'ï' | 'Ì' | 'Í' | 'Î' | 'Ï' | 'ī' | 'ĭ' | 'į' | 'ı' | 'ĩ' | 'Ĩ' =>
-            {
-                out.push('i');
-            }
-            'ñ' | 'Ñ' | 'ń' | 'ņ' | 'ň' => out.push('n'),
-            'ò'
-            | 'ó'
-            | 'ô'
-            | 'õ'
-            | 'ö'
-            | 'ø'
-            | 'Ò'
-            | 'Ó'
-            | 'Ô'
-            | 'Õ'
-            | 'Ö'
-            | 'Ø'
-            | 'ō'
-            | 'ŏ'
-            | 'ő'
-            | 'ơ'
-            | 'Ơ'
-            | '\u{1ECC}'..='\u{1EE3}' => out.push('o'),
-            'ù'
-            | 'ú'
-            | 'û'
-            | 'ü'
-            | 'Ù'
-            | 'Ú'
-            | 'Û'
-            | 'Ü'
-            | 'ū'
-            | 'ŭ'
-            | 'ů'
-            | 'ű'
-            | 'ų'
-            | 'ư'
-            | 'Ư'
-            | '\u{1EE4}'..='\u{1EF1}' => out.push('u'),
-            'ý' | 'ÿ' | 'Ý' | 'Ŷ' | 'ŷ' | '\u{1EF2}'..='\u{1EF9}' => out.push('y'),
-            'ł' | 'Ł' => out.push('l'),
-            'ś' | 'š' | 'ş' | 'Ś' | 'Š' | 'Ş' | 'ѕ' => out.push('s'),
-            'ź' | 'ż' | 'ž' | 'Ź' | 'Ż' | 'Ž' => out.push('z'),
-            'ð' | 'Đ' | 'đ' => out.push('d'),
-            'ț' | 'ţ' | 'Ț' | 'Ţ' => out.push('t'),
-            'ğ' | 'Ğ' => out.push('g'),
-            'ř' | 'Ř' => out.push('r'),
-            '\u{1EB8}'..='\u{1EC7}' => out.push('e'),
-            '\u{1EC8}'..='\u{1ECB}' => out.push('i'),
-            'æ' | 'Æ' => out.push_str("ae"),
-            'œ' | 'Œ' => out.push_str("oe"),
-            'ß' => out.push_str("ss"),
-            'þ' | 'Þ' => out.push_str("th"),
-            _ => {}
         }
     }
     out
@@ -464,14 +698,62 @@ mod tests {
 
     #[test]
     fn folding_and_slugging_are_stable() {
-        assert_eq!(fold_ascii_lower("José Müller"), "josemuller");
-        assert_eq!(fold_ascii_lower("Nguyễn"), "nguyen");
-        assert_eq!(fold_ascii_lower("Straße"), "strasse");
+        assert_eq!(normalise_token("José"), "jose");
+        assert_eq!(normalise_token("Müller"), "muller");
+        assert_eq!(normalise_token("Nguyễn"), "nguyen");
+        assert_eq!(normalise_token("Straße"), "strasse");
         assert_eq!(
             slugify("client transfer prohibited"),
             "client-transfer-prohibited"
         );
         assert_eq!(slugify("café¹"), "caf");
+    }
+
+    #[test]
+    fn latin_folds_follow_the_unicode_decompositions() {
+        // A sample of the table. When the table was written, every lowercase letter of the Latin
+        // blocks was checked against the Unicode 15.1 decompositions.
+        let pairs = [
+            ('é', "e"),
+            ('ệ', "e"),
+            ('ü', "u"),
+            ('ñ', "n"),
+            ('ō', "o"),
+            ('ș', "s"),
+            ('ț', "t"),
+            ('ǎ', "a"),
+            ('ł', "l"),
+            ('ı', "i"),
+            ('ĳ', "ij"),
+            ('æ', "ae"),
+            ('œ', "oe"),
+            ('ß', "ss"),
+            ('þ', "th"),
+            ('ø', "o"),
+            ('đ', "d"),
+            ('ð', "d"),
+        ];
+        for (letter, folded) in pairs {
+            assert_eq!(fold_latin(letter), Some(folded), "{letter}");
+        }
+        assert_eq!(fold_latin('a'), None);
+        assert_eq!(fold_latin('Ü'), None, "callers lowercase a word first");
+        assert_eq!(fold_latin('ж'), None);
+    }
+
+    #[test]
+    fn fold_table_is_sorted_for_the_binary_search() {
+        assert!(LATIN_FOLDS.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    }
+
+    #[test]
+    fn normalised_tokens_drop_marks_and_keep_other_letters() {
+        assert_eq!(normalise_token("Zu\u{0308}rich"), "zurich");
+        assert_eq!(normalise_token("Zürich"), "zurich");
+        assert_eq!(normalise_token("İstanbul"), "istanbul");
+        assert_eq!(normalise_token("co\u{00AD}operate"), "cooperate");
+        assert_eq!(normalise_token("ΟΔΟΣ"), "οδος");
+        assert_eq!(normalise_token("Москва"), "москва");
     }
 
     #[test]

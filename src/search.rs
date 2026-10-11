@@ -8,6 +8,7 @@ use crate::classify::{classify_response, is_saved_challenge};
 use crate::entity::EntityKind;
 use crate::error::Error;
 use crate::fsio::read_bounded;
+use crate::textnorm::{is_word_extender, normalise_token};
 
 /// Per-document read bound for operator directories.
 pub const MAX_DOC_BYTES: u64 = 1_048_576;
@@ -39,14 +40,20 @@ pub struct Loaded {
     pub skipped: Vec<Skipped>,
 }
 
-/// Unicode word tokens, lowercased. Single-character tokens are dropped.
-/// A non-ASCII letter never splits a word.
+/// Unicode word tokens, lowercased and folded by [`normalise_token`]. Single-character tokens are
+/// dropped. A non-ASCII letter never splits a word, and neither does a combining mark.
 #[must_use]
 pub fn tokenize(raw: &str) -> Vec<String> {
-    raw.split(|c: char| !c.is_alphanumeric())
+    raw.split(|c: char| !is_word_char(c))
+        .map(normalise_token)
         .filter(|t| t.chars().nth(1).is_some())
-        .map(str::to_lowercase)
         .collect()
+}
+
+/// A letter, a digit, or a mark or format character that belongs to the word before it. Every
+/// extender is non-ASCII, so an ASCII separator returns at the first test.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || (!c.is_ascii() && is_word_extender(c))
 }
 
 /// Every distinct query term must occur. Score is the total occurrence count. A query that is
@@ -135,17 +142,19 @@ fn names_identifier(text: &str, identifier: &Identifier) -> bool {
 /// Calls `visit` with each token that [`tokenize`] would return for `text`, in order. Lowercase
 /// ASCII tokens are passed without allocation.
 fn for_each_token(text: &str, mut visit: impl FnMut(&str)) {
-    for word in text.split(|c: char| !c.is_alphanumeric()) {
-        if word.chars().nth(1).is_none() {
-            continue;
-        }
+    for word in text.split(|c: char| !is_word_char(c)) {
         if word
             .bytes()
             .all(|b| b.is_ascii() && !b.is_ascii_uppercase())
         {
-            visit(word);
+            if word.len() > 1 {
+                visit(word);
+            }
         } else {
-            visit(&word.to_lowercase());
+            let token = normalise_token(word);
+            if token.chars().nth(1).is_some() {
+                visit(&token);
+            }
         }
     }
 }
@@ -284,6 +293,46 @@ mod tests {
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(hits[0].id, "zurich");
         assert_eq!(search(&docs, "münchen").len(), 1);
+    }
+
+    #[test]
+    fn accents_do_not_separate_a_name_from_its_plain_spelling() {
+        let docs = vec![
+            Document {
+                id: "zurich".into(),
+                body: "Zürich station".into(),
+                source: "local".into(),
+            },
+            Document {
+                id: "jose".into(),
+                body: "José García attended".into(),
+                source: "local".into(),
+            },
+        ];
+        assert_eq!(search(&docs, "zurich")[0].id, "zurich");
+        assert_eq!(search(&docs, "Jose Garcia")[0].id, "jose");
+        assert_eq!(search(&docs, "José")[0].id, "jose");
+        assert!(search(&docs, "Garcia Zurich").is_empty());
+    }
+
+    #[test]
+    fn combining_marks_and_soft_hyphens_do_not_split_words() {
+        let docs = vec![
+            Document {
+                id: "decomposed".into(),
+                body: "Zu\u{0308}rich station".into(),
+                source: "local".into(),
+            },
+            Document {
+                id: "soft".into(),
+                body: "co\u{00AD}operate schedule".into(),
+                source: "local".into(),
+            },
+        ];
+        assert_eq!(tokenize("Zu\u{0308}rich"), ["zurich"]);
+        assert_eq!(search(&docs, "Zürich")[0].id, "decomposed");
+        assert_eq!(search(&docs, "zurich")[0].id, "decomposed");
+        assert_eq!(search(&docs, "cooperate")[0].id, "soft");
     }
 
     #[test]
