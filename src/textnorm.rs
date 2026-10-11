@@ -1,5 +1,21 @@
 //! Pure text-normalisation helpers rebuilt from the monolith's `util::str_util`.
 
+/// `s` with every control character (tab, newline, ESC, ...) written as a Rust
+/// escape (`\t`, `\n`, `\u{1b}`), so a provider-controlled value cannot break a
+/// line-oriented record or drive the terminal. Everything else is unchanged.
+#[must_use]
+pub fn escape_controls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// A trimmed, non-empty borrow of an optional string field.
 #[must_use]
 pub fn nonempty(value: &Option<String>) -> Option<&str> {
@@ -85,7 +101,7 @@ pub fn is_handle(s: &str, min: usize, max: usize) -> bool {
 /// True when `s` is a dotted domain-style handle.
 #[must_use]
 pub fn is_domain_handle(s: &str) -> bool {
-    crate::canonical::canonical_domain(s).is_some()
+    crate::value_syntax::canonical_domain(s).is_some()
 }
 
 /// Floor an index to a UTF-8 character boundary.
@@ -314,6 +330,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn escape_controls_neutralises_line_and_terminal_controls() {
+        assert_eq!(escape_controls("a\tb\nc\u{1b}[31m"), "a\\tb\\nc\\u{1b}[31m");
+        assert_eq!(escape_controls("breach:DB_A ü"), "breach:DB_A ü");
+    }
+
+    #[test]
     fn title_case_stays_idempotent() {
         for input in [
             "ßeta",
@@ -395,7 +417,14 @@ mod tests {
     #[test]
     fn dotted_handles_use_domain_policy() {
         assert!(is_domain_handle("alice.dev"));
+        assert!(is_domain_handle(" Example.COM. "));
+        assert!(is_domain_handle("a-b.example"));
         assert!(!is_domain_handle("alice"));
+        assert!(!is_domain_handle("-bad.example"));
+        assert!(!is_domain_handle("bad-.example"));
+        assert!(!is_domain_handle("bad..example"));
+        assert!(!is_domain_handle("bad_example.com"));
+        assert!(!is_domain_handle("example.café"));
     }
 
     #[test]

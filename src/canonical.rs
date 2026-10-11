@@ -1,7 +1,6 @@
 //! Canonical forms for entity values and provenance labels.
 
 use crate::evidence_ancestry::canonical_family;
-use crate::validation;
 
 const TRACKING_PARAMS: &[&str] = &[
     "gclid",
@@ -69,32 +68,14 @@ pub fn canonical_handle(raw: &str) -> Option<String> {
     Some(trimmed)
 }
 
-fn valid_domain_label(label: &str) -> bool {
-    !label.is_empty()
-        && label.len() <= 63
-        && !label.starts_with('-')
-        && !label.ends_with('-')
-        && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-}
-
 #[must_use]
 pub fn canonical_domain(raw: &str) -> Option<String> {
-    let domain = raw.trim().trim_matches('.').to_ascii_lowercase();
-    if domain.is_empty() || domain.len() > 253 {
-        return None;
-    }
-    let labels: Vec<&str> = domain.split('.').collect();
-    if labels.len() < 2 || !labels.iter().all(|label| valid_domain_label(label)) {
-        return None;
-    }
-    Some(domain)
+    crate::value_syntax::canonical_domain(raw)
 }
 
 #[must_use]
 pub fn canonical_domain_host(raw: &str) -> Option<String> {
-    let domain = raw.trim().trim_matches('.').to_ascii_lowercase();
-    let stripped = domain.strip_prefix("www.").unwrap_or(domain.as_str());
-    canonical_domain(stripped)
+    crate::value_syntax::canonical_domain_host(raw)
 }
 
 #[must_use]
@@ -113,7 +94,7 @@ pub fn canonical_email(raw: &str) -> Option<String> {
 
 #[must_use]
 pub fn canonical_phone(raw: &str) -> Option<String> {
-    validation::to_e164_au(raw)
+    crate::value_syntax::canonical_phone(raw)
 }
 
 #[must_use]
@@ -212,6 +193,42 @@ pub fn canonical_url(raw: &str) -> Option<String> {
     Some(out)
 }
 
+/// One selector, one stored form. Email, phone, URL, domain, handle and
+/// coordinates win before a name. Empty after normalisation is `None`.
+#[must_use]
+pub fn canonicalise_selector(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    canonical_email(trimmed)
+        .or_else(|| canonical_phone(trimmed))
+        .or_else(|| canonical_url(trimmed))
+        .or_else(|| canonical_domain(trimmed))
+        .or_else(|| canonical_handle(trimmed))
+        .or_else(|| canonical_coordinates(trimmed))
+        .or_else(|| {
+            let name = canonical_name(trimmed);
+            (!name.is_empty()).then_some(name)
+        })
+}
+
+/// Source identifiers are tokens, not selectors.
+#[must_use]
+pub fn canonicalise_token(raw: &str) -> Option<String> {
+    let token = raw.trim().to_ascii_lowercase();
+    if token.is_empty() || token.chars().any(char::is_whitespace) {
+        return None;
+    }
+    if !token
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +275,20 @@ mod tests {
             Some("+61412345678".into())
         );
         assert_eq!(canonical_phone("abc"), None);
+    }
+
+    #[test]
+    fn selector_prefers_email_over_name() {
+        assert_eq!(
+            canonicalise_selector("  Ada@Example.COM "),
+            Some("ada@example.com".into())
+        );
+        assert_eq!(
+            canonicalise_selector("  Example.COM "),
+            Some("example.com".into())
+        );
+        assert_eq!(canonicalise_selector("   "), None);
+        assert_eq!(canonicalise_token(" CrtSh "), Some("crtsh".into()));
+        assert_eq!(canonicalise_token("has space"), None);
     }
 }

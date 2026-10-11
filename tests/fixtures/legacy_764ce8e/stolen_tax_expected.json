@@ -1,0 +1,775 @@
+{
+  "api_urls": [
+    "https://stolen.tax/api/v2/index.php?path=snusbase",
+    "https://stolen.tax/api/v2/index.php?path=osintcat",
+    "https://stolen.tax/api/v2/index.php?path=hudsonrock"
+  ],
+  "captured_from": "M D 764ce8e restore (old tree 4d5db3dc = 1dfb5c9d + 98c77fd), src/modules/stolen_tax/mod.rs",
+  "cases": [
+    {
+      "entities": [
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: DB_A (records: 2, date: unknown)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:DB_A",
+          "tags": [],
+          "value": "breach:DB_A"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: OsintCorpus (records: 1, date: 2021-02-03; path=osintcat)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:OsintCorpus",
+          "tags": [],
+          "value": "breach:OsintCorpus"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: osintcat (records: 1, date: unknown; path=osintcat)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:osintcat",
+          "tags": [],
+          "value": "breach:osintcat"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Stealer hit: stealer:HOST-1 (date: 2026-08-30T00:00:00.000Z; path=hudsonrock; os=Windows 11; ip=192.0.2.***)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "stealer:HOST-1",
+          "tags": [],
+          "value": "stealer:HOST-1"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Stealer hit: stealer:HOST-2 (date: unknown; path=hudsonrock; os=unknown; ip=unknown)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "stealer:HOST-2",
+          "tags": [],
+          "value": "stealer:HOST-2"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Stealer hit: stealer:unknown (date: unknown; path=hudsonrock; os=unknown; ip=unknown)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "stealer:unknown",
+          "tags": [],
+          "value": "stealer:unknown"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "alt@example.com",
+          "tags": [],
+          "value": "alt@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "clear@example.com",
+          "tags": [],
+          "value": "clear@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "hostless@example.com",
+          "tags": [],
+          "value": "hostless@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "o@example.com",
+          "tags": [],
+          "value": "o@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Username",
+          "raw_value": "altuser",
+          "tags": [],
+          "value": "altuser"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Username",
+          "raw_value": "nameless_row_user",
+          "tags": [],
+          "value": "nameless_row_user"
+        }
+      ],
+      "error": null,
+      "failed_paths": [],
+      "name": "v2_cascade_all_paths",
+      "truncation": null
+    },
+    {
+      "entities": [
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: 0644_DROPBOX_COM_68M_HOSTING_2012 (records: 1, date: unknown)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:0644_DROPBOX_COM_68M_HOSTING_2012",
+          "tags": [],
+          "value": "breach:0644_DROPBOX_COM_68M_HOSTING_2012"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: 0797_CANVA_COM_133M_DESIGN_052019 (records: 1, date: unknown)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:0797_CANVA_COM_133M_DESIGN_052019",
+          "tags": [],
+          "value": "breach:0797_CANVA_COM_133M_DESIGN_052019"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "alt@example.com",
+          "tags": [],
+          "value": "alt@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Username",
+          "raw_value": "altuser",
+          "tags": [],
+          "value": "altuser"
+        }
+      ],
+      "error": null,
+      "failed_paths": [],
+      "name": "snusbase_two_breaches",
+      "truncation": null
+    },
+    {
+      "entities": [],
+      "error": null,
+      "failed_paths": [],
+      "name": "snusbase_empty_array",
+      "truncation": null
+    },
+    {
+      "entities": [],
+      "error": null,
+      "failed_paths": [],
+      "name": "snusbase_empty_object_and_missing_data",
+      "truncation": null
+    },
+    {
+      "entities": [
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: ExampleBreach (records: 1, date: 2020-01-01; path=osintcat)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:ExampleBreach",
+          "tags": [],
+          "value": "breach:ExampleBreach"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: OtherCorpus (records: 1, date: unknown; path=osintcat)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:OtherCorpus",
+          "tags": [],
+          "value": "breach:OtherCorpus"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "alt@example.com",
+          "tags": [],
+          "value": "alt@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Username",
+          "raw_value": "altuser",
+          "tags": [],
+          "value": "altuser"
+        }
+      ],
+      "error": null,
+      "failed_paths": [],
+      "name": "osintcat_rows",
+      "truncation": null
+    },
+    {
+      "entities": [],
+      "error": null,
+      "failed_paths": [],
+      "name": "osintcat_empty_with_meta",
+      "truncation": null
+    },
+    {
+      "entities": [
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: AliasDb (records: 1, date: 2019-01-01; path=osintcat)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:AliasDb",
+          "tags": [],
+          "value": "breach:AliasDb"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: AliasTwo (records: 1, date: unknown; path=osintcat)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:AliasTwo",
+          "tags": [],
+          "value": "breach:AliasTwo"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: DbField (records: 1, date: unknown; path=osintcat)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:DbField",
+          "tags": [],
+          "value": "breach:DbField"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: PlainBreach (records: 1, date: unknown; path=osintcat)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:PlainBreach",
+          "tags": [],
+          "value": "breach:PlainBreach"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: osintcat (records: 1, date: unknown; path=osintcat)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:osintcat",
+          "tags": [],
+          "value": "breach:osintcat"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with seed@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "a1@example.com",
+          "tags": [],
+          "value": "a1@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with seed@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "a2@example.com",
+          "tags": [],
+          "value": "a2@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with seed@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "a4@example.com",
+          "tags": [],
+          "value": "a4@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with seed@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "a5@example.com",
+          "tags": [],
+          "value": "a5@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with seed@example.com"
+            }
+          ],
+          "kind": "Username",
+          "raw_value": "a3_user",
+          "tags": [],
+          "value": "a3_user"
+        }
+      ],
+      "error": null,
+      "failed_paths": [],
+      "name": "osintcat_field_aliases_and_bad_rows",
+      "truncation": null
+    },
+    {
+      "entities": [
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Stealer hit: stealer:DESKTOP-ABC (date: 2026-08-30T00:00:00.000Z; path=hudsonrock; os=Windows 11; ip=192.0.2.***)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "stealer:DESKTOP-ABC",
+          "tags": [],
+          "value": "stealer:DESKTOP-ABC"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Stealer hit: stealer:LAPTOP-XYZ (date: 2026-08-25T00:00:00.000Z; path=hudsonrock; os=Windows 10; ip=198.51.100.**)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "stealer:LAPTOP-XYZ",
+          "tags": [],
+          "value": "stealer:LAPTOP-XYZ"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "clear.user@example.com",
+          "tags": [],
+          "value": "clear.user@example.com"
+        }
+      ],
+      "error": null,
+      "failed_paths": [],
+      "name": "hudsonrock_stealers",
+      "truncation": null
+    },
+    {
+      "entities": [
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Stealer hit: stealer:HOST-ONLY (date: unknown; path=hudsonrock; os=unknown; ip=unknown)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "stealer:HOST-ONLY",
+          "tags": [],
+          "value": "stealer:HOST-ONLY"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Stealer hit: stealer:unknown (date: unknown; path=hudsonrock; os=Linux; ip=unknown)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "stealer:unknown",
+          "tags": [],
+          "value": "stealer:unknown"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "blankhost@example.com",
+          "tags": [],
+          "value": "blankhost@example.com"
+        }
+      ],
+      "error": null,
+      "failed_paths": [],
+      "name": "hudsonrock_blank_host",
+      "truncation": null
+    },
+    {
+      "entities": [
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: DB_A (records: 1, date: unknown)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:DB_A",
+          "tags": [],
+          "value": "breach:DB_A"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: OsintCorpus (records: 1, date: unknown; path=osintcat)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:OsintCorpus",
+          "tags": [],
+          "value": "breach:OsintCorpus"
+        },
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Stealer hit: stealer:HOST-1 (date: 2026-01-01T00:00:00Z; path=hudsonrock; os=Linux; ip=203.0.113.***)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "stealer:HOST-1",
+          "tags": [],
+          "value": "stealer:HOST-1"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with seed@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "alt@example.com",
+          "tags": [],
+          "value": "alt@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with seed@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "other@example.com",
+          "tags": [],
+          "value": "other@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with seed@example.com"
+            }
+          ],
+          "kind": "Username",
+          "raw_value": "shared_user",
+          "tags": [],
+          "value": "shared_user"
+        }
+      ],
+      "error": null,
+      "failed_paths": [],
+      "name": "cross_path_dedup",
+      "truncation": null
+    },
+    {
+      "entities": [
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: DB_X (records: 3, date: unknown)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:DB_X",
+          "tags": [],
+          "value": "breach:DB_X"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with User@Example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "alt@example.com",
+          "tags": [],
+          "value": "alt@example.com"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with User@Example.com"
+            }
+          ],
+          "kind": "Username",
+          "raw_value": "jordan_m",
+          "tags": [],
+          "value": "jordan_m"
+        }
+      ],
+      "error": null,
+      "failed_paths": [],
+      "name": "query_echo_and_dirty_spellings",
+      "truncation": null
+    },
+    {
+      "entities": [
+        {
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Breach: DB_A (records: 1, date: unknown)"
+            }
+          ],
+          "kind": "Credential",
+          "raw_value": "breach:DB_A",
+          "tags": [],
+          "value": "breach:DB_A"
+        },
+        {
+          "confidence": 0.5,
+          "evidence": [
+            {
+              "attributes": {},
+              "source": "stolen_tax",
+              "summary": "Exposed in breach: correlated with user@example.com"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "alt@example.com",
+          "tags": [],
+          "value": "alt@example.com"
+        }
+      ],
+      "error": null,
+      "failed_paths": [
+        "osintcat"
+      ],
+      "name": "partial_one_path_fails",
+      "truncation": "2 retrieved — stopped by the stolen.tax `osintcat` path(s) failing, and the provider did not report how many exist. Absence of a finding here is not evidence of absence."
+    },
+    {
+      "entities": [],
+      "error": "[stolen_tax] stolen.tax answered success=false: database temporarily unavailable",
+      "failed_paths": [
+        "snusbase",
+        "osintcat",
+        "hudsonrock"
+      ],
+      "name": "all_paths_fail",
+      "truncation": null
+    }
+  ],
+  "max_timeout_ms": 120000
+}

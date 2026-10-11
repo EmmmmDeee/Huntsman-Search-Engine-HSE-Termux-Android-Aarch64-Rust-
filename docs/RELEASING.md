@@ -5,7 +5,7 @@
 ## Jobs
 
 - **build** (read-only token, no `GH_TOKEN`, no persisted git credentials): runs `cargo build` with `HSE_RELEASE=1` and `HUNTSMAN_HIBP_NO_EMBED=1`. It then requires every `out/hibp_embedded_key.txt` to be empty, strips and stages `dist/`, proves that the binary is `huntsman-recon`, and runs the key scanner on `dist/`. Publishing requires `result: PASS (0 findings)`.
-- **publish** is the only job with write or OIDC scopes, and it never runs on `pull_request`. It re-checks the downloaded bytes against the build job's digests and re-runs the key scan from the copy inlined in the workflow, which must be byte-identical to `.github/scripts/scan-for-keys.sh`. Then it checks for an existing release, attests, publishes, and verifies the result through the API.
+- **publish** is the only job with write or OIDC scopes, and it never runs on `pull_request`. It re-checks the downloaded bytes against the build job's digests and re-runs the key scan from the copy inlined in the workflow, which must be byte-identical to `.github/scripts/scan-for-keys.sh`. Then it reconciles orphan main-channel drafts (a draft `main-<sha7>` with no tag), checks for an existing release, checks that this commit is still the `main` head, attests, publishes, and verifies the result through the API. A build whose commit is no longer the `main` head is still built, scanned and attested, but it is not published: it stays a verified Actions artifact.
 
 ## Key scanner (`.github/scripts/scan-for-keys.sh`)
 
@@ -62,7 +62,7 @@ Every refusal in the publish job has its own exit code and an `::error::[refuse:
 
 ## Attestation is required
 
-`actions/attest-build-provenance` runs without `continue-on-error`, using the publish job's existing `id-token: write` and `attestations: write` permissions. If it fails, nothing is published. A re-run against a release that already exists never re-attests or replaces it. Instead, it requires an attestation for the published binary's digest.
+`actions/attest-build-provenance` runs without `continue-on-error`, using the publish job's existing `id-token: write` and `attestations: write` permissions. If it fails, nothing is published, and the run fails, including for a superseded build that would only have remained an Actions artifact. A re-run against a release that already exists never re-attests or replaces it. Instead, it requires an attestation for the published binary's digest.
 
 To re-publish an incomplete or unattested release, delete the pre-release **and its tag**, then re-run:
 
@@ -72,8 +72,8 @@ gh release delete main-<sha7> --cleanup-tag
 
 Deleting only the release, whether in the UI or with `gh release delete` without `--cleanup-tag`, leaves the tag behind. The re-run then stops with `tag-without-release`.
 
-Every step that writes a release, a tag or an attestation is gated on `steps.existing.outputs.exists == 'false'`.
+Every step that writes this commit's `main-<sha7>` release, its tag or an attestation is gated on `steps.existing.outputs.exists == 'false'`. Two other writes exist, and the tests pin both: the orphan-draft reconciliation deletes only a draft `main-<sha7>` release whose tag is absent, and the opt-in `latest` move (behind `PROMOTE_RECON_TO_LATEST`) writes only `latest`.
 
 ## Termux installer (`.github/scripts/install-termux.sh`)
 
-The installer checks sha256 before installing and stages the binary next to its destination. It then re-checks the staged copy and renames it into place with `mv -fT`. If the destination is a directory, `mv -fT` refuses, instead of moving the binary into that directory and reporting success.
+The installer checks sha256 before installing and stages the binary in a private directory next to its destination. It then re-checks the staged copy, runs the recon binary offline (`check`, then `verify var/ledger.json`), and renames it into place with `mv -fT`. If the destination is a directory, `mv -fT` refuses, instead of moving the binary into that directory and reporting success.

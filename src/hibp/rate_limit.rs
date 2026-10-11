@@ -10,10 +10,9 @@
 //! go through here.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-
-use std::sync::Mutex;
 use std::time::Instant;
 
 /// Default budget: 10 requests per minute, the lowest HIBP plan's rate.
@@ -26,7 +25,7 @@ pub const RATE_LIMIT_ENV: &str = "HIBP_RATE_LIMIT_PER_MINUTE";
 /// A sliding-window limiter: at most `limit` acquisitions per `window`.
 #[derive(Debug)]
 pub struct RateLimiter {
-    limit: u32,
+    limit: AtomicU32,
     window: Duration,
     state: Mutex<State>,
 }
@@ -48,7 +47,7 @@ impl RateLimiter {
     #[must_use]
     pub fn new(limit: u32, window: Duration) -> Self {
         Self {
-            limit,
+            limit: AtomicU32::new(limit),
             window,
             state: Mutex::new(State::default()),
         }
@@ -56,7 +55,13 @@ impl RateLimiter {
 
     /// The configured limit per window.
     pub fn limit(&self) -> u32 {
-        self.limit
+        self.limit.load(Ordering::Relaxed)
+    }
+
+    /// Replace the active request budget. Existing timestamps are retained so
+    /// lowering a plan limit cannot erase already-consumed capacity.
+    pub fn set_limit(&self, per_minute: u32) {
+        self.limit.store(per_minute, Ordering::Relaxed);
     }
 
     /// The process-wide limiter every HIBP caller shares, sized from
@@ -87,7 +92,8 @@ impl RateLimiter {
                     Some(until) if until > now => Some(until - now),
                     _ => {
                         st.blocked_until = None;
-                        if self.limit == 0 {
+                        let limit = self.limit();
+                        if limit == 0 {
                             None
                         } else {
                             while st
@@ -97,7 +103,7 @@ impl RateLimiter {
                             {
                                 st.sent.pop_front();
                             }
-                            if st.sent.len() < self.limit as usize {
+                            if st.sent.len() < limit as usize {
                                 st.sent.push_back(now);
                                 None
                             } else {

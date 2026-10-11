@@ -3,8 +3,9 @@
 //! Every evidence item carries mandatory provenance, so graph, timeline,
 //! exposure, and identity logic all rest on the same traceable record shape.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,18 @@ use crate::confidence::{
 use crate::evidence_ancestry::{AncestryError, EvidenceAncestryGraph, EvidenceNodeId};
 use crate::sha256::{hex32, sha256};
 use crate::tags;
+
+static SCAN_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[must_use]
+pub fn scan_id(kind: &str, value: &str) -> String {
+    let counter = SCAN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0u128, |duration| duration.as_nanos());
+    let material = format!("huntsman-scan-id-v1\0{kind}\0{value}\0{now}\0{counter}");
+    hex32(&sha256(material.as_bytes()))
+}
 
 pub const CANDIDATE_CONF: f64 = 0.25;
 pub const RECALL_SOURCE: &str = "recall";
@@ -111,6 +124,9 @@ impl fmt::Display for EntityKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceProvenance {
     pub source: String,
+    /// Canonical family of `source`, as stored. Loaded from saved data, so its value is
+    /// not trusted for counting: [`Self::corroboration_key`] derives the key from
+    /// `source` and reads only whether this field is empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_family: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -137,12 +153,25 @@ impl EvidenceProvenance {
         provenance
     }
 
+    /// The family this record corroborates under, derived from `source`.
+    ///
+    /// The stored `source_family` value is never used as the key. It is deserialized
+    /// from saved data (`#[serde(default)]`) and `Entity::add_evidence` only fills it
+    /// when empty, so trusting it would let a tampered saved record give two rows from
+    /// one collector two families and inflate `Entity::source_count`. A record with a
+    /// stored family counts under `canonical_provenance_family(source)`, the same
+    /// derivation as the lineage registry gate, which is what an honest record stores.
+    ///
+    /// A record with no stored family keeps counting under its raw `source`, as on
+    /// main and in legacy 7dca720 (which counts raw sources). Canonicalising that case
+    /// too would make `HIBP` and `hibp` one source, a count change that legacy does
+    /// not make; it is not adopted here (see docs/LINEAGE.md).
     #[must_use]
-    pub fn corroboration_key(&self) -> &str {
+    pub fn corroboration_key(&self) -> String {
         if self.source_family.is_empty() {
-            &self.source
+            self.source.clone()
         } else {
-            &self.source_family
+            canonical_provenance_family(&self.source)
         }
     }
 }
@@ -250,6 +279,20 @@ pub struct Entity {
     pub generation: u32,
 }
 
+pub fn merge_by_uid(entities: &mut Vec<Entity>) {
+    let mut positions = HashMap::<String, usize>::with_capacity(entities.len());
+    let mut merged: Vec<Entity> = Vec::with_capacity(entities.len());
+    for entity in entities.drain(..) {
+        if let Some(&index) = positions.get(&entity.uid) {
+            merged[index].absorb(entity);
+        } else {
+            positions.insert(entity.uid.clone(), merged.len());
+            merged.push(entity);
+        }
+    }
+    *entities = merged;
+}
+
 impl Entity {
     #[must_use]
     pub fn new(
@@ -293,7 +336,7 @@ impl Entity {
         let mut real = BTreeSet::new();
         let mut promo = BTreeSet::new();
         for evidence in &self.evidence {
-            let key = evidence.provenance.corroboration_key().to_owned();
+            let key = evidence.provenance.corroboration_key();
             if is_non_corroborating_source(&key) {
                 continue;
             }
@@ -385,7 +428,7 @@ impl Entity {
     pub fn corroborating_sources(&self) -> BTreeSet<String> {
         self.evidence
             .iter()
-            .map(|evidence| evidence.provenance.corroboration_key().to_owned())
+            .map(|evidence| evidence.provenance.corroboration_key())
             .filter(|source| !is_non_corroborating_source(source))
             .collect()
     }

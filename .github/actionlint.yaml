@@ -1,8 +1,0 @@
-# actionlint 1.7.12 predates the `concurrency.queue` key that GitHub Actions
-# accepts since 2026-05-07 (`queue: single | max`), see
-# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
-# Ignore only that one message, only for the release workflow.
-paths:
-  .github/workflows/release.yml:
-    ignore:
-      - 'unexpected key "queue" for "concurrency" section'

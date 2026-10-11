@@ -5,8 +5,10 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::au_id;
-use crate::canonical::{canonical_domain, canonical_email, canonical_phone, canonical_url};
-use crate::entity::EntityKind;
+use crate::canonical::{
+    canonical_domain, canonical_email, canonical_handle, canonical_phone, canonical_url,
+};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 
 pub const ACTIONABLE_FLOOR: f64 = 0.50;
 
@@ -36,26 +38,30 @@ pub fn classify(raw: &str) -> Classified {
             signal: "empty",
         };
     }
-    if canonical_url(value).is_some() {
-        return classified(EntityKind::Url, value, 0.90, "scheme");
+    if let Some(url) = canonical_url(value) {
+        return classified(EntityKind::Url, &url, 0.90, "scheme");
     }
-    if canonical_email(value).is_some() {
-        return classified(EntityKind::Email, value, 0.85, "rfc-shape");
+    if let Some(email) = canonical_email(value) {
+        return classified(EntityKind::Email, &email, 0.85, "rfc-shape");
     }
     if parse_ipv4(value) {
         return classified(EntityKind::IpAddress, value, 0.92, "parsed");
     }
-    if canonical_domain(value).is_some() {
-        return classified(EntityKind::Domain, value, 0.75, "domain-shape");
+    if let Some(coordinates) = parse_decimal_coordinates(value) {
+        return classified(EntityKind::Coordinates, &coordinates, 0.85, "lat-lon");
     }
-    if canonical_phone(value).is_some() {
-        return classified(EntityKind::Phone, value, 0.80, "dialable-shape");
+    if let Some(domain) = canonical_domain(value) {
+        return classified(EntityKind::Domain, &domain, 0.75, "domain-shape");
+    }
+    if let Some(phone) = canonical_phone(value) {
+        return classified(EntityKind::Phone, &phone, 0.80, "dialable-shape");
     }
     if au_id::classify(value).is_ok() {
         return classified(EntityKind::AbnAcn, value, 0.95, "checksum");
     }
     if value.starts_with('@') {
-        return classified(EntityKind::Username, value, 0.40, "handle");
+        let handle = canonical_handle(value).unwrap_or_else(|| value.trim().to_owned());
+        return classified(EntityKind::Username, &handle, 0.40, "handle");
     }
     let lowered = value.to_ascii_lowercase();
     if ["pty ltd", "llc", "inc", "corp", "gmbh"]
@@ -102,6 +108,32 @@ pub fn extract(text: &str) -> Vec<Classified> {
     out
 }
 
+#[must_use]
+pub fn extract_entities(text: &str, scan_id: &str) -> Vec<Entity> {
+    extract(text)
+        .into_iter()
+        .filter(Classified::is_actionable)
+        .map(|classified| {
+            Entity::builder(
+                classified.kind,
+                classified.value,
+                classified.confidence,
+                scan_id,
+            )
+            .tag("classified")
+            .tag("auto-seed")
+            .evidence(
+                Evidence::new(
+                    EvidenceProvenance::for_scan("classifier", scan_id),
+                    format!("{} match in unstructured input", classified.signal),
+                )
+                .with_attr("signal", classified.signal),
+            )
+            .build()
+        })
+        .collect()
+}
+
 fn classified(kind: EntityKind, value: &str, confidence: f64, signal: &'static str) -> Classified {
     Classified {
         kind,
@@ -119,15 +151,118 @@ fn parse_ipv4(raw: &str) -> bool {
             .all(|part| !part.is_empty() && part.parse::<u8>().is_ok())
 }
 
+/// Recognises a `LAT,LON` pair in decimal degrees and returns it as `lat,lon`.
+///
+/// Both components must be plain signed decimals with a fractional part, so
+/// thousands-separated numbers (`1,000`) and decimal-comma values (`12,5`) are not
+/// mistaken for coordinates. Latitude must lie in `-90..=90` and longitude in
+/// `-180..=180`.
+fn parse_decimal_coordinates(raw: &str) -> Option<String> {
+    let (lat, lon) = raw.split_once(',')?;
+    let lat = decimal_degree(lat, 2, 90.0)?;
+    let lon = decimal_degree(lon, 3, 180.0)?;
+    Some(format!("{lat},{lon}"))
+}
+
+fn decimal_degree(raw: &str, max_int_digits: usize, limit: f64) -> Option<&str> {
+    let trimmed = raw.trim();
+    let unsigned = trimmed
+        .strip_prefix('-')
+        .or_else(|| trimmed.strip_prefix('+'))
+        .unwrap_or(trimmed);
+    let (int, frac) = unsigned.split_once('.')?;
+    if int.is_empty()
+        || int.len() > max_int_digits
+        || frac.is_empty()
+        || !int.bytes().all(|b| b.is_ascii_digit())
+        || !frac.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let degrees: f64 = unsigned.parse().ok()?;
+    if degrees > limit {
+        return None;
+    }
+    Some(trimmed.strip_prefix('+').unwrap_or(trimmed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actionable_entities_are_emitted() {
+        let entities = extract_entities("see https://example.com and ada@example.com", "scan");
+        assert_eq!(entities.len(), 2);
+        assert!(entities.iter().all(|entity| entity.has_tag("classified")));
+    }
+
+    #[test]
+    fn stored_value_is_canonical() {
+        assert_eq!(classify("  Example.COM ").value, "example.com");
+        assert_eq!(classify("  Ada@Example.COM ").value, "ada@example.com");
+        assert_eq!(classify("@Ada").value, "ada");
+    }
 
     #[test]
     fn classifies_structural_values() {
         assert_eq!(classify("https://example.com").kind, EntityKind::Url);
         assert_eq!(classify("Ada@Example.com").kind, EntityKind::Email);
         assert_eq!(classify("8.8.8.8").kind, EntityKind::IpAddress);
+    }
+
+    #[test]
+    fn classifies_decimal_degree_coordinates() {
+        let brisbane = classify("-27.4698,153.0251");
+        assert_eq!(brisbane.kind, EntityKind::Coordinates);
+        assert_eq!(brisbane.value, "-27.4698,153.0251");
+        assert!(brisbane.is_actionable());
+
+        let spaced = classify(" 37.7749, -122.4194 ");
+        assert_eq!(spaced.kind, EntityKind::Coordinates);
+        assert_eq!(spaced.value, "37.7749,-122.4194");
+
+        let signed = classify("+0.0,+0.0");
+        assert_eq!(signed.kind, EntityKind::Coordinates);
+        assert_eq!(signed.value, "0.0,0.0");
+
+        for bounds in ["90.0,180.0", "-90.0,-180.0"] {
+            assert_eq!(classify(bounds).kind, EntityKind::Coordinates, "{bounds}");
+        }
+    }
+
+    #[test]
+    fn rejects_out_of_range_or_non_decimal_coordinates() {
+        for raw in [
+            "90.1,0.0",
+            "-90.5,0.0",
+            "0.0,180.1",
+            "0.0,-181.0",
+            "123.4,12.5",
+            "12.5,1234.5",
+            "1e1,2.0",
+            "NaN,0.0",
+            "1.5,inf",
+            "12.,5.0",
+            ".5,5.0",
+            "1.5,2.5,3.5",
+        ] {
+            assert_ne!(classify(raw).kind, EntityKind::Coordinates, "{raw}");
+        }
+    }
+
+    #[test]
+    fn ordinary_numbers_and_addresses_are_not_coordinates() {
+        for raw in ["1,000", "12,500", "12,100.50", "1.000,50", "12,5"] {
+            assert_ne!(classify(raw).kind, EntityKind::Coordinates, "{raw}");
+        }
+        for raw in [
+            "12 Smith Street",
+            "Unit 3, 12 Smith St Brisbane",
+            "1.5 Example Road, 2.5 km north",
+        ] {
+            assert_eq!(classify(raw).kind, EntityKind::Address, "{raw}");
+        }
     }
 
     #[test]

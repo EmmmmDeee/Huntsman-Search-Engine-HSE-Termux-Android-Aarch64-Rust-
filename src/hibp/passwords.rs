@@ -64,6 +64,16 @@ pub fn count_for(entries: &[RangeEntry], suffix: &str) -> u64 {
         .map_or(0, |entry| entry.count)
 }
 
+/// Overwrite a buffer that held a password or hash before freeing it.
+///
+/// Best effort without `unsafe`: `fill` plus `black_box` keeps the stores from
+/// being optimised out in practice, but it is not a volatile write, and copies
+/// made elsewhere (stdin's read buffer, the allocator) are not reached.
+pub(super) fn wipe(mut bytes: Vec<u8>) {
+    bytes.fill(0);
+    std::hint::black_box(&bytes);
+}
+
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -76,7 +86,9 @@ fn hex(bytes: &[u8]) -> String {
 // FIPS 180-4 SHA-1, required by HIBP's protocol (not a security primitive here).
 #[allow(clippy::many_single_char_names)] // FIPS register and round names.
 pub(super) fn sha1_hex(data: &[u8]) -> String {
-    let mut message = data.to_vec();
+    // Sized for the padding up front, so no reallocation leaves an unwiped copy.
+    let mut message = Vec::with_capacity(data.len() + 72);
+    message.extend_from_slice(data);
     message.push(0x80);
     while message.len() % 64 != 56 {
         message.push(0);
@@ -121,6 +133,8 @@ pub(super) fn sha1_hex(data: &[u8]) -> String {
             *s = s.wrapping_add(value);
         }
     }
+    // The padded copy holds the password itself.
+    wipe(message);
     hex(&state
         .into_iter()
         .flat_map(u32::to_be_bytes)

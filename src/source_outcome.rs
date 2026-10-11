@@ -18,6 +18,8 @@ pub enum SourceOutcomeKind {
     ValidZero,
     AuthRequired,
     AuthRejected,
+    EntitlementDenied,
+    QuotaExhausted,
     RateLimited,
     BotWaf,
     DnsFailure,
@@ -180,16 +182,18 @@ pub const fn recommended_action(kind: SourceOutcomeKind) -> SourceHealthAction {
         SourceOutcomeKind::AuthRequired | SourceOutcomeKind::AuthRejected => {
             SourceHealthAction::RequireCredential
         }
-        SourceOutcomeKind::RateLimited | SourceOutcomeKind::BotWaf => SourceHealthAction::Backoff,
+        SourceOutcomeKind::QuotaExhausted
+        | SourceOutcomeKind::RateLimited
+        | SourceOutcomeKind::BotWaf => SourceHealthAction::Backoff,
         SourceOutcomeKind::DnsFailure
         | SourceOutcomeKind::ConnectFailure
         | SourceOutcomeKind::TtfbTimeout
         | SourceOutcomeKind::BodyTimeout
         | SourceOutcomeKind::Upstream5xx
         | SourceOutcomeKind::Inconclusive => SourceHealthAction::Retry,
-        SourceOutcomeKind::TlsFailure | SourceOutcomeKind::Upstream4xx => {
-            SourceHealthAction::Investigate
-        }
+        SourceOutcomeKind::EntitlementDenied
+        | SourceOutcomeKind::TlsFailure
+        | SourceOutcomeKind::Upstream4xx => SourceHealthAction::Investigate,
         SourceOutcomeKind::RedirectChanged
         | SourceOutcomeKind::ProtocolDrift
         | SourceOutcomeKind::InteractionDrift

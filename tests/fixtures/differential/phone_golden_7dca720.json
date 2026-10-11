@@ -1,0 +1,40 @@
+[
+  {
+    "input": "0412 345 678",
+    "expected": [
+      {"kind": "phone", "value": "+61412345678", "source": "phone_au"}
+    ]
+  },
+  {
+    "input": "+61 2 9876 5432",
+    "expected": [
+      {"kind": "phone", "value": "+61298765432", "source": "phone_intl"},
+      {"kind": "phone", "value": "+61298765432", "source": "phone_au"}
+    ]
+  },
+  {
+    "input": "(02) 9876 5432",
+    "expected": [
+      {"kind": "phone", "value": "+61298765432", "source": "phone_au"}
+    ]
+  },
+  {
+    "input": "+44 20 7183 8750",
+    "expected": [
+      {"kind": "phone", "value": "+442071838750", "source": "phone_intl"}
+    ]
+  },
+  {
+    "input": "0061 412 345 678",
+    "expected": [
+      {"kind": "phone", "value": "+61412345678", "source": "phone_intl"},
+      {"kind": "phone", "value": "+61412345678", "source": "phone_au"}
+    ]
+  },
+  {
+    "input": "+1 876 456 7890",
+    "expected": [
+      {"kind": "phone", "value": "+18764567890", "source": "phone_intl"}
+    ]
+  }
+]

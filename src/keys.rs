@@ -5,17 +5,42 @@
 //! its `Debug` shows the credential fingerprint, which is what ledgers and logs
 //! record. Values come from a keys file (`NAME=value` lines, mode 0600) or the
 //! process environment; the file wins so a project can pin its own keys.
+//!
+//! The keys file is `--keys FILE` when given, otherwise `$HOME/.huntsman.env` when
+//! it exists (see [`Keys::resolve`]). Both go through [`Keys::load`].
 
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::OsStr;
 use std::fmt;
-use std::path::Path;
+use std::fs::{File, Metadata};
+use std::io::{ErrorKind, Read};
+use std::path::{Path, PathBuf};
 
 use crate::credential_origin::CredentialFingerprint;
 use crate::error::Error;
 use crate::fsio::read_bounded;
 
 const MAX_KEYS_FILE_BYTES: u64 = 64 * 1024;
+
+/// Keys file read from `$HOME` when no `--keys FILE` is given.
+pub const DEFAULT_KEYS_FILE: &str = ".huntsman.env";
+
+/// `$HOME/.huntsman.env`, or `None` when `home` is unset, empty or relative. A
+/// relative `HOME` would make the default file depend on the working directory.
+#[must_use]
+pub fn default_keys_path(home: Option<&OsStr>) -> Option<PathBuf> {
+    let home = Path::new(home?);
+    home.is_absolute().then(|| home.join(DEFAULT_KEYS_FILE))
+}
+
+/// The keys for one command run, plus a warning for stderr when the default file
+/// was skipped. The warning names the path and the fix; it never holds a value.
+#[derive(Debug)]
+pub struct ResolvedKeys {
+    pub keys: Keys,
+    pub warning: Option<String>,
+}
 
 /// Is this a real credential rather than a blank or a template placeholder?
 ///
@@ -175,27 +200,79 @@ impl Keys {
     /// `Error::Store` for I/O problems or loose permissions; `Error::Invalid` for
     /// malformed content.
     pub fn load(path: &Path) -> Result<Self, Error> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(path)
-                .map_err(|e| Error::Store(format!("{}: {e}", path.display())))?
-                .permissions()
-                .mode();
-            if mode & 0o077 != 0 {
-                return Err(Error::Store(format!(
-                    "{} is accessible by group/others (mode {:o}); run chmod 600",
-                    path.display(),
-                    mode & 0o777
-                )));
-            }
+        if let Some(mode) = loose_mode(path)? {
+            return Err(Error::Store(format!(
+                "{} is accessible by group/others (mode {mode:o}); run chmod 600",
+                path.display()
+            )));
         }
-        let bytes = read_bounded(path, MAX_KEYS_FILE_BYTES)?;
+        Self::from_file_bytes(read_bounded(path, MAX_KEYS_FILE_BYTES)?)
+    }
+
+    /// The file half of [`Keys::load`]: UTF-8 check, [`Keys::parse`], environment
+    /// fallback on. Shared by `--keys` and the default file.
+    fn from_file_bytes(bytes: Vec<u8>) -> Result<Self, Error> {
         let text = String::from_utf8(bytes)
             .map_err(|_| Error::Invalid("keys file is not utf-8".into()))?;
         let mut keys = Self::parse(&text)?;
         keys.use_env = true;
         Ok(keys)
+    }
+
+    /// Keys for a command run.
+    ///
+    /// With `explicit` (`--keys FILE`) this is exactly [`Keys::load`] on that path
+    /// and the default file is not read. Otherwise `$HOME/.huntsman.env` is parsed
+    /// with the same parser when it exists and passes the default-file gate. If it
+    /// does not exist, or `home` is unset, the result is [`Keys::from_env`], as
+    /// before the default file existed. An empty or relative `home` also gives
+    /// [`Keys::from_env`], plus one warning that does not print the `HOME` value.
+    ///
+    /// The gate decides on `lstat` (the path is never followed): a symlink, a
+    /// non-regular file, a file owned by another uid, a file accessible by group
+    /// or others (`mode & 0o077 != 0`), or an undeterminable current uid is not
+    /// read. The result is then [`Keys::from_env`] plus one warning naming the path
+    /// and the reason. The file is read through the descriptor that was opened,
+    /// after checking it is the same inode `lstat` saw and re-checking the gate on
+    /// it, so a swap between check and read is refused rather than followed.
+    ///
+    /// Precedence is that of [`Keys::load`]: a slot in the file wins over the same
+    /// variable in the process environment; slots the file lacks fall back to it.
+    ///
+    /// # Errors
+    /// As [`Keys::load`] for the `--keys` file; for the default file, I/O errors
+    /// other than "not found" and malformed content.
+    pub fn resolve(explicit: Option<&Path>, home: Option<&OsStr>) -> Result<ResolvedKeys, Error> {
+        if let Some(path) = explicit {
+            return Ok(ResolvedKeys {
+                keys: Self::load(path)?,
+                warning: None,
+            });
+        }
+        let env_only = |warning| ResolvedKeys {
+            keys: Self::from_env(),
+            warning,
+        };
+        let Some(home) = home else {
+            return Ok(env_only(None));
+        };
+        let Some(path) = default_keys_path(Some(home)) else {
+            return Ok(env_only(Some(format!(
+                "warning: not loading ~/{DEFAULT_KEYS_FILE}: HOME is not an absolute path"
+            ))));
+        };
+        match load_default_file(&path)? {
+            None => Ok(env_only(None)),
+            Some(Err(refusal)) => Ok(env_only(Some(format!(
+                "warning: not loading {}: {}",
+                path.display(),
+                refusal.reason()
+            )))),
+            Some(Ok(keys)) => Ok(ResolvedKeys {
+                keys,
+                warning: None,
+            }),
+        }
     }
 
     /// File entry first, then the environment. Blank or placeholder values read as
@@ -227,6 +304,191 @@ impl fmt::Debug for Keys {
             .field("slots", &self.slots())
             .finish_non_exhaustive()
     }
+}
+
+/// Why `$HOME/.huntsman.env` was not read. Carries metadata only, never content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefaultFileRefusal {
+    Symlink,
+    NotRegularFile,
+    ForeignOwner { file_uid: u32, current_uid: u32 },
+    UnknownCurrentUser,
+    LoosePermissions { mode: u32 },
+    ChangedWhileOpening,
+}
+
+impl DefaultFileRefusal {
+    fn reason(self) -> String {
+        match self {
+            Self::Symlink => "it is a symlink; remove the symlink and create a regular file \
+                 owned by you with mode 600, or pass --keys"
+                .to_owned(),
+            Self::NotRegularFile => "it is not a regular file".to_owned(),
+            Self::ForeignOwner {
+                file_uid,
+                current_uid,
+            } => format!(
+                "it is owned by uid {file_uid}, not the current uid {current_uid}; recreate it as the current user"
+            ),
+            Self::UnknownCurrentUser => {
+                "the current uid cannot be determined, so ownership cannot be checked; pass --keys"
+                    .to_owned()
+            }
+            Self::LoosePermissions { mode } => format!(
+                "mode {mode:o} is accessible by group/others; fix with `chmod 600 ~/{DEFAULT_KEYS_FILE}`"
+            ),
+            Self::ChangedWhileOpening => "it changed between the check and the open".to_owned(),
+        }
+    }
+}
+
+/// The metadata the default-file gate decides on, taken from `lstat` or `fstat`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileFacts {
+    is_symlink: bool,
+    is_file: bool,
+    /// Permission bits (`mode & 0o777`); `0o600` off Unix.
+    mode: u32,
+    /// Owner uid; `None` off Unix, where there is no uid to compare.
+    uid: Option<u32>,
+}
+
+impl FileFacts {
+    fn of(meta: &Metadata) -> Self {
+        #[cfg(unix)]
+        let (mode, uid) = {
+            use std::os::unix::fs::MetadataExt;
+            (meta.mode() & 0o777, Some(meta.uid()))
+        };
+        #[cfg(not(unix))]
+        let (mode, uid) = (0o600, None);
+        Self {
+            is_symlink: meta.file_type().is_symlink(),
+            is_file: meta.is_file(),
+            mode,
+            uid,
+        }
+    }
+}
+
+/// The default-file gate. `current_uid` is the effective uid of this process
+/// (`None` when it cannot be determined); it is only consulted on Unix.
+fn default_file_refusal(facts: &FileFacts, current_uid: Option<u32>) -> Option<DefaultFileRefusal> {
+    if facts.is_symlink {
+        return Some(DefaultFileRefusal::Symlink);
+    }
+    if !facts.is_file {
+        return Some(DefaultFileRefusal::NotRegularFile);
+    }
+    if let Some(file_uid) = facts.uid {
+        match current_uid {
+            None => return Some(DefaultFileRefusal::UnknownCurrentUser),
+            Some(current_uid) if current_uid != file_uid => {
+                return Some(DefaultFileRefusal::ForeignOwner {
+                    file_uid,
+                    current_uid,
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    if facts.mode & 0o077 != 0 {
+        return Some(DefaultFileRefusal::LoosePermissions { mode: facts.mode });
+    }
+    None
+}
+
+/// Effective uid from `/proc/self/status` (Linux, Android/Termux). `None` where
+/// procfs is unavailable, which makes the default-file gate refuse.
+#[cfg(unix)]
+fn current_uid() -> Option<u32> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let uids = status.lines().find_map(|line| line.strip_prefix("Uid:"))?;
+    uids.split_whitespace().nth(1)?.parse().ok()
+}
+
+#[cfg(not(unix))]
+fn current_uid() -> Option<u32> {
+    None
+}
+
+/// `None` when `path` does not exist; otherwise the parsed file or the refusal.
+///
+/// The open uses default flags. `O_NOFOLLOW` (and `O_NONBLOCK`) could be set with
+/// `OpenOptionsExt::custom_flags`, which is safe Rust; the obstacle is the flag
+/// values, which differ per architecture (e.g. `O_NOFOLLOW` on `x86_64` vs `aarch64`)
+/// and would need the `libc` crate or a hard-coded per-target table. Instead the
+/// opened descriptor must be the inode `lstat` saw and pass the gate again. The
+/// residual gap: a regular file swapped for a FIFO between `lstat` and `open`
+/// makes `open` block before the re-check; that needs write access to `$HOME`.
+fn load_default_file(path: &Path) -> Result<Option<Result<Keys, DefaultFileRefusal>>, Error> {
+    let store = |e: std::io::Error| Error::Store(format!("{}: {e}", path.display()));
+    let linked = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            return Ok(None);
+        }
+        Err(e) => return Err(store(e)),
+    };
+    let uid = current_uid();
+    if let Some(refusal) = default_file_refusal(&FileFacts::of(&linked), uid) {
+        return Ok(Some(Err(refusal)));
+    }
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Ok(Some(Err(DefaultFileRefusal::ChangedWhileOpening)));
+        }
+        Err(e) => return Err(store(e)),
+    };
+    let opened = file.metadata().map_err(store)?;
+    if !same_inode(&linked, &opened) {
+        return Ok(Some(Err(DefaultFileRefusal::ChangedWhileOpening)));
+    }
+    if let Some(refusal) = default_file_refusal(&FileFacts::of(&opened), uid) {
+        return Ok(Some(Err(refusal)));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_KEYS_FILE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(store)?;
+    if bytes.len() as u64 > MAX_KEYS_FILE_BYTES {
+        return Err(Error::Store(format!(
+            "{}: exceeds {MAX_KEYS_FILE_BYTES} bytes",
+            path.display()
+        )));
+    }
+    Keys::from_file_bytes(bytes).map(|keys| Some(Ok(keys)))
+}
+
+/// Did `open` reach the inode `lstat` described (not a replacement or a link)?
+#[cfg(unix)]
+fn same_inode(linked: &Metadata, opened: &Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (linked.dev(), linked.ino()) == (opened.dev(), opened.ino())
+}
+
+#[cfg(not(unix))]
+fn same_inode(_linked: &Metadata, _opened: &Metadata) -> bool {
+    true
+}
+
+/// The permission bits (`mode & 0o777`) when group or others have any access to
+/// `path`, `None` when it is private. Always `None` off Unix.
+#[cfg(unix)]
+fn loose_mode(path: &Path) -> Result<Option<u32>, Error> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path)
+        .map_err(|e| Error::Store(format!("{}: {e}", path.display())))?
+        .permissions()
+        .mode();
+    Ok((mode & 0o077 != 0).then_some(mode & 0o777))
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
+fn loose_mode(_path: &Path) -> Result<Option<u32>, Error> {
+    Ok(None)
 }
 
 fn unquote(v: &str) -> &str {
@@ -337,6 +599,281 @@ mod tests {
                 .get("HUNTSMAN_SURELY_UNSET_SLOT_9")
                 .is_none()
         );
+    }
+
+    /// A fresh `$HOME` stand-in; never the real home directory.
+    fn fake_home(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("huntsman-keys-home-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        dir
+    }
+
+    #[cfg(unix)]
+    fn write_mode(path: &Path, text: &str, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, text).expect("write");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    }
+
+    #[test]
+    fn default_path_needs_an_absolute_home() {
+        assert_eq!(default_keys_path(None), None);
+        for relative in ["", ".", "relative/dir", " ", "./h"] {
+            assert_eq!(
+                default_keys_path(Some(OsStr::new(relative))),
+                None,
+                "{relative:?}"
+            );
+        }
+        assert_eq!(
+            default_keys_path(Some(OsStr::new("/h"))),
+            Some(PathBuf::from("/h/.huntsman.env"))
+        );
+    }
+
+    #[test]
+    fn missing_default_file_is_environment_only_and_silent() {
+        let home = fake_home("missing");
+        for h in [Some(home.as_os_str()), None] {
+            let resolved = Keys::resolve(None, h).expect("resolve");
+            assert!(resolved.warning.is_none());
+            assert_eq!(resolved.keys.slots(), [] as [&str; 0]);
+            assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
+        }
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_or_empty_home_is_skipped_with_a_short_warning() {
+        for home in [".", "relative/dir", ""] {
+            let resolved = Keys::resolve(None, Some(OsStr::new(home))).expect("resolve");
+            assert_eq!(resolved.keys.slots(), [] as [&str; 0], "{home:?}");
+            assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
+            let warning = resolved.warning.expect("warning");
+            assert_eq!(
+                warning,
+                "warning: not loading ~/.huntsman.env: HOME is not an absolute path"
+            );
+        }
+        let unset = Keys::resolve(None, None).expect("resolve");
+        assert!(unset.warning.is_none(), "unset HOME stays silent");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_default_file_is_loaded() {
+        let home = fake_home("private");
+        write_mode(
+            &home.join(DEFAULT_KEYS_FILE),
+            "HSE_TEST_DEFAULT_KEY=TEST_ONLY_VALUE_DEFAULT\n",
+            0o600,
+        );
+        let resolved = Keys::resolve(None, Some(home.as_os_str())).expect("resolve");
+        assert!(resolved.warning.is_none());
+        assert_eq!(
+            resolved
+                .keys
+                .get("HSE_TEST_DEFAULT_KEY")
+                .expect("slot")
+                .expose(),
+            "TEST_ONLY_VALUE_DEFAULT"
+        );
+        assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readable_default_file_is_skipped_with_a_valueless_warning() {
+        let home = fake_home("loose");
+        let path = home.join(DEFAULT_KEYS_FILE);
+        for mode in [0o644, 0o640, 0o604, 0o660] {
+            write_mode(&path, "HSE_TEST_LOOSE_KEY=TEST_ONLY_VALUE_LOOSE\n", mode);
+            let resolved = Keys::resolve(None, Some(home.as_os_str())).expect("resolve");
+            assert_eq!(resolved.keys.slots(), [] as [&str; 0], "{mode:o}");
+            assert!(resolved.keys.get("HSE_TEST_LOOSE_KEY").is_none());
+            let warning = resolved.warning.expect("warning");
+            assert!(warning.contains(&path.display().to_string()), "{warning}");
+            assert!(warning.contains("chmod 600 ~/.huntsman.env"), "{warning}");
+            assert!(warning.contains("accessible by group/others"), "{warning}");
+            assert!(!warning.contains("TEST_ONLY_VALUE"), "{warning}");
+            assert!(!warning.contains("HSE_TEST_LOOSE_KEY"), "{warning}");
+        }
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    const PRIVATE_FILE: FileFacts = FileFacts {
+        is_symlink: false,
+        is_file: true,
+        mode: 0o600,
+        uid: Some(1000),
+    };
+
+    #[test]
+    fn gate_accepts_a_private_regular_file_owned_by_the_current_uid() {
+        assert_eq!(default_file_refusal(&PRIVATE_FILE, Some(1000)), None);
+    }
+
+    #[test]
+    fn gate_refuses_a_file_owned_by_another_uid() {
+        assert_eq!(
+            default_file_refusal(&PRIVATE_FILE, Some(1001)),
+            Some(DefaultFileRefusal::ForeignOwner {
+                file_uid: 1000,
+                current_uid: 1001
+            })
+        );
+        let root_owned = FileFacts {
+            uid: Some(0),
+            ..PRIVATE_FILE
+        };
+        assert!(matches!(
+            default_file_refusal(&root_owned, Some(1000)),
+            Some(DefaultFileRefusal::ForeignOwner { file_uid: 0, .. })
+        ));
+        let reason = DefaultFileRefusal::ForeignOwner {
+            file_uid: 0,
+            current_uid: 1000,
+        }
+        .reason();
+        assert!(
+            reason.contains("uid 0") && reason.contains("uid 1000"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn gate_refuses_symlinks_non_files_unknown_users_and_loose_modes() {
+        let link = FileFacts {
+            is_symlink: true,
+            is_file: false,
+            ..PRIVATE_FILE
+        };
+        assert_eq!(
+            default_file_refusal(&link, Some(1000)),
+            Some(DefaultFileRefusal::Symlink)
+        );
+        let dir = FileFacts {
+            is_file: false,
+            ..PRIVATE_FILE
+        };
+        assert_eq!(
+            default_file_refusal(&dir, Some(1000)),
+            Some(DefaultFileRefusal::NotRegularFile)
+        );
+        assert_eq!(
+            default_file_refusal(&PRIVATE_FILE, None),
+            Some(DefaultFileRefusal::UnknownCurrentUser)
+        );
+        for mode in [0o644, 0o640, 0o604, 0o620, 0o610, 0o601, 0o700 | 0o070] {
+            let loose = FileFacts {
+                mode,
+                ..PRIVATE_FILE
+            };
+            assert_eq!(
+                default_file_refusal(&loose, Some(1000)),
+                Some(DefaultFileRefusal::LoosePermissions { mode }),
+                "{mode:o}"
+            );
+        }
+        for mode in [0o600, 0o400, 0o700] {
+            let tight = FileFacts {
+                mode,
+                ..PRIVATE_FILE
+            };
+            assert_eq!(default_file_refusal(&tight, Some(1000)), None, "{mode:o}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn current_uid_matches_the_owner_of_a_new_file() {
+        use std::os::unix::fs::MetadataExt;
+        let home = fake_home("uid");
+        let path = home.join("probe");
+        std::fs::write(&path, "x").expect("write");
+        let owner = std::fs::metadata(&path).expect("meta").uid();
+        assert_eq!(current_uid(), Some(owner));
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_default_file_is_refused_even_to_a_private_file() {
+        let home = fake_home("symlink");
+        let target = home.join("real.env");
+        write_mode(&target, "HSE_TEST_LINK_KEY=TEST_ONLY_VALUE_LINK\n", 0o600);
+        let path = home.join(DEFAULT_KEYS_FILE);
+        std::os::unix::fs::symlink(&target, &path).expect("symlink");
+        let resolved = Keys::resolve(None, Some(home.as_os_str())).expect("resolve");
+        assert_eq!(resolved.keys.slots(), [] as [&str; 0]);
+        assert!(resolved.keys.get("HSE_TEST_LINK_KEY").is_none());
+        let warning = resolved.warning.expect("warning");
+        assert!(warning.contains(&path.display().to_string()), "{warning}");
+        assert!(warning.contains("symlink"), "{warning}");
+        assert!(
+            warning.contains("regular file owned by you with mode 600"),
+            "{warning}"
+        );
+        assert!(warning.contains("--keys"), "{warning}");
+        assert!(
+            !warning.contains("chmod"),
+            "chmod follows the link: {warning}"
+        );
+        assert!(!warning.contains("TEST_ONLY_VALUE"), "{warning}");
+        assert!(
+            !warning.contains(&target.display().to_string()),
+            "{warning}"
+        );
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_at_default_path_is_refused_with_a_warning() {
+        let home = fake_home("dir");
+        std::fs::create_dir(home.join(DEFAULT_KEYS_FILE)).expect("dir");
+        let resolved = Keys::resolve(None, Some(home.as_os_str())).expect("resolve");
+        assert!(
+            resolved
+                .warning
+                .expect("warning")
+                .contains("not a regular file")
+        );
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_file_replaces_the_default_file() {
+        let home = fake_home("explicit");
+        write_mode(
+            &home.join(DEFAULT_KEYS_FILE),
+            "HSE_TEST_DEFAULT_ONLY=TEST_ONLY_VALUE_DEFAULT\n",
+            0o644,
+        );
+        let explicit = home.join("explicit.env");
+        write_mode(
+            &explicit,
+            "HSE_TEST_EXPLICIT=TEST_ONLY_VALUE_EXPLICIT\n",
+            0o600,
+        );
+        let resolved = Keys::resolve(Some(&explicit), Some(home.as_os_str())).expect("resolve");
+        assert!(resolved.warning.is_none(), "default file not inspected");
+        assert_eq!(resolved.keys.slots(), ["HSE_TEST_EXPLICIT"]);
+        assert!(resolved.keys.get("HSE_TEST_DEFAULT_ONLY").is_none());
+        // `--keys` keeps its own behaviour, including the hard permission error.
+        write_mode(
+            &explicit,
+            "HSE_TEST_EXPLICIT=TEST_ONLY_VALUE_EXPLICIT\n",
+            0o644,
+        );
+        let err = Keys::resolve(Some(&explicit), Some(home.as_os_str())).expect_err("loose");
+        assert!(err.to_string().contains("chmod 600"));
+        std::fs::remove_dir_all(&home).expect("cleanup");
     }
 
     #[cfg(unix)]

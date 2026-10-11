@@ -1,6 +1,8 @@
 //! Opt-in, blocking HIBP v3 and OAuth clients. No scan automatically uses paid sources.
 //! Passwords and account hashes are computed locally; tests use fake transports.
+//! The binary reaches the client only through the explicit `hibp` command ([`cli`]).
 
+pub mod cli;
 pub mod client;
 pub mod error;
 pub mod key;
@@ -21,7 +23,7 @@ fn send(http: &dyn Transport, request: Request) -> Result<Response, HibpError> {
         http,
         request,
         None,
-        &crate::fetch::FetchOptions { max_redirects: 0 },
+        &crate::fetch::FetchOptions::no_redirects(),
         "hibp",
         0,
     )

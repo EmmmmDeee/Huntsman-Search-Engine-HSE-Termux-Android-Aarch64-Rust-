@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use crate::attack::{Coverage, attack_spec_major};
+use crate::attack::{Coverage, attack_spec_major, reconnaissance_spec_major};
 use crate::ledger::{LedgerEntry, bindings};
 
 #[must_use]
@@ -72,7 +72,7 @@ pub fn coverage_layer(coverage: &Coverage, scan_label: &str) -> Value {
     }
     json!({
         "name": format!("huntsman-recon — {scan_label} (Reconnaissance coverage)"),
-        "versions": { "attack": attack_spec_major(), "navigator": "5.1.0", "layer": "4.5" },
+        "versions": { "attack": reconnaissance_spec_major(), "navigator": "5.1.0", "layer": "4.5" },
         "domain": "enterprise-attack",
         "description": "Reconnaissance-only coverage view. Disabled techniques are honest gaps.",
         "sorting": 3,
@@ -151,7 +151,10 @@ mod tests {
         exercised.insert("T1596.002".to_string(), 5);
         let coverage = attack::coverage(&exercised);
         let value = coverage_layer(&coverage, "scan-abc");
-        assert_eq!(value["versions"]["attack"], attack::attack_spec_major());
+        assert_eq!(
+            value["versions"]["attack"],
+            attack::reconnaissance_spec_major()
+        );
         let techniques = value["techniques"].as_array().unwrap();
         assert_eq!(techniques.len(), attack::reconnaissance().len());
         let whois = techniques

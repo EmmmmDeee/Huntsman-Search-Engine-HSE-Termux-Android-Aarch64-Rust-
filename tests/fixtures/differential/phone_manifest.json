@@ -1,0 +1,7 @@
+{
+  "oracle_commit": "7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58",
+  "capability": "phone_offline",
+  "input_sha256": "4db2c0ed7b495067ce397158d30b5c336f6357b017ebfd89ff49553e579199b0",
+  "golden_sha256": "a7b43643d5d45e0f7fbef6b49fe7c5aa6c101fe3e4a65cb30cb2dc8b481dc94b",
+  "allowed_differences": []
+}

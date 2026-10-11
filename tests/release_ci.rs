@@ -30,7 +30,7 @@ fn job(wf: &str, name: &str) -> String {
 }
 
 #[test]
-fn main_pushes_publish_main_channel_pre_releases_only() {
+fn main_pushes_build_and_current_head_publishes_main_channel_pre_releases_only() {
     let wf = release();
     for required in [
         "branches:\n      - main",
@@ -40,8 +40,11 @@ fn main_pushes_publish_main_channel_pre_releases_only() {
         "gh release create \"$TAG\"",
         "gh release create latest",
         "is NOT a pre-release; refusing",
-        "Cannot run person lookups yet.",
-        "queue: max",
+        "In-progress replacement with rebuilt lookup paths.",
+        "--draft --latest=false",
+        "gh release edit \"$TAG\" --draft=false --prerelease --latest=false",
+        "main advanced to",
+        "Actions artifact",
         "ASSET: huntsman-recon-aarch64-linux-android",
         "usage: huntsman-recon \\[check",
         "dist/install-termux.sh",
@@ -79,7 +82,7 @@ fn rolling_latest_moves_only_behind_an_explicit_opt_in() {
         .expect("latest step must exist");
     assert!(
         step.contains(
-            "        if: vars.PROMOTE_RECON_TO_LATEST == 'true' && steps.existing.outputs.exists == 'false'\n"
+            "        if: vars.PROMOTE_RECON_TO_LATEST == 'true' && (steps.existing.outputs.exists == 'true' || steps.publish.outputs.published == 'true')\n"
         ),
         "moving `latest` must be gated on PROMOTE_RECON_TO_LATEST == 'true'"
     );
@@ -99,13 +102,10 @@ fn rolling_latest_moves_only_behind_an_explicit_opt_in() {
         wf.lines()
             .filter(|l| l.trim_start().starts_with("gh release delete"))
             .count(),
-        1,
-        "only the gated latest step may delete a release"
+        2,
+        "only centralized candidate cleanup and the gated latest step may delete a release"
     );
-    assert!(
-        step.contains("gh release delete latest"),
-        "the only delete must be in the gated latest step"
-    );
+    assert!(step.contains("gh release delete latest"));
     assert!(wf.contains("latest moved to this build without PROMOTE_RECON_TO_LATEST"));
 }
 
@@ -169,6 +169,25 @@ fn cargo_never_runs_with_a_write_token() {
     // Only these jobs exist, and only `publish` asks for any write scope.
     assert_eq!(wf.matches(": write").count(), 3);
     assert_eq!(publish.matches(": write").count(), 3);
+}
+
+#[test]
+fn release_build_embeds_and_verifies_exact_commit_provenance() {
+    let wf = release();
+    let build = job(&wf, "build");
+    assert!(
+        wf.contains("HUNTSMAN_BUILD_SHA: ${{ github.sha }}"),
+        "release workflow must bind build provenance to github.sha"
+    );
+    assert!(
+        build.contains("grep -Fq \"$GITHUB_SHA\""),
+        "final Android binary must be checked for the exact embedded commit"
+    );
+    assert!(build.contains("embedded_build_sha: ${GITHUB_SHA}"));
+    assert!(
+        wf.contains("--build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\""),
+        "Railway release-gate image must receive the same commit provenance"
+    );
 }
 
 #[test]
@@ -244,38 +263,154 @@ fn publish_scans_with_a_byte_identical_inlined_scanner() {
 }
 
 #[test]
-fn main_publishes_are_serialised_not_coalesced() {
+fn superseded_main_builds_are_verified_without_historical_release_failures() {
     let wf = release();
     let publish = job(&wf, "publish");
-    assert!(publish.contains(
-        "    concurrency:\n      group: release-publish-main\n      cancel-in-progress: false\n      queue: max\n"
-    ));
-    assert_eq!(
-        wf.lines().filter(|l| l.trim() == "queue: max").count(),
-        1,
-        "only the publish job queues"
+    assert!(
+        !publish.contains("concurrency:") && !wf.contains("queue: max"),
+        "publish must not queue old main commits until they become historical"
     );
-    // Main runs never share a workflow-level group, so none is replaced there.
+    // Every main push keeps its own build run, so superseded commits still get
+    // verification and an Actions artifact.
     assert!(wf.contains(
         "  group: release-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}\n"
     ));
-    assert!(wf.contains(
-        "https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency"
-    ));
-    // Idempotent: an existing complete main-<sha7> at this commit is verified,
-    // never replaced, and a tag at another commit is refused.
     for required in [
         "id: existing",
         "verifying it, not replacing it",
         "not ${GITHUB_SHA}; refusing",
         "is missing or has no digest",
-        "if: steps.existing.outputs.exists == 'false'",
+        "id: head",
+        "git/ref/heads/main",
+        "steps.head.outputs.publish == 'true'",
+        "gh api -X POST \"$api/git/refs\"",
+        "-f ref=\"refs/tags/${TAG}\"",
+        "-f sha=\"$GITHUB_SHA\"",
+        "--verify-tag --draft --latest=false",
+        "read -r type actual",
+        "[ \"$actual\" != \"$GITHUB_SHA\" ]",
+        "current=\"$(gh api \"$api/git/ref/heads/main\" --jq .object.sha)\"",
+        "gh release delete \"$TAG\" --yes --cleanup-tag",
+        "gh release edit \"$TAG\" --draft=false --prerelease --latest=false",
+        "published=false",
+        "published=true",
+        "Actions artifact",
     ] {
         assert!(
             publish.contains(required),
             "publish job must contain {required:?}"
         );
     }
+    let per_commit = publish
+        .split("      - name: ")
+        .find(|s| s.starts_with("Publish pre-release "))
+        .expect("per-commit publish step must exist");
+    assert!(
+        !per_commit.contains("--target \"$GITHUB_SHA\""),
+        "per-commit publication must not ask GITHUB_TOKEN to mint a historical target"
+    );
+}
+
+#[test]
+fn orphan_main_drafts_without_backing_tags_are_reconciled_fail_closed() {
+    let wf = release();
+    let publish = job(&wf, "publish");
+    let reconcile = publish
+        .split("      - name: ")
+        .find(|s| s.starts_with("Reconcile orphan main-channel draft releases"))
+        .expect("publish must reconcile orphan main-channel drafts");
+
+    for required in [
+        "set -euo pipefail",
+        "gh api --paginate \"$api/releases?per_page=100\"",
+        "select(.draft == true)",
+        "^main-[0-9a-f]{7}$",
+        "git/ref/tags/${stale_tag}",
+        "gh api -X DELETE \"$api/releases/${id}\"",
+        "> \"$drafts\"",
+        "done < \"$drafts\"",
+    ] {
+        assert!(
+            reconcile.contains(required),
+            "orphan reconciliation must contain {required:?}"
+        );
+    }
+    assert!(
+        !reconcile.contains("|| true"),
+        "draft enumeration/deletion must fail closed rather than hide API failures"
+    );
+    let reconcile_pos = publish
+        .find("      - name: Reconcile orphan main-channel draft releases")
+        .unwrap();
+    let existing_pos = publish.find("      - name: Check for an existing").unwrap();
+    assert!(
+        reconcile_pos < existing_pos,
+        "stale invalid drafts must be reconciled before current-tag existence checks"
+    );
+}
+
+#[test]
+fn per_commit_publish_anchors_the_tag_before_creating_the_draft() {
+    let wf = release();
+    let publish = job(&wf, "publish");
+    let step = publish
+        .split("      - name: ")
+        .find(|s| s.starts_with("Publish pre-release "))
+        .expect("per-commit publish step must exist");
+
+    let pre_tag_head = step
+        .find("git/ref/heads/main")
+        .expect("publish must re-check live main immediately before tag creation");
+    let create_ref = step
+        .find("gh api -X POST \"$api/git/refs\"")
+        .expect("publish must create the immutable tag explicitly");
+    let create_release = step
+        .find("gh release create \"$TAG\"")
+        .expect("publish must create the release");
+    assert!(
+        pre_tag_head < create_ref,
+        "live main must be rechecked immediately before any release tag is created"
+    );
+    assert!(
+        create_ref < create_release,
+        "the immutable tag must exist before draft release creation"
+    );
+    assert!(
+        step.contains("--verify-tag --draft --latest=false"),
+        "draft creation must require the pre-created tag"
+    );
+    assert!(
+        step.matches("git/ref/tags/${TAG}").count() >= 2,
+        "the tag must be verified before and after draft creation"
+    );
+    assert!(
+        step.matches("git/ref/heads/main").count() >= 2,
+        "live main must be checked both immediately before tag creation and again before publication"
+    );
+    assert!(
+        step.contains("trap cleanup_on_exit EXIT")
+            && step.contains("cleanup_candidate()")
+            && step.contains("candidate_tag=true")
+            && step.contains("candidate_release=true"),
+        "an error after tag creation must trigger transactional candidate cleanup"
+    );
+    assert!(
+        step.contains("gh api -X DELETE \"$api/git/refs/tags/${TAG}\""),
+        "candidate cleanup must remove an orphan tag when no draft exists"
+    );
+    assert!(
+        step.contains("gh release delete \"$TAG\" --yes --cleanup-tag"),
+        "candidate cleanup and publication-race cleanup must remove both draft and tag"
+    );
+    assert!(
+        step.matches("candidate_release=false").count() >= 2
+            && step.matches("candidate_tag=false").count() >= 2,
+        "successful publication and intentional race cleanup must disarm the failure trap"
+    );
+    assert!(
+        !step.contains("--target \"$GITHUB_SHA\""),
+        "release creation must never ask GitHub to synthesize a historical target"
+    );
 }
 
 #[test]
@@ -285,6 +420,10 @@ fn post_publish_check_requires_a_matching_non_empty_digest() {
         .split("      - name: ")
         .find(|s| s.starts_with("Verify published pre-releases"))
         .expect("verify step must exist");
+    assert!(
+        step.contains("if: steps.existing.outputs.exists == 'true' || steps.publish.outputs.published == 'true'"),
+        "superseded CI-only builds must skip release verification"
+    );
     for required in [
         "[ -n \"$d\" ] || fail \"${t} has no digest for asset ${a}\"",
         "[[ \"$d\" =~ ^sha256:[0-9a-f]{64}$ ]]",
@@ -332,6 +471,41 @@ fn every_remote_action_is_pinned_to_a_full_commit_sha_with_a_version_comment() {
     assert!(
         remote >= 5,
         "expected the pinned remote actions, found {remote}"
+    );
+}
+
+#[test]
+fn release_publish_requires_shared_quality_gate() {
+    let wf = release();
+    let quality_msrv = job(&wf, "quality-msrv");
+    let quality = job(&wf, "quality");
+    let build = job(&wf, "build");
+    let publish = job(&wf, "publish");
+
+    assert!(
+        quality_msrv.contains("toolchain: \"1.87\"")
+            && quality_msrv.contains("cargo run --locked -p xtask -- gate msrv"),
+        "release must independently validate the repository MSRV before build/publish"
+    );
+
+    for required in [
+        "cargo run --locked -p xtask -- gate full",
+        "docker build --pull --build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\" -f Dockerfile -t huntsman-recon:railway .",
+        "bash scripts/railway-live-acceptance.sh",
+        "persist-credentials: false",
+    ] {
+        assert!(
+            quality.contains(required),
+            "release quality job must contain {required:?}"
+        );
+    }
+    assert!(
+        build.contains("needs: [resolve, quality-msrv, quality]"),
+        "release build must not run before stable and MSRV quality acceptance pass"
+    );
+    assert!(
+        publish.contains("needs: [resolve, quality-msrv, quality, build]"),
+        "release publish must depend on stable/MSRV quality and the verified build"
     );
 }
 
@@ -642,8 +816,8 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
     let resolve = job(&wf, "resolve");
     let build = job(&wf, "build");
     for forbidden in [
-        "gh api",
-        "GH_TOKEN",
+        "releases/tags/",
+        "git/ref/tags/",
         "build=false",
         "publish=false\n            echo \"Release",
     ] {
@@ -653,8 +827,24 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
         );
     }
     assert!(
+        resolve.contains("commits/${GITHUB_SHA}/pulls")
+            && resolve.contains("GH_TOKEN: ${{ github.token }}"),
+        "resolve may use the API only to prove merged-PR origin"
+    );
+    for required in [
+        "for attempt in 1 2 3 4 5 6 7 8 9 10",
+        "[ \"$attempt\" -eq 10 ] || sleep 3",
+        "could not verify merged pull request association",
+        "after bounded retry",
+    ] {
+        assert!(
+            resolve.contains(required),
+            "merged-PR origin gate must tolerate bounded GitHub indexing lag: missing {required:?}"
+        );
+    }
+    assert!(
         !build.contains("    if:"),
-        "build must run on every main push so publish can verify or refuse an existing release"
+        "build must run whenever the path-scoped release workflow is triggered so publish can verify or refuse an existing release"
     );
     assert!(!wf.contains("needs.resolve.outputs.build"));
     let publish = job(&wf, "publish");
@@ -675,6 +865,8 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
 #[test]
 fn attestation_is_a_required_step_before_publishing() {
     let wf = release();
+    assert!(!wf.contains("Re-run to retry"));
+    assert!(!wf.contains("A re-run will not add it"));
     let publish = job(&wf, "publish");
     assert!(
         !wf.contains("continue-on-error"),
@@ -762,7 +954,7 @@ fn every_scanner_rule_has_a_synthetic_positive_fixture() {
 }
 
 #[test]
-fn scanner_detects_every_rule_in_binaries_and_text_without_printing_values() {
+fn scanner_detects_each_rule_on_supported_artifact_kinds_without_printing_values() {
     if !scanner_tools_present() {
         return;
     }
@@ -774,6 +966,13 @@ fn scanner_detects_every_rule_in_binaries_and_text_without_printing_values() {
             ),
             ("txt", format!("k = {value}\n").into_bytes()),
         ] {
+            // A generic Bearer prefix is deliberately text-only. Optimized
+            // binaries may coalesce adjacent static strings into one printable
+            // run, so applying this generic rule to `strings` output creates
+            // false positives. Provider-specific signatures remain binary-scanned.
+            if rule == "bearer-token" && ext == "bin" {
+                continue;
+            }
             let dir = scratch(&format!("rule-{rule}-{ext}"));
             clean_fixture(&dir);
             let file = format!("planted.{ext}");
@@ -788,6 +987,34 @@ fn scanner_detects_every_rule_in_binaries_and_text_without_printing_values() {
             let _ = fs::remove_dir_all(&dir);
         }
     }
+}
+
+#[test]
+fn scanner_ignores_linker_coalesced_generic_bearer_run_in_binary() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let dir = scratch("binary-bearer-literal");
+    clean_fixture(&dir);
+    fs::write(
+        dir.join("linked.bin"),
+        [
+            b"\x00\x01Bearer ".as_slice(),
+            b"compiled_runtime_label_for_authorization_header".as_slice(),
+            b"\x00\xff".as_slice(),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let (code, text) = scan(&dir);
+    assert_eq!(
+        code,
+        Some(0),
+        "generic binary bearer text must not fail:\n{text}"
+    );
+    assert!(text.contains("key scan: 0 finding(s)"), "{text}");
+    assert!(!text.contains("rule=bearer-token"), "{text}");
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -892,26 +1119,60 @@ fn bin_entries(root: &Path) -> Vec<String> {
     names
 }
 
+const GOOD_RECON_FIXTURE: &[u8] = br#"#!/bin/sh
+case "$1" in
+  check) mkdir -p var; printf 'fixture-ledger\n' > var/ledger.json ;;
+  verify) [ "$2" = var/ledger.json ] && [ -f "$2" ] ;;
+  *) exit 64 ;;
+esac
+"#;
+
+fn installer_tools_present() -> bool {
+    let tools = [
+        "sha256sum",
+        "install",
+        "mktemp",
+        "mv",
+        "cut",
+        "cmp",
+        "cp",
+        "timeout",
+    ];
+    let present = tools.iter().all(|tool_name| tool(tool_name).is_some());
+    assert!(
+        present || std::env::var_os("CI").is_none(),
+        "CI must have installer coreutils"
+    );
+    present
+}
+
+fn installer_sha_line(tag: &str, bytes: &[u8]) -> String {
+    let asset = "huntsman-recon-aarch64-linux-android";
+    let probe = scratch(tag);
+    fs::write(probe.join("b"), bytes).unwrap();
+    let line = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
+    let _ = fs::remove_dir_all(&probe);
+    line
+}
+
+fn assert_live_binary_only(root: &Path) {
+    assert_eq!(
+        bin_entries(root),
+        ["huntsman-recon"],
+        "installer must leave no staging entries"
+    );
+}
+
 #[test]
 fn installer_replaces_the_binary_atomically_and_only_after_verification() {
-    let tools = ["sha256sum", "install", "mktemp", "mv", "cut", "cp"];
-    if tools.iter().any(|t| tool(t).is_none()) {
-        assert!(std::env::var_os("CI").is_none(), "CI must have coreutils");
-        eprintln!("skipping: coreutils missing");
+    if !installer_tools_present() {
         return;
     }
-    let asset = "huntsman-recon-aarch64-linux-android";
-    let new_build = b"\x7fELF new recon build\n";
-    let probe = scratch("install-probe");
-    fs::write(probe.join("b"), new_build).unwrap();
-    let good = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
-    let _ = fs::remove_dir_all(&probe);
-
-    // Verified: replaced in place, mode 0755, no staging file left behind.
-    let (code, text, root) = run_installer("ok", new_build, &good);
+    let good = installer_sha_line("install-probe", GOOD_RECON_FIXTURE);
+    let (code, text, root) = run_installer("ok", GOOD_RECON_FIXTURE, &good);
     assert_eq!(code, Some(0), "{text}");
     let dest = root.join("prefix/bin/huntsman-recon");
-    assert_eq!(fs::read(&dest).unwrap(), new_build);
+    assert_eq!(fs::read(&dest).unwrap(), GOOD_RECON_FIXTURE);
     {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
@@ -919,32 +1180,67 @@ fn installer_replaces_the_binary_atomically_and_only_after_verification() {
             0o755
         );
     }
-    assert_eq!(
-        bin_entries(&root),
-        ["huntsman-recon"],
-        "no staging leftovers"
-    );
+    assert_live_binary_only(&root);
     let _ = fs::remove_dir_all(&root);
+}
 
-    // Mismatch: the existing binary is untouched and nothing is staged.
+#[test]
+fn installer_checksum_failure_preserves_existing_binary() {
+    if !installer_tools_present() {
+        return;
+    }
+    let asset = "huntsman-recon-aarch64-linux-android";
     let bad = format!("{}  {asset}\n", "0".repeat(64));
-    let (code, text, root) = run_installer("bad", new_build, &bad);
+    let (code, text, root) = run_installer("bad", GOOD_RECON_FIXTURE, &bad);
     assert_ne!(code, Some(0), "a sha256 mismatch must fail:\n{text}");
     assert_eq!(
         fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
         b"old build\n"
     );
-    assert_eq!(
-        bin_entries(&root),
-        ["huntsman-recon"],
-        "no staging leftovers"
-    );
+    assert_live_binary_only(&root);
     let _ = fs::remove_dir_all(&root);
+}
 
+#[test]
+fn installer_runtime_acceptance_failure_preserves_existing_binary() {
+    if !installer_tools_present() {
+        return;
+    }
+    let bad_runtime = br#"#!/bin/sh
+case "$1" in
+  check) exit 9 ;;
+  *) exit 64 ;;
+esac
+"#;
+    let sha = installer_sha_line("install-runtime-fail-probe", bad_runtime);
+    let (code, text, root) = run_installer("runtime-fail", bad_runtime, &sha);
+    assert_ne!(
+        code,
+        Some(0),
+        "runtime rejection must abort install:\n{text}"
+    );
+    assert!(
+        text.contains("offline runtime acceptance failed"),
+        "installer must identify the failed acceptance stage:\n{text}"
+    );
+    assert_eq!(
+        fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
+        b"old build\n"
+    );
+    assert_live_binary_only(&root);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn installer_source_contract_uses_private_stage_runtime_gate_and_atomic_activation() {
     let src = fs::read_to_string(INSTALL).unwrap();
     for required in [
-        "stage=\"$PREFIX/bin/.${DEST_NAME}.install.$$\"",
+        "stage_dir=\"\"",
+        "mktemp -d \"$PREFIX/bin/.${DEST_NAME}.install.XXXXXX\"",
         "install -m 0755 \"$tmp/$ASSET\" \"$stage\"",
+        "timeout 30 \"$stage\" check",
+        "timeout 30 \"$stage\" verify var/ledger.json",
+        "cmp -s \"$stage\" \"$dest\"",
         "mv -fT \"$stage\" \"$dest\"",
     ] {
         assert!(
@@ -1699,7 +1995,9 @@ fn installer_refuses_a_directory_at_the_destination() {
         return;
     }
     let asset = "huntsman-recon-aarch64-linux-android";
-    let new_build = b"\x7fELF new recon build\n";
+    // The installer runs the staged recon binary offline (`check`, then
+    // `verify`) before moving it; this stand-in passes both.
+    let new_build = b"#!/bin/sh\nexit 0\n";
     let probe = scratch("install-dir-probe");
     fs::write(probe.join("b"), new_build).unwrap();
     let good = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
@@ -2127,12 +2425,57 @@ fn every_publishing_write_is_gated_on_no_existing_release() {
         "gh release upload",
         "gh release edit",
     ];
-    let mut gated = 0;
+    let (mut gated, mut reconcile, mut latest) = (0, 0, 0);
     for step in publish.split("      - name: ").skip(1) {
         let writes_here = step
             .lines()
             .any(|l| writes.iter().any(|w| l.trim_start().starts_with(w)));
         if !writes_here {
+            continue;
+        }
+        // Main's orphan-draft reconciliation (#853) deletes only a draft
+        // main-<sha7> release whose tag is absent. It never touches a release
+        // that has a tag, so it cannot replace or re-attest an existing one.
+        if step.starts_with("Reconcile orphan main-channel draft releases") {
+            for required in [
+                "select(.draft == true)",
+                "[[ \"$stale_tag\" =~ ^main-[0-9a-f]{7}$ ]] || continue",
+                "if ! gh api \"$api/git/ref/tags/${stale_tag}\" >/dev/null 2>&1; then",
+            ] {
+                assert!(step.contains(required), "reconcile must keep {required:?}");
+            }
+            let deletes: Vec<&str> = step
+                .lines()
+                .map(str::trim_start)
+                .filter(|l| writes.iter().any(|w| l.starts_with(w)))
+                .collect();
+            assert_eq!(
+                deletes,
+                ["gh api -X DELETE \"$api/releases/${id}\""],
+                "reconcile may only delete the orphan draft"
+            );
+            reconcile += 1;
+            continue;
+        }
+        // The opt-in `latest` move (#869, ad86c60d) also runs on a re-run of an
+        // existing release: it promotes the published bytes, and every write in
+        // it targets `latest`, never this commit's main-<sha7> release or tag.
+        if step.starts_with("Move the rolling `latest` pre-release") {
+            assert!(
+                step.contains("        if: vars.PROMOTE_RECON_TO_LATEST == 'true' && "),
+                "moving latest must stay behind the opt-in:\n{step}"
+            );
+            for l in step.lines().map(str::trim_start) {
+                if writes.iter().any(|w| l.starts_with(w)) {
+                    assert!(
+                        l.starts_with("gh release delete latest ")
+                            || l == "gh api -X DELETE \"$api/git/refs/tags/latest\""
+                            || l == "gh release create latest \\",
+                        "the latest step may only write `latest`: {l:?}"
+                    );
+                }
+            }
+            latest += 1;
             continue;
         }
         let cond = step
@@ -2145,5 +2488,46 @@ fn every_publishing_write_is_gated_on_no_existing_release() {
         );
         gated += 1;
     }
-    assert_eq!(gated, 3, "attest, publish and the opt-in latest move");
+    assert_eq!(gated, 2, "attest and publish");
+    assert_eq!(reconcile, 1, "the orphan-draft reconciliation step");
+    assert_eq!(latest, 1, "the opt-in latest move");
+}
+
+/// The promotion of `latest` is checked offline, against a stub `gh` that serves a fixture
+/// release. A re-run whose rebuilt provenance differs from the published one must still
+/// promote the published bytes, and a tampered download must be refused.
+#[test]
+fn promoting_latest_takes_the_published_bytes_offline() {
+    let out = Command::new("bash")
+        .arg("scripts/release-promote-self-check.sh")
+        .output()
+        .expect("bash must run the promotion self-check");
+    assert!(
+        out.status.success(),
+        "promotion self-check failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn release_reads_of_the_latest_tag_fail_on_anything_but_a_missing_tag() {
+    // A read that fails for any reason other than a 404 must stop the release. A masked read
+    // reads as "no latest tag", which skips the never-move-backwards check and the verification.
+    let wf = fs::read_to_string(".github/workflows/release.yml").expect("release workflow");
+    for masked in [
+        "commits/refs/tags/latest\" --jq .sha 2>/dev/null || true",
+        "commits/refs/tags/latest\" --jq .sha 2>/dev/null || echo absent",
+        "releases/latest\" --jq .tag_name 2>/dev/null || true",
+        "git/ref/tags/latest\" >/dev/null 2>&1; then",
+    ] {
+        assert!(
+            !wf.contains(masked),
+            "release.yml masks a failed read: {masked}"
+        );
+    }
+    assert!(
+        wf.contains("echo \"reason=${status}\" >> \"$GITHUB_OUTPUT\""),
+        "the latest step must say why it did not move latest, for the verify step"
+    );
 }

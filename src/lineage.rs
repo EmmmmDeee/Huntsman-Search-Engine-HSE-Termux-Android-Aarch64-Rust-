@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::canonical::canonical_url;
+use crate::canonical::{canonical_provenance_family, canonical_url};
 use crate::entity::Evidence;
 use crate::evidence_ancestry::{
     AncestryError, EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, canonical_family,
@@ -43,6 +43,9 @@ pub const LINEAGE_FIELDS: &[(&str, UpstreamKind)] = &[
 /// Collectors whose current adapter contract is verified to represent an authoritative
 /// registry acquisition path. Keep this set narrow; an unlisted collector's `registry`
 /// attribute remains evidence but contributes no independent family.
+///
+/// Matched against the canonical family of `provenance.source` (ASCII only), never
+/// against the stored `provenance.source_family`.
 pub const VERIFIED_REGISTRY_SOURCES: &[&str] = &["abn_lookup"];
 
 /// Ancestry ids of upstream roots. Observation ids may not use it.
@@ -123,11 +126,22 @@ impl Lineage {
 fn kind_is_admissible(kind: UpstreamKind, evidence: &Evidence) -> bool {
     match kind {
         UpstreamKind::Dataset => true,
-        UpstreamKind::Registry => {
-            VERIFIED_REGISTRY_SOURCES.contains(&evidence.provenance.source_family.as_str())
-        }
+        UpstreamKind::Registry => is_verified_registry_source(&evidence.provenance.source),
         UpstreamKind::Source => false,
     }
+}
+
+/// Whether `collector` (an [`Evidence`]'s `provenance.source`) is bound to a verified
+/// registry acquisition path.
+///
+/// The family is recomputed from the collector here. The stored
+/// `provenance.source_family` is never read: it is deserialized from saved data, so a
+/// tampered local record could otherwise claim registry class. The collector must be
+/// ASCII, because Unicode lowercasing folds some non-ASCII letters onto ASCII (KELVIN
+/// SIGN U+212A becomes `k`), which would let a lookalike name match the allowlist.
+fn is_verified_registry_source(collector: &str) -> bool {
+    collector.is_ascii()
+        && VERIFIED_REGISTRY_SOURCES.contains(&canonical_provenance_family(collector).as_str())
 }
 
 fn family_key(kind: UpstreamKind, value: &str) -> String {

@@ -86,9 +86,16 @@ fn usage_subcommands() -> BTreeSet<String> {
         .collect()
 }
 
+/// Internet examples: a URL argument, any `email`/`username`/`query` lookup, `serve`, or any
+/// `hibp` lookup (`hibp help` is offline). Provider-specific tests cover these separately.
 fn is_network(args: &[String]) -> bool {
     args.iter()
         .any(|a| a.starts_with("https://") || a.starts_with("http://"))
+        || args.first().is_some_and(|a| a == "email")
+        || args.first().is_some_and(|a| a == "username")
+        || args.first().is_some_and(|a| a == "query")
+        || args.first().is_some_and(|a| a == "serve")
+        || (args.first().is_some_and(|a| a == "hibp") && args.get(1).is_some_and(|a| a != "help"))
 }
 
 #[test]
@@ -208,7 +215,7 @@ fn every_documented_exit_code_is_observed() {
             "README documents exit {want}"
         );
     }
-    let defined: BTreeSet<u8> = main_source()
+    let defined: BTreeSet<u8> = cli_source()
         .lines()
         .filter_map(|l| l.trim().strip_prefix("const EX_"))
         .filter_map(|l| l.split('=').nth(1))
@@ -217,15 +224,24 @@ fn every_documented_exit_code_is_observed() {
     assert_eq!(
         documented.iter().copied().collect::<BTreeSet<u8>>(),
         defined,
-        "README exit codes differ from the EX_* constants in src/main.rs"
+        "README exit codes differ from the EX_* constants in src/cli/mod.rs"
     );
 }
 
-fn main_source() -> String {
-    fs::read_to_string(root().join("src/main.rs")).unwrap()
+fn cli_source() -> String {
+    fs::read_to_string(root().join("src/cli/mod.rs")).unwrap()
 }
 
-/// Gate codes passed to `gate(N, …)` in `src/main.rs`.
+fn check_source() -> String {
+    let mut source = cli_source();
+    let selfcheck = root().join("src/cli/selfcheck.rs");
+    if selfcheck.is_file() {
+        source.push_str(&fs::read_to_string(selfcheck).unwrap());
+    }
+    source
+}
+
+/// Gate codes passed to `gate(N, …)` by the check implementation.
 fn gate_codes(source: &str) -> BTreeSet<u8> {
     source
         .split("gate(")
@@ -244,7 +260,7 @@ fn documented_gate_range_matches_the_gates() {
         .expect("README states the `check` gate range");
     let (lo, hi) = claim.split_once('–').expect("range written as LO–HI");
     let range: BTreeSet<u8> = (lo.parse().unwrap()..=hi.parse().unwrap()).collect();
-    assert_eq!(range, gate_codes(&main_source()));
+    assert_eq!(range, gate_codes(&check_source()));
 }
 
 #[test]

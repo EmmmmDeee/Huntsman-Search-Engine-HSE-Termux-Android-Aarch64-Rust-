@@ -1,0 +1,5637 @@
+{
+  "captured_from": "M D 764ce8e restore (old tree 4d5db3dc = 1dfb5c9d + 98c77fd), src/modules/crtsh/mod.rs",
+  "cases": [
+    {
+      "apex_base": "example.com",
+      "confidence_non_increasing": true,
+      "emitted_count": 3,
+      "entities": [
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "C=US, O=Let's Encrypt, CN=R3",
+                "not_after": "2024-04-01",
+                "not_before": "2024-01-01"
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "api.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "api.example.com"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "evilexample.com",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "evilexample.com"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "unrelated.org",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "unrelated.org"
+        }
+      ],
+      "first_value": "api.example.com",
+      "name": "subdomains_dedup_wildcards_unrelated",
+      "query": "%.example.com"
+    },
+    {
+      "apex_base": "example.com",
+      "confidence_non_increasing": true,
+      "emitted_count": 1,
+      "entities": [
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "cert_serial": "abc123",
+                "issuer": "Let's Encrypt",
+                "not_after": "2024-04-01",
+                "not_before": "2024-01-01"
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "www.example.com",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "example.com"
+        }
+      ],
+      "first_value": "example.com",
+      "name": "apex_and_www_in_one_certificate",
+      "query": "%.example.com"
+    },
+    {
+      "apex_base": "example.com",
+      "confidence_non_increasing": true,
+      "emitted_count": 1,
+      "entities": [
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "mail.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "mail.example.com"
+        }
+      ],
+      "first_value": "mail.example.com",
+      "name": "url_seed_classifies_against_host",
+      "query": "%.example.com"
+    },
+    {
+      "apex_base": "sub.example.com",
+      "confidence_non_increasing": true,
+      "emitted_count": 3,
+      "entities": [
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "deep.sub.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "deep.sub.example.com"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "other.example.com",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "other.example.com"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "sub.example.com",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "sub.example.com"
+        }
+      ],
+      "first_value": "deep.sub.example.com",
+      "name": "url_seed_with_subdomain_host",
+      "query": "%.sub.example.com"
+    },
+    {
+      "apex_base": "Example.COM",
+      "confidence_non_increasing": true,
+      "emitted_count": 1,
+      "entities": [
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "api.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "api.example.com"
+        }
+      ],
+      "first_value": "api.example.com",
+      "name": "mixed_case_base",
+      "query": "%.Example.COM"
+    },
+    {
+      "apex_base": "example.com",
+      "confidence_non_increasing": true,
+      "emitted_count": 2,
+      "entities": [
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "CA",
+                "not_after": "",
+                "not_before": "2024-01-01"
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "portal.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "portal.example.com"
+        },
+        {
+          "confidence": 0.7,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "CA",
+                "not_after": "",
+                "not_before": "2024-01-01"
+              },
+              "source": "crtsh",
+              "summary": "Email in certificate SAN"
+            }
+          ],
+          "kind": "Email",
+          "raw_value": "jdoe@example.com",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "jdoe@example.com"
+        }
+      ],
+      "first_value": "portal.example.com",
+      "name": "email_seed_and_san_emails",
+      "query": "jane.doe@example.com"
+    },
+    {
+      "apex_base": "example.com",
+      "confidence_non_increasing": true,
+      "emitted_count": 8,
+      "entities": [
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "cert_serial": "01",
+                "issuer": "O=Acme Enterprise CA 0, C=US",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "h0.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "h0.example.com"
+        },
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "cert_serial": "02",
+                "issuer": "C=AU, O=Acme Enterprise CA 1",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "h1.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "h1.example.com"
+        },
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "O=acme enterprise ca 1, C=AU",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "h2.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "h2.example.com"
+        },
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "C=US, O=DigiCert Inc, CN=DigiCert TLS RSA SHA256 2020 CA1",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "h3.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "h3.example.com"
+        },
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "CN=No Org Field, C=US",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "h4.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "h4.example.com"
+        },
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "CN=foo, O=, C=AU",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "h5.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "h5.example.com"
+        },
+        {
+          "confidence": 0.55,
+          "evidence": [
+            {
+              "attributes": {
+                "cert_serial": "01",
+                "issuer": "O=Acme Enterprise CA 0, C=US",
+                "issuer_dn": "O=Acme Enterprise CA 0, C=US",
+                "not_after": "",
+                "not_before": "",
+                "signed_domain": "example.com"
+              },
+              "source": "crtsh",
+              "summary": "Certificate issuer organisation: Acme Enterprise CA 0"
+            }
+          ],
+          "kind": "Organisation",
+          "raw_value": "Acme Enterprise CA 0",
+          "tags": [
+            "certificate-issuer",
+            "ct-log",
+            "derived"
+          ],
+          "value": "Acme Enterprise CA 0"
+        },
+        {
+          "confidence": 0.55,
+          "evidence": [
+            {
+              "attributes": {
+                "cert_serial": "02",
+                "issuer": "C=AU, O=Acme Enterprise CA 1",
+                "issuer_dn": "C=AU, O=Acme Enterprise CA 1",
+                "not_after": "",
+                "not_before": "",
+                "signed_domain": "example.com"
+              },
+              "source": "crtsh",
+              "summary": "Certificate issuer organisation: Acme Enterprise CA 1"
+            }
+          ],
+          "kind": "Organisation",
+          "raw_value": "Acme Enterprise CA 1",
+          "tags": [
+            "certificate-issuer",
+            "ct-log",
+            "derived"
+          ],
+          "value": "Acme Enterprise CA 1"
+        }
+      ],
+      "first_value": "h3.example.com",
+      "name": "enterprise_ca_issuers_public_suppressed",
+      "query": "%.example.com"
+    },
+    {
+      "apex_base": "example.com",
+      "confidence_non_increasing": true,
+      "emitted_count": 3,
+      "entities": [
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "CA",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "a.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "a.example.com"
+        },
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "b.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "b.example.com"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "cert_serial": "04ab9f",
+                "issuer": "Let's Encrypt",
+                "not_after": "2024-04-01",
+                "not_before": "2024-01-01"
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "www.example.com",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "example.com"
+        }
+      ],
+      "first_value": "a.example.com",
+      "name": "serial_and_blank_fields",
+      "query": "%.example.com"
+    },
+    {
+      "apex_base": "example.com",
+      "confidence_non_increasing": true,
+      "emitted_count": 251,
+      "entities": [
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host0.other-0.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host0.other-0.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host1.other-1.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host1.other-1.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host10.other-10.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host10.other-10.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host100.other-100.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host100.other-100.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host101.other-101.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host101.other-101.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host102.other-102.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host102.other-102.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host103.other-103.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host103.other-103.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host104.other-104.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host104.other-104.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host105.other-105.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host105.other-105.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host106.other-106.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host106.other-106.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host107.other-107.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host107.other-107.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host108.other-108.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host108.other-108.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host109.other-109.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host109.other-109.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host11.other-11.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host11.other-11.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host110.other-110.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host110.other-110.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host111.other-111.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host111.other-111.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host112.other-112.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host112.other-112.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host113.other-113.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host113.other-113.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host114.other-114.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host114.other-114.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host115.other-115.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host115.other-115.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host116.other-116.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host116.other-116.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host117.other-117.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host117.other-117.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host118.other-118.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host118.other-118.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host119.other-119.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host119.other-119.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host12.other-12.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host12.other-12.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host120.other-120.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host120.other-120.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host121.other-121.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host121.other-121.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host122.other-122.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host122.other-122.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host123.other-123.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host123.other-123.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host124.other-124.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host124.other-124.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host125.other-125.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host125.other-125.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host126.other-126.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host126.other-126.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host127.other-127.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host127.other-127.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host128.other-128.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host128.other-128.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host129.other-129.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host129.other-129.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host13.other-13.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host13.other-13.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host130.other-130.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host130.other-130.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host131.other-131.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host131.other-131.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host132.other-132.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host132.other-132.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host133.other-133.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host133.other-133.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host134.other-134.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host134.other-134.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host135.other-135.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host135.other-135.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host136.other-136.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host136.other-136.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host137.other-137.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host137.other-137.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host138.other-138.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host138.other-138.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host139.other-139.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host139.other-139.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host14.other-14.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host14.other-14.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host140.other-140.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host140.other-140.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host141.other-141.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host141.other-141.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host142.other-142.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host142.other-142.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host143.other-143.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host143.other-143.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host144.other-144.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host144.other-144.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host145.other-145.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host145.other-145.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host146.other-146.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host146.other-146.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host147.other-147.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host147.other-147.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host148.other-148.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host148.other-148.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host149.other-149.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host149.other-149.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host15.other-15.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host15.other-15.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host150.other-150.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host150.other-150.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host151.other-151.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host151.other-151.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host152.other-152.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host152.other-152.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host153.other-153.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host153.other-153.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host154.other-154.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host154.other-154.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host155.other-155.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host155.other-155.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host156.other-156.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host156.other-156.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host157.other-157.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host157.other-157.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host158.other-158.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host158.other-158.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host159.other-159.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host159.other-159.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host16.other-16.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host16.other-16.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host160.other-160.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host160.other-160.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host161.other-161.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host161.other-161.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host162.other-162.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host162.other-162.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host163.other-163.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host163.other-163.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host164.other-164.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host164.other-164.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host165.other-165.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host165.other-165.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host166.other-166.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host166.other-166.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host167.other-167.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host167.other-167.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host168.other-168.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host168.other-168.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host169.other-169.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host169.other-169.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host17.other-17.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host17.other-17.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host170.other-170.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host170.other-170.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host171.other-171.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host171.other-171.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host172.other-172.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host172.other-172.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host173.other-173.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host173.other-173.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host174.other-174.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host174.other-174.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host175.other-175.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host175.other-175.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host176.other-176.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host176.other-176.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host177.other-177.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host177.other-177.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host178.other-178.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host178.other-178.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host179.other-179.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host179.other-179.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host18.other-18.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host18.other-18.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host180.other-180.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host180.other-180.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host181.other-181.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host181.other-181.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host182.other-182.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host182.other-182.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host183.other-183.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host183.other-183.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host184.other-184.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host184.other-184.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host185.other-185.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host185.other-185.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host186.other-186.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host186.other-186.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host187.other-187.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host187.other-187.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host188.other-188.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host188.other-188.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host189.other-189.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host189.other-189.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host19.other-19.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host19.other-19.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host190.other-190.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host190.other-190.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host191.other-191.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host191.other-191.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host192.other-192.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host192.other-192.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host193.other-193.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host193.other-193.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host194.other-194.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host194.other-194.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host195.other-195.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host195.other-195.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host196.other-196.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host196.other-196.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host197.other-197.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host197.other-197.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host198.other-198.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host198.other-198.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host199.other-199.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host199.other-199.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host2.other-2.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host2.other-2.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host20.other-20.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host20.other-20.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host200.other-200.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host200.other-200.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host201.other-201.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host201.other-201.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host202.other-202.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host202.other-202.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host203.other-203.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host203.other-203.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host204.other-204.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host204.other-204.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host205.other-205.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host205.other-205.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host206.other-206.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host206.other-206.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host207.other-207.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host207.other-207.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host208.other-208.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host208.other-208.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host209.other-209.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host209.other-209.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host21.other-21.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host21.other-21.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host210.other-210.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host210.other-210.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host211.other-211.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host211.other-211.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host212.other-212.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host212.other-212.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host213.other-213.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host213.other-213.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host214.other-214.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host214.other-214.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host215.other-215.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host215.other-215.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host216.other-216.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host216.other-216.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host217.other-217.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host217.other-217.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host218.other-218.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host218.other-218.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host219.other-219.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host219.other-219.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host22.other-22.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host22.other-22.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host220.other-220.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host220.other-220.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host221.other-221.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host221.other-221.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host222.other-222.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host222.other-222.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host223.other-223.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host223.other-223.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host224.other-224.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host224.other-224.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host225.other-225.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host225.other-225.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host226.other-226.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host226.other-226.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host227.other-227.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host227.other-227.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host228.other-228.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host228.other-228.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host229.other-229.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host229.other-229.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host23.other-23.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host23.other-23.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host230.other-230.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host230.other-230.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host231.other-231.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host231.other-231.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host232.other-232.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host232.other-232.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host233.other-233.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host233.other-233.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host234.other-234.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host234.other-234.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host235.other-235.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host235.other-235.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host236.other-236.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host236.other-236.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host237.other-237.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host237.other-237.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host238.other-238.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host238.other-238.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host239.other-239.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host239.other-239.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host24.other-24.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host24.other-24.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host240.other-240.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host240.other-240.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host241.other-241.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host241.other-241.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host242.other-242.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host242.other-242.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host243.other-243.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host243.other-243.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host244.other-244.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host244.other-244.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host245.other-245.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host245.other-245.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host246.other-246.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host246.other-246.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host247.other-247.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host247.other-247.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host248.other-248.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host248.other-248.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host249.other-249.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host249.other-249.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host25.other-25.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host25.other-25.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host26.other-26.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host26.other-26.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host27.other-27.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host27.other-27.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host28.other-28.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host28.other-28.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host29.other-29.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host29.other-29.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host3.other-3.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host3.other-3.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host30.other-30.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host30.other-30.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host31.other-31.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host31.other-31.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host32.other-32.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host32.other-32.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host33.other-33.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host33.other-33.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host34.other-34.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host34.other-34.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host35.other-35.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host35.other-35.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host36.other-36.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host36.other-36.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host37.other-37.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host37.other-37.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host38.other-38.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host38.other-38.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host39.other-39.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host39.other-39.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host4.other-4.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host4.other-4.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host40.other-40.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host40.other-40.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host41.other-41.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host41.other-41.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host42.other-42.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host42.other-42.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host43.other-43.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host43.other-43.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host44.other-44.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host44.other-44.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host45.other-45.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host45.other-45.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host46.other-46.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host46.other-46.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host47.other-47.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host47.other-47.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host48.other-48.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host48.other-48.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host49.other-49.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host49.other-49.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host5.other-5.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host5.other-5.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host50.other-50.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host50.other-50.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host51.other-51.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host51.other-51.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host52.other-52.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host52.other-52.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host53.other-53.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host53.other-53.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host54.other-54.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host54.other-54.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host55.other-55.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host55.other-55.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host56.other-56.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host56.other-56.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host57.other-57.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host57.other-57.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host58.other-58.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host58.other-58.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host59.other-59.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host59.other-59.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host6.other-6.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host6.other-6.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host60.other-60.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host60.other-60.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host61.other-61.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host61.other-61.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host62.other-62.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host62.other-62.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host63.other-63.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host63.other-63.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host64.other-64.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host64.other-64.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host65.other-65.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host65.other-65.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host66.other-66.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host66.other-66.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host67.other-67.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host67.other-67.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host68.other-68.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host68.other-68.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host69.other-69.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host69.other-69.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host7.other-7.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host7.other-7.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host70.other-70.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host70.other-70.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host71.other-71.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host71.other-71.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host72.other-72.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host72.other-72.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host73.other-73.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host73.other-73.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host74.other-74.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host74.other-74.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host75.other-75.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host75.other-75.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host76.other-76.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host76.other-76.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host77.other-77.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host77.other-77.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host78.other-78.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host78.other-78.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host79.other-79.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host79.other-79.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host8.other-8.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host8.other-8.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host80.other-80.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host80.other-80.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host81.other-81.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host81.other-81.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host82.other-82.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host82.other-82.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host83.other-83.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host83.other-83.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host84.other-84.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host84.other-84.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host85.other-85.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host85.other-85.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host86.other-86.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host86.other-86.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host87.other-87.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host87.other-87.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host88.other-88.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host88.other-88.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host89.other-89.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host89.other-89.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host9.other-9.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host9.other-9.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host90.other-90.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host90.other-90.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host91.other-91.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host91.other-91.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host92.other-92.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host92.other-92.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host93.other-93.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host93.other-93.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host94.other-94.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host94.other-94.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host95.other-95.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host95.other-95.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host96.other-96.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host96.other-96.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host97.other-97.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host97.other-97.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host98.other-98.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host98.other-98.net"
+        },
+        {
+          "confidence": 0.45,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "host99.other-99.net",
+          "tags": [
+            "ct-log"
+          ],
+          "value": "host99.other-99.net"
+        },
+        {
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "attributes": {
+                "issuer": "",
+                "not_after": "",
+                "not_before": ""
+              },
+              "source": "crtsh",
+              "summary": "Certificate Transparency log"
+            }
+          ],
+          "kind": "Domain",
+          "raw_value": "keep.example.com",
+          "tags": [
+            "ct-log",
+            "subdomain"
+          ],
+          "value": "keep.example.com"
+        }
+      ],
+      "first_value": "keep.example.com",
+      "name": "many_uncapped",
+      "query": "%.example.com"
+    },
+    {
+      "apex_base": "someone",
+      "confidence_non_increasing": true,
+      "emitted_count": 0,
+      "entities": [],
+      "first_value": null,
+      "name": "username_seed_has_no_query",
+      "query": null
+    }
+  ],
+  "max_timeout_ms": 30000,
+  "retry_by_status": [
+    {
+      "retry": false,
+      "status": 400
+    },
+    {
+      "retry": false,
+      "status": 401
+    },
+    {
+      "retry": false,
+      "status": 403
+    },
+    {
+      "retry": false,
+      "status": 404
+    },
+    {
+      "retry": false,
+      "status": 408
+    },
+    {
+      "retry": true,
+      "status": 429
+    },
+    {
+      "retry": false,
+      "status": 500
+    },
+    {
+      "retry": true,
+      "status": 502
+    },
+    {
+      "retry": true,
+      "status": 503
+    },
+    {
+      "retry": false,
+      "status": 504
+    }
+  ],
+  "transient_attempts": 3,
+  "transient_pause_ms": 2000
+}

@@ -1,0 +1,76 @@
+[
+  {
+    "name": "subdomains_dedup_wildcards_unrelated",
+    "seed_kind": "domain", "seed": "example.com",
+    "entries": [
+      {"name_value": "api.example.com\n*.example.com\napi.example.com", "common_name": "api.example.com",
+       "issuer_name": "C=US, O=Let's Encrypt, CN=R3", "not_before": "2024-01-01", "not_after": "2024-04-01"},
+      {"name_value": "unrelated.org", "common_name": "unrelated.org"},
+      {"name_value": "evilexample.com"}
+    ]
+  },
+  {
+    "name": "apex_and_www_in_one_certificate",
+    "seed_kind": "domain", "seed": "example.com",
+    "entries": [
+      {"common_name": "www.example.com", "name_value": "www.example.com\nexample.com", "issuer_name": "Let's Encrypt",
+       "not_before": "2024-01-01", "not_after": "2024-04-01", "serial_number": "abc123"}
+    ]
+  },
+  {
+    "name": "url_seed_classifies_against_host",
+    "seed_kind": "url", "seed": "https://example.com/login",
+    "entries": [{"name_value": "mail.example.com", "common_name": "mail.example.com"}]
+  },
+  {
+    "name": "url_seed_with_subdomain_host",
+    "seed_kind": "url", "seed": "https://Sub.Example.com/path?q=1",
+    "entries": [{"name_value": "deep.sub.example.com\nsub.example.com\nother.example.com"}]
+  },
+  {
+    "name": "mixed_case_base",
+    "seed_kind": "domain", "seed": "Example.COM",
+    "entries": [{"name_value": "API.example.com"}]
+  },
+  {
+    "name": "email_seed_and_san_emails",
+    "seed_kind": "email", "seed": "jane.doe@example.com",
+    "entries": [
+      {"name_value": "jdoe@example.com\na@b\nhostmaster@example.com\nportal.example.com", "issuer_name": "CA", "not_before": "2024-01-01"}
+    ]
+  },
+  {
+    "name": "enterprise_ca_issuers_public_suppressed",
+    "seed_kind": "domain", "seed": "example.com",
+    "entries": [
+      {"name_value": "h0.example.com", "issuer_name": "O=Acme Enterprise CA 0, C=US", "serial_number": "01"},
+      {"name_value": "h1.example.com", "issuer_name": "C=AU, O=Acme Enterprise CA 1", "serial_number": "02"},
+      {"name_value": "h2.example.com", "issuer_name": "O=acme enterprise ca 1, C=AU"},
+      {"name_value": "h3.example.com", "issuer_name": "C=US, O=DigiCert Inc, CN=DigiCert TLS RSA SHA256 2020 CA1"},
+      {"name_value": "h4.example.com", "issuer_name": "CN=No Org Field, C=US"},
+      {"name_value": "h5.example.com", "issuer_name": "CN=foo, O=, C=AU"}
+    ]
+  },
+  {
+    "name": "serial_and_blank_fields",
+    "seed_kind": "domain", "seed": "example.com",
+    "entries": [
+      {"common_name": "www.example.com", "name_value": "www.example.com", "issuer_name": "Let's Encrypt",
+       "not_before": "2024-01-01", "not_after": "2024-04-01", "serial_number": "04ab9f"},
+      {"name_value": "a.example.com", "issuer_name": "CA", "serial_number": ""},
+      {"name_value": "b.example.com"},
+      {}
+    ]
+  },
+  {
+    "name": "many_uncapped",
+    "seed_kind": "domain", "seed": "example.com",
+    "generate_unrelated": 250,
+    "entries": [{"name_value": "keep.example.com"}]
+  },
+  {
+    "name": "username_seed_has_no_query",
+    "seed_kind": "username", "seed": "someone",
+    "entries": []
+  }
+]

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "domain": "example.com",
+  "observations": [
+    {
+      "id": "dns-before",
+      "host": "example.com",
+      "provider": "fixture-resolver",
+      "upstream": "fixture-resolver-dataset",
+      "source_url": "https://resolver.example/query",
+      "retrieved_at": 100,
+      "event_at": 100,
+      "outcome": "success",
+      "truncated": false,
+      "kind": "dns",
+      "scope": "NS",
+      "value": "ns1.example.net"
+    },
+    {
+      "id": "dns-after",
+      "host": "example.com",
+      "provider": "fixture-resolver",
+      "upstream": "fixture-resolver-dataset",
+      "source_url": "https://resolver.example/query",
+      "retrieved_at": 200,
+      "event_at": 200,
+      "outcome": "success",
+      "truncated": false,
+      "kind": "dns",
+      "scope": "NS",
+      "value": "ns2.example.net"
+    }
+  ]
+}

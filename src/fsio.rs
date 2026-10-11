@@ -27,20 +27,36 @@ fn refuse_symlink(path: &Path) -> Result<(), Error> {
     }
 }
 
-/// Read at most `max` bytes. Larger files, symlinks, and non-files are refused.
-///
-/// # Errors
-/// `Error::Store` on a symlink, non-file, IO failure, or a file over `max` bytes.
-pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
-    refuse_symlink(path)?;
-    let file = File::open(path).map_err(|e| store_err(path, &e))?;
-    let meta = file.metadata().map_err(|e| store_err(path, &e))?;
+fn require_regular_file(path: &Path, meta: &fs::Metadata) -> Result<(), Error> {
+    if meta.file_type().is_symlink() {
+        return Err(Error::Store(format!(
+            "{}: refusing symlink",
+            path.display()
+        )));
+    }
     if !meta.is_file() {
         return Err(Error::Store(format!(
             "{}: not a regular file",
             path.display()
         )));
     }
+    Ok(())
+}
+
+/// Read at most `max` bytes. Larger files, symlinks, and non-files are refused.
+///
+/// The path is checked before opening so FIFOs/devices are rejected instead of
+/// potentially blocking or triggering device behavior. The opened handle is
+/// checked again before reading.
+///
+/// # Errors
+/// `Error::Store` on a symlink, non-file, IO failure, or a file over `max` bytes.
+pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
+    let path_meta = fs::symlink_metadata(path).map_err(|e| store_err(path, &e))?;
+    require_regular_file(path, &path_meta)?;
+    let file = File::open(path).map_err(|e| store_err(path, &e))?;
+    let file_meta = file.metadata().map_err(|e| store_err(path, &e))?;
+    require_regular_file(path, &file_meta)?;
     let mut body = Vec::new();
     file.take(max.saturating_add(1))
         .read_to_end(&mut body)

@@ -1,0 +1,11 @@
+# Canonical Huntsman directive ownership
+/AGENTS.md @EmmmmDeee
+/HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md @EmmmmDeee
+/CLAUDE.md @EmmmmDeee
+/GEMINI.md @EmmmmDeee
+/RULE.md @EmmmmDeee
+/CONTRIBUTING.md @EmmmmDeee
+/.github/copilot-instructions.md @EmmmmDeee
+/tests/engineering_command.rs @EmmmmDeee
+/.github/workflows/ci.yml @EmmmmDeee
+/.github/CODEOWNERS @EmmmmDeee
