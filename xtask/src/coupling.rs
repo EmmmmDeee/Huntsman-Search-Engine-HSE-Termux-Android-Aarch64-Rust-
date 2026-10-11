@@ -1,11 +1,12 @@
 //! Coupling analysis: which source files form clusters. A unit is a top-level module, a
 //! directory module, or a bin target. A unit refers to another when one of its files names it
 //! through a `crate::` or `huntsman_recon::` path, read from the syntax tree, so grouped imports
-//! and expression paths count. `#[cfg(test)] mod` blocks are skipped, and `mod name;` counts only
-//! in the bin root, where it declares a unit. Integration tests sit outside the graph and only add
-//! incoming references, which separates test-only units from unreferenced ones. Communities
-//! maximise modularity by local moves with fixed restarts. Co-change is the Jaccard index over the
-//! commits that touched a pair of units, read from git history.
+//! and expression paths count. Test code sits outside the graph: items and impl items under
+//! `#[cfg(test)]`, files that a `cfg(test)` declaration loads, and integration tests. Their names
+//! count only as test references, which separates test-only units from unreferenced ones. A
+//! `mod name;` is a reference only in the bin root, where it declares a unit. Communities maximise
+//! modularity by local moves with fixed restarts. Co-change is the Jaccard index over the commits
+//! that touched a pair of units, read from git history.
 
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 
@@ -85,7 +86,7 @@ struct Model {
     paths: Vec<String>,
     /// Whether some other production unit names this one.
     referenced_by_production: Vec<bool>,
-    /// How many integration-test files name this unit.
+    /// How many files name this unit from test code. A unit's own test code does not count.
     referenced_by_tests: Vec<usize>,
 }
 
@@ -95,21 +96,37 @@ impl Model {
         collect_rs(&root.join("src"), &mut files)?;
         collect_rs(&root.join("tests"), &mut files)?;
 
-        let mut facts: BTreeMap<String, (usize, String)> = BTreeMap::new();
-        let mut referencing: Vec<(String, BTreeSet<String>)> = Vec::new();
+        let mut sources = Vec::new();
         for file in &files {
             let rel = relative(root, file);
-            let Some(unit) = unit_of(&rel) else { continue };
             let text = read(file)?;
-            let refs = references_of(&text, rel == "src/main.rs")
+            let scan = scan_of(&text, rel == "src/main.rs")
                 .map_err(|problem| Error::Invalid(format!("{rel}: {problem}")))?;
+            sources.push(Source {
+                lines: text.lines().count(),
+                rel,
+                scan,
+            });
+        }
+        let test_only = test_only_files(&sources);
+        for source in &mut sources {
+            if test_only.contains(&source.rel) {
+                let code = std::mem::take(&mut source.scan.refs.code);
+                source.scan.refs.tests.extend(code);
+            }
+        }
+
+        let mut facts: BTreeMap<String, (usize, String)> = BTreeMap::new();
+        for source in &sources {
+            let Some(unit) = unit_of(&source.rel) else {
+                continue;
+            };
             if !unit.starts_with("test:") {
                 let fact = facts
-                    .entry(unit.clone())
-                    .or_insert_with(|| (0, path_of(&rel)));
-                fact.0 += text.lines().count();
+                    .entry(unit)
+                    .or_insert_with(|| (0, path_of(&source.rel)));
+                fact.0 += source.lines;
             }
-            referencing.push((unit, refs));
         }
 
         let names: Vec<String> = facts.keys().cloned().collect();
@@ -123,18 +140,26 @@ impl Model {
         let mut directed = vec![vec![0.0_f64; size]; size];
         let mut referenced_by_production = vec![false; size];
         let mut referenced_by_tests = vec![0_usize; size];
-        for (unit, refs) in &referencing {
-            for target in refs {
+        for source in &sources {
+            let Some(unit) = unit_of(&source.rel) else {
+                continue;
+            };
+            let from = index.get(&unit).copied();
+            for target in &source.scan.refs.code {
+                let (Some(origin), Some(&to)) = (from, index.get(target)) else {
+                    continue;
+                };
+                if origin != to {
+                    directed[origin][to] += 1.0;
+                    referenced_by_production[to] = true;
+                }
+            }
+            for target in &source.scan.refs.tests {
                 let Some(&to) = index.get(target) else {
                     continue;
                 };
-                if unit.starts_with("test:") {
+                if from != Some(to) {
                     referenced_by_tests[to] += 1;
-                } else if let Some(&from) = index.get(unit) {
-                    if from != to {
-                        directed[from][to] += 1.0;
-                        referenced_by_production[to] = true;
-                    }
                 }
             }
         }
@@ -247,6 +272,7 @@ fn unit_of(rel: &str) -> Option<String> {
         ["src", file] => Some(file.trim_end_matches(".rs").to_string()),
         ["src", dir, ..] => Some((*dir).to_string()),
         ["tests", file] => Some(format!("test:{}", file.trim_end_matches(".rs"))),
+        ["tests", dir, ..] => Some(format!("test:{dir}")),
         _ => None,
     }
 }
@@ -260,30 +286,137 @@ fn path_of(rel: &str) -> String {
     }
 }
 
-/// The names of the top-level units a file refers to through a root path.
-fn references_of(
-    text: &str,
-    top_level_declarations: bool,
-) -> std::result::Result<BTreeSet<String>, syn::Error> {
+/// A file that the model reads: its line count and what it names.
+struct Source {
+    rel: String,
+    lines: usize,
+    scan: Scan,
+}
+
+/// What one file names, and the module declarations it makes.
+struct Scan {
+    refs: FileRefs,
+    declared: Vec<Declared>,
+}
+
+/// The units a file names, split by whether the naming code is production or test code.
+#[derive(Default)]
+struct FileRefs {
+    /// Units that production code names.
+    code: BTreeSet<String>,
+    /// Units that test code names: items under `cfg(test)`, and everything in a file that only
+    /// tests compile.
+    tests: BTreeSet<String>,
+}
+
+/// A `mod name;` declaration, which loads its module from another file.
+struct Declared {
+    /// The inline modules around the declaration, outermost first.
+    parent: Vec<String>,
+    name: String,
+    /// Whether the declaration is under `cfg(test)`.
+    test: bool,
+}
+
+/// Scans a file for the units it names. `top_level_declarations` is set for the bin root, where
+/// `mod name;` declares a unit.
+fn scan_of(text: &str, top_level_declarations: bool) -> std::result::Result<Scan, syn::Error> {
     let file = syn::parse_file(text)?;
     let mut found = References {
-        names: BTreeSet::new(),
+        refs: FileRefs::default(),
+        in_test: false,
         top_level_declarations,
+        inline: Vec::new(),
+        declared: Vec::new(),
     };
     found.visit_file(&file);
-    Ok(found.names)
+    Ok(Scan {
+        refs: found.refs,
+        declared: found.declared,
+    })
+}
+
+/// The files that only tests compile: every integration test, and every file that a `cfg(test)`
+/// declaration loads. A declaration inside such a file loads a test-only file too.
+fn test_only_files(sources: &[Source]) -> BTreeSet<String> {
+    let known: BTreeSet<&str> = sources.iter().map(|source| source.rel.as_str()).collect();
+    let mut test_only: BTreeSet<String> = sources
+        .iter()
+        .filter(|source| source.rel.starts_with("tests/"))
+        .map(|source| source.rel.clone())
+        .collect();
+    loop {
+        let before = test_only.len();
+        for source in sources {
+            let whole_file = test_only.contains(&source.rel);
+            for module in source
+                .scan
+                .declared
+                .iter()
+                .filter(|module| whole_file || module.test)
+            {
+                let files = module_files(&source.rel, &module.parent, &module.name);
+                test_only.extend(
+                    files
+                        .into_iter()
+                        .filter(|file| known.contains(file.as_str())),
+                );
+            }
+        }
+        if test_only.len() == before {
+            return test_only;
+        }
+    }
+}
+
+/// The two files a `mod name;` declaration can load: `name.rs` or `name/mod.rs`, in the directory
+/// that Rust searches. A crate root or a `mod.rs` searches its own directory. Any other file
+/// searches a directory named after the file, and each inline module around the declaration adds
+/// one more directory.
+fn module_files(rel: &str, inline: &[String], name: &str) -> [String; 2] {
+    let (dir, file) = rel.rsplit_once('/').unwrap_or(("", rel));
+    let own_directory =
+        matches!(file, "lib.rs" | "main.rs" | "mod.rs") || matches!(dir, "tests" | "src/bin");
+    let base = if own_directory {
+        dir.to_string()
+    } else {
+        format!("{dir}/{}", file.trim_end_matches(".rs"))
+    };
+    let base = inline
+        .iter()
+        .fold(base, |acc, module| format!("{acc}/{module}"));
+    [format!("{base}/{name}.rs"), format!("{base}/{name}/mod.rs")]
 }
 
 struct References {
-    names: BTreeSet<String>,
+    refs: FileRefs,
+    /// Whether the code being visited is test code, under a `cfg(test)` attribute.
+    in_test: bool,
     top_level_declarations: bool,
+    /// The inline modules being visited, outermost first.
+    inline: Vec<String>,
+    declared: Vec<Declared>,
 }
 
 impl References {
     fn record(&mut self, name: &str) {
         if name != "self" {
-            self.names.insert(name.to_string());
+            let names = if self.in_test {
+                &mut self.refs.tests
+            } else {
+                &mut self.refs.code
+            };
+            names.insert(name.to_string());
         }
+    }
+
+    /// Visits a node with the test state that its attributes give. Under `cfg(test)`, the node
+    /// and everything below it is test code.
+    fn scoped(&mut self, attrs: &[syn::Attribute], visit: impl FnOnce(&mut Self)) {
+        let outer = self.in_test;
+        self.in_test |= has_cfg_test(attrs);
+        visit(self);
+        self.in_test = outer;
     }
 
     /// The use tree below a root segment: the first name of each branch names a unit.
@@ -319,14 +452,33 @@ impl References {
 }
 
 impl<'ast> Visit<'ast> for References {
+    fn visit_item(&mut self, node: &'ast syn::Item) {
+        self.scoped(item_attrs(node), |this| visit::visit_item(this, node));
+    }
+
+    fn visit_impl_item(&mut self, node: &'ast syn::ImplItem) {
+        self.scoped(impl_item_attrs(node), |this| {
+            visit::visit_impl_item(this, node);
+        });
+    }
+
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
-        if has_cfg_test(&node.attrs) {
-            return;
+        let name = node.ident.to_string();
+        if node.content.is_some() {
+            self.inline.push(name);
+            visit::visit_item_mod(self, node);
+            self.inline.pop();
+        } else {
+            if self.top_level_declarations {
+                self.record(&name);
+            }
+            self.declared.push(Declared {
+                parent: self.inline.clone(),
+                name,
+                test: self.in_test,
+            });
+            visit::visit_item_mod(self, node);
         }
-        if self.top_level_declarations && node.content.is_none() {
-            self.record(&node.ident.to_string());
-        }
-        visit::visit_item_mod(self, node);
     }
 
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
@@ -351,6 +503,39 @@ fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
                 .parse_args::<syn::Ident>()
                 .is_ok_and(|ident| ident == "test")
     })
+}
+
+/// The attributes of an item. A `Verbatim` item keeps its tokens and has none.
+fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+    match item {
+        syn::Item::Const(item) => &item.attrs,
+        syn::Item::Enum(item) => &item.attrs,
+        syn::Item::ExternCrate(item) => &item.attrs,
+        syn::Item::Fn(item) => &item.attrs,
+        syn::Item::ForeignMod(item) => &item.attrs,
+        syn::Item::Impl(item) => &item.attrs,
+        syn::Item::Macro(item) => &item.attrs,
+        syn::Item::Mod(item) => &item.attrs,
+        syn::Item::Static(item) => &item.attrs,
+        syn::Item::Struct(item) => &item.attrs,
+        syn::Item::Trait(item) => &item.attrs,
+        syn::Item::TraitAlias(item) => &item.attrs,
+        syn::Item::Type(item) => &item.attrs,
+        syn::Item::Union(item) => &item.attrs,
+        syn::Item::Use(item) => &item.attrs,
+        _ => &[],
+    }
+}
+
+/// The attributes of an impl item. A `Verbatim` impl item keeps its tokens and has none.
+fn impl_item_attrs(item: &syn::ImplItem) -> &[syn::Attribute] {
+    match item {
+        syn::ImplItem::Const(item) => &item.attrs,
+        syn::ImplItem::Fn(item) => &item.attrs,
+        syn::ImplItem::Type(item) => &item.attrs,
+        syn::ImplItem::Macro(item) => &item.attrs,
+        _ => &[],
+    }
 }
 
 fn next_random(state: &mut u64) -> u64 {
@@ -695,20 +880,63 @@ mod tests {
         let text = "use crate::{fetch::{FetchOptions, Fetched}, geohash, self};\n\
                     use huntsman_recon::exit::EX_USAGE;\n\
                     fn f() { let _ = crate::place::AddressComponents::default(); }\n";
-        let found = references_of(text, false).expect("the sample parses");
-        assert_eq!(found, set(&["exit", "fetch", "geohash", "place"]));
+        let found = scan_of(text, false).expect("the sample parses");
+        assert_eq!(found.refs.code, set(&["exit", "fetch", "geohash", "place"]));
+        assert!(found.refs.tests.is_empty());
     }
 
     #[test]
-    fn comments_and_test_modules_are_not_references_but_bin_declarations_are() {
+    fn comments_are_not_references_and_test_modules_are_test_code() {
         let text = "// use crate::commented;\n\
                     mod declared;\n\
                     #[cfg(test)]\n\
                     mod tests { use crate::only_in_tests; }\n";
-        let library = references_of(text, false).expect("the sample parses");
-        assert_eq!(library, BTreeSet::new());
-        let binary = references_of(text, true).expect("the sample parses");
-        assert_eq!(binary, set(&["declared"]));
+        let library = scan_of(text, false).expect("the sample parses");
+        assert_eq!(library.refs.code, BTreeSet::new());
+        assert_eq!(library.refs.tests, set(&["only_in_tests"]));
+        let declared: Vec<(&str, bool)> = library
+            .declared
+            .iter()
+            .map(|module| (module.name.as_str(), module.test))
+            .collect();
+        assert_eq!(declared, [("declared", false)]);
+        let binary = scan_of(text, true).expect("the sample parses");
+        assert_eq!(binary.refs.code, set(&["declared"]));
+        assert_eq!(binary.refs.tests, set(&["only_in_tests"]));
+    }
+
+    #[test]
+    fn items_and_impl_items_under_cfg_test_are_test_code() {
+        let text = "#[cfg(test)]\n\
+                    fn fixture() -> crate::gamma::Gamma { crate::gamma::Gamma }\n\
+                    impl Thing {\n\
+                        #[cfg(test)]\n\
+                        fn helper(&self) { let _ = crate::delta::D; }\n\
+                        fn live(&self) { let _ = crate::beta::B; }\n\
+                    }\n";
+        let found = scan_of(text, false).expect("the sample parses");
+        assert_eq!(found.refs.code, set(&["beta"]));
+        assert_eq!(found.refs.tests, set(&["delta", "gamma"]));
+    }
+
+    #[test]
+    fn module_declarations_load_the_files_that_rust_searches() {
+        assert_eq!(
+            module_files("src/hibp/mod.rs", &[], "tests"),
+            ["src/hibp/tests.rs", "src/hibp/tests/mod.rs"]
+        );
+        assert_eq!(
+            module_files("src/stolen_tax.rs", &[], "tests"),
+            ["src/stolen_tax/tests.rs", "src/stolen_tax/tests/mod.rs"]
+        );
+        assert_eq!(
+            module_files("src/lib.rs", &["outer".to_string()], "inner"),
+            ["src/outer/inner.rs", "src/outer/inner/mod.rs"]
+        );
+        assert_eq!(
+            module_files("tests/readme.rs", &[], "support"),
+            ["tests/support.rs", "tests/support/mod.rs"]
+        );
     }
 
     #[test]
@@ -740,6 +968,79 @@ mod tests {
         assert_eq!(
             parse_commits(log),
             vec![set(&["cli", "fetch"]), set(&["fetch"])]
+        );
+    }
+
+    /// A small crate with test code in each place it can hide: an inline test module, an item
+    /// under `cfg(test)`, a file that a `cfg(test)` declaration loads, and integration tests at
+    /// two depths. Test code adds test references and never production edges.
+    #[test]
+    fn test_code_adds_test_references_and_no_production_edges() {
+        let root = std::env::temp_dir().join(format!("xtask-coupling-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let files = [
+            (
+                "src/lib.rs",
+                "pub mod alpha;\npub mod beta;\npub mod delta;\npub mod gamma;\npub mod helper;\n\
+                 pub mod omega;\npub mod zeta;\n#[cfg(test)]\nmod support;\n",
+            ),
+            (
+                "src/alpha.rs",
+                "use crate::beta::Thing;\npub fn run() -> Thing { Thing }\n#[cfg(test)]\n\
+                 mod checks;\n#[cfg(test)]\nmod tests {\n    use crate::helper::Help;\n    \
+                 use crate::support::fixture;\n}\n",
+            ),
+            ("src/alpha/checks.rs", "use crate::zeta::Zeta;\n"),
+            (
+                "src/beta.rs",
+                "pub struct Thing;\n#[cfg(test)]\nfn only_in_tests() -> crate::gamma::Gamma {\n    \
+                 crate::gamma::Gamma\n}\n",
+            ),
+            ("src/delta.rs", "pub struct D;\n"),
+            ("src/gamma.rs", "pub struct Gamma;\n"),
+            ("src/helper.rs", "pub struct Help;\n"),
+            ("src/omega.rs", "pub struct Omega;\n"),
+            ("src/support.rs", "pub fn fixture() {}\n"),
+            ("src/zeta.rs", "pub struct Zeta;\n"),
+            ("tests/integration.rs", "use huntsman_recon::delta::D;\n"),
+            (
+                "tests/nested/helper.rs",
+                "use huntsman_recon::omega::Omega;\n",
+            ),
+        ];
+        for (rel, text) in files {
+            let path = root.join(rel);
+            fs::create_dir_all(path.parent().expect("a fixture file has a directory"))
+                .expect("fixture directory");
+            fs::write(&path, text).expect("fixture file");
+        }
+        let built = Model::build(&root);
+        let _ = fs::remove_dir_all(&root);
+        let model = built.expect("the fixture builds");
+        let table: Vec<(&str, bool, usize)> = model
+            .names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                (
+                    name.as_str(),
+                    model.referenced_by_production[i],
+                    model.referenced_by_tests[i],
+                )
+            })
+            .collect();
+        assert_eq!(
+            table,
+            [
+                ("alpha", false, 0),
+                ("beta", true, 0),
+                ("delta", false, 1),
+                ("gamma", false, 1),
+                ("helper", false, 1),
+                ("omega", false, 1),
+                ("support", false, 1),
+                ("zeta", false, 1),
+            ]
         );
     }
 }
