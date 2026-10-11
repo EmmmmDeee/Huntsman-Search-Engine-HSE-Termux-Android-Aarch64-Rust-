@@ -1,9 +1,10 @@
 //! The verification gate, ported from `scripts/repair-gate.sh`.
 //!
 //! Each mode runs a fixed sequence of commands in the repository root, each under a time
-//! limit. Before and after the sequence the repository content is captured: the tracked diff
-//! against HEAD and the bytes of every untracked file. A verification step that writes into the
-//! tree fails the gate, instead of passing with content it did not report.
+//! limit. Before and after the sequence the repository is captured: the commit HEAD names, the
+//! tracked diff against HEAD, and the bytes of every untracked file. A verification step that
+//! writes into the tree, or a commit made during the run, fails the gate, instead of passing
+//! with content it did not report.
 
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -27,6 +28,10 @@ A full host pass is necessary but not sufficient for platform-specific changes.
 Railway/container and Android/Termux changes require their platform gates too.";
 
 const DEFAULT_TIMEOUT_SECONDS: u64 = 3600;
+
+/// The refusal for repository content that verification changed. `tests/repair_contract.rs`
+/// pins this wording.
+const MUTATED: &str = "verification mutated tracked or untracked repository content";
 
 /// The gate's mode. `Full` is the default, as it was for the shell script.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -106,7 +111,7 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<PathBuf> {
         check_msrv_toolchain(root)?;
     }
     let mut record = RunRecord::create(root, mode.name())?;
-    let before = snapshot(root)?;
+    let before = baseline(root)?;
 
     for script in tracked_shell_scripts(root)? {
         if script == "scripts/railway-entrypoint.sh" {
@@ -186,15 +191,13 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<PathBuf> {
         &["run", "--locked", "--", "check"],
     )?;
 
-    let after = snapshot(root)?;
-    if before != after {
+    let after = baseline(root)?;
+    if let Some(problem) = drift(&before, &after) {
         let _ = std::process::Command::new("git")
             .args(["status", "--short", "--untracked-files=all"])
             .current_dir(root)
             .status();
-        return Err(Error::Refused(
-            "verification mutated tracked or untracked repository content".to_owned(),
-        ));
+        return Err(Error::Refused(problem));
     }
     Ok(record.dir().to_path_buf())
 }
@@ -285,6 +288,45 @@ fn snapshot(root: &Path) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// The state verification must leave unchanged: the commit HEAD names, then the content that
+/// `snapshot` captures. A commit made during the run moves HEAD and so also changes the content,
+/// so HEAD is compared on its own, which names the cause.
+struct Baseline {
+    head: Vec<u8>,
+    content: Vec<u8>,
+}
+
+fn baseline(root: &Path) -> Result<Baseline> {
+    Ok(Baseline {
+        head: git_stdout(root, &["rev-parse", "HEAD"])?,
+        content: snapshot(root)?,
+    })
+}
+
+/// The refusal for a repository that verification changed, or `None` when it did not.
+fn drift(before: &Baseline, after: &Baseline) -> Option<String> {
+    if before.head != after.head {
+        let from = short_id(&before.head);
+        let to = short_id(&after.head);
+        return Some(format!(
+            "HEAD moved from {from} to {to} during verification; commit only after the gate passes"
+        ));
+    }
+    if before.content != after.content {
+        return Some(MUTATED.to_owned());
+    }
+    None
+}
+
+/// The first twelve characters of a commit id, as `git rev-parse` prints it.
+fn short_id(head: &[u8]) -> String {
+    String::from_utf8_lossy(head)
+        .trim()
+        .chars()
+        .take(12)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,12 +354,36 @@ mod tests {
             "user.name=fixture",
             "-c",
             "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "-q",
             "-m",
             "base",
         ]);
         dir
+    }
+
+    /// Records an empty commit in DIR, as a verification step that commits would.
+    fn commit_in(dir: &Path, message: &str) {
+        let status = Command::new("git")
+            .args([
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                message,
+            ])
+            .current_dir(dir)
+            .status()
+            .expect("git must run");
+        assert!(status.success(), "git commit failed");
     }
 
     #[test]
@@ -348,6 +414,36 @@ mod tests {
             snapshot(&dir).expect("snapshot after"),
             "an edit to a tracked file must show"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_commit_made_during_verification_is_named_as_a_moved_head() {
+        let dir = fixture_repo("head");
+        let before = baseline(&dir).expect("baseline before");
+        commit_in(&dir, "made during verification");
+        let after = baseline(&dir).expect("baseline after");
+        let problem = drift(&before, &after).expect("a commit moves HEAD");
+        assert!(problem.starts_with("HEAD moved from "), "{problem}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_written_file_is_reported_as_mutated_content() {
+        let dir = fixture_repo("written");
+        let before = baseline(&dir).expect("baseline before");
+        fs::write(dir.join("written-by-a-check.txt"), "output\n").expect("write");
+        let after = baseline(&dir).expect("baseline after");
+        assert_eq!(drift(&before, &after).as_deref(), Some(MUTATED));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unchanged_repository_has_no_drift() {
+        let dir = fixture_repo("stable");
+        let before = baseline(&dir).expect("baseline before");
+        let after = baseline(&dir).expect("baseline after");
+        assert_eq!(drift(&before, &after), None);
         let _ = fs::remove_dir_all(&dir);
     }
 }
