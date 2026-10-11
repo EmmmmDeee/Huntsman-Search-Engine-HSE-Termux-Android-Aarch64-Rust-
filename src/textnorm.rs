@@ -771,6 +771,21 @@ mod tests {
     }
 
     #[test]
+    fn name_matching_characterises_ascii_names() {
+        // Pinned before the case-folding and token-length changes. ASCII behaviour must not change.
+        assert_eq!(name_tokens("Ada Lovelace"), ["ada", "lovelace"]);
+        assert_eq!(name_tokens("O'Brien-Smith"), ["brien", "smith"]);
+        assert_eq!(name_tokens("Madonna"), ["madonna"]);
+        assert!(name_tokens("   ").is_empty());
+        assert!(whole_word_token_match("ZOLA, EMILE", "emile zola"));
+        assert!(!whole_word_token_match("Mildred Smith", ""));
+        assert!(!whole_word_token_match("Mildred Smith", "smith jones"));
+        assert!(shares_whole_word_token("Ada Lovelace", "Lovelace Byron"));
+        assert!(!shares_whole_word_token("Ada Lovelace", "Byron King"));
+        assert!(!shares_whole_word_token("Ada Lovelace", "A"));
+    }
+
+    #[test]
     fn dotted_handles_use_domain_policy() {
         assert!(is_domain_handle("alice.dev"));
         assert!(is_domain_handle(" Example.COM. "));
