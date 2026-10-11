@@ -395,7 +395,7 @@ pub(super) fn run_history_cmd(args: &[String]) -> ExitCode {
         // silently overridden, so reject the combination instead.
         if args.iter().any(|a| a == "--passed" || a == "--failed") {
             eprintln!("run-history: --from-stdin cannot be combined with --passed/--failed");
-            return ExitCode::from(64);
+            return ExitCode::from(EX_USAGE);
         }
         let mut buffer = String::new();
         if std::io::stdin()
@@ -405,16 +405,16 @@ pub(super) fn run_history_cmd(args: &[String]) -> ExitCode {
             .is_err()
         {
             eprintln!("run-history: could not read test output from stdin");
-            return ExitCode::from(74);
+            return ExitCode::from(EX_IOERR);
         }
         if buffer.len() as u64 > MAX_STDIN_BYTES {
             eprintln!("run-history: test output on stdin exceeds 16 MiB");
-            return ExitCode::from(74);
+            return ExitCode::from(EX_IOERR);
         }
         let Some((passed, failed)) = huntsman_recon::run_history::parse_libtest_summary(&buffer)
         else {
             eprintln!("run-history: no 'test result:' line found in stdin");
-            return ExitCode::from(65);
+            return ExitCode::from(EX_DATAERR);
         };
         let mut rewritten: Vec<String> = args
             .iter()
