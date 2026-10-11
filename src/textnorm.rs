@@ -601,15 +601,26 @@ pub fn rfind_word_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
     })
 }
 
-/// Case-insensitive equality over Unicode letters. An ASCII pair takes the byte comparison, and any
-/// other pair is compared one lowercased character at a time, so `Émile` equals `émile`.
+/// Case-insensitive equality over Unicode letters: two words are equal when their characters
+/// lowercase, one at a time, to the same sequence, so `Émile` equals `émile`.
+///
+/// The bytes are compared from the start, and the first difference usually settles the answer.
+/// Bytes that are equal, or differ only in ASCII case, are the same character. A difference
+/// between two ASCII bytes makes the words unequal, because every ASCII character lowercases to
+/// one ASCII character. A difference involving a non-ASCII byte is settled on lowercased
+/// characters. With no difference, the words are equal only at the same length: a longer word
+/// has characters left after the shorter one ends, and every character has a lowercase form.
 fn eq_ignore_case(a: &str, b: &str) -> bool {
-    if a.is_ascii() && b.is_ascii() {
-        return a.eq_ignore_ascii_case(b);
+    let (x, y) = (a.as_bytes(), b.as_bytes());
+    for (p, q) in x.iter().zip(y) {
+        if !p.eq_ignore_ascii_case(q) {
+            return !(p.is_ascii() && q.is_ascii())
+                && a.chars()
+                    .flat_map(char::to_lowercase)
+                    .eq(b.chars().flat_map(char::to_lowercase));
+        }
     }
-    a.chars()
-        .flat_map(char::to_lowercase)
-        .eq(b.chars().flat_map(char::to_lowercase))
+    x.len() == y.len()
 }
 
 /// True when every alphanumeric token of `needle` appears as a whole word in `haystack`, ignoring
@@ -813,6 +824,100 @@ mod tests {
         // Two bytes in UTF-8 but one letter. The people command has always treated it this way.
         assert_eq!(name_tokens("É Lovelace"), ["lovelace"]);
         assert_eq!(name_tokens("Ø Smith"), ["smith"]);
+    }
+
+    /// The definition `eq_ignore_case` keeps: each word lowercases, one character at a time, to the
+    /// same sequence.
+    fn lowercased_sequences_equal(a: &str, b: &str) -> bool {
+        a.chars()
+            .flat_map(char::to_lowercase)
+            .eq(b.chars().flat_map(char::to_lowercase))
+    }
+
+    #[test]
+    fn eq_ignore_case_matches_the_lowercase_definition_on_every_short_word() {
+        // One character for each rule: ASCII case, the Kelvin sign (lowercases to k), dotted
+        // capital I (lowercases to two characters), sharp s, a combining mark and accented letters.
+        const ALPHABET: [char; 12] = [
+            'a', 'A', 'k', '\u{212A}', 'i', '\u{130}', '\u{DF}', '\u{1E9E}', 'S', '\u{307}', 'é',
+            'É',
+        ];
+        let mut words = vec![String::new()];
+        let mut longest = vec![String::new()];
+        for _ in 0..3 {
+            longest = longest
+                .iter()
+                .flat_map(|word| ALPHABET.iter().map(move |ch| format!("{word}{ch}")))
+                .collect();
+            words.extend(longest.iter().cloned());
+        }
+        assert_eq!(words.len(), 1 + 12 + 12 * 12 + 12 * 12 * 12);
+        for a in &words {
+            for b in &words {
+                assert_eq!(
+                    eq_ignore_case(a, b),
+                    lowercased_sequences_equal(a, b),
+                    "{a:?} and {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eq_ignore_case_matches_the_lowercase_definition_on_random_words() {
+        const ALPHABET: [char; 16] = [
+            'a', 'A', 'b', 'B', 'k', '\u{212A}', 'i', '\u{130}', '\u{DF}', 's', 'S', '\u{17F}',
+            '\u{307}', 'é', 'É', '0',
+        ];
+        // A fixed xorshift sequence, so that any failure can be reproduced.
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = |bound: usize| -> usize {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            usize::try_from(state % u64::try_from(bound).unwrap_or(1)).unwrap_or(0)
+        };
+        for _ in 0..50_000 {
+            let len = next(13);
+            let a: String = (0..len).map(|_| ALPHABET[next(ALPHABET.len())]).collect();
+            // Half the pairs are a copy of `a` with some characters changed, so that long equal
+            // prefixes are common.
+            let b: String = if next(2) == 0 {
+                let len = next(13);
+                (0..len).map(|_| ALPHABET[next(ALPHABET.len())]).collect()
+            } else {
+                a.chars()
+                    .map(|ch| {
+                        if next(4) == 0 {
+                            ALPHABET[next(ALPHABET.len())]
+                        } else {
+                            ch
+                        }
+                    })
+                    .collect()
+            };
+            assert_eq!(
+                eq_ignore_case(&a, &b),
+                lowercased_sequences_equal(&a, &b),
+                "{a:?} and {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn name_matching_follows_simple_case_mapping_at_each_length() {
+        assert!(eq_ignore_case("ADA", "ada"));
+        assert!(eq_ignore_case("\u{212A}", "k"));
+        assert!(eq_ignore_case("\u{212A}ing", "king"));
+        // A longer word has characters left over, so it is a different word.
+        assert!(!eq_ignore_case("ab", "ab\u{212A}"));
+        // Dotted capital I lowercases to two characters, so it is not a plain i.
+        assert!(!eq_ignore_case("i", "\u{130}"));
+        // Simple case mapping is not full case folding: sharp s does not equal SS.
+        assert!(!eq_ignore_case("SS", "\u{DF}"));
+        assert!(eq_ignore_case("\u{1E9E}", "\u{DF}"));
+        assert!(eq_ignore_case("É", "é"));
+        assert!(!eq_ignore_case("E", "É"));
     }
 
     #[test]
