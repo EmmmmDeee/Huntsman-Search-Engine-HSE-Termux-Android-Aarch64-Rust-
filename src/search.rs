@@ -3,7 +3,9 @@
 
 use std::path::Path;
 
+use crate::classifier::classify;
 use crate::classify::{classify_response, is_saved_challenge};
+use crate::entity::EntityKind;
 use crate::error::Error;
 use crate::fsio::read_bounded;
 
@@ -47,7 +49,8 @@ pub fn tokenize(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every distinct query term must occur. Score is the total occurrence count.
+/// Every distinct query term must occur. Score is the total occurrence count. A query that is
+/// one email address or one domain must also occur as a whole name (see `names_identifier`).
 #[must_use]
 pub fn search(docs: &[Document], query: &str) -> Vec<Hit> {
     let mut terms = tokenize(query);
@@ -56,6 +59,7 @@ pub fn search(docs: &[Document], query: &str) -> Vec<Hit> {
     if terms.is_empty() {
         return Vec::new();
     }
+    let identifier = identifier_query(query);
     let mut hits = Vec::new();
     let mut counts = vec![0usize; terms.len()];
     for doc in docs {
@@ -65,7 +69,11 @@ pub fn search(docs: &[Document], query: &str) -> Vec<Hit> {
                 counts[index] += 1;
             }
         });
-        if counts.iter().all(|&count| count > 0) {
+        if counts.iter().all(|&count| count > 0)
+            && identifier
+                .as_ref()
+                .is_none_or(|id| names_identifier(&doc.body, id))
+        {
             hits.push(Hit {
                 id: doc.id.clone(),
                 score: counts.iter().sum(),
@@ -75,6 +83,53 @@ pub fn search(docs: &[Document], query: &str) -> Vec<Hit> {
     }
     hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
     hits
+}
+
+/// An email address or a domain that is the whole query, in canonical ASCII form.
+struct Identifier {
+    value: String,
+    /// A domain also names its subdomains and the addresses at it. An address names only itself.
+    domain: bool,
+}
+
+/// The identifier when the whole query is one ASCII email address or domain. Matching its terms
+/// alone would find "ada@example.com" in any document that holds "ada", "example" and "com" apart.
+fn identifier_query(query: &str) -> Option<Identifier> {
+    let classified = classify(query.trim().trim_end_matches('.'));
+    if !classified.value.is_ascii() {
+        return None;
+    }
+    match classified.kind {
+        EntityKind::Email => Some(Identifier {
+            value: classified.value,
+            domain: false,
+        }),
+        EntityKind::Domain => Some(Identifier {
+            value: classified.value,
+            domain: true,
+        }),
+        _ => None,
+    }
+}
+
+/// Whether `text` names the identifier. Names are runs of letters, digits and `.@-_+`, with a
+/// trailing full stop removed, so a sentence that ends in the name still matches. A run matches
+/// when it equals the identifier, ignoring ASCII case. For a domain, a run also matches when it
+/// ends in the domain after a `.` or `@`: `api.example.com` and `ada@example.com` name
+/// `example.com`, while `myexample.com` and `example.com.au` do not.
+fn names_identifier(text: &str, identifier: &Identifier) -> bool {
+    let value = identifier.value.as_str();
+    text.split(|c: char| !(c.is_alphanumeric() || matches!(c, '.' | '@' | '-' | '_' | '+')))
+        .map(|run| run.trim_end_matches('.'))
+        .any(|run| {
+            run.eq_ignore_ascii_case(value)
+                || (identifier.domain
+                    && run.len() > value.len()
+                    && matches!(run.as_bytes()[run.len() - value.len() - 1], b'.' | b'@')
+                    && run
+                        .get(run.len() - value.len()..)
+                        .is_some_and(|tail| tail.eq_ignore_ascii_case(value)))
+        })
 }
 
 /// Calls `visit` with each token that [`tokenize`] would return for `text`, in order. Lowercase
@@ -262,6 +317,31 @@ mod tests {
             load_dir(&root).is_err(),
             "missing dir is an error, not hits=0"
         );
+    }
+
+    #[test]
+    fn email_and_domain_queries_match_the_whole_name() {
+        let doc = |id: &str, body: &str| Document {
+            id: id.into(),
+            body: body.into(),
+            source: "local".into(),
+        };
+        let docs = vec![
+            doc("email", "Contact Ada@Example.com for the report."),
+            doc(
+                "parts",
+                "Ada reviewed the example. The com directory lists her",
+            ),
+            doc("lookalike", "Ada wrote to ada@example.company"),
+            doc("subdomain", "See https://api.example.com/v1 for the feed"),
+            doc("suffix", "Hosted at myexample.com and example.com.au"),
+        ];
+        let ids = |query: &str| -> Vec<String> {
+            search(&docs, query).into_iter().map(|hit| hit.id).collect()
+        };
+        assert_eq!(ids("ada@example.com"), ["email"]);
+        assert_eq!(ids("example.com"), ["email", "subdomain"]);
+        assert_eq!(ids("Ada@EXAMPLE.com."), ["email"]);
     }
 
     #[test]

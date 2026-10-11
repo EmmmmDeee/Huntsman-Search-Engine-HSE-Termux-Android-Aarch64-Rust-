@@ -45,7 +45,7 @@ pub(super) fn print_command_help(command: &str) {
         }
         "id" => "id TOKEN\nClassify and validate an Australian ABN, ACN, or BSB.",
         "search" => {
-            "search QUERY [DIR]\nSearch built-in examples, or .txt/.md files in one directory. Challenge pages and unsafe/oversized inputs are skipped."
+            "search QUERY [DIR]\nSearch built-in examples, or .txt/.md files in one directory. Every query term must occur; an email address or domain must occur whole. Short HTML challenge pages and unsafe or oversized inputs are skipped."
         }
         "sources" => {
             "sources QUERY\nClassify an indicator and print curated public/browser search routes. Does not fetch those routes."
