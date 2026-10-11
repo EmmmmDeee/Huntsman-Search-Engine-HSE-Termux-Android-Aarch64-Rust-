@@ -50,6 +50,7 @@ egress	leaf	network egress policy
 email_cli	diagnostic	email enrichment command front-end
 engineering_command	diagnostic	executable engineering command hierarchy and capability ownership
 entity	runtime	canonical entity and evidence model
+environment	leaf	the process environment, read through one module
 error	leaf	shared error type
 eval	leaf	evaluation statistics and helpers
 event	leaf	event primitive

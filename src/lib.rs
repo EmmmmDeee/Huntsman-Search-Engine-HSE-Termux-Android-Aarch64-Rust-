@@ -64,6 +64,7 @@ pub mod egress;
 pub mod email_cli;
 pub mod engineering_command;
 pub mod entity;
+pub mod environment;
 pub mod error;
 pub mod eval;
 pub mod event;

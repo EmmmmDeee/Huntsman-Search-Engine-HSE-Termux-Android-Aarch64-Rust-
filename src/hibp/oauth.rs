@@ -28,6 +28,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use crate::environment;
 use crate::http::{Request, Transport};
 use serde::{Deserialize, Serialize};
 
@@ -271,7 +272,7 @@ impl FileTokenStore {
     #[must_use]
     pub fn default_path() -> Option<PathBuf> {
         Some(
-            PathBuf::from(std::env::var_os("HOME")?)
+            PathBuf::from(environment::home()?)
                 .join(".config")
                 .join("hibp")
                 .join("oauth_tokens.json"),
