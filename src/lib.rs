@@ -50,6 +50,7 @@ pub mod credential_origin;
 pub mod cross_scan;
 pub mod crtsh;
 pub mod deadline;
+pub mod dehashed;
 pub mod dependency;
 pub mod diagnostics;
 pub mod diamond;
