@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::au_id;
+use crate::au_id::{self, Identifier};
 use crate::canonical::{
     canonical_domain, canonical_email, canonical_handle, canonical_phone, canonical_url,
 };
@@ -63,22 +63,13 @@ pub fn classify(raw: &str) -> Classified {
         let handle = canonical_handle(value).unwrap_or_else(|| value.trim().to_owned());
         return classified(EntityKind::Username, &handle, 0.40, "handle");
     }
-    let lowered = value.to_ascii_lowercase();
-    if ["pty ltd", "llc", "inc", "corp", "gmbh"]
-        .iter()
-        .any(|suffix| lowered.contains(suffix))
-    {
+    if is_company_name(value) {
         return classified(EntityKind::Organisation, value, 0.60, "company-suffix");
     }
-    if lowered.contains("street")
-        || lowered.contains("st ")
-        || lowered.contains("road")
-        || lowered.contains("rd ")
-        || value.chars().any(|c| c.is_ascii_digit())
-    {
+    if is_address_shape(value) {
         return classified(EntityKind::Address, value, 0.60, "street-shape");
     }
-    if value.split_whitespace().count() >= 2 {
+    if value.split_whitespace().count() >= 2 && value.chars().any(char::is_alphabetic) {
         return classified(EntityKind::Person, value, 0.50, "multiword");
     }
     classified(EntityKind::Other, value, 0.20, "residual")
@@ -86,24 +77,17 @@ pub fn classify(raw: &str) -> Classified {
 
 #[must_use]
 pub fn extract(text: &str) -> Vec<Classified> {
+    let tokens = tokenize(text);
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
-    for token in text.split_whitespace() {
-        let token = token.trim_matches(|c: char| {
-            matches!(
-                c,
-                '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '!'
-            )
-        });
-        if token.is_empty() {
-            continue;
-        }
-        let classified = classify(token.trim_end_matches(['.', ':', '?']));
-        if classified.kind != EntityKind::Other
-            && seen.insert((classified.kind.clone(), classified.value.clone()))
+    let mut index = 0;
+    while index < tokens.len() {
+        let (found, consumed) = span_at(&tokens[index..]);
+        if found.kind != EntityKind::Other && seen.insert((found.kind.clone(), found.value.clone()))
         {
-            out.push(classified);
+            out.push(found);
         }
+        index += consumed;
     }
     out
 }
@@ -141,6 +125,143 @@ fn classified(kind: EntityKind, value: &str, confidence: f64, signal: &'static s
         confidence,
         signal,
     }
+}
+
+/// Longest run of number fragments read as one phone number or ABN/ACN.
+const NUMERIC_SPAN_MAX: usize = 4;
+/// Longest gap, in tokens, between a street number and its street word (inclusive).
+const ADDRESS_SPAN_MAX: usize = 4;
+
+fn tokenize(text: &str) -> Vec<&str> {
+    text.split_whitespace()
+        .map(|token| {
+            token.trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '!'
+                )
+            })
+        })
+        .map(|token| token.trim_end_matches(['.', ':', '?']))
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+/// Returns the entity that starts at the first token, and how many tokens it spans.
+///
+/// Multi-token spans are tried first so a phone number, ABN, or street address is never
+/// split into its digit groups or words. Every path consumes at least one token, so the
+/// caller's scan always advances.
+fn span_at(tokens: &[&str]) -> (Classified, usize) {
+    if let Some(span) = numeric_span(tokens) {
+        return span;
+    }
+    if let Some(span) = address_span(tokens) {
+        return span;
+    }
+    let head = tokens.first().copied().unwrap_or_default();
+    (classify(head), 1)
+}
+
+/// Recognises a phone number or an ABN/ACN written as two to four digit groups.
+fn numeric_span(tokens: &[&str]) -> Option<(Classified, usize)> {
+    let fragments = tokens
+        .iter()
+        .take(NUMERIC_SPAN_MAX)
+        .take_while(|token| is_number_fragment(token))
+        .count();
+    (2..=fragments).rev().find_map(|width| {
+        let joined = tokens[..width].join(" ");
+        if let Some(phone) = canonical_phone(&joined) {
+            return Some((
+                classified(EntityKind::Phone, &phone, 0.80, "dialable-shape"),
+                width,
+            ));
+        }
+        match au_id::classify(&joined) {
+            Ok(Identifier::Abn { bare, .. } | Identifier::Acn { bare }) => Some((
+                classified(EntityKind::AbnAcn, &bare, 0.95, "checksum"),
+                width,
+            )),
+            _ => None,
+        }
+    })
+}
+
+/// Recognises `NUMBER [name words] STREET-WORD`, such as `12 Queen Street`.
+///
+/// Returns a span only when it starts at the first token. When a later number begins the
+/// address (the `12` in `Unit 3, 12 Smith St`), the scan reaches that number on its own, so
+/// leading noise is not absorbed into the address.
+fn address_span(tokens: &[&str]) -> Option<(Classified, usize)> {
+    let head = tokens.first()?;
+    if !head.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut end = None;
+    for (offset, token) in tokens.iter().enumerate().skip(1).take(ADDRESS_SPAN_MAX) {
+        if is_street_word(token) {
+            end = Some(offset);
+            break;
+        }
+        if !is_name_like(token) {
+            return None;
+        }
+    }
+    let end = end?;
+    let last_number = tokens[..end]
+        .iter()
+        .rposition(|token| token.starts_with(|c: char| c.is_ascii_digit()))?;
+    if last_number != 0 {
+        return None;
+    }
+    let value = tokens[..=end].join(" ");
+    Some((
+        classified(EntityKind::Address, &value, 0.60, "street-shape"),
+        end + 1,
+    ))
+}
+
+/// A token made only of digits and phone punctuation, with at least one digit.
+fn is_number_fragment(token: &str) -> bool {
+    token.bytes().any(|b| b.is_ascii_digit())
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'+' | b'-' | b'(' | b')'))
+}
+
+/// A capitalised word or a token containing a digit, as found in street names.
+fn is_name_like(token: &str) -> bool {
+    token.starts_with(char::is_uppercase) || token.bytes().any(|b| b.is_ascii_digit())
+}
+
+fn normalise_word(word: &str) -> String {
+    word.trim_matches(|c: char| !c.is_alphanumeric())
+        .to_ascii_lowercase()
+}
+
+fn is_street_word(token: &str) -> bool {
+    matches!(
+        normalise_word(token).as_str(),
+        "street" | "st" | "road" | "rd"
+    )
+}
+
+fn is_address_shape(value: &str) -> bool {
+    value.split_whitespace().count() >= 2 && value.split_whitespace().any(is_street_word)
+}
+
+fn is_company_name(value: &str) -> bool {
+    let words: Vec<String> = value.split_whitespace().map(normalise_word).collect();
+    words
+        .windows(2)
+        .any(|pair| pair[0] == "pty" && pair[1] == "ltd")
+        || words.iter().any(|word| {
+            matches!(
+                word.as_str(),
+                "llc" | "inc" | "incorporated" | "corp" | "corporation" | "gmbh"
+            )
+        })
 }
 
 fn parse_ipv4(raw: &str) -> bool {
@@ -271,5 +392,78 @@ mod tests {
         assert_eq!(found.len(), 3);
         assert!(found.iter().any(|item| item.kind == EntityKind::Email));
         assert!(found.iter().any(|item| item.kind == EntityKind::Url));
+    }
+
+    #[test]
+    fn phone_numbers_in_free_text_are_single_entities() {
+        let international = extract("call +61 412 345 678 today");
+        assert_eq!(international.len(), 1, "{international:?}");
+        assert_eq!(international[0].kind, EntityKind::Phone);
+        assert_eq!(international[0].value, "+61412345678");
+
+        let local = extract("call 0412 345 678 today");
+        assert_eq!(local.len(), 1, "{local:?}");
+        assert_eq!(local[0].kind, EntityKind::Phone);
+    }
+
+    #[test]
+    fn abn_in_free_text_is_one_entity_without_address_fragments() {
+        let found = extract("ABN 51 824 753 556 on file");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].kind, EntityKind::AbnAcn);
+        assert_eq!(found[0].value, "51824753556");
+    }
+
+    #[test]
+    fn mixed_identifiers_and_address_each_yield_one_entity() {
+        let found = extract("+61 412 345 678 and 51 824 753 556 at 12 Queen Street");
+        let kinds: Vec<_> = found.iter().map(|item| item.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            [EntityKind::Phone, EntityKind::AbnAcn, EntityKind::Address]
+        );
+        assert_eq!(found[2].value, "12 Queen Street");
+    }
+
+    #[test]
+    fn street_address_in_prose_is_one_entity() {
+        let shipped = extract("Ship to 12 Queen Street Brisbane");
+        assert_eq!(shipped.len(), 1, "{shipped:?}");
+        assert_eq!(shipped[0].kind, EntityKind::Address);
+        assert_eq!(shipped[0].value, "12 Queen Street");
+
+        let unit = extract("Unit 3, 12 Smith St Brisbane");
+        assert_eq!(unit.len(), 1, "{unit:?}");
+        assert_eq!(unit[0].value, "12 Smith St");
+    }
+
+    #[test]
+    fn bare_digits_and_street_word_are_not_addresses() {
+        for raw in ["12", "345", "12 345", "Street", "first place"] {
+            assert_ne!(classify(raw).kind, EntityKind::Address, "{raw}");
+        }
+        assert_ne!(classify("12 345").kind, EntityKind::Person, "digit pair");
+        for text in [
+            "street 12 345",
+            "I have 3 cats on Queen Street",
+            "first place",
+        ] {
+            assert!(
+                extract(text)
+                    .iter()
+                    .all(|item| item.kind != EntityKind::Address),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn company_suffixes_match_whole_words_only() {
+        for raw in ["Vincent", "Princeton", "Lincoln"] {
+            assert_ne!(classify(raw).kind, EntityKind::Organisation, "{raw}");
+        }
+        assert_eq!(classify("Acme Pty Ltd").kind, EntityKind::Organisation);
+        assert_eq!(classify("Acme Inc.").kind, EntityKind::Organisation);
+        assert_eq!(classify("Acme Corporation").kind, EntityKind::Organisation);
     }
 }
