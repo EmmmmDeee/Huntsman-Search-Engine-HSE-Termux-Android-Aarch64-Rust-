@@ -37,9 +37,10 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
         "HUNTSMAN_STARTUP_CHECK",
         "HSE_AUTH_TOKEN",
         "/dev/urandom",
-        "huntsman-recon check",
-        "huntsman-recon verify var/ledger.json",
-        "exec gosu huntsman /usr/local/bin/huntsman-recon",
+        "HUNTSMAN_BIN=\"${HUNTSMAN_BIN:-/usr/local/bin/huntsman-recon}\"",
+        "\"$HUNTSMAN_BIN\" check",
+        "\"$HUNTSMAN_BIN\" verify var/ledger.json",
+        "exec gosu huntsman \"$HUNTSMAN_BIN\"",
     ] {
         assert!(
             entrypoint.contains(required),
