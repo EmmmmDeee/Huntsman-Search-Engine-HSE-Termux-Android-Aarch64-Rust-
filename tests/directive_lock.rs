@@ -12,7 +12,7 @@ fn repository_directive_contract_is_valid() {
     verify_at(&root()).unwrap();
     assert_eq!(
         EXPECTED_SHA256,
-        "5bdd9777d9a8046d2d4a6bf645ee6201b6e1d004b1a6a1fc7a99eb246a687584"
+        "3d02dd021502fd1c4eda70dd2b01cfe4bb19704f79452a890f1301053fac979d"
     );
     assert_eq!(MIRRORS.len(), 6);
 }
@@ -24,10 +24,9 @@ fn canonical_directive_contains_required_adaptive_invariants() {
         .unwrap_or_else(|error| panic!("{} must exist: {error}", path.display()));
 
     for required in [
-        "THE AUSTRIAN PAINTER → HIMMLER → ALL OTHER SYSTEMS",
+        "CHIEF VISIONARY → CHIEF SYSTEMS ARCHITECT → ALL OTHER SYSTEMS",
         "# PERMANENT ADAPTIVE DEFAULT OVERRIDE",
         "permanent standing default conceptual team",
-        "Do not rename **JEW BOT**.",
         "Activate only roles that can materially improve that objective; leave unnecessary roles idle.",
         "Where any earlier local team, persona, or hierarchy convention conflicts with this directive, this directive supersedes it.",
     ] {
