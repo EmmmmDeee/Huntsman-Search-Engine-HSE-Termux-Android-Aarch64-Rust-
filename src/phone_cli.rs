@@ -45,9 +45,8 @@ impl PhoneArgs {
         }
 
         let phone = phone_intl::canonicalize(&positional[0]).ok_or_else(|| {
-            Error::Invalid(
-                "phone must be explicit international form or a recognised Australian number"
-                    .into(),
+            Error::invalid_value(
+                "phone must be explicit international form or a recognised Australian number",
             )
         })?;
         Ok(Self { phone, save })

@@ -16,6 +16,10 @@ pub enum Error {
     /// The input failed a local contract. This is not a network outcome.
     #[error("invalid input: {0}")]
     Invalid(String),
+    /// A supplied value (an address, handle or number) could not be canonicalised. The usage
+    /// was correct, so the value is what to fix. The display text is the same as `Invalid`.
+    #[error("invalid input: {0}")]
+    InvalidValue(String),
     /// Local persistence failed. The message must not contain a secret.
     #[error("store: {0}")]
     Store(String),
@@ -45,6 +49,12 @@ impl Error {
         Self::Invalid(reason.into())
     }
 
+    /// Reject a supplied value that cannot be canonicalised.
+    #[must_use]
+    pub fn invalid_value(reason: impl Into<String>) -> Self {
+        Self::InvalidValue(reason.into())
+    }
+
     /// Record a local store failure.
     #[must_use]
     pub fn store(reason: impl Into<String>) -> Self {
@@ -62,7 +72,10 @@ impl Error {
     pub const fn is_local_contract(&self) -> bool {
         matches!(
             self,
-            Self::MissingField(_) | Self::Invalid(_) | Self::TerminateRefused(_)
+            Self::MissingField(_)
+                | Self::Invalid(_)
+                | Self::InvalidValue(_)
+                | Self::TerminateRefused(_)
         )
     }
 }
@@ -85,6 +98,10 @@ mod tests {
             Error::invalid("meta-plan refused: inherited fallback").to_string(),
             "invalid input: meta-plan refused: inherited fallback"
         );
+        assert_eq!(
+            Error::invalid_value("invalid email address").to_string(),
+            "invalid input: invalid email address"
+        );
         assert_eq!(Error::store("io").to_string(), "store: io");
         assert_eq!(
             Error::network("egress-policy").to_string(),
@@ -95,6 +112,7 @@ mod tests {
     #[test]
     fn local_contract_is_not_a_network_refusal() {
         assert!(Error::invalid("x").is_local_contract());
+        assert!(Error::invalid_value("x").is_local_contract());
         assert!(!Error::network("x").is_local_contract());
         assert!(!Error::store("x").is_local_contract());
     }

@@ -83,12 +83,12 @@ fn selector(raw: &str) -> Result<String, Error> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
-        return Err(Error::Invalid("invalid username selector".into()));
+        return Err(Error::invalid_value("invalid username selector"));
     }
     let canonical = canonical_handle(&value)
-        .ok_or_else(|| Error::Invalid("invalid username selector".into()))?;
+        .ok_or_else(|| Error::invalid_value("invalid username selector"))?;
     if is_placeholder_entity(&ValueKind::Username, &canonical) {
-        return Err(Error::Invalid("placeholder username selector".into()));
+        return Err(Error::invalid_value("placeholder username selector"));
     }
     Ok(value)
 }

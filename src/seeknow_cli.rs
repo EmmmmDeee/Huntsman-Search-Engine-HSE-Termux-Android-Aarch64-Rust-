@@ -297,7 +297,9 @@ fn permission_outcome(kind: SourceOutcomeKind) -> bool {
 
 fn map_error(error: Error) -> SeekNowCliRun {
     match error {
-        Error::Invalid(message) | Error::MissingField(message) => SeekNowCliRun::BadData(message),
+        Error::Invalid(message) | Error::InvalidValue(message) | Error::MissingField(message) => {
+            SeekNowCliRun::BadData(message)
+        }
         Error::Network(message) | Error::Store(message) | Error::TerminateRefused(message) => {
             SeekNowCliRun::Unavailable(message)
         }

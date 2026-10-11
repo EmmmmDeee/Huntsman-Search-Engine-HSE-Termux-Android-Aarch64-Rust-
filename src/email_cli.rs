@@ -53,7 +53,7 @@ impl EmailArgs {
             return Err(Error::Invalid("email needs exactly one ADDR".into()));
         }
         let email = canonical_email(&positional[0])
-            .ok_or_else(|| Error::Invalid("invalid email address".into()))?;
+            .ok_or_else(|| Error::invalid_value("invalid email address"))?;
         Ok(Self { email, save })
     }
 }

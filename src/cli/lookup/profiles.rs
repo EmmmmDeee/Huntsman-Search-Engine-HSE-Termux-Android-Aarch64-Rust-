@@ -16,6 +16,16 @@ use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
 use huntsman_recon::source_outcome::SourceExecutionOutcome;
 use huntsman_recon::username_cli::{USERNAME_USAGE, UsernameArgs, UsernameRun};
 
+/// The exit status for a rejected lookup argument. A value the operator supplied that cannot be
+/// canonicalised is a data error (65); every other rejection is a usage error (64). The error's
+/// variant decides, so no wording of a message, and no echoed option text, can change the status.
+fn argument_status(error: &Error) -> u8 {
+    match error {
+        Error::InvalidValue(_) => EX_DATAERR,
+        _ => EX_USAGE,
+    }
+}
+
 /// Saves the lookup ledger when `--save` was given, then prints its summary. A store failure
 /// exits 74 and any other save failure exits 65. Without `--save`, nothing is written or printed.
 fn save_if_requested(
@@ -73,14 +83,12 @@ pub(in crate::cli) fn people_cmd(args: &[String]) -> ExitCode {
 pub(in crate::cli) fn email_cmd(args: &[String]) -> ExitCode {
     let parsed = match EmailArgs::parse(args) {
         Ok(parsed) => parsed,
-        Err(err) => {
-            let message = err.to_string();
-            let code = if message.contains("invalid email address") {
-                EX_DATAERR
-            } else {
-                EX_USAGE
-            };
-            return fail(code, &format!("{message}\n{EMAIL_USAGE}"));
+        Err(error) => {
+            let message = error.to_string();
+            return fail(
+                argument_status(&error),
+                &format!("{message}\n{EMAIL_USAGE}"),
+            );
         }
     };
     let now = SystemTime::now()
@@ -107,12 +115,10 @@ pub(in crate::cli) fn username_cmd(args: &[String]) -> ExitCode {
         Ok(parsed) => parsed,
         Err(error) => {
             let message = error.to_string();
-            let code = if message.contains("username selector") {
-                EX_DATAERR
-            } else {
-                EX_USAGE
-            };
-            return fail(code, &format!("{message}\n{USERNAME_USAGE}"));
+            return fail(
+                argument_status(&error),
+                &format!("{message}\n{USERNAME_USAGE}"),
+            );
         }
     };
     let now = SystemTime::now()
@@ -138,13 +144,10 @@ pub(in crate::cli) fn phone_cmd(args: &[String]) -> ExitCode {
         Ok(parsed) => parsed,
         Err(error) => {
             let message = error.to_string();
-            let code =
-                if message.contains("phone must") || message.contains("unknown international") {
-                    EX_DATAERR
-                } else {
-                    EX_USAGE
-                };
-            return fail(code, &format!("{message}\n{PHONE_USAGE}"));
+            return fail(
+                argument_status(&error),
+                &format!("{message}\n{PHONE_USAGE}"),
+            );
         }
     };
     let now = SystemTime::now()
@@ -161,5 +164,31 @@ pub(in crate::cli) fn phone_cmd(args: &[String]) -> ExitCode {
             )
         }
         PhoneRun::Failed(message) => fail(EX_DATAERR, &message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rejected_value_exits_65_and_a_usage_error_exits_64() {
+        assert_eq!(
+            argument_status(&Error::invalid_value("invalid email address")),
+            EX_DATAERR
+        );
+        assert_eq!(
+            argument_status(&Error::invalid("only one --save")),
+            EX_USAGE
+        );
+    }
+
+    #[test]
+    fn echoed_option_text_cannot_change_the_status() {
+        // Before typed errors, the text of an unknown option could select 65 by substring.
+        assert_eq!(
+            argument_status(&Error::invalid("unknown option --invalid email address")),
+            EX_USAGE
+        );
     }
 }
