@@ -893,7 +893,12 @@ jobs:
             check_release latest tag
           elif [ "$PROMOTE" != "true" ]; then
             # Not promoted: `latest` must not point at this build. Only a 404 means it is absent.
-            if lsha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>"$RUNNER_TEMP/verify-latest.err")"; then :
+            # Existence is read from git/ref, which answers 404 for a missing tag; commits/refs/tags/latest
+            # answers 422 ("No commit found") instead (run 38101980800). The commit SHA is then peeled via
+            # commits/, so an annotated tag still compares against GITHUB_SHA.
+            if gh api "$api/git/ref/tags/latest" >/dev/null 2>"$RUNNER_TEMP/verify-latest.err"; then
+              lsha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>"$RUNNER_TEMP/verify-latest.err")" \
+                || fail "could not read the latest tag: $(cat "$RUNNER_TEMP/verify-latest.err")"
             elif grep -q 'HTTP 404' "$RUNNER_TEMP/verify-latest.err"; then lsha=absent
             else fail "could not read the latest tag: $(cat "$RUNNER_TEMP/verify-latest.err")"; fi
             [ "$lsha" != "$GITHUB_SHA" ] || fail "latest moved to this build without PROMOTE_RECON_TO_LATEST"
