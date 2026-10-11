@@ -181,7 +181,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
@@ -197,7 +197,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
@@ -206,7 +206,7 @@ jobs:
           components: clippy, rustfmt
       - name: Run shared host repair acceptance
         run: cargo run --locked -p xtask -- gate full
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Type-check Railway Infrastructure as Code
@@ -248,7 +248,7 @@ jobs:
       asset_sha256: ${{ steps.digests.outputs.asset_sha256 }}
       dist_sha256: ${{ steps.digests.outputs.dist_sha256 }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -893,7 +893,12 @@ jobs:
             check_release latest tag
           elif [ "$PROMOTE" != "true" ]; then
             # Not promoted: `latest` must not point at this build. Only a 404 means it is absent.
-            if lsha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>"$RUNNER_TEMP/verify-latest.err")"; then :
+            # Existence is read from git/ref, which answers 404 for a missing tag; commits/refs/tags/latest
+            # answers 422 ("No commit found") instead (run 38101980800). The commit SHA is then peeled via
+            # commits/, so an annotated tag still compares against GITHUB_SHA.
+            if gh api "$api/git/ref/tags/latest" >/dev/null 2>"$RUNNER_TEMP/verify-latest.err"; then
+              lsha="$(gh api "$api/commits/refs/tags/latest" --jq .sha 2>"$RUNNER_TEMP/verify-latest.err")" \
+                || fail "could not read the latest tag: $(cat "$RUNNER_TEMP/verify-latest.err")"
             elif grep -q 'HTTP 404' "$RUNNER_TEMP/verify-latest.err"; then lsha=absent
             else fail "could not read the latest tag: $(cat "$RUNNER_TEMP/verify-latest.err")"; fi
             [ "$lsha" != "$GITHUB_SHA" ] || fail "latest moved to this build without PROMOTE_RECON_TO_LATEST"

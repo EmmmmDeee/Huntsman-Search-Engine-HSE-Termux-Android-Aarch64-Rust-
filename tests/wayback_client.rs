@@ -72,7 +72,11 @@ fn wayback_request_is_https_domain_scoped_and_bounded() {
     assert!(url.contains("limit=2"), "{url}");
     assert_eq!(result.captures.len(), 2);
     assert_eq!(result.outcome.kind, SourceOutcomeKind::Success);
-    assert_eq!(result.response_sha256.as_deref().map(str::len), Some(64));
+    // The digest of the raw body, computed independently with `sha256sum`.
+    assert_eq!(
+        result.response_sha256.as_deref(),
+        Some("cbe7f37d9364c58e15dbc272eb55f09ac511f2ae29c56f4a3f154cd1e8ab1d87")
+    );
 }
 
 #[test]

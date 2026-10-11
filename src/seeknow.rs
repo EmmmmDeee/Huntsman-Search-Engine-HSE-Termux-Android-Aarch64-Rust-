@@ -16,7 +16,7 @@ use crate::sha256::{hex32, sha256};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const API_BASE: &str = "https://see-know.ru/api/v1";
-pub const KEY_SLOT: &str = "HUNTSMAN_SEEKNOW_KEY";
+pub const KEY_SLOT: &str = crate::environment::SEEKNOW_KEY_ENV;
 pub const SEARCH_LIMIT_MAX: u16 = 1000;
 pub const SEARCH_PATH: &str = "/search";
 pub const STEALER_PATH: &str = "/stealer";
@@ -817,13 +817,5 @@ fn outcome_with(
     found: Option<usize>,
     detail: &str,
 ) -> SourceExecutionOutcome {
-    SourceExecutionOutcome {
-        module: module.into(),
-        kind,
-        observed_at_unix: now_unix,
-        http_status: Some(http_status),
-        found,
-        retry_after_secs: None,
-        detail: Some(detail.into()),
-    }
+    SourceExecutionOutcome::observed(module, now_unix, kind, Some(http_status), found, detail)
 }

@@ -7,7 +7,7 @@ use crate::atproto::{
 };
 use crate::canonical::canonical_domain;
 use crate::classifier;
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Transport, append_query_param};
@@ -60,7 +60,11 @@ pub fn lookup<T: Transport + ?Sized>(
     } else {
         return Ok(Report {
             entities: Vec::new(),
-            outcome: inconclusive(now_unix, "selector cannot form a valid AT Protocol actor"),
+            outcome: SourceExecutionOutcome::inconclusive(
+                SRC,
+                now_unix,
+                "selector cannot form a valid AT Protocol actor",
+            ),
         });
     };
 
@@ -94,7 +98,8 @@ pub fn lookup<T: Transport + ?Sized>(
     if response.truncated {
         return Ok(Report {
             entities: Vec::new(),
-            outcome: failed(
+            outcome: SourceExecutionOutcome::failed(
+                SRC,
                 now_unix,
                 SourceOutcomeKind::ParserDrift,
                 Some(response.status),
@@ -108,7 +113,8 @@ pub fn lookup<T: Transport + ?Sized>(
     if classified != SourceOutcomeKind::Inconclusive {
         return Ok(Report {
             entities: Vec::new(),
-            outcome: failed(
+            outcome: SourceExecutionOutcome::failed(
+                SRC,
                 now_unix,
                 classified,
                 Some(response.status),
@@ -122,11 +128,12 @@ pub fn lookup<T: Transport + ?Sized>(
         Err(error) => {
             return Ok(Report {
                 entities: Vec::new(),
-                outcome: failed(
+                outcome: SourceExecutionOutcome::failed(
+                    SRC,
                     now_unix,
                     SourceOutcomeKind::ParserDrift,
                     Some(response.status),
-                    &format!("Bluesky JSON: {error}"),
+                    format!("Bluesky JSON: {error}"),
                 ),
             });
         }
@@ -134,7 +141,8 @@ pub fn lookup<T: Transport + ?Sized>(
     if profile.handle.trim().is_empty() {
         return Ok(Report {
             entities: Vec::new(),
-            outcome: failed(
+            outcome: SourceExecutionOutcome::failed(
+                SRC,
                 now_unix,
                 SourceOutcomeKind::SchemaDrift,
                 Some(response.status),
@@ -150,35 +158,6 @@ pub fn lookup<T: Transport + ?Sized>(
         outcome: SourceExecutionOutcome::success(SRC, now_unix, 1)
             .with_http_status(response.status),
     })
-}
-
-fn inconclusive(now_unix: u64, detail: &str) -> SourceExecutionOutcome {
-    SourceExecutionOutcome {
-        module: SRC.into(),
-        kind: SourceOutcomeKind::Inconclusive,
-        observed_at_unix: now_unix,
-        http_status: None,
-        found: None,
-        retry_after_secs: None,
-        detail: Some(detail.into()),
-    }
-}
-
-fn failed(
-    now_unix: u64,
-    kind: SourceOutcomeKind,
-    status: Option<u16>,
-    detail: &str,
-) -> SourceExecutionOutcome {
-    SourceExecutionOutcome {
-        module: SRC.into(),
-        kind,
-        observed_at_unix: now_unix,
-        http_status: status,
-        found: None,
-        retry_after_secs: None,
-        detail: Some(detail.into()),
-    }
 }
 
 fn evidence(profile: &Profile, scan_id: &str) -> Evidence {
@@ -221,7 +200,7 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
     let mut entities = Vec::new();
     let username = bare_handle(&profile.handle);
 
-    add(
+    push_entity(
         &mut entities,
         EntityKind::Username,
         username,
@@ -232,7 +211,7 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
     );
 
     let profile_url = format!("https://bsky.app/profile/{}", profile.handle);
-    add(
+    push_entity(
         &mut entities,
         EntityKind::Url,
         &profile_url,
@@ -248,7 +227,7 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
         .map(str::trim)
         .filter(|name| name.split_whitespace().count() >= 2)
     {
-        add(
+        push_entity(
             &mut entities,
             EntityKind::Person,
             name,
@@ -261,7 +240,7 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
 
     let domain = profile.handle.trim_end_matches('.');
     if platform_handle_suffix(domain).is_none() && canonical_domain(domain).is_some() {
-        add(
+        push_entity(
             &mut entities,
             EntityKind::Domain,
             domain,
@@ -278,7 +257,7 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
         .map(str::trim)
         .filter(|did| !did.is_empty())
     {
-        add(
+        push_entity(
             &mut entities,
             EntityKind::Other,
             did,
@@ -294,7 +273,7 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
             .into_iter()
             .filter(|item| matches!(item.kind, EntityKind::Email | EntityKind::Url))
         {
-            add(
+            push_entity(
                 &mut entities,
                 classified.kind,
                 &classified.value,
@@ -311,55 +290,12 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
     entities
 }
 
-fn add(
-    entities: &mut Vec<Entity>,
-    kind: EntityKind,
-    value: &str,
-    confidence: f64,
-    scan_id: &str,
-    evidence: Evidence,
-    tags: &[&str],
-) {
-    let mut entity = Entity::new(kind, value, confidence, scan_id);
-    for tag in tags {
-        entity.tag(*tag);
-    }
-    entity.add_evidence(evidence);
-    entities.push(entity);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use crate::test_support::OneResponse;
 
     use crate::http::{Response, TransportFailure};
-
-    struct Fake {
-        response: RefCell<Option<Result<Response, TransportFailure>>>,
-    }
-
-    impl Fake {
-        fn response(status: u16, body: &str) -> Self {
-            Self {
-                response: RefCell::new(Some(Ok(Response {
-                    status,
-                    headers: vec![("content-type".into(), "application/json".into())],
-                    body: body.as_bytes().to_vec(),
-                    truncated: false,
-                }))),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
-            self.response
-                .borrow_mut()
-                .take()
-                .expect("one request expected")
-        }
-    }
 
     #[test]
     fn invalid_actor_shape_is_inconclusive_without_network() {
@@ -375,7 +311,7 @@ mod tests {
 
     #[test]
     fn missing_profile_is_valid_zero() {
-        let got = lookup(&Fake::response(400, "{}"), "nobody", "scan", 1).unwrap();
+        let got = lookup(&OneResponse::json(400, "{}"), "nobody", "scan", 1).unwrap();
         assert_eq!(got.outcome.kind, SourceOutcomeKind::ValidZero);
     }
 
@@ -388,7 +324,7 @@ mod tests {
           "did":"did:plc:oky5czdrnfjpqslsw2a5iclo",
           "createdAt":"2024-01-02T03:04:05Z"
         }"#;
-        let got = lookup(&Fake::response(200, body), "alice", "scan", 1).unwrap();
+        let got = lookup(&OneResponse::json(200, body), "alice", "scan", 1).unwrap();
         assert_eq!(got.outcome.kind, SourceOutcomeKind::Success);
         for kind in [
             EntityKind::Username,
@@ -410,7 +346,13 @@ mod tests {
     #[test]
     fn custom_domain_handle_emits_domain() {
         let body = r#"{"handle":"alice.example.org","did":"did:plc:oky5czdrnfjpqslsw2a5iclo"}"#;
-        let got = lookup(&Fake::response(200, body), "alice.example.org", "scan", 1).unwrap();
+        let got = lookup(
+            &OneResponse::json(200, body),
+            "alice.example.org",
+            "scan",
+            1,
+        )
+        .unwrap();
         assert!(
             got.entities
                 .iter()

@@ -1,13 +1,21 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
-use super::{HELP, RECON_USAGE, USAGE};
+use std::process::ExitCode;
+
+use super::{HELP, RECON_USAGE, USAGE, fail};
 use huntsman_recon::email_cli::EMAIL_HELP;
+use huntsman_recon::exit::EX_USAGE;
 use huntsman_recon::hibp::cli::HIBP_USAGE;
 use huntsman_recon::people_cli::PEOPLE_HELP;
 use huntsman_recon::phone_cli::PHONE_HELP;
 use huntsman_recon::seeknow_cli::SEEKNOW_HELP;
 use huntsman_recon::sf_compat::SF_USAGE;
 use huntsman_recon::username_cli::USERNAME_HELP;
+
+/// Usage error for a command word that the dispatcher does not know.
+pub(super) fn unknown_command(other: &str) -> ExitCode {
+    fail(EX_USAGE, &format!("unknown command: {other}\n{USAGE}"))
+}
 
 pub(super) fn print_command_help(command: &str) {
     let help = match command {
@@ -37,7 +45,7 @@ pub(super) fn print_command_help(command: &str) {
         }
         "id" => "id TOKEN\nClassify and validate an Australian ABN, ACN, or BSB.",
         "search" => {
-            "search QUERY [DIR]\nSearch built-in examples, or .txt/.md files in one directory. Challenge pages and unsafe/oversized inputs are skipped."
+            "search QUERY [DIR]\nSearch built-in examples, or .txt/.md files in one directory. Every query term must occur; an email address or domain must occur whole. Short HTML challenge pages and unsafe or oversized inputs are skipped."
         }
         "sources" => {
             "sources QUERY\nClassify an indicator and print curated public/browser search routes. Does not fetch those routes."

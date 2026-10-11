@@ -19,10 +19,15 @@ Railway detects the root `Dockerfile` automatically. The container:
   `/data`.
 
 The entrypoint accepts `HSE_AUTH_TOKEN`. If it is absent, a 256-bit token is
-generated from `/dev/urandom`, stored at
-`$HUNTSMAN_DATA_DIR/.huntsman/railway-auth-token`, and printed once to the
-deployment log. Set `HSE_AUTH_TOKEN` as a Railway variable for a stable token
-that does not depend on volume persistence.
+generated from `/dev/urandom` and stored at
+`$HUNTSMAN_DATA_DIR/.huntsman/railway-auth-token`. The value is never written to
+the deployment log; the log names the file. Set `HSE_AUTH_TOKEN` as a Railway
+variable for a stable token that does not depend on volume persistence.
+
+A token printed by an earlier build of this entrypoint must be treated as
+exposed. Rotate it by setting `HSE_AUTH_TOKEN` to a new value, or by deleting the
+stored file and redeploying with `HSE_AUTH_TOKEN` unset, so that a new token is
+generated.
 
 ## Healthcheck
 

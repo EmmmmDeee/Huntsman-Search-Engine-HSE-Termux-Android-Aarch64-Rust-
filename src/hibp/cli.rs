@@ -38,6 +38,7 @@ use super::passwords::{PasswordHashMode, wipe};
 use super::types::{
     BreachModel, BreachedAccountOptions, BreachesFilter, PasteModel, SubscriptionStatus,
 };
+use crate::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 
 /// Usage for `huntsman-recon hibp`.
 pub const HIBP_USAGE: &str = "usage: huntsman-recon hibp [breach NAME | breaches [--domain DOMAIN] | account EMAIL | pastes EMAIL | password-range PREFIX | password | subscription | help]";
@@ -52,13 +53,6 @@ const SUBCOMMANDS: [&str; 8] = [
     "subscription",
     "help",
 ];
-
-const EX_USAGE: u8 = 64;
-const EX_DATAERR: u8 = 65;
-const EX_NOINPUT: u8 = 66;
-const EX_UNAVAILABLE: u8 = 69;
-const EX_IOERR: u8 = 74;
-const EX_NOPERM: u8 = 77;
 
 /// Longest password line read from stdin, in bytes.
 const MAX_PASSWORD_BYTES: u64 = 4096;

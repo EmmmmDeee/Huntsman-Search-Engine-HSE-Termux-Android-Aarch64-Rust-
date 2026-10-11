@@ -42,7 +42,7 @@ pub fn field(record: &Map<String, Value>, key: &str) -> Option<String> {
 pub fn datastore_search_url(action_base: &str, resource_id: &str, q: &str, limit: usize) -> String {
     format!(
         "{action_base}/datastore_search?resource_id={resource_id}&q={}&limit={limit}",
-        url_encode_query(q)
+        crate::http::percent_encode_component(q)
     )
 }
 
@@ -61,24 +61,6 @@ pub fn check_envelope(
     } else {
         Ok(response.result)
     }
-}
-
-fn url_encode_query(raw: &str) -> String {
-    let mut out = String::new();
-    for byte in raw.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(char::from(byte));
-            }
-            b' ' => out.push('+'),
-            _ => {
-                out.push('%');
-                out.push(crate::http::hex_upper_digit(byte >> 4));
-                out.push(crate::http::hex_upper_digit(byte & 0x0f));
-            }
-        }
-    }
-    out
 }
 
 #[cfg(test)]

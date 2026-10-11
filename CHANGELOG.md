@@ -10,6 +10,11 @@ release yet; relevant pushes to `main` are built and verified, and a current-hea
 ## [Unreleased]
 - Fix the main-channel release race where a queued build could become historical before `gh release create --target <sha>` and fail with GitHub's built-in workflow token. Publication now uses a draft created from the live main head, verifies its tag exactly, and discards a raced draft rather than failing or publishing the wrong commit.
 
+### Changed
+
+- `search` treats a saved file as a challenge page only when it is an HTML document of at most 32 KiB that carries a challenge signature. Markdown, prose and longer pages that quote a vendor or phrase are now searched. The fetch path keeps its stricter rule.
+- `search` matches a query that is one email address or one domain as a whole name. `ada@example.com` no longer matches a document that holds "ada", "example" and "com" apart. A domain still matches its subdomains and the addresses at it.
+
 ### Added
 
 - Provider credential health automation: `credential-status [--probe] [FILE]` keeps ordinary status offline, resolves existing private runtime key sources without rendering values, and can run canonical live probes for configured single-slot providers. HIBP uses `/subscription/status` with the required `User-Agent` and reports non-secret plan/RPM/entitlement metadata.
@@ -87,6 +92,12 @@ release yet; relevant pushes to `main` are built and verified, and a current-hea
 
 ### Fixed
 
+- `sources` / `source_registry::routes_for` input hardening (#671 review
+  follow-up): every leading `@` of a username is stripped (`@@x` routes `x`,
+  not `@x`), a handle made only of `@` is refused like an empty value, and a
+  value made only of dots (`.`, `..`, `@..`) is refused instead of rendering a
+  path-traversal-looking URL. Refused values give no routes, so `sources`
+  exits 65 with empty stdout.
 - Legacy snapshot restored to its pinned bytes after #665 edited files under
   `legacy/` (78ce7723). #665 therefore has no effect on the current tree, and
   #663 merged no changes.

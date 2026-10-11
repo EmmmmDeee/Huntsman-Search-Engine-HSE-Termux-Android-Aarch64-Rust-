@@ -26,7 +26,7 @@ fn railway_iac_has_an_executable_ci_gate() {
     for required in [
         "railway-iac:",
         "Railway IaC type validation",
-        "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0",
+        "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0",
         "node-version: \"22\"",
         "bash scripts/validate-railway-iac.sh",
     ] {

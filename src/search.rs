@@ -1,12 +1,14 @@
 //! Local search. Operator-supplied documents only.
 //! A blocked or throttled fetch is not a hit. No paid source. No live client.
 
-use std::collections::HashMap;
 use std::path::Path;
 
-use crate::classify::classify_response;
+use crate::classifier::classify;
+use crate::classify::{classify_response, is_saved_challenge};
+use crate::entity::EntityKind;
 use crate::error::Error;
 use crate::fsio::read_bounded;
+use crate::textnorm::{is_word_extender, normalise_token};
 
 /// Per-document read bound for operator directories.
 pub const MAX_DOC_BYTES: u64 = 1_048_576;
@@ -38,17 +40,24 @@ pub struct Loaded {
     pub skipped: Vec<Skipped>,
 }
 
-/// Unicode word tokens, lowercased. Single-character tokens are dropped.
-/// A non-ASCII letter never splits a word.
+/// Unicode word tokens, lowercased and folded by [`normalise_token`]. Single-character tokens are
+/// dropped. A non-ASCII letter never splits a word, and neither does a combining mark.
 #[must_use]
 pub fn tokenize(raw: &str) -> Vec<String> {
-    raw.split(|c: char| !c.is_alphanumeric())
+    raw.split(|c: char| !is_word_char(c))
+        .map(normalise_token)
         .filter(|t| t.chars().nth(1).is_some())
-        .map(str::to_lowercase)
         .collect()
 }
 
-/// Every distinct query term must occur. Score is the total occurrence count.
+/// A letter, a digit, or a mark or format character that belongs to the word before it. Every
+/// extender is non-ASCII, so an ASCII separator returns at the first test.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || (!c.is_ascii() && is_word_extender(c))
+}
+
+/// Every distinct query term must occur. Score is the total occurrence count. A query that is
+/// one email address or one domain must also occur as a whole name (see `names_identifier`).
 #[must_use]
 pub fn search(docs: &[Document], query: &str) -> Vec<Hit> {
     let mut terms = tokenize(query);
@@ -57,17 +66,24 @@ pub fn search(docs: &[Document], query: &str) -> Vec<Hit> {
     if terms.is_empty() {
         return Vec::new();
     }
+    let identifier = identifier_query(query);
     let mut hits = Vec::new();
+    let mut counts = vec![0usize; terms.len()];
     for doc in docs {
-        let mut counts: HashMap<String, usize> = HashMap::new();
-        for token in tokenize(&doc.body) {
-            *counts.entry(token).or_default() += 1;
-        }
-        let found: Option<Vec<usize>> = terms.iter().map(|t| counts.get(t).copied()).collect();
-        if let Some(found) = found {
+        counts.fill(0);
+        for_each_token(&doc.body, |token| {
+            if let Ok(index) = terms.binary_search_by(|term| term.as_str().cmp(token)) {
+                counts[index] += 1;
+            }
+        });
+        if counts.iter().all(|&count| count > 0)
+            && identifier
+                .as_ref()
+                .is_none_or(|id| names_identifier(&doc.body, id))
+        {
             hits.push(Hit {
                 id: doc.id.clone(),
-                score: found.iter().sum(),
+                score: counts.iter().sum(),
                 source: doc.source.clone(),
             });
         }
@@ -76,8 +92,76 @@ pub fn search(docs: &[Document], query: &str) -> Vec<Hit> {
     hits
 }
 
+/// An email address or a domain that is the whole query, in canonical ASCII form.
+struct Identifier {
+    value: String,
+    /// A domain also names its subdomains and the addresses at it. An address names only itself.
+    domain: bool,
+}
+
+/// The identifier when the whole query is one ASCII email address or domain. Matching its terms
+/// alone would find "ada@example.com" in any document that holds "ada", "example" and "com" apart.
+fn identifier_query(query: &str) -> Option<Identifier> {
+    let classified = classify(query.trim().trim_end_matches('.'));
+    if !classified.value.is_ascii() {
+        return None;
+    }
+    match classified.kind {
+        EntityKind::Email => Some(Identifier {
+            value: classified.value,
+            domain: false,
+        }),
+        EntityKind::Domain => Some(Identifier {
+            value: classified.value,
+            domain: true,
+        }),
+        _ => None,
+    }
+}
+
+/// Whether `text` names the identifier. Names are runs of letters, digits and `.@-_+`, with a
+/// trailing full stop removed, so a sentence that ends in the name still matches. A run matches
+/// when it equals the identifier, ignoring ASCII case. For a domain, a run also matches when it
+/// ends in the domain after a `.` or `@`: `api.example.com` and `ada@example.com` name
+/// `example.com`, while `myexample.com` and `example.com.au` do not.
+fn names_identifier(text: &str, identifier: &Identifier) -> bool {
+    let value = identifier.value.as_str();
+    text.split(|c: char| !(c.is_alphanumeric() || matches!(c, '.' | '@' | '-' | '_' | '+')))
+        .map(|run| run.trim_end_matches('.'))
+        .any(|run| {
+            run.eq_ignore_ascii_case(value)
+                || (identifier.domain
+                    && run.len() > value.len()
+                    && matches!(run.as_bytes()[run.len() - value.len() - 1], b'.' | b'@')
+                    && run
+                        .get(run.len() - value.len()..)
+                        .is_some_and(|tail| tail.eq_ignore_ascii_case(value)))
+        })
+}
+
+/// Calls `visit` with each token that [`tokenize`] would return for `text`, in order. Lowercase
+/// ASCII tokens are passed without allocation.
+fn for_each_token(text: &str, mut visit: impl FnMut(&str)) {
+    for word in text.split(|c: char| !is_word_char(c)) {
+        if word
+            .bytes()
+            .all(|b| b.is_ascii() && !b.is_ascii_uppercase())
+        {
+            if word.len() > 1 {
+                visit(word);
+            }
+        } else {
+            let token = normalise_token(word);
+            if token.chars().nth(1).is_some() {
+                visit(&token);
+            }
+        }
+    }
+}
+
 /// Load operator `.txt` and `.md` files from one directory, not recursive.
-/// Challenge pages, non-UTF-8, oversize files, and symlinks are reported as skipped.
+/// Short HTML challenge pages (see [`is_saved_challenge`]), non-UTF-8, oversize files, and
+/// symlinks are reported as skipped.
 ///
 /// # Errors
 /// `Error::Store` when the directory itself cannot be read. An unreadable
@@ -112,7 +196,7 @@ pub fn load_dir(dir: &Path) -> Result<Loaded, Error> {
                 continue;
             }
         };
-        if !classify_response(200, &body).is_result() {
+        if is_saved_challenge(&body) {
             loaded.skipped.push(skip("challenge page".into()));
             continue;
         }
@@ -149,6 +233,7 @@ pub fn search_response(status: u16, body: &str, query: &str, source: &str) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn docs() -> Vec<Document> {
         vec![
@@ -211,6 +296,46 @@ mod tests {
     }
 
     #[test]
+    fn accents_do_not_separate_a_name_from_its_plain_spelling() {
+        let docs = vec![
+            Document {
+                id: "zurich".into(),
+                body: "Zürich station".into(),
+                source: "local".into(),
+            },
+            Document {
+                id: "jose".into(),
+                body: "José García attended".into(),
+                source: "local".into(),
+            },
+        ];
+        assert_eq!(search(&docs, "zurich")[0].id, "zurich");
+        assert_eq!(search(&docs, "Jose Garcia")[0].id, "jose");
+        assert_eq!(search(&docs, "José")[0].id, "jose");
+        assert!(search(&docs, "Garcia Zurich").is_empty());
+    }
+
+    #[test]
+    fn combining_marks_and_soft_hyphens_do_not_split_words() {
+        let docs = vec![
+            Document {
+                id: "decomposed".into(),
+                body: "Zu\u{0308}rich station".into(),
+                source: "local".into(),
+            },
+            Document {
+                id: "soft".into(),
+                body: "co\u{00AD}operate schedule".into(),
+                source: "local".into(),
+            },
+        ];
+        assert_eq!(tokenize("Zu\u{0308}rich"), ["zurich"]);
+        assert_eq!(search(&docs, "Zürich")[0].id, "decomposed");
+        assert_eq!(search(&docs, "zurich")[0].id, "decomposed");
+        assert_eq!(search(&docs, "cooperate")[0].id, "soft");
+    }
+
+    #[test]
     fn operator_dir_requires_every_term() {
         let root = std::env::temp_dir().join(format!("huntsman-docs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -241,6 +366,155 @@ mod tests {
             load_dir(&root).is_err(),
             "missing dir is an error, not hits=0"
         );
+    }
+
+    #[test]
+    fn email_and_domain_queries_match_the_whole_name() {
+        let doc = |id: &str, body: &str| Document {
+            id: id.into(),
+            body: body.into(),
+            source: "local".into(),
+        };
+        let docs = vec![
+            doc("email", "Contact Ada@Example.com for the report."),
+            doc(
+                "parts",
+                "Ada reviewed the example. The com directory lists her",
+            ),
+            doc("lookalike", "Ada wrote to ada@example.company"),
+            doc("subdomain", "See https://api.example.com/v1 for the feed"),
+            doc("suffix", "Hosted at myexample.com and example.com.au"),
+        ];
+        let ids = |query: &str| -> Vec<String> {
+            search(&docs, query).into_iter().map(|hit| hit.id).collect()
+        };
+        assert_eq!(ids("ada@example.com"), ["email"]);
+        assert_eq!(ids("example.com"), ["email", "subdomain"]);
+        assert_eq!(ids("Ada@EXAMPLE.com."), ["email"]);
+    }
+
+    #[test]
+    fn saved_documents_that_quote_a_challenge_are_kept() {
+        let root = std::env::temp_dir().join(format!("huntsman-quotes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("README.md"),
+            "# Notes\n\nThe block page reads `<html>just a moment cloudflare</html>`.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("note.txt"),
+            "DataDome blocked our request on Tuesday.",
+        )
+        .unwrap();
+        let article = format!(
+            "<html>{}<script src=\"https://www.google.com/recaptcha/api.js\"></script></html>",
+            "x".repeat(40 * 1024)
+        );
+        std::fs::write(root.join("article.txt"), article).unwrap();
+        std::fs::write(
+            root.join("block.txt"),
+            "<html>just a moment cloudflare</html>",
+        )
+        .unwrap();
+        let loaded = load_dir(&root).unwrap();
+        let ids: Vec<&str> = loaded.docs.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["README.md", "article.txt", "note.txt"]);
+        let skipped: Vec<&str> = loaded.skipped.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
+        assert!(skipped[0].ends_with("block.txt"), "{skipped:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The count-per-document search before `for_each_token` replaced the token map. Kept here
+    /// as the oracle for the differential test.
+    fn reference_search(docs: &[Document], query: &str) -> Vec<Hit> {
+        let mut terms = tokenize(query);
+        terms.sort_unstable();
+        terms.dedup();
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let mut hits = Vec::new();
+        for doc in docs {
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            for token in tokenize(&doc.body) {
+                *counts.entry(token).or_default() += 1;
+            }
+            let found: Option<Vec<usize>> = terms.iter().map(|t| counts.get(t).copied()).collect();
+            if let Some(found) = found {
+                hits.push(Hit {
+                    id: doc.id.clone(),
+                    score: found.iter().sum(),
+                    source: doc.source.clone(),
+                });
+            }
+        }
+        hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
+        hits
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            usize::try_from(self.0 % u64::try_from(bound).unwrap_or(1)).unwrap_or(0)
+        }
+    }
+
+    #[test]
+    fn counting_matches_the_reference_on_generated_corpora() {
+        // Vocabulary covers case, Unicode (including a final sigma and a dotted capital I),
+        // one-letter words, punctuation and digits, so every branch of the tokeniser runs.
+        let vocabulary = [
+            "port",
+            "Port",
+            "PORT",
+            "Zürich",
+            "zürich",
+            "ΟΔΟΣ",
+            "ὈΔΌΣ",
+            "a",
+            "b1",
+            "x-ray",
+            "İstanbul",
+            "42",
+            "brisbane",
+            "Brisbane!",
+            "",
+        ];
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for round in 0..300 {
+            let doc_count = 1 + rng.below(12);
+            let mut docs = Vec::with_capacity(doc_count);
+            for index in 0..doc_count {
+                let word_count = rng.below(40);
+                let mut words = Vec::with_capacity(word_count);
+                for _ in 0..word_count {
+                    words.push(vocabulary[rng.below(vocabulary.len())]);
+                }
+                docs.push(Document {
+                    id: format!("doc{round}-{index}"),
+                    body: words.join(" "),
+                    source: "generated".into(),
+                });
+            }
+            let query_terms = 1 + rng.below(3);
+            let mut query_words = Vec::with_capacity(query_terms);
+            for _ in 0..query_terms {
+                query_words.push(vocabulary[rng.below(vocabulary.len())]);
+            }
+            let query = query_words.join(" ");
+            assert_eq!(
+                search(&docs, &query),
+                reference_search(&docs, &query),
+                "round {round}: {query:?}"
+            );
+        }
     }
 
     #[test]

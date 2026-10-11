@@ -497,6 +497,20 @@ mod tests {
     }
 
     #[test]
+    fn every_breach_module_is_a_breach_source() {
+        // The module catalogue's `Breach` category and the correlator's breach family must agree,
+        // or a breach module's hits never count toward `multi_breach`.
+        let breach_modules = crate::module::reachable_modules()
+            .iter()
+            .filter(|module| module.category == crate::dependency::ModuleCategory::Breach)
+            .collect::<Vec<_>>();
+        assert!(breach_modules.len() >= 3, "{breach_modules:?}");
+        for module in breach_modules {
+            assert_eq!(source_family(module.name), "breach", "{}", module.name);
+        }
+    }
+
+    #[test]
     fn helper_behaviour_matches_legacy_oracles() {
         assert!(text_mentions_ip("seen at 1.2.3.4: Brisbane", "1.2.3.4"));
         assert!(text_mentions_ip("via [2001:db8::1]:443", "2001:db8::1"));
@@ -504,6 +518,8 @@ mod tests {
         assert!(!text_mentions_ip("aé1", "é"));
         assert_eq!(source_family("ip2location"), "infra");
         assert_eq!(source_family("hibp"), "breach");
+        assert_eq!(source_family("seeknow"), "breach");
+        assert_eq!(source_family("see_know"), "breach");
         assert_eq!(source_family("github_user"), "code");
         assert_eq!(date_diff_days("2024-06-15", "2024-06-15"), 0);
         assert!(crate::relation::is_generic_handle("support"));

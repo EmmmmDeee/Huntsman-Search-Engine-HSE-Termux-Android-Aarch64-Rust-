@@ -2,9 +2,10 @@
 
 use std::process::ExitCode;
 
-use super::{EX_DATAERR, EX_USAGE, fail};
+use super::fail;
 use huntsman_recon::au_id::{Identifier, classify as classify_id};
 use huntsman_recon::classify::classify_response;
+use huntsman_recon::exit::{EX_DATAERR, EX_USAGE};
 use huntsman_recon::geohash;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
 use huntsman_recon::redact::coarsen_latlon;
