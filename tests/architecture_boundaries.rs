@@ -156,10 +156,10 @@ fn production_string_literals(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether a string literal names a credential slot: a `HUNTSMAN_` name with a credential suffix,
-/// or the standard `HIBP_API_KEY` that the HIBP key chain also reads.
+/// Whether a string literal names a credential: a `HUNTSMAN_` name with a credential suffix, or one
+/// of the two names outside that prefix, the standard `HIBP_API_KEY` and the `serve` token.
 fn names_a_credential_slot(literal: &str) -> bool {
-    literal == "HIBP_API_KEY"
+    matches!(literal, "HIBP_API_KEY" | "HSE_AUTH_TOKEN")
         || (literal.starts_with("HUNTSMAN_")
             && CREDENTIAL_SUFFIXES
                 .iter()
@@ -305,6 +305,7 @@ fn the_scanner_sees_each_forbidden_form_and_ignores_the_rest() {
         "HUNTSMAN_WIGLE_USER",
         "HUNTSMAN_CENSYS_SECRET",
         "HIBP_API_KEY",
+        "HSE_AUTH_TOKEN",
     ] {
         assert!(names_a_credential_slot(name), "{name}");
     }

@@ -58,6 +58,10 @@ pub const WHOXY_KEY_ENV: &str = "HUNTSMAN_WHOXY_KEY";
 pub const WIGLE_TOKEN_ENV: &str = "HUNTSMAN_WIGLE_TOKEN";
 pub const WIGLE_USER_ENV: &str = "HUNTSMAN_WIGLE_USER";
 
+// The bearer token that protects the `serve` listener. The binary's adapter reads it. It is named
+// here with the other credentials, so every credential name is declared in this file.
+pub const SERVE_TOKEN_ENV: &str = "HSE_AUTH_TOKEN";
+
 /// `$HOME`, when it is set. Its value need not be valid Unicode.
 #[must_use]
 pub fn home() -> Option<OsString> {
