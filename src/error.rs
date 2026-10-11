@@ -20,6 +20,10 @@ pub enum Error {
     /// was correct, so the value is what to fix. The display text is the same as `Invalid`.
     #[error("invalid input: {0}")]
     InvalidValue(String),
+    /// A required credential is absent or blank. Entry points exit 66 for it, as they do for a
+    /// missing key elsewhere.
+    #[error("missing credential: {0}")]
+    MissingCredential(String),
     /// Local persistence failed. The message must not contain a secret.
     #[error("store: {0}")]
     Store(String),
@@ -55,6 +59,12 @@ impl Error {
         Self::InvalidValue(reason.into())
     }
 
+    /// Refuse an operation whose required credential is absent or blank.
+    #[must_use]
+    pub fn missing_credential(reason: impl Into<String>) -> Self {
+        Self::MissingCredential(reason.into())
+    }
+
     /// Record a local store failure.
     #[must_use]
     pub fn store(reason: impl Into<String>) -> Self {
@@ -75,6 +85,7 @@ impl Error {
             Self::MissingField(_)
                 | Self::Invalid(_)
                 | Self::InvalidValue(_)
+                | Self::MissingCredential(_)
                 | Self::TerminateRefused(_)
         )
     }
@@ -102,6 +113,10 @@ mod tests {
             Error::invalid_value("invalid email address").to_string(),
             "invalid input: invalid email address"
         );
+        assert_eq!(
+            Error::missing_credential("HSE_AUTH_TOKEN").to_string(),
+            "missing credential: HSE_AUTH_TOKEN"
+        );
         assert_eq!(Error::store("io").to_string(), "store: io");
         assert_eq!(
             Error::network("egress-policy").to_string(),
@@ -113,6 +128,7 @@ mod tests {
     fn local_contract_is_not_a_network_refusal() {
         assert!(Error::invalid("x").is_local_contract());
         assert!(Error::invalid_value("x").is_local_contract());
+        assert!(Error::missing_credential("x").is_local_contract());
         assert!(!Error::network("x").is_local_contract());
         assert!(!Error::store("x").is_local_contract());
     }

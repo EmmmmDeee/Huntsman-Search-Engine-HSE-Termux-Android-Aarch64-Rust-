@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use super::fail;
 use huntsman_recon::error::Error;
-use huntsman_recon::exit::{EX_DATAERR, EX_UNAVAILABLE, EX_USAGE};
+use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::web_server::{ServeConfig, Server, resolve_serve_bind};
 
 pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
@@ -48,6 +48,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     let token = env::var("HSE_AUTH_TOKEN").ok();
     let config = match ServeConfig::parse(&bind, token) {
         Ok(config) => config,
+        Err(Error::MissingCredential(message)) => return fail(EX_NOINPUT, &message),
         Err(Error::Invalid(message)) => return fail(EX_DATAERR, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };
