@@ -7,8 +7,8 @@ fn current_railway_image_builds_the_root_recon_crate() {
     let docker = fs::read_to_string("Dockerfile").expect("root Dockerfile must exist");
 
     for required in [
-        "FROM rust:1.99-trixie AS builder",
-        "FROM debian:trixie-slim AS runtime",
+        "FROM rust:1.99-trixie@sha256:6ff07edce8775d0f64be7aba9197229407301bddf2054d62c27b541a6238a181 AS builder",
+        "FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS runtime",
         "cargo build --release --locked --bin huntsman-recon",
         "COPY scripts/railway-entrypoint.sh /usr/local/bin/huntsman-entrypoint",
         "ENTRYPOINT [\"/usr/local/bin/huntsman-entrypoint\"]",
@@ -18,6 +18,13 @@ fn current_railway_image_builds_the_root_recon_crate() {
         assert!(
             docker.contains(required),
             "root Dockerfile must contain {required:?}"
+        );
+    }
+
+    for line in docker.lines().filter(|line| line.starts_with("FROM ")) {
+        assert!(
+            line.contains("@sha256:"),
+            "every base image must be pinned by digest, not a tag alone: {line:?}"
         );
     }
 
