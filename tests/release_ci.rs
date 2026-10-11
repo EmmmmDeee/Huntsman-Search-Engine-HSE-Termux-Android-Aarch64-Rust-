@@ -655,6 +655,8 @@ fn clean_fixture(dir: &Path) {
     for n in 0..100 {
         write!(digit_table, "{n:02}").unwrap();
     }
+    let sha40 = format!("{}{}", random_hex32(), &random_hex32()[..8]);
+    let sha64 = random_hex32().repeat(2);
     fs::write(
         dir.join("bin"),
         [
@@ -670,6 +672,19 @@ fn clean_fixture(dir: &Path) {
             hex_table.as_bytes(),
             b"\x00".as_slice(),
             digit_table.as_bytes(),
+            b"\x00".as_slice(),
+            // `strings` joins adjacent literals, so a benign run can carry a
+            // hex char or two from the next one. These are the shapes seen in
+            // the real main-f3b5b75 binary: a commit SHA before the version,
+            // a sha256 before "embedded", std's digit table before "assertion".
+            // Up to 4 such chars in total, on either end, are tolerated.
+            format!("{sha40}0.2.0").as_bytes(),
+            b"\x00".as_slice(),
+            format!("{sha64}embedded canonical").as_bytes(),
+            b"\x00".as_slice(),
+            format!("{digit_table}assertion failed").as_bytes(),
+            b"\x00".as_slice(),
+            format!("ab{sha40}cd").as_bytes(),
             b"\x00".as_slice(),
         ]
         .concat(),
@@ -1523,6 +1538,11 @@ fn hex_run_rule_catches_a_key_packed_against_other_hex() {
         ),
         ("run48.txt", format!("v={hex}{}\n", &hex[..16]).into_bytes()),
         ("run128.txt", format!("v={}\n", hex.repeat(4)).into_bytes()),
+        // One char more than the tolerated 4-char fringe around a 40-hex core.
+        (
+            "fringe5.txt",
+            format!("v={hex}{}\n", &random_hex32()[..13]).into_bytes(),
+        ),
     ];
     for (file, bytes) in cases {
         let dir = scratch(&format!("hexrun-{file}"));

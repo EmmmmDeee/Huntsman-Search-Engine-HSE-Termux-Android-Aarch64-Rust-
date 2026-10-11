@@ -15,7 +15,8 @@ The scanner reports a file and a rule name only, as `FINDING file=<path as walke
 - **Binaries** go through `strings -a -n 8` **and** `strings -a -e l -n 8`, the second pass covering UTF-16LE. If either pass fails, the scan exits 1.
 - **Text files** are scanned as-is and also get a high-entropy check.
 - **`hibp-key-hex`:** any maximal hex run of 32 or more characters is a finding if it contains 32 lowercase hex characters in a row and its length is not exactly 40 (git SHA-1) or 64 (sha256). This catches a key packed directly against other hex, for example right after `password`, which ends in `d`. Two exceptions are not keys: all-digit runs (std's decimal formatting tables) and the `00..ff` hex byte table, whole or in part.
-  - Known limit: a key fused with exactly 8 or 32 neighbouring hex characters forms a 40- or 64-character run and is not flagged.
+  - Linker fringe: in a binary, `strings` joins adjacent literals, so a benign run can pick up a hex character or two from the next literal. A run is also skipped if dropping at most 4 characters in total from its two ends (`HEX_FRINGE=4`) leaves a benign core: exactly 40 or 64 hex, all digits, or part of the hex byte table. The real `main-f3b5b75` binary has three such runs: a commit SHA before `0.2.0`, a sha256 before `embedded`, and std's digit table before `assertion`.
+  - Known limit: a key fused with 8 to 12, or 32 to 36, neighbouring hex characters forms a run within the fringe of a 40- or 64-character core, and is not flagged.
   - Uppercase-only hex runs are out of scope, because HIBP keys are lowercase.
 - **Symlinks:** the same rule applies in this repo and in HSE-BLE-API.
   - A link whose target (`realpath -e`) is a file or directory **inside** the scanned roots is followed, and its target is scanned.

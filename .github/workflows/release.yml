@@ -519,15 +519,40 @@ jobs:
           # not keys and are skipped: all-digit runs (decimal formatting tables; a random
           # 32-hex key has no letter with probability (10/16)^32, about 3e-7) and the
           # 00..ff hex byte table or any part of it.
+          #
+          # In a linked binary `strings` joins adjacent read-only literals, so a benign
+          # run can pick up a hex character or two from the next literal: a 40-hex
+          # commit SHA followed by the version "0.2.0", a 64-hex digest followed by
+          # "embedded", std's 200-digit table followed by "assertion". A run is
+          # therefore also skipped when dropping at most HEX_FRINGE characters, in total,
+          # from its two ends leaves a benign core (exactly 40 or 64 hex, all digits, or
+          # part of the hex byte table). This widens the existing 40/64 blind spot from
+          # "a key plus exactly 8 (or 32) adjacent hex chars" to "plus 8..12 (or
+          # 32..36)"; "password<key>" (33), "<key>cafe" (36) and 48- or 128-char runs
+          # are still findings.
+          HEX_FRINGE=4
           hex_table=""
           for ((i = 0; i < 256; i++)); do printf -v b '%02x' "$i"; hex_table+=$b; done
+          benign_hex_core() {
+            local c=$1
+            case ${#c} in 40 | 64) return 0 ;; esac
+            [[ $c =~ [a-f] ]] || return 0
+            [[ $hex_table == *"$c"* ]] && return 0
+            return 1
+          }
           hex_runs() {
-            local m
+            local m a b core benign
             while IFS= read -r m; do
-              case ${#m} in 40 | 64) continue ;; esac
               [[ $m =~ [0-9a-f]{32} ]] || continue
-              [[ $m =~ [a-f] ]] || continue
-              [[ $hex_table == *"$m"* ]] && continue
+              benign=0
+              for ((a = 0; a <= HEX_FRINGE && !benign; a++)); do
+                for ((b = 0; a + b <= HEX_FRINGE; b++)); do
+                  core=${m:a:${#m}-a-b}
+                  [ "${#core}" -ge 32 ] || continue
+                  if benign_hex_core "$core"; then benign=1; break; fi
+                done
+              done
+              [ "$benign" = 0 ] || continue
               printf '%s\n' "$m"
             done
           }
