@@ -4,8 +4,8 @@
 //! and [`crate::au_electoral`] over one injected [`crate::http::Transport`]. One
 //! source's [`Error::Invalid`] or `BotWaf` does not abort the others. Evidence is
 //! fed through [`crate::lineage::resolve_with_lineage`]. Tests inject fakes; live
-//! sources are not run here. Saving a ledger is handled by [`crate::lookup_save`]; this
-//! module only parses `--save`.
+//! sources are not run here. Saving a ledger is handled by [`crate::lookup_save`], and the
+//! `--save` option is read by [`crate::lookup_args`]; this module reads only NAME.
 
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -17,11 +17,12 @@ use crate::au_people;
 use crate::canonical::canonical_name;
 use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
-use crate::evidence_ancestry::EvidenceNodeId;
 use crate::http::Transport;
 use crate::identity_resolution::AutoMergePolicy;
-use crate::lineage::{Lineage, Observation, ObservedLineage, UpstreamKind, resolve_with_lineage};
+use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
+use crate::lookup_args::LookupTokens;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::textnorm::name_tokens;
 
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
@@ -46,30 +47,10 @@ impl PeopleArgs {
     /// [`Error::Invalid`] when NAME is missing, `--save` has no path, `--save` is
     /// repeated, or an unknown option is present.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let mut name_parts = Vec::new();
-        let mut save = None;
-        let mut it = args.iter();
-        while let Some(arg) = it.next() {
-            match arg.as_str() {
-                "--save" => {
-                    if save.is_some() {
-                        return Err(Error::Invalid("only one --save".into()));
-                    }
-                    let path = it
-                        .next()
-                        .cloned()
-                        .ok_or_else(|| Error::Invalid("--save needs a value".into()))?;
-                    if path.is_empty() || path.starts_with("--") {
-                        return Err(Error::Invalid("--save needs a file path".into()));
-                    }
-                    save = Some(PathBuf::from(path));
-                }
-                flag if flag.starts_with("--") => {
-                    return Err(Error::Invalid(format!("unknown option {flag}")));
-                }
-                positional => name_parts.push(positional.to_owned()),
-            }
-        }
+        let LookupTokens {
+            positional: name_parts,
+            save,
+        } = LookupTokens::split(args)?;
         if name_parts.is_empty() {
             return Err(Error::Invalid("missing NAME".into()));
         }
@@ -173,29 +154,32 @@ fn collect<R>(
         }
         Err(Error::Network(msg)) => {
             network.get_or_insert(msg.clone());
-            report.outcomes.push(failure_outcome(
+            report.outcomes.push(SourceExecutionOutcome::failed(
                 module,
                 now_unix,
                 SourceOutcomeKind::ConnectFailure,
+                None,
                 msg,
             ));
         }
         Err(Error::Invalid(msg)) => {
             failed.get_or_insert(msg.clone());
-            report.outcomes.push(failure_outcome(
+            report.outcomes.push(SourceExecutionOutcome::failed(
                 module,
                 now_unix,
                 SourceOutcomeKind::Inconclusive,
+                None,
                 msg,
             ));
         }
         Err(e) => {
             let msg = e.to_string();
             failed.get_or_insert(msg.clone());
-            report.outcomes.push(failure_outcome(
+            report.outcomes.push(SourceExecutionOutcome::failed(
                 module,
                 now_unix,
                 SourceOutcomeKind::Inconclusive,
+                None,
                 msg,
             ));
         }
@@ -242,32 +226,12 @@ impl IntoCollected for au_electoral::Report {
     }
 }
 
-fn failure_outcome(
-    module: &'static str,
-    now_unix: u64,
-    kind: SourceOutcomeKind,
-    detail: String,
-) -> SourceExecutionOutcome {
-    let mut outcome = SourceExecutionOutcome::success(module, now_unix, 0);
-    outcome.kind = kind;
-    outcome.found = None;
-    outcome.detail = Some(detail);
-    outcome
-}
-
 fn usable(report: &Report) -> bool {
     !report.entities.is_empty()
         || report
             .outcomes
             .iter()
             .any(|outcome| outcome.kind.is_accepted())
-}
-
-fn name_tokens(name: &str) -> Vec<String> {
-    name.split(|c: char| !c.is_alphabetic())
-        .filter(|token| token.chars().count() >= 2)
-        .map(str::to_ascii_lowercase)
-        .collect()
 }
 
 /// Whether NAME has the two alphabetic tokens a person lookup needs. The scan router
@@ -300,7 +264,7 @@ fn render(report: &Report) -> Result<String, String> {
         let _ = writeln!(out, "{}\t{kind}\tfound={found}", outcome.module);
     }
 
-    let observations = observations(report);
+    let observations = observations_from(&report.entities);
     if observations.is_empty() {
         return Ok(out);
     }
@@ -308,53 +272,15 @@ fn render(report: &Report) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     let _ = writeln!(out, "lineage={}", resolution.observations.len());
     for item in &resolution.observations {
-        let _ = writeln!(out, "{}", lineage_line(item));
+        let _ = writeln!(out, "{}", lineage_tsv_line(item));
     }
     Ok(out)
-}
-
-fn observations(report: &Report) -> Vec<Observation> {
-    report
-        .entities
-        .iter()
-        .enumerate()
-        .flat_map(|(entity_index, entity)| {
-            entity
-                .evidence
-                .iter()
-                .enumerate()
-                .map(move |(evidence_index, evidence)| Observation {
-                    id: EvidenceNodeId(format!("{}:{entity_index}:{evidence_index}", entity.uid)),
-                    evidence: evidence.clone(),
-                })
-        })
-        .collect()
-}
-
-fn lineage_line(item: &ObservedLineage) -> String {
-    let id = &item.observation.id.0;
-    match &item.lineage {
-        Lineage::Upstream { kind, family, .. } => {
-            format!("{id}\t{}\t{family}", upstream_kind_label(*kind))
-        }
-        Lineage::Unattributed => format!("{id}\tunattributed"),
-        Lineage::Ambiguous { field, values } => {
-            format!("{id}\tambiguous\t{field}\t{}", values.join(";"))
-        }
-    }
-}
-
-const fn upstream_kind_label(kind: UpstreamKind) -> &'static str {
-    match kind {
-        UpstreamKind::Dataset => "dataset",
-        UpstreamKind::Registry => "registry",
-        UpstreamKind::Source => "source",
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{html_ok, json_ok};
     use std::cell::RefCell;
     use std::collections::HashMap;
 
@@ -439,24 +365,6 @@ mod tests {
                 detail: format!("egress-policy: {}", request.url),
                 blocked: true,
             })
-        }
-    }
-
-    fn json_ok(body: &str) -> Response {
-        Response {
-            status: 200,
-            headers: vec![("content-type".into(), "application/json".into())],
-            body: body.as_bytes().to_vec(),
-            truncated: false,
-        }
-    }
-
-    fn html_ok(body: &str) -> Response {
-        Response {
-            status: 200,
-            headers: vec![("content-type".into(), "text/html".into())],
-            body: body.as_bytes().to_vec(),
-            truncated: false,
         }
     }
 

@@ -6,6 +6,7 @@ pub use crate::attack_catalog::{ENTERPRISE, TACTICS, Tactic, Technique};
 use crate::dependency::ModuleCategory;
 use crate::entity::{Entity, EntityKind};
 use crate::graph::{EntityRelation, RelationKind};
+use crate::metrics::fraction;
 
 /// Version of the repository's complete embedded Enterprise snapshot.
 pub const ATTACK_VERSION: &str = "17.1";
@@ -198,15 +199,6 @@ pub struct Coverage {
     pub coverage_fraction: f64,
 }
 
-#[allow(clippy::cast_precision_loss)]
-fn ratio(numerator: usize, denominator: usize) -> f64 {
-    if denominator == 0 {
-        0.0
-    } else {
-        numerator as f64 / denominator as f64
-    }
-}
-
 #[must_use]
 pub fn coverage(exercised: &BTreeMap<String, usize>) -> Coverage {
     let recon = reconnaissance();
@@ -225,7 +217,7 @@ pub fn coverage(exercised: &BTreeMap<String, usize>) -> Coverage {
         tactic_id: TACTIC_ID,
         tactic_name: TACTIC_NAME,
         uncovered: uncovered(|id| exercised.contains_key(id)),
-        coverage_fraction: ratio(covered.len(), recon.len()),
+        coverage_fraction: fraction(covered.len(), recon.len()),
         covered,
     }
 }

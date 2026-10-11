@@ -55,12 +55,6 @@ Run `huntsman-recon <COMMAND> --help` for command details.
 Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
 `seeknow`, `people`, `email`, `username`, `query`, and networked `sf -s` lookups make HTTP requests; `serve` accepts inbound HTTP connections; their default
 egress policy is public-only.";
-const EX_USAGE: u8 = 64;
-const EX_DATAERR: u8 = 65;
-const EX_NOINPUT: u8 = 66;
-const EX_UNAVAILABLE: u8 = 69;
-const EX_NOPERM: u8 = 77;
-const EX_IOERR: u8 = 74;
 const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
 mod help;
 mod lookup;
@@ -122,7 +116,7 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         Some("correlate") => meta::correlate_cmd(&remaining.collect::<Vec<_>>()),
         Some("run-history") => meta::run_history_cmd(&remaining.collect::<Vec<_>>()),
         Some("check") | None => selfcheck::check(),
-        Some(other) => fail(EX_USAGE, &format!("unknown command: {other}\n{USAGE}")),
+        Some(other) => help::unknown_command(other),
     }
 }
 

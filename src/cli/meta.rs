@@ -4,12 +4,13 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use super::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_USAGE, fail};
+use super::fail;
 use huntsman_recon::attack_cli::{ATTACK_USAGE, render as render_attack};
 use huntsman_recon::diagnostics::{self, CredentialResolution, TermuxState};
 use huntsman_recon::directive_lock;
 use huntsman_recon::engineering_command;
 use huntsman_recon::error::Error;
+use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_USAGE};
 use huntsman_recon::fsio::{read_bounded, write_atomic};
 use huntsman_recon::http::{TransportConfig, UreqTransport};
 use huntsman_recon::keys::Keys;

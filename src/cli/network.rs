@@ -5,13 +5,14 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE, RECON_USAGE, fail};
+use super::{RECON_USAGE, fail};
 use huntsman_recon::canonical::{canonical_domain, canonical_email, canonical_url};
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::crtsh::{self, CrtShError};
 use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::error::Error;
+use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fetch::{Credential, FetchOptions, fetch};
 use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
 use huntsman_recon::hibp::cli::HibpCommand;

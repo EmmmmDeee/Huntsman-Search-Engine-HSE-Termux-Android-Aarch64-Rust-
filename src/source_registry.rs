@@ -242,7 +242,7 @@ pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
     if value.is_empty() || value.chars().all(|c| c == '.') {
         return Vec::new();
     }
-    let encoded = percent_encode_component(value);
+    let encoded = crate::http::percent_encode_unreserved(value);
     SOURCES
         .iter()
         .filter(|source| {
@@ -262,21 +262,6 @@ pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
             evidence_role: source.evidence_role,
         })
         .collect()
-}
-
-fn percent_encode_component(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    for byte in raw.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            out.push(char::from(byte));
-        } else {
-            out.push('%');
-            out.push(char::from(HEX[usize::from(byte >> 4)]));
-            out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-        }
-    }
-    out
 }
 
 #[cfg(test)]

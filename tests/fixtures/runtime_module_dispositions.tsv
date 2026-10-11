@@ -51,10 +51,12 @@ egress	leaf	network egress policy
 email_cli	diagnostic	email enrichment command front-end
 engineering_command	diagnostic	executable engineering command hierarchy and capability ownership
 entity	runtime	canonical entity and evidence model
+environment	leaf	the process environment, read through one module
 error	leaf	shared error type
 eval	leaf	evaluation statistics and helpers
 event	leaf	event primitive
 evidence_ancestry	runtime	independent-origin ancestry graph
+exit	leaf	process exit statuses shared by the binaries
 exposure	runtime	exposure analysis through intelligence report
 fetch	leaf	guarded causal fetch boundary
 fetch_cli	diagnostic	low-level fetch command parsing
@@ -79,6 +81,8 @@ keys	leaf	credential file handling
 leads	runtime	lead ranking through intelligence report
 ledger	exporter	hash-chained verified-claim ledger
 lineage	leaf	lineage-aware candidate resolution helper
+lookup_args	leaf	lookup option grammar shared by the front-ends
+lookup_report	leaf	shared text report of an identifier lookup
 lookup_save	exporter	shared unverified lookup ledger persistence
 md5	leaf	MD5 primitive for protocols that require public MD5 identifiers
 mediawiki	adapter	MediaWiki source adapter

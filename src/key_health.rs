@@ -122,6 +122,17 @@ mod tests {
     }
 
     #[test]
+    fn seeknow_auth_failures_name_the_slot_its_client_reads() {
+        let issues = auth_failing_sources(&[health(
+            "seeknow",
+            20,
+            Some("HTTP 401 Unauthorized: authentication_failed"),
+        )]);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].likely_env_var, Some(crate::seeknow::KEY_SLOT));
+    }
+
+    #[test]
     fn dehashed_health_maps_to_registered_env_var() {
         let issues = auth_failing_sources(&[health(
             "dehashed",

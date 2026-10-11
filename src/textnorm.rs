@@ -16,6 +16,81 @@ pub fn escape_controls(s: &str) -> String {
     out
 }
 
+/// Decodes the named and numeric character references in `s`. A reference that is unknown,
+/// malformed, or not a valid character is left as it is, and so is any `&` that does not begin one.
+#[must_use]
+pub fn decode_html_entities(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while !rest.is_empty() {
+        let decoded = if rest.as_bytes()[0] == b'&' {
+            decode_one_html_entity(rest)
+        } else {
+            None
+        };
+        if let Some((ch, consumed)) = decoded {
+            out.push(ch);
+            rest = &rest[consumed..];
+        } else {
+            let ch = rest.chars().next().expect("non-empty");
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    out
+}
+
+fn decode_one_html_entity(rest: &str) -> Option<(char, usize)> {
+    let after_amp = rest.get(1..)?;
+    if after_amp.starts_with('#') {
+        let hex = after_amp
+            .as_bytes()
+            .get(1)
+            .is_some_and(|b| *b == b'x' || *b == b'X');
+        let digits = if hex {
+            after_amp.get(2..)?
+        } else {
+            after_amp.get(1..)?
+        };
+        let end = digits.find(';')?;
+        let raw = &digits[..end];
+        if raw.is_empty() {
+            return None;
+        }
+        let value = if hex {
+            u32::from_str_radix(raw, 16).ok()?
+        } else {
+            raw.parse::<u32>().ok()?
+        };
+        let ch = char::from_u32(value)?;
+        let consumed = 2 + usize::from(hex) + raw.len() + 1;
+        return Some((ch, consumed));
+    }
+    let end = after_amp.find(';')?;
+    let name = &after_amp[..end];
+    let ch = match name {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => ' ',
+        _ => return None,
+    };
+    Some((ch, 1 + name.len() + 1))
+}
+
+/// The alphabetic runs of `full` that are at least two characters long, lowercased. These are the
+/// tokens that name matching compares. A one-letter initial is not a token, even an accented one
+/// that takes two bytes in UTF-8.
+#[must_use]
+pub fn name_tokens(full: &str) -> Vec<String> {
+    full.split(|c: char| !c.is_alphabetic())
+        .filter(|token| token.chars().nth(1).is_some())
+        .map(str::to_lowercase)
+        .collect()
+}
+
 /// A trimmed, non-empty borrow of an optional string field.
 #[must_use]
 pub fn nonempty(value: &Option<String>) -> Option<&str> {
@@ -144,89 +219,323 @@ pub fn char_window(s: &str, start: usize, end: usize) -> &str {
     &s[begin..finish]
 }
 
-/// Fold a Latin-ish string to lowercase ASCII `[a-z0-9]`, dropping the rest.
+/// The ASCII text that each lowercase Latin letter with a diacritic folds to, sorted by code point
+/// for the binary search in [`fold_latin`]. The rows with a canonical decomposition are the
+/// lowercase letters of U+00C0-U+024F and U+1E00-U+1EFF whose decomposition is one ASCII letter
+/// followed by combining marks. The other fifteen rows are letters with no decomposition that
+/// ASCII folding maps by convention, such as `ß` to `ss` and `ø` to `o`. Derived from the Unicode
+/// 15.1 canonical decompositions, and checked letter by letter against them.
+const LATIN_FOLDS: &[(char, &str)] = &[
+    ('ß', "ss"),
+    ('à', "a"),
+    ('á', "a"),
+    ('â', "a"),
+    ('ã', "a"),
+    ('ä', "a"),
+    ('å', "a"),
+    ('æ', "ae"),
+    ('ç', "c"),
+    ('è', "e"),
+    ('é', "e"),
+    ('ê', "e"),
+    ('ë', "e"),
+    ('ì', "i"),
+    ('í', "i"),
+    ('î', "i"),
+    ('ï', "i"),
+    ('ð', "d"),
+    ('ñ', "n"),
+    ('ò', "o"),
+    ('ó', "o"),
+    ('ô', "o"),
+    ('õ', "o"),
+    ('ö', "o"),
+    ('ø', "o"),
+    ('ù', "u"),
+    ('ú', "u"),
+    ('û', "u"),
+    ('ü', "u"),
+    ('ý', "y"),
+    ('þ', "th"),
+    ('ÿ', "y"),
+    ('ā', "a"),
+    ('ă', "a"),
+    ('ą', "a"),
+    ('ć', "c"),
+    ('ĉ', "c"),
+    ('ċ', "c"),
+    ('č', "c"),
+    ('ď', "d"),
+    ('đ', "d"),
+    ('ē', "e"),
+    ('ĕ', "e"),
+    ('ė', "e"),
+    ('ę', "e"),
+    ('ě', "e"),
+    ('ĝ', "g"),
+    ('ğ', "g"),
+    ('ġ', "g"),
+    ('ģ', "g"),
+    ('ĥ', "h"),
+    ('ħ', "h"),
+    ('ĩ', "i"),
+    ('ī', "i"),
+    ('ĭ', "i"),
+    ('į', "i"),
+    ('ı', "i"),
+    ('ĳ', "ij"),
+    ('ĵ', "j"),
+    ('ķ', "k"),
+    ('ĺ', "l"),
+    ('ļ', "l"),
+    ('ľ', "l"),
+    ('ŀ', "l"),
+    ('ł', "l"),
+    ('ń', "n"),
+    ('ņ', "n"),
+    ('ň', "n"),
+    ('ŋ', "n"),
+    ('ō', "o"),
+    ('ŏ', "o"),
+    ('ő', "o"),
+    ('œ', "oe"),
+    ('ŕ', "r"),
+    ('ŗ', "r"),
+    ('ř', "r"),
+    ('ś', "s"),
+    ('ŝ', "s"),
+    ('ş', "s"),
+    ('š', "s"),
+    ('ţ', "t"),
+    ('ť', "t"),
+    ('ŧ', "t"),
+    ('ũ', "u"),
+    ('ū', "u"),
+    ('ŭ', "u"),
+    ('ů', "u"),
+    ('ű', "u"),
+    ('ų', "u"),
+    ('ŵ', "w"),
+    ('ŷ', "y"),
+    ('ź', "z"),
+    ('ż', "z"),
+    ('ž', "z"),
+    ('ſ', "s"),
+    ('ơ', "o"),
+    ('ư', "u"),
+    ('ǎ', "a"),
+    ('ǐ', "i"),
+    ('ǒ', "o"),
+    ('ǔ', "u"),
+    ('ǖ', "u"),
+    ('ǘ', "u"),
+    ('ǚ', "u"),
+    ('ǜ', "u"),
+    ('ǟ', "a"),
+    ('ǡ', "a"),
+    ('ǧ', "g"),
+    ('ǩ', "k"),
+    ('ǫ', "o"),
+    ('ǭ', "o"),
+    ('ǰ', "j"),
+    ('ǵ', "g"),
+    ('ǹ', "n"),
+    ('ǻ', "a"),
+    ('ȁ', "a"),
+    ('ȃ', "a"),
+    ('ȅ', "e"),
+    ('ȇ', "e"),
+    ('ȉ', "i"),
+    ('ȋ', "i"),
+    ('ȍ', "o"),
+    ('ȏ', "o"),
+    ('ȑ', "r"),
+    ('ȓ', "r"),
+    ('ȕ', "u"),
+    ('ȗ', "u"),
+    ('ș', "s"),
+    ('ț', "t"),
+    ('ȟ', "h"),
+    ('ȧ', "a"),
+    ('ȩ', "e"),
+    ('ȫ', "o"),
+    ('ȭ', "o"),
+    ('ȯ', "o"),
+    ('ȱ', "o"),
+    ('ȳ', "y"),
+    ('ḁ', "a"),
+    ('ḃ', "b"),
+    ('ḅ', "b"),
+    ('ḇ', "b"),
+    ('ḉ', "c"),
+    ('ḋ', "d"),
+    ('ḍ', "d"),
+    ('ḏ', "d"),
+    ('ḑ', "d"),
+    ('ḓ', "d"),
+    ('ḕ', "e"),
+    ('ḗ', "e"),
+    ('ḙ', "e"),
+    ('ḛ', "e"),
+    ('ḝ', "e"),
+    ('ḟ', "f"),
+    ('ḡ', "g"),
+    ('ḣ', "h"),
+    ('ḥ', "h"),
+    ('ḧ', "h"),
+    ('ḩ', "h"),
+    ('ḫ', "h"),
+    ('ḭ', "i"),
+    ('ḯ', "i"),
+    ('ḱ', "k"),
+    ('ḳ', "k"),
+    ('ḵ', "k"),
+    ('ḷ', "l"),
+    ('ḹ', "l"),
+    ('ḻ', "l"),
+    ('ḽ', "l"),
+    ('ḿ', "m"),
+    ('ṁ', "m"),
+    ('ṃ', "m"),
+    ('ṅ', "n"),
+    ('ṇ', "n"),
+    ('ṉ', "n"),
+    ('ṋ', "n"),
+    ('ṍ', "o"),
+    ('ṏ', "o"),
+    ('ṑ', "o"),
+    ('ṓ', "o"),
+    ('ṕ', "p"),
+    ('ṗ', "p"),
+    ('ṙ', "r"),
+    ('ṛ', "r"),
+    ('ṝ', "r"),
+    ('ṟ', "r"),
+    ('ṡ', "s"),
+    ('ṣ', "s"),
+    ('ṥ', "s"),
+    ('ṧ', "s"),
+    ('ṩ', "s"),
+    ('ṫ', "t"),
+    ('ṭ', "t"),
+    ('ṯ', "t"),
+    ('ṱ', "t"),
+    ('ṳ', "u"),
+    ('ṵ', "u"),
+    ('ṷ', "u"),
+    ('ṹ', "u"),
+    ('ṻ', "u"),
+    ('ṽ', "v"),
+    ('ṿ', "v"),
+    ('ẁ', "w"),
+    ('ẃ', "w"),
+    ('ẅ', "w"),
+    ('ẇ', "w"),
+    ('ẉ', "w"),
+    ('ẋ', "x"),
+    ('ẍ', "x"),
+    ('ẏ', "y"),
+    ('ẑ', "z"),
+    ('ẓ', "z"),
+    ('ẕ', "z"),
+    ('ẖ', "h"),
+    ('ẗ', "t"),
+    ('ẘ', "w"),
+    ('ẙ', "y"),
+    ('ạ', "a"),
+    ('ả', "a"),
+    ('ấ', "a"),
+    ('ầ', "a"),
+    ('ẩ', "a"),
+    ('ẫ', "a"),
+    ('ậ', "a"),
+    ('ắ', "a"),
+    ('ằ', "a"),
+    ('ẳ', "a"),
+    ('ẵ', "a"),
+    ('ặ', "a"),
+    ('ẹ', "e"),
+    ('ẻ', "e"),
+    ('ẽ', "e"),
+    ('ế', "e"),
+    ('ề', "e"),
+    ('ể', "e"),
+    ('ễ', "e"),
+    ('ệ', "e"),
+    ('ỉ', "i"),
+    ('ị', "i"),
+    ('ọ', "o"),
+    ('ỏ', "o"),
+    ('ố', "o"),
+    ('ồ', "o"),
+    ('ổ', "o"),
+    ('ỗ', "o"),
+    ('ộ', "o"),
+    ('ớ', "o"),
+    ('ờ', "o"),
+    ('ở', "o"),
+    ('ỡ', "o"),
+    ('ợ', "o"),
+    ('ụ', "u"),
+    ('ủ', "u"),
+    ('ứ', "u"),
+    ('ừ', "u"),
+    ('ử', "u"),
+    ('ữ', "u"),
+    ('ự', "u"),
+    ('ỳ', "y"),
+    ('ỵ', "y"),
+    ('ỷ', "y"),
+    ('ỹ', "y"),
+];
+
+/// The ASCII text a lowercase Latin letter folds to, or `None` for every other character.
+/// Uppercase letters are not in the table, because [`normalise_token`] lowercases a word first.
+fn fold_latin(ch: char) -> Option<&'static str> {
+    LATIN_FOLDS
+        .binary_search_by_key(&ch, |&(letter, _)| letter)
+        .ok()
+        .map(|index| LATIN_FOLDS[index].1)
+}
+
+/// Characters that UAX #29 word rule WB4 ignores: combining marks (Extend) and the format
+/// characters that appear in extracted text. Such a character belongs to the word before it, so
+/// it never splits a word and is not kept in the token. The covered mark blocks are the Latin,
+/// Greek and Cyrillic combining blocks. The marks of other scripts are not covered.
 #[must_use]
-pub fn fold_ascii_lower(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            'a'..='z' | '0'..='9' => out.push(ch),
-            'A'..='Z' => out.push(ch.to_ascii_lowercase()),
-            'à'
-            | 'á'
-            | 'â'
-            | 'ã'
-            | 'ä'
-            | 'å'
-            | 'À'
-            | 'Á'
-            | 'Â'
-            | 'Ã'
-            | 'Ä'
-            | 'Å'
-            | 'ā'
-            | 'ă'
-            | 'ą'
-            | '\u{1EA0}'..='\u{1EB7}' => out.push('a'),
-            'ç' | 'Ç' | 'ć' | 'č' | 'ĉ' | 'ċ' => out.push('c'),
-            'è' | 'é' | 'ê' | 'ë' | 'È' | 'É' | 'Ê' | 'Ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' =>
-            {
-                out.push('e');
+pub fn is_word_extender(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{00AD}'
+            | '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{200B}'..='\u{200D}'
+            | '\u{2060}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+            | '\u{FEFF}'
+    )
+}
+
+/// One search token: the word lowercased, with extenders removed and each Latin letter with a
+/// diacritic folded to its base letter. Other letters are kept, so Greek and Cyrillic words stay
+/// whole. The whole word is lowercased at once, which keeps the Greek final sigma.
+#[must_use]
+pub fn normalise_token(word: &str) -> String {
+    let lower = word.to_lowercase();
+    if lower.is_ascii() {
+        return lower;
+    }
+    let mut out = String::with_capacity(lower.len());
+    for ch in lower.chars() {
+        if ch.is_ascii() {
+            out.push(ch);
+        } else if !is_word_extender(ch) {
+            match fold_latin(ch) {
+                Some(folded) => out.push_str(folded),
+                None => out.push(ch),
             }
-            'ì' | 'í' | 'î' | 'ï' | 'Ì' | 'Í' | 'Î' | 'Ï' | 'ī' | 'ĭ' | 'į' | 'ı' | 'ĩ' | 'Ĩ' =>
-            {
-                out.push('i');
-            }
-            'ñ' | 'Ñ' | 'ń' | 'ņ' | 'ň' => out.push('n'),
-            'ò'
-            | 'ó'
-            | 'ô'
-            | 'õ'
-            | 'ö'
-            | 'ø'
-            | 'Ò'
-            | 'Ó'
-            | 'Ô'
-            | 'Õ'
-            | 'Ö'
-            | 'Ø'
-            | 'ō'
-            | 'ŏ'
-            | 'ő'
-            | 'ơ'
-            | 'Ơ'
-            | '\u{1ECC}'..='\u{1EE3}' => out.push('o'),
-            'ù'
-            | 'ú'
-            | 'û'
-            | 'ü'
-            | 'Ù'
-            | 'Ú'
-            | 'Û'
-            | 'Ü'
-            | 'ū'
-            | 'ŭ'
-            | 'ů'
-            | 'ű'
-            | 'ų'
-            | 'ư'
-            | 'Ư'
-            | '\u{1EE4}'..='\u{1EF1}' => out.push('u'),
-            'ý' | 'ÿ' | 'Ý' | 'Ŷ' | 'ŷ' | '\u{1EF2}'..='\u{1EF9}' => out.push('y'),
-            'ł' | 'Ł' => out.push('l'),
-            'ś' | 'š' | 'ş' | 'Ś' | 'Š' | 'Ş' | 'ѕ' => out.push('s'),
-            'ź' | 'ż' | 'ž' | 'Ź' | 'Ż' | 'Ž' => out.push('z'),
-            'ð' | 'Đ' | 'đ' => out.push('d'),
-            'ț' | 'ţ' | 'Ț' | 'Ţ' => out.push('t'),
-            'ğ' | 'Ğ' => out.push('g'),
-            'ř' | 'Ř' => out.push('r'),
-            '\u{1EB8}'..='\u{1EC7}' => out.push('e'),
-            '\u{1EC8}'..='\u{1ECB}' => out.push('i'),
-            'æ' | 'Æ' => out.push_str("ae"),
-            'œ' | 'Œ' => out.push_str("oe"),
-            'ß' => out.push_str("ss"),
-            'þ' | 'Þ' => out.push_str("th"),
-            _ => {}
         }
     }
     out
@@ -292,7 +601,30 @@ pub fn rfind_word_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
     })
 }
 
-/// True when every alphanumeric token of `needle` appears as a whole word in `haystack`.
+/// Case-insensitive equality over Unicode letters: two words are equal when their characters
+/// lowercase, one at a time, to the same sequence, so `Émile` equals `émile`.
+///
+/// The bytes are compared from the start, and the first difference usually settles the answer.
+/// Bytes that are equal, or differ only in ASCII case, are the same character. A difference
+/// between two ASCII bytes makes the words unequal, because every ASCII character lowercases to
+/// one ASCII character. A difference involving a non-ASCII byte is settled on lowercased
+/// characters. With no difference, the words are equal only at the same length: a longer word
+/// has characters left after the shorter one ends, and every character has a lowercase form.
+fn eq_ignore_case(a: &str, b: &str) -> bool {
+    let (x, y) = (a.as_bytes(), b.as_bytes());
+    for (p, q) in x.iter().zip(y) {
+        if !p.eq_ignore_ascii_case(q) {
+            return !(p.is_ascii() && q.is_ascii())
+                && a.chars()
+                    .flat_map(char::to_lowercase)
+                    .eq(b.chars().flat_map(char::to_lowercase));
+        }
+    }
+    x.len() == y.len()
+}
+
+/// True when every alphanumeric token of `needle` appears as a whole word in `haystack`, ignoring
+/// case for Unicode letters as well as ASCII.
 #[must_use]
 pub fn whole_word_token_match(haystack: &str, needle: &str) -> bool {
     let words: Vec<&str> = haystack
@@ -306,7 +638,7 @@ pub fn whole_word_token_match(haystack: &str, needle: &str) -> bool {
     !tokens.is_empty()
         && tokens
             .iter()
-            .all(|token| words.iter().any(|word| word.eq_ignore_ascii_case(token)))
+            .all(|token| words.iter().any(|word| eq_ignore_case(word, token)))
 }
 
 /// Minimum token length `shares_whole_word_token` treats as a real name token.
@@ -322,7 +654,7 @@ pub fn shares_whole_word_token(haystack: &str, needle: &str) -> bool {
     needle
         .split(|c: char| !c.is_alphanumeric())
         .filter(|token| token.chars().count() >= MIN_SHARED_TOKEN)
-        .any(|token| words.iter().any(|word| word.eq_ignore_ascii_case(token)))
+        .any(|token| words.iter().any(|word| eq_ignore_case(word, token)))
 }
 
 #[cfg(test)]
@@ -390,14 +722,62 @@ mod tests {
 
     #[test]
     fn folding_and_slugging_are_stable() {
-        assert_eq!(fold_ascii_lower("José Müller"), "josemuller");
-        assert_eq!(fold_ascii_lower("Nguyễn"), "nguyen");
-        assert_eq!(fold_ascii_lower("Straße"), "strasse");
+        assert_eq!(normalise_token("José"), "jose");
+        assert_eq!(normalise_token("Müller"), "muller");
+        assert_eq!(normalise_token("Nguyễn"), "nguyen");
+        assert_eq!(normalise_token("Straße"), "strasse");
         assert_eq!(
             slugify("client transfer prohibited"),
             "client-transfer-prohibited"
         );
         assert_eq!(slugify("café¹"), "caf");
+    }
+
+    #[test]
+    fn latin_folds_follow_the_unicode_decompositions() {
+        // A sample of the table. When the table was written, every lowercase letter of the Latin
+        // blocks was checked against the Unicode 15.1 decompositions.
+        let pairs = [
+            ('é', "e"),
+            ('ệ', "e"),
+            ('ü', "u"),
+            ('ñ', "n"),
+            ('ō', "o"),
+            ('ș', "s"),
+            ('ț', "t"),
+            ('ǎ', "a"),
+            ('ł', "l"),
+            ('ı', "i"),
+            ('ĳ', "ij"),
+            ('æ', "ae"),
+            ('œ', "oe"),
+            ('ß', "ss"),
+            ('þ', "th"),
+            ('ø', "o"),
+            ('đ', "d"),
+            ('ð', "d"),
+        ];
+        for (letter, folded) in pairs {
+            assert_eq!(fold_latin(letter), Some(folded), "{letter}");
+        }
+        assert_eq!(fold_latin('a'), None);
+        assert_eq!(fold_latin('Ü'), None, "callers lowercase a word first");
+        assert_eq!(fold_latin('ж'), None);
+    }
+
+    #[test]
+    fn fold_table_is_sorted_for_the_binary_search() {
+        assert!(LATIN_FOLDS.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    }
+
+    #[test]
+    fn normalised_tokens_drop_marks_and_keep_other_letters() {
+        assert_eq!(normalise_token("Zu\u{0308}rich"), "zurich");
+        assert_eq!(normalise_token("Zürich"), "zurich");
+        assert_eq!(normalise_token("İstanbul"), "istanbul");
+        assert_eq!(normalise_token("co\u{00AD}operate"), "cooperate");
+        assert_eq!(normalise_token("ΟΔΟΣ"), "οδος");
+        assert_eq!(normalise_token("Москва"), "москва");
     }
 
     #[test]
@@ -412,6 +792,132 @@ mod tests {
             "smith family"
         ));
         assert!(!shares_whole_word_token("Ø Smith", "Ø Jones"));
+    }
+
+    #[test]
+    fn name_matching_characterises_ascii_names() {
+        // Pinned before the case-folding and token-length changes. ASCII behaviour must not change.
+        assert_eq!(name_tokens("Ada Lovelace"), ["ada", "lovelace"]);
+        assert_eq!(name_tokens("O'Brien-Smith"), ["brien", "smith"]);
+        assert_eq!(name_tokens("Madonna"), ["madonna"]);
+        assert!(name_tokens("   ").is_empty());
+        assert!(whole_word_token_match("ZOLA, EMILE", "emile zola"));
+        assert!(!whole_word_token_match("Mildred Smith", ""));
+        assert!(!whole_word_token_match("Mildred Smith", "smith jones"));
+        assert!(shares_whole_word_token("Ada Lovelace", "Lovelace Byron"));
+        assert!(!shares_whole_word_token("Ada Lovelace", "Byron King"));
+        assert!(!shares_whole_word_token("Ada Lovelace", "A"));
+    }
+
+    #[test]
+    fn name_matching_ignores_case_for_accented_letters() {
+        assert_eq!(name_tokens("ÉMILE ZOLA"), ["émile", "zola"]);
+        assert_eq!(name_tokens("ÉMILE ZOLA"), name_tokens("émile zola"));
+        assert!(whole_word_token_match("ZOLA, ÉMILE", "émile zola"));
+        assert!(shares_whole_word_token("ÉMILE ZOLA", "émile"));
+        // A letter with an accent is a different letter from its plain form.
+        assert!(!whole_word_token_match("ZOLA, EMILE", "émile zola"));
+    }
+
+    #[test]
+    fn one_accented_letter_is_an_initial_not_a_name_token() {
+        // Two bytes in UTF-8 but one letter. The people command has always treated it this way.
+        assert_eq!(name_tokens("É Lovelace"), ["lovelace"]);
+        assert_eq!(name_tokens("Ø Smith"), ["smith"]);
+    }
+
+    /// The definition `eq_ignore_case` keeps: each word lowercases, one character at a time, to the
+    /// same sequence.
+    fn lowercased_sequences_equal(a: &str, b: &str) -> bool {
+        a.chars()
+            .flat_map(char::to_lowercase)
+            .eq(b.chars().flat_map(char::to_lowercase))
+    }
+
+    #[test]
+    fn eq_ignore_case_matches_the_lowercase_definition_on_every_short_word() {
+        // One character for each rule: ASCII case, the Kelvin sign (lowercases to k), dotted
+        // capital I (lowercases to two characters), sharp s, a combining mark and accented letters.
+        const ALPHABET: [char; 12] = [
+            'a', 'A', 'k', '\u{212A}', 'i', '\u{130}', '\u{DF}', '\u{1E9E}', 'S', '\u{307}', 'é',
+            'É',
+        ];
+        let mut words = vec![String::new()];
+        let mut longest = vec![String::new()];
+        for _ in 0..3 {
+            longest = longest
+                .iter()
+                .flat_map(|word| ALPHABET.iter().map(move |ch| format!("{word}{ch}")))
+                .collect();
+            words.extend(longest.iter().cloned());
+        }
+        assert_eq!(words.len(), 1 + 12 + 12 * 12 + 12 * 12 * 12);
+        for a in &words {
+            for b in &words {
+                assert_eq!(
+                    eq_ignore_case(a, b),
+                    lowercased_sequences_equal(a, b),
+                    "{a:?} and {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eq_ignore_case_matches_the_lowercase_definition_on_random_words() {
+        const ALPHABET: [char; 16] = [
+            'a', 'A', 'b', 'B', 'k', '\u{212A}', 'i', '\u{130}', '\u{DF}', 's', 'S', '\u{17F}',
+            '\u{307}', 'é', 'É', '0',
+        ];
+        // A fixed xorshift sequence, so that any failure can be reproduced.
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = |bound: usize| -> usize {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            usize::try_from(state % u64::try_from(bound).unwrap_or(1)).unwrap_or(0)
+        };
+        for _ in 0..50_000 {
+            let len = next(13);
+            let a: String = (0..len).map(|_| ALPHABET[next(ALPHABET.len())]).collect();
+            // Half the pairs are a copy of `a` with some characters changed, so that long equal
+            // prefixes are common.
+            let b: String = if next(2) == 0 {
+                let len = next(13);
+                (0..len).map(|_| ALPHABET[next(ALPHABET.len())]).collect()
+            } else {
+                a.chars()
+                    .map(|ch| {
+                        if next(4) == 0 {
+                            ALPHABET[next(ALPHABET.len())]
+                        } else {
+                            ch
+                        }
+                    })
+                    .collect()
+            };
+            assert_eq!(
+                eq_ignore_case(&a, &b),
+                lowercased_sequences_equal(&a, &b),
+                "{a:?} and {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn name_matching_follows_simple_case_mapping_at_each_length() {
+        assert!(eq_ignore_case("ADA", "ada"));
+        assert!(eq_ignore_case("\u{212A}", "k"));
+        assert!(eq_ignore_case("\u{212A}ing", "king"));
+        // A longer word has characters left over, so it is a different word.
+        assert!(!eq_ignore_case("ab", "ab\u{212A}"));
+        // Dotted capital I lowercases to two characters, so it is not a plain i.
+        assert!(!eq_ignore_case("i", "\u{130}"));
+        // Simple case mapping is not full case folding: sharp s does not equal SS.
+        assert!(!eq_ignore_case("SS", "\u{DF}"));
+        assert!(eq_ignore_case("\u{1E9E}", "\u{DF}"));
+        assert!(eq_ignore_case("É", "é"));
+        assert!(!eq_ignore_case("E", "É"));
     }
 
     #[test]
@@ -434,6 +940,16 @@ mod tests {
         assert_eq!(
             pipe_delimited(" alpha | |beta|| ").collect::<Vec<_>>(),
             ["alpha", "beta"]
+        );
+    }
+
+    #[test]
+    fn html_references_decode_and_unknown_ones_are_left_alone() {
+        assert_eq!(decode_html_entities("a &amp; b &lt;c&gt;"), "a & b <c>");
+        assert_eq!(decode_html_entities("it&#39;s &#x41;&#65;"), "it's AA");
+        assert_eq!(
+            decode_html_entities("&bogus; &#xD800; & done"),
+            "&bogus; &#xD800; & done"
         );
     }
 }

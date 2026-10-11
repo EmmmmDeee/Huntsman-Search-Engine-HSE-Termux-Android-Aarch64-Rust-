@@ -65,10 +65,12 @@ pub mod egress;
 pub mod email_cli;
 pub mod engineering_command;
 pub mod entity;
+pub mod environment;
 pub mod error;
 pub mod eval;
 pub mod event;
 pub mod evidence_ancestry;
+pub mod exit;
 pub mod exposure;
 pub mod fetch;
 pub mod fetch_cli;
@@ -93,6 +95,8 @@ pub mod keys;
 pub mod leads;
 pub mod ledger;
 pub mod lineage;
+pub mod lookup_args;
+pub mod lookup_report;
 pub mod lookup_save;
 pub mod md5;
 pub mod mediawiki;
@@ -172,3 +176,6 @@ pub use ledger::{
 };
 pub use session::Session;
 pub use stage::{EvidenceLevel, Status};
+
+#[cfg(test)]
+mod test_support;

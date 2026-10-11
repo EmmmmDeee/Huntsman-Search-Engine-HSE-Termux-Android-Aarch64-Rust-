@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 pub use crate::dependency::{ModuleCategory, ModuleCost, ModuleMeta};
-
-pub const PROVIDER_COST_ENV_PREFIX: &str = "HSE_PROVIDER_COST_";
+use crate::environment;
+pub use crate::environment::PROVIDER_COST_ENV_PREFIX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -239,12 +239,7 @@ pub fn parse_cost_per_request(raw: &str) -> Option<f64> {
 
 #[must_use]
 pub fn env_cost_per_request(provider_id: &str) -> Option<f64> {
-    let env_var = format!(
-        "{PROVIDER_COST_ENV_PREFIX}{}",
-        provider_id.trim().to_ascii_uppercase()
-    );
-    std::env::var(env_var)
-        .ok()
+    environment::provider_cost_per_request(provider_id)
         .and_then(|value| parse_cost_per_request(&value))
 }
 

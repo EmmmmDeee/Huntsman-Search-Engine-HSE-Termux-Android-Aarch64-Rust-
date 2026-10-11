@@ -3,6 +3,8 @@ set -eu
 
 DATA_DIR="${RAILWAY_VOLUME_MOUNT_PATH:-${HUNTSMAN_DATA_DIR:-/data}}"
 PORT_VALUE="${PORT:-8080}"
+# The binary this entrypoint runs. Tests point it at a stub.
+HUNTSMAN_BIN="${HUNTSMAN_BIN:-/usr/local/bin/huntsman-recon}"
 
 case "$PORT_VALUE" in
   ''|*[!0-9]*) echo "huntsman-entrypoint: invalid PORT: $PORT_VALUE" >&2; exit 64 ;;
@@ -48,7 +50,7 @@ if [ -z "${HSE_AUTH_TOKEN:-}" ]; then
 fi
 
 if [ "$generated_token" = "1" ]; then
-  printf 'huntsman-entrypoint: generated HSE_AUTH_TOKEN=%s\n' "$HSE_AUTH_TOKEN" >&2
+  printf 'huntsman-entrypoint: generated HSE_AUTH_TOKEN and stored it at %s; the value is not printed\n' "$TOKEN_FILE" >&2
   printf 'huntsman-entrypoint: set HSE_AUTH_TOKEN as a Railway variable to keep the same token without relying on /data persistence\n' >&2
 fi
 
@@ -67,8 +69,8 @@ if [ "${HUNTSMAN_STARTUP_CHECK:-1}" != "0" ]; then
   fi
   old_pwd="$(pwd)"
   cd "$check_dir"
-  run_huntsman /usr/local/bin/huntsman-recon check >/dev/null
-  run_huntsman /usr/local/bin/huntsman-recon verify var/ledger.json >/dev/null
+  run_huntsman "$HUNTSMAN_BIN" check >/dev/null
+  run_huntsman "$HUNTSMAN_BIN" verify var/ledger.json >/dev/null
   cd "$old_pwd"
   rm -rf "$check_dir"
 fi
@@ -82,6 +84,6 @@ if [ "$1" = "huntsman-recon" ]; then
 fi
 
 if [ "$(id -u)" = "0" ]; then
-  exec gosu huntsman /usr/local/bin/huntsman-recon "$@"
+  exec gosu huntsman "$HUNTSMAN_BIN" "$@"
 fi
-exec /usr/local/bin/huntsman-recon "$@"
+exec "$HUNTSMAN_BIN" "$@"

@@ -6,6 +6,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use super::{MAX_ARTIFACT_BYTES, fail};
 use huntsman_recon::au_id::is_valid_abn;
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::confidence::{Classification, effective};
@@ -17,6 +18,7 @@ use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
     IndependenceEvidence,
 };
+use huntsman_recon::exit::EX_IOERR;
 use huntsman_recon::fsio::write_atomic;
 use huntsman_recon::geohash;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
@@ -39,14 +41,6 @@ use huntsman_recon::source_outcome::{
 use huntsman_recon::stage::{EvidenceLevel, Status};
 use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
-
-const EX_IOERR: u8 = 74;
-const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
-
-fn fail(code: u8, msg: &str) -> ExitCode {
-    eprintln!("{msg}");
-    ExitCode::from(code)
-}
 
 /// Self-acceptance. Each gate has its own exit code; every artifact is regenerated, never left stale.
 pub(super) fn check() -> ExitCode {
