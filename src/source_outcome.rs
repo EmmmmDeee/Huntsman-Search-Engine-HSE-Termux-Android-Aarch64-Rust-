@@ -141,6 +141,30 @@ impl SourceExecutionOutcome {
         Self::new(module, SourceOutcomeKind::ValidZero, observed_at_unix, 0)
     }
 
+    /// Every field a run records. A parser that read rows passes their count as `found`. Callers
+    /// with no row count use [`Self::failed`] or [`Self::inconclusive`]. Outside this module an
+    /// outcome is built through these constructors; `tests/architecture_boundaries.rs` refuses a
+    /// struct literal anywhere else.
+    #[must_use]
+    pub fn observed(
+        module: impl Into<String>,
+        observed_at_unix: u64,
+        kind: SourceOutcomeKind,
+        http_status: Option<u16>,
+        found: Option<usize>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            module: module.into(),
+            kind,
+            observed_at_unix,
+            http_status,
+            found,
+            retry_after_secs: None,
+            detail: Some(detail.into()),
+        }
+    }
+
     /// A run that produced no answer. `kind` says why, `http_status` is the response status when
     /// there was one, and `detail` is diagnostic text. No row count is recorded.
     #[must_use]
@@ -151,15 +175,7 @@ impl SourceExecutionOutcome {
         http_status: Option<u16>,
         detail: impl Into<String>,
     ) -> Self {
-        Self {
-            module: module.into(),
-            kind,
-            observed_at_unix,
-            http_status,
-            found: None,
-            retry_after_secs: None,
-            detail: Some(detail.into()),
-        }
+        Self::observed(module, observed_at_unix, kind, http_status, None, detail)
     }
 
     /// The run completed without a verdict. `detail` says why.
@@ -302,6 +318,19 @@ mod tests {
         assert_eq!(inconclusive.http_status, None);
         assert_eq!(inconclusive.found, None);
         assert_eq!(inconclusive.detail.as_deref(), Some("no verdict"));
+
+        let observed = SourceExecutionOutcome::observed(
+            "fixture",
+            7,
+            SourceOutcomeKind::Success,
+            Some(200),
+            Some(3),
+            "three rows",
+        );
+        assert_eq!(observed.kind, SourceOutcomeKind::Success);
+        assert_eq!(observed.http_status, Some(200));
+        assert_eq!(observed.found, Some(3));
+        assert_eq!(observed.detail.as_deref(), Some("three rows"));
     }
 
     #[test]

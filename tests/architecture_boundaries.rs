@@ -38,6 +38,9 @@ const PRINT_MACROS: [&str; 5] = ["println", "eprintln", "print", "eprint", "dbg"
 const CREDENTIAL_SUFFIXES: [&str; 5] = ["_KEY", "_TOKEN", "_SECRET", "_ID", "_USER"];
 /// The one module that names a credential slot. Other production code refers to its constants.
 const SLOT_OWNER: [&str; 1] = ["src/environment.rs"];
+/// The module that builds an outcome from its fields, and `fetch.rs`, which refines an outcome it
+/// already holds with struct-update syntax.
+const OUTCOME_OWNERS: [&str; 2] = ["src/source_outcome.rs", "src/fetch.rs"];
 
 /// One production source file: its path relative to the crate root, and its text.
 struct Source {
@@ -230,6 +233,44 @@ fn only_the_environment_module_names_a_credential_slot() {
         "production code writes a credential slot as a string literal; name it in \
          `src/environment.rs` and refer to the constant: {found:?}"
     );
+}
+
+/// Whether the tokens build a `SourceExecutionOutcome` with a struct literal. The type name followed
+/// by a brace is a literal, unless the brace follows `impl`, `struct` or `for`, or the `>` of a
+/// return type (`->` is two tokens).
+fn builds_an_outcome_literal(toks: &[String]) -> bool {
+    toks.windows(2).enumerate().any(|(index, pair)| {
+        pair[0] == "SourceExecutionOutcome"
+            && pair[1] == "{"
+            && !(index > 0 && matches!(toks[index - 1].as_str(), "impl" | "struct" | "for" | ">"))
+    })
+}
+
+#[test]
+fn only_the_outcome_module_builds_an_outcome_literal() {
+    let found = offenders(&OUTCOME_OWNERS, builds_an_outcome_literal);
+    assert!(
+        found.is_empty(),
+        "production code builds a SourceExecutionOutcome with a struct literal; call one of its \
+         constructors in `src/source_outcome.rs` instead: {found:?}"
+    );
+}
+
+#[test]
+fn the_outcome_literal_rule_sees_a_literal_and_ignores_declarations() {
+    let literal = production_tokens("fn f() { let o = SourceExecutionOutcome { module: m }; }");
+    assert!(builds_an_outcome_literal(&literal));
+    for declaration in [
+        "impl SourceExecutionOutcome { fn g() {} }",
+        "struct SourceExecutionOutcome { module: String }",
+        "impl Trait for SourceExecutionOutcome { }",
+        "fn f() -> SourceExecutionOutcome { todo() }",
+    ] {
+        assert!(
+            !builds_an_outcome_literal(&production_tokens(declaration)),
+            "{declaration}"
+        );
+    }
 }
 
 /// A scanner that finds nothing would pass every rule above, so every name a rule forbids is also

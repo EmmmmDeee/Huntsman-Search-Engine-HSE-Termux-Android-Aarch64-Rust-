@@ -263,15 +263,7 @@ fn outcome(
     found: Option<usize>,
     detail: &str,
 ) -> SourceExecutionOutcome {
-    SourceExecutionOutcome {
-        module: module.into(),
-        kind,
-        observed_at_unix: now_unix,
-        http_status: status,
-        found,
-        retry_after_secs: None,
-        detail: Some(detail.into()),
-    }
+    SourceExecutionOutcome::observed(module, now_unix, kind, status, found, detail)
 }
 
 #[must_use]
