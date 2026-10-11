@@ -19,7 +19,7 @@ use crate::fetch::{self, FetchOptions, Fetched};
 use crate::http::{self, Request, Transport};
 use crate::postcode_au;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
-use crate::textnorm::{ascii_digits, whole_word_token_match};
+use crate::textnorm::{ascii_digits, name_tokens, whole_word_token_match};
 
 const SRC: &str = "asic_director";
 const SEARCH_BASE: &str =
@@ -162,13 +162,6 @@ fn parse_fetched(
         SourceExecutionOutcome::success(SRC, now_unix, rows.len()).with_http_status(response.status)
     };
     (outcome, entities)
-}
-
-fn name_tokens(full: &str) -> Vec<String> {
-    full.split(|c: char| !c.is_alphabetic())
-        .filter(|token| token.len() >= 2)
-        .map(str::to_ascii_lowercase)
-        .collect()
 }
 
 fn provenance(scan_id: &str) -> EvidenceProvenance {

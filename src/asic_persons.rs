@@ -19,7 +19,7 @@ use crate::fetch::{self, FetchOptions, Fetched};
 use crate::http::{self, Request, Transport};
 use crate::postcode_au;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
-use crate::textnorm::{title_case, whole_word_token_match};
+use crate::textnorm::{name_tokens, title_case, whole_word_token_match};
 
 const SRC: &str = "asic_persons";
 const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
@@ -222,13 +222,6 @@ fn parse_register(
             )
         }
     }
-}
-
-fn name_tokens(full: &str) -> Vec<String> {
-    full.split(|c: char| !c.is_alphabetic())
-        .filter(|token| token.len() >= 2)
-        .map(str::to_ascii_lowercase)
-        .collect()
 }
 
 fn record_name_matches(rec: &Map<String, Value>, name_field: &str, full_name: &str) -> bool {

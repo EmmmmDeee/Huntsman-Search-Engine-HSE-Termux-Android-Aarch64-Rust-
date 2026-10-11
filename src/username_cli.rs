@@ -11,7 +11,7 @@ use crate::evidence_ancestry::EvidenceNodeId;
 use crate::github_user;
 use crate::http::Transport;
 use crate::identity_resolution::AutoMergePolicy;
-use crate::lineage::{Lineage, Observation, ObservedLineage, UpstreamKind, resolve_with_lineage};
+use crate::lineage::{Observation, lineage_tsv_line, resolve_with_lineage};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
@@ -231,7 +231,7 @@ fn append_lineage(report: &Report, out: &mut String) -> Result<(), String> {
     writeln!(out, "lineage={}", resolution.observations.len())
         .map_err(|error| error.to_string())?;
     for item in &resolution.observations {
-        writeln!(out, "{}", lineage_line(item)).map_err(|error| error.to_string())?;
+        writeln!(out, "{}", lineage_tsv_line(item)).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -252,27 +252,6 @@ fn observations(report: &Report) -> Vec<Observation> {
                 })
         })
         .collect()
-}
-
-fn lineage_line(item: &ObservedLineage) -> String {
-    let id = &item.observation.id.0;
-    match &item.lineage {
-        Lineage::Upstream { kind, family, .. } => {
-            format!("{id}\t{}\t{family}", upstream_kind_label(*kind))
-        }
-        Lineage::Unattributed => format!("{id}\tunattributed"),
-        Lineage::Ambiguous { field, values } => {
-            format!("{id}\tambiguous\t{field}\t{}", values.join(";"))
-        }
-    }
-}
-
-const fn upstream_kind_label(kind: UpstreamKind) -> &'static str {
-    match kind {
-        UpstreamKind::Dataset => "dataset",
-        UpstreamKind::Registry => "registry",
-        UpstreamKind::Source => "source",
-    }
 }
 
 #[cfg(test)]

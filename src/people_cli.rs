@@ -20,7 +20,7 @@ use crate::error::Error;
 use crate::evidence_ancestry::EvidenceNodeId;
 use crate::http::Transport;
 use crate::identity_resolution::AutoMergePolicy;
-use crate::lineage::{Lineage, Observation, ObservedLineage, UpstreamKind, resolve_with_lineage};
+use crate::lineage::{Observation, lineage_tsv_line, resolve_with_lineage};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
@@ -308,7 +308,7 @@ fn render(report: &Report) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     let _ = writeln!(out, "lineage={}", resolution.observations.len());
     for item in &resolution.observations {
-        let _ = writeln!(out, "{}", lineage_line(item));
+        let _ = writeln!(out, "{}", lineage_tsv_line(item));
     }
     Ok(out)
 }
@@ -329,27 +329,6 @@ fn observations(report: &Report) -> Vec<Observation> {
                 })
         })
         .collect()
-}
-
-fn lineage_line(item: &ObservedLineage) -> String {
-    let id = &item.observation.id.0;
-    match &item.lineage {
-        Lineage::Upstream { kind, family, .. } => {
-            format!("{id}\t{}\t{family}", upstream_kind_label(*kind))
-        }
-        Lineage::Unattributed => format!("{id}\tunattributed"),
-        Lineage::Ambiguous { field, values } => {
-            format!("{id}\tambiguous\t{field}\t{}", values.join(";"))
-        }
-    }
-}
-
-const fn upstream_kind_label(kind: UpstreamKind) -> &'static str {
-    match kind {
-        UpstreamKind::Dataset => "dataset",
-        UpstreamKind::Registry => "registry",
-        UpstreamKind::Source => "source",
-    }
 }
 
 #[cfg(test)]

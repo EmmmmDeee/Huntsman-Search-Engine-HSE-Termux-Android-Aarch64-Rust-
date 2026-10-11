@@ -16,6 +16,16 @@ pub fn escape_controls(s: &str) -> String {
     out
 }
 
+/// The alphabetic runs of `full` that are at least two bytes long, lowercased. These are the
+/// tokens that name matching compares, so a one-byte initial is not a token.
+#[must_use]
+pub fn name_tokens(full: &str) -> Vec<String> {
+    full.split(|c: char| !c.is_alphabetic())
+        .filter(|token| token.len() >= 2)
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
 /// A trimmed, non-empty borrow of an optional string field.
 #[must_use]
 pub fn nonempty(value: &Option<String>) -> Option<&str> {

@@ -22,7 +22,7 @@ use crate::fetch::{self, FetchOptions, Fetched};
 use crate::http::{self, Request, Transport};
 use crate::postcode_au;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
-use crate::textnorm::{find_ascii_ci, title_case};
+use crate::textnorm::{find_ascii_ci, name_tokens, title_case};
 
 const SRC: &str = "au_people";
 const SEARCH_BASE: &str = "https://www.truepeoplesearch.com.au/results";
@@ -260,13 +260,6 @@ fn parse_fetched(
             .with_http_status(response.status)
     };
     (outcome, entities)
-}
-
-fn name_tokens(full: &str) -> Vec<String> {
-    full.split(|c: char| !c.is_alphabetic())
-        .filter(|token| token.len() >= 2)
-        .map(str::to_ascii_lowercase)
-        .collect()
 }
 
 fn provenance(scan_id: &str) -> EvidenceProvenance {

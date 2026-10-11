@@ -339,6 +339,33 @@ fn assess(
     }
 }
 
+/// The lineage label a TSV row prints for an upstream kind.
+#[must_use]
+pub const fn upstream_kind_label(kind: UpstreamKind) -> &'static str {
+    match kind {
+        UpstreamKind::Dataset => "dataset",
+        UpstreamKind::Registry => "registry",
+        UpstreamKind::Source => "source",
+    }
+}
+
+/// One TSV row for an observation's lineage: its id, then the upstream kind and family, or
+/// `unattributed`, or the ambiguous field and its candidate values. The collection front-ends
+/// print these rows, so the row format is defined once, here.
+#[must_use]
+pub fn lineage_tsv_line(item: &ObservedLineage) -> String {
+    let id = &item.observation.id.0;
+    match &item.lineage {
+        Lineage::Upstream { kind, family, .. } => {
+            format!("{id}\t{}\t{family}", upstream_kind_label(*kind))
+        }
+        Lineage::Unattributed => format!("{id}\tunattributed"),
+        Lineage::Ambiguous { field, values } => {
+            format!("{id}\tambiguous\t{field}\t{}", values.join(";"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
