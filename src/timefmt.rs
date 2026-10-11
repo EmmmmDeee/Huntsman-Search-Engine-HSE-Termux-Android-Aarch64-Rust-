@@ -82,27 +82,42 @@ pub fn parse_timestamp_and_iso(raw: &str) -> Option<(i64, String)> {
         let (clock, zone) = time_part
             .strip_suffix('Z')
             .map_or((time_part, ""), |clock| (clock, "Z"));
-        let mut bits = clock.split(':');
+        // A numeric UTC offset (`+HH:MM`, `-HHMM`) may follow the time when there is no `Z`.
+        // Split it off before the `:` parse so its sign is not swept into the seconds field;
+        // otherwise a well-formed `12:34:56+10:00` would fail to parse entirely.
+        let (time_core, offset_spec) = if zone.is_empty() {
+            match clock
+                .char_indices()
+                .skip(1)
+                .find(|&(_, c)| matches!(c, '+' | '-'))
+            {
+                Some((i, sign)) => (&clock[..i], Some((sign, &clock[i + 1..]))),
+                None => (clock, None),
+            }
+        } else {
+            (clock, None)
+        };
+        let mut bits = time_core.split(':');
         hour = bits.next()?.parse().ok()?;
         min = bits.next().unwrap_or("0").parse().ok()?;
-        sec = bits.next().unwrap_or("0").parse().ok()?;
+        // Fractional seconds (`.sss`, as in JS `toISOString()` and atproto timestamps) are
+        // accepted and truncated to whole seconds.
+        let sec_field = bits.next().unwrap_or("0");
+        let sec_whole = sec_field
+            .split_once('.')
+            .map_or(sec_field, |(whole, _)| whole);
+        sec = sec_whole.parse().ok()?;
         if !(0..=23).contains(&hour) || !(0..=59).contains(&min) || !(0..=59).contains(&sec) {
             return None;
         }
-        if zone.is_empty() {
-            if let Some((sign, tail)) = clock
-                .char_indices()
-                .skip(1)
-                .find_map(|(i, c)| matches!(c, '+' | '-').then_some((c, &clock[i + 1..])))
-            {
-                let hhmm = tail.replace(':', "");
-                if hhmm.len() == 4 {
-                    let h: i64 = hhmm[..2].parse().ok()?;
-                    let m: i64 = hhmm[2..].parse().ok()?;
-                    offset = h * 3_600 + m * 60;
-                    if sign == '+' {
-                        offset = -offset;
-                    }
+        if let Some((sign, tail)) = offset_spec {
+            let hhmm = tail.replace(':', "");
+            if hhmm.len() == 4 {
+                let h: i64 = hhmm[..2].parse().ok()?;
+                let m: i64 = hhmm[2..].parse().ok()?;
+                offset = h * 3_600 + m * 60;
+                if sign == '+' {
+                    offset = -offset;
                 }
             }
         }
@@ -144,5 +159,66 @@ mod tests {
         );
         assert_eq!(parse_timestamp("1714998896"), Some(1_714_998_896));
         assert_eq!(parse_timestamp("1714998896000"), Some(1_714_998_896));
+    }
+
+    #[test]
+    fn parses_rfc3339_offsets_and_fractional_seconds() {
+        // +10:00 is ten hours ahead of UTC, so 12:34:56+10:00 is 02:34:56Z.
+        assert_eq!(
+            parse_timestamp_and_iso("2024-05-06T12:34:56+10:00")
+                .unwrap()
+                .1,
+            "2024-05-06T02:34:56Z"
+        );
+        // UTC written with a numeric offset rather than 'Z'.
+        assert_eq!(
+            parse_timestamp_and_iso("2024-05-06T12:34:56+00:00")
+                .unwrap()
+                .1,
+            "2024-05-06T12:34:56Z"
+        );
+        // A behind-UTC offset moves the clock forward.
+        assert_eq!(
+            parse_timestamp_and_iso("2024-05-06T12:34:56-05:00")
+                .unwrap()
+                .1,
+            "2024-05-06T17:34:56Z"
+        );
+        // Basic-format offset without a colon.
+        assert_eq!(
+            parse_timestamp_and_iso("2024-05-06T12:34:56-0500")
+                .unwrap()
+                .1,
+            "2024-05-06T17:34:56Z"
+        );
+        // Fractional seconds (JS toISOString / atproto createdAt) are accepted and dropped.
+        assert_eq!(
+            parse_timestamp_and_iso("2024-05-06T12:34:56.000Z")
+                .unwrap()
+                .1,
+            "2024-05-06T12:34:56Z"
+        );
+        assert_eq!(
+            parse_timestamp_and_iso("2024-05-06T12:34:56.789Z")
+                .unwrap()
+                .1,
+            "2024-05-06T12:34:56Z"
+        );
+        // Fractional seconds together with a numeric offset.
+        assert_eq!(
+            parse_timestamp_and_iso("2024-05-06T12:34:56.789+10:00")
+                .unwrap()
+                .1,
+            "2024-05-06T02:34:56Z"
+        );
+        // The 'Z' and offset-less forms still parse unchanged.
+        assert_eq!(
+            parse_timestamp_and_iso("2024-05-06T12:34:56Z").unwrap().1,
+            "2024-05-06T12:34:56Z"
+        );
+        assert_eq!(
+            parse_timestamp_and_iso("2024-05-06T12:34:56").unwrap().1,
+            "2024-05-06T12:34:56Z"
+        );
     }
 }
