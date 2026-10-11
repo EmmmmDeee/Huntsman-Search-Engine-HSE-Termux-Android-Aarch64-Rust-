@@ -63,14 +63,14 @@ CURRENT. One package and library (`src/lib.rs`). `src/main.rs` is a thin composi
 
 Binary adapter structure:
 - `src/main.rs` owns process startup only.
-- `src/cli/mod.rs` owns top-level argument dispatch, shared exit codes, and adapter-wide imports.
+- `src/cli/mod.rs` owns top-level argument dispatch and the stderr reporter `fail`. Process exit statuses are defined once, in `src/exit.rs`, a library module with no dependencies (L0).
 - `src/cli/{network,service,utility,meta}.rs` group process-facing commands by responsibility; `lookup.rs` is a facade over `lookup/{profiles,scan,discovery}.rs`; `help.rs` owns per-command help and `selfcheck.rs` owns offline acceptance.
 - `src/cli/mod.rs` imports no library modules. Each adapter declares its own library dependencies explicitly; parent wildcard imports are forbidden so coupling remains visible and reviewable.
 - Domain behavior and reusable logic remain in the library crate. CLI modules may orchestrate library calls but must not become a second domain layer.
 
 | Layer | Modules | Role |
 | --- | --- | --- |
-| L0 primitives | `error`, `sha256`, `md5`, `engineering_command`, `directive_lock`, `json`, `timefmt`, `union_find`, `tags`, `stage`, `event`, `fsio`, `signals`, `place`, `geohash`, `redact`, `termination`, `circuit`, `scan_batch`, `oui_ieee`, `oui`, `radar`, `repository_identity` | Pure helpers, executable command metadata (`engineering_command`), canonical directive identity/synchronization (`directive_lock`), operator-repository identity (`repository_identity`), bounded file I/O (`fsio`), retry and cache state (`circuit`), bounded batch-seed parsing (`scan_batch`) |
+| L0 primitives | `error`, `exit`, `sha256`, `md5`, `engineering_command`, `directive_lock`, `json`, `timefmt`, `union_find`, `tags`, `stage`, `event`, `fsio`, `signals`, `place`, `geohash`, `redact`, `termination`, `circuit`, `scan_batch`, `oui_ieee`, `oui`, `radar`, `repository_identity` | Pure helpers, process exit statuses (`exit`), executable command metadata (`engineering_command`), canonical directive identity/synchronization (`directive_lock`), operator-repository identity (`repository_identity`), bounded file I/O (`fsio`), retry and cache state (`circuit`), bounded batch-seed parsing (`scan_batch`) |
 | L1 evidence core | `retrieval_artifact`, `evidence_ancestry`, `confidence`, `identity_resolution`, `resolve`, `eval` | Stable retrieval-artifact identity, ancestry graph, explicit independence proof, conservative merge gate, scoring |
 | L2 network boundary | `classify`, `source_outcome`, `egress`, `credential_origin`, `http`, `keys`, `fetch`, `fetch_cli`, `deadline` | The only network path (see BOUNDARIES); `deadline` provides one time budget across several requests |
 | L3 normalisation | `value_syntax`, `textnorm`, `canonical`, `validation`, `domains`, `address_au`, `postcode_au`, `au_id`, `breach`, `archive`, `spf`, `dmarc`, `tlsrpt`, `username_variants`, `phone_intl` | Dependency-free lexical/syntax primitives (`value_syntax`), canonical forms, validators, record parsers, deterministic handle variants (`username_variants`) and offline phone country/E.164 enrichment (`phone_intl`); `archive` models archive-URL identity and deterministic capture aggregation over `canonical`; `postcode_au` also has one postcode lookup over an injected `http::Transport` (its only crate dependency is `http`), and `au_id` re-exports it (`src/au_id.rs:13`) |
@@ -107,7 +107,7 @@ CURRENT:
 - `identity_resolution::IdentityResolutionDecision::allows_automatic_merge` is `hold_reasons(..).is_empty()` and non-compensatory: one contradiction, a temporal or geographic conflict, unknown ancestry, or a missing, non-finite, out-of-range or below-floor probability blocks the merge regardless of support. Each failed condition is returned as a `HoldReason`, in a fixed order (`docs/LINEAGE.md`).
 - `lineage::resolve_with_lineage` returns every observation and every candidate in input order, each candidate `AutoMerge` or `Held { reasons }`; it drops nothing.
 - `ledger`: each entry's hash covers the previous hash plus the claim. `verify` prints `entries`, `admitted` and `tip`, and exits 65 on a broken chain.
-- CLI exit codes: 0 success, 64 usage, 65 bad data or invalid request, 66 unreadable input or missing required credential, 69 unavailable/no response, 74 artifact write failure, 77 egress/auth/entitlement refusal; `check` uses 2–11 for its gates. `hibp` reuses 64, 65, 66, 69 and 77 and adds no new process exit code. `tests/readme.rs` enforces the shared code set.
+- CLI exit codes: 0 success, 64 usage, 65 bad data or invalid request, 66 unreadable input or missing required credential, 69 unavailable/no response, 74 artifact write failure, 77 egress/auth/entitlement refusal; `check` uses 2–11 for its gates. `hibp` reuses 64, 65, 66, 69 and 77 and adds no new process exit code. `tests/readme.rs` enforces the shared code set against `src/exit.rs`, the only place these numbers are defined.
 
 PLANNED:
 - Collector contract: `collect(selector, &dyn Transport) -> (SourceOutcomeKind, Vec<Evidence>)`. Zero rows with a `Success` outcome is `ValidZero`, not a failure.

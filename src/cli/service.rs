@@ -3,8 +3,9 @@
 use std::env;
 use std::process::ExitCode;
 
-use super::{EX_DATAERR, EX_UNAVAILABLE, EX_USAGE, fail};
+use super::fail;
 use huntsman_recon::error::Error;
+use huntsman_recon::exit::{EX_DATAERR, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::web_server::{ServeConfig, Server, resolve_serve_bind};
 
 pub(super) fn serve_cmd(args: &[String]) -> ExitCode {

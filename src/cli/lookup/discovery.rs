@@ -4,12 +4,11 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::cli::{
-    EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE, MAX_ARTIFACT_BYTES, fail,
-};
+use crate::cli::{MAX_ARTIFACT_BYTES, fail};
 use huntsman_recon::classifier::{self, classify as classify_indicator};
 use huntsman_recon::entity;
 use huntsman_recon::error::Error;
+use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::{TransportConfig, UreqTransport};
 use huntsman_recon::search::{Document, load_dir, search, tokenize};
