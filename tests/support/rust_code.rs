@@ -2,12 +2,26 @@
 //! stream, and `#[cfg(test)]` items removed. Shared by `architecture_doc.rs` and
 //! `architecture_boundaries.rs`, so both read production code the same way.
 
+use std::fmt::Write as _;
+
 /// `text` with comments and string/char literals blanked to spaces (newlines kept), so a
 /// `mod` line or `crate::` path inside `/* … */`, `//` or a (raw) string is not code.
 /// Same scanner as `tests/dispositions.rs` on #675 (`bd363d0d`).
 pub fn strip_non_code(text: &str) -> String {
+    scan_code(text, false).0
+}
+
+/// `text` as `strip_non_code` reads it, except that each ordinary string literal becomes the
+/// identifier `__strN`. The second value holds the text of each literal, in order, so a test can
+/// check what a literal says while the token stream still shows where it sits.
+pub fn code_with_string_literals(text: &str) -> (String, Vec<String>) {
+    scan_code(text, true)
+}
+
+fn scan_code(text: &str, keep_strings: bool) -> (String, Vec<String>) {
     let src: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
+    let mut literals = Vec::new();
     let blank = |out: &mut String, chunk: &[char]| {
         out.extend(chunk.iter().map(|&c| if c == '\n' { '\n' } else { ' ' }));
     };
@@ -57,10 +71,21 @@ pub fn strip_non_code(text: &str) -> String {
             i += 1;
             continue;
         };
-        blank(&mut out, &rest[..end]);
+        if keep_strings && rest[0] == '"' {
+            // The literal's text, without its quotes. An unterminated literal runs to the end.
+            let close = if end >= 2 && rest[end - 1] == '"' {
+                end - 1
+            } else {
+                end
+            };
+            literals.push(rest[1..close.max(1)].iter().collect());
+            let _ = write!(out, " __str{} ", literals.len() - 1);
+        } else {
+            blank(&mut out, &rest[..end]);
+        }
         i += end;
     }
-    out
+    (out, literals)
 }
 
 /// Length of the raw string literal (`r"…"`, `r#"…"#`, …) at the start of `rest`, if any.

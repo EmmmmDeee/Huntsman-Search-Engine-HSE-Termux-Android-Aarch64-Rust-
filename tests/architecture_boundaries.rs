@@ -8,7 +8,7 @@
 #[path = "support/rust_code.rs"]
 mod rust_code;
 
-use rust_code::{strip_non_code, tokens, without_test_items};
+use rust_code::{code_with_string_literals, strip_non_code, tokens, without_test_items};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,6 +34,10 @@ const SOCKET_NAMES: [&str; 5] = [
 ];
 /// Macros that write to standard output or standard error.
 const PRINT_MACROS: [&str; 5] = ["println", "eprintln", "print", "eprint", "dbg"];
+/// The suffixes a credential slot name ends in: a key, a token, a secret, an id or a user name.
+const CREDENTIAL_SUFFIXES: [&str; 5] = ["_KEY", "_TOKEN", "_SECRET", "_ID", "_USER"];
+/// The one module that names a credential slot. Other production code refers to its constants.
+const SLOT_OWNER: [&str; 1] = ["src/environment.rs"];
 
 /// One production source file: its path relative to the crate root, and its text.
 struct Source {
@@ -139,6 +143,29 @@ fn ends_process(toks: &[String]) -> bool {
         .any(|w| w[0] == "process" && w[1] == "::" && w[2] == "exit")
 }
 
+/// The text of each string literal in `text` that is production code, in source order.
+fn production_string_literals(text: &str) -> Vec<String> {
+    let (code, literals) = code_with_string_literals(text);
+    without_test_items(&tokens(&code))
+        .0
+        .iter()
+        .filter_map(|token| {
+            let index = token.strip_prefix("__str")?.parse::<usize>().ok()?;
+            literals.get(index).cloned()
+        })
+        .collect()
+}
+
+/// Whether a string literal names a credential slot: a `HUNTSMAN_` name with a credential suffix,
+/// or the standard `HIBP_API_KEY` that the HIBP key chain also reads.
+fn names_a_credential_slot(literal: &str) -> bool {
+    literal == "HIBP_API_KEY"
+        || (literal.starts_with("HUNTSMAN_")
+            && CREDENTIAL_SUFFIXES
+                .iter()
+                .any(|suffix| literal.ends_with(suffix)))
+}
+
 /// The production files outside `allowed` whose code matches `matches`.
 fn offenders(allowed: &[&str], matches: fn(&[String]) -> bool) -> Vec<String> {
     production_sources()
@@ -183,6 +210,25 @@ fn library_code_never_ends_the_process() {
     assert!(
         found.is_empty(),
         "library code ends the process; only the process boundary may: {found:?}"
+    );
+}
+
+#[test]
+fn only_the_environment_module_names_a_credential_slot() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| !SLOT_OWNER.iter().any(|entry| under(&source.path, entry)))
+        .filter(|source| {
+            production_string_literals(&source.text)
+                .iter()
+                .any(|literal| names_a_credential_slot(literal))
+        })
+        .map(|source| source.path)
+        .collect();
+    assert!(
+        found.is_empty(),
+        "production code writes a credential slot as a string literal; name it in \
+         `src/environment.rs` and refer to the constant: {found:?}"
     );
 }
 
@@ -237,4 +283,34 @@ fn the_scanner_sees_each_forbidden_form_and_ignores_the_rest() {
 
     assert!(ends_process(&code("fn f() { std::process::exit(2); }")));
     assert!(!ends_process(&code("fn f() { let exit = 2; }")));
+
+    assert_eq!(
+        production_string_literals("const K: &str = \"HUNTSMAN_SHODAN_KEY\";"),
+        ["HUNTSMAN_SHODAN_KEY"]
+    );
+    assert!(production_string_literals("// const K: &str = \"HUNTSMAN_SHODAN_KEY\";").is_empty());
+    assert!(
+        production_string_literals(
+            "#[cfg(test)] mod t { const K: &str = \"HUNTSMAN_SHODAN_KEY\"; }"
+        )
+        .is_empty()
+    );
+    for name in [
+        "HUNTSMAN_SHODAN_KEY",
+        "HUNTSMAN_GITHUB_TOKEN",
+        "HUNTSMAN_CENSYS_ID",
+        "HUNTSMAN_WIGLE_USER",
+        "HUNTSMAN_CENSYS_SECRET",
+        "HIBP_API_KEY",
+    ] {
+        assert!(names_a_credential_slot(name), "{name}");
+    }
+    for text in [
+        "HUNTSMAN_DATA_DIR",
+        "HUNTSMAN_SHODAN_KEY is set in the environment",
+        "RAILWAY_PROJECT_ID",
+        "HUNTSMAN_SHODAN_KEY_ENV",
+    ] {
+        assert!(!names_a_credential_slot(text), "{text}");
+    }
 }

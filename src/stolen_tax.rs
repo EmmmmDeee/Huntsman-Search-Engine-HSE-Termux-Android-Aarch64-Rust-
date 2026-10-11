@@ -65,7 +65,7 @@ use crate::source_outcome::SourceOutcomeKind;
 
 const SRC: &str = "stolen_tax";
 /// The key slot this source reads (keys file or environment).
-pub const KEY_SLOT: &str = "HUNTSMAN_STOLEN_TAX_KEY";
+pub const KEY_SLOT: &str = crate::environment::STOLEN_TAX_KEY_ENV;
 /// v2 gateway; the path is appended per cascade step.
 const API_BASE: &str = "https://stolen.tax/api/v2/index.php?path=";
 /// Cascade order: snusbase primary, then the secondary corpora, always all three.

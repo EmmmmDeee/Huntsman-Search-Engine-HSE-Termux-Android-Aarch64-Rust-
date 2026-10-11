@@ -5,6 +5,10 @@
 //! `tests/architecture_boundaries.rs` refuses any other production module that reads the
 //! environment. The binary's adapters (`src/cli`, `src/main.rs`, `src/bin`) are the process
 //! boundary and may read it.
+//!
+//! The credential slot names are listed here too. A slot is read from the keys file first and from
+//! the environment second, so the two spellings are one name. Production code refers to these
+//! constants, and `tests/architecture_boundaries.rs` refuses a slot written as a string elsewhere.
 
 use std::ffi::OsString;
 
@@ -18,6 +22,41 @@ pub const HUNTSMAN_HIBP_KEY_ENV: &str = "HUNTSMAN_HIBP_KEY";
 pub const HIBP_RATE_LIMIT_ENV: &str = "HIBP_RATE_LIMIT_PER_MINUTE";
 /// The prefix of the per-provider cost variables. The provider id, upper-cased, follows it.
 pub const PROVIDER_COST_ENV_PREFIX: &str = "HSE_PROVIDER_COST_";
+
+// Credential slots: keys-file names that `keys::Keys::get` also reads from the environment.
+pub const ABUSECH_KEY_ENV: &str = "HUNTSMAN_ABUSECH_KEY";
+pub const BRAVE_KEY_ENV: &str = "HUNTSMAN_BRAVE_KEY";
+pub const CENSYS_ID_ENV: &str = "HUNTSMAN_CENSYS_ID";
+pub const CENSYS_SECRET_ENV: &str = "HUNTSMAN_CENSYS_SECRET";
+pub const CITADEL_KEY_ENV: &str = "HUNTSMAN_CITADEL_KEY";
+pub const CRIMINALIP_KEY_ENV: &str = "HUNTSMAN_CRIMINALIP_KEY";
+pub const DEHASHED_KEY_ENV: &str = "HUNTSMAN_DEHASHED_KEY";
+pub const DOMAINSDB_KEY_ENV: &str = "HUNTSMAN_DOMAINSDB_KEY";
+pub const EXA_KEY_ENV: &str = "HUNTSMAN_EXA_KEY";
+pub const FULLCONTACT_KEY_ENV: &str = "HUNTSMAN_FULLCONTACT_KEY";
+pub const GEMINI_KEY_ENV: &str = "HUNTSMAN_GEMINI_KEY";
+pub const GITHUB_TOKEN_ENV: &str = "HUNTSMAN_GITHUB_TOKEN";
+pub const HLR_KEY_ENV: &str = "HUNTSMAN_HLR_KEY";
+pub const HUNTER_KEY_ENV: &str = "HUNTSMAN_HUNTER_KEY";
+pub const INTELX_KEY_ENV: &str = "HUNTSMAN_INTELX_KEY";
+pub const NETLAS_KEY_ENV: &str = "HUNTSMAN_NETLAS_KEY";
+pub const NIAMONX_KEY_ENV: &str = "HUNTSMAN_NIAMONX_KEY";
+pub const NUMVERIFY_KEY_ENV: &str = "HUNTSMAN_NUMVERIFY_KEY";
+pub const OATHNET_KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
+pub const ONYPHE_KEY_ENV: &str = "HUNTSMAN_ONYPHE_KEY";
+pub const OPENCNAM_KEY_ENV: &str = "HUNTSMAN_OPENCNAM_KEY";
+pub const OPENROUTER_KEY_ENV: &str = "HUNTSMAN_OPENROUTER_KEY";
+pub const OSINTCAT_KEY_ENV: &str = "HUNTSMAN_OSINTCAT_KEY";
+pub const SECTRAILS_KEY_ENV: &str = "HUNTSMAN_SECTRAILS_KEY";
+pub const SEEKNOW_KEY_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";
+pub const SHODAN_KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY";
+pub const STOLEN_TAX_KEY_ENV: &str = "HUNTSMAN_STOLEN_TAX_KEY";
+pub const THREATFOX_KEY_ENV: &str = "HUNTSMAN_THREATFOX_KEY";
+pub const TROVE_KEY_ENV: &str = "HUNTSMAN_TROVE_KEY";
+pub const VIRUSTOTAL_KEY_ENV: &str = "HUNTSMAN_VIRUSTOTAL_KEY";
+pub const WHOXY_KEY_ENV: &str = "HUNTSMAN_WHOXY_KEY";
+pub const WIGLE_TOKEN_ENV: &str = "HUNTSMAN_WIGLE_TOKEN";
+pub const WIGLE_USER_ENV: &str = "HUNTSMAN_WIGLE_USER";
 
 /// `$HOME`, when it is set. Its value need not be valid Unicode.
 #[must_use]

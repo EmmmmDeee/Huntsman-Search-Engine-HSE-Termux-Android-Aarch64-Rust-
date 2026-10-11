@@ -62,65 +62,71 @@ pub struct ProviderProbeStatus {
 pub const PROVIDERS: &[Provider] = &[
     Provider {
         name: "WiGLE",
-        slots: &["HUNTSMAN_WIGLE_USER", "HUNTSMAN_WIGLE_TOKEN"],
+        slots: &[
+            crate::environment::WIGLE_USER_ENV,
+            crate::environment::WIGLE_TOKEN_ENV,
+        ],
     },
     Provider {
         name: "Brave Search",
-        slots: &["HUNTSMAN_BRAVE_KEY"],
+        slots: &[crate::environment::BRAVE_KEY_ENV],
     },
     Provider {
         name: "Shodan",
-        slots: &["HUNTSMAN_SHODAN_KEY"],
+        slots: &[crate::environment::SHODAN_KEY_ENV],
     },
     Provider {
         name: "Whoxy",
-        slots: &["HUNTSMAN_WHOXY_KEY"],
+        slots: &[crate::environment::WHOXY_KEY_ENV],
     },
     Provider {
         name: "Citadel",
-        slots: &["HUNTSMAN_CITADEL_KEY"],
+        slots: &[crate::environment::CITADEL_KEY_ENV],
     },
     Provider {
         name: "HIBP",
-        slots: &["HUNTSMAN_HIBP_KEY"],
+        slots: &[crate::environment::HUNTSMAN_HIBP_KEY_ENV],
     },
     Provider {
         name: "SeekNow",
-        slots: &["HUNTSMAN_SEEKNOW_KEY"],
+        slots: &[crate::environment::SEEKNOW_KEY_ENV],
     },
     Provider {
         name: "OathNet",
-        slots: &["HUNTSMAN_OATHNET_KEY"],
+        slots: &[crate::environment::OATHNET_KEY_ENV],
     },
     Provider {
         name: "Exa",
-        slots: &["HUNTSMAN_EXA_KEY"],
+        slots: &[crate::environment::EXA_KEY_ENV],
     },
     Provider {
         name: "OpenRouter",
-        slots: &["HUNTSMAN_OPENROUTER_KEY"],
+        slots: &[crate::environment::OPENROUTER_KEY_ENV],
     },
     Provider {
         name: "Google Gemini",
-        slots: &["HUNTSMAN_GEMINI_KEY"],
+        slots: &[crate::environment::GEMINI_KEY_ENV],
     },
     Provider {
         name: "GitHub",
-        slots: &["HUNTSMAN_GITHUB_TOKEN"],
+        slots: &[crate::environment::GITHUB_TOKEN_ENV],
     },
     Provider {
         name: "VirusTotal",
-        slots: &["HUNTSMAN_VIRUSTOTAL_KEY"],
+        slots: &[crate::environment::VIRUSTOTAL_KEY_ENV],
     },
     Provider {
         name: "Censys",
-        slots: &["HUNTSMAN_CENSYS_ID", "HUNTSMAN_CENSYS_SECRET"],
+        slots: &[
+            crate::environment::CENSYS_ID_ENV,
+            crate::environment::CENSYS_SECRET_ENV,
+        ],
     },
 ];
 
 fn secret_for_slot(keys: &Keys, slot: &str) -> Option<Secret> {
     keys.get(slot).or_else(|| match slot {
-        "HUNTSMAN_HIBP_KEY" => keys.get("HIBP_API_KEY"),
+        crate::environment::HUNTSMAN_HIBP_KEY_ENV => keys.get(crate::environment::HIBP_API_KEY_ENV),
         _ => None,
     })
 }
