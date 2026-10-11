@@ -20,3 +20,14 @@ __pycache__/
 # Local agent worktrees that the automation creates under .claude/. They are checkouts of
 # other commits, and they must never be committed to this repository.
 /.claude/
+
+# Per-run outputs of the dual-pass and issue-fix automation and of the release key scan. They are
+# evidence for one run, not source, and must never be committed.
+/dual-pass-out/
+/dual-pass-report.md
+/execution-plan.json
+/.issue-body.md
+/.dual-pass-*
+key-scan-report.txt
+/dist/
+/*.log
