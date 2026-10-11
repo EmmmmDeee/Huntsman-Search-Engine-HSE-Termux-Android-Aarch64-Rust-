@@ -596,6 +596,7 @@ fn run_script_with(
     let bash = tool("bash").expect("bash must be available");
     let mut cmd = Command::new(bash);
     cmd.arg(script).arg(dir);
+    with_known_hex(&mut cmd);
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -635,19 +636,55 @@ fn assert_redacted(text: &str, value: &str, ctx: &str) {
     );
 }
 
-fn clean_fixture(dir: &Path) {
-    fs::write(
-        dir.join("p.json"),
-        format!(
-            "{{\"commit\":\"{}\",\"sha256\":\"{}\",\"upper\":\"{}\"}}\n",
-            "a1".repeat(20),
-            "b2".repeat(32),
-            "AB".repeat(16)
+/// The value `name` is pinned to in the workflow-level `env` of release.yml.
+fn workflow_env(name: &str) -> String {
+    let wf = release();
+    let prefix = format!("\n  {name}: \"");
+    let from = wf
+        .find(&prefix)
+        .unwrap_or_else(|| panic!("{RELEASE} env must pin {name}"))
+        + prefix.len();
+    let to = from + wf[from..].find('"').expect("quoted value");
+    wf[from..to].to_owned()
+}
+
+/// Synthetic stand-ins for the per-commit known values (in CI: github.sha and
+/// sha256 of Cargo.lock). Never real, never all digits.
+fn test_build_sha() -> String {
+    fake("", "5e6f7a8b", 5)
+}
+fn test_cargo_lock_sha256() -> String {
+    fake("", "9c8d7e6f", 8)
+}
+
+/// The known hex values the scanner strips, as release.yml hands them over:
+/// the two pinned constants straight from the workflow env.
+fn known_hex() -> [(&'static str, String); 4] {
+    [
+        ("HUNTSMAN_BUILD_SHA", test_build_sha()),
+        (
+            "HUNTSMAN_RUSTC_COMMIT",
+            workflow_env("HUNTSMAN_RUSTC_COMMIT"),
         ),
-    )
-    .unwrap();
-    // The 00..ff hex byte table and a decimal digit-pair table, as std links
-    // them into every Rust binary: long hex runs that are not keys.
+        (
+            "HUNTSMAN_DIRECTIVE_SHA256",
+            workflow_env("HUNTSMAN_DIRECTIVE_SHA256"),
+        ),
+        ("HUNTSMAN_CARGO_LOCK_SHA256", test_cargo_lock_sha256()),
+    ]
+}
+
+/// Sets every known hex value on `cmd`, overriding anything inherited (CI sets
+/// `HUNTSMAN_BUILD_SHA`). A caller's own env, applied afterwards, still wins.
+fn with_known_hex(cmd: &mut Command) -> &mut Command {
+    for (k, v) in known_hex() {
+        cmd.env(k, v);
+    }
+    cmd
+}
+
+/// std's 00..ff hex byte table and 00..99 decimal digit-pair table.
+fn std_tables() -> (String, String) {
     let (mut hex_table, mut digit_table) = (String::new(), String::new());
     for b in 0..=255u8 {
         write!(hex_table, "{b:02x}").unwrap();
@@ -655,39 +692,54 @@ fn clean_fixture(dir: &Path) {
     for n in 0..100 {
         write!(digit_table, "{n:02}").unwrap();
     }
-    let sha40 = format!("{}{}", random_hex32(), &random_hex32()[..8]);
-    let sha64 = random_hex32().repeat(2);
+    (hex_table, digit_table)
+}
+
+/// Two files shaped like the release `dist/`: `bin` carries every benign hex
+/// run seen in the real main-f3b5b75 / main-f199841 binaries, glued the way
+/// `strings` joins adjacent literals; `p.json` names the build SHA, the
+/// Cargo.lock digest and the sha256 of `bin`, like the provenance and report.
+/// It scans clean only because the scanner deletes those exact values.
+fn clean_fixture(dir: &Path) {
+    let [(_, build), (_, rustc), (_, directive), (_, lock)] = known_hex();
+    let (hex_table, digit_table) = std_tables();
+    let mut rustc_paths = Vec::new();
+    for file in ["core/src/fmt/mod.rs", "std/src/io/mod.rs"] {
+        rustc_paths.extend_from_slice(format!("/rustc/{rustc}/library/{file}\x00").as_bytes());
+    }
     fs::write(
         dir.join("bin"),
         [
             b"\x00\x7fELF usage: huntsman-recon [check]\x00".as_slice(),
-            // 31 hex is one short of the key shape; 40 (git SHA-1) and 64
-            // (sha256) are the two allowed hex-run lengths.
+            // 31 hex is one short of the key shape.
             fake("", "c", 31).as_bytes(),
-            b"\x00\x01".as_slice(),
-            fake("", "d", 40).as_bytes(),
-            b"\x00\x01".as_slice(),
-            fake("", "e", 64).as_bytes(),
             b"\x00".as_slice(),
             hex_table.as_bytes(),
             b"\x00".as_slice(),
-            digit_table.as_bytes(),
+            // All digits: std's other decimal formatting tables.
+            fake("", "0", 64).as_bytes(),
             b"\x00".as_slice(),
-            // `strings` joins adjacent literals, so a benign run can carry a
-            // hex char or two from the next one. These are the shapes seen in
-            // the real main-f3b5b75 binary: a commit SHA before the version,
-            // a sha256 before "embedded", std's digit table before "assertion".
-            // Up to 4 such chars in total, on either end, are tolerated.
-            format!("{sha40}0.2.0").as_bytes(),
+            &rustc_paths,
+            // As in the real binaries: the build SHA before the version
+            // "0.2.0", the directive digest before "embedded", std's digit
+            // table before "assertion".
+            format!("{build}0.2.0").as_bytes(),
             b"\x00".as_slice(),
-            format!("{sha64}embedded canonical").as_bytes(),
+            format!("{directive}embedded canonical").as_bytes(),
             b"\x00".as_slice(),
             format!("{digit_table}assertion failed").as_bytes(),
             b"\x00".as_slice(),
-            format!("ab{sha40}cd").as_bytes(),
-            b"\x00".as_slice(),
         ]
         .concat(),
+    )
+    .unwrap();
+    let bin_sha = sha256_hex(&dir.join("bin"));
+    fs::write(
+        dir.join("p.json"),
+        format!(
+            "{{\"commit\":\"{build}\",\"cargo_lock_sha256\":\"{lock}\",\"artifact_sha256\":\"{bin_sha}\",\"upper\":\"{}\"}}\n",
+            "AB".repeat(16)
+        ),
     )
     .unwrap();
 }
@@ -774,7 +826,16 @@ fn scanner_fails_closed_when_a_tool_is_missing() {
         return;
     }
     let needed = [
-        "strings", "python3", "grep", "find", "sort", "cat", "mktemp", "rm", "realpath",
+        "strings",
+        "python3",
+        "grep",
+        "find",
+        "sort",
+        "cat",
+        "mktemp",
+        "rm",
+        "realpath",
+        "sha256sum",
     ];
     let fixture = scratch("tools-fixture");
     clean_fixture(&fixture);
@@ -784,7 +845,13 @@ fn scanner_fails_closed_when_a_tool_is_missing() {
         [b"\x00 t=".as_slice(), ghp.as_bytes(), b" \x00\xfe"].concat(),
     )
     .unwrap();
-    for missing in [None, Some("strings"), Some("python3"), Some("realpath")] {
+    for missing in [
+        None,
+        Some("strings"),
+        Some("python3"),
+        Some("realpath"),
+        Some("sha256sum"),
+    ] {
         let bin = scratch(&format!("path-{}", missing.unwrap_or("all")));
         for name in needed.iter().filter(|n| Some(**n) != missing) {
             let src = tool(name).unwrap_or_else(|| panic!("{name} must be installed"));
@@ -1512,18 +1579,19 @@ fn both_scanner_copies_scan_the_checked_list_not_a_second_sort() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// Security's hex-run rule: any lowercase hex run of 32+ characters whose
-/// length is not exactly 40 or 64 is a finding, so a key packed right after
-/// "password" (which ends in the hex letter `d`) is caught.
-#[test]
-fn hex_run_rule_catches_a_key_packed_against_other_hex() {
-    if !scanner_tools_present() {
-        return;
-    }
-    let hex = random_hex32();
-    let cases: Vec<(&str, Vec<u8>)> = vec![
+/// Security's hex-run rule (#876 re-review): after the exact known values are
+/// deleted, any run holding 32 lowercase hex in a row is a finding unless it
+/// is all digits or part of the 00..ff table. No length is exempt (no 40/64
+/// exception, no end-trim fringe), so a key glued to n more hex chars is
+/// caught for every n, as is a key glued to a known value or to "password".
+/// One file per way of gluing `hex` to other hex; each must be a finding.
+fn glued_key_cases(hex: &str) -> Vec<(String, Vec<u8>)> {
+    let [(_, build), (_, rustc), (_, directive), (_, lock)] = known_hex();
+    let (hex_table, digit_table) = std_tables();
+    let tail = format!("{}{}", random_hex32(), random_hex32());
+    let mut cases: Vec<(String, Vec<u8>)> = vec![
         (
-            "password.bin",
+            "password.bin".into(),
             [
                 b"\x00\x01password".as_slice(),
                 hex.as_bytes(),
@@ -1531,37 +1599,265 @@ fn hex_run_rule_catches_a_key_packed_against_other_hex() {
             ]
             .concat(),
         ),
-        ("password.txt", format!("password{hex}\n").into_bytes()),
         (
-            "hex-after.bin",
+            "password.txt".into(),
+            format!("password{hex}\n").into_bytes(),
+        ),
+        (
+            "hex-after.bin".into(),
             [b"\x00\x01".as_slice(), hex.as_bytes(), b"cafe\x00"].concat(),
         ),
-        ("run48.txt", format!("v={hex}{}\n", &hex[..16]).into_bytes()),
-        ("run128.txt", format!("v={}\n", hex.repeat(4)).into_bytes()),
-        // One char more than the tolerated 4-char fringe around a 40-hex core.
         (
-            "fringe5.txt",
-            format!("v={hex}{}\n", &random_hex32()[..13]).into_bytes(),
+            "run128.txt".into(),
+            format!("v={}\n", hex.repeat(4)).into_bytes(),
         ),
     ];
-    for (file, bytes) in cases {
-        let dir = scratch(&format!("hexrun-{file}"));
-        clean_fixture(&dir);
-        fs::write(dir.join(file), &bytes).unwrap();
-        let (code, text) = scan(&dir);
-        assert_eq!(code, Some(1), "{file} must fail the scan:\n{text}");
+    // key + n hex: 0..=13 spans the old 40-hex fringe (8..=12) and one past
+    // it; 30..=37 spans the old 64-hex fringe (32..=36). 8 and 32 make runs
+    // of exactly 40 and 64, the lengths the old rule exempted.
+    for n in (0..=13).chain(30..=37) {
+        cases.push((
+            format!("key-plus-{n}.bin"),
+            [
+                b"\x00\x01".as_slice(),
+                hex.as_bytes(),
+                &tail.as_bytes()[..n],
+                b"\x00",
+            ]
+            .concat(),
+        ));
+        cases.push((
+            format!("plus-{n}-key.txt"),
+            format!("v={}{hex}\n", &tail[..n]).into_bytes(),
+        ));
+    }
+    // A key glued to each exact known value, on either side, is still a key:
+    // deleting the known value leaves it standing.
+    for (name, known) in [
+        ("build-sha", &build),
+        ("rustc", &rustc),
+        ("directive", &directive),
+        ("cargo-lock", &lock),
+        ("hex-table", &hex_table),
+        ("digit-table", &digit_table),
+    ] {
+        cases.push((
+            format!("{name}-then-key.bin"),
+            [
+                b"\x00\x01".as_slice(),
+                known.as_bytes(),
+                hex.as_bytes(),
+                b"\x00",
+            ]
+            .concat(),
+        ));
+        cases.push((
+            format!("key-then-{name}.txt"),
+            format!("v={hex}{known}\n").into_bytes(),
+        ));
+    }
+    // An unknown commit SHA or digest is not stripped at all.
+    cases.push((
+        "other-sha-then-key.bin".into(),
+        [
+            b"\x00\x01".as_slice(),
+            &tail.as_bytes()[..40],
+            hex.as_bytes(),
+            b"\x00",
+        ]
+        .concat(),
+    ));
+    cases
+}
+
+#[test]
+fn hex_run_rule_catches_a_key_packed_against_other_hex() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let hex = random_hex32();
+    let cases = glued_key_cases(&hex);
+    let dir = scratch("hexrun");
+    clean_fixture(&dir);
+    for (file, bytes) in &cases {
+        fs::write(dir.join(file), bytes).unwrap();
+    }
+    let (code, text) = scan(&dir);
+    assert_eq!(code, Some(1), "every glued key must fail the scan:\n{text}");
+    let real = fs::canonicalize(&dir).unwrap();
+    for (file, _) in &cases {
         assert!(
             text.contains(&format!(
                 "FINDING file={}/{file} resolved={}/{file} rule=hibp-key-hex (value withheld)",
                 dir.display(),
-                fs::canonicalize(&dir).unwrap().display()
+                real.display()
             )),
-            "{file}:\n{text}"
+            "{file} must be a finding:\n{text}"
         );
-        assert!(text.contains("key scan: 1 finding(s)"), "{file}:\n{text}");
-        assert_redacted(&text, &hex, file);
-        let _ = fs::remove_dir_all(&dir);
     }
+    assert!(
+        text.contains(&format!("key scan: {} finding(s)", cases.len())),
+        "exactly one finding per planted file, none from the clean fixture:\n{text}"
+    );
+    assert_redacted(&text, &hex, "glued keys");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The loosening Security blocked must not come back in any form.
+#[test]
+fn hex_run_rule_has_no_length_exception_or_end_trim() {
+    let src = fs::read_to_string(SCAN).unwrap();
+    for gone in ["HEX_FRINGE", "benign_hex_core", "40 | 64", "{40}", "{64}"] {
+        assert!(!src.contains(gone), "{SCAN} must not contain {gone:?}");
+    }
+    for want in [
+        "for k in \"${KNOWN_HEX[@]}\"; do m=${m//\"$k\"/}; done",
+        "KNOWN_HEX+=(\"$hex_table\" \"$digit_table\")",
+        "for spec in HUNTSMAN_BUILD_SHA:40 HUNTSMAN_RUSTC_COMMIT:40 HUNTSMAN_DIRECTIVE_SHA256:64 HUNTSMAN_CARGO_LOCK_SHA256:64; do",
+    ] {
+        assert!(src.contains(want), "{SCAN} must contain {want:?}");
+    }
+}
+
+/// Every known value is needed: without it the real-binary shapes in the
+/// clean fixture (the glued build SHA, rustc paths, directive digest, the
+/// provenance's Cargo.lock digest) are findings. Unset means stricter.
+#[test]
+fn each_known_hex_value_is_needed_and_unset_only_makes_the_scan_stricter() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let dir = scratch("known-needed");
+    clean_fixture(&dir);
+    for (name, _) in known_hex() {
+        let bash = tool("bash").expect("bash must be available");
+        let mut cmd = Command::new(bash);
+        cmd.arg(SCAN).arg(&dir);
+        with_known_hex(&mut cmd).env_remove(name);
+        let out = cmd.output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "without {name}:\n{text}");
+        assert!(
+            text.contains("rule=hibp-key-hex (value withheld)"),
+            "without {name}:\n{text}"
+        );
+        assert!(!text.contains(&format!("stripped: {name}")), "{text}");
+    }
+    let (code, text) = scan(&dir);
+    assert_eq!(code, Some(0), "positive control:\n{text}");
+    assert!(
+        text.contains("known hex values stripped: HUNTSMAN_BUILD_SHA HUNTSMAN_RUSTC_COMMIT HUNTSMAN_DIRECTIVE_SHA256 HUNTSMAN_CARGO_LOCK_SHA256 + scanned-file sha256 + std tables"),
+        "{text}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A known value with the wrong shape (empty, short, uppercase, a bare 32-hex
+/// key) would strip arbitrary hex, so both scanner copies refuse it.
+#[test]
+fn both_scanner_copies_refuse_a_malformed_known_hex_value() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let root = scratch("known-malformed");
+    let dir = root.join("dist");
+    fs::create_dir_all(&dir).unwrap();
+    clean_fixture(&dir);
+    let inline = root.join("inlined-scan-for-keys.sh");
+    fs::write(&inline, inlined_scanner()).unwrap();
+    let key = random_hex32();
+    let upper = test_build_sha().to_ascii_uppercase();
+    for script in [PathBuf::from(SCAN), inline] {
+        for (name, len) in [
+            ("HUNTSMAN_BUILD_SHA", 40),
+            ("HUNTSMAN_RUSTC_COMMIT", 40),
+            ("HUNTSMAN_DIRECTIVE_SHA256", 64),
+            ("HUNTSMAN_CARGO_LOCK_SHA256", 64),
+        ] {
+            for bad in ["", "d", key.as_str(), upper.as_str()] {
+                let ctx = format!("{} with {name}={} chars", script.display(), bad.len());
+                let (code, text) =
+                    run_script_with(&script, &dir, &[(name, std::ffi::OsStr::new(bad))]);
+                assert_eq!(code, Some(1), "{ctx}:\n{text}");
+                assert!(
+                    text.contains(&format!(
+                        "{name} must be exactly {len} lowercase hex characters (got {} characters); refusing",
+                        bad.len()
+                    )),
+                    "{ctx}:\n{text}"
+                );
+                assert!(
+                    !text.contains("files scanned:"),
+                    "{ctx} must not scan:\n{text}"
+                );
+                assert_redacted(&text, &key, &ctx);
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// Known values come from the workflow, never from a build-job output: the
+/// two constants are pinned in the workflow env (and checked against rustc and
+/// the checkout before anything builds), the build SHA is github.sha, and the
+/// Cargo.lock digest is hashed from the checkout (build) or from the
+/// repository at github.sha (publish, which checks out nothing).
+#[test]
+fn known_hex_values_come_from_the_workflow_not_from_build_outputs() {
+    let wf = release();
+    assert_eq!(
+        workflow_env("HUNTSMAN_DIRECTIVE_SHA256"),
+        huntsman_recon::directive_lock::EXPECTED_SHA256,
+        "the workflow pin must track directive_lock::EXPECTED_SHA256"
+    );
+    let rustc = workflow_env("HUNTSMAN_RUSTC_COMMIT");
+    assert!(
+        rustc.len() == 40
+            && rustc
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    );
+    assert!(wf.contains("\n  HUNTSMAN_BUILD_SHA: ${{ github.sha }}\n"));
+    for line in wf.lines().filter(|l| l.contains("HUNTSMAN_")) {
+        assert!(
+            !line.contains("needs.") && !line.contains("steps."),
+            "a known hex value must not come from a job or step output: {line}"
+        );
+    }
+    let build = job(&wf, "build");
+    let pin = build
+        .find("name: Prove the key scan's pinned hex values still hold")
+        .expect("build must check the pins");
+    let cargo = build
+        .find("run: cargo build --release --locked --target aarch64-linux-android")
+        .unwrap();
+    assert!(
+        pin < cargo,
+        "the pins must be checked before any build code runs"
+    );
+    for want in [
+        "got=\"$(rustc -vV | sed -n 's/^commit-hash: //p')\"",
+        "[ \"$got\" = \"$HUNTSMAN_RUSTC_COMMIT\" ]",
+        "grep -Fqx \"    \\\"${HUNTSMAN_DIRECTIVE_SHA256}\\\";\" src/directive_lock.rs",
+        "HUNTSMAN_CARGO_LOCK_SHA256=\"$(sha256sum Cargo.lock | cut -d' ' -f1)\"",
+    ] {
+        assert!(build.contains(want), "build must contain {want:?}");
+    }
+    let publish = job(&wf, "publish");
+    for want in [
+        "\"repos/${GITHUB_REPOSITORY}/contents/Cargo.lock?ref=${GITHUB_SHA}\" > \"$lock\"",
+        "HUNTSMAN_CARGO_LOCK_SHA256=\"$(sha256sum \"$lock\" | cut -d' ' -f1)\"",
+        "[ \"$HUNTSMAN_BUILD_SHA\" = \"$GITHUB_SHA\" ]",
+    ] {
+        assert!(publish.contains(want), "publish must contain {want:?}");
+    }
+    assert!(
+        !publish.contains("actions/checkout"),
+        "publish must check out nothing"
+    );
+    let src = fs::read_to_string(SCAN).unwrap();
+    assert!(src.contains("d=$(sha256sum -- \"${src_of[\"$f\"]}\")"));
 }
 
 /// FTBB N1: matching is byte-wise even when the caller runs a UTF-8 locale,
@@ -1618,13 +1914,9 @@ fn scanner_matches_byte_wise_under_a_utf8_locale() {
 fn run_script_with_timeout(script: &Path, arg: &Path) -> (Option<i32>, String) {
     let timeout = tool("timeout").expect("coreutils timeout must be installed");
     let bash = tool("bash").expect("bash must be available");
-    let out = Command::new(timeout)
-        .args(["-k", "2", "10"])
-        .arg(bash)
-        .arg(script)
-        .arg(arg)
-        .output()
-        .expect("timeout must run");
+    let mut cmd = Command::new(timeout);
+    cmd.args(["-k", "2", "10"]).arg(bash).arg(script).arg(arg);
+    let out = with_known_hex(&mut cmd).output().expect("timeout must run");
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     (out.status.code(), text)
@@ -1933,14 +2225,13 @@ fn scanner_treats_a_dash_leading_root_as_a_path() {
         let file = Path::new(env!("CARGO_MANIFEST_DIR")).join(SCAN);
         for script in [file, inline] {
             let ctx = format!("{} on root {name}", script.display());
-            let out = Command::new(&timeout)
-                .args(["-k", "2", "10"])
+            let mut cmd = Command::new(&timeout);
+            cmd.args(["-k", "2", "10"])
                 .arg(&bash)
                 .arg(&script)
                 .arg(name)
-                .current_dir(&cwd)
-                .output()
-                .expect("timeout must run");
+                .current_dir(&cwd);
+            let out = with_known_hex(&mut cmd).output().expect("timeout must run");
             let text = String::from_utf8_lossy(&out.stdout).into_owned()
                 + &String::from_utf8_lossy(&out.stderr);
             assert!(

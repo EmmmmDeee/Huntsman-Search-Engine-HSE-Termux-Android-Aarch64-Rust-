@@ -26,7 +26,7 @@ export LC_ALL=C
 
 # Fail closed: without these the binary scan or the entropy check would
 # silently find nothing.
-for dep in strings python3 grep find sort cat mktemp realpath; do
+for dep in strings python3 grep find sort cat mktemp realpath sha256sum; do
   command -v "$dep" >/dev/null 2>&1 || { echo "::error::scanner dependency missing: $dep"; exit 1; }
 done
 [ "$#" -gt 0 ] || { echo "::error::usage: scan-for-keys.sh <path>..."; exit 1; }
@@ -54,55 +54,71 @@ RULES=(
   $'private-key-block\t-----BEGIN [A-Z ]*PRIVATE KEY-----'
   $'bearer-token\t[Bb]earer [A-Za-z0-9._~+/-]{24,}'
   # HIBP API keys are 32 lowercase hex characters. This matches every maximal
-  # hex run (either case) of 32+ characters; hex_runs() below keeps a run only
-  # if its length is not exactly 40 (git SHA-1) or 64 (sha256) and it holds 32
-  # lowercase hex characters in a row. So a key packed next to other hex (e.g.
-  # right after "password", which ends in "d") is still caught.
+  # hex run (either case) of 32+ characters; hex_runs() below strips the known
+  # benign values out of it and keeps it if what remains holds 32 lowercase hex
+  # characters in a row. There is no length exception: a key packed next to
+  # other hex (e.g. right after "password", which ends in "d", or glued to a
+  # commit SHA) is still caught.
   $'hibp-key-hex\t[0-9a-fA-F]{32,}'
   # Credential variable names carrying a non-placeholder value.
   $'credential-assignment\t(HUNTSMAN_[A-Z0-9_]*|HIBP_[A-Z0-9_]*)(KEY|TOKEN|SECRET)["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9_./+-]{12,}'
 )
 ALLOW_RE='insert_[a-z0-9_]+_here|AKIAIOSFODNN7EXAMPLE|<value>|\$\{?[A-Z_]+'
 
-# Filters hibp-key-hex matches (one maximal hex run per line) down to
-# key-like runs. Two lookup tables that std links into every Rust binary are
-# not keys and are skipped: all-digit runs (decimal formatting tables; a random
-# 32-hex key has no letter with probability (10/16)^32, about 3e-7) and the
-# 00..ff hex byte table or any part of it.
-#
-# In a linked binary `strings` joins adjacent read-only literals, so a benign
-# run can pick up a hex character or two from the next literal: a 40-hex
-# commit SHA followed by the version "0.2.0", a 64-hex digest followed by
-# "embedded", std's 200-digit table followed by "assertion". A run is
-# therefore also skipped when dropping at most HEX_FRINGE characters, in total,
-# from its two ends leaves a benign core (exactly 40 or 64 hex, all digits, or
-# part of the hex byte table). This widens the existing 40/64 blind spot from
-# "a key plus exactly 8 (or 32) adjacent hex chars" to "plus 8..12 (or
-# 32..36)"; "password<key>" (33), "<key>cafe" (36) and 48- or 128-char runs
-# are still findings.
-HEX_FRINGE=4
+# Exact known hex values, deleted from every hibp-key-hex run before it is
+# judged. Three kinds, none taken from a build-job output or the artifact's
+# own claims:
+# 1. From the caller's environment, which in release.yml is the workflow
+#    itself (its env block, or the checkout / repository at github.sha):
+#      HUNTSMAN_BUILD_SHA          40 hex, the commit the binary embeds
+#      HUNTSMAN_RUSTC_COMMIT       40 hex, the pinned rustc's /rustc/<hash>/
+#      HUNTSMAN_DIRECTIVE_SHA256   64 hex, directive_lock::EXPECTED_SHA256
+#      HUNTSMAN_CARGO_LOCK_SHA256  64 hex, sha256 of Cargo.lock (provenance)
+#    An unset variable strips nothing, so the scan only gets stricter. A set
+#    one must have exactly its documented shape, or the scan exits 1: a short
+#    or empty value would strip arbitrary hex.
+# 2. The sha256 of every file being scanned, computed here from its bytes
+#    (the .sha256 file and the scan report name the binary's digest). Nobody
+#    can choose these to equal a key.
+# 3. std's two lookup tables, built here: the 00..ff hex byte table and the
+#    00..99 decimal digit-pair table.
+KNOWN_HEX=()
+known=()
+for spec in HUNTSMAN_BUILD_SHA:40 HUNTSMAN_RUSTC_COMMIT:40 HUNTSMAN_DIRECTIVE_SHA256:64 HUNTSMAN_CARGO_LOCK_SHA256:64; do
+  var=${spec%%:*}
+  len=${spec#*:}
+  [ -n "${!var+x}" ] || continue
+  v=${!var}
+  [[ $v =~ ^[0-9a-f]+$ ]] && [ "${#v}" -eq "$len" ] \
+    || { echo "::error::$var must be exactly $len lowercase hex characters (got ${#v} characters); refusing"; exit 1; }
+  KNOWN_HEX+=("$v")
+  known+=("$var")
+done
+echo "known hex values stripped: ${known[*]:-none} + scanned-file sha256 + std tables"
 hex_table=""
 for ((i = 0; i < 256; i++)); do printf -v b '%02x' "$i"; hex_table+=$b; done
-benign_hex_core() {
-  local c=$1
-  case ${#c} in 40 | 64) return 0 ;; esac
-  [[ $c =~ [a-f] ]] || return 0
-  [[ $hex_table == *"$c"* ]] && return 0
-  return 1
-}
+digit_table=""
+for ((i = 0; i < 100; i++)); do printf -v b '%02d' "$i"; digit_table+=$b; done
+KNOWN_HEX+=("$hex_table" "$digit_table")
+
+# Filters hibp-key-hex matches (one maximal hex run per line) down to
+# key-like runs. Every exact known value above is deleted from the run first.
+# In a linked binary `strings` joins adjacent read-only literals, so the build
+# SHA arrives as "<sha>0" (before the version "0.2.0"), the directive digest
+# as "<digest>e" (before "embedded") and the digit table as "<table>a" (before
+# "assertion"); exact deletion leaves only the harmless remainder. What is left
+# is a finding if it holds 32 lowercase hex in a row, unless it is all digits
+# (std's other decimal formatting tables; a random 32-hex key has no letter
+# with probability (10/16)^32, about 3e-7) or part of the hex byte table.
+# No length is exempt: a key plus 8 or 32 hex chars (40 or 64 in all) is a
+# finding like any other run.
 hex_runs() {
-  local m a b core benign
+  local m k
   while IFS= read -r m; do
+    for k in "${KNOWN_HEX[@]}"; do m=${m//"$k"/}; done
     [[ $m =~ [0-9a-f]{32} ]] || continue
-    benign=0
-    for ((a = 0; a <= HEX_FRINGE && !benign; a++)); do
-      for ((b = 0; a + b <= HEX_FRINGE; b++)); do
-        core=${m:a:${#m}-a-b}
-        [ "${#core}" -ge 32 ] || continue
-        if benign_hex_core "$core"; then benign=1; break; fi
-      done
-    done
-    [ "$benign" = 0 ] || continue
+    [[ $m =~ [a-f] ]] || continue
+    [[ $hex_table == *"$m"* ]] && continue
     printf '%s\n' "$m"
   done
 }
@@ -238,6 +254,12 @@ for i in "${!files[@]}"; do
 done
 [ "${#unique[@]}" -eq "${#files[@]}" ] || echo "files reached by more than one path: scanning each once (${#unique[@]} of ${#files[@]})"
 files=("${unique[@]}")
+
+# Known value kind 2: the sha256 of each file about to be scanned.
+for f in "${files[@]}"; do
+  d=$(sha256sum -- "${src_of["$f"]}") || { echo "::error::sha256sum failed on $f"; exit 1; }
+  KNOWN_HEX+=("${d%% *}")
+done
 
 scanned=0
 for f in "${files[@]}"; do
