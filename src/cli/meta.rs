@@ -371,3 +371,112 @@ pub(super) fn verify(path: Option<String>) -> ExitCode {
         Err(e) => fail(ledger_error_code(&e), &e.to_string()),
     }
 }
+
+pub(super) fn run_history_cmd(args: &[String]) -> ExitCode {
+    use std::io::Read;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Bound the --from-stdin read: every other external input in the crate is
+    // capped, and an unbounded read of a huge or endless producer would OOM on
+    // the memory-constrained Termux target. 16 MiB holds any real test log.
+    const MAX_STDIN_BYTES: u64 = 16 * 1024 * 1024;
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+
+    // `--from-stdin` reads libtest output on stdin and injects the real
+    // passed/failed counts, so a persistent host can pipe `cargo test` straight
+    // into the regression store. The flag is resolved here, in the binary-only
+    // wrapper, because it is the only part that touches the process's stdin;
+    // the parser and the record logic it feeds are both unit-tested.
+    if args.first().map(String::as_str) == Some("record")
+        && args.iter().any(|a| a == "--from-stdin")
+    {
+        // --from-stdin supplies the counts; explicit --passed/--failed would be
+        // silently overridden, so reject the combination instead.
+        if args.iter().any(|a| a == "--passed" || a == "--failed") {
+            eprintln!("run-history: --from-stdin cannot be combined with --passed/--failed");
+            return ExitCode::from(EX_USAGE);
+        }
+        let mut buffer = String::new();
+        if std::io::stdin()
+            .lock()
+            .take(MAX_STDIN_BYTES + 1)
+            .read_to_string(&mut buffer)
+            .is_err()
+        {
+            eprintln!("run-history: could not read test output from stdin");
+            return ExitCode::from(EX_IOERR);
+        }
+        if buffer.len() as u64 > MAX_STDIN_BYTES {
+            eprintln!("run-history: test output on stdin exceeds 16 MiB");
+            return ExitCode::from(EX_IOERR);
+        }
+        let Some((passed, failed)) = huntsman_recon::run_history::parse_libtest_summary(&buffer)
+        else {
+            eprintln!("run-history: no 'test result:' line found in stdin");
+            return ExitCode::from(EX_DATAERR);
+        };
+        let mut rewritten: Vec<String> = args
+            .iter()
+            .filter(|a| a.as_str() != "--from-stdin")
+            .cloned()
+            .collect();
+        rewritten.push("--passed".to_owned());
+        rewritten.push(passed.to_string());
+        rewritten.push("--failed".to_owned());
+        rewritten.push(failed.to_string());
+        return ExitCode::from(huntsman_recon::run_history::cli::run(
+            &rewritten,
+            now_unix,
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        ));
+    }
+
+    ExitCode::from(huntsman_recon::run_history::cli::run(
+        args,
+        now_unix,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    ))
+}
+
+pub(super) fn correlate_cmd(args: &[String]) -> ExitCode {
+    let [path] = args else {
+        return fail(EX_USAGE, "usage: huntsman-recon correlate ARTIFACT");
+    };
+    match huntsman_recon::scan_artifact::read(Path::new(path)) {
+        Ok(artifact) => {
+            println!(
+                "scan_id={} entities={} relations={}",
+                huntsman_recon::textnorm::escape_controls(&artifact.scan_id),
+                artifact.entities.len(),
+                artifact.relations.len()
+            );
+            let correlations = artifact.correlate();
+            println!("correlations={}", correlations.len());
+            for c in &correlations {
+                println!(
+                    "rule={} severity={:?} entities={}",
+                    c.rule_id,
+                    c.severity,
+                    c.entity_uids.len()
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            use huntsman_recon::scan_artifact::ArtifactError;
+            // Match the crate's exit-code contract (see ledger_error_code):
+            // unreadable input (missing file, IO, a directory) is 66; a file
+            // that is read but does not parse or has the wrong version is 65.
+            let code = match &e {
+                ArtifactError::Io(_) => EX_NOINPUT,
+                ArtifactError::Malformed(_)
+                | ArtifactError::UnsupportedVersion { .. }
+                | ArtifactError::Unsupported(_) => EX_DATAERR,
+            };
+            fail(code, &format!("correlate: {e}"))
+        }
+    }
+}

@@ -1,12 +1,24 @@
 //! Cross-sweep and live-radar tracking rebuilt from `core::radar_track` and
 //! `core::radar_live`.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use super::oui;
 
 const DEPART_AFTER_MISSED_READS: u32 = 2;
 const DEFAULT_TRACK_CAPACITY: usize = 4_096;
+
+/// Whether a MAC can be held to one physical device over time: a
+/// globally-registered address (not randomized or locally-administered) on a
+/// device the operator has not bonded (so, not the operator's own kit). A
+/// randomized address rotates and must not be tracked across sweeps or
+/// locations, both because it cannot be and because treating it as one device
+/// would manufacture false links. This is the single home for that rule;
+/// `recurring_devices`, `follower_candidates`, and the live radar all use it.
+#[must_use]
+fn stable_identity(mac: &str, bonded: bool) -> bool {
+    !bonded && oui::is_locally_administered(mac) == Some(false)
+}
 
 pub struct SweepObservation {
     pub mac: String,
@@ -73,7 +85,7 @@ pub fn recurring_devices(sweeps: &[Sweep], min_sweeps: usize) -> Vec<RecurringDe
     let mut out: Vec<RecurringDevice> = by_mac
         .into_iter()
         .filter_map(|(mac, acc)| {
-            if acc.bonded_anywhere || oui::is_locally_administered(&mac) != Some(false) {
+            if !stable_identity(&mac, acc.bonded_anywhere) {
                 return None;
             }
             if acc.sweep_ids.len() < min_sweeps {
@@ -111,6 +123,137 @@ pub fn recurring_devices(sweeps: &[Sweep], min_sweeps: usize) -> Vec<RecurringDe
             .sweeps_seen
             .cmp(&left.sweeps_seen)
             .then(right.last_ts.cmp(&left.last_ts))
+            .then(left.mac.cmp(&right.mac))
+    });
+    out
+}
+
+/// One observation of a device together with the coarse location the operator
+/// was at when it was seen. `cell` is an opaque location bucket the caller
+/// supplies (e.g. a low-precision geohash), so this analysis stays independent
+/// of any coordinate system. This mirrors the BLE-radar schema's
+/// `device_to_location` joined to the operator's own `location` track.
+pub struct FollowerSighting {
+    pub mac: String,
+    pub bonded: bool,
+    pub ts: u64,
+    pub cell: String,
+}
+
+/// A device that co-travelled with the operator: seen across several distinct
+/// locations over time, which a stationary fixture (a neighbour's TV, a shop
+/// beacon) is not. This is a personal-safety signal about the operator —
+/// "something moved with you" — not a profile of the device's owner.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FollowerCandidate {
+    pub mac: String,
+    pub vendor: Option<String>,
+    pub device_class: Option<String>,
+    pub distinct_cells: usize,
+    pub sightings: usize,
+    /// Fraction of the operator's own distinct locations (over this window)
+    /// where the device co-occurred, in `0.0..=1.0`. A device present almost
+    /// everywhere the operator went (near 1.0) is the strong tail; a few shared
+    /// cells out of many (near 0.0) is likely coincidence. This separates a
+    /// real follower from overlap that raw cell counts alone cannot.
+    pub coverage: f64,
+    pub first_ts: u64,
+    pub last_ts: u64,
+    pub span_secs: u64,
+}
+
+/// Flag devices that followed the operator across distinct locations.
+///
+/// A candidate must appear in at least `min_distinct_cells` distinct operator
+/// locations (clamped to a floor of 2 — one location is stationary, not
+/// following) and persist for at least `min_span_secs` (so one dense crowd in a
+/// single moment is not mistaken for a tail). The operator's own paired kit
+/// (`bonded`) and non-resolvable randomized / locally-administered addresses are
+/// excluded: a rotating address cannot be followed across locations, and
+/// treating it as one device would manufacture false alarms.
+#[must_use]
+pub fn follower_candidates(
+    sightings: &[FollowerSighting],
+    min_distinct_cells: usize,
+    min_span_secs: u64,
+) -> Vec<FollowerCandidate> {
+    struct Acc {
+        cells: HashSet<String>,
+        sightings: usize,
+        first_ts: u64,
+        last_ts: u64,
+    }
+
+    let min_distinct_cells = min_distinct_cells.max(2);
+    let mut by_mac: HashMap<String, Acc> = HashMap::new();
+    // Every cell with any observation is a place the operator was, so this is
+    // the denominator for coverage — including cells where only the operator's
+    // own kit or a randomized address was seen.
+    let mut operator_cells: HashSet<&str> = HashSet::new();
+    for sighting in sightings {
+        let cell = sighting.cell.trim();
+        if cell.is_empty() {
+            continue;
+        }
+        operator_cells.insert(cell);
+        let mac = sighting.mac.trim().to_ascii_lowercase();
+        if mac.is_empty() {
+            continue;
+        }
+        // A device that cannot be re-identified across locations cannot be
+        // shown to be following, and its owner is deliberately unidentifiable.
+        if !stable_identity(&mac, sighting.bonded) {
+            continue;
+        }
+        let entry = by_mac.entry(mac).or_insert_with(|| Acc {
+            cells: HashSet::new(),
+            sightings: 0,
+            first_ts: u64::MAX,
+            last_ts: 0,
+        });
+        entry.cells.insert(cell.to_string());
+        entry.sightings += 1;
+        entry.first_ts = entry.first_ts.min(sighting.ts);
+        entry.last_ts = entry.last_ts.max(sighting.ts);
+    }
+    let operator_cell_total = operator_cells.len().max(1);
+
+    let mut out: Vec<FollowerCandidate> = by_mac
+        .into_iter()
+        .filter_map(|(mac, acc)| {
+            if acc.cells.len() < min_distinct_cells {
+                return None;
+            }
+            let span = acc.last_ts.saturating_sub(acc.first_ts);
+            if span < min_span_secs {
+                return None;
+            }
+            let (vendor, device_class) = classify(&mac);
+            let covered = u32::try_from(acc.cells.len()).unwrap_or(u32::MAX);
+            let total = u32::try_from(operator_cell_total).unwrap_or(u32::MAX);
+            let coverage = f64::from(covered) / f64::from(total);
+            Some(FollowerCandidate {
+                mac,
+                vendor,
+                device_class,
+                distinct_cells: acc.cells.len(),
+                sightings: acc.sightings,
+                coverage,
+                first_ts: acc.first_ts,
+                last_ts: acc.last_ts,
+                span_secs: span,
+            })
+        })
+        .collect();
+    out.sort_by(|left, right| {
+        // coverage is collinear with distinct_cells within one call (shared
+        // denominator), so distinct_cells is the primary order; coverage is the
+        // reported strength signal, not a re-ranker.
+        right
+            .distinct_cells
+            .cmp(&left.distinct_cells)
+            .then(right.sightings.cmp(&left.sightings))
+            .then(right.span_secs.cmp(&left.span_secs))
             .then(left.mac.cmp(&right.mac))
     });
     out
@@ -172,7 +315,6 @@ impl TickDelta {
 
 pub struct BtRadarState {
     tracks: HashMap<String, BtTrack>,
-    order: VecDeque<String>,
     capacity: usize,
     tick: u64,
 }
@@ -189,7 +331,6 @@ impl BtRadarState {
         assert!(capacity >= 1, "a zero-capacity radar remembers no devices");
         Self {
             tracks: HashMap::with_capacity(capacity),
-            order: VecDeque::with_capacity(capacity),
             capacity,
             tick: 0,
         }
@@ -213,7 +354,7 @@ impl BtRadarState {
     }
 
     fn is_trackable(mac: &str, bonded: bool) -> bool {
-        !bonded && oui::is_locally_administered(mac) == Some(false)
+        stable_identity(mac, bonded)
     }
 
     pub fn apply_tick(&mut self, sightings: &[SweepObservation], read: BtReadOutcome) -> TickDelta {
@@ -299,7 +440,6 @@ impl BtRadarState {
         }
         for mac in to_remove {
             self.tracks.remove(&mac);
-            self.order.retain(|entry| entry != &mac);
         }
 
         if !delta.evicted.is_empty() {
@@ -333,12 +473,25 @@ impl BtRadarState {
     fn insert_track(&mut self, track: BtTrack) -> Option<String> {
         let mut evicted = None;
         if self.tracks.len() >= self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.tracks.remove(&oldest);
-                evicted = Some(oldest);
+            // Evict the least-recently-seen track, not the oldest-inserted. A
+            // device present since the first tick is the one worth keeping under
+            // pressure; dropping it for an idle newcomer would discard the very
+            // persistence a radar exists to surface. Ties break on the lower
+            // mac so eviction is deterministic.
+            if let Some(victim) = self
+                .tracks
+                .values()
+                .min_by(|a, b| {
+                    a.last_seen_tick
+                        .cmp(&b.last_seen_tick)
+                        .then(a.mac.cmp(&b.mac))
+                })
+                .map(|track| track.mac.clone())
+            {
+                self.tracks.remove(&victim);
+                evicted = Some(victim);
             }
         }
-        self.order.push_back(track.mac.clone());
         self.tracks.insert(track.mac.clone(), track);
         evicted
     }
@@ -453,6 +606,123 @@ mod tests {
         assert!(recurring.is_empty(), "{recurring:?}");
     }
 
+    fn sighting(mac: &str, bonded: bool, ts: u64, cell: &str) -> FollowerSighting {
+        FollowerSighting {
+            mac: mac.to_string(),
+            bonded,
+            ts,
+            cell: cell.to_string(),
+        }
+    }
+
+    #[test]
+    fn follower_detection_separates_a_tail_from_a_fixture() {
+        // HW1 moves with the operator across three cells over an hour -> a tail.
+        // HW2 is seen just as often but always in one cell -> a fixture, not a
+        // follower. A randomized MAC across cells, and the operator's own bonded
+        // kit, are both excluded.
+        let sightings = [
+            sighting(HW1, false, 0, "cellA"),
+            sighting(HW1, false, 1800, "cellB"),
+            sighting(HW1, false, 3600, "cellC"),
+            sighting(HW2, false, 0, "cellA"),
+            sighting(HW2, false, 1800, "cellA"),
+            sighting(HW2, false, 3600, "cellA"),
+            sighting(RND, false, 0, "cellA"),
+            sighting(RND, false, 1800, "cellB"),
+            sighting(RND, false, 3600, "cellC"),
+            sighting("3C:5A:B4:77:88:99", true, 0, "cellA"),
+            sighting("3C:5A:B4:77:88:99", true, 1800, "cellB"),
+            sighting("3C:5A:B4:77:88:99", true, 3600, "cellC"),
+        ];
+        let out = follower_candidates(&sightings, 2, 60);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].mac, lc(HW1));
+        assert_eq!(out[0].distinct_cells, 3);
+        assert_eq!(out[0].span_secs, 3600);
+    }
+
+    #[test]
+    fn follower_detection_needs_both_distance_and_duration() {
+        // Across two cells but only seconds apart: a brief co-presence (same
+        // crowd crossing a boundary), not a sustained tail.
+        let brief = [
+            sighting(HW1, false, 0, "cellA"),
+            sighting(HW1, false, 10, "cellB"),
+        ];
+        assert!(follower_candidates(&brief, 2, 300).is_empty());
+
+        // Long span but a single cell: stationary, not following.
+        let stationary = [
+            sighting(HW1, false, 0, "cellA"),
+            sighting(HW1, false, 100_000, "cellA"),
+        ];
+        assert!(follower_candidates(&stationary, 2, 300).is_empty());
+
+        // Both conditions met: flagged.
+        let tail = [
+            sighting(HW1, false, 0, "cellA"),
+            sighting(HW1, false, 100_000, "cellB"),
+        ];
+        assert_eq!(follower_candidates(&tail, 2, 300).len(), 1);
+    }
+
+    #[test]
+    fn coverage_reports_the_fraction_of_operator_locations_shared() {
+        // The operator visited five cells (evidenced by their own bonded kit at
+        // each). HW1 was with them at three of the five -> coverage 0.6.
+        let own = "3C:5A:B4:77:88:99";
+        let mut sightings = Vec::new();
+        for (i, cell) in ["A", "B", "C", "D", "E"].iter().enumerate() {
+            sightings.push(sighting(own, true, i as u64 * 1000, cell));
+        }
+        for (i, cell) in ["A", "B", "C"].iter().enumerate() {
+            sightings.push(sighting(HW1, false, i as u64 * 1000, cell));
+        }
+        let out = follower_candidates(&sightings, 2, 60);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].distinct_cells, 3);
+        assert!(
+            (out[0].coverage - 0.6).abs() < 1e-9,
+            "coverage={}",
+            out[0].coverage
+        );
+
+        // With HW1 at all five, coverage is 1.0 — the strong-tail signal that an
+        // absolute cell count alone could not distinguish from the 0.6 case.
+        let mut everywhere = Vec::new();
+        for (i, cell) in ["A", "B", "C", "D", "E"].iter().enumerate() {
+            everywhere.push(sighting(own, true, i as u64 * 1000, cell));
+            everywhere.push(sighting(HW1, false, i as u64 * 1000, cell));
+        }
+        let out = follower_candidates(&everywhere, 2, 60);
+        assert_eq!(out.len(), 1);
+        assert!(
+            (out[0].coverage - 1.0).abs() < 1e-9,
+            "coverage={}",
+            out[0].coverage
+        );
+    }
+
+    #[test]
+    fn follower_detection_clamps_the_cell_floor_and_ignores_blank_input() {
+        // Asking for <2 distinct cells is clamped to 2, so one location never
+        // counts as following however the caller sets the threshold.
+        let one_cell = [
+            sighting(HW1, false, 0, "cellA"),
+            sighting(HW1, false, 100_000, "cellA"),
+        ];
+        assert!(follower_candidates(&one_cell, 0, 0).is_empty());
+        assert!(follower_candidates(&one_cell, 1, 0).is_empty());
+
+        // Blank mac or blank cell contributes nothing.
+        let blanks = [
+            sighting("", false, 0, "cellA"),
+            sighting(HW1, false, 0, "  "),
+        ];
+        assert!(follower_candidates(&blanks, 2, 0).is_empty());
+    }
+
     #[test]
     fn live_radar_walks_presence_states() {
         let mut radar = BtRadarState::default();
@@ -526,6 +796,30 @@ mod tests {
 
         let ranked = dense.tracks_ranked();
         assert!(!ranked.is_empty(), "a full radar ranks no tracks");
+    }
+
+    #[test]
+    fn eviction_drops_the_least_recently_seen_not_the_oldest_inserted() {
+        // HW1 and HW2 arrive first; next tick HW1 is seen again (so it is the
+        // more recent, persistent device) while a new HW3 forces an eviction at
+        // capacity 2. The idle HW2 must go, not the active HW1 — the opposite of
+        // an insertion-order queue, which would have evicted HW1.
+        let hw3 = "3C:5A:B4:AA:BB:CC";
+        let mut radar = BtRadarState::with_capacity(2);
+        radar.apply_tick(&[obs(HW1), obs(HW2)], BtReadOutcome::Read);
+        let delta = radar.apply_tick(&[obs(HW1), obs(hw3)], BtReadOutcome::Read);
+        assert_eq!(
+            delta.evicted,
+            vec![lc(HW2)],
+            "the idle track must be evicted"
+        );
+        assert_eq!(
+            radar.presence_of(HW1),
+            Some(Presence::Present),
+            "the active track survives"
+        );
+        assert_eq!(radar.presence_of(hw3), Some(Presence::New));
+        assert_eq!(radar.presence_of(HW2), None);
     }
 
     #[test]
