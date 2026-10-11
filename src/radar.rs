@@ -116,6 +116,115 @@ pub fn recurring_devices(sweeps: &[Sweep], min_sweeps: usize) -> Vec<RecurringDe
     out
 }
 
+/// One observation of a device together with the coarse location the operator
+/// was at when it was seen. `cell` is an opaque location bucket the caller
+/// supplies (e.g. a low-precision geohash), so this analysis stays independent
+/// of any coordinate system. This mirrors the BLE-radar schema's
+/// `device_to_location` joined to the operator's own `location` track.
+pub struct FollowerSighting {
+    pub mac: String,
+    pub bonded: bool,
+    pub ts: u64,
+    pub cell: String,
+}
+
+/// A device that co-travelled with the operator: seen across several distinct
+/// locations over time, which a stationary fixture (a neighbour's TV, a shop
+/// beacon) is not. This is a personal-safety signal about the operator —
+/// "something moved with you" — not a profile of the device's owner.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FollowerCandidate {
+    pub mac: String,
+    pub vendor: Option<String>,
+    pub device_class: Option<String>,
+    pub distinct_cells: usize,
+    pub sightings: usize,
+    pub first_ts: u64,
+    pub last_ts: u64,
+    pub span_secs: u64,
+}
+
+/// Flag devices that followed the operator across distinct locations.
+///
+/// A candidate must appear in at least `min_distinct_cells` distinct operator
+/// locations (clamped to a floor of 2 — one location is stationary, not
+/// following) and persist for at least `min_span_secs` (so one dense crowd in a
+/// single moment is not mistaken for a tail). The operator's own paired kit
+/// (`bonded`) and non-resolvable randomized / locally-administered addresses are
+/// excluded: a rotating address cannot be followed across locations, and
+/// treating it as one device would manufacture false alarms.
+#[must_use]
+pub fn follower_candidates(
+    sightings: &[FollowerSighting],
+    min_distinct_cells: usize,
+    min_span_secs: u64,
+) -> Vec<FollowerCandidate> {
+    struct Acc {
+        cells: HashSet<String>,
+        sightings: usize,
+        first_ts: u64,
+        last_ts: u64,
+    }
+
+    let min_distinct_cells = min_distinct_cells.max(2);
+    let mut by_mac: HashMap<String, Acc> = HashMap::new();
+    for sighting in sightings {
+        let mac = sighting.mac.trim().to_ascii_lowercase();
+        let cell = sighting.cell.trim();
+        if mac.is_empty() || cell.is_empty() {
+            continue;
+        }
+        // A device that cannot be re-identified across locations cannot be
+        // shown to be following, and its owner is deliberately unidentifiable.
+        if sighting.bonded || oui::is_locally_administered(&mac) != Some(false) {
+            continue;
+        }
+        let entry = by_mac.entry(mac).or_insert_with(|| Acc {
+            cells: HashSet::new(),
+            sightings: 0,
+            first_ts: u64::MAX,
+            last_ts: 0,
+        });
+        entry.cells.insert(cell.to_string());
+        entry.sightings += 1;
+        entry.first_ts = entry.first_ts.min(sighting.ts);
+        entry.last_ts = entry.last_ts.max(sighting.ts);
+    }
+
+    let mut out: Vec<FollowerCandidate> = by_mac
+        .into_iter()
+        .filter_map(|(mac, acc)| {
+            if acc.cells.len() < min_distinct_cells {
+                return None;
+            }
+            let span = acc.last_ts.saturating_sub(acc.first_ts);
+            if span < min_span_secs {
+                return None;
+            }
+            let (vendor, device_class) = classify(&mac);
+            Some(FollowerCandidate {
+                mac,
+                vendor,
+                device_class,
+                distinct_cells: acc.cells.len(),
+                sightings: acc.sightings,
+                first_ts: acc.first_ts,
+                last_ts: acc.last_ts,
+                span_secs: span,
+            })
+        })
+        .collect();
+    out.sort_by(|left, right| {
+        right
+            .distinct_cells
+            .cmp(&left.distinct_cells)
+            .then(right.sightings.cmp(&left.sightings))
+            .then(right.span_secs.cmp(&left.span_secs))
+            .then(left.mac.cmp(&right.mac))
+    });
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Presence {
     New,
@@ -451,6 +560,86 @@ mod tests {
         ];
         let recurring = recurring_devices(&owned, 2);
         assert!(recurring.is_empty(), "{recurring:?}");
+    }
+
+    fn sighting(mac: &str, bonded: bool, ts: u64, cell: &str) -> FollowerSighting {
+        FollowerSighting {
+            mac: mac.to_string(),
+            bonded,
+            ts,
+            cell: cell.to_string(),
+        }
+    }
+
+    #[test]
+    fn follower_detection_separates_a_tail_from_a_fixture() {
+        // HW1 moves with the operator across three cells over an hour -> a tail.
+        // HW2 is seen just as often but always in one cell -> a fixture, not a
+        // follower. A randomized MAC across cells, and the operator's own bonded
+        // kit, are both excluded.
+        let sightings = [
+            sighting(HW1, false, 0, "cellA"),
+            sighting(HW1, false, 1800, "cellB"),
+            sighting(HW1, false, 3600, "cellC"),
+            sighting(HW2, false, 0, "cellA"),
+            sighting(HW2, false, 1800, "cellA"),
+            sighting(HW2, false, 3600, "cellA"),
+            sighting(RND, false, 0, "cellA"),
+            sighting(RND, false, 1800, "cellB"),
+            sighting(RND, false, 3600, "cellC"),
+            sighting("3C:5A:B4:77:88:99", true, 0, "cellA"),
+            sighting("3C:5A:B4:77:88:99", true, 1800, "cellB"),
+            sighting("3C:5A:B4:77:88:99", true, 3600, "cellC"),
+        ];
+        let out = follower_candidates(&sightings, 2, 60);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].mac, lc(HW1));
+        assert_eq!(out[0].distinct_cells, 3);
+        assert_eq!(out[0].span_secs, 3600);
+    }
+
+    #[test]
+    fn follower_detection_needs_both_distance_and_duration() {
+        // Across two cells but only seconds apart: a brief co-presence (same
+        // crowd crossing a boundary), not a sustained tail.
+        let brief = [
+            sighting(HW1, false, 0, "cellA"),
+            sighting(HW1, false, 10, "cellB"),
+        ];
+        assert!(follower_candidates(&brief, 2, 300).is_empty());
+
+        // Long span but a single cell: stationary, not following.
+        let stationary = [
+            sighting(HW1, false, 0, "cellA"),
+            sighting(HW1, false, 100_000, "cellA"),
+        ];
+        assert!(follower_candidates(&stationary, 2, 300).is_empty());
+
+        // Both conditions met: flagged.
+        let tail = [
+            sighting(HW1, false, 0, "cellA"),
+            sighting(HW1, false, 100_000, "cellB"),
+        ];
+        assert_eq!(follower_candidates(&tail, 2, 300).len(), 1);
+    }
+
+    #[test]
+    fn follower_detection_clamps_the_cell_floor_and_ignores_blank_input() {
+        // Asking for <2 distinct cells is clamped to 2, so one location never
+        // counts as following however the caller sets the threshold.
+        let one_cell = [
+            sighting(HW1, false, 0, "cellA"),
+            sighting(HW1, false, 100_000, "cellA"),
+        ];
+        assert!(follower_candidates(&one_cell, 0, 0).is_empty());
+        assert!(follower_candidates(&one_cell, 1, 0).is_empty());
+
+        // Blank mac or blank cell contributes nothing.
+        let blanks = [
+            sighting("", false, 0, "cellA"),
+            sighting(HW1, false, 0, "  "),
+        ];
+        assert!(follower_candidates(&blanks, 2, 0).is_empty());
     }
 
     #[test]
