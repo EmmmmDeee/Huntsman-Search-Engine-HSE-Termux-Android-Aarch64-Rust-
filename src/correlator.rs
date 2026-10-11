@@ -497,6 +497,20 @@ mod tests {
     }
 
     #[test]
+    fn every_breach_module_is_a_breach_source() {
+        // The module catalogue's `Breach` category and the correlator's breach family must agree,
+        // or a breach module's hits never count toward `multi_breach`.
+        let breach_modules = crate::module::reachable_modules()
+            .iter()
+            .filter(|module| module.category == crate::dependency::ModuleCategory::Breach)
+            .collect::<Vec<_>>();
+        assert!(breach_modules.len() >= 3, "{breach_modules:?}");
+        for module in breach_modules {
+            assert_eq!(source_family(module.name), "breach", "{}", module.name);
+        }
+    }
+
+    #[test]
     fn helper_behaviour_matches_legacy_oracles() {
         assert!(text_mentions_ip("seen at 1.2.3.4: Brisbane", "1.2.3.4"));
         assert!(text_mentions_ip("via [2001:db8::1]:443", "2001:db8::1"));
