@@ -288,12 +288,15 @@ fn the_scanner_sees_each_forbidden_form_and_ignores_the_rest() {
         production_string_literals("const K: &str = \"HUNTSMAN_SHODAN_KEY\";"),
         ["HUNTSMAN_SHODAN_KEY"]
     );
-    assert!(production_string_literals("// const K: &str = \"HUNTSMAN_SHODAN_KEY\";").is_empty());
-    assert!(
+    assert_eq!(
+        production_string_literals("// const K: &str = \"HUNTSMAN_SHODAN_KEY\";"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
         production_string_literals(
             "#[cfg(test)] mod t { const K: &str = \"HUNTSMAN_SHODAN_KEY\"; }"
-        )
-        .is_empty()
+        ),
+        Vec::<String>::new()
     );
     for name in [
         "HUNTSMAN_SHODAN_KEY",

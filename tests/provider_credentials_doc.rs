@@ -61,5 +61,9 @@ fn the_doc_parsers_find_the_slots_they_are_compared_with() {
     assert!(table_slots(&doc).contains("HUNTSMAN_CENSYS_SECRET"));
     assert!(table_slots(&doc).contains("HUNTSMAN_SHODAN_KEY"));
     assert!(template_slots(&doc).contains("HUNTSMAN_WIGLE_USER"));
-    assert!(!PROVIDERS.is_empty());
+    assert!(
+        PROVIDERS
+            .iter()
+            .any(|provider| provider.slots.contains(&"HUNTSMAN_SHODAN_KEY"))
+    );
 }
