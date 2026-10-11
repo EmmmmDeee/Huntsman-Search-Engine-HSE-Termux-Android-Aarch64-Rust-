@@ -464,6 +464,18 @@ pub(super) fn correlate_cmd(args: &[String]) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(e) => fail(EX_DATAERR, &format!("correlate: {e}")),
+        Err(e) => {
+            use huntsman_recon::scan_artifact::ArtifactError;
+            // Match the crate's exit-code contract (see ledger_error_code):
+            // unreadable input (missing file, IO, a directory) is 66; a file
+            // that is read but does not parse or has the wrong version is 65.
+            let code = match &e {
+                ArtifactError::Io(_) => EX_NOINPUT,
+                ArtifactError::Malformed(_)
+                | ArtifactError::UnsupportedVersion { .. }
+                | ArtifactError::Unsupported(_) => EX_DATAERR,
+            };
+            fail(code, &format!("correlate: {e}"))
+        }
     }
 }

@@ -58,6 +58,23 @@ pub fn collect(
     limits: &CollectionLimits,
     now_unix: u64,
 ) -> Result<CollectionBatch, CollectorError> {
+    collect_page(client, selector, purpose, 1, limits, now_unix)
+}
+
+/// Like [`collect`] but fetches a specific 1-based `page`. An out-of-range page
+/// is rejected by [`SearchRequest::validate`] and surfaces as
+/// [`CollectorError::InvalidSelector`] before any entity mapping.
+///
+/// # Errors
+/// As [`collect`], plus the page-bound rejection above.
+pub fn collect_page(
+    client: &DehashedClient,
+    selector: &Entity,
+    purpose: Purpose,
+    page: u32,
+    limits: &CollectionLimits,
+    now_unix: u64,
+) -> Result<CollectionBatch, CollectorError> {
     let field = selector_field(&selector.kind)
         .ok_or_else(|| CollectorError::UnsupportedSelector(selector.kind.clone()))?;
     if limits.max_requests == 0 {
@@ -74,7 +91,7 @@ pub fn collect(
         selector: query,
         purpose,
         size: u32::try_from(size).unwrap_or(MAX_PAGE_SIZE),
-        page: 1,
+        page,
     };
 
     let mut batch = CollectionBatch::empty(COLLECTOR_ID, &selector.uid, CollectionOutcome::Failed);

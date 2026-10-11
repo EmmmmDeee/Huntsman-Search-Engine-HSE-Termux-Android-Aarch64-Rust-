@@ -87,16 +87,40 @@ pub enum ArtifactError {
     Unsupported(String),
 }
 
-/// Write `artifact` atomically: temporary file, then rename.
+/// Write `artifact` atomically and durably: write a temporary file, flush it to
+/// disk, rename it over the target, then flush the parent directory.
+///
+/// The temporary name is unique per process, so a second writer cannot clobber
+/// this one's temporary file. The `sync_all` before the rename and the
+/// directory flush after it mean the rename genuinely leaves either the old
+/// artifact or the complete new one after a crash, rather than relying on
+/// filesystem heuristics that the Termux/Android target may not provide.
 ///
 /// # Errors
-/// [`ArtifactError::Io`] if the temporary file cannot be written or renamed.
+/// [`ArtifactError::Io`] if the temporary file cannot be written, flushed, or
+/// renamed.
 pub fn write(path: &Path, artifact: &ScanArtifact) -> Result<(), ArtifactError> {
+    use std::io::Write as _;
     let bytes = serde_json::to_vec_pretty(artifact)
         .map_err(|e| ArtifactError::Malformed(format!("could not encode: {e}")))?;
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, &bytes)?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("scan");
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    {
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+    }
     fs::rename(&tmp, path)?;
+    // Flush the directory entry so the rename survives a crash. Opening a
+    // directory as a file is not portable, so a failure here does not fail the
+    // already-completed write.
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if let Ok(handle) = fs::File::open(dir) {
+        let _ = handle.sync_all();
+    }
     Ok(())
 }
 
@@ -188,6 +212,18 @@ mod tests {
     }
 
     #[test]
+    fn reading_a_missing_path_is_io_not_malformed() {
+        // correlate maps Io to exit 66 (unreadable input) and Malformed to 65
+        // (bad data); a missing file must be Io so the exit code is right.
+        let path = scratch("missing");
+        let _ = fs::remove_file(&path);
+        assert!(matches!(read(&path), Err(ArtifactError::Io(_))));
+        // A directory is also unreadable-as-a-file, not malformed data.
+        let dir = path.parent().unwrap();
+        assert!(matches!(read(dir), Err(ArtifactError::Io(_))));
+    }
+
+    #[test]
     fn from_batch_refuses_relations_rather_than_dropping_them() {
         use crate::collector::{CollectionBatch, CollectionOutcome};
         use crate::graph::EntityRelation;
@@ -219,6 +255,13 @@ mod tests {
         let path = scratch("atomic");
         write(&path, &corroborated()).unwrap();
         assert!(path.exists());
-        assert!(!path.with_extension("tmp").exists());
+        // No temporary file of any name may remain in the directory.
+        let dir = path.parent().unwrap();
+        let leftovers: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "stray temp files: {leftovers:?}");
     }
 }

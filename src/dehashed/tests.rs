@@ -700,7 +700,9 @@ mod artifact_tests {
             &mut out,
             &mut err,
         );
-        assert_eq!(code, 69, "{}", String::from_utf8_lossy(&err));
+        // A rejected key (401) is a permission error (77), matching the
+        // non-artifact path, not a transient "unavailable" (69) a wrapper retries.
+        assert_eq!(code, 77, "{}", String::from_utf8_lossy(&err));
         assert!(
             !path.exists(),
             "a failed collection must not write an artifact"
@@ -733,5 +735,73 @@ mod artifact_tests {
         );
         assert_eq!(code, 64);
         assert_eq!(fake.calls(), 0);
+    }
+
+    #[test]
+    fn save_artifact_honours_the_requested_page() {
+        let fake = Fake::with(
+            200,
+            r#"{"entries": [{"email": "a@example.com"}], "total": 1}"#,
+            &[],
+        );
+        let path = temp_path("page");
+        let args = owned(&[
+            "search",
+            "--email",
+            "a@example.com",
+            "--purpose",
+            "own-account",
+            "--page",
+            "3",
+            "--save-artifact",
+            path.to_str().unwrap(),
+        ]);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = cli::run(
+            &args,
+            || Ok(Secret::new(KEY).unwrap()),
+            fake.clone(),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+        // The collection must fetch page 3, not silently substitute page 1.
+        let sent = &fake.requests.lock().unwrap()[0];
+        let body: serde_json::Value = serde_json::from_slice(&sent.body).unwrap();
+        assert_eq!(body["page"], 3, "the request must carry the asked-for page");
+        assert!(
+            String::from_utf8(out).unwrap().contains("page=3"),
+            "the summary must report the page"
+        );
+    }
+
+    #[test]
+    fn save_artifact_rejects_a_following_flag_as_its_path() {
+        // `--save-artifact --page` must not swallow --page and write to a file
+        // named "--page"; it is a usage error before any request.
+        let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+        let args = owned(&[
+            "search",
+            "--email",
+            "a@example.com",
+            "--purpose",
+            "own-account",
+            "--save-artifact",
+            "--page",
+        ]);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = cli::run(
+            &args,
+            || Ok(Secret::new(KEY).unwrap()),
+            fake.clone(),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, 64);
+        assert_eq!(fake.calls(), 0, "no request may be sent");
+        assert!(
+            !std::path::Path::new("--page").exists(),
+            "must not create a file named after the flag"
+        );
     }
 }

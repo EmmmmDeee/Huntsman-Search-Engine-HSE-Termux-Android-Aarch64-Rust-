@@ -242,6 +242,14 @@ fn split_artifact(args: &[String]) -> Result<(Vec<String>, Option<std::path::Pat
             let Some(value) = iter.next() else {
                 return Err(Failure::usage("--save-artifact needs a file path"));
             };
+            // A value beginning with "--" is the next flag, not a path: reject
+            // it rather than swallowing the flag and writing to a file named
+            // after it. (This also catches a second --save-artifact.)
+            if value.starts_with("--") {
+                return Err(Failure::usage(&format!(
+                    "--save-artifact needs a file path, got the flag {value:?}"
+                )));
+            }
             if path.is_some() {
                 return Err(Failure::usage("--save-artifact may be given only once"));
             }
@@ -266,6 +274,7 @@ fn save_artifact(
     use crate::collector::{CollectionLimits, CollectionOutcome, CollectorError};
     use crate::entity::{Entity, EntityKind};
     use crate::scan_artifact::{self, ScanArtifact};
+    use crate::source_outcome::SourceOutcomeKind;
 
     let kind = match request.selector.field() {
         Field::Email => EntityKind::Email,
@@ -282,24 +291,40 @@ fn save_artifact(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
 
-    let batch = super::collector::collect(client, &selector, request.purpose, &limits, now_unix)
-        .map_err(|error| match error {
-            CollectorError::UnsupportedSelector(_)
-            | CollectorError::InvalidSelector(_)
-            | CollectorError::Invariant(_)
-            | CollectorError::Execution(_) => Failure {
-                code: EX_DATAERR,
-                message: format!("dehashed: {error}"),
-            },
-        })?;
+    // Honour --page: the collector otherwise fetches page 1, which would
+    // silently substitute page 1's data for the page the operator asked for.
+    let batch = super::collector::collect_page(
+        client,
+        &selector,
+        request.purpose,
+        request.page,
+        &limits,
+        now_unix,
+    )
+    .map_err(|error| match error {
+        CollectorError::UnsupportedSelector(_)
+        | CollectorError::InvalidSelector(_)
+        | CollectorError::Invariant(_)
+        | CollectorError::Execution(_) => Failure {
+            code: EX_DATAERR,
+            message: format!("dehashed: {error}"),
+        },
+    })?;
     if batch.outcome == CollectionOutcome::Failed {
-        let detail = batch
-            .receipts
-            .first()
+        let receipt = batch.receipts.first();
+        let detail = receipt
             .and_then(|r| r.outcome.detail.clone())
             .unwrap_or_else(|| "collection failed".into());
+        // Match the non-artifact path: a rejected key is a permission error
+        // (77), not a transient "unavailable" (69) a wrapper would retry.
+        let code = match receipt.map(|r| r.outcome.kind) {
+            Some(SourceOutcomeKind::AuthRejected | SourceOutcomeKind::EntitlementDenied) => {
+                EX_NOPERM
+            }
+            _ => EX_UNAVAILABLE,
+        };
         return Err(Failure {
-            code: EX_UNAVAILABLE,
+            code,
             message: format!("dehashed: no artifact written: {detail}"),
         });
     }
@@ -312,10 +337,11 @@ fn save_artifact(
         message: format!("dehashed: {error}"),
     })?;
     Ok(format!(
-        "source=DeHashed\npurpose={}\nartifact={}\nscan_id={}\nentities={}\n",
+        "source=DeHashed\npurpose={}\nartifact={}\nscan_id={}\npage={}\nentities={}\n",
         request.purpose,
         path.display(),
         scan_id,
+        request.page,
         artifact.entities.len()
     ))
 }
