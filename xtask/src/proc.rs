@@ -1,11 +1,12 @@
 //! Process helpers the xtask commands share: the repository root, git output, and a command
 //! that runs under a time limit and is killed when the limit passes. A gate run keeps each
 //! step's output under `target/repair-gate/<run>/`, so a failure can be read again without
-//! running the gate once more.
+//! running the gate once more. A gate run also holds the checkout's lock, so two runs cannot
+//! share one build directory and one tree.
 
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,6 +20,9 @@ const KEEP_RUNS: usize = 5;
 const TAIL_LINES: usize = 80;
 /// Tells runs started by one process apart, even within one second.
 static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// The lock file a gate run holds. It sits beside the run directories, which pruning skips
+/// because it is a file, not a directory.
+const LOCK_FILE: &str = "gate.lock";
 
 /// The repository root. This crate lives in `<root>/xtask`.
 #[must_use]
@@ -106,6 +110,105 @@ impl RunRecord {
             elapsed.as_secs_f64()
         )
         .map_err(|source| io_error(&summary, source))
+    }
+}
+
+/// The lock a gate run holds on its checkout. Two runs in one checkout share the build directory
+/// and the tree, so the later one would read the earlier one's writes as its own changes. The
+/// lock file names its holder's process id. A holder that has exited leaves a stale lock, which
+/// the next run takes over. A holder that is still running blocks the run.
+pub struct GateLock {
+    path: PathBuf,
+    pid: String,
+}
+
+impl GateLock {
+    /// Takes the gate lock of the checkout at ROOT.
+    ///
+    /// # Errors
+    /// `Error::Refused` when a running process holds the lock, or the holder cannot be read.
+    /// `Error::Io` when the lock file cannot be created.
+    pub fn acquire(root: &Path) -> Result<Self> {
+        let base = root.join("target").join("repair-gate");
+        fs::create_dir_all(&base).map_err(|source| io_error(&base, source))?;
+        let path = base.join(LOCK_FILE);
+        if let Some(lock) = Self::create(&path)? {
+            return Ok(lock);
+        }
+        let holder = fs::read_to_string(&path)
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        let stale = holder
+            .parse::<u32>()
+            .is_ok_and(|pid| pid > 0 && !process_is_alive(pid));
+        if !stale {
+            return Err(held_by(&holder, &path));
+        }
+        fs::remove_file(&path).map_err(|source| io_error(&path, source))?;
+        Self::create(&path)?.ok_or_else(|| {
+            Error::Refused(format!(
+                "another gate run took over {} at the same moment; run the gate again",
+                path.display()
+            ))
+        })
+    }
+
+    /// Creates the lock file, holding this process's id. `None` when the file already exists.
+    fn create(path: &Path) -> Result<Option<Self>> {
+        let pid = std::process::id().to_string();
+        match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(mut file) => {
+                writeln!(file, "{pid}").map_err(|source| io_error(path, source))?;
+                Ok(Some(Self {
+                    path: path.to_path_buf(),
+                    pid,
+                }))
+            }
+            Err(source) if source.kind() == ErrorKind::AlreadyExists => Ok(None),
+            Err(source) => Err(io_error(path, source)),
+        }
+    }
+}
+
+impl Drop for GateLock {
+    fn drop(&mut self) {
+        // The file goes only while it still names this run, so a lock taken over from this run
+        // is left alone.
+        if fs::read_to_string(&self.path).is_ok_and(|held| held.trim() == self.pid.as_str()) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// The refusal for a checkout that a running gate run holds. HOLDER is the holder's process id,
+/// empty when the lock file does not yet name one.
+fn held_by(holder: &str, path: &Path) -> Error {
+    let who = if holder.is_empty() {
+        "a gate run that has not yet recorded its process id".to_owned()
+    } else {
+        format!("the gate run in process {holder}")
+    };
+    Error::Refused(format!(
+        "{who} holds {}; wait for it to finish, or remove the file if no gate is running",
+        path.display()
+    ))
+}
+
+/// Whether process PID exists. `kill -0` sends no signal and only checks that the process is
+/// there. A process owned by another user counts as gone, because kill refuses it. When the check
+/// cannot run, the process counts as alive, so a lock is never taken over on a guess.
+fn process_is_alive(pid: u32) -> bool {
+    match Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(status) => status.success(),
+        Err(_) => true,
     }
 }
 
@@ -301,6 +404,46 @@ mod tests {
         let base = root.join("target").join("repair-gate");
         let kept = fs::read_dir(&base).expect("runs").count();
         assert_eq!(kept, KEEP_RUNS);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_checkout_held_by_a_running_gate_refuses_a_second_run() {
+        let root = scratch_root("lock-held");
+        let _first = GateLock::acquire(&root).expect("the first run takes the lock");
+        let error = GateLock::acquire(&root)
+            .err()
+            .expect("the second run is refused");
+        let message = error.to_string();
+        assert!(message.contains("holds"), "{message}");
+        assert!(
+            message.contains(&format!("process {}", std::process::id())),
+            "{message}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dropping_the_lock_releases_the_checkout() {
+        let root = scratch_root("lock-released");
+        drop(GateLock::acquire(&root).expect("the first run takes the lock"));
+        let _again = GateLock::acquire(&root).expect("a later run takes the lock");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_lock_left_by_an_exited_process_is_taken_over() {
+        let root = scratch_root("lock-stale");
+        let base = root.join("target").join("repair-gate");
+        fs::create_dir_all(&base).expect("run directory");
+        let mut child = Command::new("sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("a short-lived process");
+        let pid = child.id();
+        child.wait().expect("the process exits");
+        fs::write(base.join(LOCK_FILE), format!("{pid}\n")).expect("a stale lock");
+        let _lock = GateLock::acquire(&root).expect("the stale lock is taken over");
         let _ = fs::remove_dir_all(&root);
     }
 }

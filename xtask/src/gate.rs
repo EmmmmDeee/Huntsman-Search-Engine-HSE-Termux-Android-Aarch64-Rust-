@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use crate::error::{self, Error, Result};
-use crate::proc::{RunRecord, git_stdout, repository_root, run_step};
+use crate::proc::{GateLock, RunRecord, git_stdout, repository_root, run_step};
 
 const USAGE: &str = "usage: cargo run --locked -p xtask -- gate [fast|msrv|full]
 
@@ -110,6 +110,8 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<PathBuf> {
     if mode == Mode::Msrv {
         check_msrv_toolchain(root)?;
     }
+    // One run per checkout: a second run would share the build directory and the tree.
+    let _lock = GateLock::acquire(root)?;
     let mut record = RunRecord::create(root, mode.name())?;
     let before = baseline(root)?;
 

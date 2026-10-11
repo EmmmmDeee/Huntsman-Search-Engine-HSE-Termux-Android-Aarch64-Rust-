@@ -119,6 +119,7 @@ CURRENT:
 - `#![deny(unsafe_code)]`; clippy `pedantic` is warn and CI denies warnings.
 - A challenge page is never a result. A self-labelled ATT&CK technique never enters Navigator or STIX (`check` gates).
 - `check` regenerates `var/*.json` byte-identically. Every `gate` mode runs `check` and refuses the run if it changes any tracked or untracked content, or if a commit moves HEAD during the run (`xtask/src/gate.rs`, `baseline` and `drift`).
+- A gate run holds `target/repair-gate/gate.lock` for its checkout. A second run in that checkout is refused while the first holds the lock. A lock left by an exited process is taken over (`xtask/src/proc.rs`, `GateLock`).
 - Canonical extracted legacy trees are file-count pinned by `tests/repository_hygiene.rs`; original root-ZIP SHA-256/Git identities and a recoverable commit are recorded in `docs/ARCHIVE_PROVENANCE.md`, and `tests/repository_hygiene.rs` forbids opaque root snapshots from returning.
 - The README examples, usage line, exit codes and gate range match the binary (`tests/readme.rs`); `docs/ARCHIVE_PROVENANCE.md` counts match `legacy/` (`tests/architecture_doc.rs`); this file's module map, dependency claims and capability rows match `src/` (`tests/architecture_doc.rs`).
 - Every `.rs` file under `src/` is compiled (#675); `tests/architecture_doc.rs` fails on a file the module tree does not reach.
