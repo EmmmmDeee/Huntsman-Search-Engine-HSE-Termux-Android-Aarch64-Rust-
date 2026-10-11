@@ -340,50 +340,13 @@ fn request_failed(html_read_ok: bool, found_any_entity: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
+    use crate::test_support::{ScriptedTransport, html_ok};
 
-    use crate::http::{Response, TransportFailure};
-
-    struct Fake {
-        script: RefCell<VecDeque<Result<Response, TransportFailure>>>,
-        seen: RefCell<Vec<Request>>,
-    }
-
-    impl Fake {
-        fn new(script: Vec<Result<Response, TransportFailure>>) -> Self {
-            Self {
-                script: RefCell::new(script.into()),
-                seen: RefCell::new(Vec::new()),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-            self.seen.borrow_mut().push(request.clone());
-            self.script.borrow_mut().pop_front().unwrap_or_else(|| {
-                Err(TransportFailure {
-                    kind: SourceOutcomeKind::ConnectFailure,
-                    detail: "unexpected request".into(),
-                    blocked: false,
-                })
-            })
-        }
-    }
-
-    fn html_ok(body: &str) -> Response {
-        Response {
-            status: 200,
-            headers: vec![("content-type".into(), "text/html".into())],
-            body: body.as_bytes().to_vec(),
-            truncated: false,
-        }
-    }
+    use crate::http::Response;
 
     #[test]
     fn single_token_name_makes_no_request() {
-        let fake = Fake::new(vec![Ok(html_ok("unused"))]);
+        let fake = ScriptedTransport::new(vec![Ok(html_ok("unused"))]);
         let report = lookup(&fake, "Haigen", "t", 1).expect("no-op");
         let entities = &report.entities;
         assert!(entities.is_empty(), "{entities:?}");
@@ -395,7 +358,7 @@ mod tests {
     fn lookup_emits_org_from_scripted_html() {
         let html = "Bamford Holdings Pty Ltd ACN 004085616 Level 1 Collins St Melbourne VIC 3000 \
                     Haigen Bamford - Director";
-        let fake = Fake::new(vec![Ok(html_ok(html))]);
+        let fake = ScriptedTransport::new(vec![Ok(html_ok(html))]);
         let report = lookup(&fake, "Haigen Bamford", "scan", 1).expect("lookup");
         assert!(
             report
@@ -428,7 +391,7 @@ mod tests {
 
     #[test]
     fn challenge_page_is_not_a_director_miss() {
-        let fake = Fake::new(vec![Ok(Response {
+        let fake = ScriptedTransport::new(vec![Ok(Response {
             status: 200,
             headers: vec![("content-type".into(), "text/html".into())],
             body: b"<html>Just a moment... cloudflare checking your browser</html>".to_vec(),
@@ -440,7 +403,7 @@ mod tests {
 
     #[test]
     fn connect_403_is_not_empty_success() {
-        let fake = Fake::new(vec![Ok(Response {
+        let fake = ScriptedTransport::new(vec![Ok(Response {
             status: 403,
             headers: Vec::new(),
             body: b"forbidden".to_vec(),
@@ -452,7 +415,8 @@ mod tests {
 
     #[test]
     fn readable_empty_page_is_valid_zero() {
-        let fake = Fake::new(vec![Ok(html_ok("<html><body>no matches</body></html>"))]);
+        let fake =
+            ScriptedTransport::new(vec![Ok(html_ok("<html><body>no matches</body></html>"))]);
         let report = lookup(&fake, "Haigen Bamford", "scan", 1).expect("empty");
         let entities_empty = report.entities.is_empty();
         assert!(entities_empty, "{:?}", report.entities);

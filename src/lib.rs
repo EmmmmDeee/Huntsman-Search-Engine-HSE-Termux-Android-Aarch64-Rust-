@@ -170,3 +170,6 @@ pub use ledger::{
 };
 pub use session::Session;
 pub use stage::{EvidenceLevel, Status};
+
+#[cfg(test)]
+mod test_support;

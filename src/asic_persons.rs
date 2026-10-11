@@ -592,6 +592,7 @@ fn humanise_name(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::json_ok;
     use std::cell::RefCell;
     use std::collections::HashMap;
 
@@ -956,15 +957,6 @@ mod tests {
 
     fn envelope(records: &str) -> String {
         format!(r#"{{"success":true,"result":{{"records":[{records}]}}}}"#)
-    }
-
-    fn json_ok(body: &str) -> Response {
-        Response {
-            status: 200,
-            headers: vec![("content-type".into(), "application/json".into())],
-            body: body.as_bytes().to_vec(),
-            truncated: false,
-        }
     }
 
     struct Fake {

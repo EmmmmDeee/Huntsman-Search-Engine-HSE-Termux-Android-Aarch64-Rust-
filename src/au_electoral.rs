@@ -494,50 +494,13 @@ fn extract_suburb_hint(window: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
+    use crate::test_support::{ScriptedTransport, html_ok};
 
-    use crate::http::{Response, TransportFailure};
-
-    struct Fake {
-        script: RefCell<VecDeque<Result<Response, TransportFailure>>>,
-        seen: RefCell<Vec<Request>>,
-    }
-
-    impl Fake {
-        fn new(script: Vec<Result<Response, TransportFailure>>) -> Self {
-            Self {
-                script: RefCell::new(script.into()),
-                seen: RefCell::new(Vec::new()),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-            self.seen.borrow_mut().push(request.clone());
-            self.script.borrow_mut().pop_front().unwrap_or_else(|| {
-                Err(TransportFailure {
-                    kind: SourceOutcomeKind::ConnectFailure,
-                    detail: "unexpected request".into(),
-                    blocked: false,
-                })
-            })
-        }
-    }
-
-    fn html_ok(body: &str) -> Response {
-        Response {
-            status: 200,
-            headers: vec![("content-type".into(), "text/html".into())],
-            body: body.as_bytes().to_vec(),
-            truncated: false,
-        }
-    }
+    use crate::http::Response;
 
     #[test]
     fn empty_name_makes_no_request() {
-        let fake = Fake::new(vec![Ok(html_ok("unused"))]);
+        let fake = ScriptedTransport::new(vec![Ok(html_ok("unused"))]);
         let report = lookup(&fake, "  ", "t", 1).expect("no-op");
         let entities = &report.entities;
         assert!(entities.is_empty(), "{entities:?}");
@@ -548,7 +511,7 @@ mod tests {
     #[test]
     fn first_hit_stops_remaining_legs() {
         let html = "<p>You are enrolled for the Division of Sydney, NSW.</p>";
-        let fake = Fake::new(vec![Ok(html_ok(html))]);
+        let fake = ScriptedTransport::new(vec![Ok(html_ok(html))]);
         let report = lookup(&fake, "Haigen Bamford", "scan", 1).expect("lookup");
         let seen = fake.seen.borrow();
         assert_eq!(seen.len(), 1, "{seen:?}");
@@ -570,7 +533,7 @@ mod tests {
 
     #[test]
     fn empty_nsw_continues_to_vic() {
-        let fake = Fake::new(vec![
+        let fake = ScriptedTransport::new(vec![
             Ok(html_ok("<p>No results found.</p>")),
             Ok(html_ok(
                 "<p>You are enrolled for the Division of Melbourne</p>",
@@ -589,7 +552,7 @@ mod tests {
 
     #[test]
     fn all_unreachable_is_not_not_enrolled() {
-        let fake = Fake::new(vec![
+        let fake = ScriptedTransport::new(vec![
             Ok(Response {
                 status: 403,
                 headers: Vec::new(),
@@ -623,7 +586,7 @@ mod tests {
             body: b"<html>Just a moment... cloudflare checking your browser</html>".to_vec(),
             truncated: false,
         };
-        let fake = Fake::new(vec![Ok(wall.clone()), Ok(wall.clone()), Ok(wall)]);
+        let fake = ScriptedTransport::new(vec![Ok(wall.clone()), Ok(wall.clone()), Ok(wall)]);
         let err = lookup(&fake, "Haigen Bamford", "scan", 1).expect_err("waf");
         assert!(matches!(err, Error::Invalid(_)), "{err}");
     }
@@ -631,7 +594,7 @@ mod tests {
     #[test]
     fn readable_empty_pages_are_valid_zero() {
         let empty = html_ok("<p>No results found.</p>");
-        let fake = Fake::new(vec![Ok(empty.clone()), Ok(empty.clone()), Ok(empty)]);
+        let fake = ScriptedTransport::new(vec![Ok(empty.clone()), Ok(empty.clone()), Ok(empty)]);
         let report = lookup(&fake, "Haigen Bamford", "scan", 1).expect("negatives");
         let entities_empty = report.entities.is_empty();
         assert!(entities_empty, "{:?}", report.entities);

@@ -620,52 +620,15 @@ fn request_failed(html_read_ok: bool, found_any_entity: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
+    use crate::test_support::{ScriptedTransport, html_ok};
 
     use crate::entity;
-    use crate::http::{Response, TransportFailure};
+    use crate::http::Response;
     use crate::tags;
-
-    struct Fake {
-        script: RefCell<VecDeque<Result<Response, TransportFailure>>>,
-        seen: RefCell<Vec<Request>>,
-    }
-
-    impl Fake {
-        fn new(script: Vec<Result<Response, TransportFailure>>) -> Self {
-            Self {
-                script: RefCell::new(script.into()),
-                seen: RefCell::new(Vec::new()),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-            self.seen.borrow_mut().push(request.clone());
-            self.script.borrow_mut().pop_front().unwrap_or_else(|| {
-                Err(TransportFailure {
-                    kind: SourceOutcomeKind::ConnectFailure,
-                    detail: "unexpected request".into(),
-                    blocked: false,
-                })
-            })
-        }
-    }
-
-    fn html_ok(body: &str) -> Response {
-        Response {
-            status: 200,
-            headers: vec![("content-type".into(), "text/html".into())],
-            body: body.as_bytes().to_vec(),
-            truncated: false,
-        }
-    }
 
     #[test]
     fn single_token_name_makes_no_request() {
-        let fake = Fake::new(vec![Ok(html_ok("unused"))]);
+        let fake = ScriptedTransport::new(vec![Ok(html_ok("unused"))]);
         let report = lookup(&fake, "Haigen", "t", 1).expect("no-op");
         let empty = report.entities.is_empty();
         assert!(empty);
@@ -676,7 +639,7 @@ mod tests {
     #[test]
     fn lookup_emits_candidate_address_and_person_from_scripted_html() {
         let html = "<div>Results for Haigen Bamford</div><p>Sydney NSW 2000</p>";
-        let fake = Fake::new(vec![Ok(html_ok(html))]);
+        let fake = ScriptedTransport::new(vec![Ok(html_ok(html))]);
         let report = lookup(&fake, "Haigen Bamford", "scan", 1).expect("lookup");
         assert!(
             report
@@ -706,7 +669,7 @@ mod tests {
 
     #[test]
     fn challenge_page_is_not_a_directory_miss() {
-        let fake = Fake::new(vec![Ok(Response {
+        let fake = ScriptedTransport::new(vec![Ok(Response {
             status: 200,
             headers: vec![("content-type".into(), "text/html".into())],
             body: b"<html>Just a moment... cloudflare checking your browser</html>".to_vec(),
@@ -718,7 +681,7 @@ mod tests {
 
     #[test]
     fn http_404_is_valid_zero() {
-        let fake = Fake::new(vec![Ok(Response {
+        let fake = ScriptedTransport::new(vec![Ok(Response {
             status: 404,
             headers: Vec::new(),
             body: b"not found".to_vec(),
@@ -959,7 +922,7 @@ mod tests {
         <li>Stephen R Moreau</li>
       </ul>
     ";
-        let fake = Fake::new(vec![Ok(html_ok(html))]);
+        let fake = ScriptedTransport::new(vec![Ok(html_ok(html))]);
         let report = lookup(&fake, "Fletcher Moreau", "scan", 1).expect("lookup");
         assert!(
             !report

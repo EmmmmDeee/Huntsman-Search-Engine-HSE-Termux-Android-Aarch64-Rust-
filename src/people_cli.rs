@@ -315,6 +315,7 @@ fn render(report: &Report) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{html_ok, json_ok};
     use std::cell::RefCell;
     use std::collections::HashMap;
 
@@ -399,24 +400,6 @@ mod tests {
                 detail: format!("egress-policy: {}", request.url),
                 blocked: true,
             })
-        }
-    }
-
-    fn json_ok(body: &str) -> Response {
-        Response {
-            status: 200,
-            headers: vec![("content-type".into(), "application/json".into())],
-            body: body.as_bytes().to_vec(),
-            truncated: false,
-        }
-    }
-
-    fn html_ok(body: &str) -> Response {
-        Response {
-            status: 200,
-            headers: vec![("content-type".into(), "text/html".into())],
-            body: body.as_bytes().to_vec(),
-            truncated: false,
         }
     }
 
