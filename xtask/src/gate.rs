@@ -7,12 +7,12 @@
 
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use crate::error::{self, Error, Result};
-use crate::proc::{git_stdout, repository_root, run_step};
+use crate::proc::{RunRecord, git_stdout, repository_root, run_step};
 
 const USAGE: &str = "usage: cargo run --locked -p xtask -- gate [fast|msrv|full]
 
@@ -67,11 +67,12 @@ pub fn run(args: &[String]) -> ExitCode {
     };
     let root = repository_root();
     match execute(mode, &root, limit) {
-        Ok(()) => {
+        Ok(logs) => {
             println!(
-                "repair-gate: PASS mode={} timeout={}s",
+                "repair-gate: PASS mode={} timeout={}s logs={}",
                 mode.name(),
-                limit.as_secs()
+                limit.as_secs(),
+                logs.display()
             );
             ExitCode::SUCCESS
         }
@@ -99,21 +100,23 @@ fn timeout_from_env() -> Result<Duration> {
     Ok(Duration::from_secs(seconds))
 }
 
-fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<()> {
+/// Runs the steps of MODE. Returns the directory that holds their logs.
+fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<PathBuf> {
     if mode == Mode::Msrv {
         check_msrv_toolchain(root)?;
     }
+    let mut record = RunRecord::create(root, mode.name())?;
     let before = snapshot(root)?;
 
     for script in tracked_shell_scripts(root)? {
         if script == "scripts/railway-entrypoint.sh" {
-            run_step(root, limit, "sh", &["-n", &script])?;
+            run_step(root, limit, &mut record, "sh", &["-n", &script])?;
         } else {
-            run_step(root, limit, "bash", &["-n", &script])?;
+            run_step(root, limit, &mut record, "bash", &["-n", &script])?;
         }
     }
     if matches!(mode, Mode::Fast | Mode::Full) {
-        run_step(root, limit, "cargo", &["fmt", "--check"])?;
+        run_step(root, limit, &mut record, "cargo", &["fmt", "--check"])?;
         // Production code has no `unwrap()`: the library and both binaries compile without
         // `cfg(test)` here, so inline tests are not linted. A manifest-level deny would reach
         // the test binaries too, which is why the lint is a gate step instead.
@@ -124,13 +127,14 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<()> {
             let mut args = vec!["clippy"];
             args.extend_from_slice(package);
             args.extend_from_slice(&["--locked", "--", "-D", "clippy::unwrap_used"]);
-            run_step(root, limit, "cargo", &args)?;
+            run_step(root, limit, &mut record, "cargo", &args)?;
         }
     }
     if mode == Mode::Full {
         run_step(
             root,
             limit,
+            &mut record,
             "cargo",
             &[
                 "clippy",
@@ -144,7 +148,13 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<()> {
         )?;
     }
     if matches!(mode, Mode::Msrv | Mode::Full) {
-        run_step(root, limit, "cargo", &["test", "--locked", "--workspace"])?;
+        run_step(
+            root,
+            limit,
+            &mut record,
+            "cargo",
+            &["test", "--locked", "--workspace"],
+        )?;
     } else {
         for test in [
             "functional_code_contract",
@@ -152,11 +162,29 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<()> {
             "deployment_targets",
             "repair_contract",
         ] {
-            run_step(root, limit, "cargo", &["test", "--locked", "--test", test])?;
+            run_step(
+                root,
+                limit,
+                &mut record,
+                "cargo",
+                &["test", "--locked", "--test", test],
+            )?;
         }
-        run_step(root, limit, "cargo", &["test", "--locked", "-p", "xtask"])?;
+        run_step(
+            root,
+            limit,
+            &mut record,
+            "cargo",
+            &["test", "--locked", "-p", "xtask"],
+        )?;
     }
-    run_step(root, limit, "cargo", &["run", "--locked", "--", "check"])?;
+    run_step(
+        root,
+        limit,
+        &mut record,
+        "cargo",
+        &["run", "--locked", "--", "check"],
+    )?;
 
     let after = snapshot(root)?;
     if before != after {
@@ -168,7 +196,7 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<()> {
             "verification mutated tracked or untracked repository content".to_owned(),
         ));
     }
-    Ok(())
+    Ok(record.dir().to_path_buf())
 }
 
 /// `msrv` checks the crate on the toolchain it declares. A newer rustc would accept code that
