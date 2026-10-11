@@ -60,6 +60,8 @@ A successful `full` gate requires:
 - `huntsman-recon check`;
 - verification does not mutate tracked or untracked repository content, including a worktree that was already dirty before the gate.
 
+Each step's output is kept under `target/repair-gate/<run>/`. `NN.log` holds one step, numbered in the order the steps ran, and `summary.txt` has one line per step: `NN`, the status (`PASS`, `FAIL`, `TIMEOUT` or `NOT-STARTED`), the seconds it took, and the command. `target/` is git-ignored, so these files never enter a commit. The terminal shows each command. A failing step prints the last 80 lines of its log and the log's path. A passing run prints the run directory as `logs=`. The newest five runs are kept, and older run directories are removed when a new run starts.
+
 ## Acceptance scope matrix
 
 The repair gate verifies the host repository contract, not every deployment

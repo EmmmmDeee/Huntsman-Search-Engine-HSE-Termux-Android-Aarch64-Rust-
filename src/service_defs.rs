@@ -55,7 +55,7 @@ pub struct ProbeResult {
 const SERVICE_DEFS: &[ServiceDef] = &[
     ServiceDef {
         name: "shodan",
-        env_var: "HUNTSMAN_SHODAN_KEY",
+        env_var: crate::environment::SHODAN_KEY_ENV,
         category: "infrastructure",
         test_url: "https://api.shodan.io/api-info",
         probe_method: Method::Get,
@@ -66,7 +66,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "intelx",
-        env_var: "HUNTSMAN_INTELX_KEY",
+        env_var: crate::environment::INTELX_KEY_ENV,
         category: "breach",
         test_url: "https://2.intelx.io/authenticate/info",
         probe_method: Method::Get,
@@ -77,7 +77,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "securitytrails",
-        env_var: "HUNTSMAN_SECTRAILS_KEY",
+        env_var: crate::environment::SECTRAILS_KEY_ENV,
         category: "infrastructure",
         test_url: "https://api.securitytrails.com/v1/ping",
         probe_method: Method::Get,
@@ -88,7 +88,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "onyphe",
-        env_var: "HUNTSMAN_ONYPHE_KEY",
+        env_var: crate::environment::ONYPHE_KEY_ENV,
         category: "threat_intel",
         test_url: "https://www.onyphe.io/api/v2/summary/ip/8.8.8.8",
         probe_method: Method::Get,
@@ -99,7 +99,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "netlas",
-        env_var: "HUNTSMAN_NETLAS_KEY",
+        env_var: crate::environment::NETLAS_KEY_ENV,
         category: "infrastructure",
         test_url: "https://app.netlas.io/api/responses/",
         probe_method: Method::Get,
@@ -110,7 +110,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "hunter",
-        env_var: "HUNTSMAN_HUNTER_KEY",
+        env_var: crate::environment::HUNTER_KEY_ENV,
         category: "identity",
         test_url: "https://api.hunter.io/v2/account",
         probe_method: Method::Get,
@@ -120,10 +120,11 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         success_indicates_valid_key: true,
     },
     ServiceDef {
-        name: "see_know",
-        env_var: "HUNTSMAN_SEE_KNOW_KEY",
+        name: "seeknow",
+        env_var: crate::seeknow::KEY_SLOT,
         category: "breach",
-        test_url: "https://api.see-know.eu/account",
+        // The free key check in docs/SEEKNOW_CONTRACT.md, on the origin the client uses.
+        test_url: "https://see-know.ru/api/v1/credits",
         probe_method: Method::Get,
         key_placement: KeyPlacement::Header("X-API-Key"),
         rate_limit_reset_secs: 60,
@@ -132,7 +133,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "threatfox",
-        env_var: "HUNTSMAN_THREATFOX_KEY",
+        env_var: crate::environment::THREATFOX_KEY_ENV,
         category: "threat_intel",
         test_url: "https://threatfox-api.abuse.ch/api/v1/",
         probe_method: Method::Post,
@@ -143,7 +144,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "numverify",
-        env_var: "HUNTSMAN_NUMVERIFY_KEY",
+        env_var: crate::environment::NUMVERIFY_KEY_ENV,
         category: "identity",
         test_url: "https://api.apilayer.com/number_verification/validate?number=15555550100",
         probe_method: Method::Get,
@@ -154,7 +155,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "criminal_ip",
-        env_var: "HUNTSMAN_CRIMINALIP_KEY",
+        env_var: crate::environment::CRIMINALIP_KEY_ENV,
         category: "threat_intel",
         test_url: "https://api.criminalip.io/v1/user/me",
         probe_method: Method::Get,
@@ -165,7 +166,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "virustotal",
-        env_var: "HUNTSMAN_VIRUSTOTAL_KEY",
+        env_var: crate::environment::VIRUSTOTAL_KEY_ENV,
         category: "threat_intel",
         test_url: "https://www.virustotal.com/api/v3/users/me",
         probe_method: Method::Get,
@@ -176,7 +177,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "github",
-        env_var: "HUNTSMAN_GITHUB_TOKEN",
+        env_var: crate::environment::GITHUB_TOKEN_ENV,
         category: "identity",
         test_url: "https://api.github.com/user",
         probe_method: Method::Get,
@@ -187,7 +188,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "urlhaus",
-        env_var: "HUNTSMAN_ABUSECH_KEY",
+        env_var: crate::environment::ABUSECH_KEY_ENV,
         category: "threat_intel",
         test_url: "https://urlhaus-api.abuse.ch/v1/",
         probe_method: Method::Post,
@@ -198,7 +199,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "hlrlookups",
-        env_var: "HUNTSMAN_HLR_KEY",
+        env_var: crate::environment::HLR_KEY_ENV,
         category: "identity",
         test_url: "https://api.hlrlookups.com/api/lookup?msisdn=%2B15555550100",
         probe_method: Method::Get,
@@ -209,7 +210,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "opencnam",
-        env_var: "HUNTSMAN_OPENCNAM_KEY",
+        env_var: crate::environment::OPENCNAM_KEY_ENV,
         category: "identity",
         test_url: "https://api.opencnam.com/v2/phone/+15555550100?account_sid=huntsman",
         probe_method: Method::Get,
@@ -220,7 +221,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "trove_au",
-        env_var: "HUNTSMAN_TROVE_KEY",
+        env_var: crate::environment::TROVE_KEY_ENV,
         category: "identity",
         test_url: "https://api.trove.nla.gov.au/v3/result?q=test&zone=newspaper&encoding=json&n=1&reclevel=brief",
         probe_method: Method::Get,
@@ -231,7 +232,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "dehashed",
-        env_var: "HUNTSMAN_DEHASHED_KEY",
+        env_var: crate::environment::DEHASHED_KEY_ENV,
         category: "breach",
         test_url: "https://api.dehashed.com/v2/search",
         probe_method: Method::Post,
@@ -242,7 +243,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "fullcontact",
-        env_var: "HUNTSMAN_FULLCONTACT_KEY",
+        env_var: crate::environment::FULLCONTACT_KEY_ENV,
         category: "identity",
         test_url: "https://api.fullcontact.com/v3/person.enrich",
         probe_method: Method::Post,
@@ -253,7 +254,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "domainsdb",
-        env_var: "HUNTSMAN_DOMAINSDB_KEY",
+        env_var: crate::environment::DOMAINSDB_KEY_ENV,
         category: "infrastructure",
         test_url: "https://api.domainsdb.info/v1/domains/search?zone=com&limit=1",
         probe_method: Method::Get,
@@ -264,7 +265,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "niamonx",
-        env_var: "HUNTSMAN_NIAMONX_KEY",
+        env_var: crate::environment::NIAMONX_KEY_ENV,
         category: "breach",
         test_url: "https://dash.niamonx.io/api/v2/breaches_search",
         probe_method: Method::Post,
@@ -275,7 +276,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "hibp",
-        env_var: "HUNTSMAN_HIBP_KEY",
+        env_var: crate::environment::HUNTSMAN_HIBP_KEY_ENV,
         category: "breach",
         test_url: "https://haveibeenpwned.com/api/v3/subscription/status",
         probe_method: Method::Get,
@@ -286,7 +287,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     },
     ServiceDef {
         name: "osintcat",
-        env_var: "HUNTSMAN_OSINTCAT_KEY",
+        env_var: crate::environment::OSINTCAT_KEY_ENV,
         category: "breach",
         test_url: "https://www.osintcat.net/api/email-osint?query=test%40example.com",
         probe_method: Method::Get,
@@ -558,6 +559,21 @@ mod tests {
     }
 
     #[test]
+    fn seeknow_is_probed_on_the_client_origin_and_slot() {
+        let seeknow = find_service("seeknow").expect("seeknow is a registered service");
+        assert_eq!(seeknow.env_var, crate::seeknow::KEY_SLOT);
+        assert_eq!(
+            seeknow.test_url,
+            format!("{}/credits", crate::seeknow::API_BASE)
+        );
+        assert_eq!(seeknow.probe_method, Method::Get);
+        assert_eq!(
+            service_for_env(crate::seeknow::KEY_SLOT).map(|service| service.name),
+            Some("seeknow")
+        );
+    }
+
+    #[test]
     fn builds_probe_requests_with_correct_auth_placement() {
         let github = find_service("github").expect("github");
         let github_request = build_probe_request(github, "test-key");
@@ -566,9 +582,9 @@ mod tests {
             Some("Bearer test-key")
         );
 
-        let see_know = find_service("see_know").expect("see_know");
-        let see_know_request = build_probe_request(see_know, "test-key");
-        assert_eq!(see_know_request.header_value("x-api-key"), Some("test-key"));
+        let seeknow = find_service("seeknow").expect("seeknow");
+        let seeknow_request = build_probe_request(seeknow, "test-key");
+        assert_eq!(seeknow_request.header_value("x-api-key"), Some("test-key"));
 
         let opencnam = find_service("opencnam").expect("opencnam");
         let opencnam_request = build_probe_request(opencnam, "test-key");

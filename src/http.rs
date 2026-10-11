@@ -173,7 +173,10 @@ pub fn append_query_param(url: &str, name: &str, value: &str) -> String {
     format!("{url}{separator}{name}={}", percent_encode_component(value))
 }
 
-fn percent_encode_component(raw: &str) -> String {
+/// One query component, form-encoded: unreserved bytes are kept, a space is `+`, and every other
+/// byte is `%XX`.
+#[must_use]
+pub fn percent_encode_component(raw: &str) -> String {
     let mut out = String::new();
     for byte in raw.bytes() {
         match byte {
@@ -186,6 +189,23 @@ fn percent_encode_component(raw: &str) -> String {
                 out.push(hex_upper_digit(byte >> 4));
                 out.push(hex_upper_digit(byte & 0x0f));
             }
+        }
+    }
+    out
+}
+
+/// One path segment or query value, RFC 3986 encoded: unreserved bytes are kept, and every other
+/// byte, a space included, is `%XX`.
+#[must_use]
+pub fn percent_encode_unreserved(raw: &str) -> String {
+    let mut out = String::new();
+    for byte in raw.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(hex_upper_digit(byte >> 4));
+            out.push(hex_upper_digit(byte & 0x0f));
         }
     }
     out
@@ -519,6 +539,13 @@ fn map_ureq_error(err: &ureq::Error) -> TransportFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_two_encoders_differ_only_in_how_a_space_is_written() {
+        let raw = "a b+c~/é-_.";
+        assert_eq!(percent_encode_component(raw), "a+b%2Bc~%2F%C3%A9-_.");
+        assert_eq!(percent_encode_unreserved(raw), "a%20b%2Bc~%2F%C3%A9-_.");
+    }
 
     #[test]
     fn public_only_ignores_environment_proxy() {

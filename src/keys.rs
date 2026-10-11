@@ -10,7 +10,6 @@
 //! it exists (see [`Keys::resolve`]). Both go through [`Keys::load`].
 
 use std::collections::BTreeMap;
-use std::env;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{File, Metadata};
@@ -18,6 +17,7 @@ use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use crate::credential_origin::CredentialFingerprint;
+use crate::environment;
 use crate::error::Error;
 use crate::fsio::read_bounded;
 
@@ -286,7 +286,7 @@ impl Keys {
             return Some(s.clone());
         }
         if self.use_env {
-            return env::var(slot).ok().and_then(|v| Secret::new(v).ok());
+            return environment::variable(slot).and_then(|v| Secret::new(v).ok());
         }
         None
     }

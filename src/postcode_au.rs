@@ -41,6 +41,17 @@ pub fn is_in_au_range(value: &str) -> bool {
             .is_ok_and(|number| (800..=9999).contains(&number))
 }
 
+/// Whether `value` is a display postcode on the ASIC and TPS register pages: four digits from
+/// 2000 to 7999, the range from New South Wales to Tasmania. The register HTML is the oracle for
+/// this range, which is deliberately narrower than [`is_in_au_range`].
+#[must_use]
+pub fn is_display_postcode(value: &str) -> bool {
+    is_shaped(value)
+        && value
+            .parse::<u32>()
+            .is_ok_and(|number| (2000..=7999).contains(&number))
+}
+
 #[must_use]
 pub fn parse(json: &str) -> Vec<Locality> {
     let response: ZippoResp = serde_json::from_str(json).unwrap_or_default();
@@ -142,41 +153,14 @@ fn offline_fallback(postcode: &str) -> Vec<Locality> {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, collections::VecDeque};
 
     use crate::{
-        http::{Method, Request, Response, Transport, TransportFailure},
+        http::{Method, Response, TransportFailure},
         source_outcome::SourceOutcomeKind,
     };
 
     use super::*;
-
-    struct FakeTransport {
-        script: RefCell<VecDeque<Result<Response, TransportFailure>>>,
-        seen: RefCell<Vec<Request>>,
-    }
-
-    impl FakeTransport {
-        fn new(script: Vec<Result<Response, TransportFailure>>) -> Self {
-            Self {
-                script: RefCell::new(script.into()),
-                seen: RefCell::new(Vec::new()),
-            }
-        }
-    }
-
-    impl Transport for FakeTransport {
-        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-            self.seen.borrow_mut().push(request.clone());
-            self.script.borrow_mut().pop_front().unwrap_or_else(|| {
-                Err(TransportFailure {
-                    kind: SourceOutcomeKind::ConnectFailure,
-                    detail: "unexpected request".into(),
-                    blocked: false,
-                })
-            })
-        }
-    }
+    use crate::test_support::ScriptedTransport;
 
     #[test]
     fn parses_real_4552_payload() {
@@ -224,7 +208,7 @@ mod tests {
 
     #[test]
     fn online_lookup_uses_shared_transport_and_falls_back_cleanly() {
-        let transport = FakeTransport::new(vec![Ok(Response {
+        let transport = ScriptedTransport::new(vec![Ok(Response {
             status: 200,
             headers: Vec::new(),
             body: br#"{"places":[{"place name":"Maleny","latitude":"-26.729","longitude":"152.7554"}]}"#.to_vec(),
@@ -241,7 +225,7 @@ mod tests {
 
         let fallback = localities_with(
             "4552",
-            &FakeTransport::new(vec![Err(TransportFailure {
+            &ScriptedTransport::new(vec![Err(TransportFailure {
                 kind: SourceOutcomeKind::ConnectFailure,
                 detail: "boom".into(),
                 blocked: false,
@@ -250,7 +234,7 @@ mod tests {
         assert_eq!(fallback.len(), 3);
         let empty = localities_with(
             "4552",
-            &FakeTransport::new(vec![Ok(Response {
+            &ScriptedTransport::new(vec![Ok(Response {
                 status: 404,
                 headers: Vec::new(),
                 body: Vec::new(),
@@ -260,7 +244,7 @@ mod tests {
         assert_eq!(empty.len(), 3);
         let unshaped = localities_with(
             "bad",
-            &FakeTransport::new(vec![Ok(Response {
+            &ScriptedTransport::new(vec![Ok(Response {
                 status: 200,
                 headers: Vec::new(),
                 body: Vec::new(),
@@ -268,5 +252,16 @@ mod tests {
             })]),
         );
         assert!(unshaped.is_empty(), "{unshaped:?}");
+    }
+
+    #[test]
+    fn display_postcodes_are_the_register_range_not_the_wider_au_range() {
+        assert!(!is_display_postcode("1999"));
+        assert!(is_display_postcode("2000"));
+        assert!(is_display_postcode("7999"));
+        assert!(!is_display_postcode("8000"));
+        assert!(!is_display_postcode("20x0"));
+        // 8000 to 9999 is still an AU postcode range, so the wider check accepts it.
+        assert!(is_in_au_range("8000"));
     }
 }

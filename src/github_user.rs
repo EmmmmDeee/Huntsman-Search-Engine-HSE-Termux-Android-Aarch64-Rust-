@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::canonical::{canonical_email, canonical_url};
 use crate::domains::host_only;
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport};
@@ -86,7 +86,11 @@ pub fn lookup<T: Transport + ?Sized>(
     if !valid_login(username) {
         return Ok(Report {
             entities: Vec::new(),
-            outcome: inconclusive(now_unix, "selector is not a valid GitHub login"),
+            outcome: SourceExecutionOutcome::inconclusive(
+                SRC,
+                now_unix,
+                "selector is not a valid GitHub login",
+            ),
         });
     }
 
@@ -146,7 +150,8 @@ fn parse_response(
     if response.truncated {
         return Report {
             entities: Vec::new(),
-            outcome: failed(
+            outcome: SourceExecutionOutcome::failed(
+                SRC,
                 now_unix,
                 SourceOutcomeKind::ParserDrift,
                 Some(response.status),
@@ -160,7 +165,8 @@ fn parse_response(
     if classified != SourceOutcomeKind::Inconclusive {
         return Report {
             entities: Vec::new(),
-            outcome: failed(
+            outcome: SourceExecutionOutcome::failed(
+                SRC,
                 now_unix,
                 classified,
                 Some(response.status),
@@ -174,11 +180,12 @@ fn parse_response(
         Err(error) => {
             return Report {
                 entities: Vec::new(),
-                outcome: failed(
+                outcome: SourceExecutionOutcome::failed(
+                    SRC,
                     now_unix,
                     SourceOutcomeKind::ParserDrift,
                     Some(response.status),
-                    &format!("GitHub JSON: {error}"),
+                    format!("GitHub JSON: {error}"),
                 ),
             };
         }
@@ -186,7 +193,8 @@ fn parse_response(
     if user.login.trim().is_empty() {
         return Report {
             entities: Vec::new(),
-            outcome: failed(
+            outcome: SourceExecutionOutcome::failed(
+                SRC,
                 now_unix,
                 SourceOutcomeKind::SchemaDrift,
                 Some(response.status),
@@ -201,35 +209,6 @@ fn parse_response(
         outcome: SourceExecutionOutcome::success(SRC, now_unix, 1)
             .with_http_status(response.status),
         entities,
-    }
-}
-
-fn inconclusive(now_unix: u64, detail: &str) -> SourceExecutionOutcome {
-    SourceExecutionOutcome {
-        module: SRC.into(),
-        kind: SourceOutcomeKind::Inconclusive,
-        observed_at_unix: now_unix,
-        http_status: None,
-        found: None,
-        retry_after_secs: None,
-        detail: Some(detail.into()),
-    }
-}
-
-fn failed(
-    now_unix: u64,
-    kind: SourceOutcomeKind,
-    status: Option<u16>,
-    detail: &str,
-) -> SourceExecutionOutcome {
-    SourceExecutionOutcome {
-        module: SRC.into(),
-        kind,
-        observed_at_unix: now_unix,
-        http_status: status,
-        found: None,
-        retry_after_secs: None,
-        detail: Some(detail.into()),
     }
 }
 
@@ -281,7 +260,7 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
     let profile_evidence = evidence(user, &profile_url, scan_id);
     let mut entities = Vec::new();
 
-    add(
+    push_entity(
         &mut entities,
         EntityKind::Username,
         &user.login,
@@ -290,7 +269,7 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
         profile_evidence.clone(),
         &["github", "public-profile"],
     );
-    add(
+    push_entity(
         &mut entities,
         EntityKind::Url,
         &profile_url,
@@ -317,7 +296,7 @@ fn add_identity_fields(
         .map(str::trim)
         .filter(|name| name.split_whitespace().count() >= 2)
     {
-        add(
+        push_entity(
             entities,
             EntityKind::Person,
             name,
@@ -333,7 +312,7 @@ fn add_identity_fields(
         .map(str::trim)
         .filter(|email| canonical_email(email).is_some())
     {
-        add(
+        push_entity(
             entities,
             EntityKind::Email,
             email,
@@ -350,7 +329,7 @@ fn add_identity_fields(
         .map(|company| company.trim_start_matches('@'))
         .filter(|company| company.len() >= 2)
     {
-        add(
+        push_entity(
             entities,
             EntityKind::Organisation,
             company,
@@ -366,7 +345,7 @@ fn add_identity_fields(
         .map(str::trim)
         .filter(|location| location.len() >= 3)
     {
-        add(
+        push_entity(
             entities,
             EntityKind::Address,
             location,
@@ -393,7 +372,7 @@ fn add_social_fields(
     else {
         return;
     };
-    add(
+    push_entity(
         entities,
         EntityKind::Username,
         twitter,
@@ -413,7 +392,7 @@ fn add_blog(user: &GhUser, scan_id: &str, profile_evidence: &Evidence, entities:
     else {
         return;
     };
-    add(
+    push_entity(
         entities,
         EntityKind::Url,
         blog,
@@ -424,7 +403,7 @@ fn add_blog(user: &GhUser, scan_id: &str, profile_evidence: &Evidence, entities:
     );
     let host = host_only(blog).to_ascii_lowercase();
     if host.contains('.') && !matches!(host.as_str(), "github.com" | "github.io") {
-        add(
+        push_entity(
             entities,
             EntityKind::Domain,
             &host,
@@ -436,58 +415,10 @@ fn add_blog(user: &GhUser, scan_id: &str, profile_evidence: &Evidence, entities:
     }
 }
 
-fn add(
-    entities: &mut Vec<Entity>,
-    kind: EntityKind,
-    value: &str,
-    confidence: f64,
-    scan_id: &str,
-    evidence: Evidence,
-    tags: &[&str],
-) {
-    let mut entity = Entity::new(kind, value, confidence, scan_id);
-    for tag in tags {
-        entity.tag(*tag);
-    }
-    entity.add_evidence(evidence);
-    entities.push(entity);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-
-    use crate::http::{Response, TransportFailure};
-
-    struct Fake {
-        response: RefCell<Option<Result<Response, TransportFailure>>>,
-    }
-
-    impl Fake {
-        fn response(status: u16, headers: &[(&str, &str)], body: &str) -> Self {
-            Self {
-                response: RefCell::new(Some(Ok(Response {
-                    status,
-                    headers: headers
-                        .iter()
-                        .map(|(name, value)| ((*name).into(), (*value).into()))
-                        .collect(),
-                    body: body.as_bytes().to_vec(),
-                    truncated: false,
-                }))),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
-            self.response
-                .borrow_mut()
-                .take()
-                .expect("one request expected")
-        }
-    }
+    use crate::test_support::OneResponse;
 
     #[test]
     fn login_validation_blocks_path_shaped_input() {
@@ -500,7 +431,13 @@ mod tests {
 
     #[test]
     fn missing_profile_is_valid_zero() {
-        let got = lookup(&Fake::response(404, &[], ""), "nobody", "scan", 1).unwrap();
+        let got = lookup(
+            &OneResponse::with_headers(404, &[], ""),
+            "nobody",
+            "scan",
+            1,
+        )
+        .unwrap();
         assert_eq!(got.outcome.kind, SourceOutcomeKind::ValidZero);
         assert!(got.entities.is_empty());
     }
@@ -508,7 +445,7 @@ mod tests {
     #[test]
     fn rate_limit_is_not_a_missing_profile() {
         let got = lookup(
-            &Fake::response(403, &[("x-ratelimit-remaining", "0")], "{}"),
+            &OneResponse::with_headers(403, &[("x-ratelimit-remaining", "0")], "{}"),
             "octocat",
             "scan",
             1,
@@ -534,7 +471,7 @@ mod tests {
           "created_at":"2011-01-25T18:44:36Z"
         }"#;
         let got = lookup(
-            &Fake::response(200, &[("content-type", "application/json")], body),
+            &OneResponse::with_headers(200, &[("content-type", "application/json")], body),
             "octocat",
             "scan",
             1,
@@ -560,7 +497,7 @@ mod tests {
     #[test]
     fn malformed_json_is_parser_drift() {
         let got = lookup(
-            &Fake::response(200, &[("content-type", "application/json")], "{"),
+            &OneResponse::with_headers(200, &[("content-type", "application/json")], "{"),
             "octocat",
             "scan",
             1,

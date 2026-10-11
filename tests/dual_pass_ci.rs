@@ -7,6 +7,12 @@
 use std::fs;
 use std::process::Command;
 
+#[allow(dead_code)]
+#[path = "support/workflow.rs"]
+mod workflow;
+
+use workflow::{job, step};
+
 const WORKFLOW: &str = ".github/workflows/dual-pass.yml";
 const RED_CLASS: &str = "scripts/dual-pass/red_class.py";
 const RED_FIXTURES: &str = "scripts/dual-pass/fixtures/red";
@@ -16,33 +22,6 @@ const EGRESS_GUARD: &str = "grep -R -n -E 'https?://api\\.x\\.ai|secrets\\.XAI|o
 
 fn read(path: &str) -> String {
     fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"))
-}
-
-/// A job header is a line indented by exactly two spaces that ends with a colon.
-fn is_job_header(line: &str) -> bool {
-    line.starts_with("  ") && !line.starts_with("   ") && line.ends_with(':')
-}
-
-/// The text of one job, from its header to the next job header.
-fn job(wf: &str, name: &str) -> String {
-    let header = format!("  {name}:");
-    let mut lines = wf.lines().skip_while(|l| *l != header);
-    let first = lines
-        .next()
-        .unwrap_or_else(|| panic!("job {name:?} must exist in {WORKFLOW}"));
-    let body: Vec<&str> = lines.take_while(|l| !is_job_header(l)).collect();
-    format!("{first}\n{}", body.join("\n"))
-}
-
-/// The text of the named step: from its `- name:` line to the next step.
-fn step(wf: &str, name: &str) -> String {
-    let header = format!("      - name: {name}");
-    let mut lines = wf.lines().skip_while(|l| *l != header);
-    let first = lines
-        .next()
-        .unwrap_or_else(|| panic!("step {name:?} must exist in {WORKFLOW}"));
-    let body: Vec<&str> = lines.take_while(|l| !l.starts_with("      - ")).collect();
-    format!("{first}\n{}", body.join("\n"))
 }
 
 /// True when a line of a script is code, not a comment.

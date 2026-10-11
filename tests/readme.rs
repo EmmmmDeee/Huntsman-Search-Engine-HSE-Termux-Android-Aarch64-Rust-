@@ -1,10 +1,12 @@
 //! The README is a claim about the binary. Each claim here is checked against a run,
 //! so a stale example, an undocumented command, or a wrong exit code fails the build.
+//! Exit statuses are also checked against the source: each is defined once, in `src/exit.rs`,
+//! and no call site writes a status as a literal number.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn bin() -> Command {
@@ -215,16 +217,113 @@ fn every_documented_exit_code_is_observed() {
             "README documents exit {want}"
         );
     }
-    let defined: BTreeSet<u8> = cli_source()
+}
+
+/// Every `.rs` file under `src/`, paired with its path relative to the repository.
+fn source_files() -> Vec<(String, String)> {
+    fn walk(dir: &Path, out: &mut Vec<(String, String)>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let relative = path.strip_prefix(root()).unwrap().display().to_string();
+                out.push((relative, fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&root().join("src"), &mut files);
+    assert!(
+        files.iter().any(|(path, _)| path == "src/main.rs"),
+        "src/main.rs was not found under src/"
+    );
+    files
+}
+
+/// `pub const EX_NAME: u8 = N;` declarations in `src/exit.rs`, as name to status.
+fn exit_statuses(exit_rs: &str) -> BTreeMap<String, u8> {
+    exit_rs
         .lines()
-        .filter_map(|l| l.trim().strip_prefix("const EX_"))
-        .filter_map(|l| l.split('=').nth(1))
-        .map(|n| n.trim().trim_end_matches(';').parse().unwrap())
-        .collect();
+        .filter_map(|line| line.trim().strip_prefix("pub const "))
+        .filter(|decl| decl.starts_with("EX_"))
+        .map(|decl| {
+            let (name, value) = decl.split_once(": u8 = ").expect("EX_ constants are u8");
+            (
+                name.to_owned(),
+                value.trim_end_matches(';').parse::<u8>().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// `EX_*` names in `source`, in order. An `EX_` inside a longer identifier is not a status.
+fn exit_names(source: &str) -> Vec<String> {
+    source
+        .match_indices("EX_")
+        .filter(|(at, _)| !source[..*at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+        .map(|(at, _)| {
+            let rest = &source[at..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_uppercase() || c == '_'))
+                .unwrap_or(rest.len());
+            rest[..end].to_owned()
+        })
+        .collect()
+}
+
+/// A status is defined once, in `src/exit.rs`, and no other source file writes its number.
+#[test]
+fn statuses_are_defined_once_and_never_written_as_literals() {
+    for (path, source) in source_files() {
+        if path == "src/exit.rs" {
+            continue;
+        }
+        assert!(
+            !source.lines().any(|line| line.contains("const EX_")),
+            "{path} defines an EX_ status; define it in src/exit.rs"
+        );
+        for call in ["fail(", "ExitCode::from("] {
+            for (at, _) in source.match_indices(call) {
+                let argument = source[at + call.len()..].trim_start();
+                assert!(
+                    !argument.starts_with(|c: char| c.is_ascii_digit()),
+                    "{path} passes a literal status to `{call}`; name it in src/exit.rs"
+                );
+            }
+        }
+    }
+}
+
+/// The README's `Exit codes:` line lists exactly the statuses the CLI can return. Every status in
+/// `src/exit.rs` is used by some binary, so none is dead.
+#[test]
+fn documented_exit_codes_are_exactly_the_statuses_in_use() {
+    let statuses = exit_statuses(&fs::read_to_string(root().join("src/exit.rs")).unwrap());
+    let mut cli = BTreeSet::new();
+    let mut binaries = BTreeSet::new();
+    for (path, source) in source_files() {
+        if path == "src/exit.rs" {
+            continue;
+        }
+        let used = if path.starts_with("src/bin/") {
+            &mut binaries
+        } else {
+            &mut cli
+        };
+        used.extend(exit_names(&source));
+    }
+    let used: BTreeSet<String> = cli.union(&binaries).cloned().collect();
+    let declared: BTreeSet<String> = statuses.keys().cloned().collect();
     assert_eq!(
-        documented.iter().copied().collect::<BTreeSet<u8>>(),
-        defined,
-        "README exit codes differ from the EX_* constants in src/cli/mod.rs"
+        declared, used,
+        "every EX_ status in src/exit.rs must be used, and every use must be declared there"
+    );
+    let cli_codes: BTreeSet<u8> = cli.iter().map(|name| statuses[name]).collect();
+    let documented: BTreeSet<u8> = documented_exit_codes(&readme()).into_iter().collect();
+    assert_eq!(
+        documented, cli_codes,
+        "README `Exit codes:` must list exactly the statuses the CLI sources use"
     );
 }
 
@@ -280,5 +379,15 @@ fn parsers_hold_on_known_inputs() {
     assert_eq!(
         gate_codes("gate(2, a)?; gate(\n 11,\n b)?; fn gate(code: u8"),
         BTreeSet::from([2, 11])
+    );
+    assert_eq!(
+        exit_names("fail(EX_USAGE, x); MAX_EX_DATAERR; ExitCode::from(EX_IOERR)"),
+        ["EX_USAGE", "EX_IOERR"]
+    );
+    assert_eq!(
+        exit_statuses(
+            "pub const EX_USAGE: u8 = 64;\n    pub const EX_IOERR: u8 = 74;\nconst NOT_A_STATUS: u8 = 1;"
+        ),
+        BTreeMap::from([("EX_IOERR".to_owned(), 74), ("EX_USAGE".to_owned(), 64)])
     );
 }

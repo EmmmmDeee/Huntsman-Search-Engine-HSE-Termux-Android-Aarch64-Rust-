@@ -3,8 +3,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::cli::{EX_DATAERR, EX_NOINPUT, EX_USAGE, MAX_ARTIFACT_BYTES, fail};
+use crate::cli::{MAX_ARTIFACT_BYTES, fail};
 use huntsman_recon::error::Error;
+use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::scan_batch::parse_seed_list;
 use huntsman_recon::scan_route::{

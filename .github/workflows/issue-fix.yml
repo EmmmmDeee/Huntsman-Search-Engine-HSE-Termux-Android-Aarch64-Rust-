@@ -66,7 +66,7 @@ jobs:
       ISSUE_FIX_MODEL: ${{ vars.ISSUE_FIX_MODEL || 'opus' }}
       ISSUE_FIX_BUDGET_USD: ${{ vars.ISSUE_FIX_BUDGET_USD || '10' }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -197,7 +197,7 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -243,7 +243,7 @@ jobs:
       REPO: ${{ github.repository }}
       GATED_SHA: ${{ github.sha }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 1
@@ -308,7 +308,7 @@ jobs:
       GATE_OUTCOME: ${{ needs.gate.result }}
       PUBLISH_OUTCOME: ${{ needs.publish.result }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 1

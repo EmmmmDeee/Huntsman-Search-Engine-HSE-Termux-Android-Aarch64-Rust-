@@ -23,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use proc_macro2::{LineColumn, Span};
 use serde_json::{Map, Value};
 use syn::visit::{self, Visit};
-use syn::{ForeignItemFn, ImplItemFn, ItemFn, Signature, TraitItemFn, Visibility};
+use syn::{ForeignItemFn, ImplItemFn, ItemFn, Safety, Signature, TraitItemFn, Visibility};
 
 use crate::dual_pass::patch_paths::touched_paths;
 use crate::error::{self, Error, Result};
@@ -352,7 +352,7 @@ impl<'ast> Visit<'ast> for Finder<'_> {
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast ImplItemFn) {
-        let default = node.defaultness.as_ref().map(|token| token.span);
+        let default = node.modifiers.defaultness.as_ref().map(|token| token.span);
         self.note(
             &node.sig,
             Some(&node.vis),
@@ -391,6 +391,16 @@ fn semi_span(semi: &syn::token::Semi) -> Span {
     span
 }
 
+/// The span of a `safe` or `unsafe` qualifier. Syn 3 records both in one `Safety` value, where
+/// syn 2 had an `unsafe` token alone; a function with neither has no span.
+fn safety_span(safety: &Safety) -> Option<Span> {
+    match safety {
+        Safety::Safe(token) => Some(token.span),
+        Safety::Unsafe(token) => Some(token.span),
+        Safety::Default => None,
+    }
+}
+
 /// Where a function's first token is: its visibility or a qualifier, whichever comes first, or
 /// the `fn` keyword when it has none. Attributes and doc comments come before this and are not
 /// part of the function.
@@ -405,7 +415,7 @@ fn head(sig: &Signature, vis: Option<&Visibility>, default: Option<Span>) -> Lin
         default,
         sig.constness.as_ref().map(|token| token.span),
         sig.asyncness.as_ref().map(|token| token.span),
-        sig.unsafety.as_ref().map(|token| token.span),
+        safety_span(&sig.safety),
         sig.abi.as_ref().map(|abi| abi.extern_token.span),
     ];
     qualifiers
@@ -566,6 +576,14 @@ fn posix_path(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_safety_span_is_the_unsafe_keyword_or_none() {
+        let plain: ItemFn = syn::parse_str("fn plain() {}").expect("a plain function");
+        assert!(safety_span(&plain.sig.safety).is_none());
+        let risky: ItemFn = syn::parse_str("unsafe fn risky() {}").expect("an unsafe function");
+        assert!(safety_span(&risky.sig.safety).is_some());
+    }
 
     #[test]
     fn rstrip_drops_the_separators_python_drops() {

@@ -19,7 +19,7 @@ use crate::fetch::{self, FetchOptions, Fetched};
 use crate::http::{self, Request, Transport};
 use crate::postcode_au;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
-use crate::textnorm::{ascii_digits, whole_word_token_match};
+use crate::textnorm::{ascii_digits, decode_html_entities, name_tokens, whole_word_token_match};
 
 const SRC: &str = "asic_director";
 const SEARCH_BASE: &str =
@@ -164,13 +164,6 @@ fn parse_fetched(
     (outcome, entities)
 }
 
-fn name_tokens(full: &str) -> Vec<String> {
-    full.split(|c: char| !c.is_alphabetic())
-        .filter(|token| token.len() >= 2)
-        .map(str::to_ascii_lowercase)
-        .collect()
-}
-
 fn provenance(scan_id: &str) -> EvidenceProvenance {
     EvidenceProvenance::for_scan(SRC, scan_id)
 }
@@ -178,7 +171,7 @@ fn provenance(scan_id: &str) -> EvidenceProvenance {
 /// Strip HTML tags then decode entities. Tags come off first so a decoded `<`
 /// cannot be re-read as a tag. Linear in document length.
 fn clean_html(s: &str) -> String {
-    decode_entities(&strip_tags_plain(s))
+    decode_html_entities(&strip_tags_plain(s))
 }
 
 fn strip_tags_plain(s: &str) -> String {
@@ -196,67 +189,6 @@ fn strip_tags_plain(s: &str) -> String {
         }
     }
     out
-}
-
-fn decode_entities(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while !rest.is_empty() {
-        let decoded = if rest.as_bytes()[0] == b'&' {
-            decode_one_entity(rest)
-        } else {
-            None
-        };
-        if let Some((ch, consumed)) = decoded {
-            out.push(ch);
-            rest = &rest[consumed..];
-        } else {
-            let ch = rest.chars().next().expect("non-empty");
-            out.push(ch);
-            rest = &rest[ch.len_utf8()..];
-        }
-    }
-    out
-}
-
-fn decode_one_entity(rest: &str) -> Option<(char, usize)> {
-    let after_amp = rest.get(1..)?;
-    if after_amp.starts_with('#') {
-        let hex = after_amp
-            .as_bytes()
-            .get(1)
-            .is_some_and(|b| *b == b'x' || *b == b'X');
-        let digits = if hex {
-            after_amp.get(2..)?
-        } else {
-            after_amp.get(1..)?
-        };
-        let end = digits.find(';')?;
-        let raw = &digits[..end];
-        if raw.is_empty() {
-            return None;
-        }
-        let value = if hex {
-            u32::from_str_radix(raw, 16).ok()?
-        } else {
-            raw.parse::<u32>().ok()?
-        };
-        let ch = char::from_u32(value)?;
-        let consumed = 2 + usize::from(hex) + raw.len() + 1;
-        return Some((ch, consumed));
-    }
-    let end = after_amp.find(';')?;
-    let name = &after_amp[..end];
-    let ch = match name {
-        "amp" => '&',
-        "lt" => '<',
-        "gt" => '>',
-        "quot" => '"',
-        "apos" => '\'',
-        "nbsp" => ' ',
-        _ => return None,
-    };
-    Some((ch, 1 + name.len() + 1))
 }
 
 fn build_director_entities(
@@ -381,7 +313,7 @@ fn extract_au_address(text: &str) -> Option<String> {
     tokens.iter().enumerate().find_map(|(i, tok)| {
         address_au::state_code(tok)?;
         let next = *tokens.get(i + 1)?;
-        if asic_display_postcode(next) {
+        if postcode_au::is_display_postcode(next) {
             let start = i.saturating_sub(4);
             Some(tokens[start..=(i + 1)].join(" "))
         } else {
@@ -390,19 +322,12 @@ fn extract_au_address(text: &str) -> Option<String> {
     })
 }
 
-fn asic_display_postcode(value: &str) -> bool {
-    postcode_au::is_shaped(value)
-        && value
-            .parse::<u32>()
-            .is_ok_and(|n| (2000..=7999).contains(&n))
-}
-
 fn postcode_in_address(addr: &str) -> Option<&str> {
     let tokens: Vec<&str> = addr.split_whitespace().collect();
     tokens.iter().enumerate().find_map(|(i, tok)| {
         address_au::state_code(tok)?;
         let next = *tokens.get(i + 1)?;
-        asic_display_postcode(next).then_some(next)
+        postcode_au::is_display_postcode(next).then_some(next)
     })
 }
 
@@ -415,50 +340,13 @@ fn request_failed(html_read_ok: bool, found_any_entity: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
+    use crate::test_support::{ScriptedTransport, html_ok};
 
-    use crate::http::{Response, TransportFailure};
-
-    struct Fake {
-        script: RefCell<VecDeque<Result<Response, TransportFailure>>>,
-        seen: RefCell<Vec<Request>>,
-    }
-
-    impl Fake {
-        fn new(script: Vec<Result<Response, TransportFailure>>) -> Self {
-            Self {
-                script: RefCell::new(script.into()),
-                seen: RefCell::new(Vec::new()),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-            self.seen.borrow_mut().push(request.clone());
-            self.script.borrow_mut().pop_front().unwrap_or_else(|| {
-                Err(TransportFailure {
-                    kind: SourceOutcomeKind::ConnectFailure,
-                    detail: "unexpected request".into(),
-                    blocked: false,
-                })
-            })
-        }
-    }
-
-    fn html_ok(body: &str) -> Response {
-        Response {
-            status: 200,
-            headers: vec![("content-type".into(), "text/html".into())],
-            body: body.as_bytes().to_vec(),
-            truncated: false,
-        }
-    }
+    use crate::http::Response;
 
     #[test]
     fn single_token_name_makes_no_request() {
-        let fake = Fake::new(vec![Ok(html_ok("unused"))]);
+        let fake = ScriptedTransport::new(vec![Ok(html_ok("unused"))]);
         let report = lookup(&fake, "Haigen", "t", 1).expect("no-op");
         let entities = &report.entities;
         assert!(entities.is_empty(), "{entities:?}");
@@ -470,7 +358,7 @@ mod tests {
     fn lookup_emits_org_from_scripted_html() {
         let html = "Bamford Holdings Pty Ltd ACN 004085616 Level 1 Collins St Melbourne VIC 3000 \
                     Haigen Bamford - Director";
-        let fake = Fake::new(vec![Ok(html_ok(html))]);
+        let fake = ScriptedTransport::new(vec![Ok(html_ok(html))]);
         let report = lookup(&fake, "Haigen Bamford", "scan", 1).expect("lookup");
         assert!(
             report
@@ -503,7 +391,7 @@ mod tests {
 
     #[test]
     fn challenge_page_is_not_a_director_miss() {
-        let fake = Fake::new(vec![Ok(Response {
+        let fake = ScriptedTransport::new(vec![Ok(Response {
             status: 200,
             headers: vec![("content-type".into(), "text/html".into())],
             body: b"<html>Just a moment... cloudflare checking your browser</html>".to_vec(),
@@ -515,7 +403,7 @@ mod tests {
 
     #[test]
     fn connect_403_is_not_empty_success() {
-        let fake = Fake::new(vec![Ok(Response {
+        let fake = ScriptedTransport::new(vec![Ok(Response {
             status: 403,
             headers: Vec::new(),
             body: b"forbidden".to_vec(),
@@ -527,7 +415,8 @@ mod tests {
 
     #[test]
     fn readable_empty_page_is_valid_zero() {
-        let fake = Fake::new(vec![Ok(html_ok("<html><body>no matches</body></html>"))]);
+        let fake =
+            ScriptedTransport::new(vec![Ok(html_ok("<html><body>no matches</body></html>"))]);
         let report = lookup(&fake, "Haigen Bamford", "scan", 1).expect("empty");
         let entities_empty = report.entities.is_empty();
         assert!(entities_empty, "{:?}", report.entities);
