@@ -80,13 +80,14 @@ fn decode_one_html_entity(rest: &str) -> Option<(char, usize)> {
     Some((ch, 1 + name.len() + 1))
 }
 
-/// The alphabetic runs of `full` that are at least two bytes long, lowercased. These are the
-/// tokens that name matching compares, so a one-byte initial is not a token.
+/// The alphabetic runs of `full` that are at least two characters long, lowercased. These are the
+/// tokens that name matching compares. A one-letter initial is not a token, even an accented one
+/// that takes two bytes in UTF-8.
 #[must_use]
 pub fn name_tokens(full: &str) -> Vec<String> {
     full.split(|c: char| !c.is_alphabetic())
-        .filter(|token| token.len() >= 2)
-        .map(str::to_ascii_lowercase)
+        .filter(|token| token.chars().nth(1).is_some())
+        .map(str::to_lowercase)
         .collect()
 }
 
@@ -600,7 +601,19 @@ pub fn rfind_word_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
     })
 }
 
-/// True when every alphanumeric token of `needle` appears as a whole word in `haystack`.
+/// Case-insensitive equality over Unicode letters. An ASCII pair takes the byte comparison, and any
+/// other pair is compared one lowercased character at a time, so `Émile` equals `émile`.
+fn eq_ignore_case(a: &str, b: &str) -> bool {
+    if a.is_ascii() && b.is_ascii() {
+        return a.eq_ignore_ascii_case(b);
+    }
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .eq(b.chars().flat_map(char::to_lowercase))
+}
+
+/// True when every alphanumeric token of `needle` appears as a whole word in `haystack`, ignoring
+/// case for Unicode letters as well as ASCII.
 #[must_use]
 pub fn whole_word_token_match(haystack: &str, needle: &str) -> bool {
     let words: Vec<&str> = haystack
@@ -614,7 +627,7 @@ pub fn whole_word_token_match(haystack: &str, needle: &str) -> bool {
     !tokens.is_empty()
         && tokens
             .iter()
-            .all(|token| words.iter().any(|word| word.eq_ignore_ascii_case(token)))
+            .all(|token| words.iter().any(|word| eq_ignore_case(word, token)))
 }
 
 /// Minimum token length `shares_whole_word_token` treats as a real name token.
@@ -630,7 +643,7 @@ pub fn shares_whole_word_token(haystack: &str, needle: &str) -> bool {
     needle
         .split(|c: char| !c.is_alphanumeric())
         .filter(|token| token.chars().count() >= MIN_SHARED_TOKEN)
-        .any(|token| words.iter().any(|word| word.eq_ignore_ascii_case(token)))
+        .any(|token| words.iter().any(|word| eq_ignore_case(word, token)))
 }
 
 #[cfg(test)]
@@ -783,6 +796,23 @@ mod tests {
         assert!(shares_whole_word_token("Ada Lovelace", "Lovelace Byron"));
         assert!(!shares_whole_word_token("Ada Lovelace", "Byron King"));
         assert!(!shares_whole_word_token("Ada Lovelace", "A"));
+    }
+
+    #[test]
+    fn name_matching_ignores_case_for_accented_letters() {
+        assert_eq!(name_tokens("ÉMILE ZOLA"), ["émile", "zola"]);
+        assert_eq!(name_tokens("ÉMILE ZOLA"), name_tokens("émile zola"));
+        assert!(whole_word_token_match("ZOLA, ÉMILE", "émile zola"));
+        assert!(shares_whole_word_token("ÉMILE ZOLA", "émile"));
+        // A letter with an accent is a different letter from its plain form.
+        assert!(!whole_word_token_match("ZOLA, EMILE", "émile zola"));
+    }
+
+    #[test]
+    fn one_accented_letter_is_an_initial_not_a_name_token() {
+        // Two bytes in UTF-8 but one letter. The people command has always treated it this way.
+        assert_eq!(name_tokens("É Lovelace"), ["lovelace"]);
+        assert_eq!(name_tokens("Ø Smith"), ["smith"]);
     }
 
     #[test]
