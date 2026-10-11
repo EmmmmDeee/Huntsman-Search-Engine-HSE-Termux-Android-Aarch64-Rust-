@@ -27,6 +27,13 @@ const COMPANY_WORDS: &[&str] = &[
 /// Street words, matched the same way as [`COMPANY_WORDS`].
 const STREET_WORDS: &[&str] = &["street", "streets", "st", "road", "roads", "rd"];
 
+/// Capitalised connectors that end a name in prose. "In 2024 The Main Road" is prose, so
+/// "The" stops an address span before it can reach "Road".
+const CONNECTOR_WORDS: &[&str] = &[
+    "a", "an", "and", "at", "by", "for", "from", "in", "near", "of", "on", "or", "the", "to",
+    "with",
+];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Classified {
     pub kind: EntityKind,
@@ -234,14 +241,15 @@ fn address_span(tokens: &[&str]) -> Option<(Classified, usize)> {
     if !head.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
     }
+    // The span runs over name-like tokens and ends on the last street word in that run, so
+    // "12 St Kilda Road" keeps "Road" and "Ship to 12 Queen St Brisbane" stops at "St".
     let mut end = None;
     for (offset, token) in tokens.iter().enumerate().skip(1).take(ADDRESS_SPAN_MAX) {
-        if is_street_word(token) {
-            end = Some(offset);
+        if !is_name_like(token) {
             break;
         }
-        if !is_name_like(token) {
-            return None;
+        if is_street_word(token) {
+            end = Some(offset);
         }
     }
     let end = end?;
@@ -268,7 +276,11 @@ fn is_number_fragment(token: &str) -> bool {
 
 /// A capitalised word or a token containing a digit, as found in street names.
 fn is_name_like(token: &str) -> bool {
-    token.starts_with(char::is_uppercase) || token.bytes().any(|b| b.is_ascii_digit())
+    if token.bytes().any(|b| b.is_ascii_digit()) {
+        return true;
+    }
+    let lowered = token.to_ascii_lowercase();
+    token.starts_with(char::is_uppercase) && !CONNECTOR_WORDS.contains(&lowered.as_str())
 }
 
 /// A whitespace token that is exactly one street word, ignoring surrounding punctuation.
@@ -450,6 +462,23 @@ mod tests {
         let unit = extract("Unit 3, 12 Smith St Brisbane");
         assert_eq!(unit.len(), 1, "{unit:?}");
         assert_eq!(unit[0].value, "12 Smith St");
+    }
+
+    #[test]
+    fn address_span_keeps_road_after_an_st_name_part() {
+        let found = extract("Meet at 12 St Kilda Road tomorrow");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].kind, EntityKind::Address);
+        assert_eq!(found[0].value, "12 St Kilda Road");
+    }
+
+    #[test]
+    fn prose_with_a_connector_is_not_an_address() {
+        let found = extract("In 2024 The Main Road was closed");
+        assert!(
+            found.iter().all(|item| item.kind != EntityKind::Address),
+            "{found:?}"
+        );
     }
 
     #[test]
