@@ -13,11 +13,10 @@ use crate::canonical::canonical_email;
 use crate::domains::{INFRA_PROVIDER_ROOTS, is_freemail, is_role_localpart, is_social_platform};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
-use crate::evidence_ancestry::EvidenceNodeId;
 use crate::gravatar;
 use crate::http::Transport;
 use crate::identity_resolution::AutoMergePolicy;
-use crate::lineage::{Observation, lineage_tsv_line, resolve_with_lineage};
+use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::textnorm::upper_first;
 
@@ -312,7 +311,7 @@ fn render(report: &Report) -> Result<String, String> {
 }
 
 fn append_lineage(report: &Report, out: &mut String) -> Result<(), String> {
-    let observations = observations(report);
+    let observations = observations_from(&report.entities);
     if observations.is_empty() {
         return Ok(());
     }
@@ -323,24 +322,6 @@ fn append_lineage(report: &Report, out: &mut String) -> Result<(), String> {
         writeln!(out, "{}", lineage_tsv_line(item)).map_err(|err| err.to_string())?;
     }
     Ok(())
-}
-
-fn observations(report: &Report) -> Vec<Observation> {
-    report
-        .entities
-        .iter()
-        .enumerate()
-        .flat_map(|(entity_index, entity)| {
-            entity
-                .evidence
-                .iter()
-                .enumerate()
-                .map(move |(evidence_index, evidence)| Observation {
-                    id: EvidenceNodeId(format!("{}:{entity_index}:{evidence_index}", entity.uid)),
-                    evidence: evidence.clone(),
-                })
-        })
-        .collect()
 }
 
 #[cfg(test)]

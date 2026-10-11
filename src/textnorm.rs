@@ -16,6 +16,70 @@ pub fn escape_controls(s: &str) -> String {
     out
 }
 
+/// Decodes the named and numeric character references in `s`. A reference that is unknown,
+/// malformed, or not a valid character is left as it is, and so is any `&` that does not begin one.
+#[must_use]
+pub fn decode_html_entities(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while !rest.is_empty() {
+        let decoded = if rest.as_bytes()[0] == b'&' {
+            decode_one_html_entity(rest)
+        } else {
+            None
+        };
+        if let Some((ch, consumed)) = decoded {
+            out.push(ch);
+            rest = &rest[consumed..];
+        } else {
+            let ch = rest.chars().next().expect("non-empty");
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    out
+}
+
+fn decode_one_html_entity(rest: &str) -> Option<(char, usize)> {
+    let after_amp = rest.get(1..)?;
+    if after_amp.starts_with('#') {
+        let hex = after_amp
+            .as_bytes()
+            .get(1)
+            .is_some_and(|b| *b == b'x' || *b == b'X');
+        let digits = if hex {
+            after_amp.get(2..)?
+        } else {
+            after_amp.get(1..)?
+        };
+        let end = digits.find(';')?;
+        let raw = &digits[..end];
+        if raw.is_empty() {
+            return None;
+        }
+        let value = if hex {
+            u32::from_str_radix(raw, 16).ok()?
+        } else {
+            raw.parse::<u32>().ok()?
+        };
+        let ch = char::from_u32(value)?;
+        let consumed = 2 + usize::from(hex) + raw.len() + 1;
+        return Some((ch, consumed));
+    }
+    let end = after_amp.find(';')?;
+    let name = &after_amp[..end];
+    let ch = match name {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => ' ',
+        _ => return None,
+    };
+    Some((ch, 1 + name.len() + 1))
+}
+
 /// The alphabetic runs of `full` that are at least two bytes long, lowercased. These are the
 /// tokens that name matching compares, so a one-byte initial is not a token.
 #[must_use]
@@ -444,6 +508,16 @@ mod tests {
         assert_eq!(
             pipe_delimited(" alpha | |beta|| ").collect::<Vec<_>>(),
             ["alpha", "beta"]
+        );
+    }
+
+    #[test]
+    fn html_references_decode_and_unknown_ones_are_left_alone() {
+        assert_eq!(decode_html_entities("a &amp; b &lt;c&gt;"), "a & b <c>");
+        assert_eq!(decode_html_entities("it&#39;s &#x41;&#65;"), "it's AA");
+        assert_eq!(
+            decode_html_entities("&bogus; &#xD800; & done"),
+            "&bogus; &#xD800; & done"
         );
     }
 }

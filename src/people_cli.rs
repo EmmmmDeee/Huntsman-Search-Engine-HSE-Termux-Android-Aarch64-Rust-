@@ -17,10 +17,9 @@ use crate::au_people;
 use crate::canonical::canonical_name;
 use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
-use crate::evidence_ancestry::EvidenceNodeId;
 use crate::http::Transport;
 use crate::identity_resolution::AutoMergePolicy;
-use crate::lineage::{Observation, lineage_tsv_line, resolve_with_lineage};
+use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
@@ -300,7 +299,7 @@ fn render(report: &Report) -> Result<String, String> {
         let _ = writeln!(out, "{}\t{kind}\tfound={found}", outcome.module);
     }
 
-    let observations = observations(report);
+    let observations = observations_from(&report.entities);
     if observations.is_empty() {
         return Ok(out);
     }
@@ -311,24 +310,6 @@ fn render(report: &Report) -> Result<String, String> {
         let _ = writeln!(out, "{}", lineage_tsv_line(item));
     }
     Ok(out)
-}
-
-fn observations(report: &Report) -> Vec<Observation> {
-    report
-        .entities
-        .iter()
-        .enumerate()
-        .flat_map(|(entity_index, entity)| {
-            entity
-                .evidence
-                .iter()
-                .enumerate()
-                .map(move |(evidence_index, evidence)| Observation {
-                    id: EvidenceNodeId(format!("{}:{entity_index}:{evidence_index}", entity.uid)),
-                    evidence: evidence.clone(),
-                })
-        })
-        .collect()
 }
 
 #[cfg(test)]

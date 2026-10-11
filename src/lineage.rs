@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::canonical::{canonical_provenance_family, canonical_url};
-use crate::entity::Evidence;
+use crate::entity::{Entity, Evidence};
 use crate::evidence_ancestry::{
     AncestryError, EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, canonical_family,
 };
@@ -337,6 +337,26 @@ fn assess(
             MergeOutcome::Held { reasons }
         },
     }
+}
+
+/// One observation per evidence item, in entity order. The id is `uid:entity:evidence`, so
+/// every front-end names a given evidence item the same way.
+#[must_use]
+pub fn observations_from(entities: &[Entity]) -> Vec<Observation> {
+    entities
+        .iter()
+        .enumerate()
+        .flat_map(|(entity_index, entity)| {
+            entity
+                .evidence
+                .iter()
+                .enumerate()
+                .map(move |(evidence_index, evidence)| Observation {
+                    id: EvidenceNodeId(format!("{}:{entity_index}:{evidence_index}", entity.uid)),
+                    evidence: evidence.clone(),
+                })
+        })
+        .collect()
 }
 
 /// The lineage label a TSV row prints for an upstream kind.

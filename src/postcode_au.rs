@@ -41,6 +41,17 @@ pub fn is_in_au_range(value: &str) -> bool {
             .is_ok_and(|number| (800..=9999).contains(&number))
 }
 
+/// Whether `value` is a display postcode on the ASIC and TPS register pages: four digits from
+/// 2000 to 7999, the range from New South Wales to Tasmania. The register HTML is the oracle for
+/// this range, which is deliberately narrower than [`is_in_au_range`].
+#[must_use]
+pub fn is_display_postcode(value: &str) -> bool {
+    is_shaped(value)
+        && value
+            .parse::<u32>()
+            .is_ok_and(|number| (2000..=7999).contains(&number))
+}
+
 #[must_use]
 pub fn parse(json: &str) -> Vec<Locality> {
     let response: ZippoResp = serde_json::from_str(json).unwrap_or_default();
@@ -268,5 +279,16 @@ mod tests {
             })]),
         );
         assert!(unshaped.is_empty(), "{unshaped:?}");
+    }
+
+    #[test]
+    fn display_postcodes_are_the_register_range_not_the_wider_au_range() {
+        assert!(!is_display_postcode("1999"));
+        assert!(is_display_postcode("2000"));
+        assert!(is_display_postcode("7999"));
+        assert!(!is_display_postcode("8000"));
+        assert!(!is_display_postcode("20x0"));
+        // 8000 to 9999 is still an AU postcode range, so the wider check accepts it.
+        assert!(is_in_au_range("8000"));
     }
 }

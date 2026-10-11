@@ -22,7 +22,7 @@ use crate::fetch::{self, FetchOptions, Fetched};
 use crate::http::{self, Request, Transport};
 use crate::postcode_au;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
-use crate::textnorm::{find_ascii_ci, name_tokens, title_case};
+use crate::textnorm::{decode_html_entities, find_ascii_ci, name_tokens, title_case};
 
 const SRC: &str = "au_people";
 const SEARCH_BASE: &str = "https://www.truepeoplesearch.com.au/results";
@@ -270,16 +270,9 @@ fn state_tag_from_text(text: &str) -> Option<String> {
     address_au::state_code(text).map(|s| format!("au-state:{s}"))
 }
 
-fn tps_display_postcode(value: &str) -> bool {
-    postcode_au::is_shaped(value)
-        && value
-            .parse::<u32>()
-            .is_ok_and(|n| (2000..=7999).contains(&n))
-}
-
 fn postcode_in_line(line: &str) -> Option<&str> {
     line.split_whitespace()
-        .find(|tok| tps_display_postcode(tok))
+        .find(|tok| postcode_au::is_display_postcode(tok))
 }
 
 fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
@@ -480,7 +473,7 @@ fn is_word_bounded(hay: &str, start: usize, needle_len: usize) -> bool {
 }
 
 fn strip_html(html: &str) -> String {
-    decode_entities(&replace_tags_with_space(&drop_script_and_style(html)))
+    decode_html_entities(&replace_tags_with_space(&drop_script_and_style(html)))
 }
 
 fn drop_script_and_style(html: &str) -> String {
@@ -557,67 +550,6 @@ fn replace_tags_with_space(s: &str) -> String {
         }
     }
     out
-}
-
-fn decode_entities(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while !rest.is_empty() {
-        let decoded = if rest.as_bytes()[0] == b'&' {
-            decode_one_entity(rest)
-        } else {
-            None
-        };
-        if let Some((ch, consumed)) = decoded {
-            out.push(ch);
-            rest = &rest[consumed..];
-        } else {
-            let ch = rest.chars().next().expect("non-empty");
-            out.push(ch);
-            rest = &rest[ch.len_utf8()..];
-        }
-    }
-    out
-}
-
-fn decode_one_entity(rest: &str) -> Option<(char, usize)> {
-    let after_amp = rest.get(1..)?;
-    if after_amp.starts_with('#') {
-        let hex = after_amp
-            .as_bytes()
-            .get(1)
-            .is_some_and(|b| *b == b'x' || *b == b'X');
-        let digits = if hex {
-            after_amp.get(2..)?
-        } else {
-            after_amp.get(1..)?
-        };
-        let end = digits.find(';')?;
-        let raw = &digits[..end];
-        if raw.is_empty() {
-            return None;
-        }
-        let value = if hex {
-            u32::from_str_radix(raw, 16).ok()?
-        } else {
-            raw.parse::<u32>().ok()?
-        };
-        let ch = char::from_u32(value)?;
-        let consumed = 2 + usize::from(hex) + raw.len() + 1;
-        return Some((ch, consumed));
-    }
-    let end = after_amp.find(';')?;
-    let name = &after_amp[..end];
-    let ch = match name {
-        "amp" => '&',
-        "lt" => '<',
-        "gt" => '>',
-        "quot" => '"',
-        "apos" => '\'',
-        "nbsp" => ' ',
-        _ => return None,
-    };
-    Some((ch, 1 + name.len() + 1))
 }
 
 fn page_emails(text: &str) -> Vec<String> {

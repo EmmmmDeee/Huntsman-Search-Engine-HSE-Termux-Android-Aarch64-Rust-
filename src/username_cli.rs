@@ -7,11 +7,10 @@ use crate::bluesky_user;
 use crate::canonical::canonical_handle;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
-use crate::evidence_ancestry::EvidenceNodeId;
 use crate::github_user;
 use crate::http::Transport;
 use crate::identity_resolution::AutoMergePolicy;
-use crate::lineage::{Observation, lineage_tsv_line, resolve_with_lineage};
+use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
@@ -222,7 +221,7 @@ fn render(report: &Report) -> Result<String, String> {
 }
 
 fn append_lineage(report: &Report, out: &mut String) -> Result<(), String> {
-    let observations = observations(report);
+    let observations = observations_from(&report.entities);
     if observations.is_empty() {
         return Ok(());
     }
@@ -234,24 +233,6 @@ fn append_lineage(report: &Report, out: &mut String) -> Result<(), String> {
         writeln!(out, "{}", lineage_tsv_line(item)).map_err(|error| error.to_string())?;
     }
     Ok(())
-}
-
-fn observations(report: &Report) -> Vec<Observation> {
-    report
-        .entities
-        .iter()
-        .enumerate()
-        .flat_map(|(entity_index, entity)| {
-            entity
-                .evidence
-                .iter()
-                .enumerate()
-                .map(move |(evidence_index, evidence)| Observation {
-                    id: EvidenceNodeId(format!("{}:{entity_index}:{evidence_index}", entity.uid)),
-                    evidence: evidence.clone(),
-                })
-        })
-        .collect()
 }
 
 #[cfg(test)]
