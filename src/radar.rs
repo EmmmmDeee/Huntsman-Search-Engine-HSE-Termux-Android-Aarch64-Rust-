@@ -1,7 +1,7 @@
 //! Cross-sweep and live-radar tracking rebuilt from `core::radar_track` and
 //! `core::radar_live`.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use super::oui;
 
@@ -315,7 +315,6 @@ impl TickDelta {
 
 pub struct BtRadarState {
     tracks: HashMap<String, BtTrack>,
-    order: VecDeque<String>,
     capacity: usize,
     tick: u64,
 }
@@ -332,7 +331,6 @@ impl BtRadarState {
         assert!(capacity >= 1, "a zero-capacity radar remembers no devices");
         Self {
             tracks: HashMap::with_capacity(capacity),
-            order: VecDeque::with_capacity(capacity),
             capacity,
             tick: 0,
         }
@@ -442,7 +440,6 @@ impl BtRadarState {
         }
         for mac in to_remove {
             self.tracks.remove(&mac);
-            self.order.retain(|entry| entry != &mac);
         }
 
         if !delta.evicted.is_empty() {
@@ -476,12 +473,25 @@ impl BtRadarState {
     fn insert_track(&mut self, track: BtTrack) -> Option<String> {
         let mut evicted = None;
         if self.tracks.len() >= self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.tracks.remove(&oldest);
-                evicted = Some(oldest);
+            // Evict the least-recently-seen track, not the oldest-inserted. A
+            // device present since the first tick is the one worth keeping under
+            // pressure; dropping it for an idle newcomer would discard the very
+            // persistence a radar exists to surface. Ties break on the lower
+            // mac so eviction is deterministic.
+            if let Some(victim) = self
+                .tracks
+                .values()
+                .min_by(|a, b| {
+                    a.last_seen_tick
+                        .cmp(&b.last_seen_tick)
+                        .then(a.mac.cmp(&b.mac))
+                })
+                .map(|track| track.mac.clone())
+            {
+                self.tracks.remove(&victim);
+                evicted = Some(victim);
             }
         }
-        self.order.push_back(track.mac.clone());
         self.tracks.insert(track.mac.clone(), track);
         evicted
     }
@@ -786,6 +796,30 @@ mod tests {
 
         let ranked = dense.tracks_ranked();
         assert!(!ranked.is_empty(), "a full radar ranks no tracks");
+    }
+
+    #[test]
+    fn eviction_drops_the_least_recently_seen_not_the_oldest_inserted() {
+        // HW1 and HW2 arrive first; next tick HW1 is seen again (so it is the
+        // more recent, persistent device) while a new HW3 forces an eviction at
+        // capacity 2. The idle HW2 must go, not the active HW1 — the opposite of
+        // an insertion-order queue, which would have evicted HW1.
+        let hw3 = "3C:5A:B4:AA:BB:CC";
+        let mut radar = BtRadarState::with_capacity(2);
+        radar.apply_tick(&[obs(HW1), obs(HW2)], BtReadOutcome::Read);
+        let delta = radar.apply_tick(&[obs(HW1), obs(hw3)], BtReadOutcome::Read);
+        assert_eq!(
+            delta.evicted,
+            vec![lc(HW2)],
+            "the idle track must be evicted"
+        );
+        assert_eq!(
+            radar.presence_of(HW1),
+            Some(Presence::Present),
+            "the active track survives"
+        );
+        assert_eq!(radar.presence_of(hw3), Some(Presence::New));
+        assert_eq!(radar.presence_of(HW2), None);
     }
 
     #[test]
