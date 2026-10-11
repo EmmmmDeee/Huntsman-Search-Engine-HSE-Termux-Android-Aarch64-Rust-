@@ -25,6 +25,7 @@ use crate::fetch::{FetchOptions, fetch};
 use crate::hibp::rate_limit::{DEFAULT_REQUESTS_PER_MINUTE, RateLimiter};
 use crate::http::{Request, Response, Transport};
 use crate::keys::Secret;
+use crate::sha256::{hex32, sha256};
 
 /// The only origin the key is ever sent to.
 pub const DEHASHED_API_BASE: &str = "https://api.dehashed.com/v2";
@@ -118,6 +119,8 @@ pub struct SearchOutcome {
     pub page: u32,
     pub size: u32,
     pub total: Option<u64>,
+    /// SHA-256 of the raw response body, for the audit receipt.
+    pub response_sha256: String,
     pub entries: Vec<Entry>,
 }
 
@@ -214,6 +217,7 @@ impl DehashedClient {
             .header("Accept", "application/json")
             .header(API_KEY_HEADER, self.key.expose());
         let response = send(self.http.as_ref(), http_request)?;
+        let response_sha256 = hex32(&sha256(&response.body));
         let parsed = decode(&response)?;
 
         Ok(SearchOutcome {
@@ -222,6 +226,7 @@ impl DehashedClient {
             page: request.page,
             size: request.size,
             total: parsed.total,
+            response_sha256,
             entries: parsed.entries,
         })
     }

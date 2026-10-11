@@ -330,6 +330,7 @@ mod tests {
             page: 1,
             size: 10,
             total: Some(1),
+            response_sha256: String::new(),
             entries: vec![entry],
         };
         let text = render(&outcome);

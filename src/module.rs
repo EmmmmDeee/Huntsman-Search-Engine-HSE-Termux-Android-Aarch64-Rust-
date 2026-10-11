@@ -482,6 +482,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         attack_techniques: &["T1589.001", "T1589.002"],
         description: "explicit See-Know lookup",
     },
+    ReachableModule {
+        name: "dehashed",
+        command: "dehashed search (--email|--username|--domain) --purpose PURPOSE",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Breach,
+        attack_techniques: &["T1589.001", "T1589.002"],
+        description: "explicit DeHashed exact-match search with a declared purpose",
+    },
 ];
 
 #[must_use]

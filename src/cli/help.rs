@@ -1,6 +1,7 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
 use super::{HELP, RECON_USAGE, USAGE};
+use huntsman_recon::dehashed::cli::DEHASHED_USAGE;
 use huntsman_recon::email_cli::EMAIL_HELP;
 use huntsman_recon::hibp::cli::HIBP_USAGE;
 use huntsman_recon::people_cli::PEOPLE_HELP;
@@ -73,6 +74,7 @@ pub(super) fn print_command_help(command: &str) {
         "hibp" => HIBP_USAGE,
         "recon" => RECON_USAGE,
         "seeknow" => SEEKNOW_HELP,
+        "dehashed" => DEHASHED_USAGE,
         "keys" => {
             "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values."
         }

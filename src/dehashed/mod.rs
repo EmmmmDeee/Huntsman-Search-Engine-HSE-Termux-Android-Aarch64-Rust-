@@ -11,10 +11,12 @@
 
 pub mod cli;
 pub mod client;
+pub mod collector;
 pub mod query;
 pub mod types;
 
 pub use client::{DehashedClient, DehashedError, SearchOutcome, SearchRequest};
+pub use collector::{COLLECTOR_ID, collect};
 pub use query::{Field, Purpose, QueryError, Selector};
 
 #[cfg(test)]

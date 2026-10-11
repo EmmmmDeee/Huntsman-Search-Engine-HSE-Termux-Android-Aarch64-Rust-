@@ -15,14 +15,14 @@ use crate::keys::Secret;
 const KEY: &str = "test-key-7f3a9c";
 
 #[derive(Default)]
-struct Fake {
-    responses: Mutex<VecDeque<Response>>,
-    requests: Mutex<Vec<Request>>,
-    fail: bool,
+pub(super) struct Fake {
+    pub(super) responses: Mutex<VecDeque<Response>>,
+    pub(super) requests: Mutex<Vec<Request>>,
+    pub(super) fail: bool,
 }
 
 impl Fake {
-    fn with(status: u16, body: &str, headers: &[(&str, &str)]) -> Arc<Self> {
+    pub(super) fn with(status: u16, body: &str, headers: &[(&str, &str)]) -> Arc<Self> {
         let fake = Self::default();
         fake.responses.lock().unwrap().push_back(Response {
             status,
@@ -36,7 +36,7 @@ impl Fake {
         Arc::new(fake)
     }
 
-    fn calls(&self) -> usize {
+    pub(super) fn calls(&self) -> usize {
         self.requests.lock().unwrap().len()
     }
 }
@@ -60,7 +60,7 @@ impl Transport for Fake {
     }
 }
 
-fn client(fake: &Arc<Fake>) -> DehashedClient {
+pub(super) fn client(fake: &Arc<Fake>) -> DehashedClient {
     DehashedClient::with_limiter(
         fake.clone(),
         Secret::new(KEY).unwrap(),
@@ -68,7 +68,7 @@ fn client(fake: &Arc<Fake>) -> DehashedClient {
     )
 }
 
-fn email_request(purpose: Purpose) -> SearchRequest {
+pub(super) fn email_request(purpose: Purpose) -> SearchRequest {
     SearchRequest::new(
         Selector::new(Field::Email, "a@example.com").unwrap(),
         purpose,
@@ -309,4 +309,231 @@ fn cli_success_prints_results_and_purpose() {
     assert!(text.contains("purpose=own-account\n"), "{text}");
     assert!(text.contains("has_hashed_password=true\n"), "{text}");
     assert!(!text.contains(KEY));
+}
+
+mod collector_tests {
+    use super::*;
+    use crate::collector::{CollectionLimits, CollectionOutcome, CollectorError};
+    use crate::dehashed::collector::{COLLECTOR_ID, collect};
+    use crate::entity::{Entity, EntityKind};
+    use crate::lineage::Lineage;
+    use crate::source_outcome::SourceOutcomeKind;
+
+    const RECORDS: &str = r#"{
+        "entries": [
+            {"database_name": "ExampleBreach", "email": ["a@example.com", "b@example.com"],
+             "username": "ada", "password": "must-not-leak"},
+            {"database_name": "ExampleBreach", "email": "a@example.com", "hashed_password": "h"}
+        ],
+        "total": 2
+    }"#;
+
+    fn selector(kind: EntityKind, value: &str) -> Entity {
+        Entity::new(kind, value, 1.0, "scan-1")
+    }
+
+    fn purpose() -> Purpose {
+        Purpose::OwnAccount
+    }
+
+    fn limits() -> CollectionLimits {
+        CollectionLimits::default()
+    }
+
+    #[test]
+    fn maps_records_to_entities_pivots_and_evidence() {
+        let fake = Fake::with(200, RECORDS, &[]);
+        let client = client(&fake);
+        let batch = collect(
+            &client,
+            &selector(EntityKind::Email, "a@example.com"),
+            purpose(),
+            &limits(),
+            1_700_000_000,
+        )
+        .unwrap();
+
+        assert_eq!(batch.collector_id, COLLECTOR_ID);
+        assert_eq!(batch.outcome, CollectionOutcome::Success);
+        assert_eq!(batch.receipts.len(), 1);
+        assert_eq!(batch.receipts[0].dataset.as_deref(), Some("ExampleBreach"));
+        assert_eq!(batch.receipts[0].parsed_rows, 2);
+        assert!(batch.receipts[0].response_sha256.is_some());
+
+        // Selector "a@example.com" is deduplicated across records; "b@example.com" and "ada" are pivots.
+        let emails: Vec<&str> = batch
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(emails.len(), 2, "{emails:?}");
+        assert!(batch.pivots.iter().any(|p| p.value == "b@example.com"));
+        assert!(batch.pivots.iter().any(|p| p.value == "ada"));
+        assert!(!batch.pivots.iter().any(|p| p.value == "a@example.com"));
+    }
+
+    #[test]
+    fn evidence_never_carries_password_values() {
+        let fake = Fake::with(200, RECORDS, &[]);
+        let batch = collect(
+            &client(&fake),
+            &selector(EntityKind::Email, "a@example.com"),
+            purpose(),
+            &limits(),
+            1,
+        )
+        .unwrap();
+        for entity in &batch.entities {
+            for evidence in &entity.evidence {
+                let rendered = format!("{evidence:?}");
+                assert!(!rendered.contains("must-not-leak"), "{rendered}");
+            }
+        }
+    }
+
+    #[test]
+    fn database_name_feeds_lineage_as_one_family() {
+        let fake = Fake::with(200, RECORDS, &[]);
+        let batch = collect(
+            &client(&fake),
+            &selector(EntityKind::Email, "a@example.com"),
+            purpose(),
+            &limits(),
+            1,
+        )
+        .unwrap();
+        let evidence = batch
+            .entities
+            .iter()
+            .flat_map(|e| e.evidence.iter())
+            .next()
+            .expect("at least one evidence record");
+        let lineage = Lineage::of(evidence);
+        // Lineage canonicalises dataset names to lower case; mirrors of one dataset must collapse to one family.
+        assert_eq!(lineage.family(), Some("examplebreach"), "{lineage:?}");
+    }
+
+    #[test]
+    fn valid_zero_is_a_zero_not_a_failure() {
+        let fake = Fake::with(200, r#"{"entries": [], "total": 0}"#, &[]);
+        let batch = collect(
+            &client(&fake),
+            &selector(EntityKind::Domain, "example.com"),
+            purpose(),
+            &limits(),
+            1,
+        )
+        .unwrap();
+        assert_eq!(batch.outcome, CollectionOutcome::ValidZero);
+        assert_eq!(batch.receipts[0].outcome.kind, SourceOutcomeKind::ValidZero);
+        assert!(batch.entities.is_empty());
+    }
+
+    #[test]
+    fn more_records_than_returned_is_partial() {
+        let fake = Fake::with(
+            200,
+            r#"{"entries": [{"email": "a@example.com"}], "total": 50}"#,
+            &[],
+        );
+        let batch = collect(
+            &client(&fake),
+            &selector(EntityKind::Email, "a@example.com"),
+            purpose(),
+            &limits(),
+            1,
+        )
+        .unwrap();
+        assert_eq!(batch.outcome, CollectionOutcome::Partial);
+        assert!(batch.receipts[0].truncated);
+    }
+
+    #[test]
+    fn upstream_failures_are_recorded_not_raised() {
+        let cases = [
+            (401, SourceOutcomeKind::AuthRejected),
+            (403, SourceOutcomeKind::EntitlementDenied),
+            (429, SourceOutcomeKind::RateLimited),
+            (503, SourceOutcomeKind::Upstream5xx),
+        ];
+        for (status, expected) in cases {
+            let fake = Fake::with(status, "", &[]);
+            let batch = collect(
+                &client(&fake),
+                &selector(EntityKind::Email, "a@example.com"),
+                purpose(),
+                &limits(),
+                1,
+            )
+            .unwrap_or_else(|e| panic!("{status}: {e:?}"));
+            assert_eq!(batch.outcome, CollectionOutcome::Failed, "{status}");
+            assert_eq!(batch.receipts[0].outcome.kind, expected, "{status}");
+            assert_eq!(batch.receipts[0].outcome.http_status, Some(status));
+            assert!(batch.entities.is_empty());
+        }
+    }
+
+    #[test]
+    fn failure_receipt_detail_never_names_the_identifier() {
+        let fake = Fake::with(400, "", &[]);
+        let batch = collect(
+            &client(&fake),
+            &selector(EntityKind::Email, "a@example.com"),
+            purpose(),
+            &limits(),
+            1,
+        )
+        .unwrap();
+        let detail = batch.receipts[0].outcome.detail.clone().unwrap_or_default();
+        assert!(!detail.contains("a@example.com"), "{detail}");
+    }
+
+    #[test]
+    fn unsupported_kinds_and_invalid_values_send_nothing() {
+        let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+        assert!(matches!(
+            collect(
+                &client(&fake),
+                &selector(EntityKind::Phone, "15551234567"),
+                purpose(),
+                &limits(),
+                1
+            ),
+            Err(CollectorError::UnsupportedSelector(_))
+        ));
+        assert!(matches!(
+            collect(
+                &client(&fake),
+                &selector(EntityKind::Email, "*@example.com"),
+                purpose(),
+                &limits(),
+                1
+            ),
+            Err(CollectorError::InvalidSelector(_))
+        ));
+        let zero_budget = CollectionLimits {
+            max_requests: 0,
+            ..CollectionLimits::default()
+        };
+        assert!(matches!(
+            collect(
+                &client(&fake),
+                &selector(EntityKind::Email, "a@example.com"),
+                purpose(),
+                &zero_budget,
+                1
+            ),
+            Err(CollectorError::Invariant(_))
+        ));
+        assert_eq!(fake.calls(), 0);
+    }
+}
+
+#[test]
+fn key_env_var_matches_the_provider_registry() {
+    // service_defs sits in a lower layer and cannot import this module, so the
+    // env var name is kept in step by this test instead.
+    let def = crate::service_defs::find_service("dehashed").expect("dehashed registered");
+    assert_eq!(def.env_var, super::client::API_KEY_ENV);
 }
