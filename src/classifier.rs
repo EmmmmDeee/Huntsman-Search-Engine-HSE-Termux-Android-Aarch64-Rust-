@@ -78,22 +78,22 @@ pub fn classify(raw: &str) -> Classified {
         let handle = canonical_handle(value).unwrap_or_else(|| value.trim().to_owned());
         return classified(EntityKind::Username, &handle, 0.40, "handle");
     }
-    let multiword = value.split_whitespace().count() >= 2;
+    // A single word is never a company, a street address or a person name.
+    if value.split_whitespace().nth(1).is_none() {
+        return classified(EntityKind::Other, value, 0.20, "residual");
+    }
     let tokens = word_tokens(value);
     let has_word = |list: &[&str]| tokens.iter().any(|token| list.contains(&token.as_str()));
     let pty_ltd = tokens
         .windows(2)
         .any(|pair| pair[0] == "pty" && pair[1] == "ltd");
-    if multiword && (pty_ltd || has_word(COMPANY_WORDS)) {
+    if pty_ltd || has_word(COMPANY_WORDS) {
         return classified(EntityKind::Organisation, value, 0.60, "company-suffix");
     }
-    if multiword && (has_word(STREET_WORDS) || value.chars().any(|c| c.is_ascii_digit())) {
+    if has_word(STREET_WORDS) || value.chars().any(|c| c.is_ascii_digit()) {
         return classified(EntityKind::Address, value, 0.60, "street-shape");
     }
-    if multiword {
-        return classified(EntityKind::Person, value, 0.50, "multiword");
-    }
-    classified(EntityKind::Other, value, 0.20, "residual")
+    classified(EntityKind::Person, value, 0.50, "multiword")
 }
 
 /// Lowercased alphanumeric runs of a value, so keyword markers match whole words only.
@@ -341,5 +341,16 @@ mod tests {
             .map(|item| format!("{:?}={}", item.kind, item.value))
             .collect();
         assert!(actionable.is_empty(), "{actionable:?}");
+    }
+
+    #[test]
+    fn single_words_are_residual_even_when_they_contain_markers() {
+        // Company and street rules apply only to values of two or more words, so a single token
+        // keeps the residual kind even when it would match a rule inside a longer value.
+        for raw in ["Acme-Pty-Ltd", "Corporate", "Street", "Inc", "10:30"] {
+            let found = classify(raw);
+            assert_eq!(found.kind, EntityKind::Other, "{raw}");
+            assert_eq!(found.signal, "residual", "{raw}");
+        }
     }
 }
