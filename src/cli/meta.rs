@@ -420,3 +420,31 @@ pub(super) fn run_history_cmd(args: &[String]) -> ExitCode {
         &mut std::io::stderr().lock(),
     ))
 }
+
+pub(super) fn correlate_cmd(args: &[String]) -> ExitCode {
+    let [path] = args else {
+        return fail(EX_USAGE, "usage: huntsman-recon correlate ARTIFACT");
+    };
+    match huntsman_recon::scan_artifact::read(Path::new(path)) {
+        Ok(artifact) => {
+            println!(
+                "scan_id={} entities={} relations={}",
+                artifact.scan_id,
+                artifact.entities.len(),
+                artifact.relations.len()
+            );
+            let correlations = artifact.correlate();
+            println!("correlations={}", correlations.len());
+            for c in &correlations {
+                println!(
+                    "rule={} severity={:?} entities={}",
+                    c.rule_id,
+                    c.severity,
+                    c.entity_uids.len()
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(EX_DATAERR, &format!("correlate: {e}")),
+    }
+}
