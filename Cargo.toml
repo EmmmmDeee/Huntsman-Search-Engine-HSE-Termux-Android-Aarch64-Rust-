@@ -1,4 +1,9 @@
-# Reconstructed huntsman. Single package. No workspace.
+# Reconstructed huntsman. One package and the xtask automation crate, which is the only
+# workspace member. The package's own build and tests are unchanged.
+[workspace]
+members = ["xtask"]
+resolver = "3"
+
 # Blocking HTTP via ureq (rustls). No async runtime. Pure logic stays dependency-free.
 # sha256 is in-tree so the evidence hash does not need a crate.
 
@@ -12,14 +17,20 @@ license = "MIT OR Apache-2.0"
 publish = false
 description = "RCVF ledger with identity, GEOINT, STIX, and Navigator gates and a guarded fetch layer"
 
+# Each runtime dependency states its purpose here; tests/manifest_policy.rs refuses one that does not.
 [dependencies]
+# Derive serialisation for the ledger, session, STIX and Navigator records.
 serde = { version = "1.0", features = ["derive"] }
+# JSON for records, API responses and the embedded web API.
 serde_json = "1.0"
+# Derive Display and Error for the typed error enum.
 thiserror = "2.0"
+# The one blocking HTTP client behind the guarded fetch layer (rustls, no async runtime).
 ureq = "3"
 
+# forbid cannot be reopened by a local allow, where deny can. The xtask crate sets the same.
 [lints.rust]
-unsafe_code = "deny"
+unsafe_code = "forbid"
 
 [lints.clippy]
 pedantic = "warn"

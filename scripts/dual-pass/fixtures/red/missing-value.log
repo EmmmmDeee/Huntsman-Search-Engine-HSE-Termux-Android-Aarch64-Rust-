@@ -1,0 +1,8 @@
+   Compiling fixture v0.1.0 (/work/fixture)
+error[E0425]: cannot find value `answer_v2` in this scope
+ --> tests/generated_1.rs:4:23
+  |
+4 |     assert_eq!(answer_v2, 1);
+  |                ^^^^^^^^^ not found in this scope
+
+error: could not compile `fixture` (test "generated_1") due to 1 previous error

@@ -58,11 +58,14 @@ fn missing_or_unknown_arguments_are_usage_and_make_no_request() {
 }
 
 #[test]
-fn missing_key_is_permission_failure_before_transport() {
+fn missing_key_is_missing_input_before_transport() {
+    // A missing key is missing input (exit 66), consistent with `hibp` and
+    // `recon stolen-tax`; it is not a permission failure (exit 77), which is reserved
+    // for a credential that is present but cannot be approved or is rejected upstream.
     let transport = ScriptedTransport::new(Vec::new());
     let result = run_with_keys(&transport, &["credits".into()], &Keys::default(), 2);
     match result {
-        SeekNowCliRun::NoPerm(message) => {
+        SeekNowCliRun::Input(message) => {
             assert!(message.contains("HUNTSMAN_SEEKNOW_KEY"));
             assert!(!message.contains("dummy-seeknow-key-for-tests"));
         }

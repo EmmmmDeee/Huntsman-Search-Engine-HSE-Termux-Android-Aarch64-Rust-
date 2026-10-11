@@ -1,0 +1,348 @@
+name: issue-fix
+
+# An automated issue fixer that uses a model. A person with triage access adds the
+# ai-fix label to an issue, or dispatches the workflow with an issue number. The
+# work runs in four jobs, and only one of them holds a write token:
+#
+#   fix      runs the pinned Claude Code CLI under a tool allowlist and a spend cap,
+#            then captures the change as a patch. Only the model step holds the model
+#            key, and that step scans the working tree for the key before it ends.
+#            It holds no write token.
+#   gate     applies the patch to the commit this run started from and runs the full
+#            repair gate. It holds no secrets. Its tests run code the model wrote, so
+#            it is untrusted too.
+#   publish  applies the patch to a checkout of main, but only while main is still the
+#            commit the gate tested. It checks the result against the path policy and
+#            opens the pull request. It holds the write token, and only its publish step
+#            receives it. It runs only a binary built before the patch arrived.
+#   report   comments on the issue when an attempt stops before a pull request.
+#
+# The jobs pass files, never code. The patch and the redacted model output are the
+# only things that cross from the untrusted jobs into publish, and publish treats
+# them as data. Every job reads the same commit, github.sha, which the runner sets from
+# the event and no job can change.
+#
+# Secrets: ANTHROPIC_API_KEY (required). ISSUE_FIX_TOKEN (optional; a token with
+# contents and pull-requests write, so that CI starts on the pull request).
+# Variables: ISSUE_FIX_MODEL (default opus), ISSUE_FIX_BUDGET_USD (default 10).
+#
+# Residual risk: the model's Bash tool can run cargo, and cargo runs code the model
+# wrote. That code can read the model key in the model step and send it out, and it can
+# overwrite the trusted xtask copy in RUNNER_TEMP that runs the scan. The step's scan
+# refuses a change that carries the key, or a base64 or hex form of it, anywhere in the
+# working tree, and it redacts the model output. A key hidden some other way, a scanner
+# that was overwritten, and a process that outlives the model step, are not caught. Only
+# maintainers with triage access can apply the label, and that is the control.
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: issue-fix-${{ github.event.issue.number || inputs.issue }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'ai-fix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      issues: read
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+      REPO: ${{ github.repository }}
+      BASE_SHA: ${{ github.sha }}
+      CLAUDE_CODE_VERSION: "2.1.283"
+      ISSUE_FIX_MODEL: ${{ vars.ISSUE_FIX_MODEL || 'opus' }}
+      ISSUE_FIX_BUDGET_USD: ${{ vars.ISSUE_FIX_BUDGET_USD || '10' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check the issue number and the base commit
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue number is not numeric: $ISSUE"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$BASE_SHA" || { echo "::error::checkout is not the commit this run started from"; exit 1; }
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Build the trusted xtask before the model runs
+        run: |
+          set -euo pipefail
+          # The model edits this checkout. The checking tools (the scan, the guard and the capture) run one
+          # copy of this build, "$RUNNER_TEMP/trusted-xtask", which is made here before the model runs.
+          # What is enforced: the build reads an archive of the base commit, not the checkout, so the
+          # model's edits there cannot change what is built. What is not enforced: the copy sits in
+          # RUNNER_TEMP, and code that the model's cargo commands run, as the same runner user, can
+          # overwrite it while the model runs. The scan, the guard and the capture would then run the
+          # overwritten file. Keeping the checking tools out of the model's reach is the open trust-chain
+          # item; see the Limits and residual risk section of docs/ISSUE_FIX.md.
+          trusted="$RUNNER_TEMP/trusted"
+          rm -rf "$trusted" && mkdir -p "$trusted"
+          git archive "$BASE_SHA" | tar -x -C "$trusted"
+          cargo build --release --locked -p xtask --manifest-path "$trusted/Cargo.toml" --target-dir "$RUNNER_TEMP/trusted-target"
+          # Later steps run this copy as "$RUNNER_TEMP/trusted-xtask", the one path every policy step uses.
+          cp "$RUNNER_TEMP/trusted-target/release/xtask" "$RUNNER_TEMP/trusted-xtask"
+          test -x "$RUNNER_TEMP/trusted-xtask"
+
+      - name: Install the pinned Claude Code CLI
+        run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+      - name: Fetch the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue view "$ISSUE" --repo "$REPO" --json number,title,body,state > "$RUNNER_TEMP/issue.json"
+          test "$(jq -r .state "$RUNNER_TEMP/issue.json")" = "OPEN"
+
+      - name: Build the agent prompt
+        run: |
+          "$RUNNER_TEMP/trusted-xtask" issue-fix build-prompt "$RUNNER_TEMP/issue.json" "$RUNNER_TEMP/prompt.md"
+
+      - name: Require the model key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$ANTHROPIC_API_KEY" || { echo "::error::ANTHROPIC_API_KEY is not set"; exit 1; }
+
+      - name: Run the model under the tool allowlist
+        id: agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/change"
+          status=0
+          claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
+            --bare \
+            --model "$ISSUE_FIX_MODEL" \
+            --permission-mode acceptEdits \
+            --permission-prompts none \
+            --max-budget-usd "$ISSUE_FIX_BUDGET_USD" \
+            --output-format json \
+            --allowedTools Read Edit Write Glob Grep \
+              "Bash(cargo *)" "Bash(git diff *)" "Bash(git status *)" "Bash(git log *)" \
+              "Bash(cargo run --locked -p xtask -- gate fast)" \
+            --disallowedTools WebFetch WebSearch "Bash(curl *)" "Bash(wget *)" \
+              "Bash(gh *)" "Bash(env)" "Bash(printenv*)" "Bash(git commit *)" "Bash(git push *)" \
+            > "$RUNNER_TEMP/change/agent.json" || status=$?
+          # The scan is the copy of the trusted binary that the workflow built before the model ran. The
+          # copy sits in RUNNER_TEMP, and code that the model's cargo commands run can overwrite it while
+          # the model runs, so the scan is not yet protected from the model; the trust architecture is a
+          # later change. The scan runs while the key is still in this step's environment. The model
+          # output is redacted first, so it is clean even when the change is refused. The change is
+          # refused when the key, or an encoding of it, is in anything git would carry in the patch: file
+          # contents, file names, and symbolic-link targets. git lists those files with the same ignore
+          # rules that git add -A applies to the patch, so a .gitignore cannot hide a file from the scan,
+          # and no directory name is special.
+          scan_status=0
+          if ! git -c core.fsmonitor=false -c core.hooksPath=/dev/null ls-files -z -c -o --exclude-standard > "$RUNNER_TEMP/scan-paths"; then
+            : > "$RUNNER_TEMP/scan-paths"
+            echo "::error::cannot list the files the change would carry"
+            scan_status=1
+          fi
+          "$RUNNER_TEMP/trusted-xtask" issue-fix key-scan "$RUNNER_TEMP/change/agent.json" "$RUNNER_TEMP/scan-paths" || scan_status=$?
+          if [[ "$scan_status" -ne 0 ]]; then
+            echo "::error::the change is refused: it carries the model key, or the scan could not run"
+            status=1
+          fi
+          exit "$status"
+
+      - name: Check the change against the path policy
+        id: guard
+        if: steps.agent.outcome == 'success'
+        run: |
+          "$RUNNER_TEMP/trusted-xtask" issue-fix guard "$BASE_SHA"
+
+      - name: Capture the change as a patch
+        id: capture
+        if: steps.guard.outcome == 'success'
+        run: |
+          "$RUNNER_TEMP/trusted-xtask" issue-fix capture "$BASE_SHA" "$RUNNER_TEMP/change"
+
+      - name: Upload the change
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: issue-fix-change
+          path: ${{ runner.temp }}/change
+          if-no-files-found: ignore
+          retention-days: 14
+
+  gate:
+    needs: fix
+    if: needs.fix.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: issue-fix-change
+          path: ${{ runner.temp }}/change
+
+      - name: Apply the patch to the base commit
+        run: git apply --index "$RUNNER_TEMP/change/change.patch"
+
+      - name: Run the full repair gate
+        run: cargo run --locked -p xtask -- gate full > "$RUNNER_TEMP/gate.log" 2>&1
+
+      - name: Upload the gate log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: issue-fix-gate
+          path: ${{ runner.temp }}/gate.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  publish:
+    needs: [fix, gate]
+    if: needs.fix.result == 'success' && needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+      issues: read
+      pull-requests: write
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+      REPO: ${{ github.repository }}
+      GATED_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        with:
+          toolchain: stable
+
+      - name: Build the trusted xtask before the patch arrives
+        run: |
+          set -euo pipefail
+          # The publish step applies the change with this binary. It is built from an archive of the
+          # checkout of main, taken here before the change is downloaded, so no step can reach it
+          # through the checkout. The build step holds no secret.
+          trusted="$RUNNER_TEMP/trusted"
+          rm -rf "$trusted" && mkdir -p "$trusted"
+          git archive HEAD | tar -x -C "$trusted"
+          cargo build --release --locked -p xtask --manifest-path "$trusted/Cargo.toml" --target-dir "$RUNNER_TEMP/trusted-target"
+          cp "$RUNNER_TEMP/trusted-target/release/xtask" "$RUNNER_TEMP/trusted-xtask"
+          test -x "$RUNNER_TEMP/trusted-xtask"
+
+      - name: Check the issue number
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue number is not numeric: $ISSUE"; exit 1; }
+
+      - name: Fetch the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue view "$ISSUE" --repo "$REPO" --json number,title,state > "$RUNNER_TEMP/issue.json"
+          test "$(jq -r .state "$RUNNER_TEMP/issue.json")" = "OPEN"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: issue-fix-change
+          path: ${{ runner.temp }}/change
+
+      - name: Publish the pull request
+        env:
+          PUSH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.ISSUE_FIX_TOKEN || github.token }}
+          HAS_PAT: ${{ secrets.ISSUE_FIX_TOKEN != '' }}
+        run: |
+          "$RUNNER_TEMP/trusted-xtask" issue-fix publish "$RUNNER_TEMP/issue.json" "$RUNNER_TEMP/change"
+
+  report:
+    needs: [fix, gate, publish]
+    if: always() && needs.publish.result != 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+      REPO: ${{ github.repository }}
+      FIX_OUTCOME: ${{ needs.fix.result }}
+      GATE_OUTCOME: ${{ needs.gate.result }}
+      PUBLISH_OUTCOME: ${{ needs.publish.result }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check the issue number
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue number is not numeric: $ISSUE"; exit 1; }
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        with:
+          toolchain: stable
+
+      - name: Build the trusted xtask
+        run: |
+          set -euo pipefail
+          # The report step runs this binary, so it is built from an archive of the checkout of main. The
+          # build step holds no secret; the token reaches only the report step.
+          trusted="$RUNNER_TEMP/trusted"
+          rm -rf "$trusted" && mkdir -p "$trusted"
+          git archive HEAD | tar -x -C "$trusted"
+          cargo build --release --locked -p xtask --manifest-path "$trusted/Cargo.toml" --target-dir "$RUNNER_TEMP/trusted-target"
+          cp "$RUNNER_TEMP/trusted-target/release/xtask" "$RUNNER_TEMP/trusted-xtask"
+          test -x "$RUNNER_TEMP/trusted-xtask"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: issue-fix-gate
+          path: ${{ runner.temp }}/gate
+
+      - name: Report a stopped attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$RUNNER_TEMP/trusted-xtask" issue-fix report "$ISSUE" "$RUNNER_TEMP/gate/gate.log"

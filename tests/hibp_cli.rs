@@ -472,6 +472,19 @@ fn subscription_prints_every_status_field_and_the_key_source_not_the_key() {
 }
 
 #[test]
+fn hibp_bad_arguments_are_a_usage_error_even_without_a_key() {
+    // The arguments are checked before the key, so a keyed subcommand with the wrong shape is
+    // usage (64), not a missing key (66), and it sends nothing.
+    let (cmd, fake) = command(None);
+    for args in [&["account"][..], &["pastes"], &["subscription", "extra"]] {
+        let out = run(&cmd, args, "");
+        assert_eq!(out.code, 64, "{args:?}: {}", out.stderr);
+        assert_eq!(out.stdout, "");
+    }
+    assert_eq!(fake.requests().len(), 0, "a request was sent");
+}
+
+#[test]
 fn t1589_002_keyed_subcommands_without_a_key_fail_cleanly_and_send_nothing() {
     let (cmd, fake) = command(None);
     for args in [
@@ -483,7 +496,8 @@ fn t1589_002_keyed_subcommands_without_a_key_fail_cleanly_and_send_nothing() {
         assert_eq!(out.code, 66, "{args:?}: {}", out.stderr);
         assert_eq!(out.stdout, "");
         assert!(
-            out.stderr.contains("no API key configured") && out.stderr.contains("HIBP_API_KEY"),
+            out.stderr.contains("no API key for this keyed lookup")
+                && out.stderr.contains("HIBP_API_KEY"),
             "{}",
             out.stderr
         );
@@ -654,9 +668,26 @@ fn binary_registers_hibp_and_keyed_lookups_need_a_key() {
             &["hibp", "subscription"],
         ] {
             let out = bin(&home).args(args).output().unwrap();
+            // The gate refuses a keyed subcommand with no key before any lookup. The README
+            // documents that as a missing key, which is exit 66.
             assert_eq!(out.status.code(), Some(66), "{args:?}");
-            assert!(String::from_utf8_lossy(&out.stderr).contains("no API key configured"));
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(err.contains("no API key for this keyed lookup"), "{err}");
+            assert!(
+                err.contains("HUNTSMAN_HIBP_KEY"),
+                "refusal must name the key to set: {err}"
+            );
         }
+        // An unknown subcommand is a usage error from the HIBP command, not a missing key.
+        let unknown = bin(&home)
+            .args(["hibp", "breech", "Adobe"])
+            .output()
+            .unwrap();
+        assert_eq!(unknown.status.code(), Some(64), "{unknown:?}");
+        assert!(
+            !String::from_utf8_lossy(&unknown.stderr).contains("API key"),
+            "an unknown subcommand must not report a missing key"
+        );
     }
     let _ = fs::remove_dir_all(&home);
 }

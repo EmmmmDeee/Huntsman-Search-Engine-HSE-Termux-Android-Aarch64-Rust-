@@ -144,3 +144,6 @@ value_syntax	leaf	dependency-free domain mailbox URL-host and E.164 syntax primi
 wayback	adapter	Internet Archive Wayback CDX client
 web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
+breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
+meta_plan	runtime	meta-plan validation consumed by the runtime
+repository_identity	leaf	repository constants with no runtime caller

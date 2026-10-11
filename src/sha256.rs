@@ -1,4 +1,5 @@
-//! Compact SHA-256. NIST empty and "abc" vectors are the acceptance tests.
+//! Compact SHA-256. The NIST empty, "abc", two-block, and padding-boundary vectors
+//! are the acceptance tests.
 //! In-tree so the ledger hash does not depend on a second crate.
 
 const K: [u32; 64] = [
@@ -161,6 +162,63 @@ mod tests {
         assert_eq!(
             hex32(&sha256(b"abc")),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    /// Multi-block messages and the padding boundary. When the input length leaves no
+    /// room for the 0x80 byte plus the 8-byte length in the final 64-byte block
+    /// (`len % 64` in `56..=63`), the padding spills into a second block. The empty and
+    /// "abc" vectors above are single-block and never exercise that path, so a padding
+    /// defect would corrupt the ledger hash chain undetected. Each digest was produced
+    /// with `sha256sum` and `openssl dgst -sha256` (agreeing); the two-block strings and
+    /// the one-million-'a' value are the documented NIST / FIPS 180 vectors.
+    #[test]
+    fn nist_multiblock_and_padding_boundary() {
+        let a = |n: usize| vec![b'a'; n];
+        for (input, want) in [
+            // len % 64 == 55: 0x80 and length still fit in one block.
+            (
+                a(55),
+                "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318",
+            ),
+            // len % 64 == 56: the first length byte no longer fits; padding spills.
+            (
+                a(56),
+                "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a",
+            ),
+            (
+                a(63),
+                "7d3e74a05d7db15bce4ad9ec0658ea98e3f06eeecf16b4c6fff2da457ddc2f34",
+            ),
+            // Exactly one block of data: all padding lands in a second block.
+            (
+                a(64),
+                "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb",
+            ),
+            (
+                a(1000),
+                "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3",
+            ),
+            // The classic FIPS 180 one-million-'a' vector.
+            (
+                a(1_000_000),
+                "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
+            ),
+        ] {
+            assert_eq!(hex32(&sha256(&input)), want, "{} bytes of 'a'", input.len());
+        }
+        // The two canonical NIST two-block vectors (56 and 112 bytes).
+        assert_eq!(
+            hex32(&sha256(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+        assert_eq!(
+            hex32(&sha256(
+                b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
+            )),
+            "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
         );
     }
 }

@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE, RECON_USAGE, fail};
-use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::canonical::{canonical_domain, canonical_email, canonical_url};
+use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::crtsh::{self, CrtShError};
 use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
@@ -24,16 +24,9 @@ use huntsman_recon::stolen_tax::{self, StolenTaxError};
 use huntsman_recon::textnorm::escape_controls;
 
 pub(super) fn hibp_cmd(args: &[String]) -> ExitCode {
-    let subcommand = args.first().map(String::as_str).unwrap_or("help");
-    let has_key = huntsman_recon::hibp::KeyLoader::default_chain(None)
-        .load()
-        .is_some();
-    if !huntsman_recon::breach_hybrid::command_allowed(subcommand, has_key) {
-        return fail(
-            EX_NOPERM,
-            "hibp: keyed leg is not in the free order",
-        );
-    }
+    // The HIBP command checks the arguments first, so bad arguments are a usage error (64). A
+    // keyed subcommand with well-formed arguments and no key is refused by its keyed leg, before
+    // any request, as a missing key (66).
     ExitCode::from(HibpCommand::production().run(
         args,
         &mut std::io::stdin().lock(),
@@ -88,6 +81,9 @@ fn print_entities(entities: &[huntsman_recon::entity::Entity]) {
 }
 
 fn dns_cmd(target: &str) -> ExitCode {
+    if target.trim().is_empty() {
+        return fail(EX_USAGE, RECON_USAGE);
+    }
     let Some(target) = canonical_domain(target) else {
         return fail(EX_DATAERR, &format!("bad domain: {}", target.trim()));
     };
@@ -148,15 +144,26 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
     if query.trim().is_empty() {
         return fail(EX_USAGE, RECON_USAGE);
     }
+    // The key comes from the --keys file when one is given, and from the environment
+    // otherwise. A slot the file lacks falls back to the environment, as the README documents.
+    // The default file $HOME/.huntsman.env is not read here: this lookup combines breach and
+    // tax records, so its key has to be named where the caller names it, as on main.
     let keys = match keys_file {
-        Some(path) => match Keys::load(Path::new(path)) {
-            Ok(keys) => keys,
+        Some(path) => match Keys::resolve(Some(Path::new(path.as_str())), None) {
+            Ok(resolved) => resolved.keys,
             Err(e) => return fail(EX_NOINPUT, &e.to_string()),
         },
         None => Keys::from_env(),
     };
-    if !huntsman_recon::breach_hybrid::stolen_tax_allowed(keys.get(stolen_tax::KEY_SLOT).is_some()) {
-        return fail(EX_NOPERM, "stolen-tax: keyed leg is not in the free order");
+    if !huntsman_recon::breach_hybrid::stolen_tax_allowed(keys.get(stolen_tax::KEY_SLOT).is_some())
+    {
+        return fail(
+            EX_NOINPUT,
+            &format!(
+                "stolen-tax: no API key for this keyed lookup (set {})",
+                stolen_tax::KEY_SLOT
+            ),
+        );
     }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -1,0 +1,3 @@
+[alias]
+# `cargo gate [fast|msrv|full]` runs the verification gate in the xtask crate.
+gate = "run --locked --package xtask -- gate"

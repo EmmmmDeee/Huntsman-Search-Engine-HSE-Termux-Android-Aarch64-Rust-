@@ -1,52 +1,42 @@
 use std::fs;
-use std::process::Command;
+
+const GATE: &str = "xtask/src/gate.rs";
 
 #[test]
 fn repair_protocol_is_executable_and_pins_required_gates() {
-    let script = fs::read_to_string("scripts/repair-gate.sh").expect("repair gate");
+    // The gate is Rust, in the xtask crate. Its behaviour (usage, refusals) is tested in
+    // xtask/tests/gate.rs; this pins the commands and checks it must run.
+    let gate = fs::read_to_string(GATE).expect("repair gate");
     for required in [
-        "cargo fmt --check",
-        "cargo clippy --all-targets --locked -- -D warnings",
-        "cargo test --locked",
-        "cargo run --locked -- check",
-        "repo_fingerprint()",
-        "git diff --binary --no-ext-diff HEAD --",
-        "git ls-files --others --exclude-standard -z",
-        "sha256sum",
+        "\"fmt\", \"--check\"",
+        "\"clippy\"",
+        "\"clippy::unwrap_used\"",
+        "\"-p\", \"huntsman-recon\", \"--lib\", \"--bins\"",
+        "\"-p\", \"xtask\", \"--bins\"",
+        "\"--workspace\",",
+        "\"--all-targets\",",
+        "\"warnings\"",
+        "\"test\", \"--locked\", \"--workspace\"",
+        "\"run\", \"--locked\", \"--\", \"check\"",
+        "fn snapshot(",
         "REPAIR_GATE_TIMEOUT_SECONDS",
-        "timeout --signal=TERM --kill-after=10s",
-        "scripts/railway-live-acceptance.sh",
-        "scripts/railway-entrypoint.sh",
-        "--test functional_code_contract",
-        "--test repair_contract",
+        "\"diff\", \"--binary\", \"--no-ext-diff\", \"HEAD\", \"--\"",
+        "\"ls-files\", \"--others\", \"--exclude-standard\", \"-z\"",
+        "\"*.sh\"",
+        "\"sh\", &[\"-n\"",
+        "\"--test\", test",
+        "\"functional_code_contract\"",
+        "\"directive_lock\"",
+        "\"deployment_targets\"",
+        "\"repair_contract\"",
+        "verification mutated tracked or untracked repository content",
         "necessary but not sufficient for platform-specific changes",
     ] {
         assert!(
-            script.contains(required),
+            gate.contains(required),
             "repair gate must contain {required:?}"
         );
     }
-
-    let syntax = Command::new("bash")
-        .args(["-n", "scripts/repair-gate.sh"])
-        .status()
-        .expect("bash must execute");
-    assert!(syntax.success(), "repair gate must parse as bash");
-
-    let help = Command::new("bash")
-        .args(["scripts/repair-gate.sh", "--help"])
-        .output()
-        .expect("repair gate help must execute");
-    assert!(help.status.success());
-    let help_text = String::from_utf8_lossy(&help.stdout);
-    assert!(help_text.contains("fast|msrv|full"));
-    assert!(help_text.contains("platform-specific"));
-
-    let invalid = Command::new("bash")
-        .args(["scripts/repair-gate.sh", "invalid-mode"])
-        .status()
-        .expect("repair gate invalid mode must execute");
-    assert_eq!(invalid.code(), Some(64));
 }
 
 #[test]
@@ -62,7 +52,7 @@ fn repair_protocol_covers_failure_regression_and_platform_semantics() {
         "Regression-check",
         "Falsify",
         "Retain or roll back",
-        "bash scripts/repair-gate.sh full",
+        "cargo gate full",
         "Railway/container",
         "Android cross-build",
         "Termux runtime behavior",

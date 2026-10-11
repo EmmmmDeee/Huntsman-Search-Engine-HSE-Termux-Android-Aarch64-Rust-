@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::canonical::{canonicalise_selector, canonicalise_token, canonical_whitespace};
+use crate::canonical::{canonical_whitespace, canonicalise_selector, canonicalise_token};
 
 /// Why a plan is refused. Refusal is the success path when inheritance is attempted.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,9 +1,25 @@
 name: dual-pass
 
+# The dual-pass runner, in four jobs. It calls no model.
+#
+#   self-check  runs the offline checks of the runner on a pull request.
+#   gate        checks that the issue was written by the owner or a member, and passes
+#               its body to plan as an artifact. It holds the read token, runs no code
+#               from the repository, and finishes before plan starts.
+#   plan        compiles and runs the Rust that an issue's plan describes. That Rust
+#               can read the environment and the memory of its own process, so this
+#               job is given no credential. It writes a patch and a report.
+#   publish     applies the patch to a fresh checkout of main, checks it against the
+#               path policy, and only then pushes, labels, or opens a pull request. It
+#               holds the write token, and it runs nothing the plan job wrote.
+#
+# Only a plan written by the repository owner or a member can reach the plan job.
+
 on:
   pull_request:
     paths:
       - scripts/dual-pass/**
+      - scripts/issue-fix/**
       - .github/workflows/dual-pass.yml
       - .github/ISSUE_TEMPLATE/dual-pass.yml
   issues:
@@ -15,48 +31,175 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+permissions: {}
+
+concurrency:
+  group: dual-pass-${{ github.event.issue.number || inputs.issue || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   self-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
           toolchain: 1.87.0
       - name: Install tree-sitter fallback
-        run: python3 -m pip install --disable-pip-version-check tree-sitter tree-sitter-rust
+        run: |
+          # A venv keeps pip off the system interpreter, which PEP 668 blocks on Ubuntu 24.04.
+          python3 -m venv "$RUNNER_TEMP/dual-pass-venv"
+          "$RUNNER_TEMP/dual-pass-venv/bin/python" -m pip install --disable-pip-version-check tree-sitter tree-sitter-rust
+          echo "$RUNNER_TEMP/dual-pass-venv/bin" >> "$GITHUB_PATH"
       - name: Dual-pass self-check
         run: bash scripts/dual-pass/self-check.sh
-  plan-and-execute:
+
+  gate:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'dual-pass'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check the issue number
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue number is not numeric: $ISSUE"; exit 1; }
+
+      - name: Require a plan written by the owner or a member
+        run: |
+          set -euo pipefail
+          association="$(gh api "repos/${REPO}/issues/${ISSUE}" --jq .author_association)"
+          case "$association" in
+            OWNER|MEMBER) echo "issue author association: ${association}" ;;
+            *) echo "::error::refusing to run a plan from an issue authored by association ${association}"; exit 1 ;;
+          esac
+
+      - name: Fetch the issue body
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/issue"
+          gh issue view "$ISSUE" --repo "$REPO" --json body --jq .body > "$RUNNER_TEMP/issue/issue-body.md"
+
+      - name: Pass the issue body to plan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: issue-body
+          path: ${{ runner.temp }}/issue/issue-body.md
+          retention-days: 1
+
+  plan:
+    needs: gate
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'dual-pass'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 1
           ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check the issue number
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue number is not numeric: $ISSUE"; exit 1; }
+
+      - name: Receive the issue body the gate checked
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: issue-body
+          path: ${{ runner.temp }}/issue
+
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
           toolchain: 1.87.0
           components: rustfmt
+
       - name: Install tree-sitter fallback
-        run: python3 -m pip install --disable-pip-version-check tree-sitter tree-sitter-rust
+        run: |
+          # A venv keeps pip off the system interpreter, which PEP 668 blocks on Ubuntu 24.04.
+          python3 -m venv "$RUNNER_TEMP/dual-pass-venv"
+          "$RUNNER_TEMP/dual-pass-venv/bin/python" -m pip install --disable-pip-version-check tree-sitter tree-sitter-rust
+          echo "$RUNNER_TEMP/dual-pass-venv/bin" >> "$GITHUB_PATH"
+
       - name: Reject model endpoints in the runner
         run: |
           if grep -R -n -E 'https?://api\.x\.ai|secrets\.XAI|openai\.com|anthropic\.com' scripts/dual-pass .github/workflows/dual-pass.yml; then
             echo "LLM API reference is forbidden"
             exit 1
           fi
-      - name: Dual-pass plan then red-green
+
+      - name: Plan, then red and green, with no credential
         env:
-          # Built-in workflow token only. No model secret. No provider key.
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
-          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ env.ISSUE }}
+          DUAL_PASS_BODY: ${{ runner.temp }}/issue/issue-body.md
+          DUAL_PASS_OUT: ${{ runner.temp }}/dual-pass-out
         run: bash scripts/dual-pass/run.sh
+
+      - name: Upload the plan result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dual-pass-out
+          path: ${{ runner.temp }}/dual-pass-out
+          if-no-files-found: ignore
+          retention-days: 14
+
+  publish:
+    needs: plan
+    if: needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: write
+      issues: write
+      pull-requests: write
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Keep copies of the scripts publish runs
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/trusted-dual-pass" "$RUNNER_TEMP/trusted-policy"
+          cp -a scripts/dual-pass/. "$RUNNER_TEMP/trusted-dual-pass/"
+          cp -a scripts/issue-fix/. "$RUNNER_TEMP/trusted-policy/"
+
+      - name: Check the issue number
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE_NUMBER" =~ ^[0-9]+$ ]] || { echo "::error::issue number is not numeric: $ISSUE_NUMBER"; exit 1; }
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dual-pass-out
+          path: ${{ runner.temp }}/dual-pass-out
+
+      - name: Publish the change
+        env:
+          POLICY: ${{ runner.temp }}/trusted-policy/check-protected.sh
+        run: bash "$RUNNER_TEMP/trusted-dual-pass/publish.sh" "$RUNNER_TEMP/dual-pass-out"

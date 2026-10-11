@@ -147,8 +147,9 @@ wait_for_health() {
       tail -n 80 "$SERVER_LOG" >>"$REPORT" 2>/dev/null || true
       return 1
     fi
-    if curl --fail --silent --show-error --max-time 2 "$health_url" |
-      grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+    health_body=""
+    if health_body="$(curl --fail --silent --show-error --max-time 2 "$health_url")" \
+      && grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' <<<"$health_body"; then
       kill -0 "$SERVER_PID" 2>/dev/null || return 1
       return 0
     fi

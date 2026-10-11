@@ -40,6 +40,7 @@ fn seeknow_contract_documents_live_verification_boundary() {
         "auto email username ip domain url machine_id",
         "does **not** define",
         "no `HUNTSMAN_SEEKNOW_KEY` is configured",
+        "exits 66 (missing input) before any request",
     ] {
         assert!(
             doc.contains(required),

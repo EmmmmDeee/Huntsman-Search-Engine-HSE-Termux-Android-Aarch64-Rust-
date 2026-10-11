@@ -170,11 +170,12 @@ pub fn save_chain(path: &Path, entries: &[LedgerEntry]) -> Result<(), Error> {
 /// Load a chain and verify every link.
 ///
 /// # Errors
-/// `Error::Store` for IO, size, symlink, or JSON failure; `Error::Invalid` for a broken chain.
+/// `Error::Store` for IO, size, or symlink refusal (unreadable input); `Error::Invalid` for
+/// malformed JSON or a broken chain (bad data). Callers map these to distinct exit codes.
 pub fn load_chain(path: &Path) -> Result<Vec<LedgerEntry>, Error> {
     let body = read_bounded(path, MAX_LEDGER_BYTES)?;
     let entries: Vec<LedgerEntry> =
-        serde_json::from_slice(&body).map_err(|e| Error::Store(e.to_string()))?;
+        serde_json::from_slice(&body).map_err(|e| Error::Invalid(e.to_string()))?;
     if !chain_intact(&entries) {
         return Err(Error::Invalid("ledger chain broken".into()));
     }

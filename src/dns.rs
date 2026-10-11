@@ -41,6 +41,21 @@ impl RecordType {
             Self::Txt => "TXT",
         }
     }
+
+    /// The IANA DNS record-type code carried in the `DoH` JSON `type` field of each answer.
+    /// Used to drop answers of another type, such as a `CNAME` in the chain ahead of the
+    /// record that was queried.
+    #[must_use]
+    pub const fn doh_code(self) -> u16 {
+        match self {
+            Self::A => 1,
+            Self::Ns => 2,
+            Self::Soa => 6,
+            Self::Mx => 15,
+            Self::Txt => 16,
+            Self::Aaaa => 28,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +149,8 @@ struct DnsJsonResponse {
 
 #[derive(Debug, Deserialize, Default)]
 struct DnsJsonAnswer {
+    #[serde(rename = "type", default)]
+    rtype: u16,
     #[serde(default)]
     data: String,
 }
@@ -199,7 +216,7 @@ pub fn resolve_with_config<T: Transport + ?Sized>(
                     detail: error.to_string(),
                 });
             }
-            Ok(fetched) => match interpret_fetched(&fetched) {
+            Ok(fetched) => match interpret_fetched(&fetched, query.record_type) {
                 Ok(records) if !records.is_empty() => {
                     return Ok(ResolveAnswer {
                         server: server.clone(),
@@ -233,7 +250,10 @@ fn build_request(server: &ResolverServer, query: &ResolveQuery, timeout: Duratio
         .with_timeout(timeout)
 }
 
-fn interpret_fetched(fetched: &Fetched) -> Result<Vec<String>, ResolveError> {
+fn interpret_fetched(
+    fetched: &Fetched,
+    record_type: RecordType,
+) -> Result<Vec<String>, ResolveError> {
     match fetched.outcome.kind {
         SourceOutcomeKind::BotWaf => {
             return Err(ResolveError {
@@ -289,10 +309,13 @@ fn interpret_fetched(fetched: &Fetched) -> Result<Vec<String>, ResolveError> {
             detail: "truncated DNS response".into(),
         });
     }
-    parse_response(response)
+    parse_response(response, record_type)
 }
 
-fn parse_response(response: &Response) -> Result<Vec<String>, ResolveError> {
+fn parse_response(
+    response: &Response,
+    record_type: RecordType,
+) -> Result<Vec<String>, ResolveError> {
     if response.status != 200 {
         return Err(ResolveError {
             kind: ResolveErrorKind::Upstream,
@@ -316,9 +339,15 @@ fn parse_response(response: &Response) -> Result<Vec<String>, ResolveError> {
             detail: format!("dns status {}", parsed.status),
         });
     }
+    // Keep only answers of the queried record type. A DoH answer array may carry a CNAME
+    // (or other) record ahead of the record that was asked for; its `data` is a different
+    // kind of value (a host name, not an address or TXT string) and must not be reported
+    // as the queried type.
+    let want = record_type.doh_code();
     let records: Vec<String> = parsed
         .answers
         .into_iter()
+        .filter(|answer| answer.rtype == want)
         .filter_map(|answer| {
             let data = answer.data.trim();
             (!data.is_empty()).then(|| data.to_string())
@@ -702,7 +731,7 @@ mod tests {
             Ok(Response {
                 status: 200,
                 headers: Vec::new(),
-                body: br#"{"Status":0,"Answer":[{"data":"1.2.3.4"}]}"#.to_vec(),
+                body: br#"{"Status":0,"Answer":[{"type":1,"data":"1.2.3.4"}]}"#.to_vec(),
                 truncated: false,
             }),
         ]);
@@ -788,7 +817,7 @@ mod tests {
                 detail: "timed out".into(),
                 blocked: false,
             }),
-            Ok(json_ok(&["1.2.3.4"])),
+            Ok(json_ok(RecordType::A, &["1.2.3.4"])),
         ]);
         let answer = resolve_with_pool(
             &transport,
@@ -856,10 +885,16 @@ mod tests {
         }
     }
 
-    fn json_ok(records: &[&str]) -> Response {
+    fn json_ok(rtype: RecordType, records: &[&str]) -> Response {
         let answers = records
             .iter()
-            .map(|data| format!(r#"{{"data":{}}}"#, serde_json::to_string(data).unwrap()))
+            .map(|data| {
+                format!(
+                    r#"{{"type":{},"data":{}}}"#,
+                    rtype.doh_code(),
+                    serde_json::to_string(data).unwrap()
+                )
+            })
             .collect::<Vec<_>>()
             .join(",");
         Response {
@@ -877,6 +912,55 @@ mod tests {
             body: br#"{"Status":0,"Answer":[]}"#.to_vec(),
             truncated: false,
         }
+    }
+
+    #[test]
+    fn a_cname_in_the_answer_chain_is_not_reported_as_the_queried_type() {
+        // A real DoH answer array for a hosted _dmarc record: a CNAME (type 5) to the
+        // provider, then the TXT (type 16) that was asked for. Only the TXT is a TXT value;
+        // the CNAME target is a host name and must not be surfaced as a TXT record.
+        let transport = FakeTransport::new(vec![Ok(Response {
+            status: 200,
+            headers: Vec::new(),
+            body: br#"{"Status":0,"Answer":[{"type":5,"data":"ex._dmarc.provider.net."},{"type":16,"data":"v=DMARC1; p=reject"}]}"#.to_vec(),
+            truncated: false,
+        })]);
+        let answer = resolve_with_config(
+            &transport,
+            &ResolveQuery {
+                name: "_dmarc.example.com".into(),
+                record_type: RecordType::Txt,
+            },
+            &one_server(),
+        )
+        .expect("the TXT answer is present");
+        assert_eq!(
+            answer.records,
+            ["v=DMARC1; p=reject"],
+            "the CNAME target must not be surfaced as a TXT record"
+        );
+    }
+
+    #[test]
+    fn an_answer_whose_only_record_is_a_cname_is_an_empty_result() {
+        // An A query that returns only a CNAME (no terminal A) has no address to report,
+        // so it is an empty answer, not the CNAME host name reported as an address.
+        let transport = FakeTransport::new(vec![Ok(Response {
+            status: 200,
+            headers: Vec::new(),
+            body: br#"{"Status":0,"Answer":[{"type":5,"data":"alias.example.net."}]}"#.to_vec(),
+            truncated: false,
+        })]);
+        let error = resolve_with_config(
+            &transport,
+            &ResolveQuery {
+                name: "example.com".into(),
+                record_type: RecordType::A,
+            },
+            &one_server(),
+        )
+        .expect_err("a lone CNAME is not an A record");
+        assert_eq!(error.kind, ResolveErrorKind::Empty);
     }
 
     #[test]
@@ -909,13 +993,16 @@ mod tests {
     #[test]
     fn lookup_parses_mail_records_and_keeps_partial_failures() {
         let transport = FakeTransport::new(vec![
-            Ok(json_ok(&["93.184.216.34"])),
+            Ok(json_ok(RecordType::A, &["93.184.216.34"])),
             Ok(json_empty()),
-            Ok(json_ok(&["10 mail.example.com."])),
-            Ok(json_ok(&["a.iana-servers.net."])),
-            Ok(json_ok(&[r#""v=spf1 -all""#])),
-            Ok(json_ok(&[r#""v=DMARC1; p=reject""#])),
-            Ok(json_ok(&["v=TLSRPTv1; rua=mailto:tlsrpt@example.com"])),
+            Ok(json_ok(RecordType::Mx, &["10 mail.example.com."])),
+            Ok(json_ok(RecordType::Ns, &["a.iana-servers.net."])),
+            Ok(json_ok(RecordType::Txt, &[r#""v=spf1 -all""#])),
+            Ok(json_ok(RecordType::Txt, &[r#""v=DMARC1; p=reject""#])),
+            Ok(json_ok(
+                RecordType::Txt,
+                &["v=TLSRPTv1; rua=mailto:tlsrpt@example.com"],
+            )),
         ]);
         let report = lookup_domain_with_config(&transport, "example.com", &one_server())
             .expect("valid domain");

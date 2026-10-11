@@ -10,11 +10,11 @@
 use std::fmt::Write;
 use std::path::PathBuf;
 
-use crate::canonical::canonical_name;
 use crate::asic_director;
 use crate::asic_persons;
 use crate::au_electoral;
 use crate::au_people;
+use crate::canonical::canonical_name;
 use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::evidence_ancestry::EvidenceNodeId;
@@ -265,9 +265,16 @@ fn usable(report: &Report) -> bool {
 
 fn name_tokens(name: &str) -> Vec<String> {
     name.split(|c: char| !c.is_alphabetic())
-        .filter(|token| token.len() >= 2)
+        .filter(|token| token.chars().count() >= 2)
         .map(str::to_ascii_lowercase)
         .collect()
+}
+
+/// Whether NAME has the two alphabetic tokens a person lookup needs. The scan router
+/// uses this to tell a name from a mistyped phone or handle before it routes a guess.
+#[must_use]
+pub fn is_name(name: &str) -> bool {
+    name_tokens(&canonical_name(name)).len() >= 2
 }
 
 fn render(report: &Report) -> Result<String, String> {
@@ -350,6 +357,15 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::HashMap;
+
+    #[test]
+    fn a_name_needs_two_alphabetic_tokens_of_at_least_two_characters() {
+        assert!(is_name("Émile Zola"));
+        // One accented letter is one character, so it is not a token of a name, though it is
+        // two bytes in UTF-8.
+        assert!(!is_name("É Lovelace"));
+        assert!(!is_name("Ada"));
+    }
 
     use crate::http::{Request, Response, TransportFailure};
     use crate::source_outcome::SourceOutcomeKind;

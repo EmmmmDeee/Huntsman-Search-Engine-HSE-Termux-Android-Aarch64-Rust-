@@ -7,5 +7,9 @@
 !HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md
 !src/
 !src/**
+!xtask/
+!xtask/Cargo.toml
+!xtask/src/
+!xtask/src/**
 !scripts/
 !scripts/railway-entrypoint.sh

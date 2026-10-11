@@ -79,6 +79,11 @@ pub fn run_with_keys<T: Transport + ?Sized>(
         return SeekNowCliRun::Usage;
     }
 
+    // A missing key is missing input (exit 66), as `hibp` and `recon stolen-tax` treat it;
+    // only a key that is present but cannot be approved is a permission failure (exit 77).
+    if keys.get(KEY_SLOT).is_none() {
+        return SeekNowCliRun::Input(format!("credential {KEY_SLOT} is not configured"));
+    }
     let credential = match credential_from_keys(keys, now_unix) {
         Ok(credential) => credential,
         Err(message) => return SeekNowCliRun::NoPerm(message),
