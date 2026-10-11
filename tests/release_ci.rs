@@ -2,6 +2,7 @@
 //! root `.github/workflows/`; the copy under `legacy/` is inert. Deleting the
 //! root file (f0a1c64) silently stopped every main-channel pre-release.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -98,7 +99,9 @@ fn rolling_latest_moves_only_behind_an_explicit_opt_in() {
         );
     }
     assert_eq!(
-        wf.matches("gh release delete").count(),
+        wf.lines()
+            .filter(|l| l.trim_start().starts_with("gh release delete"))
+            .count(),
         2,
         "only centralized candidate cleanup and the gated latest step may delete a release"
     );
@@ -581,11 +584,21 @@ fn run_script(
     dir: &Path,
     path_env: Option<&std::ffi::OsStr>,
 ) -> (Option<i32>, String) {
+    let envs: Vec<(&str, &std::ffi::OsStr)> = path_env.map(|p| ("PATH", p)).into_iter().collect();
+    run_script_with(script, dir, &envs)
+}
+
+fn run_script_with(
+    script: &Path,
+    dir: &Path,
+    envs: &[(&str, &std::ffi::OsStr)],
+) -> (Option<i32>, String) {
     let bash = tool("bash").expect("bash must be available");
     let mut cmd = Command::new(bash);
     cmd.arg(script).arg(dir);
-    if let Some(p) = path_env {
-        cmd.env("PATH", p);
+    with_known_hex(&mut cmd);
+    for (k, v) in envs {
+        cmd.env(k, v);
     }
     let out = cmd.output().expect("bash must run");
     let text =
@@ -623,28 +636,110 @@ fn assert_redacted(text: &str, value: &str, ctx: &str) {
     );
 }
 
-fn clean_fixture(dir: &Path) {
-    fs::write(
-        dir.join("p.json"),
-        format!(
-            "{{\"commit\":\"{}\",\"sha256\":\"{}\",\"upper\":\"{}\"}}\n",
-            "a1".repeat(20),
-            "b2".repeat(32),
-            "AB".repeat(16)
+/// The value `name` is pinned to in the workflow-level `env` of release.yml.
+fn workflow_env(name: &str) -> String {
+    let wf = release();
+    let prefix = format!("\n  {name}: \"");
+    let from = wf
+        .find(&prefix)
+        .unwrap_or_else(|| panic!("{RELEASE} env must pin {name}"))
+        + prefix.len();
+    let to = from + wf[from..].find('"').expect("quoted value");
+    wf[from..to].to_owned()
+}
+
+/// Synthetic stand-ins for the per-commit known values (in CI: github.sha and
+/// sha256 of Cargo.lock). Never real, never all digits.
+fn test_build_sha() -> String {
+    fake("", "5e6f7a8b", 5)
+}
+fn test_cargo_lock_sha256() -> String {
+    fake("", "9c8d7e6f", 8)
+}
+
+/// The known hex values the scanner strips, as release.yml hands them over:
+/// the two pinned constants straight from the workflow env.
+fn known_hex() -> [(&'static str, String); 4] {
+    [
+        ("HUNTSMAN_BUILD_SHA", test_build_sha()),
+        (
+            "HUNTSMAN_RUSTC_COMMIT",
+            workflow_env("HUNTSMAN_RUSTC_COMMIT"),
         ),
-    )
-    .unwrap();
+        (
+            "HUNTSMAN_DIRECTIVE_SHA256",
+            workflow_env("HUNTSMAN_DIRECTIVE_SHA256"),
+        ),
+        ("HUNTSMAN_CARGO_LOCK_SHA256", test_cargo_lock_sha256()),
+    ]
+}
+
+/// Sets every known hex value on `cmd`, overriding anything inherited (CI sets
+/// `HUNTSMAN_BUILD_SHA`). A caller's own env, applied afterwards, still wins.
+fn with_known_hex(cmd: &mut Command) -> &mut Command {
+    for (k, v) in known_hex() {
+        cmd.env(k, v);
+    }
+    cmd
+}
+
+/// std's 00..ff hex byte table and 00..99 decimal digit-pair table.
+fn std_tables() -> (String, String) {
+    let (mut hex_table, mut digit_table) = (String::new(), String::new());
+    for b in 0..=255u8 {
+        write!(hex_table, "{b:02x}").unwrap();
+    }
+    for n in 0..100 {
+        write!(digit_table, "{n:02}").unwrap();
+    }
+    (hex_table, digit_table)
+}
+
+/// Two files shaped like the release `dist/`: `bin` carries every benign hex
+/// run seen in the real main-f3b5b75 / main-f199841 binaries, glued the way
+/// `strings` joins adjacent literals; `p.json` names the build SHA, the
+/// Cargo.lock digest and the sha256 of `bin`, like the provenance and report.
+/// It scans clean only because the scanner deletes those exact values.
+fn clean_fixture(dir: &Path) {
+    let [(_, build), (_, rustc), (_, directive), (_, lock)] = known_hex();
+    let (hex_table, digit_table) = std_tables();
+    let mut rustc_paths = Vec::new();
+    for file in ["core/src/fmt/mod.rs", "std/src/io/mod.rs"] {
+        rustc_paths.extend_from_slice(format!("/rustc/{rustc}/library/{file}\x00").as_bytes());
+    }
     fs::write(
         dir.join("bin"),
         [
             b"\x00\x7fELF usage: huntsman-recon [check]\x00".as_slice(),
-            // 31 and 33 hex: one short and one long of the key shape.
+            // 31 hex is one short of the key shape.
             fake("", "c", 31).as_bytes(),
-            b"\x00\x01".as_slice(),
-            fake("", "d", 33).as_bytes(),
+            b"\x00".as_slice(),
+            hex_table.as_bytes(),
+            b"\x00".as_slice(),
+            // All digits: std's other decimal formatting tables.
+            fake("", "0", 64).as_bytes(),
+            b"\x00".as_slice(),
+            &rustc_paths,
+            // As in the real binaries: the build SHA before the version
+            // "0.2.0", the directive digest before "embedded", std's digit
+            // table before "assertion".
+            format!("{build}0.2.0").as_bytes(),
+            b"\x00".as_slice(),
+            format!("{directive}embedded canonical").as_bytes(),
+            b"\x00".as_slice(),
+            format!("{digit_table}assertion failed").as_bytes(),
             b"\x00".as_slice(),
         ]
         .concat(),
+    )
+    .unwrap();
+    let bin_sha = sha256_hex(&dir.join("bin"));
+    fs::write(
+        dir.join("p.json"),
+        format!(
+            "{{\"commit\":\"{build}\",\"cargo_lock_sha256\":\"{lock}\",\"artifact_sha256\":\"{bin_sha}\",\"upper\":\"{}\"}}\n",
+            "AB".repeat(16)
+        ),
     )
     .unwrap();
 }
@@ -731,7 +826,16 @@ fn scanner_fails_closed_when_a_tool_is_missing() {
         return;
     }
     let needed = [
-        "strings", "python3", "grep", "find", "sort", "cat", "mktemp", "rm",
+        "strings",
+        "python3",
+        "grep",
+        "find",
+        "sort",
+        "cat",
+        "mktemp",
+        "rm",
+        "realpath",
+        "sha256sum",
     ];
     let fixture = scratch("tools-fixture");
     clean_fixture(&fixture);
@@ -741,7 +845,13 @@ fn scanner_fails_closed_when_a_tool_is_missing() {
         [b"\x00 t=".as_slice(), ghp.as_bytes(), b" \x00\xfe"].concat(),
     )
     .unwrap();
-    for missing in [None, Some("strings"), Some("python3")] {
+    for missing in [
+        None,
+        Some("strings"),
+        Some("python3"),
+        Some("realpath"),
+        Some("sha256sum"),
+    ] {
         let bin = scratch(&format!("path-{}", missing.unwrap_or("all")));
         for name in needed.iter().filter(|n| Some(**n) != missing) {
             let src = tool(name).unwrap_or_else(|| panic!("{name} must be installed"));
@@ -835,11 +945,45 @@ fn an_existing_release_is_verified_by_publish_not_skipped_by_resolve() {
 }
 
 #[test]
-fn attestation_warning_does_not_promise_a_retry() {
+fn attestation_is_a_required_step_before_publishing() {
     let wf = release();
     assert!(!wf.contains("Re-run to retry"));
     assert!(!wf.contains("A re-run will not add it"));
-    assert!(wf.contains("otherwise it remains a CI-only artifact"));
+    let publish = job(&wf, "publish");
+    assert!(
+        !wf.contains("continue-on-error"),
+        "no release step may be optional, the attestation least of all"
+    );
+    assert!(!wf.contains("Warn when attestation failed"));
+    let steps: Vec<&str> = publish.split("      - name: ").collect();
+    let pos = |prefix: &str| {
+        steps
+            .iter()
+            .position(|s| s.starts_with(prefix))
+            .unwrap_or_else(|| panic!("publish must have a step {prefix:?}"))
+    };
+    let (attest, require, create) = (
+        pos("Attest build provenance"),
+        pos("Require a build provenance attestation"),
+        pos("Publish pre-release"),
+    );
+    assert!(
+        attest < require && require < create,
+        "attest, then require, then publish"
+    );
+    assert!(steps[attest].contains("        if: steps.existing.outputs.exists == 'false'\n"));
+    assert!(
+        !steps[require].contains("        if:"),
+        "the attestation requirement must run for new and existing releases"
+    );
+    for required in [
+        "ATTESTATION_ID: ${{ steps.attest.outputs.attestation-id }}",
+        "attestations/${d}",
+    ] {
+        assert!(steps[require].contains(required), "missing {required:?}");
+    }
+    // The publish job's permissions already allow attesting; nothing new.
+    assert!(publish.contains("      attestations: write # record the attestation\n"));
 }
 
 /// One synthetic positive per pattern rule, assembled at runtime.
@@ -993,6 +1137,16 @@ fn write_exec(path: &Path, body: &str) {
 /// Runs the installer for the recon channel with the given release assets.
 /// Returns (exit code, output, `$PREFIX/bin` entries).
 fn run_installer(name: &str, binary: &[u8], sha_line: &str) -> (Option<i32>, String, PathBuf) {
+    run_installer_with(name, binary, sha_line, false)
+}
+
+/// As `run_installer`; with `dest_is_dir` the destination path is a directory.
+fn run_installer_with(
+    name: &str,
+    binary: &[u8],
+    sha_line: &str,
+    dest_is_dir: bool,
+) -> (Option<i32>, String, PathBuf) {
     let root = scratch(&format!("install-{name}"));
     let assets = root.join("assets");
     let fakes = root.join("fakes");
@@ -1003,7 +1157,11 @@ fn run_installer(name: &str, binary: &[u8], sha_line: &str) -> (Option<i32>, Str
     let asset = "huntsman-recon-aarch64-linux-android";
     fs::write(assets.join(asset), binary).unwrap();
     fs::write(assets.join(format!("{asset}.sha256")), sha_line).unwrap();
-    fs::write(prefix.join("bin/huntsman-recon"), b"old build\n").unwrap();
+    if dest_is_dir {
+        fs::create_dir_all(prefix.join("bin/huntsman-recon")).unwrap();
+    } else {
+        fs::write(prefix.join("bin/huntsman-recon"), b"old build\n").unwrap();
+    }
     write_exec(
         &fakes.join("curl"),
         "#!/usr/bin/env bash\nout=\"\"; url=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -o) out=\"$2\"; shift 2 ;;\n    --proto) shift 2 ;;\n    -*) shift ;;\n    *) url=\"$1\"; shift ;;\n  esac\ndone\ncp \"$FAKE_ASSETS/${url##*/}\" \"$out\"\n",
@@ -1165,7 +1323,7 @@ fn installer_source_contract_uses_private_stage_runtime_gate_and_atomic_activati
         "timeout 30 \"$stage\" check",
         "timeout 30 \"$stage\" verify var/ledger.json",
         "cmp -s \"$stage\" \"$dest\"",
-        "mv -f \"$stage\" \"$dest\"",
+        "mv -fT \"$stage\" \"$dest\"",
     ] {
         assert!(
             src.contains(required),
@@ -1281,6 +1439,1369 @@ fn both_scanner_copies_fail_closed_when_find_or_sort_fails_or_truncates() {
         }
     }
     let _ = fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------------------
+// Scanner hardening, follow-up to #672 (Security S1 and hex-run rule, FTBB
+// N1-N7, REFACTOR R1). Every planted value is synthetic and built at runtime.
+
+/// A random 32-lowercase-hex value, fresh per run, never a real key. It always
+/// holds a letter, so it is never mistaken for a decimal lookup table.
+fn random_hex32() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    loop {
+        let words: Vec<u64> = (0..2)
+            .map(|i| {
+                let mut h = RandomState::new().build_hasher();
+                h.write_u64(i);
+                h.finish()
+            })
+            .collect();
+        let hex = format!("{:016x}{:016x}", words[0], words[1]);
+        if hex.bytes().any(|b| b.is_ascii_lowercase()) {
+            return hex;
+        }
+    }
+}
+
+/// Fixture for the file-list tests: `a-clean.json` sorts before the planted
+/// `z-secret.bin`. Returns (root, fixture dir, both scanner copies, token).
+fn list_fixture(name: &str) -> (PathBuf, PathBuf, [PathBuf; 2], String) {
+    let root = scratch(name);
+    let fixture = root.join("dist");
+    fs::create_dir_all(&fixture).unwrap();
+    fs::write(fixture.join("a-clean.json"), "{\"ok\":true}\n").unwrap();
+    let ghp = fake_ghp();
+    fs::write(
+        fixture.join("z-secret.bin"),
+        [b"\x00 t=".as_slice(), ghp.as_bytes(), b" \x00\xfe"].concat(),
+    )
+    .unwrap();
+    let inline = root.join("inlined-scan-for-keys.sh");
+    fs::write(&inline, inlined_scanner()).unwrap();
+    (root, fixture, [PathBuf::from(SCAN), inline], ghp)
+}
+
+fn path_with(fakes: &Path) -> std::ffi::OsString {
+    std::ffi::OsString::from(format!(
+        "{}:{}",
+        fakes.display(),
+        std::env::var("PATH").unwrap_or_default()
+    ))
+}
+
+/// Security S1: a `sort` that keeps the count but swaps one name for a
+/// duplicate of another must not shorten the scan.
+#[test]
+fn both_scanner_copies_refuse_a_sort_that_swaps_a_name_for_a_duplicate() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let real_sort = tool("sort").expect("sort must be installed");
+    let (root, fixture, scripts, ghp) = list_fixture("swap-sort");
+    let fakes = root.join("fakes");
+    fs::create_dir_all(&fakes).unwrap();
+    write_exec(
+        &fakes.join("sort"),
+        &format!(
+            "#!/usr/bin/env bash\nmapfile -d '' -t l < <(\"{}\" \"$@\")\nl[${{#l[@]}}-1]=${{l[0]}}\nprintf '%s\\0' \"${{l[@]}}\"\n",
+            real_sort.display()
+        ),
+    );
+    let path = path_with(&fakes);
+    for script in &scripts {
+        let ctx = format!("{} with a name-swapping sort", script.display());
+        let (code, text) = run_script(script, &fixture, Some(&path));
+        assert_eq!(code, Some(2), "{ctx} must fail closed with exit 2:\n{text}");
+        assert!(
+            text.contains(
+                "sort dropped or rewrote a listed file; refusing to scan a tampered file list"
+            ),
+            "{ctx}:\n{text}"
+        );
+        assert!(
+            !text.contains("files scanned:"),
+            "{ctx} must not scan:\n{text}"
+        );
+        assert_redacted(&text, &ghp, &ctx);
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// FTBB N5: the scan loop runs over the checked array. A loop that re-reads
+/// `sort` (process substitution or pipe) would scan a second, unchecked list;
+/// this sort is real on its first call and truncates on every later one.
+#[test]
+fn both_scanner_copies_scan_the_checked_list_not_a_second_sort() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let real_sort = tool("sort").expect("sort must be installed");
+    let (root, fixture, scripts, ghp) = list_fixture("stateful-sort");
+    let fakes = root.join("fakes");
+    fs::create_dir_all(&fakes).unwrap();
+    let count = root.join("sort-calls");
+    write_exec(
+        &fakes.join("sort"),
+        &format!(
+            "#!/usr/bin/env bash\nn=$(( $(cat \"{c}\" 2>/dev/null || echo 0) + 1 ))\necho \"$n\" > \"{c}\"\nif [ \"$n\" -eq 1 ]; then exec \"{s}\" \"$@\"; fi\n\"{s}\" \"$@\" | head -z -n 1\n",
+            c = count.display(),
+            s = real_sort.display()
+        ),
+    );
+    let path = path_with(&fakes);
+    for script in &scripts {
+        let _ = fs::remove_file(&count);
+        let ctx = format!("{} with a stateful sort", script.display());
+        let (code, text) = run_script(script, &fixture, Some(&path));
+        assert_eq!(code, Some(1), "{ctx} must find the token:\n{text}");
+        assert!(
+            text.contains("rule=github-token (value withheld)"),
+            "{ctx}:\n{text}"
+        );
+        assert!(text.contains("files scanned: 2"), "{ctx}:\n{text}");
+        assert_eq!(
+            fs::read_to_string(&count).unwrap().trim(),
+            "1",
+            "{ctx}: sort must run exactly once"
+        );
+        assert_redacted(&text, &ghp, &ctx);
+    }
+    let src = fs::read_to_string(SCAN).unwrap();
+    assert!(src.contains("for f in \"${files[@]}\"; do\n  scanned=$((scanned + 1))"));
+    for forbidden in ["< <(sort", "< <(find", "sort -z \"$list\" |", "| while"] {
+        assert!(
+            !src.contains(forbidden),
+            "{SCAN} must not contain {forbidden:?}"
+        );
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// Security's hex-run rule (#876 re-review): after the exact known values are
+/// deleted, any run holding 32 lowercase hex in a row is a finding unless it
+/// is all digits or part of the 00..ff table. No length is exempt (no 40/64
+/// exception, no end-trim fringe), so a key glued to n more hex chars is
+/// caught for every n, as is a key glued to a known value or to "password".
+/// One file per way of gluing `hex` to other hex; each must be a finding.
+fn glued_key_cases(hex: &str) -> Vec<(String, Vec<u8>)> {
+    let [(_, build), (_, rustc), (_, directive), (_, lock)] = known_hex();
+    let (hex_table, digit_table) = std_tables();
+    let tail = format!("{}{}", random_hex32(), random_hex32());
+    let mut cases: Vec<(String, Vec<u8>)> = vec![
+        (
+            "password.bin".into(),
+            [
+                b"\x00\x01password".as_slice(),
+                hex.as_bytes(),
+                b"ZZZ\x00\x02",
+            ]
+            .concat(),
+        ),
+        (
+            "password.txt".into(),
+            format!("password{hex}\n").into_bytes(),
+        ),
+        (
+            "hex-after.bin".into(),
+            [b"\x00\x01".as_slice(), hex.as_bytes(), b"cafe\x00"].concat(),
+        ),
+        (
+            "run128.txt".into(),
+            format!("v={}\n", hex.repeat(4)).into_bytes(),
+        ),
+    ];
+    // key + n hex: 0..=13 spans the old 40-hex fringe (8..=12) and one past
+    // it; 30..=37 spans the old 64-hex fringe (32..=36). 8 and 32 make runs
+    // of exactly 40 and 64, the lengths the old rule exempted.
+    for n in (0..=13).chain(30..=37) {
+        cases.push((
+            format!("key-plus-{n}.bin"),
+            [
+                b"\x00\x01".as_slice(),
+                hex.as_bytes(),
+                &tail.as_bytes()[..n],
+                b"\x00",
+            ]
+            .concat(),
+        ));
+        cases.push((
+            format!("plus-{n}-key.txt"),
+            format!("v={}{hex}\n", &tail[..n]).into_bytes(),
+        ));
+    }
+    // A key glued to each exact known value, on either side, is still a key:
+    // deleting the known value leaves it standing.
+    for (name, known) in [
+        ("build-sha", &build),
+        ("rustc", &rustc),
+        ("directive", &directive),
+        ("cargo-lock", &lock),
+        ("hex-table", &hex_table),
+        ("digit-table", &digit_table),
+    ] {
+        cases.push((
+            format!("{name}-then-key.bin"),
+            [
+                b"\x00\x01".as_slice(),
+                known.as_bytes(),
+                hex.as_bytes(),
+                b"\x00",
+            ]
+            .concat(),
+        ));
+        cases.push((
+            format!("key-then-{name}.txt"),
+            format!("v={hex}{known}\n").into_bytes(),
+        ));
+    }
+    // An unknown commit SHA or digest is not stripped at all.
+    cases.push((
+        "other-sha-then-key.bin".into(),
+        [
+            b"\x00\x01".as_slice(),
+            &tail.as_bytes()[..40],
+            hex.as_bytes(),
+            b"\x00",
+        ]
+        .concat(),
+    ));
+    cases
+}
+
+#[test]
+fn hex_run_rule_catches_a_key_packed_against_other_hex() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let hex = random_hex32();
+    let cases = glued_key_cases(&hex);
+    let dir = scratch("hexrun");
+    clean_fixture(&dir);
+    for (file, bytes) in &cases {
+        fs::write(dir.join(file), bytes).unwrap();
+    }
+    let (code, text) = scan(&dir);
+    assert_eq!(code, Some(1), "every glued key must fail the scan:\n{text}");
+    let real = fs::canonicalize(&dir).unwrap();
+    for (file, _) in &cases {
+        assert!(
+            text.contains(&format!(
+                "FINDING file={}/{file} resolved={}/{file} rule=hibp-key-hex (value withheld)",
+                dir.display(),
+                real.display()
+            )),
+            "{file} must be a finding:\n{text}"
+        );
+    }
+    assert!(
+        text.contains(&format!("key scan: {} finding(s)", cases.len())),
+        "exactly one finding per planted file, none from the clean fixture:\n{text}"
+    );
+    assert_redacted(&text, &hex, "glued keys");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The loosening Security blocked must not come back in any form.
+#[test]
+fn hex_run_rule_has_no_length_exception_or_end_trim() {
+    let src = fs::read_to_string(SCAN).unwrap();
+    for gone in ["HEX_FRINGE", "benign_hex_core", "40 | 64", "{40}", "{64}"] {
+        assert!(!src.contains(gone), "{SCAN} must not contain {gone:?}");
+    }
+    for want in [
+        "for k in \"${KNOWN_HEX[@]}\"; do m=${m//\"$k\"/}; done",
+        "KNOWN_HEX+=(\"$hex_table\" \"$digit_table\")",
+        "for spec in HUNTSMAN_BUILD_SHA:40 HUNTSMAN_RUSTC_COMMIT:40 HUNTSMAN_DIRECTIVE_SHA256:64 HUNTSMAN_CARGO_LOCK_SHA256:64; do",
+    ] {
+        assert!(src.contains(want), "{SCAN} must contain {want:?}");
+    }
+}
+
+/// Every known value is needed: without it the real-binary shapes in the
+/// clean fixture (the glued build SHA, rustc paths, directive digest, the
+/// provenance's Cargo.lock digest) are findings. Unset means stricter.
+#[test]
+fn each_known_hex_value_is_needed_and_unset_only_makes_the_scan_stricter() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let dir = scratch("known-needed");
+    clean_fixture(&dir);
+    for (name, _) in known_hex() {
+        let bash = tool("bash").expect("bash must be available");
+        let mut cmd = Command::new(bash);
+        cmd.arg(SCAN).arg(&dir);
+        with_known_hex(&mut cmd).env_remove(name);
+        let out = cmd.output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "without {name}:\n{text}");
+        assert!(
+            text.contains("rule=hibp-key-hex (value withheld)"),
+            "without {name}:\n{text}"
+        );
+        assert!(!text.contains(&format!("stripped: {name}")), "{text}");
+    }
+    let (code, text) = scan(&dir);
+    assert_eq!(code, Some(0), "positive control:\n{text}");
+    assert!(
+        text.contains("known hex values stripped: HUNTSMAN_BUILD_SHA HUNTSMAN_RUSTC_COMMIT HUNTSMAN_DIRECTIVE_SHA256 HUNTSMAN_CARGO_LOCK_SHA256 + scanned-file sha256 + std tables"),
+        "{text}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A known value with the wrong shape (empty, short, uppercase, a bare 32-hex
+/// key) would strip arbitrary hex, so both scanner copies refuse it.
+#[test]
+fn both_scanner_copies_refuse_a_malformed_known_hex_value() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let root = scratch("known-malformed");
+    let dir = root.join("dist");
+    fs::create_dir_all(&dir).unwrap();
+    clean_fixture(&dir);
+    let inline = root.join("inlined-scan-for-keys.sh");
+    fs::write(&inline, inlined_scanner()).unwrap();
+    let key = random_hex32();
+    let upper = test_build_sha().to_ascii_uppercase();
+    for script in [PathBuf::from(SCAN), inline] {
+        for (name, len) in [
+            ("HUNTSMAN_BUILD_SHA", 40),
+            ("HUNTSMAN_RUSTC_COMMIT", 40),
+            ("HUNTSMAN_DIRECTIVE_SHA256", 64),
+            ("HUNTSMAN_CARGO_LOCK_SHA256", 64),
+        ] {
+            for bad in ["", "d", key.as_str(), upper.as_str()] {
+                let ctx = format!("{} with {name}={} chars", script.display(), bad.len());
+                let (code, text) =
+                    run_script_with(&script, &dir, &[(name, std::ffi::OsStr::new(bad))]);
+                assert_eq!(code, Some(1), "{ctx}:\n{text}");
+                assert!(
+                    text.contains(&format!(
+                        "{name} must be exactly {len} lowercase hex characters (got {} characters); refusing",
+                        bad.len()
+                    )),
+                    "{ctx}:\n{text}"
+                );
+                assert!(
+                    !text.contains("files scanned:"),
+                    "{ctx} must not scan:\n{text}"
+                );
+                assert_redacted(&text, &key, &ctx);
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// Known values come from the workflow, never from a build-job output: the
+/// two constants are pinned in the workflow env (and checked against rustc and
+/// the checkout before anything builds), the build SHA is github.sha, and the
+/// Cargo.lock digest is hashed from the checkout (build) or from the
+/// repository at github.sha (publish, which checks out nothing).
+#[test]
+fn known_hex_values_come_from_the_workflow_not_from_build_outputs() {
+    let wf = release();
+    assert_eq!(
+        workflow_env("HUNTSMAN_DIRECTIVE_SHA256"),
+        huntsman_recon::directive_lock::EXPECTED_SHA256,
+        "the workflow pin must track directive_lock::EXPECTED_SHA256"
+    );
+    let rustc = workflow_env("HUNTSMAN_RUSTC_COMMIT");
+    assert!(
+        rustc.len() == 40
+            && rustc
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    );
+    assert!(wf.contains("\n  HUNTSMAN_BUILD_SHA: ${{ github.sha }}\n"));
+    for line in wf.lines().filter(|l| l.contains("HUNTSMAN_")) {
+        assert!(
+            !line.contains("needs.") && !line.contains("steps."),
+            "a known hex value must not come from a job or step output: {line}"
+        );
+    }
+    let build = job(&wf, "build");
+    let pin = build
+        .find("name: Prove the key scan's pinned hex values still hold")
+        .expect("build must check the pins");
+    let cargo = build
+        .find("run: cargo build --release --locked --target aarch64-linux-android")
+        .unwrap();
+    assert!(
+        pin < cargo,
+        "the pins must be checked before any build code runs"
+    );
+    for want in [
+        "got=\"$(rustc -vV | sed -n 's/^commit-hash: //p')\"",
+        "[ \"$got\" = \"$HUNTSMAN_RUSTC_COMMIT\" ]",
+        "grep -Fqx \"    \\\"${HUNTSMAN_DIRECTIVE_SHA256}\\\";\" src/directive_lock.rs",
+        "HUNTSMAN_CARGO_LOCK_SHA256=\"$(sha256sum Cargo.lock | cut -d' ' -f1)\"",
+    ] {
+        assert!(build.contains(want), "build must contain {want:?}");
+    }
+    let publish = job(&wf, "publish");
+    for want in [
+        "\"repos/${GITHUB_REPOSITORY}/contents/Cargo.lock?ref=${GITHUB_SHA}\" > \"$lock\"",
+        "HUNTSMAN_CARGO_LOCK_SHA256=\"$(sha256sum \"$lock\" | cut -d' ' -f1)\"",
+        "[ \"$HUNTSMAN_BUILD_SHA\" = \"$GITHUB_SHA\" ]",
+    ] {
+        assert!(publish.contains(want), "publish must contain {want:?}");
+    }
+    assert!(
+        !publish.contains("actions/checkout"),
+        "publish must check out nothing"
+    );
+    let src = fs::read_to_string(SCAN).unwrap();
+    assert!(src.contains("d=$(sha256sum -- \"${src_of[\"$f\"]}\")"));
+}
+
+/// FTBB N1: matching is byte-wise even when the caller runs a UTF-8 locale,
+/// where a bracket expression does not match an invalid byte such as \xff.
+#[test]
+fn scanner_matches_byte_wise_under_a_utf8_locale() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let hex = fake_hex32();
+    let sk = format!("sk-{}", "Ab1_".repeat(6));
+    let cases: Vec<(&str, Vec<u8>, &str, &str)> = vec![
+        (
+            "hex-ff.txt",
+            [b"k=".as_slice(), hex.as_bytes(), b"\xff\n"].concat(),
+            "hibp-key-hex",
+            &hex,
+        ),
+        (
+            "ff-sk.txt",
+            [b"x\xff".as_slice(), sk.as_bytes(), b"\n"].concat(),
+            "openai-style-sk",
+            &sk,
+        ),
+    ];
+    let utf8 = std::ffi::OsStr::new("C.UTF-8");
+    for (file, bytes, rule, value) in cases {
+        let dir = scratch(&format!("locale-{file}"));
+        clean_fixture(&dir);
+        fs::write(dir.join(file), &bytes).unwrap();
+        let (code, text) =
+            run_script_with(Path::new(SCAN), &dir, &[("LC_ALL", utf8), ("LANG", utf8)]);
+        assert_eq!(
+            code,
+            Some(1),
+            "{file} under C.UTF-8 must fail the scan:\n{text}"
+        );
+        assert!(
+            text.contains(&format!("rule={rule} (value withheld)")),
+            "{file}:\n{text}"
+        );
+        assert_redacted(&text, value, file);
+        let _ = fs::remove_dir_all(&dir);
+    }
+    assert!(
+        fs::read_to_string(SCAN)
+            .unwrap()
+            .contains("\nexport LC_ALL=C\n")
+    );
+}
+
+/// Runs `script ARG` under `timeout -k 2 10` (which signals the whole
+/// process group, so a runaway `find` dies too). Exit 124/137 means it hung.
+fn run_script_with_timeout(script: &Path, arg: &Path) -> (Option<i32>, String) {
+    let timeout = tool("timeout").expect("coreutils timeout must be installed");
+    let bash = tool("bash").expect("bash must be available");
+    let mut cmd = Command::new(timeout);
+    cmd.args(["-k", "2", "10"]).arg(bash).arg(script).arg(arg);
+    let out = with_known_hex(&mut cmd).output().expect("timeout must run");
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    (out.status.code(), text)
+}
+
+/// (case, set-up given (scratch root, root/dist, planted bytes) returning
+/// the scan argument, exit code, expected text, findings when exit is 1).
+type SymlinkCase = (
+    &'static str,
+    fn(&Path, &Path, &[u8]) -> PathBuf,
+    i32,
+    &'static str,
+);
+
+fn link(target: impl AsRef<Path>, at: impl AsRef<Path>) {
+    std::os::unix::fs::symlink(target, at).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+fn symlink_cases() -> Vec<SymlinkCase> {
+    vec![
+        // Followed inside the roots, and each real file scanned once.
+        (
+            "dir-inside",
+            |_, d, x| {
+                fs::create_dir_all(d.join("sub")).unwrap();
+                fs::write(d.join("sub/z-secret.bin"), x).unwrap();
+                link("sub", d.join("linkdir"));
+                d.to_owned()
+            },
+            1,
+            "dist/sub/z-secret.bin resolved=",
+        ),
+        (
+            "file-inside",
+            |_, d, x| {
+                fs::write(d.join("z-secret.bin"), x).unwrap();
+                link("z-secret.bin", d.join("link.bin"));
+                d.to_owned()
+            },
+            1,
+            "dist/z-secret.bin resolved=",
+        ),
+        (
+            "two-links-one-dir",
+            |_, d, x| {
+                fs::create_dir_all(d.join("sub")).unwrap();
+                fs::write(d.join("sub/z-secret.bin"), x).unwrap();
+                link("sub", d.join("link-a"));
+                link("sub", d.join("link-b"));
+                d.to_owned()
+            },
+            1,
+            "scanning each once",
+        ),
+        (
+            "two-links-no-direct-path",
+            |r, d, x| {
+                // Scanned through a symlinked parent: no listed path is the
+                // real one, so only the resolved-path dedupe keeps it to one.
+                fs::create_dir_all(d.join("sub")).unwrap();
+                fs::write(d.join("sub/z-secret.bin"), x).unwrap();
+                link("sub", d.join("link-a"));
+                link("sub", d.join("link-b"));
+                link(r, r.join("alias"));
+                r.join("alias/dist")
+            },
+            1,
+            "scanning each once (3 of 5)",
+        ),
+        (
+            "trailing-newline-names",
+            |_, d, x| {
+                fs::write(d.join("sec\n"), x).unwrap();
+                link("sec\n", d.join("lnk\n"));
+                d.to_owned()
+            },
+            1,
+            "scanning each once (3 of 4)",
+        ),
+        (
+            "symlink-argument",
+            |r, d, x| {
+                fs::write(d.join("z-secret.bin"), x).unwrap();
+                link(d, r.join("arg-link"));
+                r.join("arg-link")
+            },
+            1,
+            "dist/z-secret.bin resolved=",
+        ),
+        // Refused: outside the roots, broken, looping.
+        (
+            "proc-self-environ",
+            |_, d, _| {
+                link("/proc/self/environ", d.join("env"));
+                d.to_owned()
+            },
+            2,
+            "env::symlink resolves outside the scanned roots",
+        ),
+        (
+            "file-outside",
+            |r, d, x| {
+                fs::write(r.join("outside.bin"), x).unwrap();
+                link(r.join("outside.bin"), d.join("out.bin"));
+                d.to_owned()
+            },
+            2,
+            "out.bin::symlink resolves outside the scanned roots",
+        ),
+        (
+            "dir-outside",
+            |r, d, x| {
+                fs::create_dir_all(r.join("elsewhere")).unwrap();
+                fs::write(r.join("elsewhere/z.bin"), x).unwrap();
+                link(r.join("elsewhere"), d.join("out-dir"));
+                d.to_owned()
+            },
+            2,
+            "out-dir::symlink resolves outside the scanned roots",
+        ),
+        (
+            "dot-dot-escape",
+            |r, d, x| {
+                fs::write(r.join("outside.bin"), x).unwrap();
+                fs::create_dir_all(d.join("sub")).unwrap();
+                link("../../outside.bin", d.join("sub/esc"));
+                d.to_owned()
+            },
+            2,
+            "sub/esc::symlink resolves outside the scanned roots",
+        ),
+        (
+            "sibling-prefix-dir",
+            |r, d, x| {
+                fs::create_dir_all(r.join("dist-evil")).unwrap();
+                fs::write(r.join("dist-evil/z.bin"), x).unwrap();
+                link("../dist-evil", d.join("evil"));
+                d.to_owned()
+            },
+            2,
+            "evil::symlink resolves outside the scanned roots",
+        ),
+        (
+            "sibling-prefix-file",
+            |r, d, x| {
+                fs::create_dir_all(r.join("dist-evil")).unwrap();
+                fs::write(r.join("dist-evil/z.bin"), x).unwrap();
+                link("../dist-evil/z.bin", d.join("evil.bin"));
+                d.to_owned()
+            },
+            2,
+            "evil.bin::symlink resolves outside the scanned roots",
+        ),
+        (
+            "broken",
+            |_, d, _| {
+                link("does-not-exist", d.join("broken"));
+                d.to_owned()
+            },
+            2,
+            "broken::broken or looping symlink",
+        ),
+        (
+            "loop",
+            |_, d, _| {
+                link("loop-b", d.join("loop-a"));
+                link("loop-a", d.join("loop-b"));
+                d.to_owned()
+            },
+            2,
+            "::broken or looping symlink",
+        ),
+        (
+            "ancestor-loop",
+            |_, d, _| {
+                link(".", d.join("self"));
+                d.to_owned()
+            },
+            2,
+            "find failed on:",
+        ),
+        (
+            "fifo",
+            |_, d, _| {
+                let ok = Command::new("mkfifo").arg(d.join("pipe")).status().unwrap();
+                assert!(ok.success());
+                d.to_owned()
+            },
+            2,
+            "pipe::not a regular file, directory or symlink",
+        ),
+        (
+            "broken-symlink-argument",
+            |r, _, _| {
+                link(r.join("nowhere"), r.join("arg-link"));
+                r.join("arg-link")
+            },
+            2,
+            "cannot resolve scan path",
+        ),
+        // Last, so a mutant that follows links fails an earlier case first and
+        // never walks the real filesystem from /.
+        (
+            "link-to-filesystem-root",
+            |_, d, _| {
+                link("/", d.join("slash"));
+                d.to_owned()
+            },
+            2,
+            "slash::symlink resolves outside the scanned roots",
+        ),
+    ]
+}
+
+/// FTBB N7 / REFACTOR R2, one rule for both repos: a symlink that resolves
+/// inside the scanned roots is followed (each real file scanned once); a
+/// broken, looping or outside one exits 2 and is named. Temp dirs only, and
+/// every run is killed after 10 s, so a link to / cannot walk the real
+/// filesystem or hang the suite.
+#[test]
+fn scanner_follows_symlinks_inside_the_roots_and_refuses_the_rest() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let ghp = fake_ghp();
+    let planted = [b"\x00 t=".as_slice(), ghp.as_bytes(), b" \x00"].concat();
+    for (case, set_up, want, message) in symlink_cases() {
+        let root = scratch(&format!("symlink-{case}"));
+        let dir = root.join("dist");
+        fs::create_dir_all(&dir).unwrap();
+        clean_fixture(&dir);
+        let arg = set_up(&root, &dir, &planted);
+        let inline = root.join("inlined-scan-for-keys.sh");
+        fs::write(&inline, inlined_scanner()).unwrap();
+        for script in [PathBuf::from(SCAN), inline] {
+            let ctx = format!("{} with symlink case {case}", script.display());
+            let start = std::time::Instant::now();
+            let (code, text) = run_script_with_timeout(&script, &arg);
+            assert!(
+                !matches!(code, Some(124 | 137)) && start.elapsed().as_secs() < 10,
+                "{ctx} hung:\n{text}"
+            );
+            assert_eq!(code, Some(want), "{ctx}:\n{text}");
+            assert!(
+                text.contains(message),
+                "{ctx}: expected {message:?}:\n{text}"
+            );
+            if case == "link-to-filesystem-root" {
+                assert!(
+                    !text.contains("slash/"),
+                    "{ctx} must name no path under the link:\n{text}"
+                );
+            }
+            if want == 1 {
+                let real = format!(
+                    "resolved={}/dist/",
+                    fs::canonicalize(&root).unwrap().display()
+                );
+                assert!(
+                    text.contains(&real),
+                    "{ctx}: must print the resolved path:\n{text}"
+                );
+            }
+            if want == 2 {
+                assert!(
+                    !text.contains("files scanned:"),
+                    "{ctx} must not scan:\n{text}"
+                );
+            } else {
+                assert!(
+                    text.contains("key scan: 1 finding(s)"),
+                    "{ctx}: one token, one finding:\n{text}"
+                );
+            }
+            assert_redacted(&text, &ghp, &ctx);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+/// A scan path starting with `-` is a path, never a `find` option. A root
+/// named `-L`, `-H` or `-P` would otherwise switch find's link mode and walk
+/// "." instead. The current directory holds sentinels that only a walk of
+/// "." would reach: another planted key and a dangling link. Temp dirs only,
+/// under `timeout`.
+#[test]
+fn scanner_treats_a_dash_leading_root_as_a_path() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let ghp = fake_ghp();
+    let planted = [b"\x00 t=".as_slice(), ghp.as_bytes(), b" \x00"].concat();
+    let timeout = tool("timeout").expect("coreutils timeout must be installed");
+    let bash = tool("bash").expect("bash must be available");
+    for name in ["-dist", "-L", "-P", "-H"] {
+        let cwd = scratch(&format!("dash-root{name}"));
+        fs::create_dir_all(cwd.join(name)).unwrap();
+        clean_fixture(&cwd.join(name));
+        fs::write(cwd.join(name).join("z-secret.bin"), &planted).unwrap();
+        fs::create_dir_all(cwd.join("sibling")).unwrap();
+        fs::write(cwd.join("sibling/outside-secret.bin"), &planted).unwrap();
+        link("does-not-exist", cwd.join("dangling-outside-the-root"));
+        let inline = cwd.join("inlined-scan-for-keys.sh");
+        fs::write(&inline, inlined_scanner()).unwrap();
+        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join(SCAN);
+        for script in [file, inline] {
+            let ctx = format!("{} on root {name}", script.display());
+            let mut cmd = Command::new(&timeout);
+            cmd.args(["-k", "2", "10"])
+                .arg(&bash)
+                .arg(&script)
+                .arg(name)
+                .current_dir(&cwd);
+            let out = with_known_hex(&mut cmd).output().expect("timeout must run");
+            let text = String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr);
+            assert!(
+                !matches!(out.status.code(), Some(124 | 137)),
+                "{ctx} hung:\n{text}"
+            );
+            assert_eq!(out.status.code(), Some(1), "{ctx} must scan it:\n{text}");
+            let want = format!(
+                "FINDING file=./{name}/z-secret.bin resolved={}/{name}/z-secret.bin rule=github-token (value withheld)",
+                fs::canonicalize(&cwd).unwrap().display()
+            );
+            assert!(text.contains(&want), "{ctx}: expected {want:?}:\n{text}");
+            assert!(text.contains("key scan: 1 finding(s)"), "{ctx}:\n{text}");
+            for outside in ["sibling", "outside-secret", "dangling-outside-the-root"] {
+                assert!(
+                    !text.contains(outside),
+                    "{ctx} walked outside the root:\n{text}"
+                );
+            }
+            assert_redacted(&text, &ghp, &ctx);
+        }
+        let _ = fs::remove_dir_all(&cwd);
+    }
+}
+
+/// UTF-16LE little-endian encoding of `s` (ASCII only).
+fn utf16le(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+/// REFACTOR R1 (BLE #55): binaries also get a UTF-16LE `strings` pass, so a
+/// wide-char literal holding a key is not invisible.
+#[test]
+fn scanner_reads_utf16le_strings_in_binaries() {
+    if !scanner_tools_present() {
+        return;
+    }
+    for (rule, value) in [
+        ("github-token", fake_ghp()),
+        ("hibp-key-hex", random_hex32()),
+    ] {
+        let dir = scratch(&format!("utf16-{rule}"));
+        clean_fixture(&dir);
+        let bytes = [
+            b"\x7fELF\x00\x01\x02".as_slice(),
+            &utf16le(&format!("key={value};")),
+            b"\x00\x00\x03",
+        ]
+        .concat();
+        fs::write(dir.join("wide.bin"), &bytes).unwrap();
+        let (code, text) = scan(&dir);
+        assert_eq!(code, Some(1), "UTF-16LE {rule} must fail the scan:\n{text}");
+        assert!(
+            text.contains(&format!("wide.bin rule={rule} (value withheld)")),
+            "UTF-16LE {rule}:\n{text}"
+        );
+        assert_redacted(&text, &value, rule);
+        let _ = fs::remove_dir_all(&dir);
+    }
+    assert!(fs::read_to_string(SCAN)
+        .unwrap()
+        .contains("wide=$(strings -a -e l -n 8 -- \"$src\") || { echo \"::error::strings -e l failed on $f\"; exit 1; }"));
+}
+
+/// FTBB N6: if the destination is a directory, `mv -f` would move the binary
+/// into it and report success. `mv -fT` refuses.
+#[test]
+fn installer_refuses_a_directory_at_the_destination() {
+    let tools = ["sha256sum", "install", "mktemp", "mv", "cut", "cp"];
+    if tools.iter().any(|t| tool(t).is_none()) {
+        assert!(std::env::var_os("CI").is_none(), "CI must have coreutils");
+        return;
+    }
+    let asset = "huntsman-recon-aarch64-linux-android";
+    // The installer runs the staged recon binary offline (`check`, then
+    // `verify`) before moving it; this stand-in passes both.
+    let new_build = b"#!/bin/sh\nexit 0\n";
+    let probe = scratch("install-dir-probe");
+    fs::write(probe.join("b"), new_build).unwrap();
+    let good = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
+    let _ = fs::remove_dir_all(&probe);
+    let (code, text, root) = run_installer_with("dest-dir", new_build, &good, true);
+    assert_ne!(
+        code,
+        Some(0),
+        "a directory at the destination must fail:\n{text}"
+    );
+    assert!(!text.contains("Installed"), "{text}");
+    assert!(text.contains("could not move"), "{text}");
+    let dest = root.join("prefix/bin/huntsman-recon");
+    assert!(dest.is_dir());
+    assert_eq!(
+        fs::read_dir(&dest).unwrap().count(),
+        0,
+        "nothing moved into it"
+    );
+    assert_eq!(
+        bin_entries(&root),
+        ["huntsman-recon"],
+        "no staging leftovers"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------------------
+// Publish job: run the extracted steps against a fake `gh` (FTBB N2, N3, N4).
+
+/// The `run: |` script of the step whose name starts with `prefix`, de-indented.
+fn step_script(prefix: &str) -> String {
+    let wf = release();
+    let step = wf
+        .split("      - name: ")
+        .find(|s| s.starts_with(prefix))
+        .unwrap_or_else(|| panic!("{RELEASE} must have a step {prefix:?}"));
+    let marker = "        run: |\n";
+    let from = step.find(marker).expect("step must have a run script") + marker.len();
+    let script = step[from..]
+        .lines()
+        .take_while(|l| l.is_empty() || l.starts_with("          "))
+        .map(|l| l.get(10..).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert!(
+        !script.contains("${{"),
+        "{prefix}: script must take inputs from env"
+    );
+    script
+}
+
+const FAKE_GH: &str = r#"#!/usr/bin/env bash
+# Fake `gh api PATH [--jq EXPR]`: answers from $FAKE_GH/<key>.json, where key
+# is PATH without repos/<repo>/ and with / as _. <key>.status overrides the
+# HTTP status; a missing fixture is a 404.
+[ "${1:-}" = api ] || { echo "fake gh: unexpected: $*" >&2; exit 99; }
+shift
+path="" jq=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --jq) jq="$2"; shift 2 ;;
+    -*) echo "fake gh: unexpected flag $1" >&2; exit 99 ;;
+    *) path="$1"; shift ;;
+  esac
+done
+key="${path#repos/"$GITHUB_REPOSITORY"/}"
+key="${key//\//_}"
+echo "$path" >> "$FAKE_GH/calls"
+status=404
+body='{"message":"Not Found"}'
+if [ -f "$FAKE_GH/$key.json" ]; then status=200; body="$(cat "$FAKE_GH/$key.json")"; fi
+if [ -f "$FAKE_GH/$key.status" ]; then status="$(cat "$FAKE_GH/$key.status")"; fi
+if [ "$status" != 200 ]; then printf '%s' "$body"; echo "gh: Fake (HTTP $status)" >&2; exit 1; fi
+if [ -n "$jq" ]; then jq -r "$jq" <<<"$body"; else printf '%s\n' "$body"; fi
+"#;
+
+const STEP_TAG: &str = "main-0a1b2c3";
+const STEP_ASSET: &str = "huntsman-recon-aarch64-linux-android";
+
+fn step_sha() -> String {
+    format!("0a1b2c3{}", "d".repeat(33))
+}
+
+fn digest(c: &str) -> String {
+    format!("sha256:{}", c.repeat(64))
+}
+
+fn release_json(prerelease: bool, assets: &[(String, Option<String>)]) -> String {
+    let assets: Vec<String> = assets
+        .iter()
+        .map(|(n, d)| match d {
+            Some(d) => format!("{{\"name\":\"{n}\",\"digest\":\"{d}\"}}"),
+            None => format!("{{\"name\":\"{n}\",\"digest\":null}}"),
+        })
+        .collect();
+    format!(
+        "{{\"prerelease\":{prerelease},\"draft\":false,\"assets\":[{}]}}",
+        assets.join(",")
+    )
+}
+
+fn complete_assets() -> Vec<(String, Option<String>)> {
+    [
+        STEP_ASSET.to_owned(),
+        format!("{STEP_ASSET}.sha256"),
+        format!("{STEP_ASSET}.provenance.json"),
+        "key-scan-report.txt".to_owned(),
+        "install-termux.sh".to_owned(),
+    ]
+    .into_iter()
+    .zip(["a", "b", "c", "e", "f"])
+    .map(|(n, c)| (n, Some(digest(c))))
+    .collect()
+}
+
+struct StepRun {
+    code: Option<i32>,
+    text: String,
+    output: String,
+}
+
+/// A fake `gh api` answer: (fixture key, HTTP status, body).
+type Answer = (String, u16, String);
+
+/// Runs `script` with the fake `gh`.
+fn run_step(name: &str, script: &str, fixtures: &[Answer], envs: &[(&str, &str)]) -> StepRun {
+    let root = scratch(&format!("step-{name}"));
+    let (fakes, data, tmp) = (root.join("fakes"), root.join("gh"), root.join("tmp"));
+    for d in [&fakes, &data, &tmp] {
+        fs::create_dir_all(d).unwrap();
+    }
+    write_exec(&fakes.join("gh"), FAKE_GH);
+    for (key, status, body) in fixtures {
+        fs::write(data.join(format!("{key}.json")), body).unwrap();
+        if *status != 200 {
+            fs::write(data.join(format!("{key}.status")), status.to_string()).unwrap();
+        }
+    }
+    let file = root.join("step.sh");
+    fs::write(&file, script).unwrap();
+    let out_file = root.join("output");
+    fs::write(&out_file, "").unwrap();
+    let mut cmd = Command::new(tool("bash").expect("bash must be available"));
+    cmd.arg(&file)
+        .env("PATH", path_with(&fakes))
+        .env("FAKE_GH", &data)
+        .env("GITHUB_REPOSITORY", "owner/repo")
+        .env("GITHUB_SHA", step_sha())
+        .env("TAG", STEP_TAG)
+        .env("ASSET", STEP_ASSET)
+        .env("GITHUB_OUTPUT", &out_file)
+        .env("GITHUB_STEP_SUMMARY", root.join("summary"))
+        .env("RUNNER_TEMP", &tmp);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("bash must run");
+    let run = StepRun {
+        code: out.status.code(),
+        text: String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr),
+        output: fs::read_to_string(&out_file).unwrap(),
+    };
+    let _ = fs::remove_dir_all(&root);
+    run
+}
+
+fn jq_present() -> bool {
+    let present = tool("jq").is_some();
+    assert!(
+        present || std::env::var_os("CI").is_none(),
+        "CI must have jq"
+    );
+    present
+}
+
+/// (case, fake answers, exit code, marker or `exists=` line).
+type ExistingCase = (&'static str, Vec<Answer>, i32, &'static str);
+
+fn existing_cases() -> Vec<ExistingCase> {
+    let tag_at = |ty: &str, sha: &str| -> Answer {
+        (
+            format!("git_ref_tags_{STEP_TAG}"),
+            200,
+            format!("{{\"object\":{{\"type\":\"{ty}\",\"sha\":\"{sha}\"}}}}"),
+        )
+    };
+    let here = || tag_at("commit", &step_sha());
+    let rel = |pre: bool, assets: &[(String, Option<String>)]| -> Answer {
+        (
+            format!("releases_tags_{STEP_TAG}"),
+            200,
+            release_json(pre, assets),
+        )
+    };
+    let full = complete_assets();
+    let mut missing = full.clone();
+    missing.pop();
+    let mut null_digest = full.clone();
+    null_digest[1].1 = None;
+    let mut duplicate = full.clone();
+    duplicate.push(duplicate[0].clone());
+    let ref_502: Answer = (format!("git_ref_tags_{STEP_TAG}"), 502, "{}".to_owned());
+    vec![
+        ("absent", vec![], 0, "exists=false"),
+        ("complete", vec![here(), rel(true, &full)], 0, "exists=true"),
+        ("ref-502", vec![ref_502], 15, "[refuse:ref-lookup-failed]"),
+        (
+            "other-commit",
+            vec![tag_at("commit", &"9".repeat(40)), rel(true, &full)],
+            11,
+            "[refuse:tag-elsewhere]",
+        ),
+        (
+            "annotated",
+            vec![tag_at("tag", &step_sha()), rel(true, &full)],
+            11,
+            "[refuse:tag-elsewhere]",
+        ),
+        (
+            "no-release",
+            vec![here()],
+            12,
+            "[refuse:tag-without-release]",
+        ),
+        (
+            "not-prerelease",
+            vec![here(), rel(false, &full)],
+            13,
+            "[refuse:not-prerelease]",
+        ),
+        (
+            "asset-missing",
+            vec![here(), rel(true, &missing)],
+            14,
+            "[refuse:asset-incomplete]",
+        ),
+        (
+            "null-digest",
+            vec![here(), rel(true, &null_digest)],
+            14,
+            "[refuse:asset-incomplete]",
+        ),
+        (
+            "duplicate",
+            vec![here(), rel(true, &duplicate)],
+            14,
+            "[refuse:asset-incomplete]",
+        ),
+    ]
+}
+
+#[test]
+fn existing_release_check_refuses_each_case_by_exit_code_and_marker() {
+    if !jq_present() {
+        return;
+    }
+    let script = step_script("Check for an existing");
+    for (case, fixtures, want, marker) in existing_cases() {
+        let run = run_step(&format!("existing-{case}"), &script, &fixtures, &[]);
+        assert_eq!(run.code, Some(want), "{case}:\n{}", run.text);
+        if want == 0 {
+            assert_eq!(run.output, format!("{marker}\n"), "{case}:\n{}", run.text);
+            assert!(!run.text.contains("[refuse:"), "{case}:\n{}", run.text);
+        } else {
+            assert!(
+                run.text.contains(&format!("::error::{marker} ")),
+                "{case}:\n{}",
+                run.text
+            );
+            assert_eq!(run.output, "", "{case}: a refusal must not set exists");
+        }
+        if case == "asset-missing" {
+            assert!(
+                run.text
+                    .contains(&format!("gh release delete {STEP_TAG} --cleanup-tag")),
+                "{case}: the remedy must delete the tag too:\n{}",
+                run.text
+            );
+        }
+    }
+}
+
+/// (case, `EXISTS`, `ATTESTATION_ID`, fake answers, exit code, marker).
+type AttestCase = (
+    &'static str,
+    &'static str,
+    &'static str,
+    Vec<Answer>,
+    i32,
+    &'static str,
+);
+
+fn attest_cases() -> Vec<AttestCase> {
+    let rel = |assets: &[(String, Option<String>)]| -> Answer {
+        (
+            format!("releases_tags_{STEP_TAG}"),
+            200,
+            release_json(true, assets),
+        )
+    };
+    let att = |status: u16, body: &str| -> Answer {
+        (
+            format!("attestations_{}", digest("a")),
+            status,
+            body.to_owned(),
+        )
+    };
+    let full = complete_assets();
+    let mut no_digest = full.clone();
+    no_digest[0].1 = None;
+    let one = "{\"attestations\":[{}]}";
+    let none = "{\"attestations\":[]}";
+    vec![
+        (
+            "new-attested",
+            "false",
+            "52558529",
+            vec![],
+            0,
+            "attestation 52558529",
+        ),
+        (
+            "new-no-id",
+            "false",
+            "",
+            vec![],
+            21,
+            "[refuse:no-attestation-id]",
+        ),
+        (
+            "old-attested",
+            "true",
+            "",
+            vec![rel(&full), att(200, one)],
+            0,
+            "1 build provenance attestation(s)",
+        ),
+        (
+            "old-none-404",
+            "true",
+            "",
+            vec![rel(&full), att(404, "{}")],
+            24,
+            "[refuse:unattested-release]",
+        ),
+        (
+            "old-none-empty",
+            "true",
+            "",
+            vec![rel(&full), att(200, none)],
+            24,
+            "[refuse:unattested-release]",
+        ),
+        (
+            "old-lookup-502",
+            "true",
+            "",
+            vec![rel(&full), att(502, "{}")],
+            23,
+            "[refuse:attestation-lookup-failed]",
+        ),
+        (
+            "old-no-digest",
+            "true",
+            "",
+            vec![rel(&no_digest)],
+            22,
+            "[refuse:no-asset-digest]",
+        ),
+        ("no-check", "", "", vec![], 25, "[refuse:no-existing-check]"),
+    ]
+}
+
+#[test]
+fn attestation_requirement_refuses_each_case_by_exit_code_and_marker() {
+    if !jq_present() {
+        return;
+    }
+    let script = step_script("Require a build provenance attestation");
+    for (case, exists, id, fixtures, want, marker) in attest_cases() {
+        let envs = [
+            ("EXISTS", exists),
+            ("ATTESTATION_ID", id),
+            ("ATTESTATION_URL", "https://example.invalid/attestations/1"),
+        ];
+        let run = run_step(&format!("attest-{case}"), &script, &fixtures, &envs);
+        assert_eq!(run.code, Some(want), "{case}:\n{}", run.text);
+        assert!(
+            run.text.contains(marker),
+            "{case}: expected {marker:?}:\n{}",
+            run.text
+        );
+        if want != 0 {
+            assert!(
+                run.text.contains(&format!("::error::{marker} ")),
+                "{case}:\n{}",
+                run.text
+            );
+        }
+        if case.starts_with("old-none") {
+            assert!(
+                run.text
+                    .contains(&format!("gh release delete {STEP_TAG} --cleanup-tag")),
+                "{case}: the remedy must delete the tag too:\n{}",
+                run.text
+            );
+        }
+    }
+}
+
+/// FTBB N4: every step that writes a release, a tag or an attestation runs
+/// only when no complete release exists at this commit.
+#[test]
+fn every_publishing_write_is_gated_on_no_existing_release() {
+    let wf = release();
+    let publish = job(&wf, "publish");
+    let writes = [
+        "uses: actions/attest-build-provenance@",
+        "gh release create",
+        "gh release delete",
+        "gh api -X DELETE",
+        "gh release upload",
+        "gh release edit",
+    ];
+    let (mut gated, mut reconcile, mut latest) = (0, 0, 0);
+    for step in publish.split("      - name: ").skip(1) {
+        let writes_here = step
+            .lines()
+            .any(|l| writes.iter().any(|w| l.trim_start().starts_with(w)));
+        if !writes_here {
+            continue;
+        }
+        // Main's orphan-draft reconciliation (#853) deletes only a draft
+        // main-<sha7> release whose tag is absent. It never touches a release
+        // that has a tag, so it cannot replace or re-attest an existing one.
+        if step.starts_with("Reconcile orphan main-channel draft releases") {
+            for required in [
+                "select(.draft == true)",
+                "[[ \"$stale_tag\" =~ ^main-[0-9a-f]{7}$ ]] || continue",
+                "if ! gh api \"$api/git/ref/tags/${stale_tag}\" >/dev/null 2>&1; then",
+            ] {
+                assert!(step.contains(required), "reconcile must keep {required:?}");
+            }
+            let deletes: Vec<&str> = step
+                .lines()
+                .map(str::trim_start)
+                .filter(|l| writes.iter().any(|w| l.starts_with(w)))
+                .collect();
+            assert_eq!(
+                deletes,
+                ["gh api -X DELETE \"$api/releases/${id}\""],
+                "reconcile may only delete the orphan draft"
+            );
+            reconcile += 1;
+            continue;
+        }
+        // The opt-in `latest` move (#869, ad86c60d) also runs on a re-run of an
+        // existing release: it promotes the published bytes, and every write in
+        // it targets `latest`, never this commit's main-<sha7> release or tag.
+        if step.starts_with("Move the rolling `latest` pre-release") {
+            assert!(
+                step.contains("        if: vars.PROMOTE_RECON_TO_LATEST == 'true' && "),
+                "moving latest must stay behind the opt-in:\n{step}"
+            );
+            for l in step.lines().map(str::trim_start) {
+                if writes.iter().any(|w| l.starts_with(w)) {
+                    assert!(
+                        l.starts_with("gh release delete latest ")
+                            || l == "gh api -X DELETE \"$api/git/refs/tags/latest\""
+                            || l == "gh release create latest \\",
+                        "the latest step may only write `latest`: {l:?}"
+                    );
+                }
+            }
+            latest += 1;
+            continue;
+        }
+        let cond = step
+            .lines()
+            .find(|l| l.starts_with("        if: "))
+            .unwrap_or_else(|| panic!("a writing step must have an if:\n{step}"));
+        assert!(
+            cond.contains("steps.existing.outputs.exists == 'false'"),
+            "a writing step must be gated on exists == 'false':\n{step}"
+        );
+        gated += 1;
+    }
+    assert_eq!(gated, 2, "attest and publish");
+    assert_eq!(reconcile, 1, "the orphan-draft reconciliation step");
+    assert_eq!(latest, 1, "the opt-in latest move");
 }
 
 /// The promotion of `latest` is checked offline, against a stub `gh` that serves a fixture

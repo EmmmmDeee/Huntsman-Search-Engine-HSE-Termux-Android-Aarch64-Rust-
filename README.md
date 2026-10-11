@@ -87,7 +87,7 @@ before using credentials or network access.
 | `src/` | The crate: library modules plus the `huntsman-recon` binary (`main.rs`). |
 | `tests/` | Acceptance, CLI, local-HTTP and legacy-reference integration tests; `hibp_build.rs` (build-time key embedding rules); `android_ci.rs` (the CI workflow keeps the aarch64 Android cross-build and its artifact); plus `readme.rs` and `dispositions.rs`, which check this README and `docs/ARCHIVE_PROVENANCE.md` against the binary and `legacy/`. |
 | `var/` | Artifacts written by `check` (`ledger.json`, `navigator.json`, `stix-bundle.json`). CI fails if `check` changes them. |
-| `docs/` | `RECONSTRUCTION_2026-10-02.md` (decisions and falsification passes) and `DISPOSITIONS.md` (per-file accounting of every legacy file). |
+| `docs/` | `RECONSTRUCTION_2026-10-02.md` (decisions and falsification passes), `DISPOSITIONS.md` (per-file accounting of every legacy file) and `RELEASING.md` (the main-channel release workflow, its key scanner, publish refusals and required attestation). |
 | `legacy/` | Canonical extracted historical reference trees. Not part of the build. |
 | `docs/ARCHIVE_PROVENANCE.md` | SHA-256/Git identities and extracted-tree mapping for the pinned root ZIP references. |
 | `.github/` | `workflows/ci.yml` (tests on Rust 1.87 and stable; aarch64 Android cross-build), `workflows/release.yml` (`main-<sha7>` pre-releases of `huntsman-recon`), `scripts/` (`scan-for-keys.sh`, `install-termux.sh`) and `actions/setup-ndk-aarch64` (NDK compiler and linker environment). |

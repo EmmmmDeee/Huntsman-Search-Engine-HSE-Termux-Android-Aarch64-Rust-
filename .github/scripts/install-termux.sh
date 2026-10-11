@@ -102,7 +102,7 @@ activate_staged_binary() {
     echo "Already installed and verified $dest (${TAG})"
     return
   fi
-  mv -f "$stage" "$dest" ||
+  mv -fT "$stage" "$dest" ||
     die "could not move $stage into place; $dest left unchanged"
   echo "Installed $dest (${TAG})"
 }
