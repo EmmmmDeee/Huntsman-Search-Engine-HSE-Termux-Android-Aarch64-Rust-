@@ -12,6 +12,21 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 
 pub const ACTIONABLE_FLOOR: f64 = 0.50;
 
+/// Company words. A marker qualifies a name, so it counts only as a whole word, in a value
+/// of two or more words.
+const COMPANY_WORDS: &[&str] = &[
+    "llc",
+    "inc",
+    "incorporated",
+    "corp",
+    "corporation",
+    "corporate",
+    "gmbh",
+];
+
+/// Street words, matched the same way as [`COMPANY_WORDS`].
+const STREET_WORDS: &[&str] = &["street", "streets", "st", "road", "roads", "rd"];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Classified {
     pub kind: EntityKind,
@@ -63,25 +78,31 @@ pub fn classify(raw: &str) -> Classified {
         let handle = canonical_handle(value).unwrap_or_else(|| value.trim().to_owned());
         return classified(EntityKind::Username, &handle, 0.40, "handle");
     }
-    let lowered = value.to_ascii_lowercase();
-    if ["pty ltd", "llc", "inc", "corp", "gmbh"]
-        .iter()
-        .any(|suffix| lowered.contains(suffix))
-    {
+    let multiword = value.split_whitespace().count() >= 2;
+    let tokens = word_tokens(value);
+    let has_word = |list: &[&str]| tokens.iter().any(|token| list.contains(&token.as_str()));
+    let pty_ltd = tokens
+        .windows(2)
+        .any(|pair| pair[0] == "pty" && pair[1] == "ltd");
+    if multiword && (pty_ltd || has_word(COMPANY_WORDS)) {
         return classified(EntityKind::Organisation, value, 0.60, "company-suffix");
     }
-    if lowered.contains("street")
-        || lowered.contains("st ")
-        || lowered.contains("road")
-        || lowered.contains("rd ")
-        || value.chars().any(|c| c.is_ascii_digit())
-    {
+    if multiword && (has_word(STREET_WORDS) || value.chars().any(|c| c.is_ascii_digit())) {
         return classified(EntityKind::Address, value, 0.60, "street-shape");
     }
-    if value.split_whitespace().count() >= 2 {
+    if multiword {
         return classified(EntityKind::Person, value, 0.50, "multiword");
     }
     classified(EntityKind::Other, value, 0.20, "residual")
+}
+
+/// Lowercased alphanumeric runs of a value, so keyword markers match whole words only.
+fn word_tokens(value: &str) -> Vec<String> {
+    value
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 #[must_use]
@@ -271,5 +292,54 @@ mod tests {
         assert_eq!(found.len(), 3);
         assert!(found.iter().any(|item| item.kind == EntityKind::Email));
         assert!(found.iter().any(|item| item.kind == EntityKind::Url));
+    }
+
+    #[test]
+    fn keyword_markers_match_whole_words_only() {
+        // Hand-written regression set: each input and the kind it must receive. Names that
+        // contain a marker inside a longer word keep their person kind.
+        let cases = [
+            ("Vincent Smith", EntityKind::Person),
+            ("Lincoln Hill", EntityKind::Person),
+            ("Mary Ward", EntityKind::Person),
+            ("Mary Ward Smith", EntityKind::Person),
+            ("John Hurst", EntityKind::Person),
+            ("John Hurst Jones", EntityKind::Person),
+            ("Broadbent Lee", EntityKind::Person),
+            ("Justin Bell", EntityKind::Person),
+            ("Ada Lovelace", EntityKind::Person),
+            ("Acme Pty Ltd", EntityKind::Organisation),
+            ("Foo Inc", EntityKind::Organisation),
+            ("Bar Corp", EntityKind::Organisation),
+            ("Acme Corporation", EntityKind::Organisation),
+            ("Acme Incorporated", EntityKind::Organisation),
+            ("Baz LLC", EntityKind::Organisation),
+            ("Qux GmbH", EntityKind::Organisation),
+            ("12 Smith Street", EntityKind::Address),
+            ("5 Beach Rd", EntityKind::Address),
+            ("Main St", EntityKind::Address),
+            ("Ocean Road", EntityKind::Address),
+        ];
+        let wrong: Vec<String> = cases
+            .iter()
+            .filter_map(|(raw, want)| {
+                let got = classify(raw).kind;
+                (got != *want).then(|| format!("{raw:?}: want {want:?}, got {got:?}"))
+            })
+            .collect();
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    #[test]
+    fn single_words_in_prose_are_not_actionable() {
+        // Each word is classified on its own. Keyword substrings inside ordinary words
+        // ("since", "province", "broadcast") and digits in dates or times must not match.
+        let prose = "Since 2026 the province kept its principle; Vincent broadcast 10:30 COVID-19";
+        let actionable: Vec<String> = extract(prose)
+            .into_iter()
+            .filter(Classified::is_actionable)
+            .map(|item| format!("{:?}={}", item.kind, item.value))
+            .collect();
+        assert!(actionable.is_empty(), "{actionable:?}");
     }
 }
