@@ -1,7 +1,6 @@
 //! Local search. Operator-supplied documents only.
 //! A blocked or throttled fetch is not a hit. No paid source. No live client.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use crate::classify::classify_response;
@@ -58,22 +57,42 @@ pub fn search(docs: &[Document], query: &str) -> Vec<Hit> {
         return Vec::new();
     }
     let mut hits = Vec::new();
+    let mut counts = vec![0usize; terms.len()];
     for doc in docs {
-        let mut counts: HashMap<String, usize> = HashMap::new();
-        for token in tokenize(&doc.body) {
-            *counts.entry(token).or_default() += 1;
-        }
-        let found: Option<Vec<usize>> = terms.iter().map(|t| counts.get(t).copied()).collect();
-        if let Some(found) = found {
+        counts.fill(0);
+        for_each_token(&doc.body, |token| {
+            if let Ok(index) = terms.binary_search_by(|term| term.as_str().cmp(token)) {
+                counts[index] += 1;
+            }
+        });
+        if counts.iter().all(|&count| count > 0) {
             hits.push(Hit {
                 id: doc.id.clone(),
-                score: found.iter().sum(),
+                score: counts.iter().sum(),
                 source: doc.source.clone(),
             });
         }
     }
     hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
     hits
+}
+
+/// Calls `visit` with each token that [`tokenize`] would return for `text`, in order. Lowercase
+/// ASCII tokens are passed without allocation.
+fn for_each_token(text: &str, mut visit: impl FnMut(&str)) {
+    for word in text.split(|c: char| !c.is_alphanumeric()) {
+        if word.chars().nth(1).is_none() {
+            continue;
+        }
+        if word
+            .bytes()
+            .all(|b| b.is_ascii() && !b.is_ascii_uppercase())
+        {
+            visit(word);
+        } else {
+            visit(&word.to_lowercase());
+        }
+    }
 }
 
 /// Load operator `.txt` and `.md` files from one directory, not recursive.
@@ -149,6 +168,7 @@ pub fn search_response(status: u16, body: &str, query: &str, source: &str) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn docs() -> Vec<Document> {
         vec![
@@ -241,6 +261,96 @@ mod tests {
             load_dir(&root).is_err(),
             "missing dir is an error, not hits=0"
         );
+    }
+
+    /// The count-per-document search before `for_each_token` replaced the token map. Kept here
+    /// as the oracle for the differential test.
+    fn reference_search(docs: &[Document], query: &str) -> Vec<Hit> {
+        let mut terms = tokenize(query);
+        terms.sort_unstable();
+        terms.dedup();
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let mut hits = Vec::new();
+        for doc in docs {
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            for token in tokenize(&doc.body) {
+                *counts.entry(token).or_default() += 1;
+            }
+            let found: Option<Vec<usize>> = terms.iter().map(|t| counts.get(t).copied()).collect();
+            if let Some(found) = found {
+                hits.push(Hit {
+                    id: doc.id.clone(),
+                    score: found.iter().sum(),
+                    source: doc.source.clone(),
+                });
+            }
+        }
+        hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
+        hits
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            usize::try_from(self.0 % u64::try_from(bound).unwrap_or(1)).unwrap_or(0)
+        }
+    }
+
+    #[test]
+    fn counting_matches_the_reference_on_generated_corpora() {
+        // Vocabulary covers case, Unicode (including a final sigma and a dotted capital I),
+        // one-letter words, punctuation and digits, so every branch of the tokeniser runs.
+        let vocabulary = [
+            "port",
+            "Port",
+            "PORT",
+            "Zürich",
+            "zürich",
+            "ΟΔΟΣ",
+            "ὈΔΌΣ",
+            "a",
+            "b1",
+            "x-ray",
+            "İstanbul",
+            "42",
+            "brisbane",
+            "Brisbane!",
+            "",
+        ];
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for round in 0..300 {
+            let doc_count = 1 + rng.below(12);
+            let mut docs = Vec::with_capacity(doc_count);
+            for index in 0..doc_count {
+                let word_count = rng.below(40);
+                let mut words = Vec::with_capacity(word_count);
+                for _ in 0..word_count {
+                    words.push(vocabulary[rng.below(vocabulary.len())]);
+                }
+                docs.push(Document {
+                    id: format!("doc{round}-{index}"),
+                    body: words.join(" "),
+                    source: "generated".into(),
+                });
+            }
+            let query_terms = 1 + rng.below(3);
+            let mut query_words = Vec::with_capacity(query_terms);
+            for _ in 0..query_terms {
+                query_words.push(vocabulary[rng.below(vocabulary.len())]);
+            }
+            let query = query_words.join(" ");
+            assert_eq!(
+                search(&docs, &query),
+                reference_search(&docs, &query),
+                "round {round}: {query:?}"
+            );
+        }
     }
 
     #[test]
