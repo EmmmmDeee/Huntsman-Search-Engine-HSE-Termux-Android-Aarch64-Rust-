@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::au_id;
+use crate::au_id::{self, Identifier};
 use crate::canonical::{
     canonical_domain, canonical_email, canonical_handle, canonical_phone, canonical_url,
 };
@@ -26,6 +26,13 @@ const COMPANY_WORDS: &[&str] = &[
 
 /// Street words, matched the same way as [`COMPANY_WORDS`].
 const STREET_WORDS: &[&str] = &["street", "streets", "st", "road", "roads", "rd"];
+
+/// Capitalised connectors that end a name in prose. "In 2024 The Main Road" is prose, so
+/// "The" stops an address span before it can reach "Road".
+const CONNECTOR_WORDS: &[&str] = &[
+    "a", "an", "and", "at", "by", "for", "from", "in", "near", "of", "on", "or", "the", "to",
+    "with",
+];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Classified {
@@ -90,10 +97,16 @@ pub fn classify(raw: &str) -> Classified {
     if pty_ltd || has_word(COMPANY_WORDS) {
         return classified(EntityKind::Organisation, value, 0.60, "company-suffix");
     }
-    if has_word(STREET_WORDS) || value.chars().any(|c| c.is_ascii_digit()) {
+    // Digits alone are not an address: "12 345" has no letters and no street word.
+    let has_digit = value.chars().any(|c| c.is_ascii_digit());
+    let has_letter = value.chars().any(char::is_alphabetic);
+    if has_word(STREET_WORDS) || (has_digit && has_letter) {
         return classified(EntityKind::Address, value, 0.60, "street-shape");
     }
-    classified(EntityKind::Person, value, 0.50, "multiword")
+    if has_letter && !has_digit {
+        return classified(EntityKind::Person, value, 0.50, "multiword");
+    }
+    classified(EntityKind::Other, value, 0.20, "residual")
 }
 
 /// Lowercased alphanumeric runs of a value, so keyword markers match whole words only.
@@ -107,24 +120,17 @@ fn word_tokens(value: &str) -> Vec<String> {
 
 #[must_use]
 pub fn extract(text: &str) -> Vec<Classified> {
+    let tokens = tokenize(text);
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
-    for token in text.split_whitespace() {
-        let token = token.trim_matches(|c: char| {
-            matches!(
-                c,
-                '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '!'
-            )
-        });
-        if token.is_empty() {
-            continue;
-        }
-        let classified = classify(token.trim_end_matches(['.', ':', '?']));
-        if classified.kind != EntityKind::Other
-            && seen.insert((classified.kind.clone(), classified.value.clone()))
+    let mut index = 0;
+    while index < tokens.len() {
+        let (found, consumed) = span_at(&tokens[index..]);
+        if found.kind != EntityKind::Other && seen.insert((found.kind.clone(), found.value.clone()))
         {
-            out.push(classified);
+            out.push(found);
         }
+        index += consumed;
     }
     out
 }
@@ -162,6 +168,127 @@ fn classified(kind: EntityKind, value: &str, confidence: f64, signal: &'static s
         confidence,
         signal,
     }
+}
+
+/// Longest run of number fragments read as one phone number or ABN/ACN.
+const NUMERIC_SPAN_MAX: usize = 4;
+/// Longest gap, in tokens, between a street number and its street word (inclusive).
+const ADDRESS_SPAN_MAX: usize = 4;
+
+fn tokenize(text: &str) -> Vec<&str> {
+    text.split_whitespace()
+        .map(|token| {
+            token.trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '!'
+                )
+            })
+        })
+        .map(|token| token.trim_end_matches(['.', ':', '?']))
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+/// Returns the entity that starts at the first token, and how many tokens it spans.
+///
+/// Multi-token spans are tried first so a phone number, ABN, or street address is never
+/// split into its digit groups or words. Every path consumes at least one token, so the
+/// caller's scan always advances.
+fn span_at(tokens: &[&str]) -> (Classified, usize) {
+    if let Some(span) = numeric_span(tokens) {
+        return span;
+    }
+    if let Some(span) = address_span(tokens) {
+        return span;
+    }
+    let head = tokens.first().copied().unwrap_or_default();
+    (classify(head), 1)
+}
+
+/// Recognises a phone number or an ABN/ACN written as two to four digit groups.
+fn numeric_span(tokens: &[&str]) -> Option<(Classified, usize)> {
+    let fragments = tokens
+        .iter()
+        .take(NUMERIC_SPAN_MAX)
+        .take_while(|token| is_number_fragment(token))
+        .count();
+    (2..=fragments).rev().find_map(|width| {
+        let joined = tokens[..width].join(" ");
+        if let Some(phone) = canonical_phone(&joined) {
+            return Some((
+                classified(EntityKind::Phone, &phone, 0.80, "dialable-shape"),
+                width,
+            ));
+        }
+        match au_id::classify(&joined) {
+            Ok(Identifier::Abn { bare, .. } | Identifier::Acn { bare }) => Some((
+                classified(EntityKind::AbnAcn, &bare, 0.95, "checksum"),
+                width,
+            )),
+            _ => None,
+        }
+    })
+}
+
+/// Recognises `NUMBER [name words] STREET-WORD`, such as `12 Queen Street`.
+///
+/// Returns a span only when it starts at the first token. When a later number begins the
+/// address (the `12` in `Unit 3, 12 Smith St`), the scan reaches that number on its own, so
+/// leading noise is not absorbed into the address.
+fn address_span(tokens: &[&str]) -> Option<(Classified, usize)> {
+    let head = tokens.first()?;
+    if !head.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    // The span runs over name-like tokens and ends on the last street word in that run, so
+    // "12 St Kilda Road" keeps "Road" and "Ship to 12 Queen St Brisbane" stops at "St".
+    let mut end = None;
+    for (offset, token) in tokens.iter().enumerate().skip(1).take(ADDRESS_SPAN_MAX) {
+        if !is_name_like(token) {
+            break;
+        }
+        if is_street_word(token) {
+            end = Some(offset);
+        }
+    }
+    let end = end?;
+    let last_number = tokens[..end]
+        .iter()
+        .rposition(|token| token.starts_with(|c: char| c.is_ascii_digit()))?;
+    if last_number != 0 {
+        return None;
+    }
+    let value = tokens[..=end].join(" ");
+    Some((
+        classified(EntityKind::Address, &value, 0.60, "street-shape"),
+        end + 1,
+    ))
+}
+
+/// A token made only of digits and phone punctuation, with at least one digit.
+fn is_number_fragment(token: &str) -> bool {
+    token.bytes().any(|b| b.is_ascii_digit())
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'+' | b'-' | b'(' | b')'))
+}
+
+/// A capitalised word or a token containing a digit, as found in street names.
+fn is_name_like(token: &str) -> bool {
+    if token.bytes().any(|b| b.is_ascii_digit()) {
+        return true;
+    }
+    let lowered = token.to_ascii_lowercase();
+    token.starts_with(char::is_uppercase) && !CONNECTOR_WORDS.contains(&lowered.as_str())
+}
+
+/// A whitespace token that is exactly one street word, ignoring surrounding punctuation.
+fn is_street_word(token: &str) -> bool {
+    let word = token
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_ascii_lowercase();
+    STREET_WORDS.contains(&word.as_str())
 }
 
 fn parse_ipv4(raw: &str) -> bool {
@@ -292,6 +419,96 @@ mod tests {
         assert_eq!(found.len(), 3);
         assert!(found.iter().any(|item| item.kind == EntityKind::Email));
         assert!(found.iter().any(|item| item.kind == EntityKind::Url));
+    }
+
+    #[test]
+    fn phone_numbers_in_free_text_are_single_entities() {
+        let international = extract("call +61 412 345 678 today");
+        assert_eq!(international.len(), 1, "{international:?}");
+        assert_eq!(international[0].kind, EntityKind::Phone);
+        assert_eq!(international[0].value, "+61412345678");
+
+        let local = extract("call 0412 345 678 today");
+        assert_eq!(local.len(), 1, "{local:?}");
+        assert_eq!(local[0].kind, EntityKind::Phone);
+    }
+
+    #[test]
+    fn abn_in_free_text_is_one_entity_without_address_fragments() {
+        let found = extract("ABN 51 824 753 556 on file");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].kind, EntityKind::AbnAcn);
+        assert_eq!(found[0].value, "51824753556");
+    }
+
+    #[test]
+    fn mixed_identifiers_and_address_each_yield_one_entity() {
+        let found = extract("+61 412 345 678 and 51 824 753 556 at 12 Queen Street");
+        let kinds: Vec<_> = found.iter().map(|item| item.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            [EntityKind::Phone, EntityKind::AbnAcn, EntityKind::Address]
+        );
+        assert_eq!(found[2].value, "12 Queen Street");
+    }
+
+    #[test]
+    fn street_address_in_prose_is_one_entity() {
+        let shipped = extract("Ship to 12 Queen Street Brisbane");
+        assert_eq!(shipped.len(), 1, "{shipped:?}");
+        assert_eq!(shipped[0].kind, EntityKind::Address);
+        assert_eq!(shipped[0].value, "12 Queen Street");
+
+        let unit = extract("Unit 3, 12 Smith St Brisbane");
+        assert_eq!(unit.len(), 1, "{unit:?}");
+        assert_eq!(unit[0].value, "12 Smith St");
+    }
+
+    #[test]
+    fn address_span_keeps_road_after_an_st_name_part() {
+        let found = extract("Meet at 12 St Kilda Road tomorrow");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].kind, EntityKind::Address);
+        assert_eq!(found[0].value, "12 St Kilda Road");
+    }
+
+    #[test]
+    fn prose_with_a_connector_is_not_an_address() {
+        let found = extract("In 2024 The Main Road was closed");
+        assert!(
+            found.iter().all(|item| item.kind != EntityKind::Address),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn bare_digits_and_street_word_are_not_addresses() {
+        for raw in ["12", "345", "12 345", "Street", "first place"] {
+            assert_ne!(classify(raw).kind, EntityKind::Address, "{raw}");
+        }
+        assert_ne!(classify("12 345").kind, EntityKind::Person, "digit pair");
+        for text in [
+            "street 12 345",
+            "I have 3 cats on Queen Street",
+            "first place",
+        ] {
+            assert!(
+                extract(text)
+                    .iter()
+                    .all(|item| item.kind != EntityKind::Address),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn company_suffixes_match_whole_words_only() {
+        for raw in ["Vincent", "Princeton", "Lincoln"] {
+            assert_ne!(classify(raw).kind, EntityKind::Organisation, "{raw}");
+        }
+        assert_eq!(classify("Acme Pty Ltd").kind, EntityKind::Organisation);
+        assert_eq!(classify("Acme Inc.").kind, EntityKind::Organisation);
+        assert_eq!(classify("Acme Corporation").kind, EntityKind::Organisation);
     }
 
     #[test]

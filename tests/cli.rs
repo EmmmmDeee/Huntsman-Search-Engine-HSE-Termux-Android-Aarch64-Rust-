@@ -614,6 +614,21 @@ fn investigate_extracts_actionable_entities_without_network() {
 }
 
 #[test]
+fn investigate_reports_digit_groups_as_whole_identifiers_and_addresses() {
+    let out = bin()
+        .arg("investigate")
+        .arg("call +61 412 345 678 about ABN 51 824 753 556 at 12 Queen Street Brisbane")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("entities=3"), "{stdout:?}");
+    assert!(stdout.contains("phone\t+61412345678"), "{stdout:?}");
+    assert!(stdout.contains("abn_acn\t51824753556"), "{stdout:?}");
+    assert!(stdout.contains("address\t12 Queen Street"), "{stdout:?}");
+}
+
+#[test]
 fn investigate_reads_one_bounded_local_file() {
     let dir = scratch("investigate-file");
     let path = dir.join("input.txt");
