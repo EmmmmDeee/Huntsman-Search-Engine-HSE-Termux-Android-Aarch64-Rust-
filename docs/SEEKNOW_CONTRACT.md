@@ -92,6 +92,12 @@ responses and observed rate-limit headers.
 8. No authenticated live-search acceptance claim is valid unless the operator
    has supplied a current `HUNTSMAN_SEEKNOW_KEY`.
 
+## Exit codes
+
+A missing `HUNTSMAN_SEEKNOW_KEY` exits 66 (missing input) before any request, as `hibp`
+and `recon stolen-tax` do. A key that is present but cannot be approved, or that the
+upstream rejects, exits 77 (no permission). Usage errors exit 64.
+
 ## Verification boundary
 
 As of 2026-10-07, the live unauthenticated contract and public documentation are
