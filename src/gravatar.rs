@@ -428,39 +428,11 @@ fn add_contacts(profile: &Profile, scan_id: &str, evidence: &Evidence, entities:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-
-    use crate::http::{Response, TransportFailure};
-
-    struct Fake {
-        response: RefCell<Option<Result<Response, TransportFailure>>>,
-    }
-
-    impl Fake {
-        fn response(status: u16, body: &str) -> Self {
-            Self {
-                response: RefCell::new(Some(Ok(Response {
-                    status,
-                    headers: vec![("content-type".into(), "application/json".into())],
-                    body: body.as_bytes().to_vec(),
-                    truncated: false,
-                }))),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
-            self.response
-                .borrow_mut()
-                .take()
-                .expect("one request expected")
-        }
-    }
+    use crate::test_support::OneResponse;
 
     #[test]
     fn missing_profile_is_valid_zero() {
-        let report = lookup(&Fake::response(404, ""), "a@example.com", "scan", 1).unwrap();
+        let report = lookup(&OneResponse::json(404, ""), "a@example.com", "scan", 1).unwrap();
         assert!(report.entities.is_empty());
         assert_eq!(report.outcome.kind, SourceOutcomeKind::ValidZero);
     }
@@ -481,7 +453,7 @@ mod tests {
             "emails":[{"value":"jane.work@example.org"}]
           }]
         }"#;
-        let report = lookup(&Fake::response(200, body), "Jane@example.com", "scan", 1).unwrap();
+        let report = lookup(&OneResponse::json(200, body), "Jane@example.com", "scan", 1).unwrap();
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
         assert!(report.entities.iter().any(|e| e.kind == EntityKind::Person));
         assert!(
@@ -513,7 +485,7 @@ mod tests {
     #[test]
     fn malformed_profile_is_not_a_clean_miss() {
         let report = lookup(
-            &Fake::response(200, r#"{"entry":"wrong"}"#),
+            &OneResponse::json(200, r#"{"entry":"wrong"}"#),
             "a@example.com",
             "scan",
             1,

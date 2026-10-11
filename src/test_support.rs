@@ -57,3 +57,41 @@ pub fn json_ok(body: &str) -> Response {
         truncated: false,
     }
 }
+
+/// Returns one scripted response and fails the test if a second request is made.
+pub struct OneResponse {
+    pub response: RefCell<Option<Result<Response, TransportFailure>>>,
+}
+
+impl OneResponse {
+    /// A response with the given status and a JSON body.
+    #[must_use]
+    pub fn json(status: u16, body: &str) -> Self {
+        Self::with_headers(status, &[("content-type", "application/json")], body)
+    }
+
+    /// A response with the given status, headers, and body.
+    #[must_use]
+    pub fn with_headers(status: u16, headers: &[(&str, &str)], body: &str) -> Self {
+        Self {
+            response: RefCell::new(Some(Ok(Response {
+                status,
+                headers: headers
+                    .iter()
+                    .map(|(name, value)| ((*name).into(), (*value).into()))
+                    .collect(),
+                body: body.as_bytes().to_vec(),
+                truncated: false,
+            }))),
+        }
+    }
+}
+
+impl Transport for OneResponse {
+    fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
+        self.response
+            .borrow_mut()
+            .take()
+            .expect("one request expected")
+    }
+}

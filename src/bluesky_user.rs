@@ -331,35 +331,9 @@ fn add(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use crate::test_support::OneResponse;
 
     use crate::http::{Response, TransportFailure};
-
-    struct Fake {
-        response: RefCell<Option<Result<Response, TransportFailure>>>,
-    }
-
-    impl Fake {
-        fn response(status: u16, body: &str) -> Self {
-            Self {
-                response: RefCell::new(Some(Ok(Response {
-                    status,
-                    headers: vec![("content-type".into(), "application/json".into())],
-                    body: body.as_bytes().to_vec(),
-                    truncated: false,
-                }))),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
-            self.response
-                .borrow_mut()
-                .take()
-                .expect("one request expected")
-        }
-    }
 
     #[test]
     fn invalid_actor_shape_is_inconclusive_without_network() {
@@ -375,7 +349,7 @@ mod tests {
 
     #[test]
     fn missing_profile_is_valid_zero() {
-        let got = lookup(&Fake::response(400, "{}"), "nobody", "scan", 1).unwrap();
+        let got = lookup(&OneResponse::json(400, "{}"), "nobody", "scan", 1).unwrap();
         assert_eq!(got.outcome.kind, SourceOutcomeKind::ValidZero);
     }
 
@@ -388,7 +362,7 @@ mod tests {
           "did":"did:plc:oky5czdrnfjpqslsw2a5iclo",
           "createdAt":"2024-01-02T03:04:05Z"
         }"#;
-        let got = lookup(&Fake::response(200, body), "alice", "scan", 1).unwrap();
+        let got = lookup(&OneResponse::json(200, body), "alice", "scan", 1).unwrap();
         assert_eq!(got.outcome.kind, SourceOutcomeKind::Success);
         for kind in [
             EntityKind::Username,
@@ -410,7 +384,13 @@ mod tests {
     #[test]
     fn custom_domain_handle_emits_domain() {
         let body = r#"{"handle":"alice.example.org","did":"did:plc:oky5czdrnfjpqslsw2a5iclo"}"#;
-        let got = lookup(&Fake::response(200, body), "alice.example.org", "scan", 1).unwrap();
+        let got = lookup(
+            &OneResponse::json(200, body),
+            "alice.example.org",
+            "scan",
+            1,
+        )
+        .unwrap();
         assert!(
             got.entities
                 .iter()

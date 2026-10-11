@@ -456,38 +456,7 @@ fn add(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-
-    use crate::http::{Response, TransportFailure};
-
-    struct Fake {
-        response: RefCell<Option<Result<Response, TransportFailure>>>,
-    }
-
-    impl Fake {
-        fn response(status: u16, headers: &[(&str, &str)], body: &str) -> Self {
-            Self {
-                response: RefCell::new(Some(Ok(Response {
-                    status,
-                    headers: headers
-                        .iter()
-                        .map(|(name, value)| ((*name).into(), (*value).into()))
-                        .collect(),
-                    body: body.as_bytes().to_vec(),
-                    truncated: false,
-                }))),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
-            self.response
-                .borrow_mut()
-                .take()
-                .expect("one request expected")
-        }
-    }
+    use crate::test_support::OneResponse;
 
     #[test]
     fn login_validation_blocks_path_shaped_input() {
@@ -500,7 +469,13 @@ mod tests {
 
     #[test]
     fn missing_profile_is_valid_zero() {
-        let got = lookup(&Fake::response(404, &[], ""), "nobody", "scan", 1).unwrap();
+        let got = lookup(
+            &OneResponse::with_headers(404, &[], ""),
+            "nobody",
+            "scan",
+            1,
+        )
+        .unwrap();
         assert_eq!(got.outcome.kind, SourceOutcomeKind::ValidZero);
         assert!(got.entities.is_empty());
     }
@@ -508,7 +483,7 @@ mod tests {
     #[test]
     fn rate_limit_is_not_a_missing_profile() {
         let got = lookup(
-            &Fake::response(403, &[("x-ratelimit-remaining", "0")], "{}"),
+            &OneResponse::with_headers(403, &[("x-ratelimit-remaining", "0")], "{}"),
             "octocat",
             "scan",
             1,
@@ -534,7 +509,7 @@ mod tests {
           "created_at":"2011-01-25T18:44:36Z"
         }"#;
         let got = lookup(
-            &Fake::response(200, &[("content-type", "application/json")], body),
+            &OneResponse::with_headers(200, &[("content-type", "application/json")], body),
             "octocat",
             "scan",
             1,
@@ -560,7 +535,7 @@ mod tests {
     #[test]
     fn malformed_json_is_parser_drift() {
         let got = lookup(
-            &Fake::response(200, &[("content-type", "application/json")], "{"),
+            &OneResponse::with_headers(200, &[("content-type", "application/json")], "{"),
             "octocat",
             "scan",
             1,

@@ -327,36 +327,9 @@ fn append_lineage(report: &Report, out: &mut String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use crate::test_support::OneResponse;
 
-    use crate::http::{Request, Response, TransportFailure};
     use crate::source_outcome::SourceOutcomeKind;
-
-    struct Fake {
-        response: RefCell<Option<Result<Response, TransportFailure>>>,
-    }
-
-    impl Fake {
-        fn response(status: u16, body: &str) -> Self {
-            Self {
-                response: RefCell::new(Some(Ok(Response {
-                    status,
-                    headers: vec![("content-type".into(), "application/json".into())],
-                    body: body.as_bytes().to_vec(),
-                    truncated: false,
-                }))),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
-            self.response
-                .borrow_mut()
-                .take()
-                .expect("one request expected")
-        }
-    }
 
     #[test]
     fn parse_accepts_one_email_and_save() {
@@ -434,7 +407,7 @@ mod tests {
     #[test]
     fn run_combines_derivation_and_public_profile() {
         let body = r#"{"entry":[{"displayName":"Jane Doe","preferredUsername":"janed"}]}"#;
-        match run(&Fake::response(200, body), "jane.doe@acme.example", 1) {
+        match run(&OneResponse::json(200, body), "jane.doe@acme.example", 1) {
             EmailRun::Printed { text, report } => {
                 assert!(text.contains("gravatar\tsuccess"), "{text}");
                 assert!(text.contains("lineage="), "{text}");
@@ -451,7 +424,7 @@ mod tests {
 
     #[test]
     fn missing_public_profile_keeps_offline_derivations() {
-        match run(&Fake::response(404, ""), "jane.doe@gmail.com", 1) {
+        match run(&OneResponse::json(404, ""), "jane.doe@gmail.com", 1) {
             EmailRun::Printed { report, .. } => {
                 assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
                 assert!(!report.entities.is_empty());
