@@ -36,6 +36,19 @@ pub(super) fn hibp_cmd(args: &[String]) -> ExitCode {
     ))
 }
 
+pub(super) fn dehashed_cmd(args: &[String]) -> ExitCode {
+    use huntsman_recon::dehashed::{cli, client};
+    let http: std::sync::Arc<dyn huntsman_recon::http::Transport + Send + Sync> =
+        std::sync::Arc::new(UreqTransport::new(&TransportConfig::default()));
+    ExitCode::from(cli::run(
+        args,
+        client::key_from_environment,
+        http,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    ))
+}
+
 pub(super) fn seeknow_cmd(args: &[String]) -> ExitCode {
     let transport = UreqTransport::new(&TransportConfig::default());
     let now = SystemTime::now()

@@ -36,6 +36,7 @@ credential_origin	leaf	authentication authority boundary
 cross_scan	runtime	bounded historical scan bridge analysis
 crtsh	adapter	Certificate Transparency source client
 deadline	leaf	shared per-lookup request budget
+dehashed	adapter	DeHashed exact-match source client and lineage-safe collector
 dependency	runtime	module dependency and dispatch graph
 diamond	leaf	analysis utility
 diff	leaf	diff analysis utility
@@ -111,8 +112,10 @@ resolve	leaf	conservative automatic merge application for supplied decisions
 retrieval_artifact	leaf	stable retrieval artifact identifier for provenance evidence
 rf	leaf	radio-frequency model utility
 roi	runtime	dispatch utility scoring
+run_history	leaf	durable test-run history and regression verdict
 runtime	runtime	high-level investigation composition root
 scan_batch	leaf	bounded ordered scan seed-list parsing
+scan_artifact	exporter	versioned re-loadable scan results and correlation rerun
 scan_route	runtime	deterministic lookup-front-end selector routing
 scraper_health	diagnostic	source drift diagnostics
 search	diagnostic	local search utility

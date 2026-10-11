@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 use super::{HELP, RECON_USAGE, USAGE, fail};
+use huntsman_recon::dehashed::cli::DEHASHED_USAGE;
 use huntsman_recon::email_cli::EMAIL_HELP;
 use huntsman_recon::exit::EX_USAGE;
 use huntsman_recon::hibp::cli::HIBP_USAGE;
@@ -81,6 +82,8 @@ pub(super) fn print_command_help(command: &str) {
         "hibp" => HIBP_USAGE,
         "recon" => RECON_USAGE,
         "seeknow" => SEEKNOW_HELP,
+        "run-history" => huntsman_recon::run_history::cli::USAGE,
+        "dehashed" => DEHASHED_USAGE,
         "keys" => {
             "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values."
         }

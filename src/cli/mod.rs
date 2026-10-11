@@ -44,6 +44,7 @@ Commands:
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
   hibp                  Have I Been Pwned lookups (opt-in; keyed subcommands need a key)
+  dehashed              DeHashed exact-match search (opt-in; needs a key and --purpose)
   recon                 One crt.sh, DNS/mail, or stolen.tax lookup (network access)
   seeknow               SeekNow/See-Know lookup (opt-in; needs HUNTSMAN_SEEKNOW_KEY)
   keys                  Validate a private keys file; print slots and fingerprints
@@ -106,11 +107,14 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         Some("classify") => utility::classify(remaining.next(), remaining.next()),
         Some("fetch") => network::fetch_cmd(&remaining.collect::<Vec<_>>()),
         Some("hibp") => network::hibp_cmd(&remaining.collect::<Vec<_>>()),
+        Some("dehashed") => network::dehashed_cmd(&remaining.collect::<Vec<_>>()),
         Some("recon") => network::recon_cmd(&remaining.collect::<Vec<_>>()),
         Some("seeknow") => network::seeknow_cmd(&remaining.collect::<Vec<_>>()),
         Some("keys") => meta::keys_cmd(remaining.next()),
         Some("credential-status") => meta::credential_status_cmd(&remaining.collect::<Vec<_>>()),
         Some("verify") => meta::verify(remaining.next()),
+        Some("correlate") => meta::correlate_cmd(&remaining.collect::<Vec<_>>()),
+        Some("run-history") => meta::run_history_cmd(&remaining.collect::<Vec<_>>()),
         Some("check") | None => selfcheck::check(),
         Some(other) => help::unknown_command(other),
     }
