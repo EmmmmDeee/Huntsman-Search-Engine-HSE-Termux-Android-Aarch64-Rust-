@@ -87,30 +87,40 @@ pub enum ArtifactError {
     Unsupported(String),
 }
 
-/// Write `artifact` atomically and durably: write a temporary file, flush it to
-/// disk, rename it over the target, then flush the parent directory.
+/// Upper bound on an artifact, in bytes, for both writing and reading.
 ///
-/// The temporary name is unique per process, so a second writer cannot clobber
-/// this one's temporary file. The `sync_all` before the rename and the
-/// directory flush after it mean the rename genuinely leaves either the old
-/// artifact or the complete new one after a crash, rather than relying on
-/// filesystem heuristics that the Termux/Android target may not provide.
+/// An artifact holds one scan's entity set: a `DeHashed` page or a collector
+/// batch is a few hundred records, well under 1 MiB of JSON. 32 MiB leaves a
+/// wide margin while keeping a hostile or runaway file from exhausting memory
+/// on the Termux/Android target, matching the crate rule that every external
+/// input is capped.
+pub const MAX_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
+
+fn fsio_err(error: &crate::error::Error) -> ArtifactError {
+    ArtifactError::Io(io::Error::other(error.to_string()))
+}
+
+/// Write `artifact` atomically and durably through the crate's hardened writer,
+/// [`crate::fsio::write_atomic_private`].
+///
+/// An artifact can hold emails and usernames taken from breach records, so it
+/// is created mode 600 on Unix before any bytes land, the same as the `DeHashed`
+/// key file. The writer refuses a symlink at the target or its parent, opens a
+/// fresh temporary file with `create_new` (never following or truncating an
+/// existing one), flushes it, renames it over the target, and removes the
+/// temporary file on error. The encoded artifact is capped at
+/// [`MAX_ARTIFACT_BYTES`]. After the rename the parent directory is flushed so
+/// the rename survives a crash on targets that need it.
 ///
 /// # Errors
-/// [`ArtifactError::Io`] if the temporary file cannot be written, flushed, or
-/// renamed.
+/// [`ArtifactError::Malformed`] if the artifact cannot be encoded, and
+/// [`ArtifactError::Io`] on a symlink, an artifact over the cap, or a write,
+/// flush, or rename failure.
 pub fn write(path: &Path, artifact: &ScanArtifact) -> Result<(), ArtifactError> {
-    use std::io::Write as _;
     let bytes = serde_json::to_vec_pretty(artifact)
         .map_err(|e| ArtifactError::Malformed(format!("could not encode: {e}")))?;
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("scan");
-    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
-    {
-        let mut file = fs::File::create(&tmp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-    }
-    fs::rename(&tmp, path)?;
+    crate::fsio::write_atomic_private(path, &bytes, MAX_ARTIFACT_BYTES)
+        .map_err(|e| fsio_err(&e))?;
     // Flush the directory entry so the rename survives a crash. Opening a
     // directory as a file is not portable, so a failure here does not fail the
     // already-completed write.
@@ -124,14 +134,16 @@ pub fn write(path: &Path, artifact: &ScanArtifact) -> Result<(), ArtifactError> 
     Ok(())
 }
 
-/// Read and validate an artifact.
+/// Read and validate an artifact, through [`crate::fsio::read_bounded`] at
+/// [`MAX_ARTIFACT_BYTES`].
 ///
 /// # Errors
-/// [`ArtifactError::Io`] when the file cannot be read,
+/// [`ArtifactError::Io`] when the file is missing, unreadable, not a regular
+/// file, a symlink, or over the cap,
 /// [`ArtifactError::Malformed`] when it does not decode, and
 /// [`ArtifactError::UnsupportedVersion`] when its format differs from this build's.
 pub fn read(path: &Path) -> Result<ScanArtifact, ArtifactError> {
-    let bytes = fs::read(path)?;
+    let bytes = crate::fsio::read_bounded(path, MAX_ARTIFACT_BYTES).map_err(|e| fsio_err(&e))?;
     let artifact: ScanArtifact =
         serde_json::from_slice(&bytes).map_err(|e| ArtifactError::Malformed(e.to_string()))?;
     if artifact.format_version != FORMAT_VERSION {
@@ -273,5 +285,39 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
             .collect();
         assert!(leftovers.is_empty(), "stray temp files: {leftovers:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_artifact_is_private_because_it_holds_breach_identifiers() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = scratch("private");
+        write(&path, &corroborated()).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "artifact mode was {mode:o}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_target_is_refused_and_its_destination_untouched() {
+        let path = scratch("symlink");
+        let victim = path.with_file_name("victim.txt");
+        fs::write(&victim, b"keep me").unwrap();
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+        assert!(matches!(
+            write(&path, &corroborated()),
+            Err(ArtifactError::Io(_))
+        ));
+        assert_eq!(fs::read(&victim).unwrap(), b"keep me");
+        assert!(matches!(read(&path), Err(ArtifactError::Io(_))));
+    }
+
+    #[test]
+    fn an_artifact_over_the_cap_is_refused_on_read() {
+        let path = scratch("oversize");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_ARTIFACT_BYTES + 1).unwrap();
+        drop(file);
+        assert!(matches!(read(&path), Err(ArtifactError::Io(_))));
     }
 }

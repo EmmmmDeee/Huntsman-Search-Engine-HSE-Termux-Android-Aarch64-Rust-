@@ -10,6 +10,40 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::Path;
 
+/// Upper bound on a history file, in bytes, for every read of it.
+///
+/// One record is a JSON line of roughly 150 bytes, so 16 MiB holds on the order
+/// of a hundred thousand runs, far more than a regression store accumulates.
+/// The cap keeps a hostile or runaway `--file` from exhausting memory on the
+/// Termux/Android target: every external input in the crate is capped.
+pub const MAX_HISTORY_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Read the whole history file through [`crate::fsio::read_bounded`].
+/// `Ok(None)` means the file does not exist. A symlink, a non-file, or a file
+/// over [`MAX_HISTORY_BYTES`] is an IO error.
+fn read_history(path: &Path) -> Result<Option<Vec<u8>>, HistoryError> {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(HistoryError::Io(e)),
+        Ok(_) => {}
+    }
+    crate::fsio::read_bounded(path, MAX_HISTORY_BYTES)
+        .map(Some)
+        .map_err(|e| HistoryError::Io(io::Error::other(e.to_string())))
+}
+
+/// Refuse to open a symlink for writing, matching `fsio`: appending through a
+/// planted link would write into whatever file it points at.
+fn refuse_symlink(path: &Path) -> Result<(), HistoryError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(HistoryError::Io(io::Error::other(
+            format!("{}: refusing symlink", path.display()),
+        ))),
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(HistoryError::Io(e)),
+        _ => Ok(()),
+    }
+}
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +86,7 @@ pub fn append(path: &Path, record: &RunRecord) -> Result<(), HistoryError> {
     })?;
     line.push('\n');
     heal_torn_tail(path)?;
+    refuse_symlink(path)?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(line.as_bytes())?;
     file.sync_data()?;
@@ -62,10 +97,8 @@ pub fn append(path: &Path, record: &RunRecord) -> Result<(), HistoryError> {
 /// whole lines. A missing file, an empty file, or one already ending in a
 /// newline needs no repair.
 fn heal_torn_tail(path: &Path) -> Result<(), HistoryError> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(HistoryError::Io(e)),
+    let Some(bytes) = read_history(path)? else {
+        return Ok(());
     };
     if bytes.is_empty() || bytes.last() == Some(&b'\n') {
         return Ok(());
@@ -74,6 +107,7 @@ fn heal_torn_tail(path: &Path) -> Result<(), HistoryError> {
         .iter()
         .rposition(|b| *b == b'\n')
         .map_or(0, |index| index + 1);
+    refuse_symlink(path)?;
     let file = OpenOptions::new().write(true).open(path)?;
     file.set_len(keep as u64)?;
     file.sync_data()?;
@@ -82,9 +116,6 @@ fn heal_torn_tail(path: &Path) -> Result<(), HistoryError> {
 
 /// Load every run in file order. Missing file means an empty history.
 pub fn load(path: &Path) -> Result<Vec<RunRecord>, HistoryError> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
     // Read bytes, not lines: an append interrupted mid-write can leave a torn
     // final line, possibly splitting a multi-byte character, which a UTF-8
     // line reader would itself reject. A completed append always ends in '\n',
@@ -92,7 +123,9 @@ pub fn load(path: &Path) -> Result<Vec<RunRecord>, HistoryError> {
     // final fragment is the torn write and is dropped, losing at most the line
     // being written, exactly as this module guarantees. A malformed line that
     // is *not* the unterminated tail is genuine corruption and still errors.
-    let bytes = std::fs::read(path)?;
+    let Some(bytes) = read_history(path)? else {
+        return Ok(Vec::new());
+    };
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
@@ -334,6 +367,34 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; 
             load(&path),
             Err(HistoryError::Malformed { line: 2, .. })
         ));
+    }
+
+    #[test]
+    fn a_history_over_the_cap_is_refused_on_load_and_append() {
+        let path = scratch("oversize");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_HISTORY_BYTES + 1).unwrap();
+        drop(file);
+        assert!(matches!(load(&path), Err(HistoryError::Io(_))));
+        assert!(matches!(
+            append(&path, &run("unit", 1, 0)),
+            Err(HistoryError::Io(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_history_is_refused_and_its_target_untouched() {
+        let path = scratch("symlink");
+        let victim = path.with_file_name("victim.txt");
+        std::fs::write(&victim, b"keep me").unwrap();
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+        assert!(matches!(load(&path), Err(HistoryError::Io(_))));
+        assert!(matches!(
+            append(&path, &run("unit", 1, 0)),
+            Err(HistoryError::Io(_))
+        ));
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep me");
     }
 }
 

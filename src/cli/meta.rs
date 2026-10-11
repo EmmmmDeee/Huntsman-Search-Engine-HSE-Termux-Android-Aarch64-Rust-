@@ -449,7 +449,7 @@ pub(super) fn correlate_cmd(args: &[String]) -> ExitCode {
         Ok(artifact) => {
             println!(
                 "scan_id={} entities={} relations={}",
-                artifact.scan_id,
+                huntsman_recon::textnorm::escape_controls(&artifact.scan_id),
                 artifact.entities.len(),
                 artifact.relations.len()
             );
