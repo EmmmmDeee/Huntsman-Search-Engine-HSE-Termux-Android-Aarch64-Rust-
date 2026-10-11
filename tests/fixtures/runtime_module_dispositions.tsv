@@ -79,6 +79,7 @@ keys	leaf	credential file handling
 leads	runtime	lead ranking through intelligence report
 ledger	exporter	hash-chained verified-claim ledger
 lineage	leaf	lineage-aware candidate resolution helper
+lookup_args	leaf	lookup option grammar shared by the front-ends
 lookup_save	exporter	shared unverified lookup ledger persistence
 md5	leaf	MD5 primitive for protocols that require public MD5 identifiers
 mediawiki	adapter	MediaWiki source adapter

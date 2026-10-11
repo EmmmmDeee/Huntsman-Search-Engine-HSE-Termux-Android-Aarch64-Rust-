@@ -4,8 +4,8 @@
 //! and [`crate::au_electoral`] over one injected [`crate::http::Transport`]. One
 //! source's [`Error::Invalid`] or `BotWaf` does not abort the others. Evidence is
 //! fed through [`crate::lineage::resolve_with_lineage`]. Tests inject fakes; live
-//! sources are not run here. Saving a ledger is handled by [`crate::lookup_save`]; this
-//! module only parses `--save`.
+//! sources are not run here. Saving a ledger is handled by [`crate::lookup_save`], and the
+//! `--save` option is read by [`crate::lookup_args`]; this module reads only NAME.
 
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -20,6 +20,7 @@ use crate::error::Error;
 use crate::http::Transport;
 use crate::identity_resolution::AutoMergePolicy;
 use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
+use crate::lookup_args::LookupTokens;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
@@ -45,30 +46,10 @@ impl PeopleArgs {
     /// [`Error::Invalid`] when NAME is missing, `--save` has no path, `--save` is
     /// repeated, or an unknown option is present.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let mut name_parts = Vec::new();
-        let mut save = None;
-        let mut it = args.iter();
-        while let Some(arg) = it.next() {
-            match arg.as_str() {
-                "--save" => {
-                    if save.is_some() {
-                        return Err(Error::Invalid("only one --save".into()));
-                    }
-                    let path = it
-                        .next()
-                        .cloned()
-                        .ok_or_else(|| Error::Invalid("--save needs a value".into()))?;
-                    if path.is_empty() || path.starts_with("--") {
-                        return Err(Error::Invalid("--save needs a file path".into()));
-                    }
-                    save = Some(PathBuf::from(path));
-                }
-                flag if flag.starts_with("--") => {
-                    return Err(Error::Invalid(format!("unknown option {flag}")));
-                }
-                positional => name_parts.push(positional.to_owned()),
-            }
-        }
+        let LookupTokens {
+            positional: name_parts,
+            save,
+        } = LookupTokens::split(args)?;
         if name_parts.is_empty() {
             return Err(Error::Invalid("missing NAME".into()));
         }

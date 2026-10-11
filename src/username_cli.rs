@@ -11,6 +11,7 @@ use crate::github_user;
 use crate::http::Transport;
 use crate::identity_resolution::AutoMergePolicy;
 use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
+use crate::lookup_args::LookupTokens;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
@@ -36,30 +37,7 @@ impl UsernameArgs {
     /// # Errors
     /// Invalid/missing handle, repeated `--save`, or an unknown option.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let mut positional = Vec::new();
-        let mut save = None;
-        let mut it = args.iter();
-        while let Some(arg) = it.next() {
-            match arg.as_str() {
-                "--save" => {
-                    if save.is_some() {
-                        return Err(Error::Invalid("only one --save".into()));
-                    }
-                    let path = it
-                        .next()
-                        .cloned()
-                        .ok_or_else(|| Error::Invalid("--save needs a value".into()))?;
-                    if path.is_empty() || path.starts_with("--") {
-                        return Err(Error::Invalid("--save needs a file path".into()));
-                    }
-                    save = Some(PathBuf::from(path));
-                }
-                flag if flag.starts_with("--") => {
-                    return Err(Error::Invalid(format!("unknown option {flag}")));
-                }
-                value => positional.push(value.to_owned()),
-            }
-        }
+        let LookupTokens { positional, save } = LookupTokens::split(args)?;
         if positional.len() != 1 {
             return Err(Error::Invalid("username needs exactly one HANDLE".into()));
         }

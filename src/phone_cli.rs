@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use crate::address_au::{self, AuLineType};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::error::Error;
+use crate::lookup_args::LookupTokens;
 use crate::phone_intl;
 use crate::source_outcome::SourceExecutionOutcome;
 
@@ -37,31 +38,7 @@ impl PhoneArgs {
     /// Missing/repeated arguments, unknown options, or a phone value that cannot
     /// be canonicalised without guessing a country.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let mut positional = Vec::new();
-        let mut save = None;
-        let mut it = args.iter();
-
-        while let Some(arg) = it.next() {
-            match arg.as_str() {
-                "--save" => {
-                    if save.is_some() {
-                        return Err(Error::Invalid("only one --save".into()));
-                    }
-                    let path = it
-                        .next()
-                        .cloned()
-                        .ok_or_else(|| Error::Invalid("--save needs a value".into()))?;
-                    if path.is_empty() || path.starts_with("--") {
-                        return Err(Error::Invalid("--save needs a file path".into()));
-                    }
-                    save = Some(PathBuf::from(path));
-                }
-                flag if flag.starts_with("--") => {
-                    return Err(Error::Invalid(format!("unknown option {flag}")));
-                }
-                value => positional.push(value.to_owned()),
-            }
-        }
+        let LookupTokens { positional, save } = LookupTokens::split(args)?;
 
         if positional.len() != 1 {
             return Err(Error::Invalid("phone needs exactly one NUMBER".into()));
