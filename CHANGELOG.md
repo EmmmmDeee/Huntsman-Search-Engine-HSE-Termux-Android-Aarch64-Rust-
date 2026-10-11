@@ -87,6 +87,12 @@ release yet; relevant pushes to `main` are built and verified, and a current-hea
 
 ### Fixed
 
+- `sources` / `source_registry::routes_for` input hardening (#671 review
+  follow-up): every leading `@` of a username is stripped (`@@x` routes `x`,
+  not `@x`), a handle made only of `@` is refused like an empty value, and a
+  value made only of dots (`.`, `..`, `@..`) is refused instead of rendering a
+  path-traversal-looking URL. Refused values give no routes, so `sources`
+  exits 65 with empty stdout.
 - Legacy snapshot restored to its pinned bytes after #665 edited files under
   `legacy/` (78ce7723). #665 therefore has no effect on the current tree, and
   #663 merged no changes.
