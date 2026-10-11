@@ -10,10 +10,9 @@ publish = false
 # build-time tools of xtask only; the product crate does not depend on them.
 [dependencies]
 proc-macro2 = { version = "1", features = ["span-locations"] }
-syn = { version = "2", default-features = false, features = ["full", "parsing", "visit"] }
-# Report and plan JSON, and the plan context digest.
+syn = { version = "3", default-features = false, features = ["full", "parsing", "visit"] }
+# Report and plan JSON.
 serde_json = "1"
-sha2 = "0.10"
 
 [lints.rust]
 unsafe_code = "forbid"
