@@ -18,6 +18,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::collector::CollectionBatch;
 use crate::correlator::{Correlation, evaluate_rules};
 use crate::entity::Entity;
 use crate::relation::Relation;
@@ -48,6 +49,25 @@ impl ScanArtifact {
         }
     }
 
+    /// Build an artifact from one collector batch.
+    ///
+    /// Refuses a batch that carries relations. The artifact format stores
+    /// `relation::Relation`, but collectors emit `graph::EntityRelation`, and
+    /// converting between them silently would be a guess. Refusing is the
+    /// honest answer until those two types are unified.
+    ///
+    /// # Errors
+    /// [`ArtifactError::Unsupported`] when the batch carries any relation.
+    pub fn from_batch(scan_id: &str, batch: &CollectionBatch) -> Result<Self, ArtifactError> {
+        if !batch.relations.is_empty() {
+            return Err(ArtifactError::Unsupported(format!(
+                "batch carries {} relations, which this format does not store",
+                batch.relations.len()
+            )));
+        }
+        Ok(Self::new(scan_id, batch.entities.clone(), Vec::new()))
+    }
+
     /// Rerun the correlation rules over this stored scan.
     #[must_use]
     pub fn correlate(&self) -> Vec<Correlation> {
@@ -63,6 +83,8 @@ pub enum ArtifactError {
     Malformed(String),
     #[error("scan artifact format {found} is not supported (this build reads {supported})")]
     UnsupportedVersion { found: u32, supported: u32 },
+    #[error("scan artifact cannot represent this batch: {0}")]
+    Unsupported(String),
 }
 
 /// Write `artifact` atomically: temporary file, then rename.
@@ -163,6 +185,33 @@ mod tests {
         let path = scratch("malformed");
         fs::write(&path, b"{ not an artifact").unwrap();
         assert!(matches!(read(&path), Err(ArtifactError::Malformed(_))));
+    }
+
+    #[test]
+    fn from_batch_refuses_relations_rather_than_dropping_them() {
+        use crate::collector::{CollectionBatch, CollectionOutcome};
+        use crate::graph::EntityRelation;
+        let mut batch = CollectionBatch::empty("dehashed", "uid", CollectionOutcome::Success);
+        batch.relations.push(EntityRelation::new(
+            "a",
+            "b",
+            crate::graph::RelationKind::AliasOf,
+            0.5,
+        ));
+        assert!(matches!(
+            ScanArtifact::from_batch("scan-x", &batch),
+            Err(ArtifactError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn from_batch_carries_entities_and_correlates() {
+        use crate::collector::{CollectionBatch, CollectionOutcome};
+        let mut batch = CollectionBatch::empty("dehashed", "uid", CollectionOutcome::Success);
+        batch.entities = corroborated().entities;
+        let artifact = ScanArtifact::from_batch("scan-1", &batch).unwrap();
+        assert_eq!(artifact.entities, batch.entities);
+        assert_eq!(artifact.correlate(), corroborated().correlate());
     }
 
     #[test]

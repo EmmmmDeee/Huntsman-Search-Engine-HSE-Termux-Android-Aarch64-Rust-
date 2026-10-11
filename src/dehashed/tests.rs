@@ -537,3 +537,137 @@ fn key_env_var_matches_the_provider_registry() {
     let def = crate::service_defs::find_service("dehashed").expect("dehashed registered");
     assert_eq!(def.env_var, super::client::API_KEY_ENV);
 }
+
+mod artifact_tests {
+    use super::*;
+    use crate::scan_artifact;
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("dehashed-artifact-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("scan.json")
+    }
+
+    fn owned(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn search_with_save_artifact_writes_the_collected_entities() {
+        let body = r#"{"entries": [
+            {"database_name": "ExBreach", "email": ["a@example.com"], "username": "ada", "password": "s3cret-value-xyz"},
+            {"database_name": "ExBreach", "email": ["a@example.com"]}
+        ], "total": 2}"#;
+        let fake = Fake::with(200, body, &[]);
+        let path = temp_path("success");
+        let args = owned(&[
+            "search",
+            "--email",
+            "a@example.com",
+            "--purpose",
+            "own-account",
+            "--save-artifact",
+            path.to_str().unwrap(),
+        ]);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = cli::run(
+            &args,
+            || Ok(Secret::new(KEY).unwrap()),
+            fake.clone(),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("purpose=own-account"), "{text}");
+        assert!(
+            text.contains("scan_id=dehashed:email:\"a@example.com\""),
+            "{text}"
+        );
+
+        let artifact = scan_artifact::read(&path).expect("artifact reads back");
+        assert_eq!(artifact.scan_id, "dehashed:email:\"a@example.com\"");
+        let emails: Vec<&str> = artifact
+            .entities
+            .iter()
+            .filter(|e| e.kind == crate::entity::EntityKind::Email)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(emails, vec!["a@example.com"]);
+        assert!(
+            artifact
+                .entities
+                .iter()
+                .any(|e| e.kind == crate::entity::EntityKind::Username && e.value == "ada")
+        );
+        assert!(artifact.relations.is_empty());
+        // The artifact must never carry the response's password fields in any form.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw.contains("s3cret-value-xyz"),
+            "password value leaked into the artifact"
+        );
+        assert!(
+            raw.contains("\"has_password\": \"true\""),
+            "presence flag should record that a password exists"
+        );
+    }
+
+    #[test]
+    fn a_failed_collection_writes_no_artifact() {
+        let fake = Fake::with(401, "", &[]);
+        let path = temp_path("failed");
+        let args = owned(&[
+            "search",
+            "--email",
+            "a@example.com",
+            "--purpose",
+            "own-account",
+            "--save-artifact",
+            path.to_str().unwrap(),
+        ]);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = cli::run(
+            &args,
+            || Ok(Secret::new(KEY).unwrap()),
+            fake,
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, 69, "{}", String::from_utf8_lossy(&err));
+        assert!(
+            !path.exists(),
+            "a failed collection must not write an artifact"
+        );
+        assert!(
+            String::from_utf8(err)
+                .unwrap()
+                .contains("no artifact written")
+        );
+    }
+
+    #[test]
+    fn dangling_save_artifact_is_a_usage_error_before_any_request() {
+        let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+        let args = owned(&[
+            "search",
+            "--email",
+            "a@example.com",
+            "--purpose",
+            "own-account",
+            "--save-artifact",
+        ]);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = cli::run(
+            &args,
+            || Ok(Secret::new(KEY).unwrap()),
+            fake.clone(),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, 64);
+        assert_eq!(fake.calls(), 0);
+    }
+}

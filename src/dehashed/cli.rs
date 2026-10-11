@@ -33,6 +33,8 @@ const EX_DATAERR: u8 = 65;
 const EX_NOINPUT: u8 = 66;
 const EX_UNAVAILABLE: u8 = 69;
 const EX_NOPERM: u8 = 77;
+const EX_IOERR: u8 = 74;
+const ARTIFACT_FLAG: &str = "--save-artifact";
 
 /// Why a command stopped: an exit code and the stderr text.
 #[derive(Debug, PartialEq, Eq)]
@@ -212,14 +214,110 @@ fn execute(
     match args.first().map(String::as_str) {
         Some("help") => Ok(format!("{DEHASHED_USAGE}\n")),
         Some("search") => {
-            let request = parse_search(&args[1..])?;
+            let (search_args, artifact) = split_artifact(&args[1..])?;
+            let request = parse_search(&search_args)?;
             let key = key()?;
             let client = DehashedClient::new(http, key);
-            let outcome = client.search(&request)?;
-            Ok(render(&outcome))
+            match artifact {
+                None => {
+                    let outcome = client.search(&request)?;
+                    Ok(render(&outcome))
+                }
+                Some(path) => save_artifact(&client, &request, &path),
+            }
         }
         _ => Err(Failure::usage("expected a subcommand: search or help")),
     }
+}
+
+/// Pull `--save-artifact PATH` out of the search arguments. The flag is
+/// optional and may appear once; everything else passes through to
+/// [`parse_search`] unchanged.
+fn split_artifact(args: &[String]) -> Result<(Vec<String>, Option<std::path::PathBuf>), Failure> {
+    let mut rest = Vec::with_capacity(args.len());
+    let mut path = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == ARTIFACT_FLAG {
+            let Some(value) = iter.next() else {
+                return Err(Failure::usage("--save-artifact needs a file path"));
+            };
+            if path.is_some() {
+                return Err(Failure::usage("--save-artifact may be given only once"));
+            }
+            path = Some(std::path::PathBuf::from(value));
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    Ok((rest, path))
+}
+
+/// Run the search through the collector and persist the result as a scan
+/// artifact, so `correlate` can rerun on it later.
+///
+/// A failed collection writes nothing: an artifact is a scan result, and an
+/// empty file for a failed attempt would look like a scan that found nothing.
+fn save_artifact(
+    client: &DehashedClient,
+    request: &SearchRequest,
+    path: &std::path::Path,
+) -> Result<String, Failure> {
+    use crate::collector::{CollectionLimits, CollectionOutcome, CollectorError};
+    use crate::entity::{Entity, EntityKind};
+    use crate::scan_artifact::{self, ScanArtifact};
+
+    let kind = match request.selector.field() {
+        Field::Email => EntityKind::Email,
+        Field::Username => EntityKind::Username,
+        Field::Domain => EntityKind::Domain,
+    };
+    let scan_id = format!("dehashed:{}", request.selector.query());
+    let selector = Entity::new(kind, request.selector.value(), 1.0, &scan_id);
+    let limits = CollectionLimits {
+        max_records_per_response: request.size as usize,
+        ..CollectionLimits::default()
+    };
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+
+    let batch = super::collector::collect(client, &selector, request.purpose, &limits, now_unix)
+        .map_err(|error| match error {
+            CollectorError::UnsupportedSelector(_)
+            | CollectorError::InvalidSelector(_)
+            | CollectorError::Invariant(_)
+            | CollectorError::Execution(_) => Failure {
+                code: EX_DATAERR,
+                message: format!("dehashed: {error}"),
+            },
+        })?;
+    if batch.outcome == CollectionOutcome::Failed {
+        let detail = batch
+            .receipts
+            .first()
+            .and_then(|r| r.outcome.detail.clone())
+            .unwrap_or_else(|| "collection failed".into());
+        return Err(Failure {
+            code: EX_UNAVAILABLE,
+            message: format!("dehashed: no artifact written: {detail}"),
+        });
+    }
+    let artifact = ScanArtifact::from_batch(&scan_id, &batch).map_err(|error| Failure {
+        code: EX_DATAERR,
+        message: format!("dehashed: {error}"),
+    })?;
+    scan_artifact::write(path, &artifact).map_err(|error| Failure {
+        code: EX_IOERR,
+        message: format!("dehashed: {error}"),
+    })?;
+    Ok(format!(
+        "source=DeHashed\npurpose={}\nartifact={}\nscan_id={}\nentities={}\n",
+        request.purpose,
+        path.display(),
+        scan_id,
+        artifact.entities.len()
+    ))
 }
 
 #[cfg(test)]
