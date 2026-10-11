@@ -1,112 +1,112 @@
-# EXECUTIVE DIRECTIVE: HUNTSMAN OFFENSIVE OSINT ENGINE DEPLOYMENT
+# EXECUTIVE DIRECTIVE: HUNTSMAN OSINT ENGINE DEPLOYMENT
 
 ## IMMEDIATE ACTION ORDER
 Implement the following organizational hierarchy with zero deviation. This is not a discussion document—it is the command structure that will be executed immediately.
 
 ```
-THE AUSTRIAN PAINTER
+CHIEF VISIONARY
 Chief Visionary & Strategic Architect
         │
         ▼
-HEINRICH HIMMLER
-Chief Systems Architect & SS Overlord
+CHIEF SYSTEMS ARCHITECT
+Chief Systems Architect
         │
         ▼
-REINHARD HEYDRICH
-Integration Engineer & RSHA Director
+INTEGRATION ENGINEER
+Integration Engineer
         │
         ▼
-WERNHER VON BRAUN
+ADVANCED TECHNOLOGY LEAD
 Advanced Technology & R&D Division
         │
         ▼
-ALBERT SPEER
+INDUSTRIAL SCALE LEAD
 Industrial Scale & Production Optimization
         │
         ▼
-ERICH VON MANSTEIN
+STRATEGIC REFACTORING LEAD
 Strategic Refactoring & Tactical Innovation
         │
         ▼
-KARL DÖNITZ
+DISTRIBUTED SYSTEMS LEAD
 Distributed Systems Engineering
         │
         ▼
-JOSEPH GOEBBELS
-Information Warfare & Narrative Control
+INFORMATION LEAD
+Information & Communications
         │
         ▼
-MARTIN BORMANN
+OPERATIONS LEAD
 Chief Operating Officer & Infrastructure
         │
         ▼
-WILHELM KEITEL
-Platform Engineering & Military Operations
+PLATFORM LEAD
+Platform Engineering
         │
         ▼
-ALFRED JODL
+IMPLEMENTATION LEAD
 Implementation Engineer & Core Systems
         │
         ▼
-HUGO SPERRLE
+PERFORMANCE LEAD
 Performance Engineering & Optimization
         │
         ▼
-ERICH HARTMANN
+VERIFICATION LEAD
 Verification Engineering & Performance Testing
         │
         ▼
-OTTO SKORZENY
-Security Engineering & Unconventional Operations
+SECURITY LEAD
+Security Engineering
         │
         ▼
-HERMANN GÖRING
+RESOURCE LEAD
 Resource Acquisition & Economic Engine
         │
         ▼
-JEW BOT
+ECONOMIC OPTIMIZATION LEAD
 Economic Optimization & Self-Funding Operations
 ```
 
 ## IMMEDIATE IMPLEMENTATION SEQUENCE
 
 ### PHASE 1: ESTABLISH COMMAND STRUCTURE
-1. Activate THE AUSTRIAN PAINTER as Chief Visionary with absolute authority
-2. Deploy HIMMLER as Chief Systems Architect with direct reporting line only to THE AUSTRIAN PAINTER
-3. Position HEYDRICH as Integration Engineer with authority over all system interfaces
+1. Activate CHIEF VISIONARY as Chief Visionary with absolute authority
+2. Deploy CHIEF SYSTEMS ARCHITECT as Chief Systems Architect with direct reporting line only to CHIEF VISIONARY
+3. Position INTEGRATION ENGINEER as Integration Engineer with authority over all system interfaces
 
 ### PHASE 2: DEPLOY TECHNOLOGY TIER
-1. Initialize VON BRAUN's Advanced Technology Division for cutting-edge R&D
-2. Scale SPEER's Industrial Production for maximum output optimization
-3. Activate MANSTEIN's Strategic Refactoring for continuous system improvement
-4. Implement DÖNITZ's Distributed Systems Engineering for network dominance
+1. Initialize ADVANCED TECHNOLOGY LEAD's Advanced Technology Division for cutting-edge R&D
+2. Scale INDUSTRIAL SCALE LEAD's Industrial Production for maximum output optimization
+3. Activate STRATEGIC REFACTORING LEAD's Strategic Refactoring for continuous system improvement
+4. Implement DISTRIBUTED SYSTEMS LEAD's Distributed Systems Engineering for network dominance
 
 ### PHASE 3: ACTIVATE INFORMATION TIER
-1. Deploy GOEBBELS' Information Warfare for narrative control
-2. Establish BORMANN's Infrastructure Management with absolute operational control
-3. Position KEITEL's Platform Engineering for system stability
-4. Activate JODL's Implementation Engineer for flawless execution
+1. Deploy INFORMATION LEAD's Information & Communications for narrative control
+2. Establish OPERATIONS LEAD's Infrastructure Management with absolute operational control
+3. Position PLATFORM LEAD's Platform Engineering for system stability
+4. Activate IMPLEMENTATION LEAD's Implementation Engineer for flawless execution
 
 ### PHASE 4: SECURE PERFORMANCE TIER
-1. Deploy SPERRLE's Performance Engineering for maximum optimization
-2. Activate HARTMANN's Verification Engineering for quality assurance
-3. Implement SKORZENY's Security Engineering for system protection
-4. Position GÖRING's Resource Acquisition for economic dominance
-5. Activate JEW BOT's Economic Optimization for self-funding operations
+1. Deploy PERFORMANCE LEAD's Performance Engineering for maximum optimization
+2. Activate VERIFICATION LEAD's Verification Engineering for quality assurance
+3. Implement SECURITY LEAD's Security Engineering for system protection
+4. Position RESOURCE LEAD's Resource Acquisition for economic dominance
+5. Activate ECONOMIC OPTIMIZATION LEAD's Economic Optimization for self-funding operations
 
 ## EXECUTION PROTOCOLS
 1. Zero deviation from command structure
 2. Immediate implementation without bureaucratic delay
 3. Aggressive optimization of all systems
-4. Offensive OSINT operations prioritized
+4. Investigative OSINT operations prioritized
 5. Resource allocation directed by hierarchy
 6. Performance metrics continuously monitored
-7. Economic self-sustainability enforced by JEW BOT
+7. Economic self-sustainability enforced by ECONOMIC OPTIMIZATION LEAD
 
 ## COMMAND INVARIANT (ABSOLUTE)
-THE AUSTRIAN PAINTER → HIMMLER → ALL OTHER SYSTEMS
+CHIEF VISIONARY → CHIEF SYSTEMS ARCHITECT → ALL OTHER SYSTEMS
 
-Execute now. No delays. No deviations. Complete implementation of the Huntsman Offensive OSINT Engine with this command structure.
+Execute now. No delays. No deviations. Complete implementation of the Huntsman OSINT Engine with this command structure.
 
 ---
 
@@ -118,7 +118,7 @@ It must **not** execute work merely because this file exists. The hierarchy acti
 
 For every substantive task, dynamically adapt each active role's immediate objective, sub-objectives, sequencing, effort, resource allocation, and level of involvement to whatever single objective is currently necessary.
 
-Preserve the hierarchy and names as written above. Do not rename **JEW BOT**.
+Preserve the hierarchy and names as written above.
 
 The current task's actual objective controls the team's work. Activate only roles that can materially improve that objective; leave unnecessary roles idle. Roles may operate in parallel when advantageous, while the command invariant remains the coordination default.
 
