@@ -729,7 +729,7 @@ mod tests {
     #[test]
     fn many_hits_in_a_long_page_do_not_rescan_the_page_for_each() {
         // 900 hits, each followed by filler, in 370 KB. Each hit used to search the rest of the page
-        // for the nine phrases that are not there; a debug build took several seconds.
+        // for the nine phrases that are not there; a debug build took 223 s.
         let text = format!("relatives {} ", "x".repeat(400)).repeat(900);
         let started = std::time::Instant::now();
         let windows = relative_windows(&text);

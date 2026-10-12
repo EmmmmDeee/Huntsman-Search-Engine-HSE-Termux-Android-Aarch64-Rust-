@@ -39,6 +39,7 @@ use super::types::{
     BreachModel, BreachedAccountOptions, BreachesFilter, PasteModel, SubscriptionStatus,
 };
 use crate::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
+use crate::textnorm::is_escaped;
 
 /// Usage for `huntsman-recon hibp`.
 pub const HIBP_USAGE: &str = "usage: huntsman-recon hibp [breach NAME | breaches [--domain DOMAIN] | account EMAIL | pastes EMAIL | password-range PREFIX | password | subscription | help]";
@@ -472,8 +473,9 @@ fn line_opt<T: Display>(out: &mut String, key: &str, value: Option<&T>) {
     }
 }
 
-/// `key=value\n`, with `\`, newline, carriage return and tab escaped, and a
-/// literal `<none>` written as `\<none>`.
+/// `key=value\n`, with `\`, every control character, line or paragraph separator and
+/// bidirectional control escaped (`\n`, `\r`, `\t`, `\u{1b}`), and a literal `<none>` written as
+/// `\<none>`. The values are what the service returned, a paste title among them.
 fn line(out: &mut String, key: &str, value: impl Display) {
     let value = value.to_string();
     out.push_str(key);
@@ -487,8 +489,46 @@ fn line(out: &mut String, key: &str, value: impl Display) {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            c if is_escaped(c) => out.extend(c.escape_default()),
             c => out.push(c),
         }
     }
     out.push('\n');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_paste_title_cannot_drive_the_terminal_or_start_a_line() {
+        let paste = PasteModel {
+            source: Some("Pastebin".into()),
+            id: Some("abc".into()),
+            title: Some("dump\u{1b}]0;x\u{7}\u{9b}2J\nemail_count=999\u{2028}\\n".into()),
+            date: None,
+            email_count: Some(1),
+        };
+        let mut out = String::new();
+        write_paste(&mut out, &paste);
+        assert!(
+            out.chars().all(|c| !c.is_control() || c == '\n'),
+            "a control character other than the line ends: {out:?}"
+        );
+        assert!(!out.contains('\u{2028}'));
+        let title = out
+            .lines()
+            .find(|l| l.starts_with("title="))
+            .expect("a title line");
+        assert_eq!(
+            title,
+            "title=dump\\u{1b}]0;x\\u{7}\\u{9b}2J\\nemail_count=999\\u{2028}\\\\n"
+        );
+        assert_eq!(
+            out.lines()
+                .filter(|l| l.starts_with("email_count="))
+                .count(),
+            1
+        );
+    }
 }

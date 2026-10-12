@@ -5,6 +5,7 @@
 //! provider never erases results from another.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::thread;
 
 use serde::Serialize;
@@ -15,6 +16,7 @@ use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport, append_query_param};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
+use crate::textnorm::escape_controls;
 
 const MAX_RESULTS_PER_ENGINE: usize = 20;
 const CACHE_TTL_SECS: u64 = 300;
@@ -60,6 +62,40 @@ pub struct SearchHit {
 pub struct SearchReport {
     pub hits: Vec<SearchHit>,
     pub outcomes: Vec<SourceExecutionOutcome>,
+}
+
+impl SearchReport {
+    /// The text of the report: a line per engine outcome, a line per hit, then the hit count. A hit's
+    /// address is whatever the engine's page held, so it is written through
+    /// [`escape_controls`](crate::textnorm::escape_controls), as the other reports are.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        for outcome in &self.outcomes {
+            let kind = serde_json::to_value(outcome.kind)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unknown".into());
+            let found = outcome
+                .found
+                .map_or_else(|| "none".to_owned(), |count| count.to_string());
+            let _ = writeln!(
+                out,
+                "engine={}\toutcome={kind}\tfound={found}",
+                escape_controls(&outcome.module)
+            );
+        }
+        for hit in &self.hits {
+            let _ = writeln!(
+                out,
+                "{}\t{}",
+                escape_controls(&hit.engine),
+                escape_controls(&hit.url)
+            );
+        }
+        let _ = writeln!(out, "hits={}", self.hits.len());
+        out
+    }
 }
 
 /// Query the rebuilt keyless engine subset.
@@ -389,6 +425,31 @@ mod tests {
     use std::collections::VecDeque;
 
     use crate::http::{Response, TransportFailure};
+
+    #[test]
+    fn a_report_prints_an_address_from_the_page_as_text_on_one_line() {
+        let report = SearchReport {
+            hits: vec![
+                SearchHit {
+                    engine: "duckduckgo".into(),
+                    url: "https://a.example/x\u{1b}[2J\nbing\thttps://b.example/\u{2028}".into(),
+                },
+                SearchHit {
+                    engine: "mojeek".into(),
+                    url: "https://c.example/ordinary?q=1&r=2".into(),
+                },
+            ],
+            outcomes: vec![SourceExecutionOutcome::success("duckduckgo", 1, 1)],
+        };
+        let text = report.render();
+        assert_eq!(
+            text,
+            "engine=duckduckgo\toutcome=success\tfound=1\n\
+             duckduckgo\thttps://a.example/x\\u{1b}[2J\\nbing\\thttps://b.example/\\u{2028}\n\
+             mojeek\thttps://c.example/ordinary?q=1&r=2\n\
+             hits=2\n"
+        );
+    }
 
     struct Fake {
         responses: RefCell<VecDeque<Result<Response, TransportFailure>>>,

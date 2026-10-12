@@ -407,6 +407,7 @@ pub mod cli {
 
     use super::{RunRecord, Verdict, append, load, verdict};
     use crate::exit::{EX_DATAERR, EX_IOERR, EX_USAGE};
+    use crate::textnorm::escape_controls;
 
     pub const USAGE: &str = "usage: huntsman-recon run-history (record --suite NAME (--passed N --failed N | --from-stdin) [--commit SHA] [--file PATH] | show [--suite NAME] [--file PATH])";
 
@@ -563,10 +564,15 @@ pub mod cli {
             .iter()
             .filter(|r| suite.as_deref().is_none_or(|s| s == r.suite))
         {
+            // The commit and the suite are text from the history file, which anyone may have written.
             let _ = writeln!(
                 out,
                 "commit={} suite={} passed={} failed={} at={}",
-                record.commit, record.suite, record.passed, record.failed, record.recorded_at_unix
+                escape_controls(&record.commit),
+                escape_controls(&record.suite),
+                record.passed,
+                record.failed,
+                record.recorded_at_unix
             );
         }
         0
@@ -593,6 +599,38 @@ pub mod cli {
 
         fn argv(parts: &[&str]) -> Vec<String> {
             parts.iter().map(|s| (*s).to_string()).collect()
+        }
+
+        #[test]
+        fn show_cannot_be_driven_by_the_text_in_the_history_file() {
+            // The file is read as written, and anyone may have written it.
+            let file = scratch("hostile");
+            let record = RunRecord {
+                commit: "abc\u{1b}]0;x\u{7}\nforged".into(),
+                suite: "unit\u{9b}2J\u{2028}".into(),
+                passed: 1,
+                failed: 0,
+                recorded_at_unix: 5,
+            };
+            append(&file, &record).unwrap();
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            let code = run(
+                &argv(&["show", "--file", file.to_str().unwrap()]),
+                1,
+                &mut o,
+                &mut e,
+            );
+            assert_eq!(code, 0, "{}", String::from_utf8_lossy(&e));
+            let shown = String::from_utf8(o).unwrap();
+            assert_eq!(shown.lines().count(), 1, "{shown:?}");
+            assert!(
+                shown.chars().all(|c| !c.is_control() || c == '\n') && !shown.contains('\u{2028}'),
+                "{shown:?}"
+            );
+            assert!(
+                shown
+                    .contains("commit=abc\\u{1b}]0;x\\u{7}\\nforged suite=unit\\u{9b}2J\\u{2028} ")
+            );
         }
 
         #[test]

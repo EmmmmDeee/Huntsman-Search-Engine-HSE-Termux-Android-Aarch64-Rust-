@@ -1,19 +1,45 @@
 //! Pure text-normalisation helpers rebuilt from the monolith's `util::str_util`.
 
-/// `s` with every control character (tab, newline, ESC, ...) written as a Rust
-/// escape (`\t`, `\n`, `\u{1b}`), so a provider-controlled value cannot break a
-/// line-oriented record or drive the terminal. Everything else is unchanged.
+/// Whether [`escape_controls`] writes `c` escaped: a control character, a line or paragraph
+/// separator, or a bidirectional embedding, override or isolate control. The separators start a new
+/// line for readers that split on them, and the others reorder the text around them, so a name can
+/// read as another. The marks that ordinary right-to-left text uses (U+200E, U+200F, U+061C) and
+/// the joiners that Persian and Indic scripts need are not among them.
 #[must_use]
-pub fn escape_controls(s: &str) -> String {
+pub fn is_escaped(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
+fn escape_where(s: &str, escaped: impl Fn(char) -> bool) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if c.is_control() {
+        if escaped(c) {
             out.extend(c.escape_default());
         } else {
             out.push(c);
         }
     }
     out
+}
+
+/// `s` with every control character (tab, newline, ESC, ...) written as a Rust escape (`\t`, `\n`,
+/// `\u{1b}`), and so are the characters [`is_escaped`] names, so a provider-controlled value cannot
+/// break a line-oriented record, drive the terminal or read as other text. Everything else is
+/// unchanged.
+#[must_use]
+pub fn escape_controls(s: &str) -> String {
+    escape_where(s, is_escaped)
+}
+
+/// [`escape_controls`] for text that already has lines, such as an error message: a line feed and a
+/// tab stay as they are.
+#[must_use]
+pub fn escape_controls_keep_lines(s: &str) -> String {
+    escape_where(s, |c| c != '\n' && c != '\t' && is_escaped(c))
 }
 
 /// Decodes the named and numeric character references in `s`. A reference that is unknown,
@@ -970,6 +996,38 @@ mod tests {
             decode_html_entities("&bogus; &#xD800; & done"),
             "&bogus; &#xD800; & done"
         );
+    }
+
+    #[test]
+    fn the_separators_and_bidirectional_overrides_are_escaped_too() {
+        assert_eq!(
+            escape_controls("a\u{2028}b\u{2029}c"),
+            "a\\u{2028}b\\u{2029}c"
+        );
+        assert_eq!(
+            escape_controls("pay\u{202e}fdp.exe\u{202c} \u{2066}x\u{2069}"),
+            "pay\\u{202e}fdp.exe\\u{202c} \\u{2066}x\\u{2069}"
+        );
+        // Ordinary right-to-left text, its marks and the joiners that scripts need are left alone.
+        for text in [
+            "مرحبا",
+            "a\u{200f}b",
+            "a\u{200e}b",
+            "\u{061c}",
+            "می\u{200c}خواهم",
+            "क्\u{200d}ष",
+        ] {
+            assert_eq!(escape_controls(text), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_variant_for_messages_keeps_line_feeds_and_tabs() {
+        assert_eq!(
+            escape_controls_keep_lines("one\ntwo\tx\u{1b}[2J\r\u{7}\u{2028}"),
+            "one\ntwo\tx\\u{1b}[2J\\r\\u{7}\\u{2028}"
+        );
+        assert_eq!(escape_controls_keep_lines("plain text"), "plain text");
     }
 
     #[test]

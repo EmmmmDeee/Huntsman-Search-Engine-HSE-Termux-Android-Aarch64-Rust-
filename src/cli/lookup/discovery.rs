@@ -15,6 +15,7 @@ use huntsman_recon::lookup_report::{entity_row, evidence_row};
 use huntsman_recon::search::{Document, load_dir, search, tokenize};
 use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
 use huntsman_recon::source_registry::routes_for;
+use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::web_query;
 
 pub(in crate::cli) fn investigate_cmd(args: &[String]) -> ExitCode {
@@ -70,24 +71,7 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
 
     match web_query::search(&transport, &query, now) {
         Ok(report) => {
-            for outcome in &report.outcomes {
-                let kind = serde_json::to_value(outcome.kind)
-                    .ok()
-                    .and_then(|value| value.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| "unknown".into());
-                println!(
-                    "engine={}\toutcome={}\tfound={}",
-                    outcome.module,
-                    kind,
-                    outcome
-                        .found
-                        .map_or_else(|| "none".to_owned(), |count| count.to_string())
-                );
-            }
-            for hit in &report.hits {
-                println!("{}\t{}", hit.engine, hit.url);
-            }
-            println!("hits={}", report.hits.len());
+            print!("{}", report.render());
             if report.hits.is_empty() {
                 ExitCode::from(EX_UNAVAILABLE)
             } else {
@@ -146,7 +130,11 @@ pub(in crate::cli) fn search_cmd(query: Option<String>, dir: Option<String>) -> 
         match load_dir(Path::new(&dir)) {
             Ok(loaded) => {
                 for skipped in &loaded.skipped {
-                    eprintln!("skipped\t{}\t{}", skipped.path, skipped.reason);
+                    eprintln!(
+                        "skipped\t{}\t{}",
+                        escape_controls(&skipped.path),
+                        escape_controls(&skipped.reason)
+                    );
                 }
                 loaded.docs
             }
@@ -171,7 +159,12 @@ pub(in crate::cli) fn search_cmd(query: Option<String>, dir: Option<String>) -> 
         println!("hits=0");
     }
     for hit in &hits {
-        println!("{}\t{}\t{}", hit.score, hit.id, hit.source);
+        println!(
+            "{}\t{}\t{}",
+            hit.score,
+            escape_controls(&hit.id),
+            escape_controls(&hit.source)
+        );
     }
     ExitCode::SUCCESS
 }
