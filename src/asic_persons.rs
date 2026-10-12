@@ -23,9 +23,9 @@ use crate::textnorm::{name_tokens, title_case, whole_word_token_match};
 
 const SRC: &str = "asic_persons";
 const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
-const BANNED_RES: &str = "741da9e3-7e0c-458e-830c-c518698e1788";
-const ADVISER_RES: &str = "91d80440-5787-46fc-99de-0c1d93e6cc9f";
-const CREDIT_RES: &str = "999d9e92-df2c-4d6d-b580-321dcd205292";
+pub(crate) const BANNED_RES: &str = "741da9e3-7e0c-458e-830c-c518698e1788";
+pub(crate) const ADVISER_RES: &str = "91d80440-5787-46fc-99de-0c1d93e6cc9f";
+pub(crate) const CREDIT_RES: &str = "999d9e92-df2c-4d6d-b580-321dcd205292";
 const MAX_HITS: usize = 100;
 
 const CONF_PERSON: f64 = 0.60;
