@@ -9,7 +9,7 @@ pub mod governor;
 pub mod model;
 pub mod transport;
 
-pub use dag::{Collector, DagEngine, ModuleRegistration};
+pub use dag::{Collector, DagEngine, ExecutionReport, ModuleRegistration};
 pub use error::HuntsmanError;
 pub use governor::{GovernorConfig, NetworkGovernor};
 pub use model::{Entity, EntityId, EntityKind, EpistemicLevel, ProvenanceEnvelope};
