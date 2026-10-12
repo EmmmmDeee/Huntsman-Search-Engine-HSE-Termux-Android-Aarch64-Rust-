@@ -1,0 +1,27 @@
+[package]
+name = "huntsman-collectors"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "OSINT collectors over the Huntsman async transport (DNS topology, matrix domain 1)"
+
+# Each runtime dependency states its purpose, as the workspace requires.
+[dependencies]
+# Entity model, Collector/Transport traits, governor and error types this crate builds on.
+huntsman-core = { path = "../huntsman-core" }
+# Object-safe async methods for the Collector trait implementation.
+async-trait = "0.1"
+
+[dev-dependencies]
+# Async test harness plus the in-process MockTransport (re-exported from core) for offline tests.
+tokio = { version = "1.38", default-features = false, features = ["rt", "rt-multi-thread", "macros"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

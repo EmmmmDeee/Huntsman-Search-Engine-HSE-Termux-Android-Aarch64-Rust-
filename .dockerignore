@@ -20,5 +20,9 @@
 !crates/huntsman-storage/Cargo.toml
 !crates/huntsman-storage/src/
 !crates/huntsman-storage/src/**
+!crates/huntsman-collectors/
+!crates/huntsman-collectors/Cargo.toml
+!crates/huntsman-collectors/src/
+!crates/huntsman-collectors/src/**
 !scripts/
 !scripts/railway-entrypoint.sh
