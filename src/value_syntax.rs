@@ -197,6 +197,28 @@ pub fn canonical_phone(raw: &str) -> Option<String> {
     normalise_au_phone(&compact)
 }
 
+/// Shape defect in an email local part. One rule shared by
+/// `canonical::canonical_email` and `validation::validate_email_syntax`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmailLocalError {
+    Length,
+    DotEdge,
+    ConsecutiveDots,
+}
+
+#[must_use]
+pub fn email_local_error(local: &str) -> Option<EmailLocalError> {
+    if local.is_empty() || local.len() > 64 {
+        Some(EmailLocalError::Length)
+    } else if local.starts_with('.') || local.ends_with('.') {
+        Some(EmailLocalError::DotEdge)
+    } else if local.contains("..") {
+        Some(EmailLocalError::ConsecutiveDots)
+    } else {
+        None
+    }
+}
+
 #[must_use]
 pub fn canonical_domain(raw: &str) -> Option<String> {
     let domain = raw.trim().trim_matches('.').to_ascii_lowercase();
