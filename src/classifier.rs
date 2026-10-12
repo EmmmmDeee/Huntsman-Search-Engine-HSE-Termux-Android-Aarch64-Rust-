@@ -69,6 +69,12 @@ pub fn classify(raw: &str) -> Classified {
     if parse_ipv4(value) {
         return classified(EntityKind::IpAddress, value, 0.92, "parsed");
     }
+    if let Some(mac) = parse_mac_address(value) {
+        return classified(EntityKind::MacAddress, &mac, 0.90, "six-octet");
+    }
+    if let Some(asn) = parse_asn(value) {
+        return classified(EntityKind::Asn, &asn, 0.85, "as-prefix");
+    }
     if let Some(coordinates) = parse_decimal_coordinates(value) {
         return classified(EntityKind::Coordinates, &coordinates, 0.85, "lat-lon");
     }
@@ -107,6 +113,31 @@ pub fn classify(raw: &str) -> Classified {
         return classified(EntityKind::Person, value, 0.50, "multiword");
     }
     classified(EntityKind::Other, value, 0.20, "residual")
+}
+
+/// Recognises a six-octet MAC address written with `:` or `-` separators, returned in
+/// lowercase colon form so one device seen twice is one entity.
+fn parse_mac_address(value: &str) -> Option<String> {
+    let separator = if value.contains(':') { ':' } else { '-' };
+    let octets: Vec<&str> = value.split(separator).collect();
+    let well_formed = octets.len() == 6
+        && octets
+            .iter()
+            .all(|octet| octet.len() == 2 && octet.bytes().all(|b| b.is_ascii_hexdigit()));
+    well_formed.then(|| octets.join(":").to_ascii_lowercase())
+}
+
+/// Recognises an autonomous-system number written `AS` or `ASN` followed by digits, such
+/// as `AS13335`. Returned as `AS` plus the bare number, so the case of the prefix does not
+/// split one network into two entities.
+fn parse_asn(value: &str) -> Option<String> {
+    let upper = value.to_ascii_uppercase();
+    let digits = upper
+        .strip_prefix("ASN")
+        .or_else(|| upper.strip_prefix("AS"))?;
+    let well_formed =
+        (1..=10).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit());
+    well_formed.then(|| format!("AS{digits}"))
 }
 
 /// Lowercased alphanumeric runs of a value, so keyword markers match whole words only.
@@ -569,5 +600,45 @@ mod tests {
             assert_eq!(found.kind, EntityKind::Other, "{raw}");
             assert_eq!(found.signal, "residual", "{raw}");
         }
+    }
+
+    #[test]
+    fn mac_addresses_normalise_to_lowercase_colon_form() {
+        for raw in ["00:1A:2B:3C:4D:5E", "00-1a-2b-3c-4d-5e"] {
+            let found = classify(raw);
+            assert_eq!(found.kind, EntityKind::MacAddress, "{raw}");
+            assert_eq!(found.value, "00:1a:2b:3c:4d:5e", "{raw}");
+        }
+    }
+
+    #[test]
+    fn malformed_mac_addresses_are_not_mac_addresses() {
+        for raw in [
+            "00:1A:2B:3C:4D",
+            "00:1A:2B:3C:4D:5G",
+            "00:1A:2B:3C:4D:5E:6F",
+        ] {
+            assert_ne!(classify(raw).kind, EntityKind::MacAddress, "{raw}");
+        }
+    }
+
+    #[test]
+    fn asn_numbers_normalise_prefix_and_reject_non_digits() {
+        for (raw, value) in [("AS13335", "AS13335"), ("asn64512", "AS64512")] {
+            let found = classify(raw);
+            assert_eq!(found.kind, EntityKind::Asn, "{raw}");
+            assert_eq!(found.value, value, "{raw}");
+        }
+        for raw in ["ASIA", "AS", "AS12x", "ASN12345678901"] {
+            assert_ne!(classify(raw).kind, EntityKind::Asn, "{raw}");
+        }
+    }
+
+    #[test]
+    fn extract_finds_mac_and_asn_inside_prose_without_duplicates() {
+        let found = extract("device 00-1A-2B-3C-4D-5E on AS13335, again 00:1a:2b:3c:4d:5e");
+        let kinds: Vec<_> = found.iter().map(|c| c.kind.clone()).collect();
+        assert_eq!(kinds, vec![EntityKind::MacAddress, EntityKind::Asn]);
+        assert_eq!(found[0].value, "00:1a:2b:3c:4d:5e");
     }
 }
