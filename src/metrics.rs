@@ -6,6 +6,7 @@ use crate::confidence::Classification;
 use crate::entity::Entity;
 use crate::graph::{EntityRelation, Graph, UNREACHABLE};
 
+#[allow(clippy::cast_precision_loss)]
 fn mean(values: &[f64]) -> f64 {
     if values.is_empty() {
         0.0
