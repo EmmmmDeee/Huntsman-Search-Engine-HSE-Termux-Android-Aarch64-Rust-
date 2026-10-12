@@ -5,9 +5,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::canonical;
-
-pub use crate::{domains, textnorm, validation};
+use crate::canonical::{canonical_email, canonical_handle};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonRecord {
@@ -28,31 +26,6 @@ pub struct Link {
 pub struct Cluster {
     pub members: Vec<String>,
     pub links: Vec<Link>,
-}
-
-#[must_use]
-pub fn canonical_name(raw: &str) -> String {
-    canonical::canonical_name(raw)
-}
-
-#[must_use]
-pub fn canonical_email(raw: &str) -> Option<String> {
-    canonical::canonical_email(raw)
-}
-
-#[must_use]
-pub fn canonical_domain(raw: &str) -> Option<String> {
-    canonical::canonical_domain_host(raw)
-}
-
-#[must_use]
-pub fn canonical_handle(raw: &str) -> Option<String> {
-    canonical::canonical_handle(raw)
-}
-
-#[must_use]
-pub fn canonical_phone(raw: &str) -> Option<String> {
-    canonical::canonical_phone(raw)
 }
 
 /// Union by shared canonical email or handle. Names never merge records.
@@ -270,21 +243,5 @@ mod tests {
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].links[0].reason, "shared_email");
         assert_eq!(canonical_handle("@Ada"), Some("ada".into()));
-    }
-
-    #[test]
-    fn canonical_domain_and_phone_merge_here() {
-        assert_eq!(
-            canonical_domain(" WWW.Example.COM. ").as_deref(),
-            Some("example.com")
-        );
-        assert_eq!(
-            canonical_phone("0412 345 678").as_deref(),
-            Some("+61412345678")
-        );
-        assert_eq!(
-            canonical_phone("+1 555 123 4567").as_deref(),
-            Some("+15551234567")
-        );
     }
 }
