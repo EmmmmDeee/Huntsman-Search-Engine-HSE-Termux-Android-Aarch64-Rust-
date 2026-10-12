@@ -255,4 +255,40 @@ mod tests {
         assert_eq!(gated.admitted.actions[0].source_id, "crtsh");
         assert_eq!(gated.admitted.actions[0].query, "example.com");
     }
+
+    #[test]
+    fn an_offline_run_persists_a_session_that_reloads_byte_for_byte() {
+        use crate::pipeline::{InvestigationInput, InvestigationMode, PipelineLimits};
+        use crate::planner::PlannerPolicy;
+        use crate::store::Store;
+
+        let input = InvestigationInput {
+            scan_id: "persist-roundtrip".into(),
+            seeds: vec!["alice@example.org".into()],
+            mode: InvestigationMode::Offline,
+        };
+        let outcome = investigate_offline(
+            &[],
+            &input,
+            &PipelineLimits::default(),
+            &PlannerPolicy::default(),
+            &[],
+        )
+        .expect("offline investigation");
+
+        let session = session_for_outcome(&input, &outcome).expect("session");
+        assert!(session.termination.is_some());
+
+        let root =
+            std::env::temp_dir().join(format!("huntsman-session-roundtrip-{}", std::process::id()));
+        let saved = persist_session(&root, &session).expect("persist");
+        assert!(saved.exists());
+
+        // The dormant read path is now reachable: a saved session reloads to the
+        // exact document that was written.
+        let reloaded = Store::new(&root).load(&session.id).expect("reload");
+        assert_eq!(reloaded, session);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

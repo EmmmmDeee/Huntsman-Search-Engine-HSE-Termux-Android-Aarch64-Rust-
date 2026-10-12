@@ -1,14 +1,18 @@
 //! Thin executable over the shared investigation runtime.
 
 use std::env;
+use std::path::Path;
 use std::process::ExitCode;
 
-use huntsman_recon::exit::{EX_DATAERR, EX_SOFTWARE, EX_USAGE};
+use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_SOFTWARE, EX_USAGE};
 use huntsman_recon::pipeline::{InvestigationInput, InvestigationMode, PipelineLimits};
 use huntsman_recon::planner::PlannerPolicy;
-use huntsman_recon::runtime::investigate_offline;
+use huntsman_recon::runtime::{investigate_offline, persist_session, session_for_outcome};
+use huntsman_recon::session::Session;
+use huntsman_recon::store::Store;
 
-const USAGE: &str = "usage: investigate SEED [SEED ...]";
+const USAGE: &str =
+    "usage: investigate [--session-dir DIR] SEED [SEED ...] | investigate --load-session DIR ID";
 
 fn fail(code: u8, message: &str) -> ExitCode {
     eprintln!("{message}");
@@ -22,18 +26,44 @@ fn main() -> ExitCode {
         println!(
             "Runs the bounded offline Huntsman integration spine; planned external routes are not fetched."
         );
+        println!(
+            "--session-dir DIR persists the run as a reloadable session; --load-session DIR ID prints a saved one."
+        );
         return ExitCode::SUCCESS;
     }
     if args.len() == 1 && matches!(args[0].as_str(), "-V" | "--version") {
         println!("investigate {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    if args.is_empty() {
+    if args.first().is_some_and(|arg| arg == "--load-session") {
+        return load_session(&args[1..]);
+    }
+    run_investigation(args)
+}
+
+/// Reload and summarize a session persisted by an earlier `--session-dir` run.
+fn load_session(rest: &[String]) -> ExitCode {
+    let [dir, id] = rest else {
+        return fail(EX_USAGE, "investigate --load-session needs exactly DIR ID");
+    };
+    match Store::new(dir).load(id) {
+        Ok(session) => {
+            print_session_summary(&session);
+            ExitCode::SUCCESS
+        }
+        Err(huntsman_recon::error::Error::Store(message)) => fail(EX_NOINPUT, &message),
+        Err(error) => fail(EX_DATAERR, &error.to_string()),
+    }
+}
+
+fn run_investigation(args: Vec<String>) -> ExitCode {
+    let (session_dir, seeds) = split_session_dir(args);
+    if seeds.is_empty() {
         return fail(EX_USAGE, USAGE);
     }
     let input = InvestigationInput {
         scan_id: "cli".to_string(),
-        seeds: args,
+        seeds,
         mode: InvestigationMode::Offline,
     };
     let outcome = match investigate_offline(
@@ -59,5 +89,43 @@ fn main() -> ExitCode {
         outcome.report.termination,
         outcome.report.truncated || outcome.artifacts.truncated,
     );
+    if let Some(dir) = session_dir {
+        let session = match session_for_outcome(&input, &outcome) {
+            Ok(session) => session,
+            Err(error) => return fail(EX_SOFTWARE, &format!("session build failed: {error}")),
+        };
+        match persist_session(Path::new(&dir), &session) {
+            Ok(path) => println!("session={} saved={}", session.id, path.display()),
+            Err(error) => return fail(EX_SOFTWARE, &format!("session save failed: {error}")),
+        }
+    }
     ExitCode::SUCCESS
+}
+
+/// Pull an optional `--session-dir DIR` out of the argument list; the rest are seeds.
+fn split_session_dir(args: Vec<String>) -> (Option<String>, Vec<String>) {
+    let mut dir = None;
+    let mut seeds = Vec::with_capacity(args.len());
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        if arg == "--session-dir" {
+            dir = it.next();
+        } else {
+            seeds.push(arg);
+        }
+    }
+    (dir, seeds)
+}
+
+fn print_session_summary(session: &Session) {
+    println!(
+        "session={} title={} candidates={} falsifications={} executions={} verifications={} terminated={}",
+        session.id,
+        session.title,
+        session.candidates.len(),
+        session.falsifications.len(),
+        session.executions.len(),
+        session.verifications.len(),
+        session.termination.is_some(),
+    );
 }
