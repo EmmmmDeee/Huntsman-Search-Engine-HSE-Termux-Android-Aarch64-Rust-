@@ -2,12 +2,12 @@
 //!
 //! Lookup runs [`crate::asic_persons`], [`crate::asic_director`], [`crate::au_people`]
 //! and [`crate::au_electoral`] over one injected [`crate::http::Transport`]. One
-//! source's [`Error::Invalid`] or `BotWaf` does not abort the others. Evidence is
-//! fed through [`crate::lineage::resolve_with_lineage`]. Tests inject fakes; live
+//! source's [`Error::Invalid`] or `BotWaf` does not abort the others. The report is
+//! [`crate::lookup_report::render`], which feeds the evidence through
+//! [`crate::lineage::resolve_with_lineage`]. Tests inject fakes; live
 //! sources are not run here. Saving a ledger is handled by [`crate::lookup_save`], and the
 //! `--save` option is read by [`crate::lookup_args`]; this module reads only NAME.
 
-use std::fmt::Write;
 use std::path::PathBuf;
 
 use crate::asic_director;
@@ -18,9 +18,8 @@ use crate::canonical::canonical_name;
 use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::http::Transport;
-use crate::identity_resolution::AutoMergePolicy;
-use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
 use crate::lookup_args::LookupTokens;
+use crate::lookup_report;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::textnorm::name_tokens;
 
@@ -130,7 +129,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
         return PeopleRun::Failed("nothing collected".into());
     }
 
-    match render(&report) {
+    match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => PeopleRun::Printed { text, report },
         Err(msg) => PeopleRun::Failed(msg),
     }
@@ -239,42 +238,6 @@ fn usable(report: &Report) -> bool {
 #[must_use]
 pub fn is_name(name: &str) -> bool {
     name_tokens(&canonical_name(name)).len() >= 2
-}
-
-fn render(report: &Report) -> Result<String, String> {
-    let mut out = format!("entities={}\n", report.entities.len());
-    for entity in &report.entities {
-        let _ = writeln!(
-            out,
-            "{}\t{}\t{:.2}\t{}",
-            entity.kind,
-            entity.raw_value,
-            entity.confidence,
-            entity.tags.join(",")
-        );
-    }
-    for outcome in &report.outcomes {
-        let found = outcome
-            .found
-            .map_or_else(|| "none".to_owned(), |n| n.to_string());
-        let kind = serde_json::to_value(outcome.kind)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_default();
-        let _ = writeln!(out, "{}\t{kind}\tfound={found}", outcome.module);
-    }
-
-    let observations = observations_from(&report.entities);
-    if observations.is_empty() {
-        return Ok(out);
-    }
-    let resolution = resolve_with_lineage(observations, Vec::new(), AutoMergePolicy::default())
-        .map_err(|e| e.to_string())?;
-    let _ = writeln!(out, "lineage={}", resolution.observations.len());
-    for item in &resolution.observations {
-        let _ = writeln!(out, "{}", lineage_tsv_line(item));
-    }
-    Ok(out)
 }
 
 #[cfg(test)]

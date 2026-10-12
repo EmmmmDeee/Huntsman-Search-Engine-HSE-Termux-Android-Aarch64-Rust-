@@ -33,14 +33,16 @@ fn a_generated_token_is_stored_and_never_printed() {
     let token = stored.trim();
     assert_eq!(token.len(), 64, "a 256-bit token, hex encoded");
 
-    // Stderr is deliberately absent from the failure message: on failure it would print the token.
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // A host logs both streams, so neither may carry the token. The messages leave the output out:
+    // on failure it would print the token.
+    for (name, stream) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+        assert!(
+            !String::from_utf8_lossy(stream).contains(token),
+            "the generated token reached {name}"
+        );
+    }
     assert!(
-        !stderr.contains(token),
-        "the generated token reached stderr"
-    );
-    assert!(
-        stderr.contains("railway-auth-token"),
+        String::from_utf8_lossy(&output.stderr).contains("railway-auth-token"),
         "stderr does not name the stored file"
     );
     let _ = fs::remove_dir_all(&root);

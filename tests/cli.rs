@@ -833,3 +833,92 @@ fn recon_refuses_bad_usage_and_a_missing_key_before_any_request() {
     let _ = fs::remove_dir_all(&dir);
     let _ = fs::remove_dir_all(&home);
 }
+
+/// The bytes a terminal acts on, other than the line feed and tab the reports use as separators.
+fn terminal_controls(text: &str) -> Vec<char> {
+    text.chars()
+        .filter(|c| (c.is_control() && !matches!(c, '\n' | '\t')) || *c == '\u{2028}')
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn search_prints_a_hostile_file_name_as_text_on_one_row() {
+    // A directory taken from somewhere else: its file names are the sender's choice.
+    let dir = scratch("search-names");
+    let docs = dir.join("docs");
+    fs::create_dir_all(&docs).unwrap();
+    fs::write(docs.join("esc\u{1b}[2Jname.txt"), "the needle is here\n").unwrap();
+    fs::write(docs.join("x\n9\tforged.txt"), "another needle\n").unwrap();
+    let out = bin()
+        .args(["search", "needle", "docs"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(terminal_controls(&stdout), Vec::<char>::new(), "{stdout:?}");
+    let rows: Vec<&str> = stdout.lines().collect();
+    assert_eq!(rows.len(), 2, "one row per file: {stdout:?}");
+    for row in rows {
+        assert_eq!(
+            row.matches('\t').count(),
+            2,
+            "score, id and source: {row:?}"
+        );
+    }
+    assert!(stdout.contains("esc\\u{1b}[2Jname.txt"), "{stdout:?}");
+    assert!(stdout.contains("x\\n9\\tforged.txt"), "{stdout:?}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_error_that_echoes_input_cannot_drive_the_terminal() {
+    // serde names an unknown field in its message, and the field is whatever the file held.
+    let dir = scratch("error-echo");
+    fs::write(dir.join("in.json"), "{\"\\u001b]0;x\\u0007\\u009b2J\": 1}").unwrap();
+    let out = bin()
+        .args(["domain-lifecycle", "analyze", "in.json", "--as-of", "1"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("unknown field"), "{stderr:?}");
+    assert_eq!(terminal_controls(&stderr), Vec::<char>::new(), "{stderr:?}");
+    assert!(stderr.contains("\\u{1b}]0;x\\u{7}\\u{9b}2J"), "{stderr:?}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_history_show_prints_the_text_of_a_hostile_history_file_as_text() {
+    // The file is read as written, and anyone may have written it.
+    let dir = scratch("run-history-hostile");
+    fs::write(
+        dir.join("runs.jsonl"),
+        "{\"commit\":\"abc\\u001b]0;x\\u0007\\nforged\",\"suite\":\"unit\\u009b2J\\u2028\",\"passed\":1,\"failed\":0,\"recorded_at_unix\":5}\n",
+    )
+    .unwrap();
+    let out = bin()
+        .args(["run-history", "show", "--file", "runs.jsonl"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(terminal_controls(&stdout), Vec::<char>::new(), "{stdout:?}");
+    assert_eq!(stdout.lines().count(), 1, "{stdout:?}");
+    assert!(
+        stdout.contains("commit=abc\\u{1b}]0;x\\u{7}\\nforged suite=unit\\u{9b}2J\\u{2028} "),
+        "{stdout:?}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

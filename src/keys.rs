@@ -511,6 +511,20 @@ fn loose_mode(_path: &Path) -> Result<Option<u32>, Error> {
 
 fn unquote(v: &str) -> &str {
     for q in ['"', '\''] {
+        let Some(inner) = v.strip_prefix(q) else {
+            continue;
+        };
+        // A quoted value ends at its closing quote, and only a comment may follow that quote.
+        if let Some(close) = inner.find(q) {
+            let after = &inner[close + q.len_utf8()..];
+            if after.is_empty()
+                || (after.starts_with(char::is_whitespace) && after.trim_start().starts_with('#'))
+            {
+                return &inner[..close];
+            }
+        }
+    }
+    for q in ['"', '\''] {
         if v.len() >= 2 && v.starts_with(q) && v.ends_with(q) {
             return &v[1..v.len() - 1];
         }
@@ -580,6 +594,24 @@ mod tests {
         assert_eq!(k.slots(), ["A_KEY", "B_KEY", "C_KEY"]);
         let shown = format!("{k:?}");
         assert!(!shown.contains("override") && shown.contains("A_KEY"));
+    }
+
+    #[test]
+    fn a_quoted_value_ends_at_its_closing_quote() {
+        // A comment after the closing quote is a comment, whatever it holds; a `#` inside the
+        // quotes is part of the value.
+        for (line, want) in [
+            ("A_KEY=\"abcdef1234\"\n", "abcdef1234"),
+            ("A_KEY=\"abcdef1234\" # prod\n", "abcdef1234"),
+            ("A_KEY='abcdef1234' # prod\n", "abcdef1234"),
+            ("A_KEY=\"abcdef1234\"   # \"prod\"\n", "abcdef1234"),
+            ("A_KEY=\"abcdef #1234\"\n", "abcdef #1234"),
+            ("A_KEY=\"abcdef #1234\" # prod\n", "abcdef #1234"),
+            ("A_KEY=abcdef1234 # prod\n", "abcdef1234"),
+        ] {
+            let keys = Keys::parse(line).expect("parse");
+            assert_eq!(keys.get("A_KEY").expect("a").expose(), want, "{line:?}");
+        }
     }
 
     #[test]

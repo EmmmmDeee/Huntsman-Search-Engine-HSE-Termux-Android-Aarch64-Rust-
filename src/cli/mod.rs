@@ -60,9 +60,12 @@ mod help;
 mod lookup;
 mod meta;
 mod network;
+mod report;
 mod selfcheck;
 mod service;
 mod utility;
+
+use report::fail;
 
 pub(crate) fn run(argv: Vec<String>) -> ExitCode {
     if argv.is_empty() {
@@ -118,9 +121,4 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         Some("check") | None => selfcheck::check(),
         Some(other) => help::unknown_command(other),
     }
-}
-
-fn fail(code: u8, msg: &str) -> ExitCode {
-    eprintln!("{msg}");
-    ExitCode::from(code)
 }

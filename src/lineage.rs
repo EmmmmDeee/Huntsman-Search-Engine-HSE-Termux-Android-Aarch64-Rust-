@@ -23,6 +23,7 @@ use crate::evidence_ancestry::{
     AncestryError, EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, canonical_family,
 };
 use crate::identity_resolution::{AutoMergePolicy, HoldReason, IdentityResolutionDecision};
+use crate::textnorm::escape_controls;
 
 /// Response fields that can identify an upstream family, in precedence order. The first
 /// admissible non-blank field decides and later fields are not read. The first three are
@@ -371,17 +372,27 @@ pub const fn upstream_kind_label(kind: UpstreamKind) -> &'static str {
 
 /// One TSV row for an observation's lineage: its id, then the upstream kind and family, or
 /// `unattributed`, or the ambiguous field and its candidate values. The collection front-ends
-/// print these rows, so the row format is defined once, here.
+/// print these rows, so the row format is defined once, here. The id, the family and the values
+/// come from the response, so each is written through [`escape_controls`]: a response cannot
+/// start a row or a column of its own, or drive the terminal.
 #[must_use]
 pub fn lineage_tsv_line(item: &ObservedLineage) -> String {
-    let id = &item.observation.id.0;
+    let id = escape_controls(&item.observation.id.0);
     match &item.lineage {
         Lineage::Upstream { kind, family, .. } => {
-            format!("{id}\t{}\t{family}", upstream_kind_label(*kind))
+            format!(
+                "{id}\t{}\t{}",
+                upstream_kind_label(*kind),
+                escape_controls(family)
+            )
         }
         Lineage::Unattributed => format!("{id}\tunattributed"),
         Lineage::Ambiguous { field, values } => {
-            format!("{id}\tambiguous\t{field}\t{}", values.join(";"))
+            format!(
+                "{id}\tambiguous\t{}\t{}",
+                escape_controls(field),
+                escape_controls(&values.join(";"))
+            )
         }
     }
 }
@@ -476,5 +487,44 @@ mod tests {
             resolve_with_lineage(vec![obs("lineage:adobe")], vec![], policy),
             Err(LineageError::ReservedObservationId(_))
         ));
+    }
+
+    #[test]
+    fn a_lineage_row_cannot_be_broken_by_any_of_its_text() {
+        // The types are public and deserialisable, so a saved record can carry any text in any
+        // field; the row must stay one line of fixed columns for all of it.
+        let hostile = "x\u{1b}[2J\nforged\tcolumn";
+        let escaped = "x\\u{1b}[2J\\nforged\\tcolumn";
+        let observation = Observation {
+            id: EvidenceNodeId(hostile.to_owned()),
+            evidence: evidence("probe", &[]),
+        };
+        let row = |lineage| {
+            lineage_tsv_line(&ObservedLineage {
+                observation: observation.clone(),
+                lineage,
+            })
+        };
+
+        assert_eq!(
+            row(Lineage::Unattributed),
+            format!("{escaped}\tunattributed")
+        );
+        assert_eq!(
+            row(Lineage::Upstream {
+                kind: UpstreamKind::Dataset,
+                field: hostile.to_owned(),
+                value: hostile.to_owned(),
+                family: hostile.to_owned(),
+            }),
+            format!("{escaped}\tdataset\t{escaped}")
+        );
+        assert_eq!(
+            row(Lineage::Ambiguous {
+                field: hostile.to_owned(),
+                values: vec![hostile.to_owned(), hostile.to_owned()],
+            }),
+            format!("{escaped}\tambiguous\t{escaped}\t{escaped};{escaped}")
+        );
     }
 }

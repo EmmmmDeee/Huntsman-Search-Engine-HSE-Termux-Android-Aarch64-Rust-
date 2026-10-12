@@ -235,6 +235,58 @@ fn only_the_environment_module_names_a_credential_slot() {
     );
 }
 
+/// The formats of the two rows a report gives an entity, as the literals read in the source: the
+/// entity itself (kind, value, confidence, tags) and the evidence behind it (source, summary).
+const REPORT_ROWS: [&str; 2] = ["{}\\t{}\\t{:.2}\\t{}", "evidence\\t{}\\t{}"];
+/// The one module that formats them, and so the one place that makes their values safe to print.
+const REPORT_OWNER: [&str; 1] = ["src/lookup_report.rs"];
+
+/// The production files outside `owners` that hold a string literal equal to `needle`.
+fn literal_offenders(owners: &[&str], needle: &str) -> Vec<String> {
+    production_sources()
+        .into_iter()
+        .filter(|source| !owners.iter().any(|entry| under(&source.path, entry)))
+        .filter(|source| {
+            production_string_literals(&source.text)
+                .iter()
+                .any(|literal| literal == needle)
+        })
+        .map(|source| source.path)
+        .collect()
+}
+
+#[test]
+fn only_the_lookup_report_formats_an_entity_or_evidence_row() {
+    for row in REPORT_ROWS {
+        let found = literal_offenders(&REPORT_OWNER, row);
+        assert!(
+            found.is_empty(),
+            "a second module formats the report row `{row}`; call `lookup_report::entity_row` or \
+             `lookup_report::evidence_row`, which neutralise third-party text, instead: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn the_report_row_rule_sees_each_row_and_ignores_comments() {
+    for row in REPORT_ROWS {
+        let code = format!("fn f() {{ writeln!(out, \"{row}\", a, b); }}");
+        assert!(
+            production_string_literals(&code)
+                .iter()
+                .any(|literal| literal == row),
+            "{row}"
+        );
+        let commented = format!("// \"{row}\"\nfn f() {{}}");
+        assert!(
+            !production_string_literals(&commented)
+                .iter()
+                .any(|literal| literal == row),
+            "{row}"
+        );
+    }
+}
+
 /// Whether the tokens build a `SourceExecutionOutcome` with a struct literal. The type name followed
 /// by a brace is a literal, unless the brace follows `impl`, `struct` or `for`, or the `>` of a
 /// return type (`->` is two tokens).

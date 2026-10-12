@@ -1,19 +1,45 @@
 //! Pure text-normalisation helpers rebuilt from the monolith's `util::str_util`.
 
-/// `s` with every control character (tab, newline, ESC, ...) written as a Rust
-/// escape (`\t`, `\n`, `\u{1b}`), so a provider-controlled value cannot break a
-/// line-oriented record or drive the terminal. Everything else is unchanged.
+/// Whether [`escape_controls`] writes `c` escaped: a control character, a line or paragraph
+/// separator, or a bidirectional embedding, override or isolate control. The separators start a new
+/// line for readers that split on them, and the others reorder the text around them, so a name can
+/// read as another. The marks that ordinary right-to-left text uses (U+200E, U+200F, U+061C) and
+/// the joiners that Persian and Indic scripts need are not among them.
 #[must_use]
-pub fn escape_controls(s: &str) -> String {
+pub fn is_escaped(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
+fn escape_where(s: &str, escaped: impl Fn(char) -> bool) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if c.is_control() {
+        if escaped(c) {
             out.extend(c.escape_default());
         } else {
             out.push(c);
         }
     }
     out
+}
+
+/// `s` with every control character (tab, newline, ESC, ...) written as a Rust escape (`\t`, `\n`,
+/// `\u{1b}`), and so are the characters [`is_escaped`] names, so a provider-controlled value cannot
+/// break a line-oriented record, drive the terminal or read as other text. Everything else is
+/// unchanged.
+#[must_use]
+pub fn escape_controls(s: &str) -> String {
+    escape_where(s, is_escaped)
+}
+
+/// [`escape_controls`] for text that already has lines, such as an error message: a line feed and a
+/// tab stay as they are.
+#[must_use]
+pub fn escape_controls_keep_lines(s: &str) -> String {
+    escape_where(s, |c| c != '\n' && c != '\t' && is_escaped(c))
 }
 
 /// Decodes the named and numeric character references in `s`. A reference that is unknown,
@@ -40,6 +66,25 @@ pub fn decode_html_entities(s: &str) -> String {
     out
 }
 
+/// How far past its `&` a reference may end. `#x` and eight hex digits fill eleven bytes, which
+/// leaves room for the leading zeros HTML allows. Looking further for the `;` made a text of
+/// ampersands quadratic.
+const MAX_REFERENCE_BYTES: usize = 32;
+
+/// The position of the `;` that ends a reference, if it is near enough to be one. Only a name, a
+/// number or a sign can stand before the `;` of a reference this module decodes, so the search ends
+/// at the first other byte, which keeps a text of ampersands to one step each.
+fn reference_end(s: &str) -> Option<usize> {
+    for (index, byte) in s.bytes().take(MAX_REFERENCE_BYTES).enumerate() {
+        match byte {
+            b';' => return Some(index),
+            b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'+' => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn decode_one_html_entity(rest: &str) -> Option<(char, usize)> {
     let after_amp = rest.get(1..)?;
     if after_amp.starts_with('#') {
@@ -52,7 +97,7 @@ fn decode_one_html_entity(rest: &str) -> Option<(char, usize)> {
         } else {
             after_amp.get(1..)?
         };
-        let end = digits.find(';')?;
+        let end = reference_end(digits)?;
         let raw = &digits[..end];
         if raw.is_empty() {
             return None;
@@ -66,7 +111,7 @@ fn decode_one_html_entity(rest: &str) -> Option<(char, usize)> {
         let consumed = 2 + usize::from(hex) + raw.len() + 1;
         return Some((ch, consumed));
     }
-    let end = after_amp.find(';')?;
+    let end = reference_end(after_amp)?;
     let name = &after_amp[..end];
     let ch = match name {
         "amp" => '&',
@@ -950,6 +995,149 @@ mod tests {
         assert_eq!(
             decode_html_entities("&bogus; &#xD800; & done"),
             "&bogus; &#xD800; & done"
+        );
+    }
+
+    #[test]
+    fn the_separators_and_bidirectional_overrides_are_escaped_too() {
+        assert_eq!(
+            escape_controls("a\u{2028}b\u{2029}c"),
+            "a\\u{2028}b\\u{2029}c"
+        );
+        assert_eq!(
+            escape_controls("pay\u{202e}fdp.exe\u{202c} \u{2066}x\u{2069}"),
+            "pay\\u{202e}fdp.exe\\u{202c} \\u{2066}x\\u{2069}"
+        );
+        // Ordinary right-to-left text, its marks and the joiners that scripts need are left alone.
+        for text in [
+            "مرحبا",
+            "a\u{200f}b",
+            "a\u{200e}b",
+            "\u{061c}",
+            "می\u{200c}خواهم",
+            "क्\u{200d}ष",
+        ] {
+            assert_eq!(escape_controls(text), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_variant_for_messages_keeps_line_feeds_and_tabs() {
+        assert_eq!(
+            escape_controls_keep_lines("one\ntwo\tx\u{1b}[2J\r\u{7}\u{2028}"),
+            "one\ntwo\tx\\u{1b}[2J\\r\\u{7}\\u{2028}"
+        );
+        assert_eq!(escape_controls_keep_lines("plain text"), "plain text");
+    }
+
+    #[test]
+    fn a_reference_is_looked_for_only_a_short_way_ahead() {
+        // HTML allows leading zeros, so a long reference is still read.
+        assert_eq!(decode_html_entities("&#0000000000000000000065;"), "A");
+        assert_eq!(decode_html_entities("&#x00000000000000000041;"), "A");
+        // A `;` farther off than any reference needs does not make one.
+        let far = format!("&#{}65;", "0".repeat(60));
+        assert_eq!(decode_html_entities(&far), far);
+    }
+
+    /// The decoder as it was before the search for `;` was bounded, with the bound added, so the two
+    /// differ only in how they look for the `;`.
+    fn decode_with_unbounded_search(s: &str) -> String {
+        fn one(rest: &str) -> Option<(char, usize)> {
+            let after_amp = rest.get(1..)?;
+            let found = |text: &str| text.find(';').filter(|end| *end < MAX_REFERENCE_BYTES);
+            if after_amp.starts_with('#') {
+                let hex = after_amp
+                    .as_bytes()
+                    .get(1)
+                    .is_some_and(|b| *b == b'x' || *b == b'X');
+                let digits = if hex {
+                    after_amp.get(2..)?
+                } else {
+                    after_amp.get(1..)?
+                };
+                let end = found(digits)?;
+                let raw = &digits[..end];
+                if raw.is_empty() {
+                    return None;
+                }
+                let value = if hex {
+                    u32::from_str_radix(raw, 16).ok()?
+                } else {
+                    raw.parse::<u32>().ok()?
+                };
+                return Some((char::from_u32(value)?, 2 + usize::from(hex) + raw.len() + 1));
+            }
+            let end = found(after_amp)?;
+            let ch = match &after_amp[..end] {
+                "amp" => '&',
+                "lt" => '<',
+                "gt" => '>',
+                "quot" => '"',
+                "apos" => '\'',
+                "nbsp" => ' ',
+                _ => return None,
+            };
+            Some((ch, 1 + end + 1))
+        }
+        let mut out = String::new();
+        let mut rest = s;
+        while let Some(first) = rest.chars().next() {
+            if let Some((ch, consumed)) = (first == '&').then(|| one(rest)).flatten() {
+                out.push(ch);
+                rest = &rest[consumed..];
+            } else {
+                out.push(first);
+                rest = &rest[first.len_utf8()..];
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_bounded_search_decodes_what_the_unbounded_one_did() {
+        // A generated mix of the characters a reference is made of, and of ones that break it.
+        const ALPHABET: &[&str] = &[
+            "&", "&", "&", "#", "x", "X", ";", ";", "a", "m", "p", "l", "t", "g", "q", "u", "o",
+            "n", "b", "s", "0", "1", "4", "9", "A", "F", "+", "-", " ", "é", "<",
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            (state >> 33) as usize
+        };
+        for _ in 0..4000 {
+            let length = next() % 61;
+            let text: String = (0..length)
+                .map(|_| ALPHABET[next() % ALPHABET.len()])
+                .collect();
+            assert_eq!(
+                decode_html_entities(&text),
+                decode_with_unbounded_search(&text),
+                "{text:?}"
+            );
+        }
+        // The references the generator is most likely to complete, so the comparison is not vacuous.
+        assert_eq!(
+            decode_with_unbounded_search("&amp;&#65;&#x41;&#+65;"),
+            "&AAA"
+        );
+        assert_eq!(decode_html_entities("&amp;&#65;&#x41;&#+65;"), "&AAA");
+    }
+
+    #[test]
+    fn a_text_of_ampersands_decodes_in_linear_time() {
+        // Each `&` used to scan the rest of the text for a `;`. A debug build took 0.8 s for 128 Ki
+        // of them, and about a minute for this.
+        let text = "&".repeat(1 << 20);
+        let started = std::time::Instant::now();
+        assert_eq!(decode_html_entities(&text), text);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
         );
     }
 }

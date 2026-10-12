@@ -16,6 +16,7 @@ use crate::http::Transport;
 use crate::module::reachable_modules;
 use crate::people_cli::{self, PeopleRun};
 use crate::phone_cli::{self, PhoneRun};
+use crate::textnorm::{escape_controls, is_escaped};
 use crate::username_cli::{self, UsernameRun};
 
 pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -s TARGET [-u all|footprint|investigate|passive] [-o tab|csv|json] [-t TYPE[,TYPE...]] [-r] [-q]";
@@ -331,10 +332,27 @@ fn render_rows(rows: &[Row], format: &str, include_source: bool) -> Result<Strin
         "tab" => Ok(render_tab(rows, include_source)),
         "csv" => Ok(render_csv(rows, include_source)),
         "json" => serde_json::to_string_pretty(rows)
-            .map(|body| format!("{body}\n"))
+            .map(|body| format!("{}\n", escape_unsafe_in_json(&body)))
             .map_err(|error| Error::Invalid(format!("sf json: {error}"))),
         _ => Err(Error::Invalid("invalid sf output format".into())),
     }
+}
+
+/// JSON escapes the control characters below U+0020 but leaves DEL, the C1 controls (U+0080 to
+/// U+009F), the line and paragraph separators and the bidirectional controls as they are, and a
+/// terminal or a reader can act on those. Written as `\uXXXX` the JSON reads the same. They can only
+/// occur inside a string, since the JSON text around them is ASCII.
+fn escape_unsafe_in_json(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        // Below U+007F, JSON has escaped what needs it inside strings, and the rest is layout.
+        if c >= '\u{7f}' && is_escaped(c) {
+            let _ = write!(out, "\\u{:04x}", u32::from(c));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn render_tab(rows: &[Row], include_source: bool) -> String {
@@ -397,8 +415,10 @@ fn render_csv(rows: &[Row], include_source: bool) -> String {
     out
 }
 
+/// One cell on one line: a line break or tab becomes a space, so the cell cannot start a row or a
+/// column, and any other control character is written escaped, so it cannot drive the terminal.
 fn one_line(value: &str) -> String {
-    value.replace(['\r', '\n', '\t'], " ")
+    escape_controls(&value.replace(['\r', '\n', '\t'], " "))
 }
 
 fn csv_cell(value: &str) -> String {
@@ -712,5 +732,40 @@ mod tests {
         let rendered = render_csv(&rows, true);
         assert!(rendered.contains("'=source"));
         assert!(rendered.contains("\"a,b\""));
+    }
+
+    #[test]
+    fn a_cell_cannot_drive_the_terminal_in_any_format() {
+        // A profile name the target's own page chose.
+        let hostile = "Jane\u{1b}]0;x\u{7}\u{9b}2J\u{7f}\nforged\tcolumn\u{2028}";
+        let rows = [Row {
+            source: hostile.into(),
+            event_type: "HUMAN_NAME",
+            type_description: "Human Name",
+            source_data: hostile.into(),
+            data: hostile.into(),
+        }];
+        let controls = |text: &str| {
+            text.chars()
+                .filter(|c| c.is_control() && !matches!(c, '\n' | '\t'))
+                .count()
+        };
+        for (format, rendered) in [
+            ("tab", render_tab(&rows, true)),
+            ("csv", render_csv(&rows, true)),
+            ("json", render_rows(&rows, "json", true).unwrap()),
+        ] {
+            assert_eq!(controls(&rendered), 0, "{format}: {rendered:?}");
+            assert!(!rendered.contains('\u{2028}'), "{format}");
+        }
+        // The tab and csv cells stay one line of fixed columns.
+        let tab = render_tab(&rows, false);
+        assert_eq!(tab.lines().count(), 2, "{tab:?}");
+        assert_eq!(tab.lines().last().unwrap().matches('\t').count(), 2);
+        assert!(tab.contains("Jane\\u{1b}]0;x\\u{7}\\u{9b}2J\\u{7f} forged column"));
+        // JSON reads back the same text.
+        let json: serde_json::Value =
+            serde_json::from_str(&render_rows(&rows, "json", true).unwrap()).unwrap();
+        assert_eq!(json[0]["data"], hostile);
     }
 }

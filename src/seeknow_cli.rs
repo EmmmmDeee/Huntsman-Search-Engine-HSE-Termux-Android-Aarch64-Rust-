@@ -19,6 +19,7 @@ use crate::lineage::Lineage;
 use crate::seeknow::{KEY_SLOT, credits, status};
 use crate::seeknow_collector::{SeekNowCollectionMode, collect_with_credential};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::textnorm::escape_controls;
 
 pub const SEEKNOW_USAGE: &str = "usage: huntsman-recon seeknow [status | credits | search KIND VALUE [--deep | --fast-only]] [--keys FILE]";
 pub const SEEKNOW_HELP: &str = "\
@@ -107,7 +108,12 @@ pub fn run_with_keys<T: Transport + ?Sized>(
             Ok(result) => {
                 let mut text = format!("outcome={}\n", outcome_name(result.outcome.kind));
                 for (key, value) in result.fields {
-                    let _ = writeln!(text, "{key}={value}");
+                    let _ = writeln!(
+                        text,
+                        "{}={}",
+                        escape_controls(&key),
+                        escape_controls(&value)
+                    );
                 }
                 finish_diagnostic(&result.outcome, text)
             }
@@ -243,7 +249,7 @@ fn render_batch(batch: &crate::collector::CollectionBatch) -> String {
     let _ = writeln!(text, "entities={}", batch.entities.len());
     let mut families = BTreeSet::new();
     for entity in &batch.entities {
-        let _ = writeln!(text, "{}\t{}", entity.kind, entity.value);
+        let _ = writeln!(text, "{}\t{}", entity.kind, escape_controls(&entity.value));
         for evidence in &entity.evidence {
             match Lineage::of(evidence) {
                 Lineage::Upstream { family, .. } => {
@@ -254,7 +260,7 @@ fn render_batch(batch: &crate::collector::CollectionBatch) -> String {
         }
     }
     for family in families {
-        let _ = writeln!(text, "lineage={family}");
+        let _ = writeln!(text, "lineage={}", escape_controls(&family));
     }
     for receipt in &batch.receipts {
         let _ = writeln!(

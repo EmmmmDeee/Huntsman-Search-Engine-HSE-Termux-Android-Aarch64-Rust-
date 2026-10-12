@@ -173,6 +173,23 @@ verify_api() {
   grep -q '"roles"' "$command" || return 1
 }
 
+# A browser opens speculative connections and sends nothing on them. A server that serves one
+# connection at a time makes the next request wait for each of them, so the web UI stalls for
+# seconds. Hold two such connections open and ask for the health page with a short limit.
+verify_idle_connections() {
+  local bind="$1" host port rc=0
+  host="${bind%:*}"
+  port="${bind##*:}"
+  if ! ( exec 7<>"/dev/tcp/$host/$port" ) 2>/dev/null; then
+    note 'bash has no /dev/tcp here; the idle-connection check was skipped'
+    return 0
+  fi
+  { exec 8<>"/dev/tcp/$host/$port" 9<>"/dev/tcp/$host/$port"; } 2>/dev/null || return 1
+  curl --fail --silent --show-error --max-time 3 "http://$bind/api/health" -o /dev/null || rc=1
+  exec 8>&- 8<&- 9>&- 9<&-
+  return "$rc"
+}
+
 start_and_verify_server() {
   local bind="$1"
   local base="http://$bind"
@@ -190,6 +207,10 @@ start_and_verify_server() {
 
   verify_api "$base" || fail 'module/command APIs did not pass functional checks'
   pass 'module and command APIs return current structured state'
+
+  verify_idle_connections "$bind" ||
+    fail 'a request waited for idle connections, as a browser with speculative sockets would'
+  pass 'idle connections do not delay a request'
 
   stop_server
   pass 'spawned server stops under harness control'
