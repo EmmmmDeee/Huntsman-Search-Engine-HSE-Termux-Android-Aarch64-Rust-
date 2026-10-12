@@ -458,19 +458,12 @@ pub fn sf_target_type(raw: &str) -> Option<(&'static str, String)> {
         "USERNAME"
     } else if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
         "BGP_AS_OWNER"
-    } else if value.contains(':')
-        && lower
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() || byte == b':')
-    {
+    } else if is_ipv6(value) {
         "IPV6_ADDRESS"
-    } else if lower.split_once('/').is_some_and(|(network, bits)| {
-        network.contains(':')
-            && network
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() || byte == b':')
-            && valid_prefix(bits, 128)
-    }) {
+    } else if value
+        .split_once('/')
+        .is_some_and(|(ip, bits)| is_ipv6(ip) && valid_prefix(bits, 128))
+    {
         "NETBLOCKV6_OWNER"
     } else if is_internet_name(&lower) {
         "INTERNET_NAME"
@@ -485,14 +478,11 @@ fn quoted(value: &str) -> bool {
 }
 
 fn is_ipv4(value: &str) -> bool {
-    let parts: Vec<&str> = value.split('.').collect();
-    parts.len() == 4
-        && parts.iter().all(|part| {
-            !part.is_empty()
-                && part.len() <= 3
-                && part.bytes().all(|byte| byte.is_ascii_digit())
-                && part.parse::<u8>().is_ok()
-        })
+    value.parse::<std::net::Ipv4Addr>().is_ok()
+}
+
+fn is_ipv6(value: &str) -> bool {
+    value.parse::<std::net::Ipv6Addr>().is_ok()
 }
 
 fn valid_prefix(value: &str, max: u8) -> bool {
@@ -638,6 +628,32 @@ mod tests {
         assert_eq!(
             sf_target_type("example.org"),
             Some(("INTERNET_NAME", "example.org".to_owned()))
+        );
+    }
+
+    #[test]
+    fn ip_targets_follow_std_address_grammar() {
+        for bogus in ["dead:beef", "::::", "cafe:babe:face", "a:b"] {
+            assert_ne!(
+                sf_target_type(bogus).map(|(code, _)| code),
+                Some("IPV6_ADDRESS"),
+                "{bogus}"
+            );
+        }
+        for (raw, code) in [
+            ("2001:db8::1", "IPV6_ADDRESS"),
+            ("::1", "IPV6_ADDRESS"),
+            ("::ffff:192.0.2.1", "IPV6_ADDRESS"),
+            ("2001:db8::/32", "NETBLOCKV6_OWNER"),
+            ("::ffff:192.0.2.0/120", "NETBLOCKV6_OWNER"),
+            ("192.0.2.1", "IP_ADDRESS"),
+            ("192.0.2.0/24", "NETBLOCK_OWNER"),
+        ] {
+            assert_eq!(sf_target_type(raw).map(|(c, _)| c), Some(code), "{raw}");
+        }
+        assert_ne!(
+            sf_target_type("2001:db8::/129").map(|(c, _)| c),
+            Some("NETBLOCKV6_OWNER")
         );
     }
 
