@@ -1,4 +1,8 @@
 //! Person-selector lookup adapters.
+//!
+//! [`collect`] is the one execution path per lookup kind. The `people`, `email`, `exposure`,
+//! `username` and `phone` commands, `scan`, and the Web UI's `/api/lookup` all run through it,
+//! so a kind cannot behave differently depending on where it was asked from.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -15,13 +19,135 @@ use huntsman_recon::hibp::key::KeyLoader;
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
-    self, EMAIL_POLICY, EXPOSURE_POLICY, PHONE_POLICY, SavePolicy, USERNAME_POLICY,
+    self, EMAIL_POLICY, EXPOSURE_POLICY, PEOPLE_POLICY, PHONE_POLICY, SavePolicy, USERNAME_POLICY,
 };
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
+use huntsman_recon::scan_route::ScanKind;
 use huntsman_recon::source_outcome::SourceExecutionOutcome;
 use huntsman_recon::stolen_tax;
 use huntsman_recon::username_cli::{USERNAME_USAGE, UsernameArgs, UsernameRun};
+
+/// One finished lookup: the rendered report, what it is made of, and how to save it.
+pub(in crate::cli) struct Collected {
+    pub text: String,
+    pub entities: Vec<Entity>,
+    pub outcomes: Vec<SourceExecutionOutcome>,
+    pub policy: SavePolicy,
+}
+
+/// Why a lookup produced no report. Each variant has one exit status.
+#[derive(Debug)]
+pub(in crate::cli) enum Refused {
+    /// The egress policy or the network stopped every source.
+    Network(String),
+    /// The sources ran and gave nothing usable.
+    Unavailable(String),
+    /// The selector could not be used.
+    Data(String),
+}
+
+impl Refused {
+    pub(in crate::cli) const fn exit_status(&self) -> u8 {
+        match self {
+            Self::Network(_) => EX_NOPERM,
+            Self::Unavailable(_) => EX_UNAVAILABLE,
+            Self::Data(_) => EX_DATAERR,
+        }
+    }
+
+    pub(in crate::cli) fn message(&self) -> &str {
+        match self {
+            Self::Network(m) | Self::Unavailable(m) | Self::Data(m) => m,
+        }
+    }
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+/// Run one lookup of `kind` for an already-parsed `selector`.
+///
+/// # Errors
+/// [`Refused`] when the lookup produced no report.
+pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collected, Refused> {
+    let now = now_unix();
+    let done = |text, entities, outcomes, policy| Collected {
+        text,
+        entities,
+        outcomes,
+        policy,
+    };
+    match kind {
+        ScanKind::People => {
+            let transport = UreqTransport::new(&TransportConfig::default());
+            match people_cli::run(&transport, selector, now) {
+                PeopleRun::Printed { text, report } => {
+                    Ok(done(text, report.entities, report.outcomes, PEOPLE_POLICY))
+                }
+                PeopleRun::Network(m) => Err(Refused::Network(m)),
+                PeopleRun::Failed(m) => Err(Refused::Unavailable(m)),
+            }
+        }
+        ScanKind::Email => {
+            let transport = UreqTransport::new(&TransportConfig::default());
+            match huntsman_recon::email_cli::run(&transport, selector, now) {
+                EmailRun::Printed { text, report } => {
+                    Ok(done(text, report.entities, report.outcomes, EMAIL_POLICY))
+                }
+                EmailRun::Network(m) => Err(Refused::Network(m)),
+                EmailRun::Failed(m) => Err(Refused::Unavailable(m)),
+            }
+        }
+        ScanKind::Exposure => {
+            let client = KeyLoader::default_chain(None)
+                .load()
+                .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
+            // Same rule as `recon stolen-tax`: the key is read from the environment, never the
+            // default file.
+            let keys = Keys::from_env();
+            let transport = UreqTransport::new(&stolen_tax::transport_config());
+            let sources = Sources {
+                hibp: client.as_ref(),
+                stolen_tax: keys
+                    .get(stolen_tax::KEY_SLOT)
+                    .is_some()
+                    .then_some((&transport as &dyn Transport, &keys)),
+            };
+            match huntsman_recon::exposure_cli::run(sources, selector, now) {
+                ExposureRun::Printed { text, report } => Ok(done(
+                    text,
+                    report.entities,
+                    report.outcomes,
+                    EXPOSURE_POLICY,
+                )),
+                ExposureRun::Network(m) => Err(Refused::Network(m)),
+                ExposureRun::Failed(m) => Err(Refused::Unavailable(m)),
+            }
+        }
+        ScanKind::Username => {
+            let transport = UreqTransport::new(&TransportConfig::default());
+            match huntsman_recon::username_cli::run(&transport, selector, now) {
+                UsernameRun::Printed { text, report } => Ok(done(
+                    text,
+                    report.entities,
+                    report.outcomes,
+                    USERNAME_POLICY,
+                )),
+                UsernameRun::Failed(m) => Err(Refused::Unavailable(m)),
+            }
+        }
+        ScanKind::Phone => match huntsman_recon::phone_cli::run(selector, now) {
+            PhoneRun::Printed { text, report } => {
+                Ok(done(text, report.entities, report.outcomes, PHONE_POLICY))
+            }
+            PhoneRun::Failed(m) => Err(Refused::Data(m)),
+        },
+    }
+}
 
 /// The exit status for a rejected lookup argument. A value the operator supplied that cannot be
 /// canonicalised is a data error (65); every other rejection is a usage error (64). The error's
@@ -33,18 +159,31 @@ fn argument_status(error: &Error) -> u8 {
     }
 }
 
-/// Saves the lookup ledger when `--save` was given, then prints its summary. A store failure
-/// exits 74 and any other save failure exits 65. Without `--save`, nothing is written or printed.
-fn save_if_requested(
-    save: Option<&Path>,
-    entities: &[Entity],
-    outcomes: &[SourceExecutionOutcome],
-    policy: SavePolicy,
-) -> ExitCode {
+fn usage_failure(error: &Error, usage: &str) -> ExitCode {
+    fail(argument_status(error), &format!("{error}\n{usage}"))
+}
+
+/// Prints the report and saves it when `--save` was given. A store failure exits 74 and any
+/// other save failure exits 65. Without `--save`, nothing is written.
+fn finish(kind: ScanKind, selector: &str, save: Option<&Path>) -> ExitCode {
+    let collected = match collect(kind, selector) {
+        Ok(collected) => collected,
+        Err(refused) => return fail(refused.exit_status(), refused.message()),
+    };
+    print!("{}", collected.text);
+    // An empty lookup (the people skip path) has nothing to save and prints no summary.
+    if collected.entities.is_empty() && collected.outcomes.is_empty() {
+        return ExitCode::SUCCESS;
+    }
     let Some(path) = save else {
         return ExitCode::SUCCESS;
     };
-    match lookup_save::save(path, entities, outcomes, policy) {
+    match lookup_save::save(
+        path,
+        &collected.entities,
+        &collected.outcomes,
+        collected.policy,
+    ) {
         Ok(entries) => {
             println!("saved={}", path.display());
             println!("entries={}", entries.len());
@@ -60,159 +199,37 @@ fn save_if_requested(
 }
 
 pub(in crate::cli) fn people_cmd(args: &[String]) -> ExitCode {
-    let parsed = match PeopleArgs::parse(args) {
-        Ok(p) => p,
-        Err(e) => return fail(EX_USAGE, &format!("{e}\n{PEOPLE_USAGE}")),
-    };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let transport = UreqTransport::new(&TransportConfig::default());
-    match people_cli::run(&transport, &parsed.name, now) {
-        PeopleRun::Printed { text, report } => {
-            print!("{text}");
-            // An empty people lookup has nothing to save, so it writes no ledger and prints no summary.
-            if report.entities.is_empty() && report.outcomes.is_empty() {
-                return ExitCode::SUCCESS;
-            }
-            save_if_requested(
-                parsed.save.as_deref(),
-                &report.entities,
-                &report.outcomes,
-                lookup_save::PEOPLE_POLICY,
-            )
-        }
-        PeopleRun::Network(msg) => fail(EX_NOPERM, &msg),
-        PeopleRun::Failed(msg) => fail(EX_UNAVAILABLE, &msg),
+    match PeopleArgs::parse(args) {
+        Ok(p) => finish(ScanKind::People, &p.name, p.save.as_deref()),
+        Err(e) => fail(EX_USAGE, &format!("{e}\n{PEOPLE_USAGE}")),
     }
 }
 
 pub(in crate::cli) fn email_cmd(args: &[String]) -> ExitCode {
-    let parsed = match EmailArgs::parse(args) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            let message = error.to_string();
-            return fail(
-                argument_status(&error),
-                &format!("{message}\n{EMAIL_USAGE}"),
-            );
-        }
-    };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
-    let transport = UreqTransport::new(&TransportConfig::default());
-    match huntsman_recon::email_cli::run(&transport, &parsed.email, now) {
-        EmailRun::Printed { text, report } => {
-            print!("{text}");
-            save_if_requested(
-                parsed.save.as_deref(),
-                &report.entities,
-                &report.outcomes,
-                EMAIL_POLICY,
-            )
-        }
-        EmailRun::Network(message) => fail(EX_NOPERM, &message),
-        EmailRun::Failed(message) => fail(EX_UNAVAILABLE, &message),
+    match EmailArgs::parse(args) {
+        Ok(p) => finish(ScanKind::Email, &p.email, p.save.as_deref()),
+        Err(e) => usage_failure(&e, EMAIL_USAGE),
     }
 }
 
 pub(in crate::cli) fn exposure_cmd(args: &[String]) -> ExitCode {
-    let parsed = match ExposureArgs::parse(args) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            let message = error.to_string();
-            return fail(
-                argument_status(&error),
-                &format!("{message}\n{EXPOSURE_USAGE}"),
-            );
-        }
-    };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
-    let client = KeyLoader::default_chain(None)
-        .load()
-        .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
-    // Same rule as `recon stolen-tax`: the key is read from the environment, never the default file.
-    let keys = Keys::from_env();
-    let transport = UreqTransport::new(&stolen_tax::transport_config());
-    let sources = Sources {
-        hibp: client.as_ref(),
-        stolen_tax: keys
-            .get(stolen_tax::KEY_SLOT)
-            .is_some()
-            .then_some((&transport as &dyn Transport, &keys)),
-    };
-    match huntsman_recon::exposure_cli::run(sources, &parsed.email, now) {
-        ExposureRun::Printed { text, report } => {
-            print!("{text}");
-            save_if_requested(
-                parsed.save.as_deref(),
-                &report.entities,
-                &report.outcomes,
-                EXPOSURE_POLICY,
-            )
-        }
-        ExposureRun::Network(message) => fail(EX_NOPERM, &message),
-        ExposureRun::Failed(message) => fail(EX_UNAVAILABLE, &message),
+    match ExposureArgs::parse(args) {
+        Ok(p) => finish(ScanKind::Exposure, &p.email, p.save.as_deref()),
+        Err(e) => usage_failure(&e, EXPOSURE_USAGE),
     }
 }
 
 pub(in crate::cli) fn username_cmd(args: &[String]) -> ExitCode {
-    let parsed = match UsernameArgs::parse(args) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            let message = error.to_string();
-            return fail(
-                argument_status(&error),
-                &format!("{message}\n{USERNAME_USAGE}"),
-            );
-        }
-    };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
-    let transport = UreqTransport::new(&TransportConfig::default());
-    match huntsman_recon::username_cli::run(&transport, &parsed.username, now) {
-        UsernameRun::Printed { text, report } => {
-            print!("{text}");
-            save_if_requested(
-                parsed.save.as_deref(),
-                &report.entities,
-                &report.outcomes,
-                USERNAME_POLICY,
-            )
-        }
-        UsernameRun::Failed(message) => fail(EX_UNAVAILABLE, &message),
+    match UsernameArgs::parse(args) {
+        Ok(p) => finish(ScanKind::Username, &p.username, p.save.as_deref()),
+        Err(e) => usage_failure(&e, USERNAME_USAGE),
     }
 }
 
 pub(in crate::cli) fn phone_cmd(args: &[String]) -> ExitCode {
-    let parsed = match PhoneArgs::parse(args) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            let message = error.to_string();
-            return fail(
-                argument_status(&error),
-                &format!("{message}\n{PHONE_USAGE}"),
-            );
-        }
-    };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
-    match huntsman_recon::phone_cli::run(&parsed.phone, now) {
-        PhoneRun::Printed { text, report } => {
-            print!("{text}");
-            save_if_requested(
-                parsed.save.as_deref(),
-                &report.entities,
-                &report.outcomes,
-                PHONE_POLICY,
-            )
-        }
-        PhoneRun::Failed(message) => fail(EX_DATAERR, &message),
+    match PhoneArgs::parse(args) {
+        Ok(p) => finish(ScanKind::Phone, &p.phone, p.save.as_deref()),
+        Err(e) => usage_failure(&e, PHONE_USAGE),
     }
 }
 

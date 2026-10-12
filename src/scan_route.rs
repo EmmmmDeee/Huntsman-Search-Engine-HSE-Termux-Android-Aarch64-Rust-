@@ -10,6 +10,9 @@ use crate::canonical::{canonical_email, canonical_handle, canonical_name, canoni
 pub enum ScanKind {
     People,
     Email,
+    /// Keyed breach exposure for an email. Never inferred: it spends operator keys, so it runs
+    /// only when asked for by name.
+    Exposure,
     Username,
     Phone,
 }
@@ -20,6 +23,7 @@ impl ScanKind {
         match self {
             Self::People => "people",
             Self::Email => "email",
+            Self::Exposure => "exposure",
             Self::Username => "username",
             Self::Phone => "phone",
         }
@@ -34,6 +38,7 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
     match value {
         "people" | "name" => Ok(ScanKind::People),
         "email" => Ok(ScanKind::Email),
+        "exposure" | "breach" => Ok(ScanKind::Exposure),
         "username" | "handle" => Ok(ScanKind::Username),
         "phone" => Ok(ScanKind::Phone),
         other => Err(other),
@@ -44,7 +49,7 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
 #[must_use]
 pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
     match kind {
-        ScanKind::Email => canonical_email(raw),
+        ScanKind::Email | ScanKind::Exposure => canonical_email(raw),
         ScanKind::Username => canonical_handle(raw),
         ScanKind::Phone => canonical_phone(raw),
         // The people command owns the two-token rule and its offline skip path;

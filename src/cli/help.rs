@@ -59,7 +59,7 @@ pub(super) fn print_command_help(command: &str) {
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
         "scan" => {
-            "scan SELECTOR [-k people|email|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|username|phone]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only."
+            "scan SELECTOR [-k people|email|exposure|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only."
         }
         "investigate" => {
             "investigate TEXT... | investigate --file FILE\nExtract actionable entities from local text. --file refuses symlinks and files over 1 MiB."
@@ -69,7 +69,7 @@ pub(super) fn print_command_help(command: &str) {
         }
         "sf" => SF_USAGE,
         "serve" => {
-            "serve [--bind ADDR]\nStart the embedded read-only Web UI and JSON API. Default: 127.0.0.1:8080. HSE_BIND supplies the default bind; an explicit non-loopback bind requires HSE_AUTH_TOKEN."
+            "serve [--bind ADDR]\nStart the embedded Web UI and JSON API, including GET /api/lookup (needs the X-Huntsman-Lookup: 1 header). Default: 127.0.0.1:8080. HSE_BIND supplies the default bind; an explicit non-loopback bind requires HSE_AUTH_TOKEN."
         }
         "modules" => {
             "modules [--json]\nList only rebuilt modules that are currently reachable through a huntsman-recon command."

@@ -2,7 +2,11 @@
 //!
 //! The default bind is loopback-only. Explicit non-loopback binds require a
 //! non-empty bearer token supplied by the caller. The server is dependency-free,
-//! blocking, bounded per request, and exposes only read-only metadata endpoints.
+//! blocking and bounded per request. It exposes read-only metadata endpoints and, when the
+//! binary installs a [`LookupHandler`], `GET /api/lookup`, which runs one lookup through the
+//! same front-ends as the CLI. A lookup spends network egress and operator keys, so it needs
+//! the `X-Huntsman-Lookup` header (a page on another origin cannot send it without a CORS
+//! preflight this server never approves) and is refused when the browser marks it cross-site.
 //! A loopback bind answers only requests whose `Host` is a loopback authority,
 //! which blocks a browser DNS-rebinding attack from reaching the local API.
 
@@ -16,8 +20,10 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::engineering_command;
+use crate::entity::Entity;
 use crate::error::Error;
 use crate::module::reachable_modules;
+use crate::source_outcome::SourceExecutionOutcome;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 
@@ -62,6 +68,50 @@ const MAX_CONNECTIONS: usize = 32;
 /// The handler formats short strings, so a small stack is enough, and it keeps a full set of
 /// connection threads cheap on a phone.
 const HANDLER_STACK_BYTES: usize = 256 * 1024;
+/// Lookups running at once. Each one holds sockets to several providers for up to two minutes,
+/// so a phone gets a small, fixed number; one past the cap is answered `503`.
+const MAX_LOOKUPS: usize = 2;
+/// A lookup does TLS and JSON decoding, which the small connection stack is not sized for, so it
+/// runs on its own thread with this stack.
+const LOOKUP_STACK_BYTES: usize = 4 * 1024 * 1024;
+/// Longest decoded `q` accepted by `/api/lookup`.
+const MAX_SELECTOR_BYTES: usize = 512;
+/// The header a lookup request must carry. Its presence forces a CORS preflight from any other
+/// origin, and this server answers no preflight.
+pub const LOOKUP_HEADER: &str = "x-huntsman-lookup";
+
+/// One `/api/lookup` request: `kind` is `auto` unless the caller named one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupQuery {
+    pub kind: String,
+    pub selector: String,
+}
+
+/// A finished lookup, as the CLI would print and save it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LookupReport {
+    pub route: &'static str,
+    pub text: String,
+    pub entities: Vec<Entity>,
+    pub outcomes: Vec<SourceExecutionOutcome>,
+}
+
+/// Why a lookup produced no report: the HTTP status and a message safe to show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupError {
+    pub status: u16,
+    pub message: String,
+}
+
+/// Runs one lookup. Installed by the binary, which owns transport construction.
+pub type LookupHandler =
+    Arc<dyn Fn(&LookupQuery) -> Result<LookupReport, LookupError> + Send + Sync>;
+
+#[derive(Clone)]
+struct Lookups {
+    handler: LookupHandler,
+    live: Arc<AtomicUsize>,
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ServeConfig {
@@ -115,6 +165,7 @@ fn normalize_bind(raw: &str) -> Result<SocketAddr, Error> {
 pub struct Server {
     listener: TcpListener,
     config: ServeConfig,
+    lookups: Option<Lookups>,
 }
 
 impl Server {
@@ -125,7 +176,21 @@ impl Server {
     pub fn bind(config: ServeConfig) -> Result<Self, Error> {
         let listener = TcpListener::bind(config.bind)
             .map_err(|error| Error::Store(format!("serve bind {}: {error}", config.bind)))?;
-        Ok(Self { listener, config })
+        Ok(Self {
+            listener,
+            config,
+            lookups: None,
+        })
+    }
+
+    /// Serve `GET /api/lookup` through `handler`. Without this the route answers `404`.
+    #[must_use]
+    pub fn with_lookup(mut self, handler: LookupHandler) -> Self {
+        self.lookups = Some(Lookups {
+            handler,
+            live: Arc::new(AtomicUsize::new(0)),
+        });
+        self
     }
 
     /// Actual bound address, useful when port 0 was requested.
@@ -144,14 +209,14 @@ impl Server {
     /// # Errors
     /// Returns the listener error that stops the loop.
     pub fn run(&self) -> Result<(), Error> {
-        let config = Arc::new(self.config.clone());
+        let shared = Arc::new((self.config.clone(), self.lookups.clone()));
         let live = Arc::new(AtomicUsize::new(0));
         loop {
             let (stream, _) = self
                 .listener
                 .accept()
                 .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            serve_on_a_thread(&config, &live, stream);
+            serve_on_a_thread(&shared, &live, stream);
         }
     }
 
@@ -162,18 +227,22 @@ impl Server {
                 .listener
                 .accept()
                 .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            handle_stream(&self.config, stream)?;
+            handle_stream_with(&self.config, self.lookups.as_ref(), stream)?;
         }
         Ok(())
     }
 }
 
-/// One of the [`MAX_CONNECTIONS`] places. Dropping it, including when the handler panics, frees it.
+/// One of a bounded number of places. Dropping it, including when the holder panics, frees it.
 struct Slot(Arc<AtomicUsize>);
 
 impl Slot {
     fn take(live: &Arc<AtomicUsize>) -> Option<Self> {
-        if live.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+        Self::take_of(live, MAX_CONNECTIONS)
+    }
+
+    fn take_of(live: &Arc<AtomicUsize>, cap: usize) -> Option<Self> {
+        if live.fetch_add(1, Ordering::AcqRel) >= cap {
             live.fetch_sub(1, Ordering::AcqRel);
             return None;
         }
@@ -187,20 +256,22 @@ impl Drop for Slot {
     }
 }
 
-fn serve_on_a_thread(config: &Arc<ServeConfig>, live: &Arc<AtomicUsize>, stream: TcpStream) {
+type Shared = (ServeConfig, Option<Lookups>);
+
+fn serve_on_a_thread(shared: &Arc<Shared>, live: &Arc<AtomicUsize>, stream: TcpStream) {
     let Some(slot) = Slot::take(live) else {
         refuse_busy(stream);
         return;
     };
     // The thread owns the stream; this copy lets a failed spawn still answer the client.
     let fallback = stream.try_clone().ok();
-    let config = Arc::clone(config);
+    let shared = Arc::clone(shared);
     let spawned = thread::Builder::new()
         .name("serve-connection".into())
         .stack_size(HANDLER_STACK_BYTES)
         .spawn(move || {
             let _slot = slot;
-            let _handled = handle_stream(&config, stream);
+            let _handled = handle_stream_with(&shared.0, shared.1.as_ref(), stream);
         });
     if spawned.is_err() {
         if let Some(stream) = fallback {
@@ -215,7 +286,16 @@ fn refuse_busy(mut stream: TcpStream) {
     let _ = stream.write_all(busy.as_bytes());
 }
 
-fn handle_stream(config: &ServeConfig, mut stream: TcpStream) -> Result<(), Error> {
+#[cfg(test)]
+fn handle_stream(config: &ServeConfig, stream: TcpStream) -> Result<(), Error> {
+    handle_stream_with(config, None, stream)
+}
+
+fn handle_stream_with(
+    config: &ServeConfig,
+    lookups: Option<&Lookups>,
+    mut stream: TcpStream,
+) -> Result<(), Error> {
     stream
         .set_read_timeout(Some(IO_TIMEOUT))
         .map_err(|error| Error::Store(format!("serve read timeout: {error}")))?;
@@ -225,7 +305,12 @@ fn handle_stream(config: &ServeConfig, mut stream: TcpStream) -> Result<(), Erro
 
     let deadline = Instant::now() + REQUEST_DEADLINE;
     let request = read_request(&mut stream, deadline)?;
-    let response = response_for_request(&request, config.bearer_token.as_deref(), config.bind);
+    let response = respond(
+        &request,
+        config.bearer_token.as_deref(),
+        config.bind,
+        lookups,
+    );
     stream
         .write_all(response.as_bytes())
         .map_err(|error| Error::Store(format!("serve write: {error}")))?;
@@ -292,8 +377,11 @@ enum Method {
 struct ParsedRequest<'a> {
     method: Method,
     path: &'a str,
+    query: &'a str,
     host: Option<&'a str>,
     authorization: Option<&'a str>,
+    lookup_header: bool,
+    sec_fetch_site: Option<&'a str>,
 }
 
 fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
@@ -306,9 +394,11 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
         _ => Method::Other,
     };
     let raw_path = parts.next()?;
-    let path = raw_path.split('?').next().unwrap_or(raw_path);
+    let (path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
     let mut host = None;
     let mut authorization = None;
+    let mut lookup_header = false;
+    let mut sec_fetch_site = None;
 
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
@@ -322,14 +412,21 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
             }
         } else if name.eq_ignore_ascii_case("authorization") {
             authorization = Some(value.trim());
+        } else if name.trim().eq_ignore_ascii_case(LOOKUP_HEADER) {
+            lookup_header = value.trim() == "1";
+        } else if name.eq_ignore_ascii_case("sec-fetch-site") {
+            sec_fetch_site = Some(value.trim());
         }
     }
 
     Some(ParsedRequest {
         method,
         path,
+        query,
         host,
         authorization,
+        lookup_header,
+        sec_fetch_site,
     })
 }
 
@@ -374,7 +471,17 @@ struct Health<'a> {
     version: &'a str,
 }
 
+#[cfg(test)]
 fn response_for_request(request: &str, bearer_token: Option<&str>, bind: SocketAddr) -> String {
+    respond(request, bearer_token, bind, None)
+}
+
+fn respond(
+    request: &str,
+    bearer_token: Option<&str>,
+    bind: SocketAddr,
+    lookups: Option<&Lookups>,
+) -> String {
     if request == "REQUEST_TOO_LARGE" {
         return response(
             413,
@@ -416,7 +523,7 @@ fn response_for_request(request: &str, bearer_token: Option<&str>, bind: SocketA
     }
 
     let head = parsed.method == Method::Head;
-    let protected = matches!(parsed.path, "/api/modules" | "/api/command");
+    let protected = matches!(parsed.path, "/api/modules" | "/api/command" | "/api/lookup");
     if protected
         && bearer_token.is_some_and(|expected| !bearer_matches(parsed.authorization, expected))
     {
@@ -471,9 +578,122 @@ fn response_for_request(request: &str, bearer_token: Option<&str>, bind: SocketA
                 head,
             ),
         },
+        "/api/lookup" => lookup_response(&parsed, lookups),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
     }
+}
+
+fn json_error(status: u16, message: &str) -> String {
+    let body = serde_json::json!({ "error": message }).to_string();
+    response(
+        status,
+        "application/json; charset=utf-8",
+        &format!("{body}\n"),
+        false,
+    )
+}
+
+fn lookup_response(parsed: &ParsedRequest<'_>, lookups: Option<&Lookups>) -> String {
+    let Some(lookups) = lookups else {
+        return json_error(404, "lookups are not enabled on this server");
+    };
+    if parsed.method != Method::Get {
+        return json_error(405, "lookup needs GET");
+    }
+    // `none` is a typed URL or bookmark; `same-origin` is this page. Anything else came from
+    // another site, which must not spend this operator's egress or keys.
+    if parsed
+        .sec_fetch_site
+        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
+    {
+        return json_error(403, "cross-site lookup refused");
+    }
+    if !parsed.lookup_header {
+        return json_error(403, "lookup needs the X-Huntsman-Lookup: 1 header");
+    }
+    let query = match parse_lookup_query(parsed.query) {
+        Ok(query) => query,
+        Err(message) => return json_error(400, message),
+    };
+    let Some(slot) = Slot::take_of(&lookups.live, MAX_LOOKUPS) else {
+        return json_error(503, "lookup capacity in use; retry shortly");
+    };
+    let handler = Arc::clone(&lookups.handler);
+    let worker = thread::Builder::new()
+        .name("serve-lookup".into())
+        .stack_size(LOOKUP_STACK_BYTES)
+        .spawn(move || {
+            let _slot = slot;
+            handler(&query)
+        });
+    let outcome = match worker {
+        Ok(worker) => worker.join(),
+        Err(_) => return json_error(503, "could not start a lookup worker"),
+    };
+    match outcome {
+        Ok(Ok(report)) => match serde_json::to_string(&report) {
+            Ok(body) => response(
+                200,
+                "application/json; charset=utf-8",
+                &format!("{body}\n"),
+                false,
+            ),
+            Err(_) => json_error(500, "report could not be encoded"),
+        },
+        Ok(Err(error)) => json_error(error.status, &error.message),
+        Err(_) => json_error(500, "lookup failed unexpectedly"),
+    }
+}
+
+/// `kind` (default `auto`) and `q` from a query string. Unknown keys are ignored.
+fn parse_lookup_query(raw: &str) -> Result<LookupQuery, &'static str> {
+    let mut kind = None;
+    let mut selector = None;
+    for pair in raw.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let value = percent_decode(value).ok_or("query is not valid percent-encoded UTF-8")?;
+        match key {
+            "kind" => kind = Some(value),
+            "q" => selector = Some(value),
+            _ => {}
+        }
+    }
+    let selector = selector.map(|q| q.trim().to_owned()).unwrap_or_default();
+    if selector.is_empty() {
+        return Err("lookup needs q");
+    }
+    if selector.len() > MAX_SELECTOR_BYTES {
+        return Err("q is too long");
+    }
+    let kind = kind
+        .map(|k| k.trim().to_ascii_lowercase())
+        .filter(|k| !k.is_empty())
+        .unwrap_or_else(|| "auto".into());
+    Ok(LookupQuery { kind, selector })
+}
+
+/// `application/x-www-form-urlencoded` value decoding: `+` is a space and `%XX` a byte.
+fn percent_decode(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => out.push(b' '),
+            b'%' => {
+                let hex = bytes.get(index + 1..index + 3)?;
+                if !hex.iter().all(u8::is_ascii_hexdigit) {
+                    return None;
+                }
+                out.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
+                index += 2;
+            }
+            byte => out.push(byte),
+        }
+        index += 1;
+    }
+    String::from_utf8(out).ok()
 }
 
 fn bearer_matches(header: Option<&str>, expected: &str) -> bool {
@@ -515,7 +735,9 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
         405 => "Method Not Allowed",
         408 => "Request Timeout",
         413 => "Payload Too Large",
+        422 => "Unprocessable Content",
         500 => "Internal Server Error",
+        502 => "Bad Gateway",
         503 => "Service Unavailable",
         _ => "Error",
     };
@@ -534,34 +756,89 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
 const INDEX_HTML: &str = r#"<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
 <title>Huntsman Recon</title>
 <style>
-:root{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color-scheme:dark}
-body{max-width:960px;margin:0 auto;padding:24px;background:#111;color:#eee}
-h1{font-size:20px;margin:0 0 16px}button,input{font:inherit;padding:8px}
-section{border:1px solid #444;padding:12px;margin:12px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-small{color:#aaa}
+:root{--bg:#111;--fg:#eee;--dim:#aaa;--line:#444;--acc:#7cc4ff;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color-scheme:dark}
+@media (prefers-color-scheme:light){:root{--bg:#fafafa;--fg:#111;--dim:#555;--line:#ccc;--acc:#0b62a8;color-scheme:light}}
+*{box-sizing:border-box}
+body{max-width:960px;margin:0 auto;padding:max(12px,env(safe-area-inset-top)) 12px 24px;background:var(--bg);color:var(--fg);font-size:15px}
+h1{font-size:18px;margin:0 0 12px}
+button,input,select{font:inherit;min-height:44px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit}
+button{cursor:pointer;border-color:var(--acc);color:var(--acc)}
+button:disabled{opacity:.5}
+form{display:grid;grid-template-columns:1fr;gap:8px}
+@media (min-width:640px){form{grid-template-columns:9em 1fr auto}}
+section,details{border:1px solid var(--line);border-radius:6px;padding:10px;margin:10px 0}
+summary{cursor:pointer;min-height:32px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 0}
+table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid var(--line);padding:4px;text-align:left;vertical-align:top;overflow-wrap:anywhere}
+small,.dim{color:var(--dim)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 </style>
 <h1>Huntsman Recon</h1>
-<div class="row"><input id="token" type="password" autocomplete="off" placeholder="token (only if configured)"><button id="refresh">Refresh</button></div>
-<small>Read-only status, module catalogue, and engineering command contract.</small>
-<section><b>Health</b><pre id="health">loading…</pre></section>
-<section><b>Reachable modules</b><pre id="modules">loading…</pre></section>
-<section><b>Command contract</b><pre id="command">loading…</pre></section>
+<section>
+<form id="lookup">
+<select id="kind" aria-label="kind">
+<option value="auto">auto</option><option value="people">people</option><option value="email">email</option>
+<option value="exposure">exposure</option><option value="username">username</option><option value="phone">phone</option>
+</select>
+<input id="q" required maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="name, email, @handle or phone" aria-label="selector">
+<button id="run" type="submit">Look up</button>
+</form>
+<small>Runs one lookup through the same front-ends as the CLI. It makes network requests; exposure spends operator keys.</small>
+</section>
+<section id="result" hidden>
+<div class="row"><b id="route"></b><span id="status" class="dim"></span><button id="download" type="button">Download JSON</button></div>
+<table><thead><tr><th>source</th><th>outcome</th><th>found</th></tr></thead><tbody id="outcomes"></tbody></table>
+<pre id="text"></pre>
+</section>
+<details><summary>Server status and token</summary>
+<div class="row"><input id="token" type="password" autocomplete="off" placeholder="token (only if configured)" aria-label="token"><button id="refresh" type="button">Refresh</button></div>
+<b>Health</b><pre id="health">…</pre>
+<b>Reachable modules</b><pre id="modules">…</pre>
+<b>Command contract</b><pre id="command">…</pre>
+</details>
 <script>
-const token=()=>document.getElementById('token').value;
-async function get(path){
-  const headers={}; const t=token(); if(t) headers.Authorization='Bearer '+t;
-  const r=await fetch(path,{headers,cache:'no-store'}); return await r.text();
-}
+const $=id=>document.getElementById(id);
+let last=null;
+try{$('token').value=sessionStorage.getItem('hse-token')||''}catch(_){}
+$('token').onchange=()=>{try{sessionStorage.setItem('hse-token',$('token').value)}catch(_){}};
+function headers(extra){const h=Object.assign({},extra);const t=$('token').value;if(t)h.Authorization='Bearer '+t;return h}
+async function get(path){const r=await fetch(path,{headers:headers(),cache:'no-store'});return await r.text()}
 async function refresh(){
   for(const [id,path] of [['health','/api/health'],['modules','/api/modules'],['command','/api/command']]){
-    try{document.getElementById(id).textContent=await get(path)}catch(e){document.getElementById(id).textContent=String(e)}
+    try{$(id).textContent=await get(path)}catch(e){$(id).textContent=String(e)}
   }
 }
-document.getElementById('refresh').onclick=refresh; refresh();
+function cell(row,text){const td=document.createElement('td');td.textContent=text==null?'':String(text);row.appendChild(td)}
+$('lookup').onsubmit=async ev=>{
+  ev.preventDefault();
+  const q=$('q').value.trim(); if(!q) return;
+  const params=new URLSearchParams({kind:$('kind').value,q});
+  $('run').disabled=true; $('result').hidden=false; $('route').textContent='';
+  $('status').textContent='running…'; $('text').textContent=''; $('outcomes').replaceChildren(); last=null;
+  const started=Date.now();
+  try{
+    const r=await fetch('/api/lookup?'+params,{headers:headers({'X-Huntsman-Lookup':'1'}),cache:'no-store'});
+    const body=await r.json();
+    const secs=((Date.now()-started)/1000).toFixed(1)+'s';
+    if(!r.ok){$('status').textContent='HTTP '+r.status+' · '+secs;$('text').textContent=body.error||'';return}
+    last=body; $('route').textContent=body.route;
+    $('status').textContent=body.entities.length+' entities · '+secs;
+    for(const o of body.outcomes){const tr=document.createElement('tr');cell(tr,o.module);cell(tr,o.kind);cell(tr,o.found);$('outcomes').appendChild(tr)}
+    $('text').textContent=body.text;
+  }catch(e){$('status').textContent=String(e)}finally{$('run').disabled=false}
+};
+$('download').onclick=()=>{
+  if(!last) return;
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(last,null,2)],{type:'application/json'}));
+  a.download='huntsman-'+last.route+'-'+Date.now()+'.json'; a.click(); URL.revokeObjectURL(a.href);
+};
+$('refresh').onclick=refresh; refresh();
 </script>
 </html>
 "#;
@@ -940,5 +1217,138 @@ mod tests {
             public,
         );
         assert!(served.starts_with("HTTP/1.1 200"), "{served}");
+    }
+
+    fn echo_lookups() -> Lookups {
+        Lookups {
+            handler: Arc::new(|query: &LookupQuery| {
+                assert!(query.selector != "boom", "handler panicked");
+                if query.selector == "refused" {
+                    return Err(LookupError {
+                        status: 422,
+                        message: "no".into(),
+                    });
+                }
+                Ok(LookupReport {
+                    route: "email",
+                    text: format!("{}|{}", query.kind, query.selector),
+                    entities: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+            }),
+            live: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn lookup(request: &str, token: Option<&str>, lookups: Option<&Lookups>) -> String {
+        respond(request, token, loopback_bind(), lookups)
+    }
+
+    const HEADER: &str = "X-Huntsman-Lookup: 1\r\n";
+
+    #[test]
+    fn lookup_is_absent_until_the_binary_installs_a_handler() {
+        let got = lookup(
+            &format!("GET /api/lookup?q=a HTTP/1.1\r\nHost: localhost\r\n{HEADER}\r\n"),
+            None,
+            None,
+        );
+        assert!(got.starts_with("HTTP/1.1 404"), "{got}");
+    }
+
+    #[test]
+    fn lookup_decodes_the_query_and_returns_the_report() {
+        let lookups = echo_lookups();
+        let got = lookup(
+            &format!(
+                "GET /api/lookup?kind=Email&q=ada%40example.com+x HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: same-origin\r\n{HEADER}\r\n"
+            ),
+            None,
+            Some(&lookups),
+        );
+        assert!(got.starts_with("HTTP/1.1 200"), "{got}");
+        assert!(got.contains(r#""text":"email|ada@example.com x""#), "{got}");
+        let auto = lookup(
+            &format!("GET /api/lookup?q=x HTTP/1.1\r\n{HEADER}\r\n"),
+            None,
+            Some(&lookups),
+        );
+        assert!(auto.contains(r#""text":"auto|x""#), "{auto}");
+    }
+
+    #[test]
+    fn a_cross_site_or_headerless_lookup_never_reaches_the_handler() {
+        let lookups = echo_lookups();
+        for request in [
+            "GET /api/lookup?q=boom HTTP/1.1\r\nHost: localhost\r\n\r\n".to_owned(),
+            format!(
+                "GET /api/lookup?q=boom HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: cross-site\r\n{HEADER}\r\n"
+            ),
+            format!(
+                "GET /api/lookup?q=boom HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: same-site\r\n{HEADER}\r\n"
+            ),
+            "GET /api/lookup?q=boom HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: yes\r\n\r\n"
+                .to_owned(),
+        ] {
+            let got = lookup(&request, None, Some(&lookups));
+            assert!(got.starts_with("HTTP/1.1 403"), "{request:?} -> {got}");
+        }
+        let head = lookup(
+            &format!("HEAD /api/lookup?q=boom HTTP/1.1\r\n{HEADER}\r\n"),
+            None,
+            Some(&lookups),
+        );
+        assert!(head.starts_with("HTTP/1.1 405"), "{head}");
+    }
+
+    #[test]
+    fn a_configured_token_guards_lookup() {
+        let lookups = echo_lookups();
+        let request = format!("GET /api/lookup?q=a HTTP/1.1\r\n{HEADER}\r\n");
+        assert!(lookup(&request, Some("secret"), Some(&lookups)).starts_with("HTTP/1.1 401"));
+        let authed =
+            format!("GET /api/lookup?q=a HTTP/1.1\r\nAuthorization: Bearer secret\r\n{HEADER}\r\n");
+        assert!(lookup(&authed, Some("secret"), Some(&lookups)).starts_with("HTTP/1.1 200"));
+    }
+
+    #[test]
+    fn lookup_errors_panics_and_capacity_are_answered_and_slots_are_freed() {
+        let lookups = echo_lookups();
+        let ask = |q: &str| {
+            lookup(
+                &format!("GET /api/lookup?q={q} HTTP/1.1\r\n{HEADER}\r\n"),
+                None,
+                Some(&lookups),
+            )
+        };
+        assert!(ask("refused").starts_with("HTTP/1.1 422"));
+        assert!(ask("boom").starts_with("HTTP/1.1 500"));
+        assert_eq!(
+            lookups.live.load(Ordering::Acquire),
+            0,
+            "a panic frees its slot"
+        );
+        assert!(ask("").starts_with("HTTP/1.1 400"));
+        assert!(ask(&"a".repeat(MAX_SELECTOR_BYTES + 1)).starts_with("HTTP/1.1 400"));
+        lookups.live.store(MAX_LOOKUPS, Ordering::Release);
+        assert!(ask("a").starts_with("HTTP/1.1 503"));
+        lookups.live.store(0, Ordering::Release);
+        assert!(ask("a").starts_with("HTTP/1.1 200"));
+    }
+
+    #[test]
+    fn percent_decoding_is_strict() {
+        assert_eq!(percent_decode("a+b%40c").as_deref(), Some("a b@c"));
+        assert_eq!(percent_decode("%C3%A9").as_deref(), Some("\u{e9}"));
+        for bad in ["%+1", "%zz", "%4", "%", "%FF"] {
+            assert_eq!(percent_decode(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_page_never_writes_provider_text_as_markup() {
+        assert!(!INDEX_HTML.contains("innerHTML"));
+        assert!(!INDEX_HTML.contains("insertAdjacentHTML"));
+        assert!(INDEX_HTML.contains("'X-Huntsman-Lookup':'1'"));
     }
 }
