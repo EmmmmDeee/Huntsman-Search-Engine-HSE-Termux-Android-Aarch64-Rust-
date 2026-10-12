@@ -293,11 +293,14 @@ pub fn extract_au_postcode(text: &str) -> Option<String> {
         return None;
     }
     if let Some(index) = text.rfind(last) {
-        if index >= 6 {
-            let prefix = &text[index - 6..index];
-            if prefix.as_bytes()[5] == b'-' && prefix[..5].bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
+        // Digits that follow `NNNNN-` are the tail of a ZIP+4. The look-back is by bytes: six
+        // bytes before the digits need not be a character boundary.
+        let bytes = text.as_bytes();
+        if index >= 6
+            && bytes[index - 1] == b'-'
+            && bytes[index - 6..index - 1].iter().all(u8::is_ascii_digit)
+        {
+            return None;
         }
     }
     Some(last.to_string())
@@ -582,6 +585,18 @@ mod tests {
         assert!(is_geo_discordant_namesake("6000", &["4000"]));
         assert!(is_namesake("6000", &["4000"], true));
         assert!(!is_namesake("6000", &["4000"], false));
+    }
+
+    #[test]
+    fn a_postcode_after_non_ascii_text_is_read_without_panicking() {
+        // The ZIP+4 look-back is six bytes before the digits, which can fall inside a character.
+        assert_eq!(extract_au_postcode("Zürich 2000").as_deref(), Some("2000"));
+        assert_eq!(
+            extract_au_postcode("12 Smith St, Zürich 2000").as_deref(),
+            Some("2000")
+        );
+        assert!(extract_au_postcode("Zürich 89436-9322").is_none());
+        assert!(city_coords("12 Smith St, Zürich 2000").is_some());
     }
 
     #[test]
