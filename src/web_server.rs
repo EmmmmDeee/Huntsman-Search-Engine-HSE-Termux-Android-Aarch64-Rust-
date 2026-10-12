@@ -247,9 +247,20 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
         stream
             .set_read_timeout(Some(remaining.min(IO_TIMEOUT)))
             .map_err(|error| Error::Store(format!("serve read timeout: {error}")))?;
-        let read = stream
-            .read(&mut chunk)
-            .map_err(|error| Error::Store(format!("serve read: {error}")))?;
+        let read = match stream.read(&mut chunk) {
+            Ok(read) => read,
+            // A client that sends nothing, or stalls past its budget, has run out of time: it gets
+            // the 408 that the timeout sentinel renders, not a dropped connection.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Ok("REQUEST_TIMEOUT".into());
+            }
+            Err(error) => return Err(Error::Store(format!("serve read: {error}"))),
+        };
         if read == 0 {
             break;
         }
@@ -263,7 +274,9 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
         return Ok("REQUEST_TOO_LARGE".into());
     }
 
-    String::from_utf8(bytes).map_err(|_| Error::Invalid("serve request is not UTF-8".into()))
+    // Header values may carry bytes outside ASCII (RFC 9110 obs-text). Decoding them lossily keeps
+    // such a request answerable instead of refusing it with no reply.
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -707,5 +720,44 @@ mod tests {
             normalize_bind("[::1]:8080").unwrap().ip(),
             std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
         );
+    }
+
+    #[test]
+    fn a_client_that_sends_nothing_gets_a_408_when_its_read_times_out() {
+        // A connection that never sends a byte used to be dropped without a reply, so the 408
+        // that the timeout sentinel renders never reached the client.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let config = ServeConfig::parse("127.0.0.1:0", None).unwrap();
+        let handle = thread::spawn(move || handle_stream(&config, server));
+        client
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(handle.join().unwrap().is_ok());
+        assert!(
+            response.starts_with("HTTP/1.1 408 Request Timeout"),
+            "{response}"
+        );
+    }
+
+    #[test]
+    fn opaque_header_bytes_do_not_refuse_a_valid_request() {
+        // RFC 9110 allows bytes outside ASCII in field values (obs-text). Refusing the whole
+        // request for one such byte left a valid client with no reply at all.
+        let addr = serve_in_background();
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client
+            .write_all(b"GET /api/health HTTP/1.1\r\nHost: localhost\r\nX-Note: caf\xe9\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     }
 }
