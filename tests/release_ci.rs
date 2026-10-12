@@ -525,7 +525,7 @@ fn publishing_requires_release_build_and_zero_finding_key_scan() {
     }
     let install = fs::read_to_string(INSTALL).expect("Termux installer must exist");
     for required in [
-        "CHANNEL=\"${HUNTSMAN_CHANNEL:-hse}\"",
+        "CHANNEL=\"${HUNTSMAN_CHANNEL:-recon}\"",
         "TAG=\"${HSE_TAG:-main-7dca720}\"",
         "RECON_TAG_DEFAULT=\"@RECON_TAG@\"",
         "releases/download/${TAG}",

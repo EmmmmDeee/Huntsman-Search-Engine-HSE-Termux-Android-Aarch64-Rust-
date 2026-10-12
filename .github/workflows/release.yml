@@ -936,20 +936,20 @@ jobs:
           api="repos/${GITHUB_REPOSITORY}"
           files=("dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" "dist/key-scan-report.txt" "dist/install-termux.sh")
           cat > notes.md <<NOTES
-          **In-progress replacement with rebuilt lookup paths.** This is a main-channel **pre-release** of \`huntsman-recon\`, the reconstructed crate, for aarch64 Android/Termux. It includes rebuilt people, email, username, and offline phone paths, but it does not yet cover the complete legacy \`hse\` capability surface. The installer below therefore keeps legacy \`hse\` as the default channel while allowing explicit opt-in to the current Recon build.
+          **In-progress replacement with rebuilt lookup paths.** This is a main-channel **pre-release** of \`huntsman-recon\`, the reconstructed crate, for aarch64 Android/Termux. It includes rebuilt people, email, username, and offline phone paths. It does not yet cover the complete legacy \`hse\` capability surface, so the legacy \`hse\` channel stays available as an explicit opt-in.
 
           Built from commit \`${GITHUB_SHA}\` by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. \`${ASSET}.provenance.json\` names that commit.
 
-          **Install on Termux.** By default this installs the legacy \`hse\` into \`\$PREFIX/bin/hse\` after checking its sha256:
+          **Install on Termux.** By default this installs the current \`huntsman-recon\` into \`\$PREFIX/bin/huntsman-recon\` after checking its sha256:
 
           \`\`\`bash
           curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/install-termux.sh | bash
           \`\`\`
 
-          To opt in to this huntsman-recon pre-release instead (installs \`\$PREFIX/bin/huntsman-recon\` and leaves \`hse\` alone):
+          To install the legacy \`hse\` monolith instead (installs \`\$PREFIX/bin/hse\` and leaves \`huntsman-recon\` alone):
 
           \`\`\`bash
-          curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/install-termux.sh | HUNTSMAN_CHANNEL=recon bash
+          curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/install-termux.sh | HUNTSMAN_CHANNEL=hse bash
           \`\`\`
 
           Manual recon install:
