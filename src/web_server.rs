@@ -6,6 +6,9 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -50,6 +53,13 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// read, so it alone cannot bound a client that dribbles a byte at a time; this absolute
 /// deadline caps the total time spent reading one request.
 const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
+/// Connections served at once. A phone browser opens several for one page, and some are speculative
+/// and idle, so each connection gets its own thread: one that sends nothing holds up only itself.
+/// A connection past the cap is answered `503` at once.
+const MAX_CONNECTIONS: usize = 32;
+/// The handler formats short strings, so a small stack is enough, and it keeps a full set of
+/// connection threads cheap on a phone.
+const HANDLER_STACK_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ServeConfig {
@@ -126,17 +136,20 @@ impl Server {
             .map_err(|error| Error::Store(format!("serve local address: {error}")))
     }
 
-    /// Run until the listener returns an unrecoverable error.
+    /// Run until the listener returns an unrecoverable error. Each connection is served on its
+    /// own thread, up to [`MAX_CONNECTIONS`] at a time.
     ///
     /// # Errors
     /// Returns the listener error that stops the loop.
     pub fn run(&self) -> Result<(), Error> {
+        let config = Arc::new(self.config.clone());
+        let live = Arc::new(AtomicUsize::new(0));
         loop {
             let (stream, _) = self
                 .listener
                 .accept()
                 .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            let _handled = self.handle_stream(stream);
+            serve_on_a_thread(&config, &live, stream);
         }
     }
 
@@ -147,29 +160,76 @@ impl Server {
                 .listener
                 .accept()
                 .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            self.handle_stream(stream)?;
+            handle_stream(&self.config, stream)?;
         }
         Ok(())
     }
+}
 
-    fn handle_stream(&self, mut stream: TcpStream) -> Result<(), Error> {
-        stream
-            .set_read_timeout(Some(IO_TIMEOUT))
-            .map_err(|error| Error::Store(format!("serve read timeout: {error}")))?;
-        stream
-            .set_write_timeout(Some(IO_TIMEOUT))
-            .map_err(|error| Error::Store(format!("serve write timeout: {error}")))?;
+/// One of the [`MAX_CONNECTIONS`] places. Dropping it, including when the handler panics, frees it.
+struct Slot(Arc<AtomicUsize>);
 
-        let deadline = Instant::now() + REQUEST_DEADLINE;
-        let request = read_request(&mut stream, deadline)?;
-        let response = response_for_request(&request, self.config.bearer_token.as_deref());
-        stream
-            .write_all(response.as_bytes())
-            .map_err(|error| Error::Store(format!("serve write: {error}")))?;
-        stream
-            .flush()
-            .map_err(|error| Error::Store(format!("serve flush: {error}")))
+impl Slot {
+    fn take(live: &Arc<AtomicUsize>) -> Option<Self> {
+        if live.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+            live.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(Self(Arc::clone(live)))
     }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn serve_on_a_thread(config: &Arc<ServeConfig>, live: &Arc<AtomicUsize>, stream: TcpStream) {
+    let Some(slot) = Slot::take(live) else {
+        refuse_busy(stream);
+        return;
+    };
+    // The thread owns the stream; this copy lets a failed spawn still answer the client.
+    let fallback = stream.try_clone().ok();
+    let config = Arc::clone(config);
+    let spawned = thread::Builder::new()
+        .name("serve-connection".into())
+        .stack_size(HANDLER_STACK_BYTES)
+        .spawn(move || {
+            let _slot = slot;
+            let _handled = handle_stream(&config, stream);
+        });
+    if spawned.is_err() {
+        if let Some(stream) = fallback {
+            refuse_busy(stream);
+        }
+    }
+}
+
+fn refuse_busy(mut stream: TcpStream) {
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+    let busy = response(503, "text/plain; charset=utf-8", "busy\n", false);
+    let _ = stream.write_all(busy.as_bytes());
+}
+
+fn handle_stream(config: &ServeConfig, mut stream: TcpStream) -> Result<(), Error> {
+    stream
+        .set_read_timeout(Some(IO_TIMEOUT))
+        .map_err(|error| Error::Store(format!("serve read timeout: {error}")))?;
+    stream
+        .set_write_timeout(Some(IO_TIMEOUT))
+        .map_err(|error| Error::Store(format!("serve write timeout: {error}")))?;
+
+    let deadline = Instant::now() + REQUEST_DEADLINE;
+    let request = read_request(&mut stream, deadline)?;
+    let response = response_for_request(&request, config.bearer_token.as_deref());
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|error| Error::Store(format!("serve write: {error}")))?;
+    stream
+        .flush()
+        .map_err(|error| Error::Store(format!("serve flush: {error}")))
 }
 
 fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Error> {
@@ -380,14 +440,21 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
         401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        408 => "Request Timeout",
         413 => "Payload Too Large",
         500 => "Internal Server Error",
+        503 => "Service Unavailable",
         _ => "Error",
+    };
+    let retry_after = if status == 503 {
+        "Retry-After: 1\r\n"
+    } else {
+        ""
     };
     let content_length = body.len();
     let rendered_body = if head { "" } else { body };
     format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\nCache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\n\r\n{rendered_body}"
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{retry_after}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\n\r\n{rendered_body}"
     )
 }
 
@@ -510,6 +577,94 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("huntsman-recon"));
+    }
+
+    fn serve_in_background() -> SocketAddr {
+        let server = Server::bind(ServeConfig::parse("127.0.0.1:0", None).unwrap()).unwrap();
+        let addr = server.local_addr().unwrap();
+        thread::spawn(move || {
+            let _ = server.run();
+        });
+        addr
+    }
+
+    fn get_within(addr: SocketAddr, path: &str, wait: Duration) -> std::io::Result<String> {
+        let mut client = TcpStream::connect(addr)?;
+        client.set_read_timeout(Some(wait))?;
+        client.write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())?;
+        let mut response = String::new();
+        match client.read_to_string(&mut response) {
+            // A refused connection is closed with the request unread, which resets it after the
+            // reply has been delivered.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ConnectionReset && !response.is_empty() => {}
+            outcome => {
+                outcome?;
+            }
+        }
+        Ok(response)
+    }
+
+    #[test]
+    fn an_idle_connection_does_not_hold_up_the_next_request() {
+        // A browser opens speculative connections and sends nothing on them. The accept loop used
+        // to serve one connection at a time, so each of these stalled the page for IO_TIMEOUT.
+        let addr = serve_in_background();
+        let _idle = [
+            TcpStream::connect(addr).unwrap(),
+            TcpStream::connect(addr).unwrap(),
+        ];
+        let started = Instant::now();
+        let response = get_within(addr, "/api/health", Duration::from_secs(3))
+            .expect("the request was answered while other connections sat idle");
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(
+            started.elapsed() < IO_TIMEOUT,
+            "the request waited for the idle connections"
+        );
+    }
+
+    #[test]
+    fn connections_past_the_cap_are_answered_busy_and_their_places_come_back() {
+        let addr = serve_in_background();
+        let idle: Vec<TcpStream> = (0..MAX_CONNECTIONS)
+            .map(|_| TcpStream::connect(addr).unwrap())
+            .collect();
+        let refused = get_within(addr, "/api/health", Duration::from_secs(3)).unwrap();
+        assert!(
+            refused.starts_with("HTTP/1.1 503 Service Unavailable"),
+            "{refused}"
+        );
+        assert!(refused.contains("Retry-After: 1\r\n"), "{refused}");
+
+        drop(idle);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let response = get_within(addr, "/api/health", Duration::from_secs(3)).unwrap();
+            if response.starts_with("HTTP/1.1 200") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the places never came back: {response}"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn statuses_carry_their_reason_phrases() {
+        for (status, phrase) in [(408, "Request Timeout"), (503, "Service Unavailable")] {
+            let rendered = response(status, "text/plain; charset=utf-8", "x\n", false);
+            assert!(
+                rendered.starts_with(&format!("HTTP/1.1 {status} {phrase}\r\n")),
+                "{rendered}"
+            );
+        }
+        assert!(
+            response_for_request("REQUEST_TIMEOUT", None)
+                .starts_with("HTTP/1.1 408 Request Timeout")
+        );
     }
 
     #[test]

@@ -373,7 +373,7 @@ The first rebuilt API surface is read-only:
 - `GET /api/command` — the same validated engineering command contract as `command --json`;
 - `GET /` — a minimal embedded page that renders those endpoints.
 
-The listener bounds request headers to 16 KiB, applies finite read/write timeouts, supports `GET` and `HEAD`, and closes each connection after one response. The broader legacy scan-control UI, stored-result browsing, write endpoints, and complete API surface remain to be rebuilt.
+The listener bounds request headers to 16 KiB, applies finite read/write timeouts, supports `GET` and `HEAD`, and closes each connection after one response. Each connection is served on its own small thread, at most 32 at a time; a further connection is answered `503` with `Retry-After: 1`. A phone browser opens speculative connections and sends nothing on them, and one of those holds only its own thread. On a handset, run `huntsman-recon serve` in Termux and open `http://127.0.0.1:8080/` in the phone's browser; the default loopback bind needs no root and no port below 1024. The broader legacy scan-control UI, stored-result browsing, write endpoints, and complete API surface remain to be rebuilt.
 
 
 ### Batch scan input

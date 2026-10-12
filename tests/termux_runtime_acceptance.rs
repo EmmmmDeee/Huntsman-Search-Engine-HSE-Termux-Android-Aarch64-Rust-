@@ -24,6 +24,8 @@ fn termux_runtime_harness_targets_current_binary_and_api_contract() {
         "/api/health",
         "/api/modules",
         "/api/command",
+        "verify_idle_connections",
+        "idle connections do not delay a request",
         "TERMUX_RUNTIME_ACCEPTANCE",
         "server lifecycle pass=2 (restart)",
         "aarch64|arm64",
