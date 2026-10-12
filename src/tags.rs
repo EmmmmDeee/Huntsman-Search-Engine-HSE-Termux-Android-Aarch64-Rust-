@@ -2,6 +2,13 @@
 
 pub const BREACH: &str = "breach";
 pub const STEALER_LOG: &str = "stealer-log";
+/// The address is listed in a breach incident that its source flags as fabricated: unlikely to
+/// have come from the named service, with little or no legitimate data. It describes the
+/// incident, not the person.
+pub const FABRICATED_BREACH: &str = "fabricated-breach";
+/// The address is listed in an incident that its source flags as a spam list: the data did not
+/// come from a security compromise. It describes the incident, not the person.
+pub const SPAM_LIST: &str = "spam-list";
 pub const WEB: &str = "web";
 pub const CRAWLED: &str = "crawled";
 pub const SUBDOMAIN: &str = "subdomain";

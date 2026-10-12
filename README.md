@@ -138,7 +138,7 @@ cargo run -- seeknow --help              # SeekNow subcommands; offline
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens of at least two letters, no network
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
 cargo run -- email nobody@example.com     # deterministic pivots + public Gravatar lookup
-cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax evidence (keyed; no key = no request)
+cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax evidence, then each breach's summary, flags and source links (keyed; no key = no request)
 cargo run -- username octocat             # variants + public GitHub/Bluesky lookups
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
