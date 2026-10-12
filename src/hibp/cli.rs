@@ -499,6 +499,7 @@ fn line(out: &mut String, key: &str, value: impl Display) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unexpected_controls;
 
     #[test]
     fn a_paste_title_cannot_drive_the_terminal_or_start_a_line() {
@@ -512,7 +513,7 @@ mod tests {
         let mut out = String::new();
         write_paste(&mut out, &paste);
         assert!(
-            out.chars().all(|c| !c.is_control() || c == '\n'),
+            unexpected_controls(&out, &['\n']).is_empty(),
             "a control character other than the line ends: {out:?}"
         );
         assert!(!out.contains('\u{2028}'));
