@@ -11,6 +11,7 @@ use crate::address_au::{self, AuLineType};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::error::Error;
 use crate::lookup_args::LookupTokens;
+use crate::lookup_report::{entity_row, evidence_row};
 use crate::phone_intl;
 use crate::source_outcome::SourceExecutionOutcome;
 
@@ -154,22 +155,10 @@ fn enrich_au(canonical: &str, scan_id: &str, entity: &mut Entity) {
 fn render(report: &Report) -> Result<String, String> {
     let mut out = format!("entities={}\n", report.entities.len());
     for entity in &report.entities {
-        writeln!(
-            out,
-            "{}\t{}\t{:.2}\t{}",
-            entity.kind,
-            entity.raw_value,
-            entity.confidence,
-            entity.tags.join(",")
-        )
-        .map_err(|error| error.to_string())?;
-        for evidence in &entity.evidence {
-            writeln!(
-                out,
-                "evidence\t{}\t{}",
-                evidence.provenance.source, evidence.summary
-            )
+        writeln!(out, "{}", entity_row(entity, &entity.raw_value))
             .map_err(|error| error.to_string())?;
+        for evidence in &entity.evidence {
+            writeln!(out, "{}", evidence_row(evidence)).map_err(|error| error.to_string())?;
         }
     }
     for outcome in &report.outcomes {

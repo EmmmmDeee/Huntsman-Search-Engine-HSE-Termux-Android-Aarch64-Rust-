@@ -109,6 +109,49 @@ fn credits_and_status_use_authenticated_diagnostic_endpoints_without_printing_se
 }
 
 #[test]
+fn provider_text_cannot_drive_the_terminal_or_forge_a_row_in_a_status_or_search_report() {
+    let transport = ScriptedTransport::new(vec![
+        response(
+            200,
+            r#"{"success":true,"status":"ok\u001b[2J","re\ngion":"eu\tforged"}"#,
+        ),
+        response(
+            200,
+            r#"{"success":true,"data":[{"email":"alice@example.com","name":"Jane\u001b[2J Doe","dbname":"Set\u001b[31m A"}]}"#,
+        ),
+    ]);
+    let keys = configured_keys();
+    let status = vec!["status".to_string()];
+    let search = vec![
+        "search".to_string(),
+        "email".to_string(),
+        "alice@example.com".to_string(),
+    ];
+    for args in [status, search] {
+        match run_with_keys(&transport, &args, &keys, 7) {
+            SeekNowCliRun::Printed(text) => {
+                assert!(
+                    text.chars()
+                        .all(|c| !c.is_control() || matches!(c, '\n' | '\t')),
+                    "a control character other than the report's own separators: {text:?}"
+                );
+                assert!(
+                    !text.lines().any(|line| line.starts_with("gion")),
+                    "provider text became a row of its own: {text:?}"
+                );
+                if args[0] == "search" {
+                    assert!(
+                        text.contains("person\tjane\\u{1b}[2j doe"),
+                        "the entity value is shown escaped, not dropped: {text:?}"
+                    );
+                }
+            }
+            other => panic!("unexpected result for {args:?}: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn search_defaults_to_adaptive_and_deep_is_spent_only_after_valid_zero() {
     let transport = ScriptedTransport::new(vec![
         response(200, r#"{"success":true,"data":[]}"#),

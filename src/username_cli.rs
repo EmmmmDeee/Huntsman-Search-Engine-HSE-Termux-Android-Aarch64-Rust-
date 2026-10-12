@@ -245,6 +245,45 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_name_cannot_drive_the_terminal_or_forge_a_row() {
+        let github = r#"{
+          "login":"jane-doe",
+          "id":7,
+          "html_url":"https://github.com/jane-doe",
+          "name":"Jane\u001b[2J Citizen\nforged\tcolumn"
+        }"#;
+        let bluesky = r#"{
+          "handle":"jane-doe.bsky.social",
+          "displayName":"Jane\u001b]0;title\u0007 Citizen",
+          "did":"did:plc:oky5czdrnfjpqslsw2a5iclo"
+        }"#;
+        let fake = Fake::new(vec![Ok(response(200, github)), Ok(response(200, bluesky))]);
+        let UsernameRun::Printed { text, report } = run(&fake, "jane-doe", 1) else {
+            panic!("the lookup should print a report");
+        };
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|entity| entity.raw_value.contains('\u{1b}')),
+            "the profile text reached the entities, which is what the report must neutralise"
+        );
+        assert!(
+            text.chars()
+                .all(|c| !c.is_control() || matches!(c, '\n' | '\t')),
+            "a control character other than the report's own separators: {text:?}"
+        );
+        assert!(
+            !text.lines().any(|line| line.starts_with("forged")),
+            "profile text became a row of its own: {text:?}"
+        );
+        assert!(
+            text.contains("Jane\\u{1b}[2J Citizen\\nforged\\tcolumn"),
+            "{text:?}"
+        );
+    }
+
+    #[test]
     fn one_clean_miss_does_not_erase_the_other_source() {
         let bluesky = r#"{"handle":"nobody.bsky.social"}"#;
         let fake = Fake::new(vec![Ok(response(404, "")), Ok(response(200, bluesky))]);

@@ -18,6 +18,7 @@ use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
 use huntsman_recon::hibp::cli::HibpCommand;
 use huntsman_recon::http::{Request, TransportConfig, UreqTransport, parse_http_uri};
 use huntsman_recon::keys::Keys;
+use huntsman_recon::lookup_report::entity_row;
 use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::seeknow_cli::{SEEKNOW_USAGE, SeekNowCliRun};
 use huntsman_recon::source_outcome::recommended_action;
@@ -81,16 +82,7 @@ pub(super) fn recon_cmd(args: &[String]) -> ExitCode {
 
 fn print_entities(entities: &[huntsman_recon::entity::Entity]) {
     for e in entities {
-        println!(
-            "{}\t{}\t{:.2}\t{}",
-            serde_json::to_value(&e.kind)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_owned))
-                .unwrap_or_default(),
-            escape_controls(&e.value),
-            e.confidence,
-            escape_controls(&e.tags.join(","))
-        );
+        println!("{}", entity_row(e, &e.value));
     }
 }
 
