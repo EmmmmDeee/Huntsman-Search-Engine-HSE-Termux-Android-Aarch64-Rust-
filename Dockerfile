@@ -18,6 +18,8 @@ COPY xtask/src ./xtask/src
 # workspace. This image does not compile it.
 COPY crates/huntsman-core/Cargo.toml ./crates/huntsman-core/Cargo.toml
 COPY crates/huntsman-core/src ./crates/huntsman-core/src
+COPY crates/huntsman-storage/Cargo.toml ./crates/huntsman-storage/Cargo.toml
+COPY crates/huntsman-storage/src ./crates/huntsman-storage/src
 
 RUN cargo build --release --locked --bin huntsman-recon
 
