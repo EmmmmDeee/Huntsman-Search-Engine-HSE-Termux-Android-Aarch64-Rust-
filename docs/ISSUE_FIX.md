@@ -25,8 +25,8 @@ jobs that run code the model wrote hold no write permission.
 | --- | --- | --- | --- |
 | `fix` | The model, the key scan, the path policy, and the capture of the change | `ANTHROPIC_API_KEY`, in the require and model steps only. No write permission. | A patch file and the redacted model output |
 | `gate` | `git apply` of the patch on the commit the run started from, then the full repair gate | Nothing | The gate log |
-| `publish` | `publish.sh`, from a copy of the scripts made before the patch arrived | `ISSUE_FIX_TOKEN` or the workflow token, in the publish step only | Nothing |
-| `report` | `report.sh`, when an attempt stops before a pull request | Issue write permission | Nothing |
+| `publish` | `xtask issue-fix publish`, a binary built from `main` before the patch arrived | `ISSUE_FIX_TOKEN` or the workflow token, in the publish step only | Nothing |
+| `report` | `xtask issue-fix report`, when an attempt stops before a pull request | Issue write permission | Nothing |
 
 Every job reads `github.sha`, the commit the run started from, and no step can change
 it. `publish` checks out `main` and refuses unless `main` is still that commit.
@@ -144,7 +144,7 @@ does not count a marker in a string literal.
 
 ## Publish
 
-`publish.sh` pushes `ai-fix/issue-N` and opens the pull request. It refuses when:
+`xtask issue-fix publish` pushes `ai-fix/issue-N` and opens the pull request. It refuses when:
 
 - `GATED_SHA` is not set, or `main` is not that commit, so a pull request is never a
   combination that the gate did not run on;
@@ -212,7 +212,7 @@ runs it in a git tree, so CI and the check run the same code.
   above, and truncated to 4000 characters.
 - The gate runs model-written tests with no secrets, so a test can make the gate pass.
   The patch passes the path policy on its own, and the gate is a signal, not a proof.
-- The gate log that `report.sh` posts can contain text the model chose. It is posted
+- The gate log that the report step posts can contain text the model chose. It is posted
   as a code block of at most 40 lines, with backticks replaced and each line cut at 400
   characters.
 - The spend cap is `--max-budget-usd`. This CLI version has no `--max-turns`, so the

@@ -16,13 +16,12 @@ mod workflow;
 use workflow::{job, step};
 
 const WORKFLOW: &str = ".github/workflows/issue-fix.yml";
-const SCRIPTS: [&str; 7] = [
+const SCRIPTS: [&str; 6] = [
     "scripts/issue-fix/instructions.md",
     "scripts/issue-fix/build-prompt.sh",
     "scripts/issue-fix/check-protected.sh",
     "scripts/issue-fix/capture.sh",
     "scripts/issue-fix/publish.sh",
-    "scripts/issue-fix/report.sh",
     "scripts/issue-fix/self-check.sh",
 ];
 
