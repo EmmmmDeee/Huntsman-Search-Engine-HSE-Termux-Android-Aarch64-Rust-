@@ -9,7 +9,10 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use crate::canonical::canonical_email;
-use crate::domains::{INFRA_PROVIDER_ROOTS, is_freemail, is_role_localpart, is_social_platform};
+use crate::domains::{
+    is_freemail, is_infrastructure_mail_domain, is_role_localpart, is_social_platform,
+    registrable_domain, split_email,
+};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::gravatar;
@@ -92,9 +95,10 @@ pub fn run<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> 
 }
 
 fn derive_entities(email: &str, scan_id: &str) -> Vec<Entity> {
-    let Some((local, domain)) = email.rsplit_once('@') else {
+    let Some((local, domain)) = split_email(email) else {
         return Vec::new();
     };
+    let (local, domain) = (local.as_str(), domain.as_str());
     let mut entities = Vec::new();
     add_seed(email, scan_id, &mut entities);
 
@@ -137,11 +141,11 @@ fn derived_evidence(scan_id: &str, email: &str, derivation: &str) -> Evidence {
 }
 
 fn domain_is_specific(domain: &str) -> bool {
+    let registrable = registrable_domain(domain).unwrap_or_else(|| domain.to_string());
     !is_freemail(domain)
+        && !is_freemail(&registrable)
         && !is_social_platform(domain)
-        && !INFRA_PROVIDER_ROOTS.iter().any(|root| {
-            domain == *root || domain.strip_suffix(root).is_some_and(|p| p.ends_with('.'))
-        })
+        && !is_infrastructure_mail_domain(domain)
 }
 
 fn derive_usernames(
@@ -320,6 +324,21 @@ mod tests {
                 .iter()
                 .any(|entity| entity.kind == EntityKind::Domain)
         );
+    }
+
+    #[test]
+    fn shared_split_contract_for_derivation() {
+        let has_domain = |e: &str| {
+            derive_entities(e, "scan")
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Domain)
+        };
+        assert!(!has_domain("Jane.Doe@Gmail.COM."));
+        assert!(!has_domain("bounce@mailgun.net"));
+        assert!(!has_domain("ops@eu.mailgun.net"));
+        assert!(derive_entities("a@b@acme.example", "scan").is_empty());
+        assert!(derive_entities("@acme.example", "scan").is_empty());
+        assert!(has_domain(" Jane@Acme.Example "));
     }
 
     #[test]
