@@ -75,6 +75,12 @@ pub fn classify(raw: &str) -> Classified {
     if let Some(asn) = parse_asn(value) {
         return classified(EntityKind::Asn, &asn, 0.85, "as-prefix");
     }
+    if let Some(crypto) = parse_crypto_address(value) {
+        return classified(EntityKind::CryptoAddress, &crypto, 0.90, "crypto-prefix");
+    }
+    if let Some(key) = parse_api_key(value) {
+        return classified(EntityKind::ApiKey, &key, 0.92, "key-prefix");
+    }
     if let Some(coordinates) = parse_decimal_coordinates(value) {
         return classified(EntityKind::Coordinates, &coordinates, 0.85, "lat-lon");
     }
@@ -138,6 +144,74 @@ fn parse_asn(value: &str) -> Option<String> {
     let well_formed =
         (1..=10).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit());
     well_formed.then(|| format!("AS{digits}"))
+}
+
+/// Recognises cryptocurrency addresses by their distinctive prefixes and character sets:
+/// Bitcoin mainnet (1, 3, or bc1), Ethereum (0x + 40 hex), Monero (4 + 94 alnum).
+fn parse_crypto_address(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
+        let hex = &trimmed[2..];
+        if hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Some(format!("0x{}", hex.to_ascii_lowercase()));
+        }
+    }
+    if trimmed.starts_with("bc1") && (25..=90).contains(&trimmed.len()) {
+        let tail = &trimmed[3..];
+        if tail
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() && b != b'b' && b != b'i' && b != b'o')
+        {
+            return Some(trimmed.to_ascii_lowercase());
+        }
+    }
+    if (trimmed.starts_with('1') || trimmed.starts_with('3'))
+        && (25..=34).contains(&trimmed.len())
+        && trimmed.bytes().all(|b| b.is_ascii_alphanumeric())
+        && !trimmed.contains('0')
+        && !trimmed.contains('O')
+        && !trimmed.contains('I')
+        && !trimmed.contains('l')
+    {
+        return Some(trimmed.to_owned());
+    }
+    if trimmed.starts_with('4')
+        && trimmed.len() == 95
+        && trimmed.bytes().all(|b| b.is_ascii_alphanumeric())
+    {
+        return Some(trimmed.to_owned());
+    }
+    None
+}
+
+/// Recognises well-known API key prefixes: AWS access keys (AKIA/ASIA), GitHub tokens
+/// (ghp_, gho_, ghs_, ghc_, ghr_), Slack tokens (xoxb-, xoxp-, xoxo-, xoxa-, xoxr-).
+fn parse_api_key(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if (trimmed.starts_with("AKIA") || trimmed.starts_with("ASIA"))
+        && trimmed.len() == 20
+        && trimmed.bytes().all(|b| b.is_ascii_alphanumeric())
+    {
+        return Some(trimmed.to_owned());
+    }
+    for prefix in ["ghp_", "gho_", "ghs_", "ghc_", "ghr_"] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            if (36..=40).contains(&rest.len()) && rest.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    for prefix in ["xoxb-", "xoxp-", "xoxo-", "xoxa-", "xoxr-"] {
+        if trimmed.starts_with(prefix)
+            && (40..=80).contains(&trimmed.len())
+            && trimmed
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Some(trimmed.to_owned());
+        }
+    }
+    None
 }
 
 /// Lowercased alphanumeric runs of a value, so keyword markers match whole words only.
@@ -640,5 +714,69 @@ mod tests {
         let kinds: Vec<_> = found.iter().map(|c| c.kind.clone()).collect();
         assert_eq!(kinds, vec![EntityKind::MacAddress, EntityKind::Asn]);
         assert_eq!(found[0].value, "00:1a:2b:3c:4d:5e");
+    }
+
+    #[test]
+    fn ethereum_addresses_normalise_to_lowercase() {
+        let found = classify("0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe");
+        assert_eq!(found.kind, EntityKind::CryptoAddress);
+        assert_eq!(found.value, "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae");
+    }
+
+    #[test]
+    fn bitcoin_bech32_addresses_are_detected() {
+        let found = classify("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+        assert_eq!(found.kind, EntityKind::CryptoAddress);
+    }
+
+    #[test]
+    fn bitcoin_legacy_addresses_are_detected() {
+        let found = classify("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa");
+        assert_eq!(found.kind, EntityKind::CryptoAddress);
+    }
+
+    #[test]
+    fn malformed_crypto_addresses_are_rejected() {
+        for raw in ["0xZZZZ", "0x1234", "bc1", "1short"] {
+            assert_ne!(classify(raw).kind, EntityKind::CryptoAddress, "{raw}");
+        }
+    }
+
+    #[test]
+    fn aws_access_keys_are_detected() {
+        let found = classify("AKIAIOSFODNN7EXAMPLE");
+        assert_eq!(found.kind, EntityKind::ApiKey);
+        assert_eq!(found.value, "AKIAIOSFODNN7EXAMPLE");
+    }
+
+    #[test]
+    fn github_tokens_are_detected() {
+        let token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh1234";
+        let found = classify(token);
+        assert_eq!(found.kind, EntityKind::ApiKey);
+    }
+
+    #[test]
+    fn slack_tokens_are_detected() {
+        let token = "xoxb-123456789012-1234567890123-ABCDEFGHIJKLMNOPQRSTUVWx";
+        let found = classify(token);
+        assert_eq!(found.kind, EntityKind::ApiKey);
+    }
+
+    #[test]
+    fn malformed_api_keys_are_rejected() {
+        for raw in ["AKIA", "AKIAIOSFOD", "ghp_short", "xoxb-short"] {
+            assert_ne!(classify(raw).kind, EntityKind::ApiKey, "{raw}");
+        }
+    }
+
+    #[test]
+    fn extract_finds_crypto_and_api_keys_in_prose() {
+        let text =
+            "leaked key AKIAIOSFODNN7EXAMPLE and wallet 0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe";
+        let found = extract(text);
+        let kinds: Vec<_> = found.iter().map(|c| c.kind.clone()).collect();
+        assert!(kinds.contains(&EntityKind::ApiKey), "{kinds:?}");
+        assert!(kinds.contains(&EntityKind::CryptoAddress), "{kinds:?}");
     }
 }
