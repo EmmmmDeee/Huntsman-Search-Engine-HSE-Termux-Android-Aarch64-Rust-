@@ -2,8 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::canonical::canonical_domain;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ArchiveSource {
     Wayback,
@@ -78,23 +76,7 @@ pub fn parse_archive_url(raw: &str) -> Option<ArchiveUrlKey> {
         .find(['/', '?'])
         .unwrap_or(without_fragment.len());
     let authority = &without_fragment[..authority_end];
-    if authority.is_empty() || authority.contains('@') {
-        return None;
-    }
-
-    let (raw_host, raw_port) = split_authority(authority)?;
-    let host = canonical_domain(raw_host.trim_end_matches('.'))?;
-    let port = match raw_port {
-        None => None,
-        Some(value) => {
-            let parsed = value.parse::<u16>().ok()?;
-            if (scheme == "http" && parsed == 80) || (scheme == "https" && parsed == 443) {
-                None
-            } else {
-                Some(parsed)
-            }
-        }
-    };
+    let (host, port) = crate::canonical::canonical_authority(&scheme, authority)?;
 
     let tail = &without_fragment[authority_end..];
     let (path, query) = tail.split_once('?').unwrap_or((tail, ""));
@@ -109,23 +91,6 @@ pub fn parse_archive_url(raw: &str) -> Option<ArchiveUrlKey> {
         path: path.to_owned(),
         query: query.to_owned(),
     })
-}
-
-fn split_authority(authority: &str) -> Option<(&str, Option<&str>)> {
-    if authority.starts_with('[') {
-        return None;
-    }
-    match authority.rsplit_once(':') {
-        Some((host, port)) if !host.contains(':') => {
-            if host.is_empty() || port.is_empty() {
-                None
-            } else {
-                Some((host, Some(port)))
-            }
-        }
-        Some(_) => None,
-        None => Some((authority, None)),
-    }
 }
 
 #[derive(Debug)]

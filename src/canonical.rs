@@ -154,6 +154,41 @@ pub fn canonical_query(raw: &str) -> String {
         .join("&")
 }
 
+/// One http(s) authority, one canonical `(host, port)`. The single gate for every URL key in the
+/// crate: userinfo and bracketed hosts are refused, the port must be a `u16`, and the scheme's
+/// default port (or an empty port) collapses to `None`.
+#[must_use]
+pub fn canonical_authority(scheme: &str, authority: &str) -> Option<(String, Option<u16>)> {
+    if authority.is_empty() || authority.contains('@') || authority.starts_with('[') {
+        return None;
+    }
+    let (raw_host, raw_port) = match authority.rsplit_once(':') {
+        Some((host, _)) if host.contains(':') => return None,
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    if raw_host.is_empty() {
+        return None;
+    }
+    let host = canonical_domain(raw_host.trim_end_matches('.'))?;
+    let port = match raw_port {
+        None | Some("") => None,
+        Some(value) => {
+            if !value.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let parsed = value.parse::<u16>().ok()?;
+            let default = match scheme.to_ascii_lowercase().as_str() {
+                "http" => 80,
+                "https" => 443,
+                _ => 0,
+            };
+            (parsed != default).then_some(parsed)
+        }
+    };
+    Some((host, port))
+}
+
 #[must_use]
 pub fn canonical_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
@@ -167,16 +202,8 @@ pub fn canonical_url(raw: &str) -> Option<String> {
         .unwrap_or(before_fragment.len());
     let authority = &before_fragment[..split];
     let tail = &before_fragment[split..];
-    let (host, port) = authority.split_once(':').unwrap_or((authority, ""));
-    let host = canonical_domain(host)?;
-    let port = if port.is_empty()
-        || (scheme.eq_ignore_ascii_case("http") && port == "80")
-        || (scheme.eq_ignore_ascii_case("https") && port == "443")
-    {
-        String::new()
-    } else {
-        format!(":{port}")
-    };
+    let (host, port) = canonical_authority(scheme, authority)?;
+    let port = port.map_or_else(String::new, |p| format!(":{p}"));
     let (path, query) = tail.split_once('?').unwrap_or((tail, ""));
     let path = if path.is_empty() { "/" } else { path };
     let query = canonical_query(query);
@@ -290,5 +317,43 @@ mod tests {
         assert_eq!(canonicalise_selector("   "), None);
         assert_eq!(canonicalise_token(" CrtSh "), Some("crtsh".into()));
         assert_eq!(canonicalise_token("has space"), None);
+    }
+}
+
+#[cfg(test)]
+mod authority_contract_tests {
+    use super::canonical_url;
+    use crate::archive::parse_archive_url;
+
+    #[test]
+    fn canonical_url_and_archive_key_agree_on_authority() {
+        // Default port written with a leading zero is still the default port.
+        assert_eq!(
+            canonical_url("https://Example.com:0443/a").as_deref(),
+            Some("https://example.com/a")
+        );
+        // A port that is not a u16 is not a URL.
+        assert_eq!(canonical_url("https://example.com:abc/a"), None);
+        assert_eq!(canonical_url("https://example.com:99999/a"), None);
+        // Userinfo never survives into a canonical form.
+        assert_eq!(canonical_url("https://user:pw@example.com/a"), None);
+        // Non-default ports are kept, normalised.
+        assert_eq!(
+            canonical_url("http://example.com:08080/").as_deref(),
+            Some("http://example.com:8080")
+        );
+        for raw in [
+            "https://example.com:0443/a",
+            "https://example.com:abc/a",
+            "https://user:pw@example.com/a",
+            "http://example.com:08080/",
+            "https://example.com./a?b=1",
+        ] {
+            assert_eq!(
+                canonical_url(raw).is_some(),
+                parse_archive_url(raw).is_some(),
+                "{raw}: canonical_url and parse_archive_url disagree on validity"
+            );
+        }
     }
 }
