@@ -7,6 +7,12 @@ The crate (`huntsman-recon`, version `0.2.0` in `Cargo.toml`) has no stable
 release yet; relevant pushes to `main` are built and verified, and a current-head build publishes a `main-<sha7>` pre-release (#672). Superseded builds remain Actions artifacts for their retention window. Release policy: only pre-releases (`main-<sha7>` plus a rolling
 `latest`); a stable release needs the owner's explicit approval.
 
+Versions and tags. The `v1.x` tags belong to the legacy `hse` monolith (`v1.41.0` is its latest),
+so they say nothing about this crate. `huntsman-recon` is not tagged: a build is identified by its
+commit, which `build-sha` and `diagnostics` print, and by its `main-<sha7>` pre-release. The
+`0.2.0` in `Cargo.toml` is the development version that `--version` and the HTTP `User-Agent`
+report. A stable release needs its own version heading in this file, cut when the owner approves it.
+
 ## [Unreleased]
 - Fix the main-channel release race where a queued build could become historical before `gh release create --target <sha>` and fail with GitHub's built-in workflow token. Publication now uses a draft created from the live main head, verifies its tag exactly, and discards a raced draft rather than failing or publishing the wrong commit.
 
