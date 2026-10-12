@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # install-termux.sh: install a prebuilt aarch64 Huntsman binary on Termux.
 #
-# Default (HUNTSMAN_CHANNEL=hse): the legacy `hse` binary, which still runs
-# person lookups, into $PREFIX/bin/hse. Release HSE_TAG, default main-7dca720
-# (the newest legacy hse build).
-#
-# Opt-in (HUNTSMAN_CHANNEL=recon): the huntsman-recon pre-release, an
-# in-progress replacement with rebuilt people/email/username/phone lookup paths, into
+# Default (HUNTSMAN_CHANNEL=recon): the current huntsman-recon build, with
+# rebuilt people/email/username/offline-phone lookup paths, into
 # $PREFIX/bin/huntsman-recon. Release HUNTSMAN_RELEASE_TAG, default: the
 # main-<sha7> release this script was attached to.
+#
+# Opt-in (HUNTSMAN_CHANNEL=hse): the legacy `hse` monolith, which still runs
+# the full legacy person-lookup surface, into $PREFIX/bin/hse. Release HSE_TAG,
+# default main-7dca720 (the newest legacy hse build). Recon does not yet cover
+# the complete legacy surface, so this channel stays available for it.
 #
 # Both channels download the binary and its .sha256 over HTTPS, verify the
 # sha256 and install only on a match. The verified binary is staged next to
@@ -19,7 +20,7 @@ set -euo pipefail
 
 REPO="EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-"
 RECON_TAG_DEFAULT="@RECON_TAG@"
-CHANNEL="${HUNTSMAN_CHANNEL:-hse}"
+CHANNEL="${HUNTSMAN_CHANNEL:-recon}"
 
 die() { echo "install-termux: $*" >&2; exit 1; }
 

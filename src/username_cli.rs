@@ -168,6 +168,7 @@ mod tests {
 
     use crate::http::{Request, Response, TransportFailure};
     use crate::source_outcome::SourceOutcomeKind;
+    use crate::test_support::unexpected_controls;
 
     struct Fake {
         replies: RefCell<VecDeque<Result<Response, TransportFailure>>>,
@@ -269,8 +270,7 @@ mod tests {
             "the profile text reached the entities, which is what the report must neutralise"
         );
         assert!(
-            text.chars()
-                .all(|c| !c.is_control() || matches!(c, '\n' | '\t')),
+            unexpected_controls(&text, &['\n', '\t']).is_empty(),
             "a control character other than the report's own separators: {text:?}"
         );
         assert!(

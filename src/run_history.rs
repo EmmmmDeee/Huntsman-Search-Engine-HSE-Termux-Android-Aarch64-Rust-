@@ -10,6 +10,8 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::Path;
 
+use crate::fsio::{REFUSED_SYMLINK, SymlinkRefusal};
+
 /// Upper bound on a history file, in bytes, for every read of it.
 ///
 /// One record is a JSON line of roughly 150 bytes, so 16 MiB holds on the order
@@ -35,13 +37,13 @@ fn read_history(path: &Path) -> Result<Option<Vec<u8>>, HistoryError> {
 /// Refuse to open a symlink for writing, matching `fsio`: appending through a
 /// planted link would write into whatever file it points at.
 fn refuse_symlink(path: &Path) -> Result<(), HistoryError> {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => Err(HistoryError::Io(io::Error::other(
-            format!("{}: refusing symlink", path.display()),
+    crate::fsio::check_not_symlink(path).map_err(|refusal| match refusal {
+        SymlinkRefusal::Linked => HistoryError::Io(io::Error::other(format!(
+            "{}: {REFUSED_SYMLINK}",
+            path.display()
         ))),
-        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(HistoryError::Io(e)),
-        _ => Ok(()),
-    }
+        SymlinkRefusal::Unreadable(e) => HistoryError::Io(e),
+    })
 }
 
 use serde::{Deserialize, Serialize};
@@ -266,6 +268,27 @@ mod tests {
     fn missing_file_is_an_empty_history() {
         let path = scratch("missing");
         assert!(load(&path).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_refuses_a_symlink_and_does_not_write_through_it() {
+        // A history path that is a symlink must be refused, so an append cannot land in whatever
+        // file the link points at. The refusal is enforced in append's read step (heal_torn_tail,
+        // through fsio::read_bounded); refuse_symlink guards the writes behind it as a second layer.
+        let link = scratch("symlink");
+        let target = link.with_file_name("target.jsonl");
+        std::fs::write(&target, b"").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        match append(&link, &run("unit", 1, 0)) {
+            Err(HistoryError::Io(e)) => assert!(e.to_string().contains("refusing symlink"), "{e}"),
+            other => panic!("a symlink history path must be refused, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"",
+            "the append followed the link and wrote through it"
+        );
     }
 
     #[test]
@@ -589,6 +612,7 @@ pub mod cli {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::test_support::unexpected_controls;
 
         fn scratch(name: &str) -> PathBuf {
             let dir = std::env::temp_dir().join(format!("rh-cli-{name}-{}", std::process::id()));
@@ -624,7 +648,7 @@ pub mod cli {
             let shown = String::from_utf8(o).unwrap();
             assert_eq!(shown.lines().count(), 1, "{shown:?}");
             assert!(
-                shown.chars().all(|c| !c.is_control() || c == '\n') && !shown.contains('\u{2028}'),
+                unexpected_controls(&shown, &['\n']).is_empty() && !shown.contains('\u{2028}'),
                 "{shown:?}"
             );
             assert!(

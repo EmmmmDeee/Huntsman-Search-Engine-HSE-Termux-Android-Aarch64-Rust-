@@ -601,6 +601,7 @@ fn sf_type(kind: &EntityKind) -> (&'static str, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unexpected_controls;
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -745,17 +746,16 @@ mod tests {
             source_data: hostile.into(),
             data: hostile.into(),
         }];
-        let controls = |text: &str| {
-            text.chars()
-                .filter(|c| c.is_control() && !matches!(c, '\n' | '\t'))
-                .count()
-        };
         for (format, rendered) in [
             ("tab", render_tab(&rows, true)),
             ("csv", render_csv(&rows, true)),
             ("json", render_rows(&rows, "json", true).unwrap()),
         ] {
-            assert_eq!(controls(&rendered), 0, "{format}: {rendered:?}");
+            assert_eq!(
+                unexpected_controls(&rendered, &['\n', '\t']).len(),
+                0,
+                "{format}: {rendered:?}"
+            );
             assert!(!rendered.contains('\u{2028}'), "{format}");
         }
         // The tab and csv cells stay one line of fixed columns.

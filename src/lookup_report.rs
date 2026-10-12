@@ -89,6 +89,7 @@ fn append_lineage(entities: &[Entity], out: &mut String) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
+    use crate::test_support::unexpected_controls;
 
     /// Text a third party controls: a terminal escape, a forged row, a forged column, a carriage
     /// return, DEL and NUL.
@@ -120,8 +121,7 @@ mod tests {
         let text = render(&entities, &outcomes).expect("the report renders");
 
         assert!(
-            text.chars()
-                .all(|c| !c.is_control() || matches!(c, '\n' | '\t')),
+            unexpected_controls(&text, &['\n', '\t']).is_empty(),
             "a control character other than the report's own separators: {text:?}"
         );
         for row in text.lines().skip(1).take(entities.len()) {

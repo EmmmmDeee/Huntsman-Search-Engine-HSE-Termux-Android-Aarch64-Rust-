@@ -376,6 +376,33 @@ mod tests {
     }
 
     #[test]
+    fn guesses_made_from_the_address_are_never_more_than_one_source() {
+        // jane.doe@acme.example yields janedoe, jane_doe and jane-doe, which merge. None of them has
+        // a source that corroborates: they are guesses from the address the operator typed.
+        match run(&OneResponse::json(404, ""), "jane.doe@acme.example", 1) {
+            EmailRun::Printed { report, .. } => {
+                let guesses: Vec<_> = report
+                    .entities
+                    .iter()
+                    .filter(|entity| entity.kind == EntityKind::Username)
+                    .collect();
+                assert!(guesses.len() > 1, "{guesses:?}");
+                for guess in guesses {
+                    assert_eq!(guess.source_count(), 1, "{}", guess.value);
+                    assert!(
+                        guess.c_effective() <= guess.confidence + 1e-9,
+                        "{} was raised from {} to {}",
+                        guess.value,
+                        guess.confidence,
+                        guess.c_effective()
+                    );
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn missing_public_profile_keeps_offline_derivations() {
         match run(&OneResponse::json(404, ""), "jane.doe@gmail.com", 1) {
             EmailRun::Printed { report, .. } => {

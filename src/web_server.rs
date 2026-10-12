@@ -3,6 +3,8 @@
 //! The default bind is loopback-only. Explicit non-loopback binds require a
 //! non-empty bearer token supplied by the caller. The server is dependency-free,
 //! blocking, bounded per request, and exposes only read-only metadata endpoints.
+//! A loopback bind answers only requests whose `Host` is a loopback authority,
+//! which blocks a browser DNS-rebinding attack from reaching the local API.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -223,7 +225,7 @@ fn handle_stream(config: &ServeConfig, mut stream: TcpStream) -> Result<(), Erro
 
     let deadline = Instant::now() + REQUEST_DEADLINE;
     let request = read_request(&mut stream, deadline)?;
-    let response = response_for_request(&request, config.bearer_token.as_deref());
+    let response = response_for_request(&request, config.bearer_token.as_deref(), config.bind);
     stream
         .write_all(response.as_bytes())
         .map_err(|error| Error::Store(format!("serve write: {error}")))?;
@@ -247,9 +249,20 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
         stream
             .set_read_timeout(Some(remaining.min(IO_TIMEOUT)))
             .map_err(|error| Error::Store(format!("serve read timeout: {error}")))?;
-        let read = stream
-            .read(&mut chunk)
-            .map_err(|error| Error::Store(format!("serve read: {error}")))?;
+        let read = match stream.read(&mut chunk) {
+            Ok(read) => read,
+            // A client that sends nothing, or stalls past its budget, has run out of time: it gets
+            // the 408 that the timeout sentinel renders, not a dropped connection.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Ok("REQUEST_TIMEOUT".into());
+            }
+            Err(error) => return Err(Error::Store(format!("serve read: {error}"))),
+        };
         if read == 0 {
             break;
         }
@@ -263,7 +276,9 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
         return Ok("REQUEST_TOO_LARGE".into());
     }
 
-    String::from_utf8(bytes).map_err(|_| Error::Invalid("serve request is not UTF-8".into()))
+    // Header values may carry bytes outside ASCII (RFC 9110 obs-text). Decoding them lossily keeps
+    // such a request answerable instead of refusing it with no reply.
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,6 +292,7 @@ enum Method {
 struct ParsedRequest<'a> {
     method: Method,
     path: &'a str,
+    host: Option<&'a str>,
     authorization: Option<&'a str>,
 }
 
@@ -291,13 +307,20 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
     };
     let raw_path = parts.next()?;
     let path = raw_path.split('?').next().unwrap_or(raw_path);
+    let mut host = None;
     let mut authorization = None;
 
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
-        if name.eq_ignore_ascii_case("authorization") {
+        if name.eq_ignore_ascii_case("host") {
+            // First Host wins; a second one is malformed and is ignored rather than
+            // allowed to override the first.
+            if host.is_none() {
+                host = Some(value.trim());
+            }
+        } else if name.eq_ignore_ascii_case("authorization") {
             authorization = Some(value.trim());
         }
     }
@@ -305,8 +328,43 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
     Some(ParsedRequest {
         method,
         path,
+        host,
         authorization,
     })
+}
+
+/// Whether a loopback server should answer a request carrying this `Host`.
+///
+/// A DNS-rebinding attack reaches a loopback bind from a page whose origin is a
+/// public name rebound to a loopback address, so the browser sends that public
+/// name in `Host`. Accepting only loopback authorities refuses the rebound
+/// request while real local clients (which send `localhost`, `127.0.0.1`, or
+/// `[::1]`) are unaffected. A missing or empty `Host` is allowed: a browser never
+/// omits it, so its absence is not a rebinding vector and a raw client stays
+/// answerable.
+fn host_is_allowed_for_loopback(host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        return true;
+    };
+    let host = host.trim();
+    if host.is_empty() {
+        return true;
+    }
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        // IPv6 literal in brackets: `[::1]` or `[::1]:port`.
+        match rest.split_once(']') {
+            Some((inner, _)) => inner,
+            None => return false,
+        }
+    } else {
+        // `host` or `host:port`; strip only a trailing port.
+        host.rsplit_once(':').map_or(host, |(name, _)| name)
+    };
+    if name.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    name.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 #[derive(Debug, Serialize)]
@@ -316,7 +374,7 @@ struct Health<'a> {
     version: &'a str,
 }
 
-fn response_for_request(request: &str, bearer_token: Option<&str>) -> String {
+fn response_for_request(request: &str, bearer_token: Option<&str>, bind: SocketAddr) -> String {
     if request == "REQUEST_TOO_LARGE" {
         return response(
             413,
@@ -333,6 +391,20 @@ fn response_for_request(request: &str, bearer_token: Option<&str>) -> String {
     let Some(parsed) = parse_request(request) else {
         return response(400, "text/plain; charset=utf-8", "bad request\n", false);
     };
+
+    // DNS-rebinding guard. A loopback server is reached from a page whose origin is
+    // a public name rebound to a loopback address, so the browser sends that public
+    // name in `Host`. Answer only loopback authorities (or an absent `Host`). A
+    // non-loopback bind is intentionally public, gated by the bearer token, and its
+    // legitimate `Host` is not known here, so the guard skips it.
+    if bind.ip().is_loopback() && !host_is_allowed_for_loopback(parsed.host) {
+        return response(
+            403,
+            "text/plain; charset=utf-8",
+            "host not allowed\n",
+            parsed.method == Method::Head,
+        );
+    }
 
     if parsed.method == Method::Other {
         return response(
@@ -438,6 +510,7 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
         204 => "No Content",
         400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         408 => "Request Timeout",
@@ -498,6 +571,12 @@ mod tests {
     use super::*;
     use std::thread;
 
+    /// A loopback bind for the pure-router tests. The DNS-rebinding guard is active
+    /// for loopback binds, so requests here carry a loopback `Host` or none at all.
+    fn loopback_bind() -> SocketAddr {
+        "127.0.0.1:8080".parse().unwrap()
+    }
+
     #[test]
     fn implicit_bind_is_loopback_locally_and_railway_port_on_railway() {
         assert_eq!(resolve_serve_bind(None, None, false).unwrap(), DEFAULT_BIND);
@@ -529,16 +608,25 @@ mod tests {
 
     #[test]
     fn pure_router_serves_health_and_protected_metadata() {
-        let health = response_for_request("GET /api/health HTTP/1.1\r\n\r\n", Some("secret"));
+        let health = response_for_request(
+            "GET /api/health HTTP/1.1\r\n\r\n",
+            Some("secret"),
+            loopback_bind(),
+        );
         assert!(health.starts_with("HTTP/1.1 200"));
         assert!(health.contains("\"status\": \"ok\""));
 
-        let denied = response_for_request("GET /api/modules HTTP/1.1\r\n\r\n", Some("secret"));
+        let denied = response_for_request(
+            "GET /api/modules HTTP/1.1\r\n\r\n",
+            Some("secret"),
+            loopback_bind(),
+        );
         assert!(denied.starts_with("HTTP/1.1 401"));
 
         let allowed = response_for_request(
             "GET /api/modules HTTP/1.1\r\nAuthorization: bearer secret\r\n\r\n",
             Some("secret"),
+            loopback_bind(),
         );
         assert!(allowed.starts_with("HTTP/1.1 200"));
         assert!(allowed.contains("\"modules\""));
@@ -546,8 +634,8 @@ mod tests {
 
     #[test]
     fn head_has_get_content_length_but_no_body() {
-        let get = response_for_request("GET /api/health HTTP/1.1\r\n\r\n", None);
-        let head = response_for_request("HEAD /api/health HTTP/1.1\r\n\r\n", None);
+        let get = response_for_request("GET /api/health HTTP/1.1\r\n\r\n", None, loopback_bind());
+        let head = response_for_request("HEAD /api/health HTTP/1.1\r\n\r\n", None, loopback_bind());
         let get_len = get
             .lines()
             .find(|line| line.starts_with("Content-Length:"))
@@ -662,7 +750,7 @@ mod tests {
             );
         }
         assert!(
-            response_for_request("REQUEST_TIMEOUT", None)
+            response_for_request("REQUEST_TIMEOUT", None, loopback_bind())
                 .starts_with("HTTP/1.1 408 Request Timeout")
         );
     }
@@ -685,7 +773,8 @@ mod tests {
             "an elapsed deadline must stop the read, not block on the silent client"
         );
         assert!(
-            response_for_request("REQUEST_TIMEOUT", None).starts_with("HTTP/1.1 408"),
+            response_for_request("REQUEST_TIMEOUT", None, loopback_bind())
+                .starts_with("HTTP/1.1 408"),
             "the timeout sentinel renders as 408 Request Timeout"
         );
     }
@@ -707,5 +796,149 @@ mod tests {
             normalize_bind("[::1]:8080").unwrap().ip(),
             std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
         );
+    }
+
+    #[test]
+    fn a_client_that_sends_nothing_gets_a_408_when_its_read_times_out() {
+        // A connection that never sends a byte used to be dropped without a reply, so the 408
+        // that the timeout sentinel renders never reached the client.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let config = ServeConfig::parse("127.0.0.1:0", None).unwrap();
+        let handle = thread::spawn(move || handle_stream(&config, server));
+        client
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(handle.join().unwrap().is_ok());
+        assert!(
+            response.starts_with("HTTP/1.1 408 Request Timeout"),
+            "{response}"
+        );
+    }
+
+    #[test]
+    fn opaque_header_bytes_do_not_refuse_a_valid_request() {
+        // RFC 9110 allows bytes outside ASCII in field values (obs-text). Refusing the whole
+        // request for one such byte left a valid client with no reply at all.
+        let addr = serve_in_background();
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client
+            .write_all(b"GET /api/health HTTP/1.1\r\nHost: localhost\r\nX-Note: caf\xe9\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    }
+
+    #[test]
+    fn host_allowlist_accepts_only_loopback_authorities() {
+        for allowed in [
+            "localhost",
+            "LOCALHOST",
+            "localhost:8080",
+            "127.0.0.1",
+            "127.0.0.1:8080",
+            "127.0.0.5:8080",
+            "[::1]",
+            "[::1]:8080",
+        ] {
+            assert!(
+                host_is_allowed_for_loopback(Some(allowed)),
+                "{allowed} should be allowed"
+            );
+        }
+        assert!(host_is_allowed_for_loopback(None));
+        assert!(host_is_allowed_for_loopback(Some("")));
+        for denied in [
+            "rebind.example.com",
+            "127.0.0.1.evil.com",
+            "localhost.evil.com",
+            "10.0.0.1:8080",
+            "evil.com:127.0.0.1",
+            "example.com",
+        ] {
+            assert!(
+                !host_is_allowed_for_loopback(Some(denied)),
+                "{denied} should be denied"
+            );
+        }
+    }
+
+    #[test]
+    fn a_loopback_server_refuses_a_rebound_host_on_every_endpoint() {
+        // A page on a public origin rebound to loopback makes the browser send that
+        // public name in Host. No endpoint, authenticated or not, may answer it.
+        let bind = loopback_bind();
+        for path in [
+            "/",
+            "/index.html",
+            "/api/health",
+            "/api/modules",
+            "/api/command",
+        ] {
+            let rebound = response_for_request(
+                &format!("GET {path} HTTP/1.1\r\nHost: rebind.example.com\r\n\r\n"),
+                None,
+                bind,
+            );
+            assert!(
+                rebound.starts_with("HTTP/1.1 403 Forbidden"),
+                "{path}: {rebound}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_loopback_server_still_answers_loopback_and_hostless_requests() {
+        let bind = loopback_bind();
+        for host in [
+            "localhost",
+            "localhost:8080",
+            "127.0.0.1:8080",
+            "[::1]:8080",
+        ] {
+            let ok = response_for_request(
+                &format!("GET /api/health HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+                None,
+                bind,
+            );
+            assert!(ok.starts_with("HTTP/1.1 200"), "{host}: {ok}");
+        }
+        let hostless = response_for_request("GET /api/health HTTP/1.1\r\n\r\n", None, bind);
+        assert!(hostless.starts_with("HTTP/1.1 200"), "{hostless}");
+    }
+
+    #[test]
+    fn the_host_guard_runs_before_authentication() {
+        // A rebound request to a protected endpoint is refused for its Host even with a
+        // valid token, so the guard never reveals the 200/401 distinction to a
+        // disallowed origin.
+        let served = response_for_request(
+            "GET /api/command HTTP/1.1\r\nHost: evil.example\r\nAuthorization: Bearer secret\r\n\r\n",
+            Some("secret"),
+            loopback_bind(),
+        );
+        assert!(served.starts_with("HTTP/1.1 403 Forbidden"), "{served}");
+    }
+
+    #[test]
+    fn a_public_bind_is_not_subject_to_the_host_guard() {
+        // A non-loopback bind is intentionally public and gated by the bearer token; its
+        // real Host (a Railway hostname, say) is unknown here, so the guard must not
+        // apply or it would refuse every real request.
+        let public = "0.0.0.0:8080".parse::<SocketAddr>().unwrap();
+        let served = response_for_request(
+            "GET /api/health HTTP/1.1\r\nHost: huntsman.up.railway.app\r\n\r\n",
+            Some("secret"),
+            public,
+        );
+        assert!(served.starts_with("HTTP/1.1 200"), "{served}");
     }
 }

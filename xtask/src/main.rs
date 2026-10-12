@@ -1,8 +1,6 @@
 //! Repository automation, in Rust. Run as `cargo run --locked -p xtask -- <command>`, or
 //! `cargo gate <mode>` for the verification gate.
 
-#![forbid(unsafe_code)]
-
 mod coupling;
 mod dual_pass;
 mod error;

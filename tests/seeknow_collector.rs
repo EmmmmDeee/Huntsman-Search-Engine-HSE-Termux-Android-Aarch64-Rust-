@@ -1,71 +1,22 @@
-use std::cell::RefCell;
-use std::collections::VecDeque;
-
 use huntsman_recon::collector::{CollectionLimits, CollectionOutcome};
-use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::entity::{Entity, EntityKind};
-use huntsman_recon::fetch::{AuthStyle, Credential};
-use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
-use huntsman_recon::keys::Secret;
+use huntsman_recon::fetch::Credential;
 use huntsman_recon::lineage::Lineage;
-use huntsman_recon::seeknow::KEY_SLOT;
 use huntsman_recon::seeknow_collector::{
     SeekNowCollectionMode, SeekNowCollector, collect_with_credential, plan_selector,
 };
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
-struct ScriptedTransport {
-    responses: RefCell<VecDeque<Response>>,
-    seen: RefCell<Vec<Request>>,
-}
+#[allow(dead_code)]
+#[path = "support/seeknow_doubles.rs"]
+mod seeknow_doubles;
 
-impl ScriptedTransport {
-    fn new(responses: Vec<Response>) -> Self {
-        Self {
-            responses: RefCell::new(responses.into()),
-            seen: RefCell::new(Vec::new()),
-        }
-    }
+use seeknow_doubles::{ScriptedTransport, credential_with, response};
 
-    fn request_count(&self) -> usize {
-        self.seen.borrow().len()
-    }
-}
-
-impl Transport for ScriptedTransport {
-    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-        self.seen.borrow_mut().push(request.clone());
-        Ok(self
-            .responses
-            .borrow_mut()
-            .pop_front()
-            .expect("scripted response"))
-    }
-}
-
-fn response(status: u16, body: &str) -> Response {
-    Response {
-        status,
-        headers: Vec::new(),
-        body: body.as_bytes().to_vec(),
-        truncated: false,
-    }
-}
-
+/// The collector's credential carries its own provenance and secret, so a test can tell it
+/// from the client's.
 fn credential() -> Credential {
-    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
-        provider_id: "seeknow".into(),
-        credential_slot: KEY_SLOT.into(),
-        approved_at_unix: 1,
-        approval_provenance: "collector-test".into(),
-    })
-    .unwrap();
-    Credential::new(
-        authority,
-        Secret::new("seek-collector-test-secret").unwrap(),
-        AuthStyle::Header("X-API-Key".into()),
-    )
-    .unwrap()
+    credential_with("collector-test", "seek-collector-test-secret")
 }
 
 fn selector(kind: EntityKind, value: &str) -> Entity {

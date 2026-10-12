@@ -7,6 +7,7 @@ readonly TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 
 probe_dir=""
 accept_dir=""
+legacy_download=""
 
 cleanup() {
   if [[ -n "${probe_dir:-}" && -d "$probe_dir" ]]; then
@@ -14,6 +15,9 @@ cleanup() {
   fi
   if [[ -n "${accept_dir:-}" && -d "$accept_dir" ]]; then
     rm -rf "$accept_dir"
+  fi
+  if [[ -n "${legacy_download:-}" ]]; then
+    rm -f "$legacy_download"
   fi
 }
 trap cleanup EXIT
@@ -67,6 +71,7 @@ install_legacy_hse() {
     command -v curl >/dev/null 2>&1 || die "curl is required for the legacy hse handoff"
     command -v mktemp >/dev/null 2>&1 || die "mktemp is required for the legacy hse handoff"
     downloaded="$(mktemp "${TMPDIR:-$TERMUX_PREFIX/tmp}/huntsman-legacy-install.XXXXXX")"
+    legacy_download="$downloaded"
     installer="$downloaded"
     curl -fsSL --proto '=https' \
       "https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/legacy-hse/install.sh" \
@@ -77,6 +82,7 @@ install_legacy_hse() {
   local status=$?
   set -e
   [[ -z "$downloaded" ]] || rm -f "$downloaded"
+  legacy_download=""
   (( status == 0 )) || die "legacy hse installer exited $status"
   printf 'legacy-hse installed; huntsman-recon was not substituted for hse.\n'
 }

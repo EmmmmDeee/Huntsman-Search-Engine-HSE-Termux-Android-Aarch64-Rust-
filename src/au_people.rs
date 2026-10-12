@@ -429,29 +429,58 @@ fn is_name_token(t: &str) -> bool {
         && !NAME_CHROME.contains(&tl.as_str())
 }
 
-/// Most windows kept from one page. A page that names a relatives phrase thousands of times is not a
-/// directory listing, and every window costs memory.
-const MAX_RELATIVE_WINDOWS: usize = 1000;
-
-/// The text after each relatives phrase, at most [`RELATIVE_WINDOW`] characters of it.
+/// The text after each relatives phrase, at most [`RELATIVE_WINDOW`] characters of it, in page order.
 ///
-/// A phrase counts when its first occurrence at or after the previous one is a whole word. Where
-/// each phrase occurs next is kept, and a phrase is searched for again only once the scan has passed
-/// its last hit, so the text is read once per phrase and not once per hit.
-fn relative_windows(text: &str) -> Vec<String> {
-    let mut windows = Vec::new();
-    let mut offset = 0;
-    // `None`: not searched for yet. `Some(None)`: no occurrence from the last search on.
-    let mut next: Vec<Option<Option<usize>>> = vec![None; RELATIVE_PHRASES.len()];
-    while offset < text.len() && windows.len() < MAX_RELATIVE_WINDOWS {
+/// A phrase counts when its first occurrence at or after the previous one is a whole word. Each
+/// phrase's next occurrence is remembered until the scan passes it, so the page is searched once per
+/// phrase rather than once per hit. The windows come one at a time, so a long page is never held as a
+/// list of them.
+fn relative_windows(text: &str) -> RelativeWindows<'_> {
+    RelativeWindows {
+        text,
+        offset: 0,
+        next: [NextHit::Unknown; RELATIVE_PHRASES.len()],
+    }
+}
+
+struct RelativeWindows<'a> {
+    text: &'a str,
+    offset: usize,
+    /// Per phrase, where the last search for it found it.
+    next: [NextHit; RELATIVE_PHRASES.len()],
+}
+
+/// Where a relatives phrase occurs next, as far as the last search for it found.
+#[derive(Clone, Copy)]
+enum NextHit {
+    /// Not searched for yet.
+    Unknown,
+    /// Its first occurrence at or after the place the last search started, as a page position.
+    At(usize),
+    /// It does not occur at or after the place the last search started.
+    Absent,
+}
+
+impl Iterator for RelativeWindows<'_> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        let text = self.text;
+        let offset = self.offset;
+        if offset >= text.len() {
+            return None;
+        }
         let rest = &text[offset..];
         let mut best: Option<(usize, usize)> = None;
-        for (slot, phrase) in next.iter_mut().zip(RELATIVE_PHRASES) {
+        for (slot, phrase) in self.next.iter_mut().zip(RELATIVE_PHRASES) {
             let hit = match *slot {
-                Some(hit) if hit.is_none_or(|at| at >= offset) => hit,
-                _ => {
+                // A remembered position still ahead of the scan is the first one ahead of it too,
+                // and a phrase that was absent further back is absent here.
+                NextHit::At(at) if at >= offset => Some(at),
+                NextHit::Absent => None,
+                NextHit::Unknown | NextHit::At(_) => {
                     let hit = find_ascii_ci(rest, phrase).map(|at| offset + at);
-                    *slot = Some(hit);
+                    *slot = hit.map_or(NextHit::Absent, NextHit::At);
                     hit
                 }
             };
@@ -465,15 +494,11 @@ fn relative_windows(text: &str) -> Vec<String> {
                 best = Some((at, phrase.len()));
             }
         }
-        let Some((at, plen)) = best else {
-            break;
-        };
+        let (at, plen) = best?;
         let after = offset + at + plen;
-        let window: String = text[after..].chars().take(RELATIVE_WINDOW).collect();
-        windows.push(window);
-        offset = after;
+        self.offset = after;
+        Some(text[after..].chars().take(RELATIVE_WINDOW).collect())
     }
-    windows
 }
 
 fn is_word_bounded(hay: &str, start: usize, needle_len: usize) -> bool {
@@ -716,7 +741,7 @@ mod tests {
             let text: String = (0..next() % 40)
                 .map(|_| PIECES[next() % PIECES.len()])
                 .collect();
-            let windows = relative_windows(&text);
+            let windows: Vec<String> = relative_windows(&text).collect();
             assert_eq!(windows, relative_windows_before(&text), "{text:?}");
             with_windows += usize::from(!windows.is_empty());
         }
@@ -732,8 +757,8 @@ mod tests {
         // for the nine phrases that are not there; a debug build took 223 s.
         let text = format!("relatives {} ", "x".repeat(400)).repeat(900);
         let started = std::time::Instant::now();
-        let windows = relative_windows(&text);
-        assert_eq!(windows.len(), 900);
+        let windows = relative_windows(&text).count();
+        assert_eq!(windows, 900);
         assert!(
             started.elapsed() < std::time::Duration::from_secs(2),
             "{:?}",
@@ -742,10 +767,17 @@ mod tests {
     }
 
     #[test]
-    fn a_page_that_repeats_a_phrase_thousands_of_times_keeps_a_bounded_number_of_windows() {
-        // A 4 MiB page of "relatives " would have held about 100 MB of windows.
-        let text = "relatives ".repeat(2 * MAX_RELATIVE_WINDOWS);
-        assert_eq!(relative_windows(&text).len(), MAX_RELATIVE_WINDOWS);
+    fn a_page_that_repeats_a_phrase_yields_each_window_without_holding_them() {
+        // 100,000 hits. Held as a list, their windows would take about 30 MB; read one at a time they
+        // take a fixed amount of memory.
+        let text = "relatives ".repeat(100_000);
+        let started = std::time::Instant::now();
+        assert_eq!(relative_windows(&text).count(), 100_000);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

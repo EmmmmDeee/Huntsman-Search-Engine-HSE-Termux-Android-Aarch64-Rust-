@@ -15,16 +15,31 @@ fn store_err(path: &Path, e: &std::io::Error) -> Error {
     Error::Store(format!("{}: {e}", path.display()))
 }
 
-fn refuse_symlink(path: &Path) -> Result<(), Error> {
+/// The text a refused symbolic link is reported with.
+pub(crate) const REFUSED_SYMLINK: &str = "refusing symlink";
+
+/// Why a path may not be written through: it is a symbolic link, or it could not be inspected.
+pub(crate) enum SymlinkRefusal {
+    Linked,
+    Unreadable(std::io::Error),
+}
+
+/// The policy for every write in this crate: a symbolic link is refused, so a write cannot land in
+/// whatever file the link points at. A path that does not exist yet is allowed.
+pub(crate) fn check_not_symlink(path: &Path) -> Result<(), SymlinkRefusal> {
     match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => Err(Error::Store(format!(
-            "{}: refusing symlink",
-            path.display()
-        ))),
+        Ok(meta) if meta.file_type().is_symlink() => Err(SymlinkRefusal::Linked),
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(store_err(path, &e)),
+        Err(e) => Err(SymlinkRefusal::Unreadable(e)),
     }
+}
+
+fn refuse_symlink(path: &Path) -> Result<(), Error> {
+    check_not_symlink(path).map_err(|refusal| match refusal {
+        SymlinkRefusal::Linked => Error::Store(format!("{}: {REFUSED_SYMLINK}", path.display())),
+        SymlinkRefusal::Unreadable(e) => store_err(path, &e),
+    })
 }
 
 fn require_regular_file(path: &Path, meta: &fs::Metadata) -> Result<(), Error> {

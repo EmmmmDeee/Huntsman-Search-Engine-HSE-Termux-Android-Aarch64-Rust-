@@ -1,43 +1,12 @@
-use std::cell::RefCell;
-use std::collections::VecDeque;
-
-use huntsman_recon::http::{Method, Request, Response, Transport, TransportFailure};
+use huntsman_recon::http::Method;
 use huntsman_recon::keys::Keys;
 use huntsman_recon::seeknow_cli::{SeekNowCliRun, run_with_keys};
 
-struct ScriptedTransport {
-    responses: RefCell<VecDeque<Response>>,
-    seen: RefCell<Vec<Request>>,
-}
+#[allow(dead_code)]
+#[path = "support/seeknow_doubles.rs"]
+mod seeknow_doubles;
 
-impl ScriptedTransport {
-    fn new(responses: Vec<Response>) -> Self {
-        Self {
-            responses: RefCell::new(responses.into()),
-            seen: RefCell::new(Vec::new()),
-        }
-    }
-}
-
-impl Transport for ScriptedTransport {
-    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-        self.seen.borrow_mut().push(request.clone());
-        Ok(self
-            .responses
-            .borrow_mut()
-            .pop_front()
-            .expect("scripted response"))
-    }
-}
-
-fn response(status: u16, body: &str) -> Response {
-    Response {
-        status,
-        headers: Vec::new(),
-        body: body.as_bytes().to_vec(),
-        truncated: false,
-    }
-}
+use seeknow_doubles::{ScriptedTransport, response};
 
 fn configured_keys() -> Keys {
     Keys::parse("HUNTSMAN_SEEKNOW_KEY=dummy-seeknow-key-for-tests\n").unwrap()
