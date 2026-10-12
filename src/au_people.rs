@@ -429,14 +429,33 @@ fn is_name_token(t: &str) -> bool {
         && !NAME_CHROME.contains(&tl.as_str())
 }
 
+/// Most windows kept from one page. A page that names a relatives phrase thousands of times is not a
+/// directory listing, and every window costs memory.
+const MAX_RELATIVE_WINDOWS: usize = 1000;
+
+/// The text after each relatives phrase, at most [`RELATIVE_WINDOW`] characters of it.
+///
+/// A phrase counts when its first occurrence at or after the previous one is a whole word. Where
+/// each phrase occurs next is kept, and a phrase is searched for again only once the scan has passed
+/// its last hit, so the text is read once per phrase and not once per hit.
 fn relative_windows(text: &str) -> Vec<String> {
     let mut windows = Vec::new();
     let mut offset = 0;
-    while offset < text.len() {
+    // `None`: not searched for yet. `Some(None)`: no occurrence from the last search on.
+    let mut next: Vec<Option<Option<usize>>> = vec![None; RELATIVE_PHRASES.len()];
+    while offset < text.len() && windows.len() < MAX_RELATIVE_WINDOWS {
         let rest = &text[offset..];
         let mut best: Option<(usize, usize)> = None;
-        for phrase in RELATIVE_PHRASES {
-            let Some(at) = find_ascii_ci(rest, phrase) else {
+        for (slot, phrase) in next.iter_mut().zip(RELATIVE_PHRASES) {
+            let hit = match *slot {
+                Some(hit) if hit.is_none_or(|at| at >= offset) => hit,
+                _ => {
+                    let hit = find_ascii_ci(rest, phrase).map(|at| offset + at);
+                    *slot = Some(hit);
+                    hit
+                }
+            };
+            let Some(at) = hit.map(|at| at - offset) else {
                 continue;
             };
             if !is_word_bounded(rest, at, phrase.len()) {
@@ -625,6 +644,109 @@ mod tests {
     use crate::entity;
     use crate::http::Response;
     use crate::tags;
+
+    /// The scan as it was before it read the text once per phrase: every hit searched the rest of
+    /// the text again for every phrase.
+    fn relative_windows_before(text: &str) -> Vec<String> {
+        let mut windows = Vec::new();
+        let mut offset = 0;
+        while offset < text.len() {
+            let rest = &text[offset..];
+            let mut best: Option<(usize, usize)> = None;
+            for phrase in RELATIVE_PHRASES {
+                let Some(at) = find_ascii_ci(rest, phrase) else {
+                    continue;
+                };
+                if !is_word_bounded(rest, at, phrase.len()) {
+                    continue;
+                }
+                if best.is_none_or(|(best_at, _)| at < best_at) {
+                    best = Some((at, phrase.len()));
+                }
+            }
+            let Some((at, plen)) = best else {
+                break;
+            };
+            let after = offset + at + plen;
+            windows.push(text[after..].chars().take(RELATIVE_WINDOW).collect());
+            offset = after;
+        }
+        windows
+    }
+
+    #[test]
+    fn relative_windows_are_what_the_repeated_scan_found() {
+        // Phrases in every case, run together and apart, among other text and multi-byte letters.
+        const PIECES: &[&str] = &[
+            "relatives",
+            "Relatives",
+            "RELATIVES",
+            "possible relatives",
+            "Possible Associates",
+            "known associates",
+            "household member",
+            "household members",
+            "also known as",
+            "related to",
+            "lives with",
+            "associates",
+            "xrelatives",
+            "relativesx",
+            " ",
+            " ",
+            " ",
+            "",
+            "x",
+            ".",
+            "\n",
+            "é",
+            "Jane Citizen",
+            "of",
+            "relative",
+        ];
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            (state >> 33) as usize
+        };
+        let mut with_windows = 0;
+        for _ in 0..3000 {
+            let text: String = (0..next() % 40)
+                .map(|_| PIECES[next() % PIECES.len()])
+                .collect();
+            let windows = relative_windows(&text);
+            assert_eq!(windows, relative_windows_before(&text), "{text:?}");
+            with_windows += usize::from(!windows.is_empty());
+        }
+        assert!(
+            with_windows > 1000,
+            "the comparison needs texts that have windows: {with_windows}"
+        );
+    }
+
+    #[test]
+    fn many_hits_in_a_long_page_do_not_rescan_the_page_for_each() {
+        // 900 hits, each followed by filler, in 370 KB. Each hit used to search the rest of the page
+        // for the nine phrases that are not there; a debug build took several seconds.
+        let text = format!("relatives {} ", "x".repeat(400)).repeat(900);
+        let started = std::time::Instant::now();
+        let windows = relative_windows(&text);
+        assert_eq!(windows.len(), 900);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_page_that_repeats_a_phrase_thousands_of_times_keeps_a_bounded_number_of_windows() {
+        // A 4 MiB page of "relatives " would have held about 100 MB of windows.
+        let text = "relatives ".repeat(2 * MAX_RELATIVE_WINDOWS);
+        assert_eq!(relative_windows(&text).len(), MAX_RELATIVE_WINDOWS);
+    }
 
     #[test]
     fn single_token_name_makes_no_request() {
