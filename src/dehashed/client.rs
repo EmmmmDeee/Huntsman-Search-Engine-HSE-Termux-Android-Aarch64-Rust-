@@ -46,7 +46,9 @@ pub enum DehashedError {
     Query(#[from] super::query::QueryError),
     #[error("dehashed: no API key (set {API_KEY_ENV} or ~/.config/dehashed/api_key)")]
     MissingKey,
-    #[error("dehashed: the key file must be readable only by its owner (mode 0600)")]
+    #[error(
+        "dehashed: the key file was refused: it must be a regular file (not a symlink) owned by you with mode 0600"
+    )]
     KeyFilePermissions,
     #[error("dehashed: size must be between 1 and {MAX_PAGE_SIZE}, got {0}")]
     InvalidSize(u32),
@@ -290,27 +292,11 @@ pub fn key_from_environment() -> Result<Secret, DehashedError> {
         .join(".config")
         .join("dehashed")
         .join("api_key");
-    if !path.is_file() {
-        return Err(DehashedError::MissingKey);
-    }
-    if !private_file(&path) {
-        return Err(DehashedError::KeyFilePermissions);
-    }
-    let raw = crate::fsio::read_bounded(&path, 4096)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .ok_or(DehashedError::MissingKey)?;
+    let bytes = match crate::keys::read_private_file(&path, 4096) {
+        Ok(Some(Ok(bytes))) => bytes,
+        Ok(Some(Err(_refusal))) => return Err(DehashedError::KeyFilePermissions),
+        Ok(None) | Err(_) => return Err(DehashedError::MissingKey),
+    };
+    let raw = String::from_utf8(bytes).map_err(|_| DehashedError::MissingKey)?;
     Secret::new(raw).map_err(|_| DehashedError::MissingKey)
-}
-
-#[cfg(unix)]
-#[allow(clippy::verbose_bit_mask)]
-fn private_file(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o077 == 0)
-}
-
-#[cfg(not(unix))]
-fn private_file(_path: &std::path::Path) -> bool {
-    true
 }
