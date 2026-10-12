@@ -11,5 +11,10 @@
 !xtask/Cargo.toml
 !xtask/src/
 !xtask/src/**
+!crates/
+!crates/huntsman-core/
+!crates/huntsman-core/Cargo.toml
+!crates/huntsman-core/src/
+!crates/huntsman-core/src/**
 !scripts/
 !scripts/railway-entrypoint.sh

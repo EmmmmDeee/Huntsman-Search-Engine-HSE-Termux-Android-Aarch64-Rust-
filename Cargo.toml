@@ -1,7 +1,7 @@
 # Reconstructed huntsman. One package and the xtask automation crate, which is the only
 # workspace member. The package's own build and tests are unchanged.
 [workspace]
-members = ["xtask"]
+members = ["xtask", "crates/huntsman-core"]
 resolver = "3"
 
 # Blocking HTTP via ureq (rustls). No async runtime. Pure logic stays dependency-free.

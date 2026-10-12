@@ -14,6 +14,10 @@ COPY src ./src
 # source while loading the workspace. This build does not compile xtask.
 COPY xtask/Cargo.toml ./xtask/Cargo.toml
 COPY xtask/src ./xtask/src
+# huntsman-core is a workspace member, so cargo reads its manifest and source while loading the
+# workspace. This image does not compile it.
+COPY crates/huntsman-core/Cargo.toml ./crates/huntsman-core/Cargo.toml
+COPY crates/huntsman-core/src ./crates/huntsman-core/src
 
 RUN cargo build --release --locked --bin huntsman-recon
 
