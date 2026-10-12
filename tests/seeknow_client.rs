@@ -1,72 +1,18 @@
-use std::cell::RefCell;
-use std::collections::VecDeque;
-
-use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
-use huntsman_recon::fetch::{AuthStyle, Credential};
-use huntsman_recon::http::{Method, Request, Response, Transport, TransportFailure};
-use huntsman_recon::keys::Secret;
+use huntsman_recon::http::{Method, Response};
 use huntsman_recon::seeknow::{
-    KEY_SLOT, SEARCH_LIMIT_MAX, SeekNowQueryType, SeekNowSearch, search_deep, search_fast,
+    SEARCH_LIMIT_MAX, SeekNowQueryType, SeekNowSearch, search_deep, search_fast,
 };
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
-struct ScriptedTransport {
-    responses: RefCell<VecDeque<Response>>,
-    seen: RefCell<Vec<Request>>,
-}
+#[allow(dead_code)]
+#[path = "support/seeknow_doubles.rs"]
+mod seeknow_doubles;
 
-impl ScriptedTransport {
-    fn new(responses: Vec<Response>) -> Self {
-        Self {
-            responses: RefCell::new(responses.into()),
-            seen: RefCell::new(Vec::new()),
-        }
-    }
-}
+use seeknow_doubles::{ScriptedTransport, credential, response_with};
 
-impl Transport for ScriptedTransport {
-    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-        self.seen.borrow_mut().push(request.clone());
-        Ok(self
-            .responses
-            .borrow_mut()
-            .pop_front()
-            .expect("scripted response"))
-    }
-}
-
+/// A 200 response with `body`, which is what most of these tests script.
 fn response(body: &str) -> Response {
-    response_with(200, body, Vec::new(), false)
-}
-
-fn response_with(
-    status: u16,
-    body: &str,
-    headers: Vec<(String, String)>,
-    truncated: bool,
-) -> Response {
-    Response {
-        status,
-        headers,
-        body: body.as_bytes().to_vec(),
-        truncated,
-    }
-}
-
-fn credential() -> Credential {
-    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
-        provider_id: "seeknow".into(),
-        credential_slot: KEY_SLOT.into(),
-        approved_at_unix: 1,
-        approval_provenance: "integration-test".into(),
-    })
-    .unwrap();
-    Credential::new(
-        authority,
-        Secret::new("seek-test-secret").unwrap(),
-        AuthStyle::Header("X-API-Key".into()),
-    )
-    .unwrap()
+    seeknow_doubles::response(200, body)
 }
 
 fn auto_search() -> SeekNowSearch {

@@ -1,71 +1,26 @@
-use std::cell::RefCell;
-use std::collections::VecDeque;
-
-use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
-use huntsman_recon::fetch::{AuthStyle, Credential};
-use huntsman_recon::http::{Method, Request, Response, Transport, TransportFailure};
-use huntsman_recon::keys::Secret;
+use huntsman_recon::http::{Method, Response};
 use huntsman_recon::seeknow::{
-    KEY_SLOT, MAX_FIELD_CHARS, MAX_FIELDS_PER_ROW, SEARCH_LIMIT_MAX, SeekNowQueryType,
-    SeekNowSearch, credits, search_fast, status,
+    MAX_FIELD_CHARS, MAX_FIELDS_PER_ROW, SEARCH_LIMIT_MAX, SeekNowQueryType, SeekNowSearch,
+    credits, search_fast, status,
 };
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
-struct ScriptedTransport {
-    responses: RefCell<VecDeque<Response>>,
-    seen: RefCell<Vec<Request>>,
-}
+#[allow(dead_code)]
+#[path = "support/seeknow_doubles.rs"]
+mod seeknow_doubles;
 
-impl ScriptedTransport {
-    fn new(responses: Vec<Response>) -> Self {
-        Self {
-            responses: RefCell::new(responses.into()),
-            seen: RefCell::new(Vec::new()),
-        }
-    }
-}
+use seeknow_doubles::{ScriptedTransport, credential};
 
-impl Transport for ScriptedTransport {
-    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-        self.seen.borrow_mut().push(request.clone());
-        Ok(self
-            .responses
-            .borrow_mut()
-            .pop_front()
-            .expect("scripted response"))
-    }
-}
-
-fn response(body: String) -> Response {
-    Response {
-        status: 200,
-        headers: Vec::new(),
-        body: body.into_bytes(),
-        truncated: false,
-    }
-}
-
-fn credential() -> Credential {
-    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
-        provider_id: "seeknow".into(),
-        credential_slot: KEY_SLOT.into(),
-        approved_at_unix: 1,
-        approval_provenance: "integration-test".into(),
-    })
-    .unwrap();
-    Credential::new(
-        authority,
-        Secret::new("seek-test-secret").unwrap(),
-        AuthStyle::Header("X-API-Key".into()),
-    )
-    .unwrap()
+/// A 200 response with `body`, which is what these tests script.
+fn response(body: &str) -> Response {
+    seeknow_doubles::response(200, body)
 }
 
 #[test]
 fn credits_and_status_are_authenticated_zero_redirect_gets() {
     let transport = ScriptedTransport::new(vec![
-        response(r#"{"success":true,"credits_remaining":123,"daily_limit":500}"#.into()),
-        response(r#"{"success":true,"status":"ok","version":"v1"}"#.into()),
+        response(r#"{"success":true,"credits_remaining":123,"daily_limit":500}"#),
+        response(r#"{"success":true,"status":"ok","version":"v1"}"#),
     ]);
     let credential = credential();
 
@@ -94,7 +49,7 @@ fn credits_and_status_are_authenticated_zero_redirect_gets() {
 #[test]
 fn upstream_arrays_survive_as_multiple_values_for_lineage() {
     let transport = ScriptedTransport::new(vec![response(
-        r#"{"success":true,"data":[{"email":"a@example.com","dbname":["Dataset A","Dataset B"],"source":["mirror-1","mirror-2"],"record_id":"r1"}]}"#.into(),
+        r#"{"success":true,"data":[{"email":"a@example.com","dbname":["Dataset A","Dataset B"],"source":["mirror-1","mirror-2"],"record_id":"r1"}]}"#,
     )]);
     let result = search_fast(
         &transport,
@@ -138,7 +93,7 @@ fn rows_fields_and_strings_are_bounded_with_visible_truncation() {
         .map(|_| serde_json::Value::Object(row.clone()))
         .collect::<Vec<_>>();
     let body = serde_json::json!({"success": true, "data": rows}).to_string();
-    let transport = ScriptedTransport::new(vec![response(body)]);
+    let transport = ScriptedTransport::new(vec![response(&body)]);
     let result = search_fast(
         &transport,
         &credential(),
