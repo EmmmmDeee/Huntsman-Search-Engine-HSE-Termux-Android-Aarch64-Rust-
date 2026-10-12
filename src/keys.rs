@@ -308,7 +308,7 @@ impl fmt::Debug for Keys {
 
 /// Why `$HOME/.huntsman.env` was not read. Carries metadata only, never content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DefaultFileRefusal {
+pub(crate) enum DefaultFileRefusal {
     Symlink,
     NotRegularFile,
     ForeignOwner { file_uid: u32, current_uid: u32 },
@@ -422,6 +422,24 @@ fn current_uid() -> Option<u32> {
 /// residual gap: a regular file swapped for a FIFO between `lstat` and `open`
 /// makes `open` block before the re-check; that needs write access to `$HOME`.
 fn load_default_file(path: &Path) -> Result<Option<Result<Keys, DefaultFileRefusal>>, Error> {
+    match read_private_file(path, MAX_KEYS_FILE_BYTES)? {
+        None => Ok(None),
+        Some(Err(refusal)) => Ok(Some(Err(refusal))),
+        Some(Ok(bytes)) => Keys::from_file_bytes(bytes).map(|keys| Some(Ok(keys))),
+    }
+}
+
+/// The shared private-file gate for every on-disk secret (the keys file, the
+/// HIBP and `DeHashed` `api_key` files): refuses a symlink, a non-regular file, a
+/// file owned by another uid, an unknown current uid, or group/other mode bits,
+/// re-checking the opened descriptor against the `lstat`ed inode.
+///
+/// `Ok(None)` when `path` does not exist. A refusal carries metadata only, never
+/// file content, so it is safe to print.
+pub(crate) fn read_private_file(
+    path: &Path,
+    max: u64,
+) -> Result<Option<Result<Vec<u8>, DefaultFileRefusal>>, Error> {
     let store = |e: std::io::Error| Error::Store(format!("{}: {e}", path.display()));
     let linked = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
@@ -449,16 +467,16 @@ fn load_default_file(path: &Path) -> Result<Option<Result<Keys, DefaultFileRefus
         return Ok(Some(Err(refusal)));
     }
     let mut bytes = Vec::new();
-    file.take(MAX_KEYS_FILE_BYTES.saturating_add(1))
+    file.take(max.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(store)?;
-    if bytes.len() as u64 > MAX_KEYS_FILE_BYTES {
+    if bytes.len() as u64 > max {
         return Err(Error::Store(format!(
-            "{}: exceeds {MAX_KEYS_FILE_BYTES} bytes",
+            "{}: exceeds {max} bytes",
             path.display()
         )));
     }
-    Keys::from_file_bytes(bytes).map(|keys| Some(Ok(keys)))
+    Ok(Some(Ok(bytes)))
 }
 
 /// Did `open` reach the inode `lstat` described (not a replacement or a link)?
@@ -891,5 +909,114 @@ mod tests {
         let k = Keys::load(&path).expect("tight");
         assert_eq!(k.get("T_KEY").expect("t").expose(), "value-12345");
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    // --- Shared private-file gate (keys file, HIBP and DeHashed api_key files) ---
+
+    const GATE_SECRET: &str = "TEST_ONLY_GATE_SECRET_9f2c";
+
+    fn refusal_text(refusal: DefaultFileRefusal) -> String {
+        format!("{refusal:?} {}", refusal.reason())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_file_gate_accepts_0600() {
+        let home = fake_home("gate-0600");
+        let path = home.join("api_key");
+        write_mode(&path, GATE_SECRET, 0o600);
+        let got = read_private_file(&path, 4096).expect("io").expect("exists");
+        assert_eq!(got.expect("accepted"), GATE_SECRET.as_bytes());
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_file_gate_refuses_0644_without_key_material() {
+        let home = fake_home("gate-0644");
+        let path = home.join("api_key");
+        write_mode(&path, GATE_SECRET, 0o644);
+        let refusal = read_private_file(&path, 4096)
+            .expect("io")
+            .expect("exists")
+            .expect_err("0644 must be refused");
+        assert_eq!(
+            refusal,
+            DefaultFileRefusal::LoosePermissions { mode: 0o644 }
+        );
+        assert!(!refusal_text(refusal).contains(GATE_SECRET));
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_file_gate_refuses_symlink_to_private_file_without_key_material() {
+        let home = fake_home("gate-symlink");
+        let target = home.join("real_key");
+        write_mode(&target, GATE_SECRET, 0o600);
+        let path = home.join("api_key");
+        std::os::unix::fs::symlink(&target, &path).expect("symlink");
+        let refusal = read_private_file(&path, 4096)
+            .expect("io")
+            .expect("exists")
+            .expect_err("symlink must be refused");
+        assert_eq!(refusal, DefaultFileRefusal::Symlink);
+        assert!(!refusal_text(refusal).contains(GATE_SECRET));
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[test]
+    fn private_file_gate_refuses_other_uid_without_key_material() {
+        let facts = FileFacts {
+            is_symlink: false,
+            is_file: true,
+            mode: 0o600,
+            uid: Some(4242),
+        };
+        let refusal = default_file_refusal(&facts, Some(1000)).expect("refused");
+        assert_eq!(
+            refusal,
+            DefaultFileRefusal::ForeignOwner {
+                file_uid: 4242,
+                current_uid: 1000
+            }
+        );
+        assert!(!refusal_text(refusal).contains(GATE_SECRET));
+    }
+
+    #[test]
+    fn private_file_gate_missing_file_is_none() {
+        let home = fake_home("gate-missing");
+        assert!(
+            read_private_file(&home.join("absent"), 4096)
+                .expect("io")
+                .is_none()
+        );
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hibp_file_source_uses_the_shared_gate() {
+        use crate::hibp::key::{FileSource, KeySource};
+        let home = fake_home("gate-hibp");
+        let key = "0123456789abcdef0123456789abcdef";
+        let ok = home.join("ok_key");
+        write_mode(&ok, key, 0o600);
+        assert!(FileSource(ok.clone()).load().is_some(), "0600 accepted");
+        let loose = home.join("loose_key");
+        write_mode(&loose, key, 0o644);
+        assert!(FileSource(loose).load().is_none(), "0644 refused");
+        let link = home.join("link_key");
+        std::os::unix::fs::symlink(&ok, &link).expect("symlink");
+        assert!(FileSource(link).load().is_none(), "symlink refused");
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[test]
+    fn dehashed_refusal_text_carries_no_key_material() {
+        let text = crate::dehashed::client::DehashedError::KeyFilePermissions.to_string();
+        assert!(!text.contains(GATE_SECRET));
+        assert!(text.contains("0600"), "{text}");
     }
 }
