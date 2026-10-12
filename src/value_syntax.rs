@@ -137,50 +137,49 @@ fn valid_domain_label(label: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || character == '-')
 }
 
+/// One AU national-significant-number rule shared by every input shape:
+/// nine digits with a geographic/mobile lead, or a 1300/1800 service number.
+fn au_national_key(national: &str) -> Option<String> {
+    let bytes = national.as_bytes();
+    let ok = (bytes.len() == 9 && matches!(bytes[0], b'2' | b'3' | b'4' | b'5' | b'7' | b'8'))
+        || (bytes.len() == 10 && (national.starts_with("1300") || national.starts_with("1800")));
+    let candidate = format!("+61{national}");
+    (ok && phone_e164_error(&candidate).is_none()).then_some(candidate)
+}
+
 #[must_use]
 pub fn normalise_au_phone(raw: &str) -> Option<String> {
     let compact: String = raw
         .chars()
         .filter(|character| character.is_ascii_digit() || *character == '+')
         .collect();
-    let valid = |candidate: String| phone_e164_error(&candidate).is_none().then_some(candidate);
-
-    if compact.starts_with("+61") {
-        return valid(compact);
-    }
-    if compact.starts_with("0061") {
-        return valid(format!("+{}", &compact[2..]));
-    }
-    if let Some(national) = compact.strip_prefix("61").filter(|national| {
-        national.len() == 9
-            && matches!(
-                national.as_bytes()[0],
-                b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
-            )
-    }) {
-        return valid(format!("+61{national}"));
-    }
-    if compact.starts_with('0')
-        && compact.len() == 10
-        && matches!(
-            compact.as_bytes()[1],
-            b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
-        )
+    if let Some(rest) = compact
+        .strip_prefix("+61")
+        .or_else(|| compact.strip_prefix("0061"))
     {
-        return valid(format!("+61{}", &compact[1..]));
+        // "+61 (0)4..." keeps a trunk zero that is not part of the number.
+        let national = match rest.strip_prefix('0') {
+            Some(after) if au_national_key(after).is_some() => after,
+            _ => rest,
+        };
+        return au_national_key(national);
     }
-    if compact.len() == 9
-        && matches!(
-            compact.as_bytes()[0],
-            b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
-        )
-    {
-        return valid(format!("+61{compact}"));
+    if compact.contains('+') {
+        return None;
     }
-    if compact.len() == 10 && (compact.starts_with("1300") || compact.starts_with("1800")) {
-        return valid(format!("+61{compact}"));
+    if let Some(national) = compact.strip_prefix("61") {
+        if national.len() == 9 {
+            if let Some(key) = au_national_key(national) {
+                return Some(key);
+            }
+        }
     }
-    None
+    if let Some(national) = compact.strip_prefix('0') {
+        if national.len() == 9 {
+            return au_national_key(national);
+        }
+    }
+    au_national_key(&compact)
 }
 
 #[must_use]
@@ -189,6 +188,9 @@ pub fn canonical_phone(raw: &str) -> Option<String> {
         .chars()
         .filter(|character| character.is_ascii_digit() || *character == '+')
         .collect();
+    if compact.starts_with("+61") {
+        return normalise_au_phone(&compact);
+    }
     if compact.starts_with('+') {
         return phone_e164_error(&compact).is_none().then_some(compact);
     }
@@ -356,5 +358,30 @@ mod tests {
         assert!(!is_role_localpart("alice"));
         assert!(is_whois_privacy_placeholder("Domains By Proxy, LLC"));
         assert!(!is_whois_privacy_placeholder("Ada Lovelace"));
+    }
+}
+
+#[cfg(test)]
+mod au_phone_key_contract {
+    use super::*;
+
+    #[test]
+    fn trunk_zero_after_country_code_is_one_key() {
+        let want = Some("+61412345678".to_string());
+        assert_eq!(normalise_au_phone("+61 (0)412 345 678"), want);
+        assert_eq!(normalise_au_phone("0061 0412 345 678"), want);
+        assert_eq!(canonical_phone("+61 (0)412 345 678"), want);
+        assert_eq!(canonical_phone("0412 345 678"), want);
+    }
+
+    #[test]
+    fn au_country_code_requires_au_national_length() {
+        assert_eq!(normalise_au_phone("+61 4123 4567 8901"), None);
+        assert_eq!(normalise_au_phone("+61 9 1234 5678"), None);
+        assert_eq!(canonical_phone("+61 4123 4567 8901"), None);
+        assert_eq!(
+            normalise_au_phone("+61 1300 123 456").as_deref(),
+            Some("+611300123456")
+        );
     }
 }
