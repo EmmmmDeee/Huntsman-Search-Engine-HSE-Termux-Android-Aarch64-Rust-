@@ -52,17 +52,16 @@ pub fn canonical_name(raw: &str) -> String {
 
 #[must_use]
 pub fn canonical_handle(raw: &str) -> Option<String> {
+    let raw = raw.trim().trim_start_matches('@');
+    if raw.len() > 40 {
+        return None;
+    }
     let trimmed = raw
-        .trim()
-        .trim_start_matches('@')
         .chars()
         .filter(|c| !matches!(c, '.' | '_' | '-'))
         .map(|c| c.to_ascii_lowercase())
         .collect::<String>();
-    if trimmed.is_empty()
-        || trimmed.len() > 40
-        || !trimmed.chars().all(|c| c.is_ascii_alphanumeric())
-    {
+    if trimmed.is_empty() || !trimmed.chars().all(|c| c.is_ascii_alphanumeric()) {
         return None;
     }
     Some(trimmed)
@@ -267,6 +266,14 @@ mod tests {
             Some("adalovelace".into())
         );
         assert_eq!(canonical_handle(""), None);
+    }
+
+    #[test]
+    fn handle_length_limit_applies_to_raw_handle() {
+        let forty = "a".repeat(40);
+        assert_eq!(canonical_handle(&format!("@{forty}")), Some(forty));
+        let long_raw = "ab.".repeat(20);
+        assert_eq!(canonical_handle(&long_raw), None);
     }
 
     #[test]
