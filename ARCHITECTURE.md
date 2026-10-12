@@ -118,7 +118,7 @@ PLANNED:
 ## INVARIANTS
 
 CURRENT:
-- `#![deny(unsafe_code)]`; clippy `pedantic` is warn and CI denies warnings.
+- `unsafe_code` is forbidden and clippy `pedantic` is warn, both set in `[lints]` in `Cargo.toml`; CI denies warnings.
 - A challenge page is never a result. A self-labelled ATT&CK technique never enters Navigator or STIX (`check` gates).
 - `check` regenerates `var/*.json` byte-identically. Every `gate` mode runs `check` and refuses the run if it changes any tracked or untracked content, or if a commit moves HEAD during the run (`xtask/src/gate.rs`, `baseline` and `drift`).
 - A gate run holds `target/repair-gate/gate.lock` for its checkout. A second run in that checkout is refused while the first holds the lock. A lock left by an exited process is taken over (`xtask/src/proc.rs`, `GateLock`).

@@ -29,8 +29,14 @@ thiserror = "2.0"
 ureq = "3"
 
 # forbid cannot be reopened by a local allow, where deny can. The xtask crate sets the same.
+# Every crate-level lint level lives here; tests/manifest_policy.rs refuses one in a crate root.
 [lints.rust]
 unsafe_code = "forbid"
 
 [lints.clippy]
-pedantic = "warn"
+# Priority -1 applies the group first, so the specific allows below win over it.
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints this crate does not enforce.
+items_after_statements = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"

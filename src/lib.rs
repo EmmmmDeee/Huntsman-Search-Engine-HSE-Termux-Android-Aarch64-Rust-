@@ -3,13 +3,10 @@
 //! guarded HTTP layer (`egress`, `http`, `fetch`, `keys`, `deadline`). Challenge pages are not results.
 //! Pure logic stays separate from I/O so every decision can be tested without a network.
 
-#![deny(unsafe_code)]
+// Lint levels are set in Cargo.toml `[lints]`. This test-only allowance is the one exception:
+// `assert_is_empty` fires on the 1.99 clippy the gate runs, and `unknown_lints` covers toolchains
+// that lack it.
 #![cfg_attr(test, allow(unknown_lints, clippy::assert_is_empty))]
-#![allow(
-    clippy::items_after_statements,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc
-)]
 
 pub mod address_au;
 pub mod analysis;

@@ -1,7 +1,8 @@
 //! The manifests carry the invariants that every later file inherits: unsafe code is forbidden
-//! in every crate, and every runtime dependency of the package states its purpose. A `forbid`
-//! cannot be reopened by a local `allow`, where a `deny` can. A dependency without a stated
-//! purpose is one nobody can judge for removal.
+//! in every crate, lint levels are set in the manifests and nowhere else, and every runtime
+//! dependency of the package states its purpose. A `forbid` cannot be reopened by a local
+//! `allow`, where a `deny` can. A dependency without a stated purpose is one nobody can judge
+//! for removal.
 
 use std::fs;
 
@@ -55,4 +56,34 @@ fn every_runtime_dependency_states_its_purpose() {
         seen > 0,
         "the root manifest declares no runtime dependencies"
     );
+}
+
+/// A crate root sets no lint level of its own, so the manifests show the whole policy. The one
+/// exception is test-only: `assert_is_empty` fires on the 1.99 clippy the gate runs, and
+/// `unknown_lints` covers toolchains that lack it.
+#[test]
+fn crate_roots_set_no_lint_level_outside_the_manifests() {
+    const LEVELS: [&str; 5] = ["allow(", "deny(", "warn(", "forbid(", "expect("];
+    const TEST_ONLY: &str = "#![cfg_attr(test, allow(unknown_lints, clippy::assert_is_empty))]";
+    let mut roots = vec![
+        "src/lib.rs".to_string(),
+        "src/main.rs".to_string(),
+        "xtask/src/main.rs".to_string(),
+    ];
+    for entry in fs::read_dir("src/bin").expect("src/bin") {
+        roots.push(entry.expect("src/bin entry").path().display().to_string());
+    }
+    for path in &roots {
+        let source = fs::read_to_string(path).expect(path);
+        for line in source.lines().map(str::trim) {
+            let exempt = path == "src/lib.rs" && line == TEST_ONLY;
+            if !line.starts_with("#![") || exempt {
+                continue;
+            }
+            assert!(
+                !LEVELS.iter().any(|level| line.contains(level)),
+                "{path} sets a lint level outside [lints] in Cargo.toml: {line}"
+            );
+        }
+    }
 }
