@@ -25,8 +25,9 @@ serde_json = "1.0"
 tracing = "0.1"
 
 [dev-dependencies]
-# The async test harness for hermetic, offline DAG verification.
-tokio = { version = "1.38", default-features = false, features = ["rt-multi-thread", "macros", "io-util"] }
+# The async test harness for hermetic, offline DAG verification; test-util adds paused,
+# auto-advancing time so governor pacing is verified deterministically without sleeping.
+tokio = { version = "1.38", default-features = false, features = ["rt-multi-thread", "macros", "io-util", "test-util"] }
 
 # Lint levels live in the manifest, as the root package requires. unsafe cannot be reopened.
 [lints.rust]
