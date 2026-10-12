@@ -291,7 +291,7 @@ pub fn is_freemail(domain: &str) -> bool {
 /// trimmed, lowercased, trailing root dot dropped, exactly one `@`, and a
 /// non-empty local part and domain. Values with several `@` are not emails,
 /// so first-`@` and last-`@` splits can no longer disagree.
-fn split_email(email: &str) -> Option<(String, String)> {
+pub(crate) fn split_email(email: &str) -> Option<(String, String)> {
     let email = email.trim().trim_end_matches('.').to_ascii_lowercase();
     let (local, domain) = email.split_once('@')?;
     if local.is_empty() || domain.is_empty() || domain.contains('@') {
@@ -309,6 +309,13 @@ pub fn is_infrastructure_email(email: &str) -> bool {
     if is_role_localpart(local) {
         return true;
     }
+    is_infrastructure_mail_domain(domain)
+}
+
+/// Domain half of [`is_infrastructure_email`]: provider/mail-infra roots,
+/// excluding freemail. Expects a domain already normalised by [`split_email`].
+#[must_use]
+pub(crate) fn is_infrastructure_mail_domain(domain: &str) -> bool {
     let registrable = registrable_domain(domain).unwrap_or_else(|| domain.to_string());
     if is_freemail(domain) || is_freemail(&registrable) {
         return false;
