@@ -387,3 +387,91 @@ fn legacy_hse_parent_without_ref_routes_before_recon_install() {
 
     let _ = fs::remove_dir_all(&temp);
 }
+
+#[test]
+fn legacy_download_is_removed_on_failure_and_on_success() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let installer = root.join("install.sh");
+    let temp = scratch();
+    let prefix = PathBuf::from("/data/data/com.termux/files/usr");
+    let fake_bin = temp.join("fake-bin");
+    let fake_target_libdir = temp.join("rustlib");
+    let log = temp.join("install.log");
+    let tmpdir = temp.join("tmp");
+    fs::create_dir_all(&tmpdir).unwrap();
+    install_fake_termux_toolchain(&fake_bin, &fake_target_libdir);
+    // The fake curl writes FAKE_CURL_BODY to the -o target and exits with FAKE_CURL_STATUS.
+    write_executable(
+        &fake_bin.join("curl"),
+        r#"#!/bin/sh
+out=''
+while [ $# -gt 0 ]; do
+  if [ "$1" = '-o' ]; then shift; out="$1"; fi
+  shift
+done
+printf '%s' "$FAKE_CURL_BODY" > "$out"
+exit "${FAKE_CURL_STATUS:-0}"
+"#,
+    );
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    let run = |status: &str, body: &str| {
+        Command::new("bash")
+            .arg(&installer)
+            .env("PATH", format!("{}:{existing_path}", fake_bin.display()))
+            .env("PREFIX", &prefix)
+            .env("INSTALL_LOG", &log)
+            .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
+            .env("HOME", &temp)
+            .env("TMPDIR", &tmpdir)
+            .env("HSE_REF", "legacy-hse")
+            .env("FAKE_CURL_STATUS", status)
+            .env("FAKE_CURL_BODY", body)
+            .env_remove("HUNTSMAN_REV")
+            .env_remove("HUNTSMAN_LEGACY_CHANNEL_INSTALLER")
+            .output()
+            .expect("legacy download route must execute")
+    };
+    let leftovers = || -> Vec<String> {
+        fs::read_dir(&tmpdir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("huntsman-legacy-install."))
+            .collect()
+    };
+
+    // A dropped download must fail the install and leave no partial installer behind.
+    let failed = run("22", "partial download");
+    assert!(
+        !failed.status.success(),
+        "a failed download must fail the installer:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&failed.stdout),
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    assert!(
+        leftovers().is_empty(),
+        "a failed legacy download left a partial installer behind: {:?}",
+        leftovers()
+    );
+
+    // A completed download runs the handoff and is also removed afterwards.
+    let body = "#!/bin/sh\nprintf 'legacy-channel-ok\\n' >> \"$INSTALL_LOG\"\n";
+    let succeeded = run("0", body);
+    assert!(
+        succeeded.status.success(),
+        "a completed legacy download must install:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&succeeded.stdout),
+        String::from_utf8_lossy(&succeeded.stderr)
+    );
+    assert!(
+        fs::read_to_string(&log)
+            .unwrap()
+            .contains("legacy-channel-ok")
+    );
+    assert!(
+        leftovers().is_empty(),
+        "a completed legacy download left its installer behind: {:?}",
+        leftovers()
+    );
+
+    let _ = fs::remove_dir_all(&temp);
+}
