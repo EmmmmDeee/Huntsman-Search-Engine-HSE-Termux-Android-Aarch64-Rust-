@@ -423,12 +423,26 @@ fn current_uid() -> Option<u32> {
 /// makes `open` block before the re-check; that needs write access to `$HOME`.
 fn load_default_file(path: &Path) -> Result<Option<Result<Keys, DefaultFileRefusal>>, Error> {
     let store = |e: std::io::Error| Error::Store(format!("{}: {e}", path.display()));
+    match read_gated(path, MAX_KEYS_FILE_BYTES).map_err(store)? {
+        None => Ok(None),
+        Some(Err(refusal)) => Ok(Some(Err(refusal))),
+        Some(Ok(bytes)) => Keys::from_file_bytes(bytes).map(|keys| Some(Ok(keys))),
+    }
+}
+
+/// The shared private-file gate: `None` when `path` does not exist, the
+/// refusal when it fails the gate, else at most `max` bytes. An oversized file
+/// is an `InvalidData` error.
+fn read_gated(
+    path: &Path,
+    max: u64,
+) -> std::io::Result<Option<Result<Vec<u8>, DefaultFileRefusal>>> {
     let linked = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
             return Ok(None);
         }
-        Err(e) => return Err(store(e)),
+        Err(e) => return Err(e),
     };
     let uid = current_uid();
     if let Some(refusal) = default_file_refusal(&FileFacts::of(&linked), uid) {
@@ -439,9 +453,9 @@ fn load_default_file(path: &Path) -> Result<Option<Result<Keys, DefaultFileRefus
         Err(e) if e.kind() == ErrorKind::NotFound => {
             return Ok(Some(Err(DefaultFileRefusal::ChangedWhileOpening)));
         }
-        Err(e) => return Err(store(e)),
+        Err(e) => return Err(e),
     };
-    let opened = file.metadata().map_err(store)?;
+    let opened = file.metadata()?;
     if !same_inode(&linked, &opened) {
         return Ok(Some(Err(DefaultFileRefusal::ChangedWhileOpening)));
     }
@@ -449,16 +463,42 @@ fn load_default_file(path: &Path) -> Result<Option<Result<Keys, DefaultFileRefus
         return Ok(Some(Err(refusal)));
     }
     let mut bytes = Vec::new();
-    file.take(MAX_KEYS_FILE_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(store)?;
-    if bytes.len() as u64 > MAX_KEYS_FILE_BYTES {
-        return Err(Error::Store(format!(
-            "{}: exceeds {MAX_KEYS_FILE_BYTES} bytes",
-            path.display()
-        )));
+    file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("exceeds {max} bytes"),
+        ));
     }
-    Keys::from_file_bytes(bytes).map(|keys| Some(Ok(keys)))
+    Ok(Some(Ok(bytes)))
+}
+
+/// Outcome of [`read_private_file`]. A refusal carries metadata only (never
+/// file content), so its text is safe to show.
+#[derive(Debug)]
+pub enum PrivateFile {
+    /// The path does not exist.
+    Missing,
+    /// The path exists but fails the private-file gate (symlink, not a
+    /// regular file, another uid's file, group/other access, or swapped).
+    Refused(String),
+    /// The path could not be read.
+    Unreadable,
+    /// The gated contents.
+    Contents(Vec<u8>),
+}
+
+/// Read a credential file through the same private-file gate that guards
+/// `$HOME/.huntsman.env`: decided on `lstat` (never followed), re-checked on
+/// the opened descriptor, and bounded to `max` bytes.
+#[must_use]
+pub fn read_private_file(path: &Path, max: u64) -> PrivateFile {
+    match read_gated(path, max) {
+        Ok(None) => PrivateFile::Missing,
+        Ok(Some(Err(refusal))) => PrivateFile::Refused(refusal.reason()),
+        Ok(Some(Ok(bytes))) => PrivateFile::Contents(bytes),
+        Err(_) => PrivateFile::Unreadable,
+    }
 }
 
 /// Did `open` reach the inode `lstat` described (not a replacement or a link)?
@@ -891,5 +931,81 @@ mod tests {
         let k = Keys::load(&path).expect("tight");
         assert_eq!(k.get("T_KEY").expect("t").expose(), "value-12345");
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    mod private_file_gate {
+        use super::super::{PrivateFile, read_private_file};
+        use std::os::unix::fs::PermissionsExt;
+
+        const SECRET: &str = "k3y-private-file-gate-SENTINEL";
+
+        fn dir(name: &str) -> std::path::PathBuf {
+            let d = std::env::temp_dir().join(format!("hse-pfg-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).expect("dir");
+            d
+        }
+
+        fn write(path: &std::path::Path, mode: u32) {
+            std::fs::write(path, SECRET).expect("write");
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        }
+
+        fn refused(outcome: PrivateFile) -> String {
+            match outcome {
+                PrivateFile::Refused(reason) => {
+                    assert!(!reason.contains(SECRET), "refusal leaked key: {reason}");
+                    reason
+                }
+                other => panic!("expected refusal, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn accepts_0600_refuses_0644() {
+            let d = dir("mode");
+            let p = d.join("api_key");
+            write(&p, 0o600);
+            match read_private_file(&p, 4096) {
+                PrivateFile::Contents(b) => assert_eq!(b, SECRET.as_bytes()),
+                other => panic!("0600 not accepted: {other:?}"),
+            }
+            write(&p, 0o644);
+            assert!(refused(read_private_file(&p, 4096)).contains("644"));
+        }
+
+        #[test]
+        fn refuses_a_symlink_to_a_private_file() {
+            let d = dir("link");
+            let target = d.join("real");
+            write(&target, 0o600);
+            let link = d.join("api_key");
+            std::os::unix::fs::symlink(&target, &link).expect("symlink");
+            assert!(refused(read_private_file(&link, 4096)).contains("symlink"));
+        }
+
+        #[test]
+        fn refuses_a_file_owned_by_another_uid() {
+            // A root-owned private file the current (non-root) user can stat.
+            let p = std::path::Path::new("/etc/shadow");
+            if super::super::current_uid() == Some(0) || std::fs::symlink_metadata(p).is_err() {
+                return;
+            }
+            let reason = refused(read_private_file(p, 4096));
+            assert!(
+                reason.contains("uid") || reason.contains("mode"),
+                "{reason}"
+            );
+        }
+
+        #[test]
+        fn missing_file_is_missing() {
+            let d = dir("missing");
+            assert!(matches!(
+                read_private_file(&d.join("none"), 4096),
+                PrivateFile::Missing
+            ));
+        }
     }
 }

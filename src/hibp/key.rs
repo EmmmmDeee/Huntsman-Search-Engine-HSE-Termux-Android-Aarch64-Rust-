@@ -82,10 +82,12 @@ impl KeySource for ValueSource {
 pub struct FileSource(pub PathBuf);
 impl KeySource for FileSource {
     fn load(&self) -> Option<(ApiKey, KeyOrigin)> {
-        if !private_file(&self.0) {
+        let crate::keys::PrivateFile::Contents(bytes) =
+            crate::keys::read_private_file(&self.0, 4096)
+        else {
             return None;
-        }
-        let raw = String::from_utf8(crate::fsio::read_bounded(&self.0, 4096).ok()?).ok()?;
+        };
+        let raw = String::from_utf8(bytes).ok()?;
         ApiKey::new(&raw).map(|k| (k, KeyOrigin::File(self.0.clone())))
     }
 }
@@ -172,16 +174,4 @@ impl KeyLoader {
     pub fn load(&self) -> Option<(ApiKey, KeyOrigin)> {
         self.sources.iter().find_map(|s| s.load())
     }
-}
-
-#[cfg(unix)]
-#[allow(clippy::verbose_bit_mask)]
-fn private_file(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o077 == 0)
-}
-#[cfg(not(unix))]
-fn private_file(_path: &std::path::Path) -> bool {
-    true
 }
