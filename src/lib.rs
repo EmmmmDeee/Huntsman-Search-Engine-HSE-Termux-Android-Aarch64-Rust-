@@ -64,7 +64,6 @@ pub mod engineering_command;
 pub mod entity;
 pub mod environment;
 pub mod error;
-pub mod eval;
 pub mod event;
 pub mod evidence_ancestry;
 pub mod exit;
