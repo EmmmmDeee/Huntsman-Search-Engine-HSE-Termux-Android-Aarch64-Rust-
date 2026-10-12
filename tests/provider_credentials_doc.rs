@@ -7,7 +7,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
+use huntsman_recon::environment::STOLEN_TAX_KEY_ENV;
 use huntsman_recon::provider_credentials::PROVIDERS;
+use huntsman_recon::service_defs::service_defs;
 
 fn manifest_doc() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/PROVIDER_CREDENTIALS.md");
@@ -66,4 +68,25 @@ fn the_doc_parsers_find_the_slots_they_are_compared_with() {
             .iter()
             .any(|provider| provider.slots.contains(&"HUNTSMAN_SHODAN_KEY"))
     );
+}
+
+/// Every credential slot the runtime reads must be inventoried, or `credential-status` reports
+/// fewer providers than the process can actually use. The service registry declares the keyed
+/// services; `stolen_tax` reads its slot outside the registry, so it is listed on its own.
+#[test]
+fn every_runtime_credential_slot_is_inventoried() {
+    let inventoried: BTreeSet<&str> = PROVIDERS
+        .iter()
+        .flat_map(|provider| provider.slots.iter().copied())
+        .collect();
+    let registry = service_defs()
+        .iter()
+        .map(|service| (service.name, service.env_var));
+    let outside_registry = [("stolen_tax", STOLEN_TAX_KEY_ENV)];
+    for (source, slot) in registry.chain(outside_registry) {
+        assert!(
+            inventoried.contains(slot),
+            "{source} reads {slot} but no provider inventories it"
+        );
+    }
 }

@@ -26,6 +26,33 @@ these slots without printing their values.
 | VirusTotal | `HUNTSMAN_VIRUSTOTAL_KEY` | account/API relationship supported; current credential not recovered |
 | Censys | `HUNTSMAN_CENSYS_ID`, `HUNTSMAN_CENSYS_SECRET` | do not assume usable; provider access must be revalidated |
 
+## Registry slots without recorded credential state
+
+These slots are read at runtime by the service registry or a source module.
+This manifest records no credential state for them. Their provider's
+credential status is unknown until it is checked with `credential-status`.
+
+| Provider | Runtime slot(s) | Integration state |
+| --- | --- | --- |
+| URLhaus | `HUNTSMAN_ABUSECH_KEY` | declared runtime slot; credential state not recorded |
+| Criminal IP | `HUNTSMAN_CRIMINALIP_KEY` | declared runtime slot; credential state not recorded |
+| DeHashed | `HUNTSMAN_DEHASHED_KEY` | declared runtime slot; credential state not recorded |
+| DomainsDB | `HUNTSMAN_DOMAINSDB_KEY` | declared runtime slot; credential state not recorded |
+| FullContact | `HUNTSMAN_FULLCONTACT_KEY` | declared runtime slot; credential state not recorded |
+| HLR Lookups | `HUNTSMAN_HLR_KEY` | declared runtime slot; credential state not recorded |
+| Hunter | `HUNTSMAN_HUNTER_KEY` | declared runtime slot; credential state not recorded |
+| IntelX | `HUNTSMAN_INTELX_KEY` | declared runtime slot; credential state not recorded |
+| Netlas | `HUNTSMAN_NETLAS_KEY` | declared runtime slot; credential state not recorded |
+| niamonx | `HUNTSMAN_NIAMONX_KEY` | declared runtime slot; credential state not recorded |
+| Numverify | `HUNTSMAN_NUMVERIFY_KEY` | declared runtime slot; credential state not recorded |
+| Onyphe | `HUNTSMAN_ONYPHE_KEY` | declared runtime slot; credential state not recorded |
+| OpenCNAM | `HUNTSMAN_OPENCNAM_KEY` | declared runtime slot; credential state not recorded |
+| osintcat | `HUNTSMAN_OSINTCAT_KEY` | declared runtime slot; credential state not recorded |
+| SecurityTrails | `HUNTSMAN_SECTRAILS_KEY` | declared runtime slot; credential state not recorded |
+| ThreatFox | `HUNTSMAN_THREATFOX_KEY` | declared runtime slot; credential state not recorded |
+| Trove AU | `HUNTSMAN_TROVE_KEY` | declared runtime slot; credential state not recorded |
+| stolen.tax | `HUNTSMAN_STOLEN_TAX_KEY` | declared runtime slot; credential state not recorded |
+
 ## Private runtime template
 
 Copy only the slots you actually use into `$HOME/.huntsman.env` and set the
@@ -48,6 +75,24 @@ HUNTSMAN_GITHUB_TOKEN=
 HUNTSMAN_VIRUSTOTAL_KEY=
 HUNTSMAN_CENSYS_ID=
 HUNTSMAN_CENSYS_SECRET=
+HUNTSMAN_ABUSECH_KEY=
+HUNTSMAN_CRIMINALIP_KEY=
+HUNTSMAN_DEHASHED_KEY=
+HUNTSMAN_DOMAINSDB_KEY=
+HUNTSMAN_FULLCONTACT_KEY=
+HUNTSMAN_HLR_KEY=
+HUNTSMAN_HUNTER_KEY=
+HUNTSMAN_INTELX_KEY=
+HUNTSMAN_NETLAS_KEY=
+HUNTSMAN_NIAMONX_KEY=
+HUNTSMAN_NUMVERIFY_KEY=
+HUNTSMAN_ONYPHE_KEY=
+HUNTSMAN_OPENCNAM_KEY=
+HUNTSMAN_OSINTCAT_KEY=
+HUNTSMAN_SECTRAILS_KEY=
+HUNTSMAN_THREATFOX_KEY=
+HUNTSMAN_TROVE_KEY=
+HUNTSMAN_STOLEN_TAX_KEY=
 ```
 
 Never place populated values in this repository, release artifacts, logs,

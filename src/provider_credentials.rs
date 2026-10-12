@@ -122,6 +122,78 @@ pub const PROVIDERS: &[Provider] = &[
             crate::environment::CENSYS_SECRET_ENV,
         ],
     },
+    Provider {
+        name: "URLhaus",
+        slots: &[crate::environment::ABUSECH_KEY_ENV],
+    },
+    Provider {
+        name: "Criminal IP",
+        slots: &[crate::environment::CRIMINALIP_KEY_ENV],
+    },
+    Provider {
+        name: "DeHashed",
+        slots: &[crate::environment::DEHASHED_KEY_ENV],
+    },
+    Provider {
+        name: "DomainsDB",
+        slots: &[crate::environment::DOMAINSDB_KEY_ENV],
+    },
+    Provider {
+        name: "FullContact",
+        slots: &[crate::environment::FULLCONTACT_KEY_ENV],
+    },
+    Provider {
+        name: "HLR Lookups",
+        slots: &[crate::environment::HLR_KEY_ENV],
+    },
+    Provider {
+        name: "Hunter",
+        slots: &[crate::environment::HUNTER_KEY_ENV],
+    },
+    Provider {
+        name: "IntelX",
+        slots: &[crate::environment::INTELX_KEY_ENV],
+    },
+    Provider {
+        name: "Netlas",
+        slots: &[crate::environment::NETLAS_KEY_ENV],
+    },
+    Provider {
+        name: "niamonx",
+        slots: &[crate::environment::NIAMONX_KEY_ENV],
+    },
+    Provider {
+        name: "Numverify",
+        slots: &[crate::environment::NUMVERIFY_KEY_ENV],
+    },
+    Provider {
+        name: "Onyphe",
+        slots: &[crate::environment::ONYPHE_KEY_ENV],
+    },
+    Provider {
+        name: "OpenCNAM",
+        slots: &[crate::environment::OPENCNAM_KEY_ENV],
+    },
+    Provider {
+        name: "osintcat",
+        slots: &[crate::environment::OSINTCAT_KEY_ENV],
+    },
+    Provider {
+        name: "SecurityTrails",
+        slots: &[crate::environment::SECTRAILS_KEY_ENV],
+    },
+    Provider {
+        name: "ThreatFox",
+        slots: &[crate::environment::THREATFOX_KEY_ENV],
+    },
+    Provider {
+        name: "Trove AU",
+        slots: &[crate::environment::TROVE_KEY_ENV],
+    },
+    Provider {
+        name: "stolen.tax",
+        slots: &[crate::environment::STOLEN_TAX_KEY_ENV],
+    },
 ];
 
 fn secret_for_slot(keys: &Keys, slot: &str) -> Option<Secret> {
