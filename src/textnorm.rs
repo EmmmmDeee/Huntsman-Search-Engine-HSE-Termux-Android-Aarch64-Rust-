@@ -66,16 +66,12 @@ pub fn decode_html_entities(s: &str) -> String {
     out
 }
 
-/// How far past its `&` a reference may end. `#x` and eight hex digits fill eleven bytes, which
-/// leaves room for the leading zeros HTML allows. Looking further for the `;` made a text of
-/// ampersands quadratic.
-const MAX_REFERENCE_BYTES: usize = 32;
-
-/// The position of the `;` that ends a reference, if it is near enough to be one. Only a name, a
-/// number or a sign can stand before the `;` of a reference this module decodes, so the search ends
-/// at the first other byte, which keeps a text of ampersands to one step each.
+/// The position of the `;` that ends a reference, when only a name, a number or a sign comes before
+/// it. Any other byte ends the search. A reference cannot hold such a byte, and the next `&` is one
+/// of them, so each byte is searched by at most one `&`: a text of ampersands takes linear time, and
+/// the decoding is the same as a search for the `;` to the end of the text.
 fn reference_end(s: &str) -> Option<usize> {
-    for (index, byte) in s.bytes().take(MAX_REFERENCE_BYTES).enumerate() {
+    for (index, byte) in s.bytes().enumerate() {
         match byte {
             b';' => return Some(index),
             b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'+' => {}
@@ -1030,33 +1026,17 @@ mod tests {
         assert_eq!(escape_controls_keep_lines("plain text"), "plain text");
     }
 
-    #[test]
-    fn a_reference_is_looked_for_only_a_short_way_ahead() {
-        // HTML allows leading zeros, so a long reference is still read.
-        assert_eq!(decode_html_entities("&#0000000000000000000065;"), "A");
-        assert_eq!(decode_html_entities("&#x00000000000000000041;"), "A");
-        // A `;` farther off than any reference needs does not make one.
-        let far = format!("&#{}65;", "0".repeat(60));
-        assert_eq!(decode_html_entities(&far), far);
-    }
-
-    /// The decoder as it was before the search for `;` was bounded, with the bound added, so the two
-    /// differ only in how they look for the `;`.
-    fn decode_with_unbounded_search(s: &str) -> String {
+    /// The decoder with a plain search for the `;`, which is how it was written before the search
+    /// stopped at the first byte a reference cannot hold. The two must agree on every text.
+    fn decode_with_plain_search(s: &str) -> String {
         fn one(rest: &str) -> Option<(char, usize)> {
             let after_amp = rest.get(1..)?;
-            let found = |text: &str| text.find(';').filter(|end| *end < MAX_REFERENCE_BYTES);
-            if after_amp.starts_with('#') {
-                let hex = after_amp
-                    .as_bytes()
-                    .get(1)
-                    .is_some_and(|b| *b == b'x' || *b == b'X');
-                let digits = if hex {
-                    after_amp.get(2..)?
-                } else {
-                    after_amp.get(1..)?
+            if let Some(numeric) = after_amp.strip_prefix('#') {
+                let (hex, digits) = match numeric.strip_prefix(['x', 'X']) {
+                    Some(hex_digits) => (true, hex_digits),
+                    None => (false, numeric),
                 };
-                let end = found(digits)?;
+                let end = digits.find(';')?;
                 let raw = &digits[..end];
                 if raw.is_empty() {
                     return None;
@@ -1068,7 +1048,7 @@ mod tests {
                 };
                 return Some((char::from_u32(value)?, 2 + usize::from(hex) + raw.len() + 1));
             }
-            let end = found(after_amp)?;
+            let end = after_amp.find(';')?;
             let ch = match &after_amp[..end] {
                 "amp" => '&',
                 "lt" => '<',
@@ -1083,7 +1063,8 @@ mod tests {
         let mut out = String::new();
         let mut rest = s;
         while let Some(first) = rest.chars().next() {
-            if let Some((ch, consumed)) = (first == '&').then(|| one(rest)).flatten() {
+            let decoded = if first == '&' { one(rest) } else { None };
+            if let Some((ch, consumed)) = decoded {
                 out.push(ch);
                 rest = &rest[consumed..];
             } else {
@@ -1095,7 +1076,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bounded_search_decodes_what_the_unbounded_one_did() {
+    fn the_early_stop_decodes_exactly_what_a_plain_search_does() {
         // A generated mix of the characters a reference is made of, and of ones that break it.
         const ALPHABET: &[&str] = &[
             "&", "&", "&", "#", "x", "X", ";", ";", "a", "m", "p", "l", "t", "g", "q", "u", "o",
@@ -1115,16 +1096,27 @@ mod tests {
                 .collect();
             assert_eq!(
                 decode_html_entities(&text),
-                decode_with_unbounded_search(&text),
+                decode_with_plain_search(&text),
                 "{text:?}"
             );
         }
-        // The references the generator is most likely to complete, so the comparison is not vacuous.
-        assert_eq!(
-            decode_with_unbounded_search("&amp;&#65;&#x41;&#+65;"),
-            "&AAA"
-        );
+        // References the generator is likely to complete, so the comparison is not vacuous.
+        assert_eq!(decode_with_plain_search("&amp;&#65;&#x41;&#+65;"), "&AAA");
         assert_eq!(decode_html_entities("&amp;&#65;&#x41;&#+65;"), "&AAA");
+    }
+
+    #[test]
+    fn a_reference_of_any_length_is_decoded_as_before() {
+        // HTML allows any number of leading zeros, and a reference that spans them still decodes.
+        assert_eq!(decode_html_entities("&#0000000000000000000065;"), "A");
+        assert_eq!(
+            decode_html_entities(&format!("&#{}65;", "0".repeat(60))),
+            "A"
+        );
+        assert_eq!(
+            decode_html_entities(&format!("&#x{}41;", "0".repeat(60))),
+            "A"
+        );
     }
 
     #[test]

@@ -369,7 +369,12 @@ impl Entity {
         let distinct = real.len() + if grounded { promo.len() } else { 0 };
         if distinct > 0 {
             u32::try_from(distinct).unwrap_or(u32::MAX)
+        } else if !self.evidence.is_empty() && self.corroborating_sources().is_empty() {
+            // Only enrichment or recall evidence: one observation, however many entities derived
+            // from the same input were merged into this one.
+            1
         } else {
+            // No evidence: the number of times the entity was seen.
             self.corroboration.max(1)
         }
     }
@@ -723,6 +728,62 @@ mod tests {
         entity.add_evidence(evidence(RECALL_SOURCE, "recalled"));
         assert_eq!(entity.evidence_sources().len(), 3);
         assert_eq!(entity.source_count(), 1);
+    }
+
+    #[test]
+    fn guesses_derived_from_one_input_are_one_observation_however_many_merge() {
+        // Four spellings of one username, each a guess from the same email address. They share a
+        // uid, so they merge, and the merge must not read as four sources agreeing.
+        let guess = |value: &str| {
+            let mut entity = Entity::new(EntityKind::Username, value, 0.7, "s");
+            entity.tag(tags::DERIVED);
+            entity.add_evidence(evidence(
+                "email_parse",
+                "derived from jane.doe@acme.example",
+            ));
+            entity
+        };
+        let mut merged = vec![
+            guess("jane.doe"),
+            guess("janedoe"),
+            guess("jane_doe"),
+            guess("jane-doe"),
+        ];
+        merge_by_uid(&mut merged);
+        assert_eq!(merged.len(), 1, "the four spellings share a uid");
+        let entity = &merged[0];
+        assert_eq!(entity.corroboration, 4, "the merge counter is unchanged");
+        assert_eq!(entity.source_count(), 1);
+        assert!(
+            (entity.c_effective() - 0.7).abs() < 1e-9,
+            "{}",
+            entity.c_effective()
+        );
+        assert_eq!(entity.classify(), Classification::Probable);
+    }
+
+    #[test]
+    fn ungrounded_promotion_evidence_keeps_the_merge_count_as_before() {
+        // A promotion source corroborates only with grounded evidence. Without it, the merge count
+        // decides, as it did before the enrichment-only case was narrowed out of this fallback.
+        let promoted = || {
+            let mut entity = Entity::new(EntityKind::Email, "a@b.com", 0.6, "s");
+            entity.add_evidence(evidence(MULTIPATH_CORROBORATION_SOURCE, "seen twice"));
+            entity
+        };
+        let mut merged = vec![promoted(), promoted()];
+        merge_by_uid(&mut merged);
+        assert_eq!(merged[0].corroboration, 2);
+        assert_eq!(merged[0].source_count(), 2);
+    }
+
+    #[test]
+    fn an_entity_without_evidence_keeps_the_number_of_times_it_was_seen() {
+        let mut seen = Entity::new(EntityKind::Email, "a@b.com", 0.5, "s");
+        seen.absorb(Entity::new(EntityKind::Email, "a@b.com", 0.5, "s"));
+        seen.absorb(Entity::new(EntityKind::Email, "a@b.com", 0.5, "s"));
+        assert!(seen.evidence.is_empty());
+        assert_eq!(seen.source_count(), 3);
     }
 
     #[test]
