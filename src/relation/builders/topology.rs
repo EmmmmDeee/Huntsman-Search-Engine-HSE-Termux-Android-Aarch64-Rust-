@@ -1,6 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 
-use crate::canonical::{canonical_coordinates, canonical_domain_host, canonical_url};
+use crate::canonical::{
+    canonical_coordinates, canonical_domain, canonical_domain_host, canonical_url,
+};
 use crate::entity::{Entity, EntityKind, normalise};
 use crate::geohash::haversine_km;
 
@@ -17,11 +19,36 @@ fn parse_coords(raw: &str) -> Option<(f64, f64)> {
     Some((lat.parse().ok()?, lon.parse().ok()?))
 }
 
-fn url_host(url: &str) -> Option<String> {
-    let canonical = canonical_url(url)?;
-    let (_, rest) = canonical.split_once("://")?;
-    let authority = rest.split('/').next().unwrap_or(rest);
-    canonical_domain_host(authority).map(|host| domain_key(&host))
+/// Domain keys a URL may be hosted on, most specific first: the exact host
+/// under the same `domain_key` Domain entities use, then its `www.`-stripped
+/// alias. An exact `www.` Domain entity therefore wins over the apex.
+fn url_host_keys(url: &str) -> Vec<String> {
+    let Some(canonical) = canonical_url(url) else {
+        return Vec::new();
+    };
+    let Some((_, rest)) = canonical.split_once("://") else {
+        return Vec::new();
+    };
+    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+    let host = authority
+        .rsplit_once(':')
+        .map_or(authority, |(host, port)| {
+            if port.bytes().all(|b| b.is_ascii_digit()) && !host.ends_with(']') {
+                host
+            } else {
+                authority
+            }
+        });
+    let mut keys = Vec::with_capacity(2);
+    if let Some(exact) = canonical_domain(host) {
+        keys.push(domain_key(&exact));
+    }
+    if let Some(alias) = canonical_domain_host(host).map(|h| domain_key(&h)) {
+        if !keys.contains(&alias) {
+            keys.push(alias);
+        }
+    }
+    keys
 }
 
 #[must_use]
@@ -66,17 +93,18 @@ pub fn derive_structural(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
                 }
             }
             EntityKind::Url => {
-                if let Some(host) = url_host(&entity.value) {
-                    if let Some(domain_entity) = domains.get(host.as_str()) {
-                        push_edge(
-                            &mut edges,
-                            &entity.uid,
-                            &domain_entity.uid,
-                            RelationKind::HostedOn,
-                            endpoint_confidence(entity, domain_entity),
-                            scan_id,
-                        );
-                    }
+                if let Some(domain_entity) = url_host_keys(&entity.value)
+                    .iter()
+                    .find_map(|key| domains.get(key.as_str()))
+                {
+                    push_edge(
+                        &mut edges,
+                        &entity.uid,
+                        &domain_entity.uid,
+                        RelationKind::HostedOn,
+                        endpoint_confidence(entity, domain_entity),
+                        scan_id,
+                    );
                 }
             }
             _ => {}
