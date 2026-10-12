@@ -70,19 +70,22 @@ pub fn validate_email_syntax(s: &str) -> ValidationReport {
     if domain.contains('@') {
         return ValidationReport::fail("email.bad_at_count", "expected exactly one '@'");
     }
-    if local.is_empty() || local.len() > 64 {
+    let local_error = crate::value_syntax::email_local_error(local);
+    if local_error == Some(crate::value_syntax::EmailLocalError::Length) {
         return ValidationReport::fail("email.local_length", "local part 1..=64 chars");
     }
     if domain.is_empty() || !domain.contains('.') {
         return ValidationReport::fail("email.domain_shape", "domain must contain '.'");
     }
-    if local.starts_with('.') || local.ends_with('.') {
+    if local_error == Some(crate::value_syntax::EmailLocalError::DotEdge) {
         return ValidationReport::fail("email.local_dot_edge", "leading/trailing '.' in local");
     }
     if domain.starts_with('.') || domain.ends_with('.') {
         return ValidationReport::fail("email.domain_dot_edge", "leading/trailing '.' in domain");
     }
-    if local.contains("..") || domain.contains("..") {
+    if local_error == Some(crate::value_syntax::EmailLocalError::ConsecutiveDots)
+        || domain.contains("..")
+    {
         return ValidationReport::fail("email.consecutive_dots", "consecutive '.' forbidden");
     }
     ValidationReport::ok()

@@ -82,7 +82,7 @@ pub fn canonical_domain_host(raw: &str) -> Option<String> {
 pub fn canonical_email(raw: &str) -> Option<String> {
     let trimmed = raw.trim().to_ascii_lowercase();
     let (local, domain) = trimmed.split_once('@')?;
-    if local.is_empty()
+    if crate::value_syntax::email_local_error(local).is_some()
         || !local
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
@@ -267,6 +267,29 @@ mod tests {
             Some("adalovelace".into())
         );
         assert_eq!(canonical_handle(""), None);
+    }
+
+    #[test]
+    fn canonical_email_never_accepts_what_validate_email_syntax_rejects() {
+        let long_local = format!("{}@example.com", "a".repeat(65));
+        for bad in [
+            ".ada@example.com",
+            "ada.@example.com",
+            "a..da@example.com",
+            long_local.as_str(),
+        ] {
+            assert!(
+                !crate::validation::validate_email_syntax(bad).valid,
+                "{bad}"
+            );
+            assert_eq!(canonical_email(bad), None, "{bad}");
+        }
+        let max_local = format!("{}@example.com", "a".repeat(64));
+        assert!(canonical_email(&max_local).is_some());
+        assert_eq!(
+            canonical_email("a.b+c@example.co.uk"),
+            Some("a.b+c@example.co.uk".into())
+        );
     }
 
     #[test]
