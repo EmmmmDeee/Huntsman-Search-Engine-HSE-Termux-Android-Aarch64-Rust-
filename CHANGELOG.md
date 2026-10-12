@@ -29,6 +29,7 @@ release yet; relevant pushes to `main` are built and verified, and a current-hea
 - The Railway entrypoint no longer prints the token it generates. The value is stored in the data directory and the log names the file. A token that an earlier build printed is in the platform log and must be treated as exposed: rotate it as `docs/RAILWAY.md` describes.
 - `serve` bounds each request by a 10 s whole-request deadline and answers `408 Request Timeout` after it. A client that sent one byte at a time used to hold the single-threaded listener, before authentication.
 - `recon dns` reports only the answers of the queried record type. A CNAME that came ahead of a TXT or an address answer is no longer shown as one.
+- A keys file value in quotes that is followed by a comment (`KEY="abc" # prod`) is read as `abc`. It kept the quotes, so the provider rejected a key that `credential-status` reported as configured.
 - A timestamp with an RFC 3339 numeric offset (`+10:00`) or fractional seconds (`.000Z`) parses, where it was rejected and its evidence dropped from timelines. A malformed offset, an impossible date such as 2024-02-30, trailing fields and an empty time are refused, where they were read as UTC, moved to March 1 or ignored, and a non-ASCII offset no longer panics. Distances use one Earth radius (6371 km): a near-antipodal pair no longer gives NaN, and coordinates that cannot be compared are reported as a conflict, not as agreement. The percentile bootstrap refuses fewer than 30 values.
 
 ### Added
