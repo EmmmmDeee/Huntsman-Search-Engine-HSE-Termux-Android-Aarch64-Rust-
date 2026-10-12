@@ -430,7 +430,7 @@ fn load_default_file(path: &Path) -> Result<Option<Result<Keys, DefaultFileRefus
 }
 
 /// The shared private-file gate for every on-disk secret (the keys file, the
-/// HIBP and DeHashed `api_key` files): refuses a symlink, a non-regular file, a
+/// HIBP and `DeHashed` `api_key` files): refuses a symlink, a non-regular file, a
 /// file owned by another uid, an unknown current uid, or group/other mode bits,
 /// re-checking the opened descriptor against the `lstat`ed inode.
 ///
