@@ -272,7 +272,14 @@ where
 /// an email, the host's wildcard for a URL. **Pure.**
 fn build_query(kind: ReconTargetKind, value: &str) -> Option<String> {
     match kind {
-        ReconTargetKind::Domain => Some(format!("%.{}", value.trim())),
+        // The same canonical apex `build_entities` classifies against: a
+        // mixed-case, `www.` or root-dotted seed otherwise queried a literal
+        // crt.sh never matches.
+        ReconTargetKind::Domain => {
+            let host = crate::domains::canonical_domain_host(value)
+                .unwrap_or_else(|| value.trim().trim_end_matches('.').to_ascii_lowercase());
+            Some(format!("%.{host}"))
+        }
         ReconTargetKind::Email => Some(value.trim().to_owned()),
         ReconTargetKind::Url => crate::domains::host_from_url(value).map(|h| format!("%.{h}")),
         ReconTargetKind::Username => None,

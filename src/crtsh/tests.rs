@@ -457,3 +457,16 @@ fn a_username_seed_sends_nothing() {
     assert_eq!(report.attempts, 0);
     assert_eq!(script.sent(), 0);
 }
+
+#[test]
+fn domain_query_uses_canonical_host_seed() {
+    // A mixed-case, `www.`-prefixed, root-dotted seed must query the same apex
+    // the entities are classified against, not a literal crt.sh never matches.
+    for seed in ["Example.COM.", "www.example.com", " WWW.Example.com. "] {
+        assert_eq!(
+            build_query(ReconTargetKind::Domain, seed).as_deref(),
+            Some("%.example.com"),
+            "seed {seed:?}"
+        );
+    }
+}

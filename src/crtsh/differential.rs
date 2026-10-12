@@ -111,11 +111,17 @@ fn port_reproduces_the_legacy_crtsh_output() {
         })
         .unwrap();
 
-        assert_eq!(
-            report.query.as_deref(),
-            want["query"].as_str(),
-            "{name}: query"
-        );
+        // Deliberate divergence: the port queries the canonical apex (lowercase,
+        // no `www.`, no root dot) that entities are classified against; the
+        // legacy query carried the seed's literal spelling.
+        let want_query = want["query"].as_str().map(|q| match q.strip_prefix("%.") {
+            Some(host) => format!(
+                "%.{}",
+                crate::domains::canonical_domain_host(host).unwrap_or_else(|| host.to_owned())
+            ),
+            None => q.to_owned(),
+        });
+        assert_eq!(report.query, want_query, "{name}: query");
         assert_eq!(
             apex_base(kind, seed),
             want["apex_base"].as_str().unwrap(),
