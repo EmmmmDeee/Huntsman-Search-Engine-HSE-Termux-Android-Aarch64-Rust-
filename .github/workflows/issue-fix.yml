@@ -294,7 +294,11 @@ jobs:
 
   report:
     needs: [fix, gate, publish]
-    if: always() && needs.publish.result != 'success'
+    # Only when a fix was actually attempted (the ai-fix label or a dispatch, which the fix job
+    # gates on) and it did not reach a published pull request. Without the skipped check, adding any
+    # other label to any issue skips fix/gate/publish and still ran report, commenting on an issue
+    # that never asked for a fix.
+    if: always() && needs.fix.result != 'skipped' && needs.publish.result != 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
