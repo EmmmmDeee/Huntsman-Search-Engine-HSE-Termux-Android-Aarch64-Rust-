@@ -287,12 +287,25 @@ pub fn is_freemail(domain: &str) -> bool {
     FREEMAIL.contains(&domain)
 }
 
+/// The one email split shared by the email classifiers in this module:
+/// trimmed, lowercased, trailing root dot dropped, exactly one `@`, and a
+/// non-empty local part and domain. Values with several `@` are not emails,
+/// so first-`@` and last-`@` splits can no longer disagree.
+fn split_email(email: &str) -> Option<(String, String)> {
+    let email = email.trim().trim_end_matches('.').to_ascii_lowercase();
+    let (local, domain) = email.split_once('@')?;
+    if local.is_empty() || domain.is_empty() || domain.contains('@') {
+        return None;
+    }
+    Some((local.to_string(), domain.to_string()))
+}
+
 #[must_use]
 pub fn is_infrastructure_email(email: &str) -> bool {
-    let email = email.trim().trim_end_matches('.').to_ascii_lowercase();
-    let Some((local, domain)) = email.split_once('@') else {
+    let Some((local, domain)) = split_email(email) else {
         return false;
     };
+    let (local, domain) = (local.as_str(), domain.as_str());
     if is_role_localpart(local) {
         return true;
     }
@@ -308,10 +321,10 @@ pub fn is_infrastructure_email(email: &str) -> bool {
 
 #[must_use]
 pub fn is_noreply_email_domain(email: &str) -> bool {
-    let Some((_, domain)) = email.trim().rsplit_once('@') else {
+    let Some((_, domain)) = split_email(email) else {
         return false;
     };
-    domain.to_ascii_lowercase().split('.').any(|label| {
+    domain.split('.').any(|label| {
         let folded: String = label.chars().filter(char::is_ascii_alphanumeric).collect();
         folded == "noreply" || folded == "donotreply"
     })
@@ -420,5 +433,31 @@ mod tests {
         assert!(!is_app_package_id("dev.portal.com"));
         assert!(looks_like_domain("app.example.com"));
         assert!(MULTI_LABEL_SUFFIXES.is_sorted());
+    }
+}
+
+#[cfg(test)]
+mod email_split_contract_tests {
+    use super::*;
+
+    #[test]
+    fn multi_at_values_are_not_classified_as_email() {
+        for raw in [
+            "postmaster@evil.example@gmail.com",
+            "alice@users.noreply.github.com@gmail.com",
+            "alice@gmail.com@users.noreply.github.com",
+            "alice@evil.example@amazonses.com",
+        ] {
+            assert!(!is_infrastructure_email(raw), "infra: {raw}");
+            assert!(!is_noreply_email_domain(raw), "noreply: {raw}");
+        }
+    }
+
+    #[test]
+    fn email_classifiers_share_trim_and_trailing_dot_rule() {
+        assert!(is_noreply_email_domain(" Alice@Users.NoReply.GitHub.com. "));
+        assert!(is_infrastructure_email(" Network-Ops@AmazonAWS.com. "));
+        assert!(!is_infrastructure_email("@amazonses.com"));
+        assert!(!is_noreply_email_domain("@noreply.github.com"));
     }
 }
