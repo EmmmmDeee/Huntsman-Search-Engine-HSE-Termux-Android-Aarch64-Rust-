@@ -2,9 +2,11 @@
 //!
 //! Lookup runs [`crate::asic_persons`], [`crate::asic_director`], [`crate::au_people`]
 //! and [`crate::au_electoral`] over one injected [`crate::http::Transport`]. One
-//! source's [`Error::Invalid`] or `BotWaf` does not abort the others. The report is
-//! [`crate::lookup_report::render`], which feeds the evidence through
-//! [`crate::lineage::resolve_with_lineage`]. Tests inject fakes; live
+//! source's [`Error::Invalid`] or `BotWaf` does not abort the others. All entities from
+//! all sources are merged via [`crate::entity::merge_by_uid`], which deduplicates records
+//! with the same UID and calls [`crate::entity::Entity::absorb`] to combine attributes.
+//! The merged report is rendered by [`crate::lookup_report::render`], which feeds the
+//! evidence through [`crate::lineage::resolve_with_lineage`]. Tests inject fakes; live
 //! sources are not run here. Saving a ledger is handled by [`crate::lookup_save`], and the
 //! `--save` option is read by [`crate::lookup_args`]; this module reads only NAME.
 
@@ -26,7 +28,15 @@ use crate::textnorm::name_tokens;
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
 people NAME [--save FILE]
-Look up NAME on keyless ASIC people registers, ASIC Connect, True People Search AU, and NSW/VIC/QLD electoral rolls. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.";
+Look up NAME on keyless ASIC people registers, ASIC Connect, True People Search AU, and NSW/VIC/QLD electoral rolls. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
+
+The lookup queries four independent sources:
+  1. ASIC people register (company associates and sole traders)
+  2. ASIC director register (company director records)
+  3. True People Search AU (aggregated name+location records)
+  4. Electoral rolls (NSW, VIC, QLD public registers)
+
+Results from all sources are merged by entity UID: duplicate records from different sources are combined into a single entity whose observation set includes all evidence. This consolidation detects when one person has multiple records across registers and surfaces the corroborated attributes.";
 
 /// Merged entities and outcomes from every people source that ran.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -118,6 +128,9 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
         &mut failed,
     );
 
+    // Entities with identical UIDs from different sources are merged: duplicate records
+    // are combined into one entity whose observation set includes evidence from all sources.
+    // This consolidates cases where one person has records across multiple registers.
     merge_by_uid(&mut report.entities);
     if !usable(&report) {
         if let Some(msg) = network {

@@ -318,7 +318,15 @@ are not evidence of absence. The binary exposes `people NAME [--save FILE]`
 (unquoted words are joined) through `people_cli`, which also runs
 `asic_director`, `au_people` and `au_electoral` over the same transport and
 feeds emitted evidence through `lineage::resolve_with_lineage`. One source
-`Invalid` or BotWaf does not abort the others. `--save FILE` writes an
+`Invalid` or BotWaf does not abort the others. 
+
+Results from all four sources are automatically merged by entity UID: records with identical
+UIDs from different sources are consolidated into a single entity whose observation set includes
+evidence from all sources. This merge rule detects when one person has records across multiple
+Australian public registers (ASIC people, ASIC directors, True People Search AU, electoral rolls)
+and surfaces corroborated attributes.
+
+`--save FILE` writes an
 unverified hash-chained ledger of outcomes and entities that `verify FILE`
 reloads byte-identically (`admitted=0`; a register row is not identity
 resolution). Skip (fewer than two alphabetic tokens of at least two letters) makes no request and does
