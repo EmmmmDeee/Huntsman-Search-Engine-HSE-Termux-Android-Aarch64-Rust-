@@ -1,0 +1,230 @@
+//! `scripts/lifecycle.sh sync` commits the worktree and pushes `main`, and CANONICAL.md promises
+//! that it refuses secret-looking paths. Each test runs the real script in a scratch clone against a
+//! local bare remote, so a secret that slips through shows up as a file on that remote's `main`.
+//! Unix only: the script is bash.
+#![cfg(unix)]
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+struct Sandbox {
+    root: PathBuf,
+    work: PathBuf,
+    origin: PathBuf,
+}
+
+impl Sandbox {
+    fn new(name: &str) -> Self {
+        let root =
+            std::env::temp_dir().join(format!("huntsman-lifecycle-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let work = root.join("work");
+        let origin = root.join("origin.git");
+        fs::create_dir_all(work.join("scripts")).unwrap();
+        fs::create_dir_all(root.join("home")).unwrap();
+        let sandbox = Self { root, work, origin };
+        sandbox.git_in(
+            &sandbox.root,
+            &["init", "-q", "--bare", "-b", "main", "origin.git"],
+        );
+        sandbox.git(&["init", "-q", "-b", "main"]);
+        for (key, value) in [
+            ("user.name", "Test"),
+            ("user.email", "test@example.invalid"),
+            ("commit.gpgsign", "false"),
+        ] {
+            sandbox.git(&["config", key, value]);
+        }
+        let origin = sandbox.origin.display().to_string();
+        sandbox.git(&["remote", "add", "origin", &origin]);
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/lifecycle.sh"),
+            sandbox.work.join("scripts/lifecycle.sh"),
+        )
+        .unwrap();
+        sandbox.write("README.md", "scratch\n");
+        sandbox.commit_and_push("initial");
+        sandbox
+    }
+
+    fn command(&self, program: &str, dir: &Path) -> Command {
+        let mut command = Command::new(program);
+        command
+            .current_dir(dir)
+            .env("HOME", self.root.join("home"))
+            .env("HUNTSMAN_HOME", self.root.join("state"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0");
+        command
+    }
+
+    fn git_in(&self, dir: &Path, args: &[&str]) -> Output {
+        let output = self.command("git", dir).args(args).output().unwrap();
+        assert!(output.status.success(), "git {args:?} failed");
+        output
+    }
+
+    fn git(&self, args: &[&str]) -> Output {
+        self.git_in(&self.work, args)
+    }
+
+    fn commit_and_push(&self, message: &str) {
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "-q", "-m", message]);
+        self.git(&["push", "-q", "origin", "main"]);
+    }
+
+    fn head(&self) -> String {
+        let output = self.git(&["rev-parse", "HEAD"]);
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    fn write(&self, relative: &str, body: &str) {
+        let path = self.work.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
+    fn sync(&self) -> Output {
+        self.command("bash", &self.work)
+            .args(["scripts/lifecycle.sh", "sync"])
+            .output()
+            .unwrap()
+    }
+
+    /// The files on the remote's `main`, names unquoted.
+    fn pushed(&self) -> Vec<String> {
+        let output = self
+            .command("git", &self.root)
+            .arg("--git-dir")
+            .arg(&self.origin)
+            .args(["ls-tree", "-r", "-z", "--name-only", "main"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let mut names: Vec<String> = output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|name| !name.is_empty())
+            .map(|name| String::from_utf8(name.to_vec()).unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Runs the sync and asserts that it stopped for `reason`, committed nothing and pushed nothing.
+    fn assert_stopped(&self, reason: &str) {
+        let head = self.head();
+        let pushed = self.pushed();
+        let output = self.sync();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "the sync went ahead although it should have stopped: {reason}"
+        );
+        assert!(
+            stderr.contains(reason),
+            "the sync stopped for another reason: {stderr}"
+        );
+        assert_eq!(self.head(), head, "a commit was made");
+        assert_eq!(self.pushed(), pushed, "the remote changed");
+    }
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+const REFUSED: &str = "refusing to commit secret-looking path";
+
+#[test]
+fn a_secret_inside_an_untracked_directory_is_refused() {
+    // `git status --porcelain` lists an untracked directory as one entry, `deploy/`, and
+    // `git add -A` then takes every file in it.
+    let sandbox = Sandbox::new("directory");
+    sandbox.write("deploy/.env", "API_KEY=not-a-real-key\n");
+    sandbox.write("notes.txt", "ordinary\n");
+    sandbox.assert_stopped(REFUSED);
+}
+
+#[test]
+fn a_secret_whose_name_has_a_space_is_refused() {
+    // Porcelain quotes such a name, so the closing quote hides the `.pem` suffix.
+    let sandbox = Sandbox::new("space");
+    sandbox.write("my key.pem", "not a real key\n");
+    sandbox.write("notes.txt", "ordinary\n");
+    sandbox.assert_stopped(REFUSED);
+}
+
+#[test]
+fn a_secret_whose_name_is_not_ascii_is_refused() {
+    // Porcelain writes such a name as a quoted octal escape.
+    let sandbox = Sandbox::new("non-ascii");
+    sandbox.write("café.pem", "not a real key\n");
+    sandbox.write("notes.txt", "ordinary\n");
+    sandbox.assert_stopped(REFUSED);
+}
+
+#[test]
+fn a_file_in_a_top_level_keys_directory_is_refused() {
+    // The pattern `*/keys/*` needs a directory above `keys`.
+    let sandbox = Sandbox::new("keys");
+    sandbox.write("keys/provider.txt", "not a real key\n");
+    sandbox.write("notes.txt", "ordinary\n");
+    sandbox.assert_stopped(REFUSED);
+}
+
+#[test]
+fn a_secret_that_is_already_staged_is_refused() {
+    // A staged file is neither untracked nor modified, but `git commit` takes it.
+    let sandbox = Sandbox::new("staged");
+    sandbox.write("deploy.env", "API_KEY=not-a-real-key\n");
+    sandbox.git(&["add", "deploy.env"]);
+    sandbox.assert_stopped(REFUSED);
+}
+
+#[test]
+fn a_tracked_secret_looking_file_that_changes_is_refused() {
+    let sandbox = Sandbox::new("tracked");
+    sandbox.write("example.env", "API_KEY=\n");
+    sandbox.commit_and_push("track an example");
+    sandbox.write("example.env", "API_KEY=not-a-real-key\n");
+    sandbox.assert_stopped(REFUSED);
+}
+
+#[test]
+fn a_listing_that_fails_stops_the_sync() {
+    // The guard must fail closed: with no list of changed paths there is nothing to check.
+    let sandbox = Sandbox::new("listing");
+    sandbox.write("notes.txt", "ordinary\n");
+    fs::write(sandbox.work.join(".git/index"), "not an index").unwrap();
+    sandbox.assert_stopped("could not list the changed paths");
+}
+
+#[test]
+fn ordinary_changes_are_committed_and_pushed() {
+    let sandbox = Sandbox::new("ordinary");
+    let before = sandbox.head();
+    sandbox.write("notes.txt", "ordinary\n");
+    sandbox.write("docs/guide.md", "also ordinary\n");
+    let output = sandbox.sync();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_ne!(sandbox.head(), before, "nothing was committed");
+    assert_eq!(
+        sandbox.pushed(),
+        [
+            "README.md",
+            "docs/guide.md",
+            "notes.txt",
+            "scripts/lifecycle.sh"
+        ]
+    );
+}

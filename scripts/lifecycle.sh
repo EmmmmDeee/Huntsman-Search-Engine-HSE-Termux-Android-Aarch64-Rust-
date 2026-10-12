@@ -87,7 +87,7 @@ test_cmd() {
 
 secret_path() {
   case "$1" in
-    *.env|*.env.*|*.pem|*.key|*id_rsa*|*id_ed25519*|*/keys/*|*credentials*|*secret*)
+    *.env|*.env.*|*.pem|*.key|*id_rsa*|*id_ed25519*|keys/*|*/keys/*|*credentials*|*secret*)
       return 0
       ;;
   esac
@@ -100,10 +100,24 @@ sync_cmd() {
   branch="$(git rev-parse --abbrev-ref HEAD)"
   [[ "$branch" == "main" ]] || die "sync refuses non-main branch: $branch"
   write_state sync running "$branch"
-  mapfile -t dirty < <(git status --porcelain)
+  # Every path that `git add -A` and `git commit` would take, one entry per file and unquoted:
+  # untracked files (not the directory that holds them), tracked changes, and what is staged.
+  # `git status --porcelain` lists an untracked directory as one entry and quotes a name with a
+  # space or a non-ASCII character, so a secret inside a directory or behind a quote got past
+  # secret_path. A listing that fails stops the sync.
+  listing="$(mktemp "$STATE_DIR/changed-paths.XXXXXX")"
+  {
+    git ls-files -z --others --exclude-standard &&
+      git ls-files -z --modified --deleted &&
+      git diff -z --cached --name-only
+  } > "$listing" || {
+    rm -f "$listing"
+    die "could not list the changed paths"
+  }
+  mapfile -d '' -t dirty < "$listing"
+  rm -f "$listing"
   if [[ ${#dirty[@]} -gt 0 ]]; then
-    for line in "${dirty[@]}"; do
-      path="${line:3}"
+    for path in "${dirty[@]}"; do
       if secret_path "$path"; then
         write_state sync refused "$path"
         die "refusing to commit secret-looking path: $path"
