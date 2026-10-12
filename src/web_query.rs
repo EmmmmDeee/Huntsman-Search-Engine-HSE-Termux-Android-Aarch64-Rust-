@@ -11,7 +11,7 @@ use std::thread;
 use serde::Serialize;
 
 use crate::canonical::{canonical_url, canonical_whitespace};
-use crate::circuit::{self, BackoffPolicy, ResponseCache};
+use crate::circuit::{BackoffPolicy, ResponseCache};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport, append_query_param};
@@ -140,36 +140,23 @@ fn search_engine<T: Transport + ?Sized>(
         return Ok(parse_engine_response(engine, &cached, now_unix));
     }
 
-    let host = circuit::host_of(&url).unwrap_or_else(|| engine.name.to_owned());
-    if !circuit::allow_host(&host, now_unix) {
-        return Ok(EngineReport {
-            hits: Vec::new(),
-            outcome: outcome(
-                engine.name,
-                SourceOutcomeKind::Inconclusive,
-                now_unix,
-                None,
-                None,
-                "source pacing circuit is open; request not sent",
-            ),
-        });
-    }
-
     let request = Request::get(&url)
         .header("accept", "text/html,application/xhtml+xml")
         .header("user-agent", crate::http::DEFAULT_USER_AGENT);
     let mut attempt = 0u32;
 
     loop {
+        // The shared boundary paces per host: it suppresses while the circuit is
+        // open and records the outcome's health. A suppressed fetch comes back as a
+        // no-response `Inconclusive`, which is not retryable and falls through below.
         let fetched = fetch(
             transport,
             request.clone(),
             None,
-            &FetchOptions::default(),
+            &FetchOptions::default().paced(),
             engine.name,
             now_unix,
         )?;
-        record_source_health(&host, &fetched.outcome, now_unix);
 
         if retryable_fetch(fetched.outcome.kind) && RETRY_POLICY.should_retry(attempt) {
             thread::sleep(RETRY_POLICY.delay(attempt));
@@ -226,21 +213,6 @@ fn retryable_fetch(kind: SourceOutcomeKind) -> bool {
             | SourceOutcomeKind::BodyTimeout
             | SourceOutcomeKind::Upstream5xx
     )
-}
-
-fn record_source_health(host: &str, outcome: &SourceExecutionOutcome, now_unix: u64) {
-    match outcome.kind {
-        SourceOutcomeKind::RateLimited => circuit::record_rate_limited(
-            host,
-            now_unix,
-            outcome.retry_after_secs.unwrap_or(circuit::COOLDOWN_SECS),
-        ),
-        SourceOutcomeKind::BotWaf | SourceOutcomeKind::Upstream5xx => {
-            circuit::record_failure(host, now_unix);
-        }
-        kind if kind.is_transport_failure() => circuit::record_failure(host, now_unix),
-        _ => circuit::record_success(host),
-    }
 }
 
 fn parse_engine_response(engine: EngineSpec, response: &Response, now_unix: u64) -> EngineReport {
@@ -637,7 +609,7 @@ mod tests {
             name: "circuit_test",
             base_url: "https://circuit-web-query.invalid/search",
         };
-        circuit::record_rate_limited("circuit-web-query.invalid", 400, 60);
+        crate::circuit::record_rate_limited("circuit-web-query.invalid", 400, 60);
         let fake = Fake::new(Vec::new());
 
         let report = search_engine(&fake, engine, "circuit-key-unique", 401).unwrap();

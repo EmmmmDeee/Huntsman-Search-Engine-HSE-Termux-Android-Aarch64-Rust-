@@ -117,6 +117,12 @@ impl Credential {
 pub struct FetchOptions {
     pub max_redirects: u32,
     pub redirect_policy: RedirectPolicy,
+    /// When set, the fetch is gated by the shared per-host circuit breaker
+    /// ([`crate::circuit`]): the first request is not sent while the host's circuit
+    /// is open (the result is a no-response `Inconclusive` outcome saying so), and
+    /// the final outcome feeds the breaker's health so a failing host is paced
+    /// down for every caller. Off by default; callers opt in with [`Self::paced`].
+    pub circuit_breaker: bool,
 }
 
 impl Default for FetchOptions {
@@ -124,6 +130,7 @@ impl Default for FetchOptions {
         Self {
             max_redirects: DEFAULT_MAX_REDIRECTS,
             redirect_policy: RedirectPolicy::Any,
+            circuit_breaker: false,
         }
     }
 }
@@ -135,7 +142,16 @@ impl FetchOptions {
         Self {
             max_redirects: 0,
             redirect_policy: RedirectPolicy::Any,
+            circuit_breaker: false,
         }
+    }
+
+    /// Gate this fetch by the shared per-host circuit breaker. See
+    /// [`FetchOptions::circuit_breaker`].
+    #[must_use]
+    pub const fn paced(mut self) -> Self {
+        self.circuit_breaker = true;
+        self
     }
 }
 
@@ -236,6 +252,87 @@ pub fn fetch_within<T: Transport + ?Sized>(
 }
 
 fn fetch_hops<T: Transport + ?Sized>(
+    transport: &T,
+    request: Request,
+    credential: Option<&Credential>,
+    options: &FetchOptions,
+    deadline: Option<&Deadline<'_>>,
+    module: &str,
+    now_unix: u64,
+) -> Result<Fetched, Error> {
+    if !options.circuit_breaker {
+        return fetch_hops_inner(
+            transport, request, credential, options, deadline, module, now_unix,
+        );
+    }
+    // One causal fetch, paced by the shared per-host breaker: suppress while the
+    // host's circuit is open, otherwise feed the final outcome back to the breaker.
+    let host = crate::circuit::host_of(&request.url);
+    if let Some(host) = &host {
+        if !crate::circuit::allow_host(host, now_unix) {
+            return Ok(suppressed(module, now_unix, &request.url));
+        }
+    }
+    let result = fetch_hops_inner(
+        transport, request, credential, options, deadline, module, now_unix,
+    );
+    if let (Some(host), Ok(fetched)) = (&host, &result) {
+        record_breaker_health(
+            host,
+            fetched.outcome.kind,
+            fetched.outcome.retry_after_secs,
+            now_unix,
+        );
+    }
+    result
+}
+
+/// The result when the host's breaker is open and the first request was not sent.
+fn suppressed(module: &str, now_unix: u64, url: &str) -> Fetched {
+    let outcome = SourceExecutionOutcome::observed(
+        module,
+        now_unix,
+        SourceOutcomeKind::Inconclusive,
+        None,
+        None,
+        "source pacing circuit is open; request not sent",
+    );
+    Fetched {
+        outcome,
+        response: None,
+        final_url: redact_url(url),
+        redirects: 0,
+        credential_sent: None,
+        redirect_refused: None,
+        not_sent_hop: None,
+    }
+}
+
+/// Feed one fetch outcome into the shared per-host breaker. This is the single
+/// authority mapping a [`SourceOutcomeKind`] to a breaker signal; every paced
+/// caller shares it rather than re-deriving the rule.
+fn record_breaker_health(
+    host: &str,
+    kind: SourceOutcomeKind,
+    retry_after_secs: Option<u64>,
+    now_unix: u64,
+) {
+    use crate::circuit;
+    match kind {
+        SourceOutcomeKind::RateLimited => circuit::record_rate_limited(
+            host,
+            now_unix,
+            retry_after_secs.unwrap_or(circuit::COOLDOWN_SECS),
+        ),
+        SourceOutcomeKind::BotWaf | SourceOutcomeKind::Upstream5xx => {
+            circuit::record_failure(host, now_unix);
+        }
+        other if other.is_transport_failure() => circuit::record_failure(host, now_unix),
+        _ => circuit::record_success(host),
+    }
+}
+
+fn fetch_hops_inner<T: Transport + ?Sized>(
     transport: &T,
     request: Request,
     credential: Option<&Credential>,
@@ -555,6 +652,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
+    use crate::circuit::BreakerState;
     use crate::credential_origin::OperatorCredentialRef;
     use crate::http::TransportFailure;
 
@@ -1150,6 +1248,81 @@ mod tests {
         assert!(seen[1].header_value("x-feed").is_none());
     }
 
+    fn paced(max: u32) -> FetchOptions {
+        FetchOptions {
+            max_redirects: max,
+            ..FetchOptions::default()
+        }
+        .paced()
+    }
+
+    #[test]
+    fn a_paced_fetch_records_a_rate_limit_and_then_suppresses_the_next_request() {
+        // A host unique to this test so the shared registry cannot be perturbed by
+        // any other test in the binary.
+        let host = "paced-ratelimit.invalid";
+        let url = format!("https://{host}/q");
+        let f = Fake::new(vec![Ok(resp(429, &[("retry-after", "30")], ""))]);
+        let r = fetch(&f, Request::get(&url), None, &paced(0), "t", 1000).expect("fetch");
+        assert_eq!(r.outcome.kind, SourceOutcomeKind::RateLimited);
+        assert_eq!(crate::circuit::host_state(host), Some(BreakerState::Open));
+
+        // The circuit is open, so the next paced request is not sent at all.
+        let empty = Fake::new(vec![]);
+        let suppressed =
+            fetch(&empty, Request::get(&url), None, &paced(0), "t", 1001).expect("fetch");
+        assert_eq!(suppressed.outcome.kind, SourceOutcomeKind::Inconclusive);
+        assert!(suppressed.response.is_none());
+        assert!(empty.seen.borrow().is_empty(), "request should not be sent");
+        assert!(
+            suppressed
+                .outcome
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("circuit is open"))
+        );
+    }
+
+    #[test]
+    fn five_paced_failures_open_the_circuit_and_a_success_closes_it() {
+        let host = "paced-failures.invalid";
+        let url = format!("https://{host}/q");
+        for _ in 0..crate::circuit::FAILURE_THRESHOLD {
+            let f = Fake::new(vec![Ok(resp(503, &[], ""))]);
+            let r = fetch(&f, Request::get(&url), None, &paced(0), "t", 2000).expect("fetch");
+            assert_eq!(r.outcome.kind, SourceOutcomeKind::Upstream5xx);
+        }
+        assert_eq!(crate::circuit::host_state(host), Some(BreakerState::Open));
+
+        // After the cooldown the breaker half-opens and lets one probe through; a
+        // success recorded by the paced fetch closes it again.
+        let probe = Fake::new(vec![Ok(resp(200, &[], "ok"))]);
+        let r = fetch(
+            &probe,
+            Request::get(&url),
+            None,
+            &paced(0),
+            "t",
+            2000 + crate::circuit::COOLDOWN_SECS,
+        )
+        .expect("fetch");
+        assert_eq!(r.outcome.kind, SourceOutcomeKind::Inconclusive);
+        assert_eq!(crate::circuit::host_state(host), Some(BreakerState::Closed));
+    }
+
+    #[test]
+    fn an_unpaced_fetch_ignores_an_open_circuit() {
+        let host = "unpaced-open.invalid";
+        let url = format!("https://{host}/q");
+        crate::circuit::record_rate_limited(host, 3000, 60);
+        assert_eq!(crate::circuit::host_state(host), Some(BreakerState::Open));
+        // Default options do not consult the breaker: the request is still sent.
+        let f = Fake::new(vec![Ok(resp(200, &[], "ok"))]);
+        let r = run(&f, &url, None, 0).expect("fetch");
+        assert_eq!(r.outcome.kind, SourceOutcomeKind::Inconclusive);
+        assert_eq!(f.seen.borrow().len(), 1);
+    }
+
     #[test]
     fn an_unusable_location_is_a_refused_hop_under_same_site() {
         let f = Fake::new(vec![Ok(resp(
@@ -1164,6 +1337,7 @@ mod tests {
             &FetchOptions {
                 max_redirects: 9,
                 redirect_policy: RedirectPolicy::SameSite { site: "stolen.tax" },
+                ..FetchOptions::default()
             },
             "t",
             100,

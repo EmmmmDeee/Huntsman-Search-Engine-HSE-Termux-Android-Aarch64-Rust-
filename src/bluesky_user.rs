@@ -75,7 +75,7 @@ pub fn lookup<T: Transport + ?Sized>(
             .header("accept", "application/json")
             .header("user-agent", crate::http::DEFAULT_USER_AGENT),
         None,
-        &FetchOptions::no_redirects(),
+        &FetchOptions::no_redirects().paced(),
         SRC,
         now_unix,
     )?;

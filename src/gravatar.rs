@@ -115,7 +115,7 @@ pub fn lookup<T: Transport + ?Sized>(
         transport,
         Request::get(&url).header("accept", "application/json"),
         None,
-        &FetchOptions::no_redirects(),
+        &FetchOptions::no_redirects().paced(),
         SRC,
         now_unix,
     )?;
