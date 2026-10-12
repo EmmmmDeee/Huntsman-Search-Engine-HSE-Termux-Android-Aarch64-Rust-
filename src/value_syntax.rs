@@ -252,6 +252,9 @@ pub fn host_only(value: &str) -> &str {
         })
         .unwrap_or(trimmed);
     let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    // Userinfo (`user:pw@`) belongs to the authority only; an `@` in the path,
+    // query or fragment never changes the host.
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
     if let Some(close) = authority
         .strip_prefix('[')
         .and_then(|without_open| without_open.find(']'))
@@ -353,6 +356,17 @@ mod tests {
             Some("+14155552671".into())
         );
         assert_eq!(canonical_phone("0412 345 678"), Some("+61412345678".into()));
+    }
+
+    #[test]
+    fn host_only_scopes_userinfo_to_the_authority() {
+        assert_eq!(host_only("https://user:pw@Real.org:8443/a"), "Real.org");
+        assert_eq!(host_only("https://real.org/p?u=a@example.com"), "real.org");
+        assert_eq!(host_only("https://example.com/@someone"), "example.com");
+        assert_eq!(
+            host_from_url("https://bob@Real.org/x"),
+            Some("real.org".to_owned())
+        );
     }
 
     #[test]

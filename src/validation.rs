@@ -370,7 +370,7 @@ fn is_placeholder_email_local(local: &str) -> bool {
 }
 
 fn url_host_is_placeholder(url: &str) -> bool {
-    let host = crate::value_syntax::host_only(url.rsplit('@').next().unwrap_or(url));
+    let host = crate::value_syntax::host_only(url);
     !host.is_empty() && is_placeholder_domain(host)
 }
 
@@ -631,6 +631,22 @@ pub fn is_onion_url(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_placeholder_uses_the_authority_host_only() {
+        assert!(!is_placeholder_entity(
+            &ValueKind::Url,
+            "https://real.org/p?u=a@example.com"
+        ));
+        assert!(is_placeholder_entity(
+            &ValueKind::Url,
+            "https://example.com/@someone"
+        ));
+        assert!(is_placeholder_entity(
+            &ValueKind::Url,
+            "https://user@example.com/"
+        ));
+    }
 
     #[test]
     fn phone_and_email_validation_match_legacy_contract() {
