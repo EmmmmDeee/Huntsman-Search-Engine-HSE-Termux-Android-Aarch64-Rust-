@@ -90,6 +90,7 @@ pub const PHONE_POLICY: SavePolicy = SavePolicy {
 fn exposure_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "hibp_account" => ("hibp_account", "src/exposure_cli.rs"),
+        "stolen_tax" => ("stolen_tax", "src/stolen_tax.rs"),
         _ => (source, "src/exposure_cli.rs"),
     }
 }

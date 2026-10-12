@@ -32,7 +32,7 @@ Commands:
   domain-lifecycle      Compare imported domain observations offline
   people                Look up a name on keyless ASIC people registers
   email                 Enrich an email and query its public Gravatar profile
-  exposure              HIBP breached-account evidence for an email (operator key)
+  exposure              Keyed breach evidence for an email (HIBP account, stolen.tax)
   username              Enrich a username through public GitHub and Bluesky profiles
   phone                 Canonicalise and classify a phone number offline
   scan                  Route one selector or bounded seed-list into rebuilt lookup front-ends

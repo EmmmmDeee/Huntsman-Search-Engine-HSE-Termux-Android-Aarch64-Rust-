@@ -1,32 +1,47 @@
 //! End-to-end front-end for `huntsman-recon exposure`.
 //!
-//! The address is canonicalised once and queried against HIBP `breachedaccount`
-//! through a caller-supplied [`HibpClient`]. Each breach becomes evidence on the
-//! seed email entity, tagged `breach` or `stealer-log`, so breach exposure flows
-//! through `merge_by_uid`, `lookup_report` (lineage) and `lookup_save` like every
-//! other lookup front-end. Without an operator key no request is made and the
-//! outcome is `AuthRequired`, never a silent zero.
+//! The address is canonicalised once, then the account-keyed legs of
+//! [`breach_hybrid::exposure_order`] run in that order: HIBP `breachedaccount`,
+//! then the stolen.tax cascade. The keyless legs (Pwned Passwords, the HIBP
+//! catalogue) are not keyed on an address and are not run here. Each HIBP breach
+//! becomes evidence on the seed email entity, tagged `breach` or `stealer-log`;
+//! stolen.tax entities are taken as that module builds them. Everything flows
+//! through `merge_by_uid`, `lookup_report` (lineage) and `lookup_save`. A leg
+//! without its key makes no request and records `AuthRequired`, never a zero.
 
 use std::path::PathBuf;
 
+use crate::breach_hybrid::{self, BreachLeg};
 use crate::canonical::canonical_email;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::hibp::client::HibpClient;
 use crate::hibp::error::HibpError;
 use crate::hibp::types::{BreachModel, BreachedAccountOptions};
+use crate::http::Transport;
+use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::stolen_tax::{self, StolenTaxError};
 use crate::tags;
 
 pub const EXPOSURE_USAGE: &str = "usage: huntsman-recon exposure ADDR [--save FILE]";
 pub const EXPOSURE_HELP: &str = "\
 exposure ADDR [--save FILE]
-Canonicalise ADDR and query HIBP breached-account (operator key required; without one no request is made and the outcome is auth_required). Each breach becomes lineage-rendered evidence on the email entity. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise ADDR and run the keyed breach legs in order: HIBP breached-account, then the stolen.tax cascade. A leg without its key makes no request and reports auth_required. Results are lineage-rendered entities. --save FILE writes an unverified ledger that verify can reload.";
 
 /// Source label for the HIBP breached-account leg.
 pub const SOURCE: &str = "hibp_account";
+/// Source label for the stolen.tax leg.
+pub const STOLEN_TAX_SOURCE: &str = "stolen_tax";
+
+/// The configured legs. `None` means that leg has no operator key.
+#[derive(Clone, Copy, Default)]
+pub struct Sources<'a> {
+    pub hibp: Option<&'a HibpClient>,
+    pub stolen_tax: Option<(&'a dyn Transport, &'a Keys)>,
+}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -61,10 +76,9 @@ pub enum ExposureRun {
     Failed(String),
 }
 
-/// Query breach exposure for `email`. `client` is `None` when no operator key is
-/// configured; then nothing is sent.
+/// Run every configured account-keyed breach leg for `email`.
 #[must_use]
-pub fn run(client: Option<&HibpClient>, email: &str, now_unix: u64) -> ExposureRun {
+pub fn run(sources: Sources<'_>, email: &str, now_unix: u64) -> ExposureRun {
     let Some(email) = canonical_email(email) else {
         return ExposureRun::Failed("invalid email address".into());
     };
@@ -73,49 +87,115 @@ pub fn run(client: Option<&HibpClient>, email: &str, now_unix: u64) -> ExposureR
         entities: vec![seed_entity(&email, &scan_id)],
         outcomes: Vec::new(),
     };
+    let mut network = None;
 
-    let outcome = match client {
-        None => SourceExecutionOutcome::failed(
-            SOURCE,
-            now_unix,
-            SourceOutcomeKind::AuthRequired,
-            None,
-            "no HIBP operator key configured; no request made",
-        ),
-        Some(client) => {
-            let options = BreachedAccountOptions {
-                truncate_response: Some(false),
-                ..BreachedAccountOptions::default()
-            };
-            match client.breached_account(&email, &options) {
-                Ok(breaches) if breaches.is_empty() => {
-                    SourceExecutionOutcome::valid_zero(SOURCE, now_unix)
-                }
-                Ok(breaches) => {
-                    for breach in &breaches {
-                        report
-                            .entities
-                            .push(breach_entity(&email, &scan_id, breach));
-                    }
-                    SourceExecutionOutcome::success(SOURCE, now_unix, breaches.len())
-                }
-                Err(HibpError::Transport(msg)) => return ExposureRun::Network(msg),
-                Err(err) => SourceExecutionOutcome::failed(
-                    SOURCE,
+    for leg in breach_hybrid::exposure_order(true) {
+        let outcome = match leg {
+            BreachLeg::PwnedPasswords | BreachLeg::HibpCatalog => continue,
+            BreachLeg::HibpAccount => match sources.hibp {
+                None => missing_key(SOURCE, now_unix),
+                Some(client) => hibp_leg(
+                    client,
+                    &email,
+                    &scan_id,
                     now_unix,
-                    outcome_kind(&err),
-                    None,
-                    err.to_string(),
+                    &mut report,
+                    &mut network,
                 ),
-            }
-        }
-    };
-    report.outcomes.push(outcome);
+            },
+            BreachLeg::StolenTax => match sources.stolen_tax {
+                None => missing_key(STOLEN_TAX_SOURCE, now_unix),
+                Some((transport, keys)) => {
+                    stolen_tax_leg(transport, keys, &email, &scan_id, now_unix, &mut report)
+                }
+            },
+        };
+        report.outcomes.push(outcome);
+    }
     merge_by_uid(&mut report.entities);
 
+    let collected = report.outcomes.iter().any(|o| o.kind.is_accepted());
+    if let (false, Some(msg)) = (collected, network) {
+        return ExposureRun::Network(msg);
+    }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => ExposureRun::Printed { text, report },
         Err(msg) => ExposureRun::Failed(msg),
+    }
+}
+
+fn missing_key(source: &str, now_unix: u64) -> SourceExecutionOutcome {
+    SourceExecutionOutcome::failed(
+        source,
+        now_unix,
+        SourceOutcomeKind::AuthRequired,
+        None,
+        "no operator key configured; no request made",
+    )
+}
+
+fn hibp_leg(
+    client: &HibpClient,
+    email: &str,
+    scan_id: &str,
+    now_unix: u64,
+    report: &mut Report,
+    network: &mut Option<String>,
+) -> SourceExecutionOutcome {
+    let options = BreachedAccountOptions {
+        truncate_response: Some(false),
+        ..BreachedAccountOptions::default()
+    };
+    match client.breached_account(email, &options) {
+        Ok(breaches) if breaches.is_empty() => SourceExecutionOutcome::valid_zero(SOURCE, now_unix),
+        Ok(breaches) => {
+            report
+                .entities
+                .extend(breaches.iter().map(|b| breach_entity(email, scan_id, b)));
+            SourceExecutionOutcome::success(SOURCE, now_unix, breaches.len())
+        }
+        Err(err) => {
+            if let HibpError::Transport(msg) = &err {
+                network.get_or_insert_with(|| msg.clone());
+            }
+            SourceExecutionOutcome::failed(
+                SOURCE,
+                now_unix,
+                outcome_kind(&err),
+                None,
+                err.to_string(),
+            )
+        }
+    }
+}
+
+fn stolen_tax_leg(
+    transport: &dyn Transport,
+    keys: &Keys,
+    email: &str,
+    scan_id: &str,
+    now_unix: u64,
+    report: &mut Report,
+) -> SourceExecutionOutcome {
+    match stolen_tax::lookup(transport, keys, email, scan_id, now_unix) {
+        Ok(got) => {
+            let found = got.entities.len();
+            report.entities.extend(got.entities);
+            let outcome = SourceExecutionOutcome::success(STOLEN_TAX_SOURCE, now_unix, found);
+            match got.truncation {
+                Some(why) => outcome.with_detail(format!("partial: {why}")),
+                None => outcome,
+            }
+        }
+        Err(err) => {
+            let kind = match &err {
+                StolenTaxError::MissingKey => SourceOutcomeKind::AuthRequired,
+                StolenTaxError::Refused(_) => SourceOutcomeKind::ConnectFailure,
+                StolenTaxError::BudgetExhausted { .. } => SourceOutcomeKind::BodyTimeout,
+                StolenTaxError::Failed(_) => SourceOutcomeKind::Inconclusive,
+            };
+            SourceExecutionOutcome::failed(STOLEN_TAX_SOURCE, now_unix, kind, None, err.to_string())
+        }
     }
 }
 
@@ -183,19 +263,77 @@ mod tests {
 
     #[test]
     fn no_key_makes_no_request_and_reports_auth_required() {
-        let ExposureRun::Printed { report, .. } = run(None, "Ada@Example.com", 7) else {
+        let ExposureRun::Printed { report, .. } = run(Sources::default(), "Ada@Example.com", 7)
+        else {
             panic!("expected a printed report");
         };
-        assert_eq!(report.outcomes.len(), 1);
-        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::AuthRequired);
+        let legs: Vec<_> = report
+            .outcomes
+            .iter()
+            .map(|o| (o.module.as_str(), o.kind))
+            .collect();
+        assert_eq!(
+            legs,
+            [
+                (SOURCE, SourceOutcomeKind::AuthRequired),
+                (STOLEN_TAX_SOURCE, SourceOutcomeKind::AuthRequired)
+            ],
+            "every keyed leg is reported, in breach_hybrid order"
+        );
         assert_eq!(report.entities.len(), 1);
         assert!(!report.entities[0].tags.iter().any(|t| t == tags::BREACH));
+    }
+
+    struct Breaches(std::sync::Mutex<Vec<String>>);
+
+    impl Transport for Breaches {
+        fn send(
+            &self,
+            request: &crate::http::Request,
+        ) -> Result<crate::http::Response, crate::http::TransportFailure> {
+            self.0.lock().unwrap().push(request.url.clone());
+            Ok(crate::http::Response {
+                status: 200,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: br#"[{"Name":"Adobe","Title":"Adobe","Domain":"adobe.com","BreachDate":"2013-10-04","PwnCount":152445165,"DataClasses":["Email addresses","Passwords"],"IsVerified":true,"IsStealerLog":false},{"Name":"Logs","DataClasses":["Email addresses"],"IsStealerLog":true}]"#.to_vec(),
+                truncated: false,
+            })
+        }
+    }
+
+    #[test]
+    fn each_hibp_breach_is_evidence_on_the_one_email_entity() {
+        let transport = std::sync::Arc::new(Breaches(std::sync::Mutex::default()));
+        let key = crate::hibp::key::ApiKey::new("0123456789abcdef0123456789abcdef").unwrap();
+        let client = HibpClient::new(transport.clone(), crate::hibp::client::Auth::ApiKey(key));
+        let sources = Sources {
+            hibp: Some(&client),
+            stolen_tax: None,
+        };
+        let ExposureRun::Printed { report, text } = run(sources, "ada@example.com", 7) else {
+            panic!("expected a printed report");
+        };
+        let urls = transport.0.lock().unwrap();
+        assert_eq!(urls.len(), 1, "{urls:?}");
+        assert!(urls[0].contains("/breachedaccount/"), "{urls:?}");
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
+        assert_eq!(report.outcomes[0].found, Some(2));
+        assert_eq!(report.entities.len(), 1, "merged by uid: {text}");
+        let entity = &report.entities[0];
+        assert!(entity.tags.iter().any(|t| t == tags::BREACH));
+        assert!(entity.tags.iter().any(|t| t == tags::STEALER_LOG));
+        let breaches: Vec<_> = entity
+            .evidence
+            .iter()
+            .filter_map(|e| e.attributes.get("breach_name"))
+            .collect();
+        assert_eq!(breaches.len(), 2, "{breaches:?}");
     }
 
     #[test]
     fn invalid_address_fails() {
         assert!(matches!(
-            run(None, "not-an-email", 7),
+            run(Sources::default(), "not-an-email", 7),
             ExposureRun::Failed(_)
         ));
     }

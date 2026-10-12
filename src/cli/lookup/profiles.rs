@@ -9,16 +9,18 @@ use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::Entity;
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
-use huntsman_recon::exposure_cli::{EXPOSURE_USAGE, ExposureArgs, ExposureRun};
+use huntsman_recon::exposure_cli::{EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
 use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
 use huntsman_recon::hibp::key::KeyLoader;
-use huntsman_recon::http::{TransportConfig, UreqTransport};
+use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
+use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
     self, EMAIL_POLICY, EXPOSURE_POLICY, PHONE_POLICY, SavePolicy, USERNAME_POLICY,
 };
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
 use huntsman_recon::source_outcome::SourceExecutionOutcome;
+use huntsman_recon::stolen_tax;
 use huntsman_recon::username_cli::{USERNAME_USAGE, UsernameArgs, UsernameRun};
 
 /// The exit status for a rejected lookup argument. A value the operator supplied that cannot be
@@ -132,7 +134,17 @@ pub(in crate::cli) fn exposure_cmd(args: &[String]) -> ExitCode {
     let client = KeyLoader::default_chain(None)
         .load()
         .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
-    match huntsman_recon::exposure_cli::run(client.as_ref(), &parsed.email, now) {
+    // Same rule as `recon stolen-tax`: the key is read from the environment, never the default file.
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&stolen_tax::transport_config());
+    let sources = Sources {
+        hibp: client.as_ref(),
+        stolen_tax: keys
+            .get(stolen_tax::KEY_SLOT)
+            .is_some()
+            .then_some((&transport as &dyn Transport, &keys)),
+    };
+    match huntsman_recon::exposure_cli::run(sources, &parsed.email, now) {
         ExposureRun::Printed { text, report } => {
             print!("{text}");
             save_if_requested(
