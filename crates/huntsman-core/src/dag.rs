@@ -7,10 +7,12 @@ use crate::transport::Transport;
 use async_trait::async_trait;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-/// Upper bound on entities awaiting expansion, keeping traversal within the memory ceiling.
+/// Upper bound on discovered entities awaiting expansion, keeping traversal within the memory
+/// ceiling. Seeds are never subject to it: [`DagEngine::execute`] drains them lazily from the
+/// caller's vector and queues every one, so operator input is never dropped from expansion.
 pub const MAX_FRONTIER: usize = 4096;
 
 /// Trait implemented by modular collectors.
@@ -54,12 +56,65 @@ impl ModuleRegistration {
     }
 }
 
+/// Counts describing how one [`DagEngine::execute`] run ended, so a caller can tell a complete
+/// traversal from one whose expansion was cut short.
+///
+/// Every emitted entity is accounted for exactly once: `emitted` equals `expanded` plus
+/// `overflow_unexpanded`, `depth_limited` and `no_consumer`. The counts, like the deduplication
+/// state behind them, belong to that run alone; a later run on the same engine starts from zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExecutionReport {
+    /// Distinct entities delivered to the sink: seeds and discoveries, each once per run.
+    pub emitted: usize,
+    /// Entities handed to the collectors that consume their kind.
+    pub expanded: usize,
+    /// Discoveries emitted but never expanded because the frontier was at [`MAX_FRONTIER`].
+    /// Non-zero means the graph below those entities is missing from this run.
+    pub overflow_unexpanded: usize,
+    /// Collector invocations that returned an error. Each was isolated and traversal continued,
+    /// so whatever that invocation would have discovered is missing from this run.
+    pub collector_failures: usize,
+    /// Entities emitted but not expanded because they sit at the engine's maximum hop depth.
+    pub depth_limited: usize,
+    /// Entities emitted but not expanded because no registered collector consumes their kind.
+    pub no_consumer: usize,
+}
+
+/// Where an entity entering a run came from, which decides whether the frontier cap applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// Supplied by the caller: always queued for expansion.
+    Seed,
+    /// Produced by a collector: queued only while the frontier is below [`MAX_FRONTIER`].
+    Discovery,
+}
+
+/// What becomes of an admitted entity once it has been emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Disposition {
+    /// Queued on the frontier for the collectors to expand.
+    Expand,
+    /// At the engine's maximum hop depth; a leaf by configuration.
+    DepthLimited,
+    /// No registered collector consumes its kind; a leaf by construction.
+    NoConsumer,
+    /// A discovery that found the frontier full; its subtree is missing from this run.
+    Overflow,
+}
+
+/// Mutable state of one traversal. It is owned by the `execute` call, so runs on the same engine
+/// never share it, a cancelled run leaves nothing behind, and its memory is freed on return.
+struct Run {
+    seen: HashSet<EntityId>,
+    frontier: VecDeque<Entity>,
+    report: ExecutionReport,
+}
+
 /// Core reactive DAG execution engine.
 pub struct DagEngine {
     modules: Vec<Arc<dyn Collector>>,
     transport: Arc<dyn Transport>,
     governor: NetworkGovernor,
-    seen_entities: Arc<Mutex<HashSet<EntityId>>>,
     max_hop_depth: u8,
 }
 
@@ -75,7 +130,6 @@ impl DagEngine {
             modules: Vec::new(),
             transport,
             governor,
-            seen_entities: Arc::new(Mutex::new(HashSet::new())),
             max_hop_depth,
         }
     }
@@ -85,50 +139,131 @@ impl DagEngine {
         self.modules.push(registration.into_collector());
     }
 
-    /// Deduplicate `entity`, emit it, and queue it for expansion if depth and capacity allow.
+    /// Decide whether `entity` can be queued for expansion in `run`.
+    fn disposition(&self, run: &Run, entity: &Entity, origin: Origin) -> Disposition {
+        if entity.hop_depth >= self.max_hop_depth {
+            return Disposition::DepthLimited;
+        }
+        if !self
+            .modules
+            .iter()
+            .any(|module| module.can_consume(&entity.kind))
+        {
+            return Disposition::NoConsumer;
+        }
+        if origin == Origin::Discovery && run.frontier.len() >= MAX_FRONTIER {
+            return Disposition::Overflow;
+        }
+        Disposition::Expand
+    }
+
+    /// Deduplicate `entity` within `run`, emit it, and queue it for expansion when its depth, a
+    /// consuming collector and (for discoveries) frontier capacity allow.
     async fn admit(
         &self,
+        run: &mut Run,
         entity: Entity,
-        frontier: &mut VecDeque<Entity>,
+        origin: Origin,
         outbound_sink: &mpsc::Sender<Entity>,
     ) -> Result<(), HuntsmanError> {
-        if !self
-            .seen_entities
-            .lock()
-            .await
-            .insert(entity.provenance.entity_id)
-        {
+        if !run.seen.insert(entity.provenance.entity_id) {
             return Ok(());
         }
-        let expandable = entity.hop_depth < self.max_hop_depth;
-        let queued = if expandable && frontier.len() < MAX_FRONTIER {
-            Some(entity.clone())
-        } else {
-            if expandable {
+        let queued = match self.disposition(run, &entity, origin) {
+            Disposition::Expand => Some(entity.clone()),
+            Disposition::DepthLimited => {
+                debug!(
+                    "Entity {} reached max depth ({})",
+                    entity.kind.canonical_value(),
+                    self.max_hop_depth
+                );
+                run.report.depth_limited += 1;
+                None
+            }
+            Disposition::NoConsumer => {
+                debug!(
+                    "No registered collector consumes {}",
+                    entity.kind.canonical_value()
+                );
+                run.report.no_consumer += 1;
+                None
+            }
+            Disposition::Overflow => {
                 warn!(
                     "Frontier at capacity ({MAX_FRONTIER}); {} emitted but not expanded",
                     entity.kind.canonical_value()
                 );
+                run.report.overflow_unexpanded += 1;
+                None
             }
-            None
         };
         outbound_sink
             .send(entity)
             .await
             .map_err(|e| HuntsmanError::ChannelCongestion(e.to_string()))?;
+        run.report.emitted += 1;
         if let Some(next) = queued {
-            frontier.push_back(next);
+            run.frontier.push_back(next);
         }
         Ok(())
     }
 
-    /// Seed the pipeline and expand breadth-first until the frontier drains.
+    /// Hand `current` to every collector that consumes its kind and admit what they discover.
+    async fn expand(
+        &self,
+        run: &mut Run,
+        current: &Entity,
+        outbound_sink: &mpsc::Sender<Entity>,
+    ) -> Result<(), HuntsmanError> {
+        run.report.expanded += 1;
+        for collector in &self.modules {
+            if !collector.can_consume(&current.kind) {
+                continue;
+            }
+            match collector
+                .process(current, self.transport.clone(), self.governor.clone())
+                .await
+            {
+                Ok(discovered) => {
+                    for mut item in discovered {
+                        item.hop_depth = current.hop_depth.saturating_add(1);
+                        info!(
+                            "Discovered node [{}] via {}",
+                            item.kind.canonical_value(),
+                            collector.name()
+                        );
+                        self.admit(run, item, Origin::Discovery, outbound_sink)
+                            .await?;
+                    }
+                }
+                Err(err) => {
+                    run.report.collector_failures += 1;
+                    error!(
+                        "Module {} failed on {}: {}",
+                        collector.name(),
+                        current.kind.canonical_value(),
+                        err
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Seed the pipeline and expand breadth-first until every seed's frontier drains.
     ///
-    /// Every newly discovered entity (deduplicated by its deterministic id) is emitted to
-    /// `outbound_sink` and, while below `max_hop_depth`, re-enters the frontier so downstream
-    /// collectors can expand it. The frontier lives in this task, so any number of seeds can be
-    /// enqueued without self-deadlock; it is capped at [`MAX_FRONTIER`] entities to bound memory,
-    /// and entities beyond the cap are still emitted but not expanded.
+    /// All traversal state (the deduplication set, the frontier and the counts) lives inside
+    /// this call and is freed when it returns, so re-running the same seeds on one engine,
+    /// retrying after a failure or cancellation, and running several executes concurrently on a
+    /// shared engine are independent runs. Within a run every entity is emitted to
+    /// `outbound_sink` once, deduplicated by its deterministic id, and queued for expansion
+    /// while it is below `max_hop_depth` and some registered collector consumes its kind.
+    ///
+    /// Seeds are drained lazily: the next one is admitted only once the previous seed's
+    /// discoveries are exhausted, so the frontier holds discoveries alone and every seed is
+    /// expanded. The frontier is capped at [`MAX_FRONTIER`] pending discoveries to bound memory;
+    /// a discovery past the cap is still emitted but not expanded, and the returned
+    /// [`ExecutionReport`] counts it so the incomplete expansion is visible to the caller.
     ///
     /// # Errors
     /// Returns [`HuntsmanError::ChannelCongestion`] if `outbound_sink` closes, since discoveries
@@ -137,58 +272,30 @@ impl DagEngine {
         &self,
         seeds: Vec<Entity>,
         outbound_sink: mpsc::Sender<Entity>,
-    ) -> Result<(), HuntsmanError> {
-        let mut frontier: VecDeque<Entity> = VecDeque::new();
+    ) -> Result<ExecutionReport, HuntsmanError> {
+        let mut run = Run {
+            seen: HashSet::new(),
+            frontier: VecDeque::new(),
+            report: ExecutionReport::default(),
+        };
+        let mut seeds = seeds.into_iter();
 
-        for seed in seeds {
-            self.admit(seed, &mut frontier, &outbound_sink).await?;
-        }
-
-        while let Some(current_entity) = frontier.pop_front() {
-            if current_entity.hop_depth >= self.max_hop_depth {
-                debug!(
-                    "Entity {} reached max depth ({})",
-                    current_entity.kind.canonical_value(),
-                    self.max_hop_depth
-                );
-                continue;
-            }
-
-            for module in &self.modules {
-                if module.can_consume(&current_entity.kind) {
-                    let transport = self.transport.clone();
-                    let governor = self.governor.clone();
-                    let collector = module.clone();
-
-                    match collector
-                        .process(&current_entity, transport, governor)
-                        .await
-                    {
-                        Ok(discovered) => {
-                            for mut item in discovered {
-                                item.hop_depth = current_entity.hop_depth.saturating_add(1);
-                                info!(
-                                    "Discovered node [{}] via {}",
-                                    item.kind.canonical_value(),
-                                    collector.name()
-                                );
-                                self.admit(item, &mut frontier, &outbound_sink).await?;
-                            }
-                        }
-                        Err(err) => {
-                            error!(
-                                "Module {} failed on {}: {}",
-                                collector.name(),
-                                current_entity.kind.canonical_value(),
-                                err
-                            );
-                        }
+        loop {
+            let current = match run.frontier.pop_front() {
+                Some(entity) => entity,
+                None => match seeds.next() {
+                    Some(seed) => {
+                        self.admit(&mut run, seed, Origin::Seed, &outbound_sink)
+                            .await?;
+                        continue;
                     }
-                }
-            }
+                    None => break,
+                },
+            };
+            self.expand(&mut run, &current, &outbound_sink).await?;
         }
 
-        Ok(())
+        Ok(run.report)
     }
 }
 
@@ -197,6 +304,7 @@ mod tests {
     use super::*;
     use crate::model::{Entity, EntityKind, EpistemicLevel, ProvenanceEnvelope};
     use crate::transport::MockTransport;
+    use std::time::Duration;
 
     struct DummySubdomainCollector;
 
@@ -264,8 +372,18 @@ mod tests {
         };
 
         let (sink_tx, mut sink_rx) = mpsc::channel(16);
-        let exec_result = engine.execute(vec![seed], sink_tx).await;
-        assert!(exec_result.is_ok());
+        let report = match engine.execute(vec![seed], sink_tx).await {
+            Ok(report) => report,
+            Err(err) => panic!("execute failed: {err}"),
+        };
+        assert_eq!(
+            report,
+            ExecutionReport {
+                emitted: 2,
+                expanded: 2,
+                ..ExecutionReport::default()
+            }
+        );
 
         let mut collected = Vec::new();
         while let Ok(item) = sink_rx.try_recv() {
@@ -312,6 +430,92 @@ mod tests {
         }
     }
 
+    /// Produces `sub.{name}` for any domain not already under a `sub.` label; leaf otherwise.
+    struct SubdomainCollector;
+
+    #[async_trait]
+    impl Collector for SubdomainCollector {
+        fn name(&self) -> &'static str {
+            "subdomain"
+        }
+
+        fn can_consume(&self, kind: &EntityKind) -> bool {
+            matches!(kind, EntityKind::Domain(_))
+        }
+
+        async fn process(
+            &self,
+            input: &Entity,
+            _transport: Arc<dyn Transport>,
+            _governor: NetworkGovernor,
+        ) -> Result<Vec<Entity>, HuntsmanError> {
+            let EntityKind::Domain(ref d) = input.kind else {
+                return Ok(vec![]);
+            };
+            if d.starts_with("sub.") {
+                return Ok(vec![]);
+            }
+            Ok(vec![domain_entity(&format!("sub.{d}"), 0)])
+        }
+    }
+
+    /// Fans `fanout.example` out to `MAX_FRONTIER + 5` children; each child yields one leaf.
+    struct FanoutCollector;
+
+    #[async_trait]
+    impl Collector for FanoutCollector {
+        fn name(&self) -> &'static str {
+            "fanout"
+        }
+
+        fn can_consume(&self, kind: &EntityKind) -> bool {
+            matches!(kind, EntityKind::Domain(_))
+        }
+
+        async fn process(
+            &self,
+            input: &Entity,
+            _transport: Arc<dyn Transport>,
+            _governor: NetworkGovernor,
+        ) -> Result<Vec<Entity>, HuntsmanError> {
+            let EntityKind::Domain(ref d) = input.kind else {
+                return Ok(vec![]);
+            };
+            if d == "fanout.example" {
+                return Ok((0..MAX_FRONTIER + 5)
+                    .map(|i| domain_entity(&format!("c{i}.fanout.example"), 0))
+                    .collect());
+            }
+            if d.ends_with(".fanout.example") && !d.starts_with("leaf.") {
+                return Ok(vec![domain_entity(&format!("leaf.{d}"), 0)]);
+            }
+            Ok(vec![])
+        }
+    }
+
+    /// Fails on every domain it is handed.
+    struct FailingCollector;
+
+    #[async_trait]
+    impl Collector for FailingCollector {
+        fn name(&self) -> &'static str {
+            "failing"
+        }
+
+        fn can_consume(&self, kind: &EntityKind) -> bool {
+            matches!(kind, EntityKind::Domain(_))
+        }
+
+        async fn process(
+            &self,
+            _input: &Entity,
+            _transport: Arc<dyn Transport>,
+            _governor: NetworkGovernor,
+        ) -> Result<Vec<Entity>, HuntsmanError> {
+            Err(HuntsmanError::Protocol("injected failure".to_owned()))
+        }
+    }
+
     fn domain_entity(name: &str, hop_depth: u8) -> Entity {
         let kind = match EntityKind::new_domain(name) {
             Ok(kind) => kind,
@@ -339,16 +543,65 @@ mod tests {
         )
     }
 
+    /// Drains `rx` on its own task so `execute` never blocks on sink capacity.
+    fn drain(mut rx: mpsc::Receiver<Entity>) -> tokio::task::JoinHandle<Vec<Entity>> {
+        tokio::spawn(async move {
+            let mut items = Vec::new();
+            while let Some(item) = rx.recv().await {
+                items.push(item);
+            }
+            items
+        })
+    }
+
+    async fn collected(handle: tokio::task::JoinHandle<Vec<Entity>>) -> Vec<String> {
+        match handle.await {
+            Ok(items) => items.iter().map(|e| e.kind.canonical_value()).collect(),
+            Err(err) => panic!("drain task failed: {err}"),
+        }
+    }
+
+    /// Run `seeds` through `engine` with a drained sink of `capacity`, returning the report and
+    /// the canonical values the sink received, in order.
+    async fn execute_and_collect(
+        engine: &DagEngine,
+        seeds: Vec<Entity>,
+        capacity: usize,
+    ) -> (ExecutionReport, Vec<String>) {
+        let (tx, rx) = mpsc::channel(capacity);
+        let drained = drain(rx);
+        let report = match engine.execute(seeds, tx).await {
+            Ok(report) => report,
+            Err(err) => panic!("execute failed: {err}"),
+        };
+        (report, collected(drained).await)
+    }
+
+    /// The report accounts for every emitted entity exactly once.
+    fn assert_accounted(report: ExecutionReport) {
+        assert_eq!(
+            report.emitted,
+            report.expanded
+                + report.overflow_unexpanded
+                + report.depth_limited
+                + report.no_consumer,
+            "{report:?}"
+        );
+    }
+
     #[tokio::test]
     async fn discoveries_are_expanded_until_the_depth_limit() {
         let mut engine = engine(2);
         engine.register_module(ModuleRegistration::new(Arc::new(ChainCollector)));
         let (sink_tx, mut sink_rx) = mpsc::channel(16);
 
-        let result = engine
+        let report = match engine
             .execute(vec![domain_entity("d0.example", 0)], sink_tx)
-            .await;
-        assert!(result.is_ok(), "{result:?}");
+            .await
+        {
+            Ok(report) => report,
+            Err(err) => panic!("execute failed: {err}"),
+        };
 
         let mut names = Vec::new();
         while let Ok(item) = sink_rx.try_recv() {
@@ -363,6 +616,15 @@ mod tests {
                 ("d2.example".to_owned(), 2),
             ]
         );
+        assert_eq!(
+            report,
+            ExecutionReport {
+                emitted: 3,
+                expanded: 2,
+                depth_limited: 1,
+                ..ExecutionReport::default()
+            }
+        );
     }
 
     #[tokio::test]
@@ -373,21 +635,27 @@ mod tests {
             .collect();
         let (sink_tx, mut sink_rx) = mpsc::channel(1024);
 
-        let outcome = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            engine.execute(seeds, sink_tx),
-        )
-        .await;
-        match outcome {
-            Ok(Ok(())) => {}
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(5), engine.execute(seeds, sink_tx)).await;
+        let report = match outcome {
+            Ok(Ok(report)) => report,
             Ok(Err(err)) => panic!("execute failed: {err}"),
             Err(_) => panic!("execute deadlocked on 600 seeds"),
-        }
+        };
         let mut count = 0;
         while sink_rx.try_recv().is_ok() {
             count += 1;
         }
         assert_eq!(count, 600);
+        // No collector is registered, so every seed is emitted and none can be expanded.
+        assert_eq!(
+            report,
+            ExecutionReport {
+                emitted: 600,
+                no_consumer: 600,
+                ..ExecutionReport::default()
+            }
+        );
     }
 
     #[tokio::test]
@@ -399,5 +667,173 @@ mod tests {
             .execute(vec![domain_entity("lost.example", 0)], sink_tx)
             .await;
         assert!(matches!(result, Err(HuntsmanError::ChannelCongestion(_))));
+    }
+
+    #[tokio::test]
+    async fn a_second_execute_on_the_same_engine_re_emits_and_re_expands_the_seed() {
+        let mut engine = engine(3);
+        engine.register_module(ModuleRegistration::new(Arc::new(DummySubdomainCollector)));
+        let expected = vec!["example.com".to_owned(), "api.example.com".to_owned()];
+        for run in 0..2 {
+            let (report, names) =
+                execute_and_collect(&engine, vec![domain_entity("example.com", 0)], 16).await;
+            assert_eq!(
+                names, expected,
+                "run {run} must emit the seed and its discovery"
+            );
+            assert_eq!(
+                report,
+                ExecutionReport {
+                    emitted: 2,
+                    expanded: 2,
+                    ..ExecutionReport::default()
+                },
+                "run {run} must expand from scratch"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_executes_on_a_shared_engine_are_independent() {
+        let mut engine = engine(3);
+        engine.register_module(ModuleRegistration::new(Arc::new(DummySubdomainCollector)));
+        let engine = Arc::new(engine);
+        let (tx_a, rx_a) = mpsc::channel(16);
+        let (tx_b, rx_b) = mpsc::channel(16);
+        let (drained_a, drained_b) = (drain(rx_a), drain(rx_b));
+
+        let (a, b) = tokio::join!(
+            engine.execute(vec![domain_entity("example.com", 0)], tx_a),
+            engine.execute(vec![domain_entity("example.com", 0)], tx_b),
+        );
+        let complete = ExecutionReport {
+            emitted: 2,
+            expanded: 2,
+            ..ExecutionReport::default()
+        };
+        assert!(
+            matches!(a, Ok(report) if report == complete),
+            "run A: {a:?}"
+        );
+        assert!(
+            matches!(b, Ok(report) if report == complete),
+            "run B: {b:?}"
+        );
+        let expected = vec!["example.com".to_owned(), "api.example.com".to_owned()];
+        assert_eq!(collected(drained_a).await, expected, "run A");
+        assert_eq!(collected(drained_b).await, expected, "run B");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_run_leaves_nothing_behind_for_the_retry() {
+        let mut engine = engine(3);
+        engine.register_module(ModuleRegistration::new(Arc::new(DummySubdomainCollector)));
+        // A sink nobody drains: the seed fits, the discovery blocks, the timeout cancels the run.
+        let (stuck_tx, _stuck_rx) = mpsc::channel(1);
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(100),
+            engine.execute(vec![domain_entity("example.com", 0)], stuck_tx),
+        )
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "the first run must be cancelled by the timeout"
+        );
+
+        let (report, names) =
+            execute_and_collect(&engine, vec![domain_entity("example.com", 0)], 16).await;
+        assert_eq!(
+            names,
+            vec!["example.com".to_owned(), "api.example.com".to_owned()],
+            "the retry must redo everything the cancelled run started"
+        );
+        assert_eq!(
+            report,
+            ExecutionReport {
+                emitted: 2,
+                expanded: 2,
+                ..ExecutionReport::default()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn more_seeds_than_max_frontier_are_all_expanded() {
+        let mut engine = engine(1);
+        engine.register_module(ModuleRegistration::new(Arc::new(SubdomainCollector)));
+        let total = MAX_FRONTIER + 1;
+        let seeds: Vec<Entity> = (0..total)
+            .map(|i| domain_entity(&format!("seed{i}.example"), 0))
+            .collect();
+
+        let (report, names) = execute_and_collect(&engine, seeds, 64).await;
+
+        let children = names.iter().filter(|n| n.starts_with("sub.")).count();
+        assert_eq!(children, total, "every seed must be expanded, none dropped");
+        // Each child sits at depth 1, the limit, so it is emitted but not expanded.
+        assert_eq!(
+            report,
+            ExecutionReport {
+                emitted: 2 * total,
+                expanded: total,
+                depth_limited: total,
+                ..ExecutionReport::default()
+            }
+        );
+        assert_accounted(report);
+    }
+
+    #[tokio::test]
+    async fn discovery_overflow_is_reported_rather_than_lost() {
+        let mut engine = engine(3);
+        engine.register_module(ModuleRegistration::new(Arc::new(FanoutCollector)));
+
+        let (report, names) =
+            execute_and_collect(&engine, vec![domain_entity("fanout.example", 0)], 64).await;
+
+        let children = names.iter().filter(|n| n.starts_with('c')).count();
+        let leaves = names.iter().filter(|n| n.starts_with("leaf.")).count();
+        assert_eq!(
+            children,
+            MAX_FRONTIER + 5,
+            "every discovery is still emitted"
+        );
+        assert_eq!(report.overflow_unexpanded, 5, "{report:?}");
+        assert_eq!(
+            leaves,
+            children - report.overflow_unexpanded,
+            "exactly the reported discoveries went unexpanded"
+        );
+        assert_eq!(
+            report,
+            ExecutionReport {
+                emitted: 1 + children + leaves,
+                expanded: 1 + MAX_FRONTIER + leaves,
+                overflow_unexpanded: 5,
+                ..ExecutionReport::default()
+            }
+        );
+        assert_accounted(report);
+    }
+
+    #[tokio::test]
+    async fn collector_failures_are_counted_not_hidden() {
+        let mut engine = engine(3);
+        engine.register_module(ModuleRegistration::new(Arc::new(FailingCollector)));
+
+        let (report, names) =
+            execute_and_collect(&engine, vec![domain_entity("broken.example", 0)], 16).await;
+
+        assert_eq!(names, vec!["broken.example".to_owned()]);
+        assert_eq!(
+            report,
+            ExecutionReport {
+                emitted: 1,
+                expanded: 1,
+                collector_failures: 1,
+                ..ExecutionReport::default()
+            }
+        );
+        assert_accounted(report);
     }
 }
