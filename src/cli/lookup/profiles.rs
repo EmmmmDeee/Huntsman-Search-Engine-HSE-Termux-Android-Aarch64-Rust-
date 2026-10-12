@@ -9,8 +9,13 @@ use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::Entity;
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
+use huntsman_recon::exposure_cli::{EXPOSURE_USAGE, ExposureArgs, ExposureRun};
+use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
+use huntsman_recon::hibp::key::KeyLoader;
 use huntsman_recon::http::{TransportConfig, UreqTransport};
-use huntsman_recon::lookup_save::{self, EMAIL_POLICY, PHONE_POLICY, SavePolicy, USERNAME_POLICY};
+use huntsman_recon::lookup_save::{
+    self, EMAIL_POLICY, EXPOSURE_POLICY, PHONE_POLICY, SavePolicy, USERNAME_POLICY,
+};
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
 use huntsman_recon::source_outcome::SourceExecutionOutcome;
@@ -107,6 +112,38 @@ pub(in crate::cli) fn email_cmd(args: &[String]) -> ExitCode {
         }
         EmailRun::Network(message) => fail(EX_NOPERM, &message),
         EmailRun::Failed(message) => fail(EX_UNAVAILABLE, &message),
+    }
+}
+
+pub(in crate::cli) fn exposure_cmd(args: &[String]) -> ExitCode {
+    let parsed = match ExposureArgs::parse(args) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let message = error.to_string();
+            return fail(
+                argument_status(&error),
+                &format!("{message}\n{EXPOSURE_USAGE}"),
+            );
+        }
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let client = KeyLoader::default_chain(None)
+        .load()
+        .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
+    match huntsman_recon::exposure_cli::run(client.as_ref(), &parsed.email, now) {
+        ExposureRun::Printed { text, report } => {
+            print!("{text}");
+            save_if_requested(
+                parsed.save.as_deref(),
+                &report.entities,
+                &report.outcomes,
+                EXPOSURE_POLICY,
+            )
+        }
+        ExposureRun::Network(message) => fail(EX_NOPERM, &message),
+        ExposureRun::Failed(message) => fail(EX_UNAVAILABLE, &message),
     }
 }
 

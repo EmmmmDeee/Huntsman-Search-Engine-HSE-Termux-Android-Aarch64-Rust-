@@ -68,6 +68,7 @@ pub mod event;
 pub mod evidence_ancestry;
 pub mod exit;
 pub mod exposure;
+pub mod exposure_cli;
 pub mod fetch;
 pub mod fetch_cli;
 pub mod fsio;

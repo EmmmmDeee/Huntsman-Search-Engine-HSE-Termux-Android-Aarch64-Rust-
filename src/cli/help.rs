@@ -6,6 +6,7 @@ use super::{HELP, RECON_USAGE, USAGE, fail};
 use huntsman_recon::dehashed::cli::DEHASHED_USAGE;
 use huntsman_recon::email_cli::EMAIL_HELP;
 use huntsman_recon::exit::EX_USAGE;
+use huntsman_recon::exposure_cli::EXPOSURE_HELP;
 use huntsman_recon::hibp::cli::HIBP_USAGE;
 use huntsman_recon::people_cli::PEOPLE_HELP;
 use huntsman_recon::phone_cli::PHONE_HELP;
@@ -54,6 +55,7 @@ pub(super) fn print_command_help(command: &str) {
         "domain-lifecycle" => huntsman_recon::domain_lifecycle::USAGE,
         "people" => PEOPLE_HELP,
         "email" => EMAIL_HELP,
+        "exposure" => EXPOSURE_HELP,
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
         "scan" => {
