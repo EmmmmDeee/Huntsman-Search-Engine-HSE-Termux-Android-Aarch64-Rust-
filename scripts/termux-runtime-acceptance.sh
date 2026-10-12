@@ -171,6 +171,15 @@ verify_api() {
   grep -q '"count"' "$modules" || return 1
   grep -q '"invariant"' "$command" || return 1
   grep -q '"roles"' "$command" || return 1
+  # The Web UI lookup path, offline: a phone lookup makes no request, so this proves the
+  # handler, its worker thread and the JSON report on the handset without network or keys.
+  local lookup="$WORK_DIR/lookup.json"
+  curl --fail --silent --show-error --max-time 10 -H 'X-Huntsman-Lookup: 1' \
+    "$base/api/lookup?kind=phone&q=%2B61412345678" -o "$lookup" || return 1
+  grep -q '"route":"phone"' "$lookup" || return 1
+  grep -q '"value":"+61412345678"' "$lookup" || return 1
+  # Without the header the lookup must be refused, so a page on another site cannot run one.
+  [ "$(curl --silent --max-time 5 -o /dev/null -w '%{http_code}' "$base/api/lookup?kind=phone&q=%2B61412345678")" = 403 ] || return 1
 }
 
 # A browser opens speculative connections and sends nothing on them. A server that serves one

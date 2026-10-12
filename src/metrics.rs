@@ -4,8 +4,16 @@ use serde::Serialize;
 
 use crate::confidence::Classification;
 use crate::entity::Entity;
-use crate::eval::stats::mean;
 use crate::graph::{EntityRelation, Graph, UNREACHABLE};
+
+#[allow(clippy::cast_precision_loss)]
+fn mean(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        0.0
+    } else {
+        values.iter().copied().sum::<f64>() / values.len() as f64
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TierCounts {

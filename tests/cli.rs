@@ -167,7 +167,10 @@ fn help_and_version_are_available() {
         ("domain-lifecycle", "domain-lifecycle analyze INPUT.json"),
         ("people", "people NAME [--save FILE]"),
         ("phone", "phone NUMBER [--save FILE]"),
-        ("scan", "scan SELECTOR [-k people|email|username|phone]"),
+        (
+            "scan",
+            "scan SELECTOR [-k people|email|exposure|username|phone]",
+        ),
         ("investigate", "investigate TEXT..."),
         ("modules", "modules [--json]"),
         ("attack", "attack status|coverage|gaps [--json]"),

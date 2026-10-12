@@ -138,6 +138,7 @@ cargo run -- seeknow --help              # SeekNow subcommands; offline
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens of at least two letters, no network
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
 cargo run -- email nobody@example.com     # deterministic pivots + public Gravatar lookup
+cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax evidence (keyed; no key = no request)
 cargo run -- username octocat             # variants + public GitHub/Bluesky lookups
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
@@ -373,19 +374,24 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 `huntsman-recon serve` starts a dependency-free embedded UI on `127.0.0.1:8080` by default. `HSE_BIND` or `serve --bind ADDR` selects another socket address. Explicit non-loopback binds require a non-empty `HSE_AUTH_TOKEN`.
 
-The first rebuilt API surface is read-only:
+The API surface:
 
 - `GET /api/health` — process name/version and status;
 - `GET /api/modules` — the same truthful reachable-module catalogue as `modules --json`;
 - `GET /api/command` — the same validated engineering command contract as `command --json`;
-- `GET /` — a minimal embedded page that renders those endpoints.
+- `GET /api/lookup?kind=auto|people|email|exposure|username|phone&q=SELECTOR` — one lookup through the same routing and front-ends as `scan`, returning `{route, text, entities, outcomes}` as JSON. `auto` infers the kind exactly as `scan` does; `exposure` is never inferred because it spends operator keys. Errors are JSON `{"error": …}`: 400 bad selector, 422 unusable selector, 502 every source failed, 503 lookup capacity in use;
+- `GET /` — a mobile-first page with a lookup form, the outcome table, the rendered report, a "Download JSON" button, and a collapsible status panel.
 
-The listener bounds request headers to 16 KiB, applies finite read/write timeouts, supports `GET` and `HEAD`, and closes each connection after one response. Each connection has its own thread, at most 32 at a time; a further connection is answered `503` with `Retry-After: 1`, so a connection that sends nothing (as a browser's speculative ones do) holds up only itself. The default bind is `127.0.0.1:8080`, which needs no root and no port below 1024: run `huntsman-recon serve` in Termux and open `http://127.0.0.1:8080/` in the phone's browser. The broader legacy scan-control UI, stored-result browsing, write endpoints, and complete API surface remain to be rebuilt.
+`/api/lookup` makes network requests on the operator's behalf, so it is guarded beyond the loopback `Host` check: it needs the `X-Huntsman-Lookup: 1` header (another origin cannot send it without a CORS preflight, which this server never approves), it refuses requests the browser marks `Sec-Fetch-Site` cross-site or same-site, and it needs the bearer token whenever `HSE_AUTH_TOKEN` is set. At most two lookups run at once, each on its own 4 MiB-stack worker; a third is answered `503`. Provider text is written into the page as text, never as markup.
+
+The listener bounds request headers to 16 KiB, applies finite read/write timeouts, supports `GET` and `HEAD`, and closes each connection after one response. Each connection has its own thread, at most 32 at a time; a further connection is answered `503` with `Retry-After: 1`, so a connection that sends nothing (as a browser's speculative ones do) holds up only itself.
+
+On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no root and no port below 1024: run `huntsman-recon serve` and open `http://127.0.0.1:8080/` in the phone's browser. Keys come from the same environment and `~/.huntsman.env` chain as the CLI, so export them in the Termux session before `serve`. Stored-result browsing, write endpoints, and the complete legacy API remain to be rebuilt.
 
 
 ### Batch scan input
 
-`scan --input-file FILE [-k people|email|username|phone]` accepts UTF-8 files up to 1 MiB with one target per line. Blank lines and lines whose trimmed form starts with `#` are ignored; exact duplicate seeds keep only their first occurrence. A batch is capped at 1000 unique seeds, every accepted seed is attempted even after an earlier failure, and the process exits non-zero after completion if any seed failed. Batch `--save` is refused for now so one seed can never overwrite another seed's ledger artifact.
+`scan --input-file FILE [-k people|email|exposure|username|phone]` accepts UTF-8 files up to 1 MiB with one target per line. Blank lines and lines whose trimmed form starts with `#` are ignored; exact duplicate seeds keep only their first occurrence. A batch is capped at 1000 unique seeds, every accepted seed is attempted even after an earlier failure, and the process exits non-zero after completion if any seed failed. Batch `--save` is refused for now so one seed can never overwrite another seed's ledger artifact.
 
 
 ### Domain lifecycle analysis

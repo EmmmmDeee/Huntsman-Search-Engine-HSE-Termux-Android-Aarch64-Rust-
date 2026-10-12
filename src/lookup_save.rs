@@ -87,6 +87,21 @@ pub const PHONE_POLICY: SavePolicy = SavePolicy {
     entity_provenance: phone_provenance,
 };
 
+fn exposure_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        "hibp_account" => ("hibp_account", "src/exposure_cli.rs"),
+        "stolen_tax" => ("stolen_tax", "src/stolen_tax.rs"),
+        _ => (source, "src/exposure_cli.rs"),
+    }
+}
+
+pub const EXPOSURE_POLICY: SavePolicy = SavePolicy {
+    default_source: "hibp_account",
+    does_not_show: "a breach exposure record is not an identity-resolution verdict",
+    outcome_provenance: exposure_provenance,
+    entity_provenance: exposure_provenance,
+};
+
 /// Persist one lookup report as a fresh unverified hash chain.
 ///
 /// # Errors
