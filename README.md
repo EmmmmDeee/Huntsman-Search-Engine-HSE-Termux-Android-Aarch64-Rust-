@@ -8,8 +8,8 @@ score.
 
 > **Status:** this is the `huntsman-recon` reconstruction, not the previous
 > `hse` monolith. `people`, `email`, `username`, and `phone` provide subsets of the old monolith's person-lookups.
-> Canonical extracted legacy trees are preserved as read-only reconstruction references;
-> the two historical ZIP references remain byte-pinned at the repository root. See
+> The historical source archives are intentionally absent from the active tree; their SHA-256 and
+> Git identities are recorded for recovery from Git history. See
 > [archive provenance](docs/ARCHIVE_PROVENANCE.md) and [architecture and status](ARCHITECTURE.md).
 
 ## Install on Termux (Android arm64)
@@ -85,11 +85,10 @@ before using credentials or network access.
 | Path | Contents |
 | --- | --- |
 | `src/` | The crate: library modules plus the `huntsman-recon` binary (`main.rs`). |
-| `tests/` | Acceptance, CLI, local-HTTP and legacy-reference integration tests; `hibp_build.rs` (build-time key embedding rules); `android_ci.rs` (the CI workflow keeps the aarch64 Android cross-build and its artifact); plus `readme.rs` and `dispositions.rs`, which check this README and `docs/ARCHIVE_PROVENANCE.md` against the binary and `legacy/`. |
+| `tests/` | Acceptance, CLI and local-HTTP integration tests; `hibp_build.rs` (build-time key embedding rules); `android_ci.rs` (the CI workflow keeps the aarch64 Android cross-build and its artifact); plus `readme.rs`, which checks this README's examples, usage, exit codes and gate range against the binary, and `architecture_doc.rs`, which checks `ARCHITECTURE.md` against `src/`. |
 | `var/` | Artifacts written by `check` (`ledger.json`, `navigator.json`, `stix-bundle.json`). CI fails if `check` changes them. |
-| `docs/` | `RECONSTRUCTION_2026-10-02.md` (decisions and falsification passes), `DISPOSITIONS.md` (per-file accounting of every legacy file) and `RELEASING.md` (the main-channel release workflow, its key scanner, publish refusals and required attestation). |
-| `legacy/` | Canonical extracted historical reference trees. Not part of the build. |
-| `docs/ARCHIVE_PROVENANCE.md` | SHA-256/Git identities and extracted-tree mapping for the pinned root ZIP references. |
+| `docs/` | Design and operations notes, including `RELEASING.md` (the main-channel release workflow, its key scanner, publish refusals and required attestation). |
+| `docs/ARCHIVE_PROVENANCE.md` | SHA-256 and Git identities of the historical source archives, which are absent from the active tree and recoverable from Git history. |
 | `.github/` | `workflows/ci.yml` (tests on Rust 1.87 and stable; aarch64 Android cross-build), `workflows/release.yml` (`main-<sha7>` pre-releases of `huntsman-recon`), `scripts/` (`scan-for-keys.sh`, `install-termux.sh`) and `actions/setup-ndk-aarch64` (NDK compiler and linker environment). |
 | `CHANGELOG.md` | Notable changes, Keep a Changelog format. |
 | `docs/COMMERCIAL_READINESS.md` | Buyer/client due-diligence index: reusable assets, proof boundaries, commercial-readiness gates, and value-maximizing engineering sequence. |
@@ -199,7 +198,7 @@ The refactor-overlay foundations preserved under historical Git tree `39d9f765f0
 
 Rebuilt monolith utilities: `au_id` (ABN, ACN, BSB), `geohash`, `confidence` (corroboration, ancestry-aware), `redact` (coordinate coarsening, secret scrubbing). `check` exercises them as gate 10.
 
-See `docs/RECONSTRUCTION_2026-10-02.md`.
+See [architecture and status](ARCHITECTURE.md) for the reconstruction decisions and verification approach.
 
 ## HIBP (`hibp` command)
 
