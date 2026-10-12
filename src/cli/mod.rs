@@ -102,6 +102,7 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         Some("exposure") => lookup::exposure_cmd(&remaining.collect::<Vec<_>>()),
         Some("username") => lookup::username_cmd(&remaining.collect::<Vec<_>>()),
         Some("phone") => lookup::phone_cmd(&remaining.collect::<Vec<_>>()),
+        Some("domain") => lookup::domain_cmd(&remaining.collect::<Vec<_>>()),
         Some("scan") => lookup::scan_cmd(&remaining.collect::<Vec<_>>()),
         Some("investigate") => lookup::investigate_cmd(&remaining.collect::<Vec<_>>()),
         Some("query") => lookup::query_cmd(&remaining.collect::<Vec<_>>()),

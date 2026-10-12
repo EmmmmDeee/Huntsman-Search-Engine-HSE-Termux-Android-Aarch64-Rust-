@@ -102,6 +102,21 @@ pub const EXPOSURE_POLICY: SavePolicy = SavePolicy {
     entity_provenance: exposure_provenance,
 };
 
+fn domain_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        "crtsh" => ("crtsh", "src/crtsh.rs"),
+        "dns" => ("dns", "src/dns.rs"),
+        _ => (source, "src/domain_cli.rs"),
+    }
+}
+
+pub const DOMAIN_POLICY: SavePolicy = SavePolicy {
+    default_source: "crtsh",
+    does_not_show: "a domain-recon lead is not an identity-resolution verdict",
+    outcome_provenance: domain_provenance,
+    entity_provenance: domain_provenance,
+};
+
 /// Persist one lookup report as a fresh unverified hash chain.
 ///
 /// # Errors
