@@ -12,7 +12,7 @@ use crate::entity::Entity;
 use crate::error::Error;
 use crate::http::{Transport, UreqTransport};
 use crate::lookup_args::LookupTokens;
-use crate::lookup_report::entity_row;
+use crate::lookup_report;
 use crate::recon::ReconTargetKind;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
@@ -121,13 +121,10 @@ pub fn run<T: Transport + ?Sized>(transport: &T, domain: &str, now_unix: u64) ->
         return DomainRun::Failed(format!("no results for domain {domain}"));
     }
 
-    let mut text = String::new();
-    use std::fmt::Write as _;
-    let _ = writeln!(text, "domain: {domain}");
-    for entity in &entities {
-        text.push_str(&entity_row(entity, &entity.value));
-        text.push('\n');
-    }
+    let mut text = match lookup_report::render(&entities, &outcomes) {
+        Ok(rendered) => rendered,
+        Err(msg) => return DomainRun::Failed(msg),
+    };
     for section in &sections {
         text.push_str(section);
         if !section.ends_with('\n') {
