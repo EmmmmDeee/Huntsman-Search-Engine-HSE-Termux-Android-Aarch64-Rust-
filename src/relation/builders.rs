@@ -817,6 +817,28 @@ mod tests {
     }
 
     #[test]
+    fn url_hosted_on_prefers_exact_www_host_entity() {
+        let www = ent(EntityKind::Domain, "www.example.com", 0.9);
+        let url = ent(EntityKind::Url, "https://WWW.Example.com:443/login", 0.6);
+        let rels = derive_structural(&[www.clone(), url.clone()], "s");
+        assert!(
+            rels.iter()
+                .any(|relation| relation.kind == RelationKind::HostedOn
+                    && relation.from_uid == url.uid
+                    && relation.to_uid == www.uid)
+        );
+
+        let apex = ent(EntityKind::Domain, "example.com", 0.9);
+        let rels = derive_structural(&[apex.clone(), www.clone(), url.clone()], "s");
+        let hosted: Vec<_> = rels
+            .iter()
+            .filter(|relation| relation.kind == RelationKind::HostedOn)
+            .collect();
+        assert_eq!(hosted.len(), 1);
+        assert_eq!(hosted[0].to_uid, www.uid);
+    }
+
+    #[test]
     fn resolution_and_registration_link_present_entities_only() {
         let mut domain = ent(EntityKind::Domain, "example.com", 0.92);
         domain.add_evidence(
