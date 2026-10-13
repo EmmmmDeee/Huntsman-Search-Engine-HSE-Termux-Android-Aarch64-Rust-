@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::method_actor::{ActorError, ActorMetadata, ActorResult, FunctionActor, MethodActor};
+use crate::method_actor::{ActorMetadata, FunctionActor, MethodActor};
 
 /// Create an actor that filters empty or whitespace-only strings.
 pub fn whitespace_filter_actor() -> Arc<dyn MethodActor> {

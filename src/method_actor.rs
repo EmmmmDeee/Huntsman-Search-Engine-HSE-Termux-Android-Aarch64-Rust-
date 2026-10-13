@@ -314,6 +314,55 @@ impl PipelineBuilder {
         self
     }
 
+    /// Topologically sort actors by dependencies.
+    fn topological_sort(actors: &[(String, Arc<dyn MethodActor>)]) -> ActorResult<Vec<usize>> {
+        let n = actors.len();
+        let mut in_degree = vec![0; n];
+        let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut id_to_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+        for (i, (id, _)) in actors.iter().enumerate() {
+            id_to_index.insert(id.clone(), i);
+        }
+
+        for (i, (_, actor)) in actors.iter().enumerate() {
+            for dep_id in &actor.metadata().dependencies {
+                if let Some(&dep_idx) = id_to_index.get(dep_id) {
+                    adjacency[dep_idx].push(i);
+                    in_degree[i] += 1;
+                } else {
+                    return Err(ActorError::DependencyViolation(format!(
+                        "actor {} depends on unknown actor {}",
+                        actor.metadata().id, dep_id
+                    )));
+                }
+            }
+        }
+
+        let mut queue: Vec<usize> = (0..n).filter(|i| in_degree[*i] == 0).collect();
+        let mut order = Vec::new();
+
+        while !queue.is_empty() {
+            let node = queue.remove(0);
+            order.push(node);
+
+            for &neighbor in &adjacency[node] {
+                in_degree[neighbor] -= 1;
+                if in_degree[neighbor] == 0 {
+                    queue.push(neighbor);
+                }
+            }
+        }
+
+        if order.len() != n {
+            return Err(ActorError::DependencyViolation(
+                "circular dependency detected in actor pipeline".to_string(),
+            ));
+        }
+
+        Ok(order)
+    }
+
     /// Build and validate the pipeline.
     pub fn build(self) -> ActorResult<Pipeline> {
         self.config.validate()?;
@@ -324,21 +373,27 @@ impl PipelineBuilder {
             ));
         }
 
-        let actor_ids: Vec<_> = self.actors.iter().map(|(id, _)| id.clone()).collect();
+        let sort_order = Self::topological_sort(&self.actors)?;
+        let mut sorted_actors = Vec::new();
+        let mut actor_order = Vec::new();
+        let mut estimated_cost = 0u32;
+
+        for &idx in &sort_order {
+            let (id, actor) = self.actors[idx].clone();
+            sorted_actors.push(actor.clone());
+            actor_order.push(id);
+            estimated_cost = estimated_cost.saturating_add(actor.metadata().cost_estimate);
+        }
+
+        let is_optimal = sort_order.iter().enumerate().all(|(i, &idx)| idx == i);
         let plan = ExecutionPlan {
-            actor_order: actor_ids.clone(),
-            is_optimal: true,
-            estimated_cost: self
-                .actors
-                .iter()
-                .map(|(_, a)| a.metadata().cost_estimate)
-                .sum(),
+            actor_order,
+            is_optimal,
+            estimated_cost,
         };
 
-        plan.validate(&actor_ids)?;
-
         Ok(Pipeline {
-            actors: self.actors.into_iter().map(|(_, a)| a).collect(),
+            actors: sorted_actors,
             config: self.config,
             plan,
         })
@@ -359,7 +414,20 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
+    /// Get the execution plan for this pipeline.
+    pub fn plan(&self) -> &ExecutionPlan {
+        &self.plan
+    }
+
+    /// Get the configuration for this pipeline.
+    pub fn config(&self) -> &PipelineConfig {
+        &self.config
+    }
+
     /// Execute the pipeline with the given input items.
+    ///
+    /// Actors are executed in the order determined by their dependencies.
+    /// See `ExecutionPlan` for the specific ordering and cost estimates.
     pub fn execute(&self, mut items: Vec<String>) -> ActorResult<PipelineExecution> {
         let mut results = Vec::new();
         let start_time = std::time::Instant::now();
@@ -487,5 +555,71 @@ mod tests {
         let result = pipeline.execute(vec!["test".to_string()]).unwrap();
         assert_eq!(result.output, vec!["test".to_string()]);
         assert_eq!(result.stages.len(), 1);
+    }
+
+    #[test]
+    fn test_dependency_ordering() {
+        let metadata_a = ActorMetadata::new("a", "Actor A");
+        let actor_a = Arc::new(FunctionActor::new(metadata_a, Arc::new(|items| Ok(items))));
+
+        let metadata_b = ActorMetadata::new("b", "Actor B").with_dependency("a");
+        let actor_b = Arc::new(FunctionActor::new(metadata_b, Arc::new(|items| Ok(items))));
+
+        let metadata_c = ActorMetadata::new("c", "Actor C").with_dependency("b");
+        let actor_c = Arc::new(FunctionActor::new(metadata_c, Arc::new(|items| Ok(items))));
+
+        let pipeline = PipelineBuilder::new()
+            .add_actor(actor_c)
+            .add_actor(actor_b)
+            .add_actor(actor_a)
+            .build()
+            .unwrap();
+
+        assert_eq!(pipeline.plan().actor_order, vec!["a", "b", "c"]);
+        assert!(!pipeline.plan().is_optimal);
+    }
+
+    #[test]
+    fn test_circular_dependency_detection() {
+        let metadata_a =
+            ActorMetadata::new("a", "Actor A").with_dependency("c");
+        let actor_a = Arc::new(FunctionActor::new(metadata_a, Arc::new(|items| Ok(items))));
+
+        let metadata_b = ActorMetadata::new("b", "Actor B").with_dependency("a");
+        let actor_b = Arc::new(FunctionActor::new(metadata_b, Arc::new(|items| Ok(items))));
+
+        let metadata_c = ActorMetadata::new("c", "Actor C").with_dependency("b");
+        let actor_c = Arc::new(FunctionActor::new(metadata_c, Arc::new(|items| Ok(items))));
+
+        let result = PipelineBuilder::new()
+            .add_actor(actor_a)
+            .add_actor(actor_b)
+            .add_actor(actor_c)
+            .build();
+
+        assert!(result.is_err());
+        match result {
+            Err(ActorError::DependencyViolation(msg)) => {
+                assert!(msg.contains("circular dependency"));
+            }
+            _ => panic!("expected circular dependency error"),
+        }
+    }
+
+    #[test]
+    fn test_missing_dependency_detection() {
+        let metadata_a =
+            ActorMetadata::new("a", "Actor A").with_dependency("missing");
+        let actor_a = Arc::new(FunctionActor::new(metadata_a, Arc::new(|items| Ok(items))));
+
+        let result = PipelineBuilder::new().add_actor(actor_a).build();
+
+        assert!(result.is_err());
+        match result {
+            Err(ActorError::DependencyViolation(msg)) => {
+                assert!(msg.contains("unknown actor"));
+            }
+            _ => panic!("expected missing dependency error"),
+        }
     }
 }
