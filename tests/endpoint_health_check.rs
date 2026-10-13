@@ -1,9 +1,9 @@
 //! Endpoint health check suite for Australian OSINT sources.
 //!
-//! Validates that all documented endpoints in AUSTRALIAN_OSINT_RESOURCES.md
+//! Validates that all documented endpoints in `AUSTRALIAN_OSINT_RESOURCES.md`
 //! are reachable and return expected response codes.
 //!
-//! Run with: cargo test --test endpoint_health_check -- --test-threads=1
+//! Run with: `cargo test --test endpoint_health_check -- --test-threads=1`
 
 use std::time::Duration;
 
@@ -35,12 +35,12 @@ const TEST_ENTITIES: &[(&str, &str)] = &[
 
 /// Check basic HTTP/HTTPS endpoints for reachability
 #[allow(unused_variables)]
-fn check_http_endpoint(url: &str, timeout: Duration) -> Result<u16, String> {
+fn check_http_endpoint(url: &str, timeout: Duration) -> u16 {
     // This is a simple validation that the endpoint is reachable
     // In production, this would use actual HTTP client library
     // For now, document the test pattern
 
-    eprintln!("Validating endpoint: {}", url);
+    eprintln!("Validating endpoint: {url}");
 
     // Verification strategy:
     // 1. Parse URL protocol and host
@@ -49,82 +49,67 @@ fn check_http_endpoint(url: &str, timeout: Duration) -> Result<u16, String> {
     // 4. Record response code and latency
     // 5. Return status code or error
 
-    Ok(200) // Placeholder for actual implementation
+    200 // Placeholder for actual implementation
 }
 
 /// Validate WHOIS endpoints specifically
 #[allow(dead_code)]
-fn check_whois_endpoint(host: &str, port: u16, test_query: &str) -> Result<(), String> {
-    eprintln!(
-        "Validating WHOIS: {}:{} with query '{}'",
-        host, port, test_query
-    );
+fn check_whois_endpoint(host: &str, port: u16, test_query: &str) {
+    eprintln!("Validating WHOIS: {host}:{port} with query '{test_query}'");
 
     // WHOIS validation pattern:
     // 1. Connect to host:port (usually port 43)
     // 2. Send query + \r\n
     // 3. Receive response (not "not found", not error)
     // 4. Close connection
-
-    Ok(())
 }
 
 #[test]
-#[ignore] // Run only when explicitly testing endpoints
+#[ignore = "Run only when explicitly testing endpoints"]
 fn validate_tier1_endpoints_reachable() {
     eprintln!("\n=== Tier 1 Government Endpoint Validation ===\n");
 
     for (name, endpoint) in TIER1_ENDPOINTS {
-        eprintln!("Checking {} ({})", name, endpoint);
+        eprintln!("Checking {name} ({endpoint})");
 
         if endpoint.contains("://") {
             // HTTP/HTTPS endpoint
-            match check_http_endpoint(endpoint, Duration::from_secs(5)) {
-                Ok(status) if status == 200 || status == 301 => {
-                    eprintln!("  ✓ {}: HTTP {}", name, status);
-                }
-                Ok(status) => {
-                    eprintln!("  ⚠ {}: HTTP {} (unexpected)", name, status);
-                }
-                Err(e) => {
-                    eprintln!("  ✗ {}: {}", name, e);
-                }
+            let status = check_http_endpoint(endpoint, Duration::from_secs(5));
+            if status == 200 || status == 301 {
+                eprintln!("  ✓ {name}: HTTP {status}");
+            } else {
+                eprintln!("  ⚠ {name}: HTTP {status} (unexpected)");
             }
         } else if endpoint.contains(":43") {
             // WHOIS endpoint
             let parts: Vec<&str> = endpoint.split(':').collect();
             if parts.len() == 2 {
-                eprintln!(
-                    "  ⏳ {}: WHOIS validation (pattern defined, not yet enabled)",
-                    name
-                );
+                eprintln!("  ⏳ {name}: WHOIS validation (pattern defined, not yet enabled)");
             }
         }
     }
 }
 
 #[test]
-#[ignore] // Run only when explicitly testing endpoints
+#[ignore = "Run only when explicitly testing endpoints"]
 fn validate_endpoint_response_formats() {
     eprintln!("\n=== Endpoint Response Format Validation ===\n");
 
     for (endpoint_name, test_query) in TEST_ENTITIES {
-        eprintln!("Testing {} with query: {}", endpoint_name, test_query);
+        eprintln!("Testing {endpoint_name} with query: {test_query}");
 
         // Pattern-based validation:
         // - WHOIS responses contain key:value pairs
         // - HTTP registry endpoints return HTML/JSON with expected structure
         // - Parsing rules should match those in src/*.rs modules
 
-        eprintln!(
-            "  → Validation pattern defined in module: src/{}.rs",
-            endpoint_name.to_lowercase().replace(" ", "_")
-        );
+        let module_name = endpoint_name.to_lowercase().replace(' ', "_");
+        eprintln!("  → Validation pattern defined in module: src/{module_name}.rs");
     }
 }
 
 #[test]
-#[ignore] // Run only in CI/CD validation pipeline
+#[ignore = "Run only in CI/CD validation pipeline"]
 fn validate_response_latency() {
     eprintln!("\n=== Response Latency Measurement ===\n");
     eprintln!("Performance targets from AUSTRALIAN_OSINT_RESOURCES.md:");
@@ -159,8 +144,7 @@ fn endpoint_list_completeness() {
         assert!(!endpoint.is_empty(), "Endpoint URL must not be empty");
         assert!(
             endpoint.contains("://") || endpoint.contains(":43"),
-            "Endpoint must be URL or WHOIS port format: {}",
-            endpoint
+            "Endpoint must be URL or WHOIS port format: {endpoint}"
         );
     }
 }
@@ -174,16 +158,16 @@ fn endpoint_documentation_consistency() {
             .any(|(name, _)| name.to_lowercase().contains(&endpoint_name.to_lowercase()));
         assert!(
             found,
-            "Test entity references undocumented endpoint: {}",
-            endpoint_name
+            "Test entity references undocumented endpoint: {endpoint_name}"
         );
     }
 }
 
 /// Helper to format health check results for changelog
 #[allow(dead_code)]
+#[must_use]
 fn format_health_check_result(source: &str, status: &str, timestamp: &str) -> String {
-    format!("[{}] {}: {}", timestamp, source, status)
+    format!("[{timestamp}] {source}: {status}")
 }
 
 #[test]
