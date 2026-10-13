@@ -154,6 +154,7 @@ pub mod stage;
 pub mod stix;
 pub mod stolen_tax;
 pub mod store;
+pub mod subdomain_takeover;
 pub mod tags;
 pub mod termination;
 pub mod textnorm;

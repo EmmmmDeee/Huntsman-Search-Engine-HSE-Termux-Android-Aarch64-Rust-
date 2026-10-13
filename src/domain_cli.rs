@@ -16,6 +16,7 @@ use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::recon::ReconTargetKind;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::subdomain_takeover;
 
 pub const DOMAIN_USAGE: &str = "usage: huntsman-recon domain DOMAIN [--save FILE]";
 
@@ -115,6 +116,17 @@ pub fn run<T: Transport + ?Sized>(transport: &T, domain: &str, now_unix: u64) ->
     let (outcome, section) = dns_outcome(dns_report, now_unix);
     outcomes.push(outcome);
     if let Some(section) = section {
+        sections.push(section);
+    }
+
+    // Subdomain takeover detection: probe discovered subdomains for takeover vulnerabilities.
+    let (takeover_entities, takeover_outcome, takeover_section) =
+        subdomain_takeover_detection(transport, &entities, &domain, now_unix);
+    entities.extend(takeover_entities);
+    if let Some(outcome) = takeover_outcome {
+        outcomes.push(outcome);
+    }
+    if let Some(section) = takeover_section {
         sections.push(section);
     }
 
@@ -666,4 +678,54 @@ mod tests {
         assert_eq!(out.skipped, 8);
         assert_eq!(out.resolved, 0);
     }
+}
+
+/// Subdomain takeover detection: probe discovered subdomains for vulnerabilities.
+/// Extracts Domain entities that are subdomains, probes them for takeover signatures,
+/// and returns any findings as entities with evidence.
+fn subdomain_takeover_detection<T: Transport + ?Sized>(
+    transport: &T,
+    entities: &[Entity],
+    root_domain: &str,
+    now_unix: u64,
+) -> (Vec<Entity>, Option<SourceExecutionOutcome>, Option<String>) {
+    // Extract subdomains: Domain entities where the value is a subdomain of root_domain
+    let subdomains: Vec<String> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .map(|e| e.value.as_str())
+        .filter(|value| *value != root_domain && value.ends_with(&format!(".{root_domain}")))
+        .map(|s| s.to_owned())
+        .collect();
+
+    if subdomains.is_empty() {
+        return (Vec::new(), None, None);
+    }
+
+    // Run takeover detection on subdomains
+    let findings = subdomain_takeover::detect_in_subdomains(transport, &subdomains);
+
+    if findings.is_empty() {
+        let outcome = SourceExecutionOutcome::valid_zero("subdomain_takeover", now_unix);
+        let section = format!("subdomain_takeover: {}/{} subdomains probed", subdomains.len(), subdomains.len());
+        return (Vec::new(), Some(outcome), Some(section));
+    }
+
+    // Convert findings into entities with evidence
+    let mut result_entities = Vec::new();
+    for finding in &findings {
+        let mut entity = Entity::new(EntityKind::Domain, &finding.subdomain, 0.95, "subdomain_takeover");
+        let evidence = subdomain_takeover::finding_to_evidence(finding, "domain_cli");
+        entity.add_evidence(evidence);
+        result_entities.push(entity);
+    }
+
+    let count = findings.len();
+    let outcome = SourceExecutionOutcome::success("subdomain_takeover", now_unix, count);
+    let section = format!(
+        "subdomain_takeover: {}/{} subdomains vulnerable",
+        count, subdomains.len()
+    );
+
+    (result_entities, Some(outcome), Some(section))
 }
