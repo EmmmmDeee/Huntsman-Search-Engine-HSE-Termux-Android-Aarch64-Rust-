@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::VecDeque, fs};
+use std::{cell::RefCell, collections::VecDeque, fs, path::Path};
 
 use huntsman_recon::{
     http::{Request, Response, Transport, TransportFailure},
@@ -7,8 +7,10 @@ use huntsman_recon::{
 };
 
 fn fixture(name: &str) -> String {
-    fs::read_to_string(format!("tests/fixtures/wayback/{name}"))
-        .unwrap_or_else(|e| panic!("failed to load fixture {name}: {e}"))
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/wayback")
+        .join(name);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
 struct FakeTransport {

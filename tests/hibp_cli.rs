@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -22,8 +22,10 @@ const KEY: &str = "fake-hibp-key-5f0c1d2e3a4b";
 const PASSWORD: &str = "correct horse battery staple";
 
 fn fixture(name: &str) -> String {
-    fs::read_to_string(format!("tests/fixtures/hibp/{name}"))
-        .unwrap_or_else(|e| panic!("failed to load fixture {name}: {e}"))
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/hibp")
+        .join(name);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
 #[derive(Default)]
@@ -296,7 +298,12 @@ fn t1589_002_pastes_print_every_paste_field_and_404_is_no_results() {
 #[test]
 fn t1589_001_password_range_lists_every_suffix_without_a_key() {
     let (cmd, fake) = command(Some(KEY));
-    fake.push(200, &fixture("password_range.txt"), &[]);
+    let body = fixture("password_range.txt");
+    assert!(
+        body.contains("\r\n"),
+        "Pwned Passwords range bodies are CRLF-separated"
+    );
+    fake.push(200, &body, &[]);
     let out = run(&cmd, &["password-range", "21bd1"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     let lines: Vec<&str> = out.stdout.lines().collect();
