@@ -234,7 +234,9 @@ impl WaveExecutor {
                 };
 
                 // Add to results (no deadline check needed since thread ran).
-                let mut res = results_clone.lock().unwrap();
+                let mut res = results_clone
+                    .lock()
+                    .expect("results mutex poisoned: thread panicked while holding lock");
                 res.push(evidence);
             });
 
@@ -247,8 +249,14 @@ impl WaveExecutor {
         }
 
         match Arc::try_unwrap(results) {
-            Ok(mutex) => mutex.lock().unwrap().clone(),
-            Err(arc) => arc.lock().unwrap().clone(),
+            Ok(mutex) => mutex
+                .lock()
+                .expect("results mutex poisoned: thread panicked while holding lock")
+                .clone(),
+            Err(arc) => arc
+                .lock()
+                .expect("results mutex poisoned: thread panicked while holding lock")
+                .clone(),
         }
     }
 }

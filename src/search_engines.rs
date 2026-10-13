@@ -228,7 +228,7 @@ impl SearchOrchestrator {
     /// Create orchestrator with default configuration for all engines
     #[must_use]
     pub fn new(strategy: RotationStrategy) -> Self {
-        let engine_types = vec![
+        let engine_types = [
             SearchEngineType::WaybackMachine,
             SearchEngineType::GitHub,
             SearchEngineType::Shodan,
@@ -373,8 +373,7 @@ impl SearchOrchestrator {
         self.rate_limit_states
             .iter()
             .find(|s| s.engine == engine_type)
-            .map(|s| s.current_backoff)
-            .unwrap_or(Duration::from_secs(0))
+            .map_or(Duration::from_secs(0), |s| s.current_backoff)
     }
 }
 
@@ -389,7 +388,7 @@ impl RateLimitManager {
     #[must_use]
     pub fn new() -> Self {
         let mut states = std::collections::HashMap::new();
-        let engine_types = vec![
+        let engine_types = [
             SearchEngineType::WaybackMachine,
             SearchEngineType::GitHub,
             SearchEngineType::Shodan,
@@ -418,7 +417,8 @@ impl RateLimitManager {
         Self { states }
     }
 
-    /// Determine if a source should be skipped: backoff > remaining_budget.
+    /// Determine if a source should be skipped: backoff > `remaining_budget`.
+    #[must_use]
     pub fn should_skip(&self, source: SearchEngineType, remaining_budget: Duration) -> bool {
         if let Some(state) = self.states.get(&source) {
             state.current_backoff > remaining_budget
@@ -452,8 +452,7 @@ impl RateLimitManager {
     pub fn current_backoff(&self, source: SearchEngineType) -> Duration {
         self.states
             .get(&source)
-            .map(|s| s.current_backoff)
-            .unwrap_or(Duration::from_secs(0))
+            .map_or(Duration::from_secs(0), |s| s.current_backoff)
     }
 }
 
