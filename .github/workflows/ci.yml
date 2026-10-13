@@ -16,7 +16,7 @@ jobs:
   main-pr-origin:
     name: Main push originated from merged PR
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require merged pull request association
         env:
@@ -41,7 +41,7 @@ jobs:
 
   railway-iac:
     name: Railway IaC type validation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -52,7 +52,7 @@ jobs:
 
   directive-lock:
     name: Canonical Huntsman directive lock
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
@@ -62,7 +62,7 @@ jobs:
         run: cargo test --locked --test directive_lock
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # Keep the MSRV and stable verdicts independent: with fail-fast, a stable
       # failure cancels the 1.87 leg before it reports.
@@ -85,7 +85,7 @@ jobs:
 
   railway-container:
     name: Railway container smoke test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build current Huntsman Recon image
@@ -115,7 +115,7 @@ jobs:
 
   android-aarch64:
     name: Android aarch64 cross-build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       HUNTSMAN_HIBP_NO_EMBED: "1"
     steps:

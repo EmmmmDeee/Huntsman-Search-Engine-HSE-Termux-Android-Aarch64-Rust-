@@ -132,7 +132,7 @@ jobs:
     # this commit, or refuses a partial one, a non-prerelease or a tag at
     # another commit.
     name: Resolve main-channel tag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.t.outputs.tag }}
       publish: ${{ steps.t.outputs.publish }}
@@ -185,7 +185,7 @@ jobs:
   quality-msrv:
     name: Shared repair acceptance (Rust 1.87)
     needs: resolve
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -201,7 +201,7 @@ jobs:
   quality:
     name: Shared repair and Railway acceptance
     needs: resolve
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -247,7 +247,7 @@ jobs:
     # GH_TOKEN, no persisted git credentials, no OIDC.
     name: Build and key-scan aarch64 Termux binary
     needs: [resolve, quality-msrv, quality]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     env:
@@ -418,7 +418,7 @@ jobs:
     name: Publish main-channel pre-releases
     needs: [resolve, quality-msrv, quality, build]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.resolve.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write     # create the tags and pre-releases
       id-token: write     # Sigstore-backed provenance
