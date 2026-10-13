@@ -1,10 +1,15 @@
-use std::{cell::RefCell, collections::VecDeque};
+use std::{cell::RefCell, collections::VecDeque, fs};
 
 use huntsman_recon::{
     http::{Request, Response, Transport, TransportFailure},
     source_outcome::SourceOutcomeKind,
     wayback::{WaybackQuery, wayback_lookup},
 };
+
+fn fixture(name: &str) -> String {
+    fs::read_to_string(format!("tests/fixtures/wayback/{name}"))
+        .unwrap_or_else(|e| panic!("failed to load fixture {name}: {e}"))
+}
 
 struct FakeTransport {
     outcomes: RefCell<VecDeque<Result<Response, TransportFailure>>>,
@@ -42,13 +47,14 @@ fn response(status: u16, body: &str, truncated: bool) -> Response {
     }
 }
 
-fn valid_body() -> &'static str {
-    r#"[["urlkey","timestamp","original","mimetype","statuscode","digest"],["com,example)/","20260102030405","https://Example.COM./admin/login?next=%2F","text/html","200","sha1:ABC"],["malformed"],["com,example)/report.pdf","20260203040506","http://example.com:80/report.pdf","application/pdf","301","sha1:DEF"]]"#
+fn valid_body() -> String {
+    fixture("valid_response.json")
 }
 
 #[test]
 fn wayback_request_is_https_domain_scoped_and_bounded() {
-    let transport = FakeTransport::new(vec![Ok(response(200, valid_body(), false))]);
+    let body = valid_body();
+    let transport = FakeTransport::new(vec![Ok(response(200, &body, false))]);
     let result = wayback_lookup(
         &transport,
         &WaybackQuery {
@@ -81,7 +87,8 @@ fn wayback_request_is_https_domain_scoped_and_bounded() {
 
 #[test]
 fn wayback_parser_accepts_valid_rows_and_isolates_malformed_rows() {
-    let transport = FakeTransport::new(vec![Ok(response(200, valid_body(), false))]);
+    let body = valid_body();
+    let transport = FakeTransport::new(vec![Ok(response(200, &body, false))]);
     let result = wayback_lookup(
         &transport,
         &WaybackQuery {
@@ -111,8 +118,8 @@ fn wayback_parser_accepts_valid_rows_and_isolates_malformed_rows() {
 
 #[test]
 fn wayback_empty_valid_response_is_valid_zero() {
-    let body = r#"[["urlkey","timestamp","original","mimetype","statuscode","digest"]]"#;
-    let transport = FakeTransport::new(vec![Ok(response(200, body, false))]);
+    let body = fixture("empty_response.json");
+    let transport = FakeTransport::new(vec![Ok(response(200, &body, false))]);
     let result = wayback_lookup(
         &transport,
         &WaybackQuery {
@@ -130,8 +137,8 @@ fn wayback_empty_valid_response_is_valid_zero() {
 
 #[test]
 fn wayback_body_truncation_propagates_without_manufacturing_absence() {
-    let body = r#"[["urlkey","timestamp","original","mimetype","statuscode","digest"]]"#;
-    let transport = FakeTransport::new(vec![Ok(response(200, body, true))]);
+    let body = fixture("empty_response.json");
+    let transport = FakeTransport::new(vec![Ok(response(200, &body, true))]);
     let result = wayback_lookup(
         &transport,
         &WaybackQuery {
@@ -169,7 +176,8 @@ fn wayback_transport_failure_stays_transport_outcome() {
 
 #[test]
 fn wayback_non_2xx_never_emits_capture_evidence() {
-    let transport = FakeTransport::new(vec![Ok(response(503, valid_body(), false))]);
+    let body = valid_body();
+    let transport = FakeTransport::new(vec![Ok(response(503, &body, false))]);
     let result = wayback_lookup(
         &transport,
         &WaybackQuery {
@@ -186,7 +194,8 @@ fn wayback_non_2xx_never_emits_capture_evidence() {
 
 #[test]
 fn wayback_unusable_envelope_is_parser_drift() {
-    let transport = FakeTransport::new(vec![Ok(response(200, r#"{"rows":[]}"#, false))]);
+    let body = fixture("invalid_envelope.json");
+    let transport = FakeTransport::new(vec![Ok(response(200, &body, false))]);
     let result = wayback_lookup(
         &transport,
         &WaybackQuery {

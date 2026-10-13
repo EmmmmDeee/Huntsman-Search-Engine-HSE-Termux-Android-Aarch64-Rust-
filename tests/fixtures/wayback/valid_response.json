@@ -1,0 +1,1 @@
+[["urlkey","timestamp","original","mimetype","statuscode","digest"],["com,example)/","20260102030405","https://Example.COM./admin/login?next=%2F","text/html","200","sha1:ABC"],["malformed"],["com,example)/report.pdf","20260203040506","http://example.com:80/report.pdf","application/pdf","301","sha1:DEF"]]
