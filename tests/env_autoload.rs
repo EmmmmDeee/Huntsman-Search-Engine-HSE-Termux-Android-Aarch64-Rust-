@@ -34,24 +34,51 @@ fn write_mode(path: &Path, text: &str, mode: u32) {
     let _ = mode;
 }
 
-/// Accept one request on loopback, answer 200, return the raw request head.
-fn serve_once() -> (u16, thread::JoinHandle<String>) {
+/// What the one-shot server read: the request head, and why reading stopped, on
+/// which port, from which peer. A failed assertion then shows what was actually
+/// received; a `host:` header naming another port means a stray connection.
+struct Served {
+    head: String,
+    ended: String,
+}
+
+impl Served {
+    fn contains(&self, needle: &str) -> bool {
+        self.head.contains(needle)
+    }
+}
+
+impl std::fmt::Display for Served {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "reading ended: {}; head: {:?}", self.ended, self.head)
+    }
+}
+
+/// Accept one request on loopback, answer 200, return what was read.
+fn serve_once() -> (u16, thread::JoinHandle<Served>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let handle = thread::spawn(move || {
-        let (mut sock, _) = listener.accept().unwrap();
+        let (mut sock, peer) = listener.accept().unwrap();
         sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut buf = Vec::new();
         let mut chunk = [0u8; 512];
-        while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
-            match sock.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        let ended = loop {
+            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                break "complete head".to_owned();
             }
-        }
+            match sock.read(&mut chunk) {
+                Ok(0) => break "eof".to_owned(),
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(e) => break format!("{:?}", e.kind()),
+            }
+        };
         let _ =
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
-        String::from_utf8_lossy(&buf).into_owned()
+        Served {
+            head: String::from_utf8_lossy(&buf).into_owned(),
+            ended: format!("{ended} on port {port} from {peer}"),
+        }
     });
     (port, handle)
 }
@@ -117,7 +144,7 @@ fn private_default_file_is_auto_loaded() {
     let request = server.join().unwrap();
     assert!(
         request.contains("Bearer TEST_ONLY_VALUE_DEFAULT\r\n"),
-        "credential from ~/.huntsman.env was not sent"
+        "credential from ~/.huntsman.env was not sent; {request}"
     );
     std::fs::remove_dir_all(&home).unwrap();
 }
@@ -178,11 +205,10 @@ fn missing_default_file_is_a_silent_no_op() {
     let out = fetch(&home, port, &[], Some("TEST_ONLY_VALUE_ENV"));
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(stderr(&out), "");
+    let request = server.join().unwrap();
     assert!(
-        server
-            .join()
-            .unwrap()
-            .contains("Bearer TEST_ONLY_VALUE_ENV\r\n")
+        request.contains("Bearer TEST_ONLY_VALUE_ENV\r\n"),
+        "{request}"
     );
     std::fs::remove_dir_all(&home).unwrap();
 }
@@ -208,8 +234,11 @@ fn explicit_keys_file_overrides_the_default_file() {
     let out = fetch(&home, port, &["--keys", explicit_arg], None);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let request = server.join().unwrap();
-    assert!(request.contains("Bearer TEST_ONLY_VALUE_EXPLICIT\r\n"));
-    assert!(!request.contains("TEST_ONLY_VALUE_DEFAULT"));
+    assert!(
+        request.contains("Bearer TEST_ONLY_VALUE_EXPLICIT\r\n"),
+        "{request}"
+    );
+    assert!(!request.contains("TEST_ONLY_VALUE_DEFAULT"), "{request}");
 
     // A --keys file without the slot does not fall back to the default file.
     write_mode(&explicit, "UNRELATED_TEST_SLOT=TEST_ONLY_VALUE_X\n", 0o600);
@@ -247,11 +276,10 @@ fn default_file_wins_over_the_environment_like_keys() {
     let (port, server) = serve_once();
     let out = fetch(&home, port, &[], Some("TEST_ONLY_VALUE_ENV"));
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let request = server.join().unwrap();
     assert!(
-        server
-            .join()
-            .unwrap()
-            .contains("Bearer TEST_ONLY_VALUE_FILE\r\n")
+        request.contains("Bearer TEST_ONLY_VALUE_FILE\r\n"),
+        "{request}"
     );
 
     // A slot the file lacks still falls back to the environment.
@@ -263,11 +291,10 @@ fn default_file_wins_over_the_environment_like_keys() {
     let (port, server) = serve_once();
     let out = fetch(&home, port, &[], Some("TEST_ONLY_VALUE_ENV"));
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let request = server.join().unwrap();
     assert!(
-        server
-            .join()
-            .unwrap()
-            .contains("Bearer TEST_ONLY_VALUE_ENV\r\n")
+        request.contains("Bearer TEST_ONLY_VALUE_ENV\r\n"),
+        "{request}"
     );
     std::fs::remove_dir_all(&home).unwrap();
 }
@@ -292,12 +319,10 @@ fn anonymous_fetch_does_not_read_the_default_file() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(stderr(&out), "", "no credential requested, no warning");
+    let request = server.join().unwrap();
     assert!(
-        !server
-            .join()
-            .unwrap()
-            .to_ascii_lowercase()
-            .contains("authorization")
+        !request.head.to_ascii_lowercase().contains("authorization"),
+        "{request}"
     );
     std::fs::remove_dir_all(&home).unwrap();
 }
@@ -427,9 +452,12 @@ fn relative_or_empty_home_skips_auto_load_with_one_warning() {
         let request = server.join().unwrap();
         assert!(
             request.contains("Bearer TEST_ONLY_VALUE_ENV\r\n"),
-            "{home:?}"
+            "{home:?}: {request}"
         );
-        assert!(!request.contains("TEST_ONLY_VALUE_CWD"), "{home:?}");
+        assert!(
+            !request.contains("TEST_ONLY_VALUE_CWD"),
+            "{home:?}: {request}"
+        );
     }
     std::fs::remove_dir_all(&cwd).unwrap();
 }
