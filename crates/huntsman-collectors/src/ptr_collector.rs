@@ -83,7 +83,7 @@ impl PtrResolveCollector {
 #[async_trait]
 impl Collector for PtrResolveCollector {
     fn name(&self) -> &'static str {
-        "dns-ptr"
+        "dns_ptr"
     }
 
     fn can_consume(&self, kind: &EntityKind) -> bool {
@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(out[0].kind.canonical_value(), "host.example.com");
         assert_eq!(out[0].hop_depth, 1);
         assert_eq!(out[0].provenance.observed_at_utc, ANSWER_OBSERVED);
-        assert_eq!(out[0].provenance.source_module, "dns-ptr");
+        assert_eq!(out[0].provenance.source_module, "dns_ptr");
     }
 
     #[tokio::test]

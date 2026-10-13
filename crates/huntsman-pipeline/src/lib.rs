@@ -492,7 +492,7 @@ mod tests {
         match store.get(&ip.entity_id()) {
             Ok(Some(found)) => {
                 assert_eq!(found.hop_depth, 1);
-                assert_eq!(found.provenance.source_module, "dns-resolve");
+                assert_eq!(found.provenance.source_module, "dns_resolve");
                 assert_eq!(found.provenance.observed_at_utc, OBSERVED_AT);
             }
             other => panic!("resolved address not durable: {other:?}"),

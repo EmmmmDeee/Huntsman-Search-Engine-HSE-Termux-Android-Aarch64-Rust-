@@ -438,7 +438,7 @@ mod tests {
         let kind = domain("example.com");
         let a = ProvenanceEnvelope::new("seed", 1, b"one", &kind, EpistemicLevel::ProtocolLog);
         let b = ProvenanceEnvelope::new(
-            "dns-resolve",
+            "dns_resolve",
             2,
             b"two",
             &kind,

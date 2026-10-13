@@ -457,7 +457,7 @@ fn ip_entities<T: Transport + ?Sized>(transport: &T, raw: &str) -> Result<Vec<En
         let mut host = Entity::new(EntityKind::Domain, &name, 0.9, &scan_id);
         host.add_evidence(
             Evidence::new(
-                EvidenceProvenance::for_scan("dns_ptr", &scan_id),
+                EvidenceProvenance::for_scan("dns", &scan_id),
                 format!("PTR {} -> {name}", dns::reverse_name(ip)),
             )
             .with_attr("address", ip.to_string()),
@@ -957,7 +957,7 @@ mod tests {
         assert_eq!(value[0]["data"], "1.1.1.1");
         assert_eq!(value[1]["event_type"], "DOMAIN_NAME");
         assert_eq!(value[1]["data"], "one.one.one.one");
-        assert_eq!(value[1]["source"], "dns_ptr");
+        assert_eq!(value[1]["source"], "dns");
     }
 
     #[test]

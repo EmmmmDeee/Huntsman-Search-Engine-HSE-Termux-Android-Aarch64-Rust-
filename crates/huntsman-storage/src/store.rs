@@ -774,7 +774,7 @@ mod tests {
         let store = open(scratch.path());
         let direct = observed(
             "shared.example",
-            "dns-resolve",
+            "dns_resolve",
             1_710_000_000,
             b"wire response",
             EpistemicLevel::DirectObservation,
@@ -817,7 +817,7 @@ mod tests {
         let store = open(scratch.path());
         let direct = observed(
             "ledger.example",
-            "dns-resolve",
+            "dns_resolve",
             1_710_000_000,
             b"wire response",
             EpistemicLevel::DirectObservation,

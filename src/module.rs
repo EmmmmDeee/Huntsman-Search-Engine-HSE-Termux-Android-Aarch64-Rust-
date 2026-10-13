@@ -298,7 +298,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "SpiderFoot-compatible front end over rebuilt lookup paths",
     },
     ReachableModule {
-        name: "classify_module",
+        name: "classifier",
         command: "investigate TEXT... | --file FILE",
         access: "offline",
         network: false,
@@ -307,7 +307,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "bounded offline entity extraction from local text",
     },
     ReachableModule {
-        name: "local_search",
+        name: "search",
         command: "search QUERY [DIR]",
         access: "offline",
         network: false,
@@ -514,6 +514,38 @@ pub const fn reachable_modules() -> &'static [ReachableModule] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Catalogue entries whose authority lives outside `src/`, with that authority.
+    const WORKSPACE_ENTRY_POINTS: &[(&str, &str)] =
+        &[("dns_graph", "huntsman_pipeline::run_dns_graph")];
+
+    #[test]
+    fn reachable_module_names_are_canonical() {
+        let lib = include_str!("lib.rs");
+        let mut seen = std::collections::BTreeSet::new();
+        for module in reachable_modules() {
+            let name = module.name;
+            assert!(seen.insert(name), "duplicate catalogue name {name}");
+            assert!(
+                !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                "{name} is not a snake_case identifier"
+            );
+            let compiled = lib
+                .lines()
+                .any(|line| line.trim() == format!("pub mod {name};"));
+            let persisted = crate::entity::ENRICHMENT_ONLY_SOURCES.contains(&name);
+            let workspace = WORKSPACE_ENTRY_POINTS
+                .iter()
+                .any(|(entry, _)| *entry == name);
+            assert!(
+                compiled || persisted || workspace,
+                "{name} names no src/ module, persisted evidence source or workspace entry point"
+            );
+        }
+    }
 
     struct StubModule;
 

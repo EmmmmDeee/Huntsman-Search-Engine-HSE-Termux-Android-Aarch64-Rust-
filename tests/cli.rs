@@ -430,7 +430,7 @@ fn modules_lists_only_reachable_catalog_entries() {
         "phone_intl",
         "github_user",
         "gravatar",
-        "classify_module",
+        "classifier",
         "sf_compat",
         "web_server",
         "crtsh",

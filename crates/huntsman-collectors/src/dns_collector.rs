@@ -122,7 +122,7 @@ impl DnsResolveCollector {
 #[async_trait]
 impl Collector for DnsResolveCollector {
     fn name(&self) -> &'static str {
-        "dns-resolve"
+        "dns_resolve"
     }
 
     fn can_consume(&self, kind: &EntityKind) -> bool {
@@ -431,7 +431,7 @@ mod tests {
         assert!(addrs.contains(&IpAddr::V6(v6)), "{addrs:?}");
         for entity in &discovered {
             assert_eq!(entity.hop_depth, 1);
-            assert_eq!(entity.provenance.source_module, "dns-resolve");
+            assert_eq!(entity.provenance.source_module, "dns_resolve");
         }
     }
 
