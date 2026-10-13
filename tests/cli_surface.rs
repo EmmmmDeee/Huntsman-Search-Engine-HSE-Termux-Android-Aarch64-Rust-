@@ -123,3 +123,87 @@ fn no_command_prints_the_help_to_stderr_and_writes_nothing() {
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "wrote into {dir:?}");
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Every dispatched command is handed all of its arguments. An arm that takes only the next one or
+/// two leaves the rest unread, and the command then runs on part of what was typed.
+#[test]
+fn every_command_is_handed_all_of_its_arguments() {
+    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli/mod.rs"))
+        .expect("src/cli/mod.rs");
+    let dispatch = source
+        .split("match remaining.next().as_deref() {")
+        .nth(1)
+        .expect("cli::run dispatches on the first argument");
+    let dispatch = &dispatch[..dispatch.find("\n    }\n").expect("end of the dispatch")];
+    assert!(
+        !dispatch.contains("remaining.next()"),
+        "a dispatch arm reads single arguments, so the rest are dropped:\n{dispatch}"
+    );
+}
+
+/// A command that takes a fixed number of arguments refuses one more, before it reads or writes
+/// anything, instead of running on the ones it expected.
+#[test]
+fn fixed_arity_commands_refuse_an_extra_argument() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-surface-extra-argument");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    for args in [
+        &["check", "extra"][..],
+        &["geo", "-27.4698,153.0251", "-33.8688,151.2093", "extra"][..],
+        &["geohash", "-27.4698,153.0251", "9", "extra"][..],
+        &["coarsen", "-27.4698,153.0251", "extra"][..],
+        &["search", "brisbane port", ".", "extra"][..],
+        &["verify", "ledger.json", "extra"][..],
+        &["keys", "keys.env", "extra"][..],
+    ] {
+        let out = bin().args(args).current_dir(&dir).output().unwrap();
+        assert_eq!(out.status.code(), Some(i32::from(EX_USAGE)), "{args:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "", "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .starts_with(&format!("usage: huntsman-recon {}", args[0])),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "wrote into {dir:?}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A command whose last argument is free text takes the rest of the line, as `query` and
+/// `investigate` do, so an unquoted name, ABN or response body means what it means quoted.
+#[test]
+fn free_text_commands_take_the_rest_of_the_line() {
+    for (unquoted, quoted) in [
+        (
+            &["sources", "Ada", "Lovelace"][..],
+            &["sources", "Ada Lovelace"][..],
+        ),
+        (
+            &["id", "53", "004", "085", "616"][..],
+            &["id", "53 004 085 616"][..],
+        ),
+        (
+            &[
+                "classify",
+                "200",
+                "<html>just",
+                "a",
+                "moment",
+                "cloudflare</html>",
+            ][..],
+            &["classify", "200", "<html>just a moment cloudflare</html>"][..],
+        ),
+    ] {
+        let split = bin().args(unquoted).output().unwrap();
+        let whole = bin().args(quoted).output().unwrap();
+        assert_eq!(whole.status.code(), Some(0), "{quoted:?}");
+        assert_eq!(split.status.code(), whole.status.code(), "{unquoted:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&split.stdout),
+            String::from_utf8_lossy(&whole.stdout),
+            "{unquoted:?}"
+        );
+    }
+}

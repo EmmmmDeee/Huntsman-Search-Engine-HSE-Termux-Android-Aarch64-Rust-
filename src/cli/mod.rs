@@ -7,7 +7,7 @@
 use std::env;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT | run-history record|show [options]]";
+const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT | run-history record|show [options]]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -93,12 +93,12 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         Some("build-sha") => meta::build_sha_cmd(&remaining.collect::<Vec<_>>()),
         Some("command") => meta::command_cmd(&remaining.collect::<Vec<_>>()),
         Some("directive") => meta::directive_cmd(&remaining.collect::<Vec<_>>()),
-        Some("geo") => utility::geo(remaining.next(), remaining.next()),
-        Some("geohash") => utility::geohash_cmd(remaining.next(), remaining.next().as_deref()),
-        Some("coarsen") => utility::coarsen_cmd(remaining.next()),
-        Some("id") => utility::id_cmd(remaining.next()),
-        Some("search") => lookup::search_cmd(remaining.next(), remaining.next()),
-        Some("sources") => lookup::sources_cmd(remaining.next()),
+        Some("geo") => utility::geo(&remaining.collect::<Vec<_>>()),
+        Some("geohash") => utility::geohash_cmd(&remaining.collect::<Vec<_>>()),
+        Some("coarsen") => utility::coarsen_cmd(&remaining.collect::<Vec<_>>()),
+        Some("id") => utility::id_cmd(&remaining.collect::<Vec<_>>()),
+        Some("search") => lookup::search_cmd(&remaining.collect::<Vec<_>>()),
+        Some("sources") => lookup::sources_cmd(&remaining.collect::<Vec<_>>()),
         Some("domain-lifecycle") => meta::domain_lifecycle_cmd(&remaining.collect::<Vec<_>>()),
         Some("people") => lookup::people_cmd(&remaining.collect::<Vec<_>>()),
         Some("email") => lookup::email_cmd(&remaining.collect::<Vec<_>>()),
@@ -114,18 +114,18 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         Some("serve") => service::serve_cmd(&remaining.collect::<Vec<_>>()),
         Some("modules") => meta::modules_cmd(&remaining.collect::<Vec<_>>()),
         Some("attack") => meta::attack_cmd(&remaining.collect::<Vec<_>>()),
-        Some("classify") => utility::classify(remaining.next(), remaining.next()),
+        Some("classify") => utility::classify(&remaining.collect::<Vec<_>>()),
         Some("fetch") => network::fetch_cmd(&remaining.collect::<Vec<_>>()),
         Some("hibp") => network::hibp_cmd(&remaining.collect::<Vec<_>>()),
         Some("dehashed") => network::dehashed_cmd(&remaining.collect::<Vec<_>>()),
         Some("recon") => network::recon_cmd(&remaining.collect::<Vec<_>>()),
         Some("seeknow") => network::seeknow_cmd(&remaining.collect::<Vec<_>>()),
-        Some("keys") => meta::keys_cmd(remaining.next()),
+        Some("keys") => meta::keys_cmd(&remaining.collect::<Vec<_>>()),
         Some("credential-status") => meta::credential_status_cmd(&remaining.collect::<Vec<_>>()),
-        Some("verify") => meta::verify(remaining.next()),
+        Some("verify") => meta::verify(&remaining.collect::<Vec<_>>()),
         Some("correlate") => meta::correlate_cmd(&remaining.collect::<Vec<_>>()),
         Some("run-history") => meta::run_history_cmd(&remaining.collect::<Vec<_>>()),
-        Some("check") => selfcheck::check(),
+        Some("check") => selfcheck::check(&remaining.collect::<Vec<_>>()),
         Some(other) => help::unknown_command(other),
         None => help::no_command(),
     }

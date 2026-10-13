@@ -18,7 +18,7 @@ use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
     IndependenceEvidence,
 };
-use huntsman_recon::exit::EX_IOERR;
+use huntsman_recon::exit::{EX_IOERR, EX_USAGE};
 use huntsman_recon::fsio::write_atomic;
 use huntsman_recon::geohash;
 use huntsman_recon::geoint::{haversine_m, parse_latlon};
@@ -43,7 +43,11 @@ use huntsman_recon::stix::bundle;
 use huntsman_recon::termination::{FrontierState, TerminationSignals, decide_termination};
 
 /// Self-acceptance. Each gate has its own exit code; every artifact is regenerated, never left stale.
-pub(super) fn check() -> ExitCode {
+/// It takes no arguments: one that is given is refused before anything is written.
+pub(super) fn check(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        return fail(EX_USAGE, "usage: huntsman-recon check");
+    }
     match run_check() {
         Ok(meters) => {
             println!("command_hierarchy=accepted");

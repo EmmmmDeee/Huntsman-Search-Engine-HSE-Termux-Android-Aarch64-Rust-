@@ -11,28 +11,32 @@ use huntsman_recon::geoint::{haversine_m, parse_latlon};
 use huntsman_recon::redact::coarsen_latlon;
 use huntsman_recon::source_outcome::{classify_fetch, recommended_action};
 
-pub(super) fn geo(a: Option<String>, b: Option<String>) -> ExitCode {
-    let (Some(a), Some(b)) = (a, b) else {
+pub(super) fn geo(args: &[String]) -> ExitCode {
+    let [a, b] = args else {
         return fail(EX_USAGE, "usage: huntsman-recon geo LAT,LON LAT,LON");
     };
-    let Ok((lat1, lon1)) = parse_latlon(&a) else {
+    let Ok((lat1, lon1)) = parse_latlon(a) else {
         return fail(EX_DATAERR, &format!("bad coordinate: {a}"));
     };
-    let Ok((lat2, lon2)) = parse_latlon(&b) else {
+    let Ok((lat2, lon2)) = parse_latlon(b) else {
         return fail(EX_DATAERR, &format!("bad coordinate: {b}"));
     };
     println!("{:.0}", haversine_m(lat1, lon1, lat2, lon2));
     ExitCode::SUCCESS
 }
 
-pub(super) fn geohash_cmd(pair: Option<String>, precision: Option<&str>) -> ExitCode {
-    let Some(pair) = pair else {
-        return fail(
-            EX_USAGE,
-            "usage: huntsman-recon geohash LAT,LON [PRECISION]",
-        );
+pub(super) fn geohash_cmd(args: &[String]) -> ExitCode {
+    let (pair, precision) = match args {
+        [pair] => (pair, None),
+        [pair, precision] => (pair, Some(precision.as_str())),
+        _ => {
+            return fail(
+                EX_USAGE,
+                "usage: huntsman-recon geohash LAT,LON [PRECISION]",
+            );
+        }
     };
-    let Ok((lat, lon)) = parse_latlon(&pair) else {
+    let Ok((lat, lon)) = parse_latlon(pair) else {
         return fail(EX_DATAERR, &format!("bad coordinate: {pair}"));
     };
     let precision = match precision.map(str::parse::<usize>) {
@@ -49,11 +53,11 @@ pub(super) fn geohash_cmd(pair: Option<String>, precision: Option<&str>) -> Exit
     }
 }
 
-pub(super) fn coarsen_cmd(pair: Option<String>) -> ExitCode {
-    let Some(pair) = pair else {
+pub(super) fn coarsen_cmd(args: &[String]) -> ExitCode {
+    let [pair] = args else {
         return fail(EX_USAGE, "usage: huntsman-recon coarsen LAT,LON");
     };
-    match coarsen_latlon(&pair) {
+    match coarsen_latlon(pair) {
         Some(coarse) => {
             println!("{coarse}");
             ExitCode::SUCCESS
@@ -62,11 +66,12 @@ pub(super) fn coarsen_cmd(pair: Option<String>) -> ExitCode {
     }
 }
 
-pub(super) fn id_cmd(token: Option<String>) -> ExitCode {
-    let Some(token) = token else {
-        return fail(EX_USAGE, "usage: huntsman-recon id TOKEN");
-    };
-    match classify_id(&token) {
+/// The rest of the line is the token, so `id 53 004 085 616` reads as it does quoted.
+pub(super) fn id_cmd(args: &[String]) -> ExitCode {
+    if args.is_empty() {
+        return fail(EX_USAGE, "usage: huntsman-recon id TOKEN...");
+    }
+    match classify_id(&args.join(" ")) {
         Ok(Identifier::Abn { bare, acn }) => {
             println!("abn={bare}");
             println!("acn={}", acn.as_deref().unwrap_or("none"));
@@ -81,10 +86,15 @@ pub(super) fn id_cmd(token: Option<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-pub(super) fn classify(status: Option<String>, body: Option<String>) -> ExitCode {
-    let (Some(status), Some(body)) = (status, body) else {
-        return fail(EX_USAGE, "usage: huntsman-recon classify STATUS BODY");
+/// The rest of the line is the body, so an unquoted body is classified whole, not by its first word.
+pub(super) fn classify(args: &[String]) -> ExitCode {
+    let [status, body @ ..] = args else {
+        return fail(EX_USAGE, "usage: huntsman-recon classify STATUS BODY...");
     };
+    if body.is_empty() {
+        return fail(EX_USAGE, "usage: huntsman-recon classify STATUS BODY...");
+    }
+    let body = body.join(" ");
     let Ok(status) = status.parse::<u16>() else {
         return fail(EX_DATAERR, "bad status");
     };
