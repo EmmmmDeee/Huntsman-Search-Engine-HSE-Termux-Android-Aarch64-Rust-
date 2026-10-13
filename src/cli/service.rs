@@ -4,6 +4,7 @@ use std::env;
 use std::process::ExitCode;
 
 use super::fail;
+use huntsman_recon::diagnostics::TermuxState;
 use huntsman_recon::environment::SERVE_TOKEN_ENV;
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
@@ -16,6 +17,10 @@ use huntsman_recon::web_server::{
 };
 
 use super::lookup::{Refused, collect};
+
+/// Printed once by `serve` under Termux. Android may stop a process that Termux started while
+/// Termux is in the background or the screen is off, so the page would stop answering.
+const TERMUX_BACKGROUND_HINT: &str = "serve: Android may stop this server while Termux is in the background; run termux-wake-lock to keep it running with the screen off, and on Android 12 or later see \"Keep serve running on Android\" in docs/INSTALL.md";
 
 fn bad_selector(message: &str) -> LookupError {
     LookupError {
@@ -107,10 +112,16 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     };
     let server = match Server::bind(config) {
         Ok(server) => server.with_lookup(std::sync::Arc::new(web_lookup)),
+        Err(Error::Store(message)) => return fail(EX_UNAVAILABLE, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };
     match server.local_addr() {
-        Ok(addr) => println!("serving=http://{addr}/"),
+        Ok(addr) => {
+            println!("serving=http://{addr}/");
+            if TermuxState::current() == TermuxState::Detected {
+                eprintln!("{TERMUX_BACKGROUND_HINT}");
+            }
+        }
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     }
     match server.run() {

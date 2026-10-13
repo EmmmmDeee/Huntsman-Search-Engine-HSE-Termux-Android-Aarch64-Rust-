@@ -394,7 +394,7 @@ Every response carries `X-Frame-Options: DENY` and a `Content-Security-Policy` t
 
 The listener bounds request headers to 16 KiB, applies finite read/write timeouts, supports `GET` and `HEAD`, and closes each connection after one response. Each connection has its own thread, at most 32 at a time; a further connection is answered `503` with `Retry-After: 1`, so a connection that sends nothing (as a browser's speculative ones do) holds up only itself.
 
-On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no root and no port below 1024: run `huntsman-recon serve` and open `http://127.0.0.1:8080/` in the phone's browser. Keys come from the same environment and `~/.huntsman.env` chain as the CLI, so export them in the Termux session before `serve`. Stored-result browsing, write endpoints, and the complete legacy API remain to be rebuilt.
+On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no root and no port below 1024: run `huntsman-recon serve` and open `http://127.0.0.1:8080/` in the phone's browser. If another server already holds 8080, pass `--bind 127.0.0.1:0` and use the address on the `serving=` line; [Keep serve running on Android](docs/INSTALL.md#keep-serve-running-on-android) covers that and keeping the server alive in the background. Keys come from the same environment and `~/.huntsman.env` chain as the CLI, so export them in the Termux session before `serve`. Stored-result browsing, write endpoints, and the complete legacy API remain to be rebuilt.
 
 
 ### Batch scan input
