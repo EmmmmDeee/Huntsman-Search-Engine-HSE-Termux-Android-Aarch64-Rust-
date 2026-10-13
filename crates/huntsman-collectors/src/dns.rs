@@ -64,6 +64,9 @@ const RCODE_NXDOMAIN: u8 = 3;
 
 /// Maximum labels or pointer hops walked while decoding a name (loop and runaway guard).
 const MAX_NAME_STEPS: usize = 128;
+/// RFC 1035 §2.3.4 caps a domain name at 255 octets; a decoder that honours it cannot be driven
+/// to build an oversized name out of many short labels across compression pointers.
+const MAX_NAME_OCTETS: usize = 255;
 /// Maximum answer records parsed from one response (allocation guard).
 const MAX_ANSWERS: usize = 64;
 /// Fixed RR header width after the owner name: TYPE(2) CLASS(2) TTL(4) RDLENGTH(2).
@@ -348,7 +351,16 @@ fn reachable_names(
     let mut cnames: Vec<(String, String)> = Vec::new();
     for rr in rrs {
         if rr.rtype == TYPE_CNAME && rr.rclass == CLASS_IN {
-            let (target, _) = read_name(msg, rr.rdata_start)?;
+            let (target, next) = read_name(msg, rr.rdata_start)?;
+            // The name encoded inside the CNAME's RDATA must stay within that RDATA; its only
+            // escape is a backward compression pointer, never a run into the following records.
+            let rdata_end = rr
+                .rdata_start
+                .checked_add(rr.rdata_len)
+                .ok_or_else(|| protocol("CNAME RDATA length overflow"))?;
+            if next > rdata_end {
+                return Err(protocol("CNAME RDATA name ran past its RDLENGTH"));
+            }
             cnames.push((rr.owner.clone(), target));
         }
     }
@@ -406,6 +418,9 @@ fn read_name(msg: &[u8], start: usize) -> Result<(String, usize), HuntsmanError>
                         .iter()
                         .map(u8::to_ascii_lowercase),
                 );
+                if out.len() > MAX_NAME_OCTETS {
+                    return Err(protocol("DNS name exceeds 255 octets"));
+                }
                 pos = label_end;
             }
             0xC0 => {
@@ -850,5 +865,60 @@ mod tests {
             .map(|n| transaction_id(42, 0, &format!("h{n}.example.com"), TYPE_A))
             .collect();
         assert!(over_domains.len() > 1, "id is constant across domains");
+    }
+
+    // --- name-length and RDATA bounds -----------------------------------------------------
+
+    #[test]
+    fn a_name_longer_than_255_octets_is_rejected_not_built() {
+        // Six 63-byte labels (≈384 octets decoded) exceed the RFC 1035 ceiling. The answer's
+        // owner name alone must be refused before any record is surfaced.
+        let mut owner = Vec::new();
+        for _ in 0..6 {
+            owner.push(63u8);
+            owner.extend(std::iter::repeat_n(b'a', 63));
+        }
+        owner.push(0);
+        let msg = build(
+            0x4242,
+            0x8180,
+            "example.com",
+            TYPE_A,
+            &[(owner, TYPE_A, CLASS_IN, vec![93, 184, 216, 34])],
+        );
+        match parse(&key(0x4242, "example.com", TYPE_A), &msg) {
+            Err(_) => {}
+            Ok(outcome) => panic!("an over-long name must be rejected, got {outcome:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cname_whose_name_overruns_its_rdlength_is_rejected() {
+        // A CNAME RR whose RDLENGTH (5) is shorter than the name encoded in its RDATA
+        // ("cname.test" = 12 octets). read_name would otherwise run past the RDATA; the
+        // RDLENGTH bound must reject it rather than trust a name assembled from later bytes.
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&0x1111u16.to_be_bytes());
+        msg.extend_from_slice(&0x8180u16.to_be_bytes());
+        msg.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT
+        msg.extend_from_slice(&1u16.to_be_bytes()); // ANCOUNT
+        msg.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
+        msg.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
+        msg.extend_from_slice(&name_wire("example.com"));
+        msg.extend_from_slice(&TYPE_A.to_be_bytes());
+        msg.extend_from_slice(&CLASS_IN.to_be_bytes());
+        // Answer: CNAME owned by example.com (pointer to the question), RDLENGTH lies.
+        msg.extend_from_slice(&qname_ptr());
+        msg.extend_from_slice(&TYPE_CNAME.to_be_bytes());
+        msg.extend_from_slice(&CLASS_IN.to_be_bytes());
+        msg.extend_from_slice(&300u32.to_be_bytes());
+        msg.extend_from_slice(&5u16.to_be_bytes()); // RDLENGTH = 5, too short for the name
+        msg.extend_from_slice(&name_wire("cname.test")); // 12 octets of name follow
+        match parse(&key(0x1111, "example.com", TYPE_A), &msg) {
+            Err(_) => {}
+            Ok(outcome) => {
+                panic!("a CNAME name past its RDLENGTH must be rejected, got {outcome:?}")
+            }
+        }
     }
 }
