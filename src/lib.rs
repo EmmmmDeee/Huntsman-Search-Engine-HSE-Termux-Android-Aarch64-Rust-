@@ -11,6 +11,7 @@
 pub mod abn;
 pub mod acma_phone;
 pub mod address_au;
+pub mod aggregator;
 pub mod analysis;
 pub mod archive;
 pub mod archive_bridge;
