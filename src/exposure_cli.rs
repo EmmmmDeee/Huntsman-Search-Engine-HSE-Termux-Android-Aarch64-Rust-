@@ -476,12 +476,21 @@ fn push_row(out: &mut String, fields: &[String]) {
 }
 
 fn missing_key(source: &str, now_unix: u64) -> SourceExecutionOutcome {
+    // The HIBP account API needs a key only to automate the check. An individual can
+    // check their own address for free on the website, so the HIBP leg names that route
+    // rather than reporting a bare dead end.
+    let detail = if source == SOURCE {
+        "no operator key configured; no request made. Check this address for free at \
+         https://haveibeenpwned.com/ (the key only automates the API)"
+    } else {
+        "no operator key configured; no request made"
+    };
     SourceExecutionOutcome::failed(
         source,
         now_unix,
         SourceOutcomeKind::AuthRequired,
         None,
-        "no operator key configured; no request made",
+        detail,
     )
 }
 
@@ -969,6 +978,26 @@ mod tests {
         assert!(!report.entities[0].tags.iter().any(|t| t == tags::BREACH));
         assert_eq!(report.incidents, None, "no answer is not a zero");
         assert!(text.ends_with("\nincidents=none\n"), "{text}");
+
+        // The HIBP leg names the free self-service route; stolen.tax, which has none, does not.
+        let detail = |module: &str| {
+            report
+                .outcomes
+                .iter()
+                .find(|o| o.module == module)
+                .and_then(|o| o.detail.clone())
+                .unwrap_or_default()
+        };
+        assert!(
+            detail(SOURCE).contains("https://haveibeenpwned.com/"),
+            "{}",
+            detail(SOURCE)
+        );
+        assert!(
+            !detail(STOLEN_TAX_SOURCE).contains("haveibeenpwned"),
+            "{}",
+            detail(STOLEN_TAX_SOURCE)
+        );
     }
 
     #[test]
