@@ -167,17 +167,23 @@ pub fn probe<T: Transport + ?Sized>(
 
 /// Convert a takeover finding into evidence for inclusion in an entity.
 #[must_use]
-pub fn finding_to_evidence(finding: &TakeoverFinding, _scan_id: &str) -> Evidence {
+pub fn finding_to_evidence(finding: &TakeoverFinding, scan_id: &str) -> Evidence {
     let mut provenance = EvidenceProvenance::new("subdomain_takeover_detector");
-    provenance.scan_id = Some(_scan_id.to_owned());
+    provenance.scan_id = Some(scan_id.to_owned());
 
     let mut attributes = std::collections::BTreeMap::new();
     attributes.insert("service".to_owned(), finding.service.clone());
-    attributes.insert("risk_level".to_owned(), finding.risk_level.as_str().to_owned());
+    attributes.insert(
+        "risk_level".to_owned(),
+        finding.risk_level.as_str().to_owned(),
+    );
     attributes.insert("http_status".to_owned(), finding.http_status.to_string());
     attributes.insert("sample".to_owned(), finding.response_sample.clone());
 
-    let summary = format!("Subdomain {} vulnerable to takeover via {}", finding.subdomain, finding.service);
+    let summary = format!(
+        "Subdomain {} vulnerable to takeover via {}",
+        finding.subdomain, finding.service
+    );
 
     let mut evidence = Evidence::new(provenance, summary);
     evidence.attributes = attributes;
@@ -234,7 +240,13 @@ mod tests {
 
         let evidence = finding_to_evidence(&finding, "scan123");
         assert!(evidence.attributes.contains_key("service"));
-        assert_eq!(evidence.attributes.get("service").map(|s| s.as_str()), Some("github_pages"));
-        assert_eq!(evidence.attributes.get("risk_level").map(|s| s.as_str()), Some("high"));
+        assert_eq!(
+            evidence.attributes.get("service").map(String::as_str),
+            Some("github_pages")
+        );
+        assert_eq!(
+            evidence.attributes.get("risk_level").map(String::as_str),
+            Some("high")
+        );
     }
 }

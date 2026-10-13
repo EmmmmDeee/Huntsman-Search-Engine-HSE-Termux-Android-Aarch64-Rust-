@@ -57,10 +57,19 @@ fn extract_domain(url: &str) -> Option<String> {
     url.split("://")
         .nth(1)
         .and_then(|rest| rest.split('/').next())
-        .map(|s| s.to_lowercase())
+        .map(str::to_lowercase)
 }
 
-/// Follow redirect chain for a URL, up to MAX_HOPS.
+/// Base for resolving a relative reference: the URL with its last path segment removed.
+fn relative_base(url: &str) -> Option<String> {
+    let authority_start = url.find("://")? + 3;
+    let base_len = url[authority_start..]
+        .rfind('/')
+        .map_or(url.len(), |i| authority_start + i);
+    Some(url[..base_len].to_owned())
+}
+
+/// Follow redirect chain for a URL, up to `MAX_HOPS`.
 #[must_use]
 pub fn follow_redirects<T: Transport + ?Sized>(
     transport: &T,
@@ -103,42 +112,30 @@ pub fn follow_redirects<T: Transport + ?Sized>(
         }
 
         // Get Location header
-        let location = match response.header_value("location") {
-            Some(loc) => loc.to_string(),
-            None => {
-                // Redirect without Location header
-                let final_url = current_url.clone();
-                return Some(RedirectChain {
-                    start_url: start_url.to_string(),
-                    final_url,
-                    hops,
-                    anomaly: Some(RedirectAnomaly::Suspicious),
-                });
-            }
+        let Some(location) = response.header_value("location").map(str::to_owned) else {
+            // Redirect without Location header
+            return Some(RedirectChain {
+                start_url: start_url.to_string(),
+                final_url: current_url,
+                hops,
+                anomaly: Some(RedirectAnomaly::Suspicious),
+            });
         };
 
         // Resolve relative URLs
         let target_url = if location.starts_with("http://") || location.starts_with("https://") {
             location.clone()
         } else if location.starts_with('/') {
-            // Absolute path
-            if let Some(domain) = extract_domain(&current_url) {
-                let scheme = if current_url.starts_with("https") {
-                    "https"
-                } else {
-                    "http"
-                };
-                format!("{scheme}://{domain}{location}")
+            let domain = extract_domain(&current_url)?;
+            let scheme = if current_url.starts_with("https") {
+                "https"
             } else {
-                return None;
-            }
+                "http"
+            };
+            format!("{scheme}://{domain}{location}")
         } else {
-            // Relative URL - construct from current URL
-            if let Some(base) = current_url.rsplit('/').next() {
-                format!("{base}/{location}")
-            } else {
-                return None;
-            }
+            let base = relative_base(&current_url)?;
+            format!("{base}/{location}")
         };
 
         // Check for cross-domain redirects
@@ -191,14 +188,28 @@ mod tests {
     fn redirect_anomaly_strings_are_consistent() {
         assert_eq!(RedirectAnomaly::Loop.as_str(), "redirect_loop");
         assert_eq!(RedirectAnomaly::DepthExceeded.as_str(), "depth_exceeded");
-        assert_eq!(RedirectAnomaly::CrossDomainRedirect.as_str(), "cross_domain_redirect");
+        assert_eq!(
+            RedirectAnomaly::CrossDomainRedirect.as_str(),
+            "cross_domain_redirect"
+        );
         assert_eq!(RedirectAnomaly::ClientError.as_str(), "client_error");
         assert_eq!(RedirectAnomaly::Suspicious.as_str(), "suspicious");
     }
 
     #[test]
-    fn max_hops_constant_is_reasonable() {
-        assert!(MAX_HOPS >= 5, "MAX_HOPS should be at least 5");
-        assert!(MAX_HOPS <= 50, "MAX_HOPS should not exceed 50");
+    fn relative_base_strips_only_the_last_path_segment() {
+        assert_eq!(
+            relative_base("https://example.com/a/b"),
+            Some("https://example.com/a".to_string())
+        );
+        assert_eq!(
+            relative_base("https://example.com/"),
+            Some("https://example.com".to_string())
+        );
+        assert_eq!(
+            relative_base("https://example.com"),
+            Some("https://example.com".to_string())
+        );
+        assert_eq!(relative_base("invalid"), None);
     }
 }

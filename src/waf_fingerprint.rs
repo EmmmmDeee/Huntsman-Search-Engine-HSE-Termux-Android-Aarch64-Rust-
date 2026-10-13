@@ -236,7 +236,11 @@ mod tests {
     #[test]
     fn patterns_are_well_formed() {
         for pattern in FINGERPRINT_PATTERNS {
-            assert!(!pattern.headers.is_empty(), "Pattern {} has no headers", pattern.name);
+            assert!(
+                !pattern.headers.is_empty(),
+                "Pattern {} has no headers",
+                pattern.name
+            );
             assert!(
                 !pattern.header_values.is_empty(),
                 "Pattern {} has no header values",
