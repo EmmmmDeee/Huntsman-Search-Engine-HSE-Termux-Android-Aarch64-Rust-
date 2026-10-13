@@ -70,7 +70,8 @@ fn crate_roots_set_no_lint_level_outside_the_manifests() {
         "src/main.rs".to_string(),
         "xtask/src/main.rs".to_string(),
     ];
-    for entry in fs::read_dir("src/bin").expect("src/bin") {
+    // Any further executable under src/bin is a crate root too; today there is none.
+    for entry in fs::read_dir("src/bin").into_iter().flatten() {
         roots.push(entry.expect("src/bin entry").path().display().to_string());
     }
     for path in &roots {

@@ -153,6 +153,7 @@ cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan 
 cargo run -- domain example.com             # crt.sh certificate names + DNS records over DoH; network
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
+cargo run -- plan ada@example.com example.com  # offline spine: entities, relations, planned routes; nothing fetched
 cargo run -- query "OpenAI research"          # network: Bing/Brave/Mojeek subset
 cargo run -- sf -M                         # SpiderFoot-style reachable-module listing; offline
 cargo run -- serve --help                    # embedded UI/API command options; does not start a listener
@@ -371,6 +372,11 @@ live receipt. Live ASIC Connect is WAF-blocked.
 ### Offline investigate
 
 `investigate TEXT... | investigate --file FILE` extracts actionable entities through the rebuilt classifier without network access. File input uses the bounded reader, refuses symlinks, and is capped at 1 MiB. The `modules` catalogue includes this path as `classifier` only because it is now reachable from the binary.
+
+
+### Offline investigation plan
+
+`plan [--session-dir DIR] SEED [SEED ...]` runs the offline integration spine described in [docs/RUNTIME_INTEGRATION.md](docs/RUNTIME_INTEGRATION.md): it normalises the seeds into entities and relations, analyses that one state, and plans the external source routes without fetching any of them. `--session-dir DIR` saves the run as a session, written before anything is printed, and `plan --load-session DIR ID` prints a saved one. An option it does not know, a repeated `--session-dir` or one without a directory exits 64 before the run starts, so a request to save is never dropped. This was a separate `investigate` executable, which the prebuilt release did not ship.
 
 
 ### Web meta-search

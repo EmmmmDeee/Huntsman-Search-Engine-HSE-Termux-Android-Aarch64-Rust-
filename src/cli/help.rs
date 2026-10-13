@@ -72,6 +72,9 @@ pub(super) fn print_command_help(command: &str) {
         "investigate" => {
             "investigate TEXT... | investigate --file FILE\nExtract actionable entities from local text. --file refuses symlinks and files over 1 MiB."
         }
+        "plan" => {
+            "plan [--session-dir DIR] SEED [SEED ...] | plan --load-session DIR ID\nRun the offline investigation spine on one or more seeds: normalise them into entities and relations, analyse that one state, and plan the external routes without fetching them. --session-dir DIR saves the run as a session, and --load-session DIR ID prints a saved one. Offline."
+        }
         "query" => {
             "query QUERY...\nQuery the rebuilt keyless Bing, Brave, and Mojeek subset through the shared fetch boundary; provider failures remain independent."
         }

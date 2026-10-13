@@ -18,8 +18,6 @@ pub const EX_DATAERR: u8 = 65;
 pub const EX_NOINPUT: u8 = 66;
 /// No usable response from a service, or a register that could not be used.
 pub const EX_UNAVAILABLE: u8 = 69;
-/// Internal failure of the program. Only the `investigate` binary uses this status.
-pub const EX_SOFTWARE: u8 = 70;
 /// Artifact or output write failure.
 pub const EX_IOERR: u8 = 74;
 /// Refused by policy (egress, or a malformed URL or redirect target), or no permission for it.
