@@ -53,7 +53,7 @@ concurrency:
 jobs:
   fix:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'ai-fix'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       contents: read
@@ -191,7 +191,7 @@ jobs:
   gate:
     needs: fix
     if: needs.fix.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       actions: read
@@ -231,7 +231,7 @@ jobs:
   publish:
     needs: [fix, gate]
     if: needs.fix.result == 'success' && needs.gate.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       actions: read
@@ -299,7 +299,7 @@ jobs:
     # other label to any issue skips fix/gate/publish and still ran report, commenting on an issue
     # that never asked for a fix.
     if: always() && needs.fix.result != 'skipped' && needs.publish.result != 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       actions: read

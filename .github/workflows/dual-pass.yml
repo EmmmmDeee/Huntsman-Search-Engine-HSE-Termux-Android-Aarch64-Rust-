@@ -40,7 +40,7 @@ concurrency:
 jobs:
   self-check:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -61,7 +61,7 @@ jobs:
 
   gate:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'dual-pass'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -101,7 +101,7 @@ jobs:
   plan:
     needs: gate
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'dual-pass'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
@@ -164,7 +164,7 @@ jobs:
   publish:
     needs: plan
     if: needs.plan.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       actions: read
