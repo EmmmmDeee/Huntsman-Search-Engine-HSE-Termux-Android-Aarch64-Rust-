@@ -114,6 +114,7 @@ pub mod mediawiki;
 pub mod meta_plan;
 pub mod metrics;
 pub mod module;
+pub mod module_execution;
 pub mod module_registry;
 pub mod navigator;
 pub mod network_cli;
