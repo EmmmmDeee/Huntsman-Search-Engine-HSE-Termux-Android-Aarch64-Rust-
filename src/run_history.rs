@@ -75,7 +75,14 @@ pub enum HistoryError {
     Malformed { line: usize, reason: String },
 }
 
-/// Append one run as a JSON line. Creates the file if it does not exist.
+/// Append one run as a JSON line. Creates the file, and any missing parent
+/// directories, if they do not exist.
+///
+/// The default path is `var/run_history.jsonl`, relative to the working
+/// directory, so without creating the parent `run-history record` failed in any
+/// directory without a `var/` — a Termux user's `$HOME`, say — with an IO error
+/// and no record written. Creating it mirrors every other writer in the crate
+/// (`fsio::write_atomic`, the session `store`).
 ///
 /// Before writing, a torn tail left by a previously interrupted append — bytes
 /// not ended by a newline, which are not a committed record — is truncated, so
@@ -87,6 +94,12 @@ pub fn append(path: &Path, record: &RunRecord) -> Result<(), HistoryError> {
         reason: e.to_string(),
     })?;
     line.push('\n');
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     heal_torn_tail(path)?;
     refuse_symlink(path)?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
@@ -268,6 +281,20 @@ mod tests {
     fn missing_file_is_an_empty_history() {
         let path = scratch("missing");
         assert!(load(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn append_creates_missing_parent_directories() {
+        // The default path is `var/run_history.jsonl`; outside a checkout that `var/` does not
+        // exist, and append used to fail with an IO error and write nothing. It must create the
+        // parent so `run-history record` works in any directory, as every other writer does.
+        let base = std::env::temp_dir().join(format!("run-history-parents-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let path = base.join("var").join("run_history.jsonl");
+        assert!(!path.parent().unwrap().exists());
+        append(&path, &run("unit", 3, 0)).unwrap();
+        assert_eq!(load(&path).unwrap(), vec![run("unit", 3, 0)]);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[cfg(unix)]
