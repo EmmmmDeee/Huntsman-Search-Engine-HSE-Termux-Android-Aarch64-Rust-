@@ -3,11 +3,17 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 # Real-device acceptance for the current Huntsman Recon binary.
-# This script is intentionally device-only: CI cross-builds Android, but cannot
+# A pass is a handset pass only on a device: CI cross-builds Android, but cannot
 # prove execution under a real Termux userspace.
 #
-# Canonical invocation:
-#   bash scripts/termux-runtime-acceptance.sh
+# Canonical invocation, on the handset (no checkout needed):
+#   curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/scripts/termux-runtime-acceptance.sh -o "$TMPDIR/termux-runtime-acceptance.sh"
+#   bash "$TMPDIR/termux-runtime-acceptance.sh"
+#
+# HSE_ACCEPTANCE_HOST=1 runs every check except the two device ones on a build
+# host, as CI does against each build so this harness cannot drift from the
+# binary. Such a run ends HOST_RUNTIME_ACCEPTANCE, never
+# TERMUX_RUNTIME_ACCEPTANCE: it is not a handset pass.
 
 ORIGINAL_PWD="$(pwd -P)"
 
@@ -25,6 +31,7 @@ SERVER_LOG="$(anchor_path "${HSE_ACCEPTANCE_SERVER_LOG:-$STATE_DIR/termux-accept
 TIMEOUT_SECS="${HSE_ACCEPTANCE_TIMEOUT:-30}"
 SERVER_TIMEOUT_SECS="${HSE_ACCEPTANCE_SERVER_TIMEOUT:-30}"
 SERVER_PORT="${HSE_ACCEPTANCE_PORT:-}"
+HOST_RUN="${HSE_ACCEPTANCE_HOST:-}"
 SERVER_PID=""
 WORK_DIR=""
 
@@ -77,15 +84,23 @@ if [ -n "$SERVER_PORT" ]; then
     fail 'HSE_ACCEPTANCE_PORT must be in 1..65535'
 fi
 
-case "$(uname -m)" in
-  aarch64|arm64) pass 'runtime architecture is ARM64' ;;
-  *) fail "unexpected runtime architecture: $(uname -m)" ;;
+case "$HOST_RUN" in
+  '') ;;
+  1) note "host run on $(uname -m) with PREFIX=${PREFIX:-unset}: the two device checks are skipped and this is not a handset pass" ;;
+  *) fail "HSE_ACCEPTANCE_HOST must be 1 or unset, got '$HOST_RUN'" ;;
 esac
 
-case "${PREFIX:-}" in
-  /data/data/com.termux/files/usr*) pass 'Termux PREFIX detected' ;;
-  *) fail "not running in a standard Termux PREFIX: ${PREFIX:-unset}" ;;
-esac
+if [ "$HOST_RUN" != 1 ]; then
+  case "$(uname -m)" in
+    aarch64|arm64) pass 'runtime architecture is ARM64' ;;
+    *) fail "unexpected runtime architecture: $(uname -m)" ;;
+  esac
+
+  case "${PREFIX:-}" in
+    /data/data/com.termux/files/usr*) pass 'Termux PREFIX detected' ;;
+    *) fail "not running in a standard Termux PREFIX: ${PREFIX:-unset}" ;;
+  esac
+fi
 
 note "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 note "binary=$HSE_BIN"
@@ -235,6 +250,10 @@ pass 'server lifecycle pass=1'
 start_and_verify_server "$BIND"
 pass 'server lifecycle pass=2 (restart)'
 
-pass 'TERMUX_RUNTIME_ACCEPTANCE'
+if [ "$HOST_RUN" = 1 ]; then
+  pass 'HOST_RUNTIME_ACCEPTANCE (not a handset pass)'
+else
+  pass 'TERMUX_RUNTIME_ACCEPTANCE'
+fi
 note "report=$REPORT"
 note "server_log=$SERVER_LOG"
