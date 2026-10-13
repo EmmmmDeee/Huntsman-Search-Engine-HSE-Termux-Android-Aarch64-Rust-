@@ -1,16 +1,24 @@
-//! Keyless GitHub public-profile lookup for a username selector.
+//! GitHub public-profile lookup for a username selector. Keyless by default; when the operator
+//! configures `HUNTSMAN_GITHUB_TOKEN` the token is sent as a Bearer credential pinned to the API
+//! origin, which raises the rate limit without changing what is read.
 
 use serde::Deserialize;
 
 use crate::canonical::{canonical_email, canonical_url};
+use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::domains::host_only;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, fetch};
+use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
 use crate::http::{Request, Response, Transport};
+use crate::keys::Keys;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
 
 pub const SRC: &str = "github_user";
+/// The credential slot holding an optional GitHub token.
+pub const TOKEN_SLOT: &str = crate::environment::GITHUB_TOKEN_ENV;
+/// The only origin the token is ever sent to.
+const API_ORIGIN: &str = "https://api.github.com:443";
 
 const USERNAME_CONF: f64 = 0.85;
 const PERSON_CONF: f64 = 0.75;
@@ -78,6 +86,7 @@ pub fn valid_login(value: &str) -> bool {
 /// Returns a network-boundary error when the guarded fetch refuses a URL.
 pub fn lookup<T: Transport + ?Sized>(
     transport: &T,
+    keys: &Keys,
     username: &str,
     scan_id: &str,
     now_unix: u64,
@@ -94,13 +103,17 @@ pub fn lookup<T: Transport + ?Sized>(
         });
     }
 
+    let credential = keys
+        .get(TOKEN_SLOT)
+        .map(|secret| token_credential(secret, now_unix))
+        .transpose()?;
     let url = format!("https://api.github.com/users/{username}");
     let fetched = fetch(
         transport,
         Request::get(&url)
             .header("accept", "application/vnd.github+json")
             .header("user-agent", crate::http::DEFAULT_USER_AGENT),
-        None,
+        credential.as_ref(),
         &FetchOptions::no_redirects(),
         SRC,
         now_unix,
@@ -115,14 +128,27 @@ pub fn lookup<T: Transport + ?Sized>(
     Ok(parse_response(
         &response,
         fetched.outcome,
+        credential.is_some(),
         scan_id,
         now_unix,
     ))
 }
 
+fn token_credential(secret: crate::keys::Secret, now_unix: u64) -> Result<Credential, Error> {
+    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
+        provider_id: "github".into(),
+        credential_slot: TOKEN_SLOT.into(),
+        approved_at_unix: now_unix,
+        approval_provenance: format!("operator configured {TOKEN_SLOT}"),
+    })
+    .map_err(|e| Error::Invalid(e.to_string()))?;
+    Ok(Credential::new(authority, secret, AuthStyle::Bearer)?.only_for_origin(API_ORIGIN))
+}
+
 fn parse_response(
     response: &Response,
     fallback: SourceExecutionOutcome,
+    authenticated: bool,
     scan_id: &str,
     now_unix: u64,
 ) -> Report {
@@ -141,7 +167,11 @@ fn parse_response(
         let mut outcome = fallback;
         outcome.kind = SourceOutcomeKind::RateLimited;
         outcome.found = None;
-        outcome.detail = Some("GitHub unauthenticated rate limit exhausted".into());
+        outcome.detail = Some(if authenticated {
+            "GitHub token rate limit exhausted".into()
+        } else {
+            format!("GitHub unauthenticated rate limit exhausted; set {TOKEN_SLOT} to raise it")
+        });
         return Report {
             entities: Vec::new(),
             outcome,
@@ -433,6 +463,7 @@ mod tests {
     fn missing_profile_is_valid_zero() {
         let got = lookup(
             &OneResponse::with_headers(404, &[], ""),
+            &Keys::default(),
             "nobody",
             "scan",
             1,
@@ -442,10 +473,53 @@ mod tests {
         assert!(got.entities.is_empty());
     }
 
+    const TOKEN: &str = "ghp_h7K2mQ9xR4vL8nT3pW6zY1bC5dF0gJ2sA9eU";
+
+    fn sent_authorization(keys: &Keys) -> (Option<String>, Report) {
+        let transport = crate::test_support::ScriptedTransport::new(vec![Ok(Response {
+            status: 403,
+            headers: vec![("x-ratelimit-remaining".into(), "0".into())],
+            body: b"{}".to_vec(),
+            truncated: false,
+        })]);
+        let report = lookup(&transport, keys, "octocat", "scan", 1).unwrap();
+        let seen = transport.seen.borrow();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].url, "https://api.github.com/users/octocat");
+        let authorization = seen[0]
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            .map(|(_, value)| value.clone());
+        (authorization, report)
+    }
+
+    #[test]
+    fn a_configured_token_is_sent_as_bearer_and_named_in_the_rate_limit() {
+        let keys = Keys::parse(&format!("{TOKEN_SLOT}={TOKEN}")).unwrap();
+        let (authorization, report) = sent_authorization(&keys);
+        assert_eq!(authorization, Some(format!("Bearer {TOKEN}")));
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::RateLimited);
+        assert_eq!(
+            report.outcome.detail.as_deref(),
+            Some("GitHub token rate limit exhausted")
+        );
+    }
+
+    #[test]
+    fn without_a_token_no_credential_is_sent_and_the_slot_is_named() {
+        let (authorization, report) = sent_authorization(&Keys::default());
+        assert_eq!(authorization, None);
+        let detail = report.outcome.detail.unwrap();
+        assert!(detail.contains("unauthenticated"), "{detail}");
+        assert!(detail.contains(TOKEN_SLOT), "{detail}");
+    }
+
     #[test]
     fn rate_limit_is_not_a_missing_profile() {
         let got = lookup(
             &OneResponse::with_headers(403, &[("x-ratelimit-remaining", "0")], "{}"),
+            &Keys::default(),
             "octocat",
             "scan",
             1,
@@ -472,6 +546,7 @@ mod tests {
         }"#;
         let got = lookup(
             &OneResponse::with_headers(200, &[("content-type", "application/json")], body),
+            &Keys::default(),
             "octocat",
             "scan",
             1,
@@ -498,6 +573,7 @@ mod tests {
     fn malformed_json_is_parser_drift() {
         let got = lookup(
             &OneResponse::with_headers(200, &[("content-type", "application/json")], "{"),
+            &Keys::default(),
             "octocat",
             "scan",
             1,

@@ -8,6 +8,7 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_u
 use crate::error::Error;
 use crate::github_user;
 use crate::http::Transport;
+use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::source_outcome::SourceExecutionOutcome;
@@ -52,7 +53,12 @@ pub enum UsernameRun {
 
 /// Run deterministic variants and the two keyless public-profile collectors.
 #[must_use]
-pub fn run<T: Transport + ?Sized>(transport: &T, username: &str, now_unix: u64) -> UsernameRun {
+pub fn run<T: Transport + ?Sized>(
+    transport: &T,
+    keys: &Keys,
+    username: &str,
+    now_unix: u64,
+) -> UsernameRun {
     let username = match selector(username) {
         Ok(username) => username,
         Err(error) => return UsernameRun::Failed(error.to_string()),
@@ -63,7 +69,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, username: &str, now_unix: u64) 
         outcomes: Vec::new(),
     };
 
-    collect_github(transport, &username, &scan_id, now_unix, &mut report);
+    collect_github(transport, keys, &username, &scan_id, now_unix, &mut report);
     collect_bluesky(transport, &username, &scan_id, now_unix, &mut report);
     merge_by_uid(&mut report.entities);
 
@@ -122,12 +128,13 @@ fn derived_entities(username: &str, scan_id: &str) -> Vec<Entity> {
 
 fn collect_github<T: Transport + ?Sized>(
     transport: &T,
+    keys: &Keys,
     username: &str,
     scan_id: &str,
     now_unix: u64,
     report: &mut Report,
 ) {
-    match github_user::lookup(transport, username, scan_id, now_unix) {
+    match github_user::lookup(transport, keys, username, scan_id, now_unix) {
         Ok(found) => {
             report.entities.extend(found.entities);
             report.outcomes.push(found.outcome);
@@ -229,7 +236,7 @@ mod tests {
           "did":"did:plc:oky5czdrnfjpqslsw2a5iclo"
         }"#;
         let fake = Fake::new(vec![Ok(response(200, github)), Ok(response(200, bluesky))]);
-        match run(&fake, "jane-doe", 1) {
+        match run(&fake, &Keys::default(), "jane-doe", 1) {
             UsernameRun::Printed { text, report } => {
                 assert!(text.contains("github_user\tsuccess"), "{text}");
                 assert!(text.contains("bluesky_user\tsuccess"), "{text}");
@@ -259,7 +266,8 @@ mod tests {
           "did":"did:plc:oky5czdrnfjpqslsw2a5iclo"
         }"#;
         let fake = Fake::new(vec![Ok(response(200, github)), Ok(response(200, bluesky))]);
-        let UsernameRun::Printed { text, report } = run(&fake, "jane-doe", 1) else {
+        let UsernameRun::Printed { text, report } = run(&fake, &Keys::default(), "jane-doe", 1)
+        else {
             panic!("the lookup should print a report");
         };
         assert!(
@@ -287,7 +295,7 @@ mod tests {
     fn one_clean_miss_does_not_erase_the_other_source() {
         let bluesky = r#"{"handle":"nobody.bsky.social"}"#;
         let fake = Fake::new(vec![Ok(response(404, "")), Ok(response(200, bluesky))]);
-        match run(&fake, "nobody", 1) {
+        match run(&fake, &Keys::default(), "nobody", 1) {
             UsernameRun::Printed { report, .. } => {
                 assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
                 assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::Success);

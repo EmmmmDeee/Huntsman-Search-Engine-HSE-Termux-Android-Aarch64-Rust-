@@ -131,7 +131,8 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
         }
         ScanKind::Username => {
             let transport = UreqTransport::new(&TransportConfig::default());
-            match huntsman_recon::username_cli::run(&transport, selector, now) {
+            let keys = Keys::from_env();
+            match huntsman_recon::username_cli::run(&transport, &keys, selector, now) {
                 UsernameRun::Printed { text, report } => Ok(done(
                     text,
                     report.entities,

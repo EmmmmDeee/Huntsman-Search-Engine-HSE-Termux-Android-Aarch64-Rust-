@@ -13,6 +13,7 @@ use crate::email_cli::{self, EmailRun};
 use crate::entity::{Entity, EntityKind};
 use crate::error::Error;
 use crate::http::Transport;
+use crate::keys::Keys;
 use crate::module::reachable_modules;
 use crate::people_cli::{self, PeopleRun};
 use crate::phone_cli::{self, PhoneRun};
@@ -252,6 +253,7 @@ pub fn type_listing(quiet: bool) -> String {
 /// Execute one supported sf target over the already-rebuilt lookup front-ends.
 pub fn run_scan<T: Transport + ?Sized>(
     transport: &T,
+    keys: &Keys,
     scan: &SfScan,
     now_unix: u64,
 ) -> Result<String, Error> {
@@ -268,7 +270,7 @@ pub fn run_scan<T: Transport + ?Sized>(
             EmailRun::Network(message) => return Err(Error::Network(message)),
             EmailRun::Failed(message) => return Err(Error::Invalid(message)),
         },
-        "USERNAME" => match username_cli::run(transport, &scan.target, now_unix) {
+        "USERNAME" => match username_cli::run(transport, keys, &scan.target, now_unix) {
             UsernameRun::Printed { report, .. } => report.entities,
             UsernameRun::Failed(message) => return Err(Error::Invalid(message)),
         },
@@ -699,7 +701,7 @@ mod tests {
             types: Vec::new(),
             include_source: false,
         };
-        let rendered = run_scan(&fake, &scan, 1).unwrap();
+        let rendered = run_scan(&fake, &Keys::default(), &scan, 1).unwrap();
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
         assert_eq!(value.as_array().map(Vec::len), Some(1));
         assert_eq!(value[0]["event_type"], "PHONE_NUMBER");
@@ -717,7 +719,7 @@ mod tests {
             types: Vec::new(),
             include_source: false,
         };
-        let error = run_scan(&fake, &scan, 1).unwrap_err();
+        let error = run_scan(&fake, &Keys::default(), &scan, 1).unwrap_err();
         assert!(error.to_string().contains("passive"));
     }
 
