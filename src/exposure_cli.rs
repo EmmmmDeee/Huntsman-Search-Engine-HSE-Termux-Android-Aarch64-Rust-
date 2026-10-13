@@ -39,7 +39,7 @@ use crate::textnorm::{decode_html_entities, escape_controls, is_escaped};
 pub const EXPOSURE_USAGE: &str = "usage: huntsman-recon exposure ADDR [--save FILE]";
 pub const EXPOSURE_HELP: &str = "\
 exposure ADDR [--save FILE]
-Canonicalise ADDR and run the keyed breach legs in order: HIBP breached-account, then the stolen.tax cascade. A leg without its key makes no request and reports auth_required. Results are lineage-rendered entities. Then incidents=N (none when HIBP gave no answer) and, per HIBP breach sorted by name: an incident row (title, breach and added dates, domain, account count, verified, flags), a caution row for a fabricated or spam-list breach, its summary, data classes, attribution, and the reference links its own description gives. This is public context about each breach, not a finding about the person. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise ADDR and run the keyed breach legs in order: HIBP breached-account, then the stolen.tax cascade. A leg without its key makes no request and reports auth_required. Results are lineage-rendered entities. Then incidents=N (none when HIBP gave no answer) and, per HIBP breach sorted by name (a name the source repeats is shown once, keeping every flag any of its records sets): an incident row (title, breach and added dates, domain, account count, verified, flags), a caution row for a fabricated or spam-list breach, its summary, data classes, attribution, and the reference links its own description gives. This is public context about each breach, not a finding about the person. --save FILE writes an unverified ledger that verify can reload.";
 
 /// Source label for the HIBP breached-account leg.
 pub const SOURCE: &str = "hibp_account";
@@ -63,6 +63,16 @@ const FABRICATED: &str = "fabricated";
 const SPAM_LIST: &str = "spam-list";
 /// The label of the HIBP stealer-log flag.
 const STEALER_LOG: &str = "stealer-log";
+/// Every status flag label, in the order an incident lists its flags.
+const STATUS_LABELS: [&str; 7] = [
+    FABRICATED,
+    SPAM_LIST,
+    "malware",
+    STEALER_LOG,
+    "sensitive",
+    "retired",
+    "subscription-free",
+];
 
 /// The HTML elements that separate text: a tag of one of these reads as a space, any other tag as
 /// nothing, so `a<br>b` reads `a b` and `a<b>b</b>` reads `ab`.
@@ -145,18 +155,21 @@ impl Incident {
     #[must_use]
     pub fn from_breach(breach: &BreachModel) -> Self {
         let description = breach.description.as_deref();
-        let status = [
-            (FABRICATED, breach.is_fabricated),
-            (SPAM_LIST, breach.is_spam_list),
-            ("malware", breach.is_malware),
-            (STEALER_LOG, breach.is_stealer_log),
-            ("sensitive", breach.is_sensitive),
-            ("retired", breach.is_retired),
-            ("subscription-free", breach.is_subscription_free),
-        ]
-        .into_iter()
-        .filter_map(|(label, value)| value.map(|set| StatusFlag { label, set }))
-        .collect();
+        // The values in `STATUS_LABELS` order.
+        let values = [
+            breach.is_fabricated,
+            breach.is_spam_list,
+            breach.is_malware,
+            breach.is_stealer_log,
+            breach.is_sensitive,
+            breach.is_retired,
+            breach.is_subscription_free,
+        ];
+        let status = STATUS_LABELS
+            .into_iter()
+            .zip(values)
+            .filter_map(|(label, value)| value.map(|set| StatusFlag { label, set }))
+            .collect();
         Self {
             name: breach.name.clone(),
             title: breach.title.clone(),
@@ -192,6 +205,75 @@ impl Incident {
     pub fn has_flag(&self, label: &str) -> bool {
         self.flags().any(|flag| flag == label)
     }
+
+    /// The value the source gives the flag `label`, or `None` when it omits it.
+    fn flag_value(&self, label: &str) -> Option<bool> {
+        self.status
+            .iter()
+            .find(|flag| flag.label == label)
+            .map(|flag| flag.set)
+    }
+
+    /// Folds `later`, a record the source gave after this one under the same name, into this
+    /// one. A descriptive field (title, domain, dates, account count, data classes, summary,
+    /// references, attribution) keeps the first value given and takes the later one only where
+    /// this record has none. The status flags and `verified` are merged so that a caution is
+    /// never lost: a flag either record sets to true is set, and the incident is verified only
+    /// when no record says otherwise.
+    fn absorb(&mut self, later: Self) {
+        fn fill<T>(first: &mut Option<T>, later: Option<T>) {
+            if first.is_none() {
+                *first = later;
+            }
+        }
+        fn fill_list<T>(first: &mut Vec<T>, later: Vec<T>) {
+            if first.is_empty() {
+                *first = later;
+            }
+        }
+        self.status = STATUS_LABELS
+            .into_iter()
+            .filter_map(|label| {
+                let values = [self.flag_value(label), later.flag_value(label)];
+                let given = values.iter().any(Option::is_some);
+                given.then(|| StatusFlag {
+                    label,
+                    set: values.contains(&Some(true)),
+                })
+            })
+            .collect();
+        self.verified = self
+            .verified
+            .into_iter()
+            .chain(later.verified)
+            .reduce(|a, b| a && b);
+        fill(&mut self.title, later.title);
+        fill(&mut self.domain, later.domain);
+        fill(&mut self.breach_date, later.breach_date);
+        fill(&mut self.added_date, later.added_date);
+        fill(&mut self.modified_date, later.modified_date);
+        fill(&mut self.pwn_count, later.pwn_count);
+        fill(&mut self.summary, later.summary);
+        fill(&mut self.attribution, later.attribution);
+        fill_list(&mut self.data_classes, later.data_classes);
+        fill_list(&mut self.references, later.references);
+    }
+}
+
+/// One incident per breach name, sorted by name. HIBP documents a breach name as unique, so only
+/// a malformed or hostile answer repeats one; records that share a name are folded into the first
+/// of them in source order with [`Incident::absorb`], so no flag one of them sets is dropped.
+fn merge_incidents(mut incidents: Vec<Incident>) -> Vec<Incident> {
+    // A stable sort: records that share a name stay in source order.
+    incidents.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut merged: Vec<Incident> = Vec::with_capacity(incidents.len());
+    for incident in incidents {
+        match merged.last_mut() {
+            Some(last) if last.name == incident.name => last.absorb(incident),
+            _ => merged.push(incident),
+        }
+    }
+    merged
 }
 
 /// What a flag that changes how an incident should be read means, in the source's terms.
@@ -225,8 +307,10 @@ pub struct Sources<'a> {
 pub struct Report {
     pub entities: Vec<Entity>,
     pub outcomes: Vec<SourceExecutionOutcome>,
-    /// The breach incidents HIBP lists the address in, sorted by breach name, one per name.
-    /// `None` when HIBP gave no answer (no key, or a failed request), which is not a zero.
+    /// The breach incidents HIBP lists the address in, sorted by breach name, one per name
+    /// (records that share a name are merged, see [`Incident::absorb`]). The HIBP evidence is
+    /// built from these same incidents. `None` when HIBP gave no answer (no key, or a failed
+    /// request), which is not a zero.
     pub incidents: Option<Vec<Incident>>,
 }
 
@@ -419,17 +503,27 @@ fn hibp_leg(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix)
         }
         Ok(breaches) => {
-            let mut incidents: Vec<Incident> = breaches.iter().map(Incident::from_breach).collect();
+            // Merged before the evidence is built, so the evidence, the tags, the incidents
+            // section and the found count all describe the same one record per breach name.
+            let incidents = merge_incidents(breaches.iter().map(Incident::from_breach).collect());
             report.entities.extend(
                 incidents
                     .iter()
                     .map(|incident| breach_entity(email, scan_id, incident)),
             );
-            // Sorted by name for a stable report; a repeated name keeps its first record.
-            incidents.sort_by(|a, b| a.name.cmp(&b.name));
-            incidents.dedup_by(|later, earlier| later.name == earlier.name);
+            let outcome = SourceExecutionOutcome::success(SOURCE, now_unix, incidents.len());
+            let outcome = if incidents.len() < breaches.len() {
+                outcome.with_detail(format!(
+                    "the source gave {} records for {} breach names; records that share a name \
+                     are merged and keep every flag any of them sets",
+                    breaches.len(),
+                    incidents.len()
+                ))
+            } else {
+                outcome
+            };
             report.incidents = Some(incidents);
-            SourceExecutionOutcome::success(SOURCE, now_unix, breaches.len())
+            outcome
         }
         Err(err) => {
             if let HibpError::Transport(msg) = &err {
@@ -1273,7 +1367,7 @@ mod tests {
         let mut rotated = breaches.to_vec();
         rotated.rotate_left(2);
         let (again, _, _) = run_with(&serde_json::Value::from(rotated));
-        // Rotating moves the second Alpha record ahead of the first, so it is kept instead.
+        // Rotating moves the second Alpha record ahead of the first, so its title is kept instead.
         assert_eq!(
             incidents_section(&again).replace("Second Alpha", "First Alpha"),
             section,
@@ -1281,6 +1375,223 @@ mod tests {
         );
         let (repeat, _, _) = run_with(&serde_json::Value::from(breaches.to_vec()));
         assert_eq!(repeat, forward, "the whole report is deterministic");
+    }
+
+    /// The HIBP evidence summaries in `report`, in order.
+    fn hibp_summaries(report: &Report) -> Vec<&str> {
+        report
+            .entities
+            .iter()
+            .flat_map(|entity| &entity.evidence)
+            .filter(|evidence| evidence.attributes.contains_key("breach_name"))
+            .map(|evidence| evidence.summary.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn a_repeated_breach_name_cannot_hide_a_flag_from_the_text() {
+        // HIBP documents Name as unique, so only a malformed or hostile answer repeats one. The
+        // later record carries the flags; whichever record comes first, the text, the evidence and
+        // the tags must all show them, and must agree on the count. A descriptive field comes from
+        // the first record that gives it: the domain, which only the flagged record gives, too.
+        let genuine = serde_json::json!({
+            "Name": "Alpha", "Title": "Genuine record", "BreachDate": "2020-01-01",
+            "Description": "<a href=\"https://one.example/\">one</a>",
+            "DataClasses": ["Email addresses"], "IsVerified": true,
+            "IsFabricated": false, "IsSpamList": false
+        });
+        let flagged = serde_json::json!({
+            "Name": "Alpha", "Title": "Fabricated record", "Domain": "alpha.example",
+            "Description": "<a href=\"https://two.example/\">two</a> \
+                            <a href=\"https://one.example/\">one</a>",
+            "DataClasses": ["Passwords", "Email addresses"], "IsVerified": false,
+            "IsFabricated": true, "IsSpamList": true, "IsMalware": true
+        });
+        let other = serde_json::json!({"Name": "Beta", "IsFabricated": false});
+        let fabricated = caution(FABRICATED).unwrap_or_default();
+        let spam_list = caution(SPAM_LIST).unwrap_or_default();
+        assert!(!fabricated.is_empty() && !spam_list.is_empty());
+        let expected_section = format!(
+            "incidents=2\n\
+             incident\tAlpha\ttitle=Genuine record\tbreach_date=2020-01-01\tadded=unknown\t\
+             domain=alpha.example\taccounts=unknown\tverified=false\t\
+             flags=fabricated,spam-list,malware\n\
+             caution\tAlpha\t{fabricated}\n\
+             caution\tAlpha\t{spam_list}\n\
+             summary\tAlpha\tone\n\
+             data_classes\tAlpha\tEmail addresses\n\
+             reference\tAlpha\thttps://one.example\n\
+             incident\tBeta\ttitle=unknown\tbreach_date=unknown\tadded=unknown\t\
+             domain=unknown\taccounts=unknown\tverified=unknown\tflags=none\n"
+        );
+
+        for (order, breaches) in [
+            ("flagged second", [&genuine, &flagged, &other]),
+            ("flagged first", [&flagged, &other, &genuine]),
+        ] {
+            let breaches: Vec<serde_json::Value> = breaches.into_iter().cloned().collect();
+            let (text, report, _) = run_with(&serde_json::Value::from(breaches));
+            let section = incidents_section(&text);
+            if order == "flagged second" {
+                assert_eq!(section, expected_section, "{order}");
+            }
+            for row in [
+                "flags=fabricated,spam-list,malware\n",
+                &format!("\ncaution\tAlpha\t{fabricated}\n"),
+                &format!("\ncaution\tAlpha\t{spam_list}\n"),
+                "verified=false\t",
+            ] {
+                assert!(section.contains(row), "{order}: {row:?} in {section}");
+            }
+            assert!(section.starts_with("incidents=2\n"), "{order}: {section}");
+            assert!(
+                text.contains("\nhibp_account\tsuccess\tfound=2\n"),
+                "{order}: the outcome counts the incidents the section prints: {text}"
+            );
+            let detail = report.outcomes[0].detail.as_deref().unwrap_or_default();
+            assert!(
+                detail.contains("3 records") && detail.contains("2 breach names"),
+                "{order}: the merge is on record: {detail:?}"
+            );
+
+            assert_eq!(
+                hibp_summaries(&report),
+                [
+                    "Address listed in HIBP breach Alpha, which the source flags as fabricated \
+                     and spam-list",
+                    "Address listed in HIBP breach Beta",
+                ],
+                "{order}: one evidence per breach name, in name order"
+            );
+            for (key, value) in [
+                ("breach_fabricated", "true"),
+                ("breach_spam_list", "true"),
+                ("breach_malware", "true"),
+                ("breach_verified", "false"),
+                ("breach_domain", "alpha.example"),
+            ] {
+                assert_eq!(
+                    breach_attr(&report, "Alpha", key),
+                    Some(value),
+                    "{order}: {key}"
+                );
+            }
+            let Some(entity) = report
+                .entities
+                .iter()
+                .find(|e| e.tags.iter().any(|t| t == tags::BREACH))
+            else {
+                panic!("{order}: no breach entity: {text}");
+            };
+            for tag in [tags::FABRICATED_BREACH, tags::SPAM_LIST] {
+                assert!(entity.tags.iter().any(|t| t == tag), "{order}: {tag}");
+            }
+        }
+    }
+
+    /// A record of breach `Alpha` with the title, `verified` value and status flags given.
+    fn alpha(title: &str, verified: Option<bool>, status: &[(&'static str, bool)]) -> Incident {
+        Incident {
+            name: "Alpha".to_owned(),
+            title: Some(title.to_owned()),
+            verified,
+            status: status
+                .iter()
+                .map(|&(label, set)| StatusFlag { label, set })
+                .collect(),
+            ..Incident::default()
+        }
+    }
+
+    #[test]
+    fn merging_records_keeps_every_caution_whatever_their_order() {
+        let plain = alpha(
+            "first",
+            Some(true),
+            &[(FABRICATED, false), ("retired", false)],
+        );
+        let flagged = alpha(
+            "second",
+            None,
+            &[("sensitive", false), (SPAM_LIST, true), (FABRICATED, true)],
+        );
+        let unverified = alpha("third", Some(false), &[]);
+        let other = Incident {
+            name: "Beta".to_owned(),
+            ..Incident::default()
+        };
+        let expected_status: Vec<StatusFlag> = [
+            (FABRICATED, true),
+            (SPAM_LIST, true),
+            ("sensitive", false),
+            ("retired", false),
+        ]
+        .into_iter()
+        .map(|(label, set)| StatusFlag { label, set })
+        .collect();
+
+        for records in [
+            [&plain, &flagged, &unverified, &other],
+            [&other, &flagged, &unverified, &plain],
+            [&unverified, &other, &plain, &flagged],
+        ] {
+            let records: Vec<Incident> = records.into_iter().cloned().collect();
+            let first_title = records
+                .iter()
+                .find(|record| record.name == "Alpha")
+                .and_then(|record| record.title.clone());
+            let merged = merge_incidents(records);
+            let names: Vec<&str> = merged.iter().map(|i| i.name.as_str()).collect();
+            assert_eq!(names, ["Alpha", "Beta"]);
+            let alpha = &merged[0];
+            assert_eq!(alpha.title, first_title, "the first record's title is kept");
+            assert_eq!(
+                alpha.status, expected_status,
+                "any true wins, a flag no record sends stays absent, in the fixed order"
+            );
+            assert_eq!(
+                alpha.verified,
+                Some(false),
+                "verified only if no record denies it"
+            );
+            assert_eq!(merged[1].status, [], "{:?}", merged[1]);
+        }
+    }
+
+    #[test]
+    fn merging_records_fills_only_the_fields_the_first_record_lacks() {
+        let mut only_true = alpha("a", Some(true), &[]);
+        only_true.absorb(alpha("b", None, &[]));
+        assert_eq!(only_true.verified, Some(true));
+        assert_eq!(only_true.title.as_deref(), Some("a"));
+        let mut unknown = alpha("a", None, &[]);
+        unknown.absorb(alpha("b", None, &[]));
+        assert_eq!(unknown.verified, None);
+
+        let mut gaps = Incident {
+            name: "Alpha".to_owned(),
+            ..Incident::default()
+        };
+        gaps.absorb(Incident {
+            name: "Alpha".to_owned(),
+            domain: Some("alpha.example".to_owned()),
+            data_classes: vec!["Passwords".to_owned()],
+            references: vec!["https://alpha.example/news".to_owned()],
+            ..Incident::default()
+        });
+        assert_eq!(gaps.domain.as_deref(), Some("alpha.example"));
+        assert_eq!(gaps.data_classes, ["Passwords"]);
+        assert_eq!(gaps.references, ["https://alpha.example/news"]);
+        gaps.absorb(Incident {
+            name: "Alpha".to_owned(),
+            domain: Some("later.example".to_owned()),
+            data_classes: vec!["Usernames".to_owned()],
+            references: vec!["https://later.example/".to_owned()],
+            ..Incident::default()
+        });
+        assert_eq!(gaps.domain.as_deref(), Some("alpha.example"));
+        assert_eq!(gaps.data_classes, ["Passwords"]);
+        assert_eq!(gaps.references, ["https://alpha.example/news"]);
     }
 
     #[test]
