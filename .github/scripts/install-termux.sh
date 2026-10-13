@@ -4,7 +4,8 @@
 # Default (HUNTSMAN_CHANNEL=recon): the current huntsman-recon build, with
 # rebuilt people/email/username/offline-phone lookup paths, into
 # $PREFIX/bin/huntsman-recon. Release HUNTSMAN_RELEASE_TAG, default: the
-# main-<sha7> release this script was attached to.
+# main-<sha7> release this script was attached to. The copy in the repository
+# was attached to no release; it installs the newest published recon build.
 #
 # Opt-in (HUNTSMAN_CHANNEL=hse): the legacy `hse` monolith, which still runs
 # the full legacy person-lookup surface, into $PREFIX/bin/hse. Release HSE_TAG,
@@ -32,13 +33,19 @@ case "$CHANNEL" in
     ;;
   recon)
     TAG="${HUNTSMAN_RELEASE_TAG:-$RECON_TAG_DEFAULT}"
+    # The release job stamps its own tag into the default. Left unstamped, this
+    # is the repository's copy: the newest build is found once the tools pass.
+    if [ -z "${HUNTSMAN_RELEASE_TAG:-}" ]; then
+      case "$RECON_TAG_DEFAULT" in @*@) TAG="" ;; esac
+    fi
     ASSET="huntsman-recon-aarch64-linux-android"
     DEST_NAME="huntsman-recon"
     echo "Note: huntsman-recon is still a partial replacement for the legacy HSE surface."
     ;;
   *) die "HUNTSMAN_CHANNEL must be 'recon' (default) or 'hse', got '$CHANNEL'" ;;
 esac
-[[ "$TAG" =~ ^(latest|main-[0-9a-f]{7}|v[0-9]+\.[0-9]+\.[0-9]+)$ ]] || die "bad release tag '$TAG'"
+valid_tag() { [[ "$1" =~ ^(latest|main-[0-9a-f]{7}|v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; }
+[ -z "$TAG" ] || valid_tag "$TAG" || die "bad release tag '$TAG'"
 [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/bin" ] || die "\$PREFIX/bin not found; run this inside Termux"
 case "$(uname -m)" in aarch64 | arm64) ;; *) die "these binaries are aarch64 only (got $(uname -m))" ;; esac
 for c in curl sha256sum install mktemp mv cut cmp; do
@@ -48,7 +55,6 @@ if [ "$CHANNEL" = recon ]; then
   command -v timeout >/dev/null 2>&1 || die "missing timeout (pkg install coreutils)"
 fi
 
-base="https://github.com/${REPO}/releases/download/${TAG}"
 dest="$PREFIX/bin/$DEST_NAME"
 stage_dir=""
 stage=""
@@ -61,6 +67,35 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+# The newest published recon build. The release job publishes main-<sha7> only
+# while that commit is the head of main, so the newest build belongs to the
+# newest commit of main that has one: walk back from the head, at most 30
+# commits, and take the first whose checksum asset exists. The releases list is
+# not in date order, so it cannot be used for this.
+newest_recon_tag() {
+  local depth sha tag
+  for ((depth = 0; depth < 30; depth++)); do
+    sha="$(curl -fsSL --proto '=https' -H 'Accept: application/vnd.github.sha' \
+      "https://api.github.com/repos/${REPO}/commits/main~${depth}")" ||
+      die "could not read main~${depth} from the GitHub API; set HUNTSMAN_RELEASE_TAG=main-<sha7>"
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "the GitHub API did not return a commit id for main~${depth}"
+    tag="main-${sha:0:7}"
+    if curl -fsSL --proto '=https' -o "$tmp/probe.sha256" \
+      "https://github.com/${REPO}/releases/download/${tag}/${ASSET}.sha256" 2>/dev/null; then
+      printf '%s\n' "$tag"
+      return
+    fi
+  done
+  die "no published recon build among the last 30 commits of main; set HUNTSMAN_RELEASE_TAG=main-<sha7>"
+}
+
+if [ -z "$TAG" ]; then
+  TAG="$(newest_recon_tag)"
+  valid_tag "$TAG" || die "bad release tag '$TAG'"
+  echo "Newest published build: ${TAG}"
+fi
+base="https://github.com/${REPO}/releases/download/${TAG}"
 
 echo "Downloading ${ASSET} from release ${TAG}"
 curl -fsSL --proto '=https' -o "$tmp/$ASSET" "$base/$ASSET"

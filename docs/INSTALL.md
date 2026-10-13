@@ -56,10 +56,28 @@ full 40-character SHA in `HUNTSMAN_REV`.
 
 ## Prebuilt Termux release
 
-The release workflow attaches a checksum-verified Termux installer to each
-published `main-<commit>` pre-release. Relevant main pushes are always built and verified, but a build superseded before publication remains an Actions artifact rather than minting a historical release tag. Select an available commit tag from the repository's
+Installing the newest verified build needs no compiler. It downloads one
+binary of about 5 MB instead of compiling on the phone:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/.github/scripts/install-termux.sh -o "$TMPDIR/install-termux.sh"
+bash "$TMPDIR/install-termux.sh"
+```
+
+This copy of the installer finds the newest build itself. A `main-<commit>`
+pre-release is published only while its commit is the head of `main`. So the
+installer walks back from the head of `main`, at most 30 commits, through the
+GitHub API, and installs the build of the first commit that has one. Run the
+same two commands again to upgrade.
+
+The release workflow also attaches a checksum-verified installer to each
+published `main-<commit>` pre-release. That installer always installs its own
+release. Relevant main pushes are always built and verified, but a build
+superseded before publication remains an Actions artifact rather than minting a
+historical release tag. To install one specific build, select a commit tag from
+the repository's
 [Releases](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases)
-page, replacing `main-<commit>` below with that exact tag:
+page and replace `main-<commit>` below with that exact tag:
 
 ```sh
 TAG=main-<commit>
