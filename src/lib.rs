@@ -64,6 +64,7 @@ pub mod diagnostics;
 pub mod diamond;
 pub mod diff;
 pub mod differential;
+pub mod dispatcher;
 pub mod directive_lock;
 pub mod dmarc;
 pub mod dns;
