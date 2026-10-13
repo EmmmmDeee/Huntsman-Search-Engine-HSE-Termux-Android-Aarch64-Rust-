@@ -102,6 +102,7 @@ pub mod meta_plan;
 pub mod method_actor;
 pub mod method_actor_stateful;
 pub mod method_actors;
+pub mod method_actors_osint;
 pub mod metrics;
 pub mod module;
 pub mod navigator;
