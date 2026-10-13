@@ -175,27 +175,30 @@ fn usage_failure(error: &Error, usage: &str) -> ExitCode {
     fail(argument_status(error), &format!("{error}\n{usage}"))
 }
 
-/// Prints the report and saves it when `--save` was given. A store failure exits 74 and any
-/// other save failure exits 65. Without `--save`, nothing is written.
+/// Saves the report when `--save` was given, then prints it. A store failure exits 74 and any
+/// other save failure exits 65. Without `--save`, nothing is written. The save comes first so a
+/// reader that stops early, which ends the process at the next print, cannot cost the ledger.
 fn finish(kind: ScanKind, selector: &str, save: Option<&Path>) -> ExitCode {
     let collected = match collect(kind, selector) {
         Ok(collected) => collected,
         Err(refused) => return fail(refused.exit_status(), refused.message()),
     };
-    print!("{}", collected.text);
     // An empty lookup (the people skip path) has nothing to save and prints no summary.
-    if collected.entities.is_empty() && collected.outcomes.is_empty() {
-        return ExitCode::SUCCESS;
-    }
-    let Some(path) = save else {
+    let empty = collected.entities.is_empty() && collected.outcomes.is_empty();
+    let saved = save.filter(|_| !empty).map(|path| {
+        let entries = lookup_save::save(
+            path,
+            &collected.entities,
+            &collected.outcomes,
+            collected.policy,
+        );
+        (path, entries)
+    });
+    print!("{}", collected.text);
+    let Some((path, entries)) = saved else {
         return ExitCode::SUCCESS;
     };
-    match lookup_save::save(
-        path,
-        &collected.entities,
-        &collected.outcomes,
-        collected.policy,
-    ) {
+    match entries {
         Ok(entries) => {
             println!("saved={}", path.display());
             println!("entries={}", entries.len());

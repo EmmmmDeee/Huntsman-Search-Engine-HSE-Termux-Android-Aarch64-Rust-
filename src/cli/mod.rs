@@ -66,9 +66,10 @@ mod selfcheck;
 mod service;
 mod utility;
 
-use report::fail;
+use report::{exit_on_output_failure, fail};
 
 pub(crate) fn run(argv: Vec<String>) -> ExitCode {
+    exit_on_output_failure();
     if argv.is_empty() {
         return selfcheck::check();
     }
