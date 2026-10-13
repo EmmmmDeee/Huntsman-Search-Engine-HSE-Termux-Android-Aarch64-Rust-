@@ -1,16 +1,20 @@
 //! Partial `SpiderFoot` 4.0 command-line compatibility over rebuilt Huntsman paths.
 //!
-//! The compatibility layer is deliberately narrow: it implements the legacy target
-//! classifier, `-M` / `-T` / `-V`, use-case validation, tab/csv/json rows, type
-//! filtering, and single-target execution for the people/email/username/phone
-//! front-ends that are actually rebuilt. Unsupported target classes fail explicitly.
+//! The layer implements the `sf.py` 4.0 target classifier, `-M` / `-T` / `-V`, use-case
+//! validation, and the `sfp__stor_stdout` output contract (`-o`, `-H`, `-n`, `-r`, `-S`, `-D`,
+//! `-t` with `-f`, `-F`), with the same argument-combination refusals. Execution covers the
+//! people, email, username, phone, internet-name and IP-address targets through rebuilt
+//! front-ends. Unsupported target classes and options fail explicitly, never silently.
 
 use std::fmt::Write as _;
+use std::net::IpAddr;
 
 use serde::Serialize;
 
+use crate::dns;
+use crate::domain_cli::{self, DomainRun};
 use crate::email_cli::{self, EmailRun};
-use crate::entity::{Entity, EntityKind};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::error::Error;
 use crate::http::Transport;
 use crate::module::reachable_modules;
@@ -19,97 +23,161 @@ use crate::phone_cli::{self, PhoneRun};
 use crate::textnorm::{escape_controls, is_escaped};
 use crate::username_cli::{self, UsernameRun};
 
-pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -s TARGET [-u all|footprint|investigate|passive] [-o tab|csv|json] [-t TYPE[,TYPE...]] [-r] [-q]";
+pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -s TARGET [-u all|footprint|investigate|passive] [-o tab|csv|json] [-t TYPE[,TYPE...] [-f]] [-F TYPE[,TYPE...]] [-H] [-n] [-r] [-S LENGTH] [-D DELIMITER] [-d] [-q] [-max-threads N]";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SfMode {
+    #[default]
     Scan,
     ListModules,
     ListTypes,
     Version,
 }
 
+/// How scan rows are written: the `sfp__stor_stdout` options.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SfArgs {
-    pub target: Option<String>,
-    pub use_case: String,
+pub struct SfOutput {
     pub format: String,
-    pub types: Vec<String>,
     pub include_source: bool,
-    pub quiet: bool,
-    pub mode: SfMode,
+    pub no_headers: bool,
+    pub strip_newlines: bool,
+    /// Characters kept of each data and source-data cell; 0 keeps all.
+    pub max_length: usize,
+    pub delimiter: String,
 }
 
-impl Default for SfArgs {
+impl Default for SfOutput {
     fn default() -> Self {
         Self {
-            target: None,
-            use_case: "all".into(),
             format: "tab".into(),
-            types: Vec::new(),
             include_source: false,
-            quiet: false,
-            mode: SfMode::Scan,
+            no_headers: false,
+            strip_newlines: false,
+            max_length: 0,
+            delimiter: ",".into(),
         }
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SfArgs {
+    pub target: Option<String>,
+    pub use_case: Option<String>,
+    /// `-t`: event types to collect.
+    pub types: Vec<String>,
+    /// `-F`: show only these event types.
+    pub show_types: Vec<String>,
+    /// `-f`: show only the `-t` types.
+    pub filter_requested: bool,
+    /// `-D`, kept apart from `output.delimiter` so `-D` without csv can be refused.
+    pub delimiter: Option<String>,
+    pub output: SfOutput,
+    pub debug: bool,
+    pub max_threads: Option<usize>,
+    pub quiet: bool,
+    pub mode: SfMode,
+}
+
+fn type_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .filter(|item| !item.is_empty())
+        .map(str::to_ascii_uppercase)
+        .collect()
+}
+
+/// Options `sf.py` 4.0 accepts that this layer does not implement, each with its refusal.
+fn unimplemented_option(flag: &str) -> Option<&'static str> {
+    Some(match flag {
+        "-m" => {
+            "-m selects SpiderFoot modules; rebuilt front-ends run fixed source sets, so it is not supported yet"
+        }
+        "-x" => "-x strict mode needs per-module event selection, which is not supported yet",
+        "-l" => "-l starts the SpiderFoot web listener; use `huntsman-recon serve --bind IP:PORT`",
+        "-C" | "--correlate" => {
+            "-C correlates a stored SpiderFoot scan; use `huntsman-recon correlate ARTIFACT`"
+        }
+        _ => return None,
+    })
+}
+
 impl SfArgs {
-    /// Parse the supported SpiderFoot-compatible flag subset.
+    /// Parse the `sf.py` 4.0 flag set this layer implements.
     ///
     /// # Errors
-    /// Unknown flags, missing values, incompatible listing/scan modes, invalid
-    /// use cases, output formats, or event types.
+    /// Unknown or unimplemented flags, missing or malformed values, and every argument
+    /// combination `sf.py` refuses.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
         let mut parsed = Self::default();
         let mut index = 0;
         while index < args.len() {
-            match args[index].as_str() {
+            let flag = args[index].as_str();
+            let mut step = 1;
+            match flag {
                 "-s" | "--target" => {
-                    parsed.target = Some(value(args, index, "-s/--target")?.to_owned());
-                    index += 2;
+                    parsed.target = Some(value(args, index, "-s")?.to_owned());
+                    step = 2;
                 }
                 "-u" | "--use-case" => {
-                    parsed.use_case = value(args, index, "-u/--use-case")?.to_ascii_lowercase();
-                    index += 2;
+                    parsed.use_case = Some(value(args, index, "-u")?.to_ascii_lowercase());
+                    step = 2;
                 }
                 "-o" | "--output" | "--format" => {
-                    parsed.format = value(args, index, "-o/--output")?.to_ascii_lowercase();
-                    index += 2;
+                    parsed.output.format = value(args, index, "-o")?.to_ascii_lowercase();
+                    step = 2;
                 }
-                "-t" | "-F" | "--types" => {
-                    parsed.types.extend(
-                        value(args, index, "-t/-F")?
-                            .split(',')
-                            .filter(|item| !item.is_empty())
-                            .map(str::to_ascii_uppercase),
-                    );
-                    index += 2;
+                "-t" | "--types" => {
+                    parsed.types.extend(type_list(value(args, index, "-t")?));
+                    step = 2;
                 }
-                "-r" | "--include-source" => {
-                    parsed.include_source = true;
-                    index += 1;
+                "-F" => {
+                    parsed
+                        .show_types
+                        .extend(type_list(value(args, index, "-F")?));
+                    step = 2;
                 }
-                "-q" | "--quiet" => {
-                    parsed.quiet = true;
-                    index += 1;
+                "-S" => {
+                    parsed.output.max_length = value(args, index, "-S")?
+                        .parse::<usize>()
+                        .map_err(|_| Error::Invalid("argument -S: invalid int value".into()))?;
+                    step = 2;
                 }
-                "-M" | "--list-modules" => {
+                "-D" => {
+                    let delimiter = value(args, index, "-D")?;
+                    if delimiter.is_empty() || delimiter.chars().any(|c| c.is_control() || c == '"')
+                    {
+                        return Err(Error::Invalid(
+                            "argument -D: delimiter must be printable and not a quote".into(),
+                        ));
+                    }
+                    parsed.delimiter = Some(delimiter.to_owned());
+                    step = 2;
+                }
+                "-max-threads" | "--max-threads" => {
+                    let threads = value(args, index, "-max-threads")?
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|threads| *threads > 0)
+                        .ok_or_else(|| {
+                            Error::Invalid("argument -max-threads: must be a positive int".into())
+                        })?;
+                    parsed.max_threads = Some(threads);
+                    step = 2;
+                }
+                "-f" => parsed.filter_requested = true,
+                "-H" => parsed.output.no_headers = true,
+                "-n" => parsed.output.strip_newlines = true,
+                "-r" | "--include-source" => parsed.output.include_source = true,
+                "-d" | "--debug" => parsed.debug = true,
+                "-q" | "--quiet" => parsed.quiet = true,
+                "-M" | "--modules" | "--list-modules" => {
                     set_mode(&mut parsed, SfMode::ListModules)?;
-                    index += 1;
                 }
-                "-T" | "--list-types" => {
-                    set_mode(&mut parsed, SfMode::ListTypes)?;
-                    index += 1;
-                }
-                "-V" | "--sf-version" => {
-                    set_mode(&mut parsed, SfMode::Version)?;
-                    index += 1;
-                }
-                flag if flag.starts_with('-') => {
-                    return Err(Error::Invalid(format!(
-                        "unsupported sf option {flag}; supported subset: {SF_USAGE}"
-                    )));
+                "-T" | "--list-types" => set_mode(&mut parsed, SfMode::ListTypes)?,
+                "-V" | "--version" | "--sf-version" => set_mode(&mut parsed, SfMode::Version)?,
+                other if other.starts_with('-') => {
+                    let reason = unimplemented_option(other)
+                        .map_or_else(|| format!("unsupported sf option {other}"), str::to_owned);
+                    return Err(Error::Invalid(reason));
                 }
                 value => {
                     return Err(Error::Invalid(format!(
@@ -117,30 +185,74 @@ impl SfArgs {
                     )));
                 }
             }
+            index += step;
         }
+        parsed.validate()?;
+        Ok(parsed)
+    }
 
-        validate_use_case(&parsed.use_case)?;
-        if !matches!(parsed.format.as_str(), "tab" | "csv" | "json") {
-            return Err(Error::Invalid(format!(
-                "invalid sf output format {:?}; choose tab, csv, or json",
-                parsed.format
-            )));
+    fn validate(&self) -> Result<(), Error> {
+        if let Some(use_case) = &self.use_case {
+            validate_use_case(use_case)?;
         }
-        for kind in &parsed.types {
+        let format = self.output.format.as_str();
+        if !matches!(format, "tab" | "csv" | "json") {
+            return Err(Error::Invalid(
+                "Invalid output format selected. Must be 'tab', 'csv' or 'json'.".into(),
+            ));
+        }
+        for kind in self.types.iter().chain(&self.show_types) {
             if !known_type(kind) {
                 return Err(Error::Invalid(format!("unknown sf event type {kind}")));
             }
         }
-
-        if parsed.mode != SfMode::Scan && parsed.target.is_some() {
-            return Err(Error::Invalid(
-                "sf listing/version modes do not accept -s".into(),
-            ));
+        if self.mode != SfMode::Scan {
+            if self.target.is_some() {
+                return Err(Error::Invalid(
+                    "sf listing/version modes do not accept -s".into(),
+                ));
+            }
+            return Ok(());
         }
-        if parsed.mode == SfMode::Scan && parsed.target.is_none() {
+        if self.target.is_none() {
             return Err(Error::Invalid("sf needs -s TARGET, -M, -T, or -V".into()));
         }
-        Ok(parsed)
+        // The refusals and wording of sf.py 4.0, in its order.
+        if self.output.include_source && format == "json" {
+            return Err(Error::Invalid(
+                "-r can only be used when your output format is tab or csv.".into(),
+            ));
+        }
+        if self.output.no_headers && format == "json" {
+            return Err(Error::Invalid(
+                "-H can only be used when your output format is tab or csv.".into(),
+            ));
+        }
+        if self.delimiter.is_some() && format != "csv" {
+            return Err(Error::Invalid(
+                "-D can only be used when using the csv output format.".into(),
+            ));
+        }
+        if self.filter_requested && self.types.is_empty() {
+            return Err(Error::Invalid(
+                "You can only use -f with -t. Use --help for guidance.".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The types `sfp__stor_stdout` shows, or `None` to show every event. `-t` replaces the
+    /// `-F` list, exactly as `sf.py` assigns `_requested` after `-F`.
+    #[must_use]
+    pub fn shown_types(&self) -> Option<Vec<String>> {
+        let show_only = self.filter_requested || !self.show_types.is_empty();
+        show_only.then(|| {
+            if self.types.is_empty() {
+                self.show_types.clone()
+            } else {
+                self.types.clone()
+            }
+        })
     }
 }
 
@@ -182,9 +294,9 @@ pub struct SfScan {
     pub target: String,
     pub target_type: &'static str,
     pub use_case: String,
-    pub format: String,
-    pub types: Vec<String>,
-    pub include_source: bool,
+    /// `Some(types)` shows only events of those types; `None` shows every event.
+    pub shown_types: Option<Vec<String>>,
+    pub output: SfOutput,
 }
 
 /// Resolve parsed flags to a metadata action or one supported scan.
@@ -207,10 +319,15 @@ pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
     Ok(SfAction::Scan(SfScan {
         target: normalized,
         target_type,
-        use_case: args.use_case.clone(),
-        format: args.format.clone(),
-        types: args.types.clone(),
-        include_source: args.include_source,
+        use_case: args.use_case.clone().unwrap_or_else(|| "all".into()),
+        shown_types: args.shown_types(),
+        output: SfOutput {
+            delimiter: args
+                .delimiter
+                .clone()
+                .unwrap_or_else(|| args.output.delimiter.clone()),
+            ..args.output.clone()
+        },
     }))
 }
 
@@ -276,11 +393,29 @@ pub fn run_scan<T: Transport + ?Sized>(
             PhoneRun::Printed { report, .. } => report.entities,
             PhoneRun::Failed(message) => return Err(Error::Invalid(message)),
         },
-        "HUMAN_NAME" => match people_cli::run(transport, &scan.target, now_unix) {
-            PeopleRun::Printed { report, .. } => report.entities,
-            PeopleRun::Network(message) => return Err(Error::Network(message)),
-            PeopleRun::Failed(message) => return Err(Error::Invalid(message)),
+        "HUMAN_NAME" => {
+            // The people front-end skips a non-name with no request; reporting that as a
+            // scan with no events would read as "nothing found".
+            if !people_cli::is_name(&scan.target) {
+                return Err(Error::Invalid(format!(
+                    "sf target {:?} was classified HUMAN_NAME but has fewer than two alphabetic tokens; nothing was looked up",
+                    scan.target
+                )));
+            }
+            match people_cli::run(transport, &scan.target, now_unix) {
+                PeopleRun::Printed { report, .. } => report.entities,
+                PeopleRun::Network(message) => return Err(Error::Network(message)),
+                PeopleRun::Failed(message) => return Err(Error::Invalid(message)),
+            }
+        }
+        "INTERNET_NAME" => match domain_cli::run(transport, &scan.target, now_unix) {
+            DomainRun::Printed { report, .. } => report.entities,
+            DomainRun::Network(message) | DomainRun::Unavailable(message) => {
+                return Err(Error::Network(message));
+            }
+            DomainRun::Failed(message) => return Err(Error::Invalid(message)),
         },
+        "IP_ADDRESS" | "IPV6_ADDRESS" => ip_entities(transport, &scan.target)?,
         other => {
             return Err(Error::Invalid(format!(
                 "sf target type {other} is detected but its rebuilt scan path is not available yet"
@@ -289,14 +424,47 @@ pub fn run_scan<T: Transport + ?Sized>(
     };
 
     let mut rows: Vec<Row> = entities.iter().map(Row::from_entity).collect();
-    if !scan.types.is_empty() {
+    if let Some(shown) = &scan.shown_types {
         rows.retain(|row| {
-            scan.types
+            shown
                 .iter()
                 .any(|wanted| wanted.eq_ignore_ascii_case(row.event_type))
         });
     }
-    render_rows(&rows, &scan.format, scan.include_source)
+    render_rows(&rows, &scan.output)
+}
+
+/// The target address plus every host name its PTR records carry, through the `DoH` pool.
+fn ip_entities<T: Transport + ?Sized>(transport: &T, raw: &str) -> Result<Vec<Entity>, Error> {
+    let ip: IpAddr = raw
+        .parse()
+        .map_err(|_| Error::Invalid(format!("sf target {raw:?} is not an IP address")))?;
+    let scan_id = crate::entity::scan_id("ip", &ip.to_string());
+    let mut target = Entity::new(EntityKind::IpAddress, ip.to_string(), 1.0, &scan_id);
+    target.add_evidence(Evidence::new(
+        EvidenceProvenance::for_scan("seed", &scan_id),
+        "scan target",
+    ));
+    let names = dns::lookup_ptr(transport, ip).map_err(|error| {
+        Error::Network(format!(
+            "reverse DNS for {ip} failed ({}): {}",
+            error.kind.as_str(),
+            error.detail
+        ))
+    })?;
+    let mut entities = vec![target];
+    for name in names {
+        let mut host = Entity::new(EntityKind::Domain, &name, 0.9, &scan_id);
+        host.add_evidence(
+            Evidence::new(
+                EvidenceProvenance::for_scan("dns_ptr", &scan_id),
+                format!("PTR {} -> {name}", dns::reverse_name(ip)),
+            )
+            .with_attr("address", ip.to_string()),
+        );
+        entities.push(host);
+    }
+    Ok(entities)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -327,11 +495,33 @@ impl Row {
     }
 }
 
-fn render_rows(rows: &[Row], format: &str, include_source: bool) -> Result<String, Error> {
-    match format {
-        "tab" => Ok(render_tab(rows, include_source)),
-        "csv" => Ok(render_csv(rows, include_source)),
-        "json" => serde_json::to_string_pretty(rows)
+/// `-n` and `-S`, applied to a cell before it is escaped, as `sfp__stor_stdout` applies them.
+fn shaped(value: &str, output: &SfOutput) -> String {
+    let value = if output.strip_newlines {
+        value.replace('\n', " ").replace('\r', "")
+    } else {
+        value.to_owned()
+    };
+    if output.max_length > 0 {
+        value.chars().take(output.max_length).collect()
+    } else {
+        value
+    }
+}
+
+fn render_rows(rows: &[Row], output: &SfOutput) -> Result<String, Error> {
+    let rows: Vec<Row> = rows
+        .iter()
+        .map(|row| Row {
+            source_data: shaped(&row.source_data, output),
+            data: shaped(&row.data, output),
+            ..row.clone()
+        })
+        .collect();
+    match output.format.as_str() {
+        "tab" => Ok(render_tab(&rows, output)),
+        "csv" => Ok(render_csv(&rows, output)),
+        "json" => serde_json::to_string_pretty(&rows)
             .map(|body| format!("{}\n", escape_unsafe_in_json(&body)))
             .map_err(|error| Error::Invalid(format!("sf json: {error}"))),
         _ => Err(Error::Invalid("invalid sf output format".into())),
@@ -355,61 +545,49 @@ fn escape_unsafe_in_json(json: &str) -> String {
     out
 }
 
-fn render_tab(rows: &[Row], include_source: bool) -> String {
+fn render_tab(rows: &[Row], output: &SfOutput) -> String {
     let mut out = String::new();
-    if include_source {
-        out.push_str("Source\tType\tSource Data\tData\n");
-    } else {
-        out.push_str("Source\tType\tData\n");
+    if !output.no_headers {
+        if output.include_source {
+            out.push_str("Source\tType\tSource Data\tData\n");
+        } else {
+            out.push_str("Source\tType\tData\n");
+        }
     }
     for row in rows {
-        if include_source {
-            writeln!(
-                &mut out,
-                "{}\t{}\t{}\t{}",
-                one_line(&row.source),
-                one_line(row.type_description),
-                one_line(&row.source_data),
-                one_line(&row.data)
-            )
-            .expect("writing to String cannot fail");
-        } else {
-            writeln!(
-                &mut out,
-                "{}\t{}\t{}",
-                one_line(&row.source),
-                one_line(row.type_description),
-                one_line(&row.data)
-            )
-            .expect("writing to String cannot fail");
+        let mut cells = vec![one_line(&row.source), one_line(row.type_description)];
+        if output.include_source {
+            cells.push(one_line(&row.source_data));
         }
+        cells.push(one_line(&row.data));
+        out.push_str(&cells.join("\t"));
+        out.push('\n');
     }
     out
 }
 
-fn render_csv(rows: &[Row], include_source: bool) -> String {
+fn render_csv(rows: &[Row], output: &SfOutput) -> String {
+    let delimiter = output.delimiter.as_str();
     let mut out = String::new();
-    if include_source {
-        out.push_str("Source,Type,Source Data,Data\n");
-    } else {
-        out.push_str("Source,Type,Data\n");
+    if !output.no_headers {
+        let header: &[&str] = if output.include_source {
+            &["Source", "Type", "Source Data", "Data"]
+        } else {
+            &["Source", "Type", "Data"]
+        };
+        out.push_str(&header.join(delimiter));
+        out.push('\n');
     }
     for row in rows {
-        let fields: Vec<String> = if include_source {
-            vec![
-                csv_cell(&row.source),
-                csv_cell(row.type_description),
-                csv_cell(&row.source_data),
-                csv_cell(&row.data),
-            ]
-        } else {
-            vec![
-                csv_cell(&row.source),
-                csv_cell(row.type_description),
-                csv_cell(&row.data),
-            ]
-        };
-        out.push_str(&fields.join(","));
+        let mut cells = vec![
+            csv_cell(&row.source, delimiter),
+            csv_cell(row.type_description, delimiter),
+        ];
+        if output.include_source {
+            cells.push(csv_cell(&row.source_data, delimiter));
+        }
+        cells.push(csv_cell(&row.data, delimiter));
+        out.push_str(&cells.join(delimiter));
         out.push('\n');
     }
     out
@@ -421,7 +599,7 @@ fn one_line(value: &str) -> String {
     escape_controls(&value.replace(['\r', '\n', '\t'], " "))
 }
 
-fn csv_cell(value: &str) -> String {
+fn csv_cell(value: &str, delimiter: &str) -> String {
     let one_line = one_line(value);
     let guarded = if one_line
         .as_bytes()
@@ -432,9 +610,10 @@ fn csv_cell(value: &str) -> String {
     } else {
         one_line
     };
-    if guarded
-        .chars()
-        .any(|character| matches!(character, ',' | '"' | '\n' | '\r'))
+    if guarded.contains(delimiter)
+        || guarded
+            .chars()
+            .any(|character| matches!(character, ',' | '"' | '\n' | '\r'))
     {
         format!("\"{}\"", guarded.replace('"', "\"\""))
     } else {
@@ -628,6 +807,214 @@ mod tests {
         }
     }
 
+    fn with_source(format: &str) -> SfOutput {
+        SfOutput {
+            format: format.into(),
+            include_source: true,
+            ..SfOutput::default()
+        }
+    }
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| (*w).to_owned()).collect()
+    }
+
+    fn parse_err(words: &[&str]) -> String {
+        match SfArgs::parse(&args(words)) {
+            Err(error) => error.to_string(),
+            Ok(parsed) => panic!("{words:?} parsed: {parsed:?}"),
+        }
+    }
+
+    fn doh(body: &str) -> Response {
+        Response {
+            status: 200,
+            headers: Vec::new(),
+            body: body.as_bytes().to_vec(),
+            truncated: false,
+        }
+    }
+
+    fn row(event_type: &'static str, data: &str) -> Row {
+        Row {
+            source: "src".into(),
+            event_type,
+            type_description: "Desc",
+            source_data: "seed\nline".into(),
+            data: data.into(),
+        }
+    }
+
+    #[test]
+    fn shown_types_follow_stor_stdout() {
+        let shown = |words: &[&str]| SfArgs::parse(&args(words)).map(|a| a.shown_types());
+        // -t alone collects but shows every event; -f narrows to -t.
+        assert_eq!(
+            shown(&["-s", "a.example", "-t", "IP_ADDRESS"]).ok(),
+            Some(None)
+        );
+        assert_eq!(
+            shown(&["-s", "a.example", "-t", "ip_address", "-f"]).ok(),
+            Some(Some(vec!["IP_ADDRESS".to_string()]))
+        );
+        // -F shows only its types and is not a collection request.
+        assert_eq!(
+            shown(&["-s", "a.example", "-F", "DOMAIN_NAME"]).ok(),
+            Some(Some(vec!["DOMAIN_NAME".to_string()]))
+        );
+        // -t replaces the -F list, as sf.py assigns _requested after -F.
+        assert_eq!(
+            shown(&["-s", "a.example", "-F", "DOMAIN_NAME", "-t", "IP_ADDRESS"]).ok(),
+            Some(Some(vec!["IP_ADDRESS".to_string()]))
+        );
+    }
+
+    #[test]
+    fn sf_py_argument_refusals_are_preserved() {
+        assert!(
+            parse_err(&["-s", "a.example", "-o", "json", "-r"]).contains("-r can only be used")
+        );
+        assert!(
+            parse_err(&["-s", "a.example", "-o", "json", "-H"]).contains("-H can only be used")
+        );
+        assert!(parse_err(&["-s", "a.example", "-D", ";"]).contains("-D can only be used"));
+        assert!(parse_err(&["-s", "a.example", "-f"]).contains("only use -f with -t"));
+        assert!(parse_err(&["-s", "a.example", "-S", "x"]).contains("-S"));
+        assert!(parse_err(&["-s", "a.example", "-max-threads", "0"]).contains("max-threads"));
+        assert!(parse_err(&["-s", "a.example", "-m", "sfp_dnsresolve"]).contains("-m selects"));
+        assert!(parse_err(&["-s", "a.example", "-x"]).contains("strict mode"));
+        assert!(parse_err(&["-l", "127.0.0.1:5001"]).contains("serve --bind"));
+        assert!(parse_err(&["-C", "abc"]).contains("correlate ARTIFACT"));
+        assert!(
+            parse_err(&["-s", "a.example", "-F", "NOT_A_TYPE"]).contains("unknown sf event type")
+        );
+        assert!(
+            SfArgs::parse(&args(&[
+                "-s",
+                "a.example",
+                "-o",
+                "csv",
+                "-D",
+                ";",
+                "-H",
+                "-n",
+                "-S",
+                "9",
+                "-d",
+                "-max-threads",
+                "4"
+            ]))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn output_options_shape_cells_like_stor_stdout() {
+        let rows = [row("IP_ADDRESS", "192.0.2.1;x"), row("DOMAIN_NAME", "a\nb")];
+        let csv = SfOutput {
+            format: "csv".into(),
+            no_headers: true,
+            delimiter: ";".into(),
+            ..SfOutput::default()
+        };
+        let rendered = render_rows(&rows, &csv).unwrap_or_default();
+        // No header, the chosen delimiter, and a cell holding it is quoted.
+        assert_eq!(rendered, "src;Desc;\"192.0.2.1;x\"\nsrc;Desc;a b\n");
+
+        let json = SfOutput {
+            format: "json".into(),
+            strip_newlines: true,
+            max_length: 3,
+            ..SfOutput::default()
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&render_rows(&rows, &json).unwrap_or_default())
+                .unwrap_or_default();
+        assert_eq!(value[0]["data"], "192");
+        assert_eq!(value[1]["data"], "a b");
+        assert_eq!(value[1]["source_data"], "see");
+    }
+
+    #[test]
+    fn ip_target_reverse_resolves_through_the_doh_pool() {
+        let fake = Fake::new(vec![Ok(doh(
+            r#"{"Status":0,"Answer":[{"type":12,"data":"one.one.one.one."}]}"#,
+        ))]);
+        let scan = SfScan {
+            target: "1.1.1.1".into(),
+            target_type: "IP_ADDRESS",
+            use_case: "all".into(),
+            shown_types: None,
+            output: SfOutput {
+                format: "json".into(),
+                ..SfOutput::default()
+            },
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&run_scan(&fake, &scan, 1).unwrap_or_default())
+                .unwrap_or_default();
+        assert_eq!(value[0]["event_type"], "IP_ADDRESS");
+        assert_eq!(value[0]["data"], "1.1.1.1");
+        assert_eq!(value[1]["event_type"], "DOMAIN_NAME");
+        assert_eq!(value[1]["data"], "one.one.one.one");
+        assert_eq!(value[1]["source"], "dns_ptr");
+    }
+
+    #[test]
+    fn ip_target_resolver_failure_is_a_network_error_not_an_empty_scan() {
+        let servfail = r#"{"Status":2}"#;
+        let fake = Fake::new(vec![
+            Ok(doh(servfail)),
+            Ok(doh(servfail)),
+            Ok(doh(servfail)),
+        ]);
+        let scan = SfScan {
+            target: "192.0.2.7".into(),
+            target_type: "IP_ADDRESS",
+            use_case: "all".into(),
+            shown_types: None,
+            output: SfOutput::default(),
+        };
+        assert!(matches!(run_scan(&fake, &scan, 1), Err(Error::Network(_))));
+    }
+
+    #[test]
+    fn internet_name_reaches_the_domain_front_end() {
+        let fake = Fake::new(Vec::new());
+        let scan = SfScan {
+            target: "a b".into(),
+            target_type: "INTERNET_NAME",
+            use_case: "all".into(),
+            shown_types: None,
+            output: SfOutput::default(),
+        };
+        // An invalid name is refused by domain_cli itself, proving the route is wired.
+        match run_scan(&fake, &scan, 1) {
+            Err(Error::Invalid(message)) => {
+                assert!(message.contains("invalid domain"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_human_name_without_two_alphabetic_tokens_is_refused_not_empty() {
+        let fake = Fake::new(Vec::new());
+        let scan = SfScan {
+            target: "0412 345 678".into(),
+            target_type: "HUMAN_NAME",
+            use_case: "all".into(),
+            shown_types: None,
+            output: SfOutput::default(),
+        };
+        match run_scan(&fake, &scan, 1) {
+            Err(Error::Invalid(message)) => {
+                assert!(message.contains("two alphabetic"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn target_detection_matches_rebuilt_legacy_shapes() {
         assert_eq!(
@@ -695,9 +1082,11 @@ mod tests {
             target: "+61412345678".into(),
             target_type: "PHONE_NUMBER",
             use_case: "passive".into(),
-            format: "json".into(),
-            types: Vec::new(),
-            include_source: false,
+            shown_types: None,
+            output: SfOutput {
+                format: "json".into(),
+                ..SfOutput::default()
+            },
         };
         let rendered = run_scan(&fake, &scan, 1).unwrap();
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
@@ -713,9 +1102,8 @@ mod tests {
             target: "jane@example.org".into(),
             target_type: "EMAILADDR",
             use_case: "passive".into(),
-            format: "tab".into(),
-            types: Vec::new(),
-            include_source: false,
+            shown_types: None,
+            output: SfOutput::default(),
         };
         let error = run_scan(&fake, &scan, 1).unwrap_err();
         assert!(error.to_string().contains("passive"));
@@ -730,7 +1118,7 @@ mod tests {
             source_data: "a,b".into(),
             data: "jane@example.org".into(),
         }];
-        let rendered = render_csv(&rows, true);
+        let rendered = render_csv(&rows, &with_source("csv"));
         assert!(rendered.contains("'=source"));
         assert!(rendered.contains("\"a,b\""));
     }
@@ -747,9 +1135,9 @@ mod tests {
             data: hostile.into(),
         }];
         for (format, rendered) in [
-            ("tab", render_tab(&rows, true)),
-            ("csv", render_csv(&rows, true)),
-            ("json", render_rows(&rows, "json", true).unwrap()),
+            ("tab", render_tab(&rows, &with_source("tab"))),
+            ("csv", render_csv(&rows, &with_source("csv"))),
+            ("json", render_rows(&rows, &with_source("json")).unwrap()),
         ] {
             assert_eq!(
                 unexpected_controls(&rendered, &['\n', '\t']).len(),
@@ -759,13 +1147,13 @@ mod tests {
             assert!(!rendered.contains('\u{2028}'), "{format}");
         }
         // The tab and csv cells stay one line of fixed columns.
-        let tab = render_tab(&rows, false);
+        let tab = render_tab(&rows, &SfOutput::default());
         assert_eq!(tab.lines().count(), 2, "{tab:?}");
         assert_eq!(tab.lines().last().unwrap().matches('\t').count(), 2);
         assert!(tab.contains("Jane\\u{1b}]0;x\\u{7}\\u{9b}2J\\u{7f} forged column"));
         // JSON reads back the same text.
         let json: serde_json::Value =
-            serde_json::from_str(&render_rows(&rows, "json", true).unwrap()).unwrap();
+            serde_json::from_str(&render_rows(&rows, &with_source("json")).unwrap()).unwrap();
         assert_eq!(json[0]["data"], hostile);
     }
 }

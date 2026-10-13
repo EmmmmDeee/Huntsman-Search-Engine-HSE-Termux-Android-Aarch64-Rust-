@@ -2,6 +2,7 @@
 //! DNS-over-HTTPS queries go through `fetch` over an injected transport so tests
 //! use fakes and a challenge page is a wall, not a JSON parse error.
 
+use std::fmt::Write as _;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
@@ -27,6 +28,7 @@ pub enum RecordType {
     Ns,
     Soa,
     Txt,
+    Ptr,
 }
 
 impl RecordType {
@@ -39,6 +41,7 @@ impl RecordType {
             Self::Ns => "NS",
             Self::Soa => "SOA",
             Self::Txt => "TXT",
+            Self::Ptr => "PTR",
         }
     }
 
@@ -53,6 +56,7 @@ impl RecordType {
             Self::Soa => 6,
             Self::Mx => 15,
             Self::Txt => 16,
+            Self::Ptr => 12,
             Self::Aaaa => 28,
         }
     }
@@ -333,9 +337,15 @@ fn parse_response(
             kind: ResolveErrorKind::Upstream,
             detail: "invalid DNS JSON".into(),
         })?;
+    // NXDOMAIN (3) is a definitive absence; SERVFAIL, REFUSED and every other RCODE mean the
+    // resolver gave no answer, which must not read as "no records".
     if parsed.status != 0 {
         return Err(ResolveError {
-            kind: ResolveErrorKind::Empty,
+            kind: if parsed.status == 3 {
+                ResolveErrorKind::Empty
+            } else {
+                ResolveErrorKind::Upstream
+            },
             detail: format!("dns status {}", parsed.status),
         });
     }
@@ -420,6 +430,57 @@ pub fn soa_rname_to_email(rname: &str) -> String {
         cursor += 1;
     }
     String::new()
+}
+
+/// The `in-addr.arpa` (IPv4) or nibble-format `ip6.arpa` (IPv6) name whose PTR record names `ip`.
+#[must_use]
+pub fn reverse_name(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, c, d] = v4.octets();
+            format!("{d}.{c}.{b}.{a}.in-addr.arpa")
+        }
+        IpAddr::V6(v6) => {
+            let mut name = String::with_capacity(72);
+            for byte in v6.octets().iter().rev() {
+                let _ = write!(name, "{:x}.{:x}.", byte & 0x0f, byte >> 4);
+            }
+            name.push_str("ip6.arpa");
+            name
+        }
+    }
+}
+
+/// Reverse-resolve `ip` over the `DoH` pool: the canonical host names its PTR records carry.
+///
+/// No PTR record (an empty answer or NXDOMAIN) is `Ok` with no names, a definitive zero; a
+/// transport, HTTP, challenge, truncation or parse failure is `Err`, never an empty success.
+/// A PTR value that is not a well-formed domain is dropped.
+///
+/// # Errors
+/// The [`ResolveError`] of the last resolver tried when none produced a definitive answer.
+pub fn lookup_ptr<T: Transport + ?Sized>(
+    transport: &T,
+    ip: IpAddr,
+) -> Result<Vec<String>, ResolveError> {
+    let query = ResolveQuery {
+        name: reverse_name(ip),
+        record_type: RecordType::Ptr,
+    };
+    match resolve_with_pool(transport, &query) {
+        Ok(answer) => {
+            let mut names: Vec<String> = answer
+                .records
+                .iter()
+                .filter_map(|record| canonical::canonical_domain(record.trim_end_matches('.')))
+                .collect();
+            names.sort();
+            names.dedup();
+            Ok(names)
+        }
+        Err(error) if error.kind == ResolveErrorKind::Empty => Ok(Vec::new()),
+        Err(error) => Err(error),
+    }
 }
 
 /// Canonical DNS name for a domain, URL or email selector. Nothing is sent.
@@ -690,6 +751,69 @@ mod tests {
                     blocked: false,
                 })
             })
+        }
+    }
+
+    fn doh(body: &str) -> Response {
+        Response {
+            status: 200,
+            headers: Vec::new(),
+            body: body.as_bytes().to_vec(),
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn reverse_names_follow_rfc_1035_and_3596() {
+        assert_eq!(
+            reverse_name(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))),
+            "4.3.2.1.in-addr.arpa"
+        );
+        let v6: IpAddr = "2001:db8::567:89ab"
+            .parse()
+            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(
+            reverse_name(v6),
+            "b.a.9.8.7.6.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
+        );
+    }
+
+    #[test]
+    fn ptr_lookup_returns_canonical_names_and_drops_cnames() {
+        let transport = FakeTransport::new(vec![Ok(doh(
+            r#"{"Status":0,"Answer":[{"type":5,"data":"alias.example."},{"type":12,"data":"One.One.One.One."},{"type":12,"data":"one.one.one.one."}]}"#,
+        ))]);
+        let names = lookup_ptr(&transport, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)));
+        assert_eq!(names, Ok(vec!["one.one.one.one".to_string()]));
+        let seen = transport.seen.borrow();
+        assert!(
+            seen[0].url.contains("name=1.1.1.1.in-addr.arpa"),
+            "{}",
+            seen[0].url
+        );
+        assert!(seen[0].url.contains("type=PTR"), "{}", seen[0].url);
+    }
+
+    #[test]
+    fn nxdomain_is_a_definitive_zero_but_servfail_is_a_failure() {
+        let nx = FakeTransport::new(vec![
+            Ok(doh(r#"{"Status":3}"#)),
+            Ok(doh(r#"{"Status":3}"#)),
+            Ok(doh(r#"{"Status":3}"#)),
+        ]);
+        assert_eq!(
+            lookup_ptr(&nx, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))),
+            Ok(Vec::new())
+        );
+
+        let servfail = FakeTransport::new(vec![
+            Ok(doh(r#"{"Status":2}"#)),
+            Ok(doh(r#"{"Status":2}"#)),
+            Ok(doh(r#"{"Status":2}"#)),
+        ]);
+        match lookup_ptr(&servfail, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))) {
+            Err(error) => assert_eq!(error.kind, ResolveErrorKind::Upstream),
+            Ok(names) => panic!("SERVFAIL read as a definitive answer: {names:?}"),
         }
     }
 

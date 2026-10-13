@@ -154,6 +154,9 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
                     Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
                 }
                 huntsman_recon::domain_cli::DomainRun::Network(m) => Err(Refused::Network(m)),
+                huntsman_recon::domain_cli::DomainRun::Unavailable(m) => {
+                    Err(Refused::Unavailable(m))
+                }
                 huntsman_recon::domain_cli::DomainRun::Failed(m) => Err(Refused::Unavailable(m)),
             }
         }

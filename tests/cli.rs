@@ -539,7 +539,7 @@ fn sf_metadata_and_offline_phone_path_work() {
 #[test]
 fn sf_rejects_unrebuilt_target_classes_explicitly() {
     let out = bin()
-        .args(["sf", "-s", "example.org", "-u", "all"])
+        .args(["sf", "-s", "192.0.2.0/24", "-u", "all"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(65));
