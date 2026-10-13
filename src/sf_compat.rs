@@ -22,7 +22,7 @@ use crate::phone_cli::{self, PhoneRun};
 use crate::textnorm::{escape_controls, is_escaped};
 use crate::username_cli::{self, UsernameRun};
 
-pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -s TARGET [-u all|footprint|investigate|passive] [-o tab|csv|json] [-t TYPE[,TYPE...] [-f]] [-F TYPE[,TYPE...]] [-H] [-n] [-r] [-S LENGTH] [-D DELIMITER] [-d] [-q] [-max-threads N]";
+pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -C SCANID|FILE [-q] | -s TARGET [-u all|footprint|investigate|passive] [-o tab|csv|json] [-t TYPE[,TYPE...] [-f]] [-F TYPE[,TYPE...]] [-H] [-n] [-r] [-S LENGTH] [-D DELIMITER] [-d] [-q] [-max-threads N]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SfMode {
@@ -31,6 +31,8 @@ pub enum SfMode {
     ListModules,
     ListTypes,
     Version,
+    /// `-C SCANID|FILE`: re-run the correlation rules on a stored scan.
+    Correlate,
 }
 
 /// How scan rows are written: the `sfp__stor_stdout` options.
@@ -75,6 +77,8 @@ pub struct SfArgs {
     pub max_threads: Option<usize>,
     pub quiet: bool,
     pub mode: SfMode,
+    /// The `-C` scan id or artifact path.
+    pub correlate: Option<String>,
 }
 
 fn type_list(raw: &str) -> Vec<String> {
@@ -92,9 +96,6 @@ fn unimplemented_option(flag: &str) -> Option<&'static str> {
         }
         "-x" => "-x strict mode needs per-module event selection, which is not supported yet",
         "-l" => "-l starts the SpiderFoot web listener; use `huntsman-recon serve --bind IP:PORT`",
-        "-C" | "--correlate" => {
-            "-C re-correlates a stored SpiderFoot scan; sf scans are not stored, but every sf -s scan runs the correlation rules when it finishes, and `huntsman-recon correlate ARTIFACT` re-runs them on a stored artifact"
-        }
         _ => return None,
     })
 }
@@ -172,6 +173,11 @@ impl SfArgs {
                     set_mode(&mut parsed, SfMode::ListModules)?;
                 }
                 "-T" | "--list-types" => set_mode(&mut parsed, SfMode::ListTypes)?,
+                "-C" | "--correlate" => {
+                    set_mode(&mut parsed, SfMode::Correlate)?;
+                    parsed.correlate = Some(value(args, index, "-C")?.to_owned());
+                    step = 2;
+                }
                 "-V" | "--version" | "--sf-version" => set_mode(&mut parsed, SfMode::Version)?,
                 other if other.starts_with('-') => {
                     let reason = unimplemented_option(other)
@@ -208,7 +214,7 @@ impl SfArgs {
         if self.mode != SfMode::Scan {
             if self.target.is_some() {
                 return Err(Error::Invalid(
-                    "sf listing/version modes do not accept -s".into(),
+                    "sf -M, -T, -V and -C do not accept -s".into(),
                 ));
             }
             return Ok(());
@@ -258,7 +264,7 @@ impl SfArgs {
 fn set_mode(args: &mut SfArgs, mode: SfMode) -> Result<(), Error> {
     if args.mode != SfMode::Scan {
         return Err(Error::Invalid(
-            "sf accepts only one of -M, -T, or -V at a time".into(),
+            "sf accepts only one of -M, -T, -V or -C at a time".into(),
         ));
     }
     args.mode = mode;
@@ -286,6 +292,8 @@ fn validate_use_case(value: &str) -> Result<(), Error> {
 pub enum SfAction {
     Text(String),
     Scan(SfScan),
+    /// Re-run the correlation rules on the stored scan this id or path names.
+    Correlate(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,6 +317,11 @@ pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
         }
         SfMode::ListModules => return Ok(SfAction::Text(module_listing(args.quiet))),
         SfMode::ListTypes => return Ok(SfAction::Text(type_listing(args.quiet))),
+        SfMode::Correlate => {
+            return Ok(SfAction::Correlate(
+                args.correlate.clone().unwrap_or_default(),
+            ));
+        }
         SfMode::Scan => {}
     }
     let target = args.target.as_deref().unwrap_or_default();
@@ -366,9 +379,11 @@ pub fn type_listing(quiet: bool) -> String {
 }
 
 /// What one scan printed, and the sources that failed without failing the whole scan.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SfRun {
     pub body: String,
+    /// Every entity the scan produced, before `-t`/`-F` display filtering: what is stored.
+    pub entities: Vec<Entity>,
     pub warnings: Vec<String>,
     /// `New correlation [id]: headline` lines from the correlation rules run over the scan's
     /// entities after collection, as `SpiderFoot` 4.0 runs its rules at the end of every scan.
@@ -446,15 +461,22 @@ pub fn run_scan<T: Transport + ?Sized>(
                 .any(|wanted| wanted.eq_ignore_ascii_case(row.event_type))
         });
     }
-    let correlations = crate::correlator::correlate_entities(&entities, "sf")
-        .into_iter()
-        .map(|c| format!("New correlation [{}]: {}", c.rule_id, c.description))
-        .collect();
+    let correlations = correlation_lines(&crate::correlator::correlate_entities(&entities, "sf"));
     Ok(SfRun {
         body: render_rows(&rows, &scan.output)?,
+        entities,
         warnings,
         correlations,
     })
+}
+
+/// `New correlation [ID]: HEADLINE`, the line `SpiderFoot` logs for each correlation.
+#[must_use]
+pub fn correlation_lines(correlations: &[crate::correlator::Correlation]) -> Vec<String> {
+    correlations
+        .iter()
+        .map(|c| format!("New correlation [{}]: {}", c.rule_id, c.description))
+        .collect()
 }
 
 /// IP, netblock and AS targets through [`network_cli`]: the entities, plus a warning for each
@@ -932,7 +954,14 @@ mod tests {
         assert!(parse_err(&["-s", "a.example", "-m", "sfp_dnsresolve"]).contains("-m selects"));
         assert!(parse_err(&["-s", "a.example", "-x"]).contains("strict mode"));
         assert!(parse_err(&["-l", "127.0.0.1:5001"]).contains("serve --bind"));
-        assert!(parse_err(&["-C", "abc"]).contains("correlate ARTIFACT"));
+        let correlate = SfArgs::parse(&args(&["-C", "abc"]));
+        assert!(
+            matches!(&correlate, Ok(a) if a.mode == SfMode::Correlate && a.correlate.as_deref() == Some("abc")),
+            "{correlate:?}"
+        );
+        assert!(parse_err(&["-C"]).contains("-C needs a value"));
+        assert!(parse_err(&["-C", "abc", "-s", "a.example"]).contains("do not accept -s"));
+        assert!(parse_err(&["-C", "abc", "-M"]).contains("only one of"));
         assert!(
             parse_err(&["-s", "a.example", "-F", "NOT_A_TYPE"]).contains("unknown sf event type")
         );

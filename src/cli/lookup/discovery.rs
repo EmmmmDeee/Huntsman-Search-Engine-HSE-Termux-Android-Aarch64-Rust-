@@ -12,6 +12,7 @@ use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::{TransportConfig, UreqTransport};
 use huntsman_recon::lookup_report::{entity_row, evidence_row};
+use huntsman_recon::scan_artifact::{self, ScanArtifact};
 use huntsman_recon::search::{Document, load_dir, search, tokenize};
 use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
 use huntsman_recon::source_registry::routes_for;
@@ -98,6 +99,7 @@ pub(in crate::cli) fn sf_cmd(args: &[String]) -> ExitCode {
             print!("{body}");
             ExitCode::SUCCESS
         }
+        SfAction::Correlate(reference) => sf_correlate(&reference, parsed.quiet),
         SfAction::Scan(scan) => {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -106,12 +108,22 @@ pub(in crate::cli) fn sf_cmd(args: &[String]) -> ExitCode {
             match sf_compat::run_scan(&transport, &scan, now) {
                 Ok(run) => {
                     print!("{}", run.body);
+                    let stored = store_sf_scan(&scan.target, run.entities);
                     if !parsed.quiet {
                         for warning in &run.warnings {
                             eprintln!("[WARNING] {}", escape_controls(warning));
                         }
                         for correlation in &run.correlations {
                             eprintln!("[INFO] {}", escape_controls(correlation));
+                        }
+                        match stored {
+                            Ok((id, path)) => eprintln!(
+                                "[INFO] Scan [{id}] stored: {}",
+                                escape_controls(&path.display().to_string())
+                            ),
+                            Err(why) => {
+                                eprintln!("[WARNING] scan not stored: {}", escape_controls(&why));
+                            }
                         }
                     }
                     ExitCode::SUCCESS
@@ -122,6 +134,59 @@ pub(in crate::cli) fn sf_cmd(args: &[String]) -> ExitCode {
             }
         }
     }
+}
+
+/// The `sf` scan store, `$HOME/.huntsman/sf`, as `sf.py` keeps every scan for `-C`.
+fn sf_store() -> Result<std::path::PathBuf, String> {
+    crate::cli::state::state_dir(Some("sf"))
+}
+
+/// Persist a finished scan as a scan artifact named by a fresh scan id.
+fn store_sf_scan(
+    target: &str,
+    entities: Vec<entity::Entity>,
+) -> Result<(String, std::path::PathBuf), String> {
+    let id = entity::scan_id("sf", target);
+    let path = sf_store()?.join(format!("{id}.json"));
+    let artifact = ScanArtifact::new(id.clone(), entities, Vec::new());
+    scan_artifact::write(&path, &artifact).map_err(|e| e.to_string())?;
+    Ok((id, path))
+}
+
+/// `sf -C SCANID|FILE`: a path to an artifact, or the hex id of a scan in the store. An id is
+/// only ever hex, so it cannot name a file outside the store.
+fn sf_correlate(reference: &str, quiet: bool) -> ExitCode {
+    let path = if Path::new(reference).is_file() {
+        Path::new(reference).to_path_buf()
+    } else if !reference.is_empty()
+        && reference.len() <= 64
+        && reference.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        match sf_store() {
+            Ok(dir) => dir.join(format!("{}.json", reference.to_ascii_lowercase())),
+            Err(why) => return fail(EX_NOINPUT, &format!("sf -C: {why}")),
+        }
+    } else {
+        return fail(
+            EX_USAGE,
+            &format!("sf -C needs a stored scan id (hex) or an artifact file\n{SF_USAGE}"),
+        );
+    };
+    let artifact = match scan_artifact::read(&path) {
+        Ok(artifact) => artifact,
+        Err(error) => {
+            return fail(
+                EX_NOINPUT,
+                &format!("sf -C {}: {error}", escape_controls(reference)),
+            );
+        }
+    };
+    if !quiet {
+        for line in sf_compat::correlation_lines(&artifact.correlate()) {
+            eprintln!("[INFO] {}", escape_controls(&line));
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 pub(in crate::cli) fn search_cmd(query: Option<String>, dir: Option<String>) -> ExitCode {

@@ -526,8 +526,10 @@ fn sf_metadata_and_offline_phone_path_work() {
     assert!(stdout.contains("EMAILADDR"), "{stdout:?}");
     assert!(stdout.contains("PHONE_NUMBER"), "{stdout:?}");
 
+    let home = scratch("sf-meta-home");
     let scan = bin()
         .args(["sf", "-s", "+61412345678", "-u", "passive", "-o", "json"])
+        .env("HOME", &home)
         .output()
         .unwrap();
     assert_eq!(scan.status.code(), Some(0));
@@ -940,4 +942,64 @@ fn an_unusable_ca_bundle_fails_closed_with_its_reason() {
         stdout.contains("SSL_CERT_FILE=/nonexistent/huntsman-ca.pem"),
         "{stdout}"
     );
+}
+
+#[test]
+fn sf_scans_are_stored_and_re_correlated_with_dash_c() {
+    let home = scratch("sf-store-home");
+    let scan = bin()
+        .args(["sf", "-s", "+61412345678", "-u", "passive"])
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    assert_eq!(scan.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&scan.stderr);
+    let id: String = stderr
+        .split("Scan [")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .unwrap_or_else(|| panic!("no scan id in {stderr:?}"))
+        .to_owned();
+    assert!(id.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+    let stored = home.join(".huntsman/sf").join(format!("{id}.json"));
+    assert!(stored.is_file(), "{}", stored.display());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(home.join(".huntsman/sf"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    // By id and by path, in a fresh process: the scan survives the one that ran it.
+    for reference in [id.clone(), stored.display().to_string()] {
+        let rerun = bin()
+            .args(["sf", "-C", &reference])
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        assert_eq!(
+            rerun.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&rerun.stderr)
+        );
+    }
+
+    // An id is hex only, so it cannot reach outside the store; an unknown id is unreadable.
+    let traversal = bin()
+        .args(["sf", "-C", "../../etc/passwd"])
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    assert_eq!(traversal.status.code(), Some(64));
+    let missing = bin()
+        .args(["sf", "-C", "deadbeef"])
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(66));
+    let _ = fs::remove_dir_all(&home);
 }

@@ -67,6 +67,7 @@ mod network;
 mod report;
 mod selfcheck;
 mod service;
+mod state;
 mod utility;
 
 use report::fail;

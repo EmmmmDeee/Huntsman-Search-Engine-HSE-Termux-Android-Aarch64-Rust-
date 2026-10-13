@@ -79,19 +79,9 @@ fn parse(args: &[String]) -> Result<GraphArgs, String> {
 
 /// `$HOME/.huntsman/graph.redb`, creating `~/.huntsman` with mode 700 if it is absent.
 fn default_store() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .ok_or("HOME is not an absolute path; pass --store FILE")?;
-    let dir = home.join(".huntsman");
-    if !dir.is_dir() {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&dir)
-            .map_err(|e| format!("create {}: {e}", dir.display()))?;
-    }
-    Ok(dir.join("graph.redb"))
+    super::state::state_dir(None)
+        .map(|dir| dir.join("graph.redb"))
+        .map_err(|why| format!("{why}; pass --store FILE"))
 }
 
 pub(super) fn graph_cmd(args: &[String]) -> ExitCode {
