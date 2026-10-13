@@ -460,6 +460,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "Cert Spotter certificate-transparency lookup",
     },
     ReachableModule {
+        name: "rdap",
+        command: "domain DOMAIN | scan DOMAIN | sf -s DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1596.002"],
+        description: "RDAP domain registration (registrar, dates, nameservers)",
+    },
+    ReachableModule {
         name: "crtsh",
         command: "recon crtsh TARGET",
         access: "keyless",

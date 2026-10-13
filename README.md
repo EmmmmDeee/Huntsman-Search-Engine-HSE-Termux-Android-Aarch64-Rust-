@@ -368,7 +368,7 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 ### Domain lookup
 
-`domain DOMAIN [--save FILE]` (also `scan DOMAIN`, `sf -s DOMAIN` and `/api/lookup?kind=domain`) combines two independent certificate-transparency indexes, crt.sh and the keyless Cert Spotter API, with DNS-over-HTTPS A/AAAA/MX/NS/TXT records. Addresses and name/mail hosts become entities; names both CT indexes report merge into one. Each source reports its own outcome, so a crt.sh outage leaves Cert Spotter and DNS results intact; Cert Spotter pagination stops at 10 pages and says `partial` when it does. A domain with no records is a definitive zero; no source answering exits 69.
+`domain DOMAIN [--save FILE]` (also `scan DOMAIN`, `sf -s DOMAIN` and `/api/lookup?kind=domain`) combines two independent certificate-transparency indexes, crt.sh and the keyless Cert Spotter API, the domain's RDAP registration record (registrar, registration/expiry dates, status and nameservers, routed by the IANA bootstrap registry with redirects off; an unregistered name is a definitive zero; `sf` reports the registrar as `DOMAIN_REGISTRAR`), and DNS-over-HTTPS A/AAAA/MX/NS/TXT records. Addresses and name/mail hosts become entities; names both CT indexes report merge into one. Each source reports its own outcome, so a crt.sh outage leaves Cert Spotter and DNS results intact; Cert Spotter pagination stops at 10 pages and says `partial` when it does. A domain with no records is a definitive zero; no source answering exits 69.
 
 ### Phone lookup
 

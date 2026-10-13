@@ -101,6 +101,11 @@ pub fn run<T: Transport + ?Sized>(transport: &T, domain: &str, now_unix: u64) ->
     outcomes.push(outcome);
     sections.push(section);
 
+    let (found, outcome, section) = rdap_source(transport, &domain, now_unix);
+    entities.extend(found);
+    outcomes.push(outcome);
+    sections.push(section);
+
     // DoH requests carry their own timeout, which the transport caps, so the caller's
     // transport (and its egress policy) serves DNS as it serves crt.sh.
     let dns_report = dns::lookup_domain(transport, &domain);
@@ -175,6 +180,42 @@ fn certspotter_source<T: Transport + ?Sized>(
             let section = format!("certspotter: unavailable ({})", failure.detail);
             let outcome = SourceExecutionOutcome::failed(
                 "certspotter",
+                now_unix,
+                failure.kind,
+                failure.http_status,
+                failure.detail,
+            );
+            (Vec::new(), outcome, section)
+        }
+    }
+}
+
+/// The domain's RDAP registration record: registrar and nameserver entities, outcome and report
+/// section. An unregistered name (RDAP 404) is a valid zero.
+fn rdap_source<T: Transport + ?Sized>(
+    transport: &T,
+    domain: &str,
+    now_unix: u64,
+) -> (Vec<Entity>, SourceExecutionOutcome, String) {
+    match crate::rdap::lookup(transport, domain, "domain_cli") {
+        Ok(report) if !report.registered => (
+            Vec::new(),
+            SourceExecutionOutcome::valid_zero("rdap", now_unix),
+            "rdap: not registered".into(),
+        ),
+        Ok(report) => {
+            let count = report.entities.len();
+            let section = format!("rdap: {count} registration entities");
+            (
+                report.entities,
+                SourceExecutionOutcome::success("rdap", now_unix, count),
+                section,
+            )
+        }
+        Err(failure) => {
+            let section = format!("rdap: unavailable ({})", failure.detail);
+            let outcome = SourceExecutionOutcome::failed(
+                "rdap",
                 now_unix,
                 failure.kind,
                 failure.http_status,

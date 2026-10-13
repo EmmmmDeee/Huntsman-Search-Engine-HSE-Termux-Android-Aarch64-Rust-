@@ -106,6 +106,7 @@ fn domain_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "crtsh" => ("crtsh", "src/crtsh.rs"),
         "certspotter" => ("certspotter", "src/certspotter.rs"),
+        "rdap" => ("rdap", "src/rdap.rs"),
         "dns" => ("dns", "src/dns.rs"),
         _ => (source, "src/domain_cli.rs"),
     }

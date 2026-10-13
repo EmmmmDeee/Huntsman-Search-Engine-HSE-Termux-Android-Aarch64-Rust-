@@ -121,6 +121,7 @@ pub mod profiles;
 pub mod proof;
 pub mod provider_credentials;
 pub mod radar;
+pub mod rdap;
 pub mod recon;
 pub mod redact;
 pub mod relation;

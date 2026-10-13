@@ -549,7 +549,13 @@ struct Row {
 
 impl Row {
     fn from_entity(entity: &Entity) -> Self {
-        let (event_type, type_description) = sf_type(&entity.kind);
+        let (event_type, type_description) = if entity.kind == EntityKind::Organisation
+            && entity.has_tag(crate::rdap::REGISTRAR_TAG)
+        {
+            ("DOMAIN_REGISTRAR", "Domain Registrar")
+        } else {
+            sf_type(&entity.kind)
+        };
         // A target merged with what a source reported about it shows the report, not "seed".
         let evidence = entity
             .evidence
@@ -796,6 +802,7 @@ pub fn type_table() -> &'static [(&'static str, &'static str, &'static str)] {
         ("BGP_AS_OWNER", "BGP AS Ownership", "asn"),
         ("COMPANY_NAME", "Company Name", "organisation"),
         ("DOMAIN_NAME", "Domain Name", "domain"),
+        ("DOMAIN_REGISTRAR", "Domain Registrar", "organisation"),
         ("EMAILADDR", "Email Address", "email"),
         ("HUMAN_NAME", "Human Name", "person"),
         ("INTERNET_NAME", "Internet Name", "domain"),
