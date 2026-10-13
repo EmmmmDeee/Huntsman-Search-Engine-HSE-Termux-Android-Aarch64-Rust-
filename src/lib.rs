@@ -9,6 +9,7 @@
 #![cfg_attr(test, allow(unknown_lints, clippy::assert_is_empty))]
 
 pub mod abn;
+pub mod acma_phone;
 pub mod address_au;
 pub mod analysis;
 pub mod archive;
