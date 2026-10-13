@@ -8,5 +8,7 @@
 
 pub mod dns;
 mod dns_collector;
+mod ptr_collector;
 
 pub use dns_collector::DnsResolveCollector;
+pub use ptr_collector::PtrResolveCollector;

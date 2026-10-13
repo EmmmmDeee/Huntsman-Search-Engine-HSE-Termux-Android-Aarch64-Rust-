@@ -47,6 +47,8 @@ pub const TYPE_A: u16 = 1;
 pub const TYPE_AAAA: u16 = 28;
 /// RFC 1035 TYPE for a canonical-name alias.
 const TYPE_CNAME: u16 = 5;
+/// RFC 1035 TYPE for a reverse (PTR) record: RDATA is a domain name.
+pub const TYPE_PTR: u16 = 12;
 /// RFC 6891 TYPE for the EDNS0 OPT pseudo-record.
 const TYPE_OPT: u16 = 41;
 /// RFC 1035 CLASS IN (Internet).
@@ -217,6 +219,67 @@ pub fn encode_query(
 /// Returns [`HuntsmanError::Protocol`] if the datagram is truncated below a required boundary, a
 /// name is malformed or compressed unsafely, or the response fails to bind to the query.
 pub fn parse(query: &QueryKey, msg: &[u8]) -> Result<DnsOutcome, HuntsmanError> {
+    match bind_response(query, msg)? {
+        ResponseStatus::Answerable { answers_start } => Ok(DnsOutcome::Answers(
+            parse_answer_section(query, msg, answers_start)?,
+        )),
+        ResponseStatus::Truncated => Ok(DnsOutcome::Truncated),
+        ResponseStatus::NameError => Ok(DnsOutcome::NameError),
+        ResponseStatus::ServerFailure(rcode) => Ok(DnsOutcome::ServerFailure(rcode)),
+    }
+}
+
+/// The typed result of a reverse (`PTR`) lookup, validated and bound to its query.
+///
+/// Mirrors [`DnsOutcome`] but carries decoded domain names instead of addresses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PtrOutcome {
+    /// `NOERROR`: the domain names whose owner is the queried reverse name. Empty is a real zero.
+    Names(Vec<String>),
+    /// `NXDOMAIN`: the reverse name definitively does not exist.
+    NameError,
+    /// The TC bit was set: this UDP answer is truncated and must not be trusted as complete.
+    Truncated,
+    /// A non-`NOERROR`/`NXDOMAIN` RCODE: a server-side failure carrying the RCODE.
+    ServerFailure(u8),
+}
+
+/// Validate a `PTR` response against its `query` and return the domain names it points to.
+///
+/// Binds the response to the query exactly as [`parse`] does (id, QR, OPCODE, echoed question),
+/// then returns the `PTR` RDATA names whose owner is the queried reverse name. A `PTR` RDATA name
+/// is decoded with the same bounded decoder as every other name and must end within its own
+/// RDLENGTH.
+///
+/// # Errors
+/// Returns [`HuntsmanError::Protocol`] on the same conditions as [`parse`].
+pub fn parse_ptr(query: &QueryKey, msg: &[u8]) -> Result<PtrOutcome, HuntsmanError> {
+    match bind_response(query, msg)? {
+        ResponseStatus::Answerable { answers_start } => {
+            Ok(PtrOutcome::Names(ptr_names(query, msg, answers_start)?))
+        }
+        ResponseStatus::Truncated => Ok(PtrOutcome::Truncated),
+        ResponseStatus::NameError => Ok(PtrOutcome::NameError),
+        ResponseStatus::ServerFailure(rcode) => Ok(PtrOutcome::ServerFailure(rcode)),
+    }
+}
+
+/// How a response's header and echoed question resolved after binding it to the query.
+enum ResponseStatus {
+    /// `NOERROR`, not truncated: the answer section begins at this offset.
+    Answerable { answers_start: usize },
+    /// The TC bit was set.
+    Truncated,
+    /// `NXDOMAIN`.
+    NameError,
+    /// Any other non-`NOERROR` RCODE.
+    ServerFailure(u8),
+}
+
+/// Bind a response to `query` (transaction id, QR bit, OPCODE, and the echoed question) and
+/// classify its header. This is the single anti-spoofing gate shared by [`parse`] and
+/// [`parse_ptr`]; a datagram that fails any check is rejected here.
+fn bind_response(query: &QueryKey, msg: &[u8]) -> Result<ResponseStatus, HuntsmanError> {
     if msg.len() < HEADER_LEN {
         return Err(protocol("DNS message shorter than its header"));
     }
@@ -258,15 +321,40 @@ pub fn parse(query: &QueryKey, msg: &[u8]) -> Result<DnsOutcome, HuntsmanError> 
 
     // Bound to the query. A truncated UDP answer must not be trusted as complete.
     if flags & FLAG_TC != 0 {
-        return Ok(DnsOutcome::Truncated);
+        return Ok(ResponseStatus::Truncated);
     }
     let rcode = (flags & RCODE_MASK) as u8;
-    match rcode {
-        0 => Ok(DnsOutcome::Answers(parse_answer_section(
-            query, msg, q_end,
-        )?)),
-        RCODE_NXDOMAIN => Ok(DnsOutcome::NameError),
-        other => Ok(DnsOutcome::ServerFailure(other)),
+    Ok(match rcode {
+        0 => ResponseStatus::Answerable {
+            answers_start: q_end,
+        },
+        RCODE_NXDOMAIN => ResponseStatus::NameError,
+        other => ResponseStatus::ServerFailure(other),
+    })
+}
+
+/// The reverse-DNS query name for `ip`: `d.c.b.a.in-addr.arpa` for IPv4, the 32 nibbles of the
+/// address in reverse under `ip6.arpa` for IPv6. Lowercase, no trailing dot, as a `QueryKey.name`.
+#[must_use]
+pub fn reverse_dns_name(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            format!("{}.{}.{}.{}.in-addr.arpa", o[3], o[2], o[1], o[0])
+        }
+        IpAddr::V6(v6) => {
+            let mut name = String::with_capacity(72);
+            for octet in v6.octets().iter().rev() {
+                let (hi, lo) = (octet >> 4, octet & 0x0F);
+                // Low nibble first, then high: the whole address reversed nibble by nibble.
+                name.push(char::from_digit(u32::from(lo), 16).unwrap_or('0'));
+                name.push('.');
+                name.push(char::from_digit(u32::from(hi), 16).unwrap_or('0'));
+                name.push('.');
+            }
+            name.push_str("ip6.arpa");
+            name
+        }
     }
 }
 
@@ -279,12 +367,10 @@ struct ParsedRr {
     rdata_len: usize,
 }
 
-/// Decode the answer section and return the A/AAAA records bound to the queried name.
-fn parse_answer_section(
-    query: &QueryKey,
-    msg: &[u8],
-    start: usize,
-) -> Result<Vec<DnsRecord>, HuntsmanError> {
+/// Decode the answer section into resource records, bounded by [`MAX_ANSWERS`]; every offset is
+/// checked so a malformed or hostile datagram errors rather than over-reading. Shared by the
+/// address and `PTR` extractors so both walk the section through one audited loop.
+fn collect_rrs(msg: &[u8], start: usize) -> Result<Vec<ParsedRr>, HuntsmanError> {
     let answer_count = usize::from(u16::from_be_bytes([msg[6], msg[7]])).min(MAX_ANSWERS);
     let mut pos = start;
     let mut rrs: Vec<ParsedRr> = Vec::new();
@@ -317,6 +403,48 @@ fn parse_answer_section(
         });
         pos = rdata_end;
     }
+    Ok(rrs)
+}
+
+/// Decode the RDATA of `rr` as a domain name, requiring it to end within the record's own
+/// RDLENGTH (its only escape is a backward compression pointer, never a run into later records).
+fn rdata_name(msg: &[u8], rr: &ParsedRr) -> Result<String, HuntsmanError> {
+    let (name, next) = read_name(msg, rr.rdata_start)?;
+    let rdata_end = rr
+        .rdata_start
+        .checked_add(rr.rdata_len)
+        .ok_or_else(|| protocol("RDATA length overflow"))?;
+    if next > rdata_end {
+        return Err(protocol("RDATA name ran past its RDLENGTH"));
+    }
+    Ok(name)
+}
+
+/// The `PTR` domain names whose owner is the queried reverse name, de-duplicated in first-seen
+/// order and capped at [`MAX_ANSWERS`].
+fn ptr_names(query: &QueryKey, msg: &[u8], start: usize) -> Result<Vec<String>, HuntsmanError> {
+    let rrs = collect_rrs(msg, start)?;
+    let owner = query.name.to_ascii_lowercase();
+    let mut names = Vec::new();
+    for rr in &rrs {
+        if rr.rtype != TYPE_PTR || rr.rclass != CLASS_IN || rr.owner != owner {
+            continue;
+        }
+        let name = rdata_name(msg, rr)?;
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
+/// Decode the answer section and return the A/AAAA records bound to the queried name.
+fn parse_answer_section(
+    query: &QueryKey,
+    msg: &[u8],
+    start: usize,
+) -> Result<Vec<DnsRecord>, HuntsmanError> {
+    let rrs = collect_rrs(msg, start)?;
 
     let reachable = reachable_names(query, msg, &rrs)?;
 
@@ -351,17 +479,8 @@ fn reachable_names(
     let mut cnames: Vec<(String, String)> = Vec::new();
     for rr in rrs {
         if rr.rtype == TYPE_CNAME && rr.rclass == CLASS_IN {
-            let (target, next) = read_name(msg, rr.rdata_start)?;
-            // The name encoded inside the CNAME's RDATA must stay within that RDATA; its only
-            // escape is a backward compression pointer, never a run into the following records.
-            let rdata_end = rr
-                .rdata_start
-                .checked_add(rr.rdata_len)
-                .ok_or_else(|| protocol("CNAME RDATA length overflow"))?;
-            if next > rdata_end {
-                return Err(protocol("CNAME RDATA name ran past its RDLENGTH"));
-            }
-            cnames.push((rr.owner.clone(), target));
+            // The CNAME target name must end within its own RDATA (shared RDLENGTH bound).
+            cnames.push((rr.owner.clone(), rdata_name(msg, rr)?));
         }
     }
     let mut reachable = HashSet::new();
@@ -919,6 +1038,124 @@ mod tests {
             Ok(outcome) => {
                 panic!("a CNAME name past its RDLENGTH must be rejected, got {outcome:?}")
             }
+        }
+    }
+
+    // --- reverse (PTR) lookups ------------------------------------------------------------
+
+    #[test]
+    fn reverse_name_for_ipv4_reverses_the_octets_under_in_addr_arpa() {
+        let ip = IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34));
+        assert_eq!(reverse_dns_name(ip), "34.216.184.93.in-addr.arpa");
+    }
+
+    #[test]
+    fn reverse_name_for_ipv6_reverses_every_nibble_under_ip6_arpa() {
+        let ip = IpAddr::V6(Ipv6Addr::LOCALHOST); // ::1
+        let name = reverse_dns_name(ip);
+        assert!(name.ends_with(".ip6.arpa"), "{name}");
+        // 32 nibble labels + "ip6" + "arpa" = 34 dot-separated labels.
+        assert_eq!(name.split('.').count(), 34, "{name}");
+        assert!(
+            name.starts_with("1.0.0.0.0.0.0.0."),
+            "low nibble of the last octet comes first: {name}"
+        );
+    }
+
+    /// Build a PTR response: the reverse-name question echoed, then one PTR answer whose owner is
+    /// the question (compressed pointer) and whose RDATA is `target`.
+    fn ptr_response(id: u16, reverse_name: &str, target: &str) -> Vec<u8> {
+        build(
+            id,
+            0x8180,
+            reverse_name,
+            TYPE_PTR,
+            &[(qname_ptr(), TYPE_PTR, CLASS_IN, name_wire(target))],
+        )
+    }
+
+    #[test]
+    fn a_ptr_answer_bound_to_the_query_yields_its_name() {
+        let reverse = "34.216.184.93.in-addr.arpa";
+        let msg = ptr_response(0x4242, reverse, "host.example.com");
+        match parse_ptr(&key(0x4242, reverse, TYPE_PTR), &msg) {
+            Ok(PtrOutcome::Names(names)) => assert_eq!(names, vec!["host.example.com".to_owned()]),
+            other => panic!("expected the PTR name, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_forged_transaction_id_ptr_datagram_is_rejected() {
+        let reverse = "34.216.184.93.in-addr.arpa";
+        let msg = ptr_response(0x9999, reverse, "evil.example");
+        assert!(parse_ptr(&key(0x4242, reverse, TYPE_PTR), &msg).is_err());
+    }
+
+    #[test]
+    fn a_ptr_record_owned_by_another_name_is_dropped() {
+        let reverse = "34.216.184.93.in-addr.arpa";
+        // Owner is an explicit unrelated name, not the question pointer.
+        let msg = build(
+            0x4242,
+            0x8180,
+            reverse,
+            TYPE_PTR,
+            &[(
+                name_wire("other.in-addr.arpa"),
+                TYPE_PTR,
+                CLASS_IN,
+                name_wire("host.example.com"),
+            )],
+        );
+        match parse_ptr(&key(0x4242, reverse, TYPE_PTR), &msg) {
+            Ok(PtrOutcome::Names(names)) => {
+                assert!(names.is_empty(), "owner mismatch leaked: {names:?}")
+            }
+            other => panic!("expected an empty result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ptr_nxdomain_and_servfail_are_typed_not_empty_success() {
+        let reverse = "1.1.1.10.in-addr.arpa";
+        let nx = build(0x1, 0x8183, reverse, TYPE_PTR, &[]); // RCODE 3
+        assert_eq!(
+            parse_ptr(&key(0x1, reverse, TYPE_PTR), &nx).ok(),
+            Some(PtrOutcome::NameError)
+        );
+        let servfail = build(0x2, 0x8182, reverse, TYPE_PTR, &[]); // RCODE 2
+        assert_eq!(
+            parse_ptr(&key(0x2, reverse, TYPE_PTR), &servfail).ok(),
+            Some(PtrOutcome::ServerFailure(2))
+        );
+    }
+
+    #[test]
+    fn duplicate_ptr_names_are_returned_once() {
+        let reverse = "34.216.184.93.in-addr.arpa";
+        let msg = build(
+            0x7,
+            0x8180,
+            reverse,
+            TYPE_PTR,
+            &[
+                (
+                    qname_ptr(),
+                    TYPE_PTR,
+                    CLASS_IN,
+                    name_wire("host.example.com"),
+                ),
+                (
+                    qname_ptr(),
+                    TYPE_PTR,
+                    CLASS_IN,
+                    name_wire("host.example.com"),
+                ),
+            ],
+        );
+        match parse_ptr(&key(0x7, reverse, TYPE_PTR), &msg) {
+            Ok(PtrOutcome::Names(names)) => assert_eq!(names, vec!["host.example.com".to_owned()]),
+            other => panic!("expected one de-duplicated name, got {other:?}"),
         }
     }
 }

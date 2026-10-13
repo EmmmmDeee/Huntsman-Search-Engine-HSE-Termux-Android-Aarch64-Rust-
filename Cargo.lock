@@ -157,6 +157,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "huntsman-pipeline"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "huntsman-core",
+ "huntsman-storage",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "huntsman-recon"
 version = "0.2.0"
 dependencies = [

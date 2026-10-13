@@ -1,0 +1,33 @@
+[package]
+name = "huntsman-pipeline"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Assembles the Huntsman DAG engine and the embedded graph store into one persisting run"
+
+# Each runtime dependency states its purpose, as the workspace requires.
+[dependencies]
+# The DAG engine, entity model and error type whose output this crate drains.
+huntsman-core = { path = "../huntsman-core" }
+# The embedded graph store this crate persists discovered entities into.
+huntsman-storage = { path = "../huntsman-storage" }
+# Bounded channel between the engine's sink and the persistence drain, run concurrently.
+tokio = { version = "1.38", default-features = false, features = ["rt", "sync", "macros"] }
+# Typed domain error enum for the pipeline layer.
+thiserror = "2.0"
+
+[dev-dependencies]
+# Async test harness for the end-to-end persisting-run tests.
+tokio = { version = "1.38", default-features = false, features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
+# Implements the Collector trait for the in-test synthetic collectors.
+async-trait = "0.1"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
