@@ -12,6 +12,7 @@ attack_catalog	leaf	ATT&CK catalogue
 attack_cli	diagnostic	ATT&CK command front-end over the reachable module catalogue
 attack_reporting	leaf	hierarchy-aware ATT&CK coverage projection
 au_id	leaf	Australian identifier normalization
+base64	leaf	RFC 4648 base64 encoding for CSP hashes and PKCE values
 benchmark	diagnostic	benchmarking support
 bluesky_user	adapter	public Bluesky profile source client
 breach	leaf	breach record parsing utilities

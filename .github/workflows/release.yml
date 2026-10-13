@@ -595,7 +595,12 @@ jobs:
           # (std's other decimal formatting tables; a random 32-hex key has no letter
           # with probability (10/16)^32, about 3e-7) or part of the hex byte table.
           # No length is exempt: a key plus 8 or 32 hex chars (40 or 64 in all) is a
-          # finding like any other run.
+          # finding like any other run. Nor is a run key-like when every 32-digit window
+          # of it uses at most four different digits. That is what the layout of a
+          # linked binary makes when it lays a literal next to a zero-filled constant
+          # ("style" then 64 zeros) or two vector constants ("d" x16 then "6" x16). A
+          # random 32-hex key uses 14 different digits on average, and four or fewer
+          # with probability 9.9e-17; a key glued to such a run keeps its own window.
           hex_runs() {
             local m k
             while IFS= read -r m; do
@@ -603,8 +608,27 @@ jobs:
               [[ $m =~ [0-9a-f]{32} ]] || continue
               [[ $m =~ [a-f] ]] || continue
               [[ $hex_table == *"$m"* ]] && continue
+              varied_window "$m" || continue
               printf '%s\n' "$m"
             done
+          }
+
+          # Whether some window of 32 lowercase hex digits in $1 uses at least five
+          # different digits.
+          varied_window() {
+            local IFS=' ' run i n d
+            local -a runs
+            read -r -a runs <<<"${1//[!0-9a-f]/ }"
+            for run in "${runs[@]}"; do
+              for ((i = 0; i + 32 <= ${#run}; i++)); do
+                n=0
+                for d in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
+                  [[ ${run:i:32} == *"$d"* ]] && n=$((n + 1))
+                done
+                [ "$n" -lt 5 ] || return 0
+              done
+            done
+            return 1
           }
           
           ENTROPY_PY='

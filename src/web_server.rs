@@ -12,17 +12,19 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::base64;
 use crate::engineering_command;
 use crate::entity::Entity;
 use crate::error::Error;
 use crate::module::reachable_modules;
+use crate::sha256::sha256;
 use crate::source_outcome::SourceExecutionOutcome;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
@@ -724,6 +726,36 @@ fn fixed_time_eq(left: &[u8], right: &[u8]) -> bool {
     diff == 0
 }
 
+/// The page's policy. Its one inline script and its one inline style run because their SHA-256
+/// is listed, so injected markup cannot run script. Nothing loads from elsewhere, requests go
+/// only to this server, and no other page may frame it. Without that last rule, a site open in
+/// the same phone browser could lay this page under its own and turn taps into lookups that
+/// spend the operator's keys.
+static PAGE_POLICY: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "default-src 'none'; script-src '{}'; style-src '{}'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        hash_source(inline_block(INDEX_HTML, "script")),
+        hash_source(inline_block(INDEX_HTML, "style")),
+    )
+});
+
+/// Every other response loads nothing and may not be framed.
+const OTHER_POLICY: &str = "default-src 'none'; frame-ancestors 'none'";
+
+/// The text between `<tag>` and `</tag>`, the part a browser hashes for a CSP hash source.
+fn inline_block<'a>(page: &'a str, tag: &str) -> &'a str {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    match (page.find(&open), page.find(&close)) {
+        (Some(start), Some(end)) if start + open.len() <= end => &page[start + open.len()..end],
+        _ => "",
+    }
+}
+
+fn hash_source(content: &str) -> String {
+    format!("sha256-{}", base64::standard(&sha256(content.as_bytes())))
+}
+
 fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
     let reason = match status {
         200 => "OK",
@@ -748,8 +780,13 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
     };
     let content_length = body.len();
     let rendered_body = if head { "" } else { body };
+    let policy = if content_type.starts_with("text/html") {
+        PAGE_POLICY.as_str()
+    } else {
+        OTHER_POLICY
+    };
     format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{retry_after}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\n\r\n{rendered_body}"
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{retry_after}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: {policy}\r\n\r\n{rendered_body}"
     )
 }
 
@@ -1342,6 +1379,105 @@ mod tests {
         assert_eq!(percent_decode("%C3%A9").as_deref(), Some("\u{e9}"));
         for bad in ["%+1", "%zz", "%4", "%", "%FF"] {
             assert_eq!(percent_decode(bad), None, "{bad}");
+        }
+    }
+
+    fn header<'a>(response: &'a str, name: &str) -> Option<&'a str> {
+        response
+            .split("\r\n\r\n")
+            .next()?
+            .lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))
+    }
+
+    #[test]
+    fn every_response_refuses_framing_and_outside_loads() {
+        for request in [
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n",
+            "HEAD / HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n",
+            "GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n",
+            "GET /api/modules HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n",
+            "GET /missing HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n",
+            "GET / HTTP/1.1\r\nHost: evil.example\r\n\r\n",
+            "REQUEST_TOO_LARGE",
+        ] {
+            let response = response_for_request(request, None, loopback_bind());
+            assert_eq!(
+                header(&response, "X-Frame-Options"),
+                Some("DENY"),
+                "{request}"
+            );
+            let policy = header(&response, "Content-Security-Policy").unwrap_or_default();
+            assert!(
+                policy.starts_with("default-src 'none';"),
+                "{request}: {policy}"
+            );
+            assert!(
+                policy.ends_with("frame-ancestors 'none'"),
+                "{request}: {policy}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_page_policy_allows_exactly_the_page_inline_script_and_style() {
+        let response = response_for_request(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n",
+            None,
+            loopback_bind(),
+        );
+        let policy = header(&response, "Content-Security-Policy").unwrap();
+        // Hashes of what a browser hashes: the exact text inside each element.
+        let between = |open: &str, close: &str| {
+            let start = INDEX_HTML.find(open).unwrap() + open.len();
+            let end = INDEX_HTML.find(close).unwrap();
+            crate::base64::standard(&crate::sha256::sha256(&INDEX_HTML.as_bytes()[start..end]))
+        };
+        assert!(
+            policy.contains(&format!(
+                "script-src 'sha256-{}';",
+                between("<script>", "</script>")
+            )),
+            "{policy}"
+        );
+        assert!(
+            policy.contains(&format!(
+                "style-src 'sha256-{}';",
+                between("<style>", "</style>")
+            )),
+            "{policy}"
+        );
+        assert!(policy.contains("connect-src 'self';"), "{policy}");
+        assert!(!policy.contains("unsafe"), "{policy}");
+    }
+
+    /// The hashes cover the two inline blocks and nothing else. A second block, an inline event
+    /// handler, a `style` attribute or a `javascript:` URL would be blocked by the policy, and the
+    /// page would break in the browser with nothing failing here.
+    #[test]
+    fn the_page_keeps_only_what_its_policy_allows() {
+        assert_eq!(INDEX_HTML.matches("<script").count(), 1);
+        assert_eq!(INDEX_HTML.matches("<style").count(), 1);
+        assert!(INDEX_HTML.contains("<script>") && INDEX_HTML.contains("<style>"));
+        let script = inline_block(INDEX_HTML, "script");
+        let style = inline_block(INDEX_HTML, "style");
+        assert!(!script.trim().is_empty() && !style.trim().is_empty());
+        assert!(!INDEX_HTML.to_ascii_lowercase().contains("javascript:"));
+        // The markup outside the two blocks: every attribute of every tag.
+        let markup = INDEX_HTML.replace(script, "").replace(style, "");
+        let attributes: Vec<String> = markup
+            .split('<')
+            .skip(1)
+            .filter_map(|tag| tag.split('>').next())
+            .flat_map(|tag| tag.split_whitespace().skip(1).map(str::to_ascii_lowercase))
+            .collect();
+        assert!(!attributes.is_empty());
+        for attribute in &attributes {
+            let name = attribute.split('=').next().unwrap_or_default();
+            assert!(
+                !(name.starts_with("on") && name.len() > 2) && name != "style",
+                "the policy would block attribute {attribute:?}"
+            );
         }
     }
 
