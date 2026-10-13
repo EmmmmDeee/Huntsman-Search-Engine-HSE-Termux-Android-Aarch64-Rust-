@@ -117,7 +117,6 @@ fn assert_never_shown(run: &Run, secret: &str) {
     );
 }
 
-
 /// Every field of the Adobe fixture, as the CLI prints it.
 const ADOBE_LINES: [&str; 23] = [
     "breach=Adobe",
