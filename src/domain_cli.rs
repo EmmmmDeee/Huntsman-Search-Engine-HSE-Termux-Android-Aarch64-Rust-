@@ -7,6 +7,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::apnic;
+use crate::asic_company;
 use crate::auda;
 use crate::canonical::canonical_domain;
 use crate::crtsh::{self, CrtShError};
@@ -558,10 +560,17 @@ fn supplementary_signals<T: Transport + ?Sized>(
         infrastructure_fingerprinting(transport, &deadline, domain),
         redirect_analysis(transport, &deadline, domain),
         auda_whois(transport, &deadline, domain),
+        asic_company_lookup(transport, &deadline, domain),
     ] {
         entities.extend(found);
         sections.extend(section);
     }
+
+    // APNIC enrichment: query for any resolved IP addresses.
+    let (apnic_found, apnic_section) =
+        apnic_enrichment(transport, &deadline, entities);
+    entities.extend(apnic_found);
+    sections.extend(apnic_section);
 }
 
 /// Redirect analysis: follow the chains from the domain's http and https roots. The chain is
@@ -649,6 +658,81 @@ fn auda_whois<T: Transport + ?Sized>(
         "auda_whois: {} domain (registrar: {})",
         record.status.as_str(),
         record.registrar.as_deref().unwrap_or("unknown")
+    );
+
+    (vec![entity], Some(section))
+}
+
+/// APNIC enrichment: Query APNIC registry for resolved IPs to identify Australian network infrastructure.
+/// Returns network allocation metadata: ASN, organization, country. Supplementary to DNS sources.
+fn apnic_enrichment<T: Transport + ?Sized>(
+    transport: &T,
+    deadline: &Deadline<'_>,
+    entities: &[Entity],
+) -> (Vec<Entity>, Option<String>) {
+    let mut found = Vec::new();
+    let mut au_count = 0;
+
+    // For each IP entity, query APNIC to enrich with network allocation info.
+    for entity in entities {
+        if entity.kind != EntityKind::IpAddress {
+            continue;
+        }
+
+        let Some(record) = apnic::query_ip(transport, deadline, &entity.value) else {
+            continue;
+        };
+
+        if record.is_australian() {
+            au_count += 1;
+            let mut ip_entity = Entity::new(
+                EntityKind::IpAddress,
+                &entity.value,
+                0.8,
+                "apnic_enrichment",
+            );
+            ip_entity.add_evidence(apnic::record_to_evidence(&record));
+            found.push(ip_entity);
+        }
+    }
+
+    let section = if au_count > 0 {
+        Some(format!("apnic_enrichment: {au_count} Australian IP allocation(s)"))
+    } else {
+        None
+    };
+
+    (found, section)
+}
+
+/// ASIC company lookup: Query ASIC for registrant names found in domain/contact records.
+/// Returns business registration metadata: ACN, company status, directors. Supplementary.
+fn asic_company_lookup<T: Transport + ?Sized>(
+    transport: &T,
+    deadline: &Deadline<'_>,
+    domain: &str,
+) -> (Vec<Entity>, Option<String>) {
+    let Some(record) = asic_company::query_company(transport, deadline, domain) else {
+        return (Vec::new(), None);
+    };
+
+    // Only report if company is found (name is populated).
+    if record.name.is_none() {
+        return (Vec::new(), None);
+    }
+
+    let mut entity = Entity::new(
+        EntityKind::Organisation,
+        record.name.as_deref().unwrap_or(domain),
+        0.8,
+        "asic_company",
+    );
+    entity.add_evidence(asic_company::company_to_evidence(&record));
+
+    let section = format!(
+        "asic_company: {} ({})",
+        record.status.as_str(),
+        record.acn.as_deref().unwrap_or("no ACN")
     );
 
     (vec![entity], Some(section))
