@@ -103,7 +103,7 @@ before using credentials or network access.
 
 | | `hse` (legacy v1.41.0 monolith) | `huntsman-recon` (this tree, in progress) |
 | --- | --- | --- |
-| Person lookups | Yes. Provider modules such as `asic_persons`, `asic_director`, `username_search`, `phone_au` and `bluesky_user` (195 `pub mod` entries in `src/modules/mod.rs` at `7dca720b`), plus `hse scan`, `hse investigate` and `hse serve`. Whether each provider works live has not been re-verified. | **Partial.** `people` calls `asic_persons`, `asic_director`, `au_people` and `au_electoral` for names with at least two alphabetic tokens. `email ADDR` canonicalises an address, derives deterministic email pivots, queries the public Gravatar profile, renders evidence lineage, and can save a ledger for `verify`. `username HANDLE` derives bounded normalization variants, queries the public GitHub and Bluesky profiles independently, renders lineage, and can save a ledger for `verify`. `phone NUMBER` canonicalises explicit international syntax or recognised Australian local syntax, resolves the dialling prefix offline, enriches Australian numbering-plan line type/region, and can save a ledger for `verify`. `scan SELECTOR` routes one selector to `people`, `email`, `username`, or `phone` automatically, with `-k` available for an explicit rebuilt kind. A selector that is not an email, handle, or recognised phone, and has fewer than two alphabetic tokens of at least two letters, is not inferred as a name: `scan` refuses it with exit 65 rather than reporting a skip as success. `scan -k people WORD` needs a name: a single token exits 65 and the people command is not reached. `people WORD` on its own still skips a single token with exit 0. `scan --input-file FILE [-k KIND]` runs the same routing once per unique non-comment line, attempts every seed, and reports a non-zero final status if any seed fails. `sources` classifies an input (a person or organisation name, an email address, an `@username`, a domain, an IP address or coordinates) and only prints curated public search or browser URLs for it, offline and `LeadOnly`; nothing is fetched. `search` reads only local documents; `hibp` provides explicit opt-in HIBP lookups. |
+| Person lookups | Yes. Provider modules such as `asic_persons`, `asic_director`, `username_search`, `phone_au` and `bluesky_user` (195 `pub mod` entries in `src/modules/mod.rs` at `7dca720b`), plus `hse scan`, `hse investigate` and `hse serve`. Whether each provider works live has not been re-verified. | **Partial.** `people` calls `asic_persons`, `asic_director`, `au_people` and `au_electoral` for names with at least two alphabetic tokens. `email ADDR` canonicalises an address, derives deterministic email pivots, queries the public Gravatar profile, renders evidence lineage, and can save a ledger for `verify`. `username HANDLE` derives bounded normalization variants, queries the public GitHub and Bluesky profiles independently, renders lineage, and can save a ledger for `verify`. `phone NUMBER` canonicalises explicit international syntax or recognised Australian local syntax, resolves the dialling prefix offline, enriches Australian numbering-plan line type/region, and can save a ledger for `verify`. `scan SELECTOR` routes one selector to `people`, `email`, `username`, `phone`, or `domain` automatically, with `-k` available for an explicit rebuilt kind. A selector that is not an email, handle, domain, or recognised phone, and has fewer than two alphabetic tokens of at least two letters, is not inferred as a name: `scan` refuses it with exit 65 rather than reporting a skip as success. `scan -k people WORD` needs a name: a single token exits 65 and the people command is not reached. `people WORD` on its own still skips a single token with exit 0. `scan --input-file FILE [-k KIND]` runs the same routing once per unique non-comment line, attempts every seed, and reports a non-zero final status if any seed fails. `sources` classifies an input (a person or organisation name, an email address, an `@username`, a domain, an IP address or coordinates) and only prints curated public search or browser URLs for it, offline and `LeadOnly`; nothing is fetched. `search` reads only local documents; `hibp` provides explicit opt-in HIBP lookups. |
 | Source | Maintained branch `legacy-hse`, seeded from verified monolith commit `98c77fd8dac95082515f0f76cea8f4f0dc7a604b`. | `src/` |
 | Where to get it | Maintained `legacy-hse` branch via its installer; its release workflow publishes per-commit `hse-aarch64-linux-android` pre-releases. | A GitHub pre-release `main-<sha7>` (asset `huntsman-recon-aarch64-linux-android`), the CI artifact of the same name from a `main` push (see "Downloads"), or a source build |
 
@@ -111,7 +111,7 @@ before using credentials or network access.
 
 Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands; `check` exercises egress, origin, placeholder and URL-redaction rules as gate 11, without a socket). A challenge page is not a hit. No paid source is called automatically; HIBP is explicit opt-in via the CLI or library. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
 
-For contributors: one Rust package (`huntsman-recon`), Rust 1.87+, no workspace.
+For contributors: one Rust package (`huntsman-recon`), Rust 1.87+, in a workspace with the `xtask` automation crate and the four engine crates under `crates/`.
 The binary's full command list is available with `huntsman-recon --help`;
 run `huntsman-recon COMMAND --help` for command-specific usage. `diagnostics [--json]`
 is fully offline, backed by the reusable `diagnostics` library module, and reports only non-secret build/runtime/module/provider state; `build-sha`
@@ -126,6 +126,8 @@ cargo run -- build-sha                 # exact embedded commit for provenance bu
 cargo run -- command                   # validate + print engineering command contract
 cargo run -- directive --help          # repository directive verifier/self-repair usage
 cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
+cargo run -- correlate --help          # correlation rules over a dehashed --save-artifact scan; offline
+cargo run -- run-history --help        # record test-run results and compare each with the earlier runs
 cargo run -- search "brisbane port"    # built-in fixture
 cargo run -- search "brisbane port" docs/
 cargo run -- sources example.com       # classify + build curated routes; no network
@@ -140,6 +142,7 @@ cargo run -- credential-status             # offline; per provider: configured?,
 cargo run -- credential-status --probe     # opt-in live checks for configured providers with registered probes
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
 cargo run -- hibp help                   # HIBP subcommands; offline
+cargo run -- dehashed help               # DeHashed subcommands; offline (search needs a key and --purpose)
 cargo run -- seeknow --help              # SeekNow subcommands; offline
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens of at least two letters, no network
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
@@ -147,6 +150,7 @@ cargo run -- email nobody@example.com     # deterministic pivots + public Gravat
 cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax evidence, then each breach's summary, flags and source links (keyed; no key = no request)
 cargo run -- username octocat             # variants + public GitHub/Bluesky lookups
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
+cargo run -- domain example.com             # crt.sh certificate names + DNS records over DoH; network
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
 cargo run -- query "OpenAI research"          # network: Bing/Brave/Mojeek subset
@@ -349,7 +353,10 @@ live receipt. Live ASIC Connect is WAF-blocked.
 ### Email lookup
 
 `email ADDR [--save FILE]` canonicalises the selector, derives deterministic non-network email pivots, queries the public Gravatar profile, renders lineage, and optionally writes an unverified ledger that `verify` can reload. A missing Gravatar profile is a validated zero result; malformed or incomplete responses are not treated as absence.
-\n\n### Username lookup\n\n`username HANDLE [--save FILE]` keeps the operator selector, derives bounded separator/de-decoration variants at candidate confidence, and performs keyless public-profile lookups against GitHub and Bluesky. Provider absence, rate limits, malformed responses, and unsupported handle shapes remain distinct outcomes. `--save` writes an unverified ledger that `verify` can reload.\n
+
+### Username lookup
+
+`username HANDLE [--save FILE]` keeps the operator selector, derives bounded separator/de-decoration variants at candidate confidence, and performs keyless public-profile lookups against GitHub and Bluesky. Provider absence, rate limits, malformed responses, and unsupported handle shapes remain distinct outcomes. `--save` writes an unverified ledger that `verify` can reload.
 
 ### Phone lookup
 
@@ -385,7 +392,7 @@ The API surface:
 - `GET /api/health` — process name/version and status;
 - `GET /api/modules` — the same truthful reachable-module catalogue as `modules --json`;
 - `GET /api/command` — the same validated engineering command contract as `command --json`;
-- `GET /api/lookup?kind=auto|people|email|exposure|username|phone&q=SELECTOR` — one lookup through the same routing and front-ends as `scan`, returning `{route, text, entities, outcomes}` as JSON. `auto` infers the kind exactly as `scan` does; `exposure` is never inferred because it spends operator keys. Errors are JSON `{"error": …}`: 400 bad selector, 422 unusable selector, 502 every source failed, 503 lookup capacity in use;
+- `GET /api/lookup?kind=auto|people|email|exposure|username|phone|domain&q=SELECTOR` — one lookup through the same routing and front-ends as `scan`, returning `{route, text, entities, outcomes}` as JSON. `auto` infers the kind exactly as `scan` does; `exposure` is never inferred because it spends operator keys. Errors are JSON `{"error": …}`: 400 bad selector, 422 unusable selector, 502 every source failed, 503 lookup capacity in use;
 - `GET /` — a mobile-first page with a lookup form, the outcome table, the rendered report, a "Download JSON" button, and a collapsible status panel.
 
 `/api/lookup` makes network requests on the operator's behalf, so it is guarded beyond the loopback `Host` check: it needs the `X-Huntsman-Lookup: 1` header (another origin cannot send it without a CORS preflight, which this server never approves), it refuses requests the browser marks `Sec-Fetch-Site` cross-site or same-site, and it needs the bearer token whenever `HSE_AUTH_TOKEN` is set. At most two lookups run at once, each on its own 4 MiB-stack worker; a third is answered `503`. Provider text is written into the page as text, never as markup.
@@ -399,7 +406,7 @@ On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no
 
 ### Batch scan input
 
-`scan --input-file FILE [-k people|email|exposure|username|phone]` accepts UTF-8 files up to 1 MiB with one target per line. Blank lines and lines whose trimmed form starts with `#` are ignored; exact duplicate seeds keep only their first occurrence. A batch is capped at 1000 unique seeds, every accepted seed is attempted even after an earlier failure, and the process exits non-zero after completion if any seed failed. Batch `--save` is refused for now so one seed can never overwrite another seed's ledger artifact.
+`scan --input-file FILE [-k people|email|exposure|username|phone|domain] [--save-dir DIR]` accepts UTF-8 files up to 1 MiB with one target per line. Blank lines and lines whose trimmed form starts with `#` are ignored; exact duplicate seeds keep only their first occurrence. A batch is capped at 1000 unique seeds, every accepted seed is attempted even after an earlier failure, and the process exits non-zero after completion if any seed failed. Batch `--save` is refused; `--save-dir DIR` writes one ledger per seed instead, named by the seed's position and the seed reduced to safe filename characters (`0001-<seed>.json`), so no seed can overwrite another seed's ledger.
 
 
 ### Domain lifecycle analysis

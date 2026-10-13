@@ -58,8 +58,11 @@ pub(super) fn print_command_help(command: &str) {
         "exposure" => EXPOSURE_HELP,
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
+        "domain" => {
+            "domain DOMAIN [--save FILE]\nLook up one domain: certificate-transparency names from crt.sh and DNS records over DNS-over-HTTPS. --save writes an unverified ledger that verify can reload. Makes network requests."
+        }
         "scan" => {
-            "scan SELECTOR [-k people|email|exposure|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only."
+            "scan SELECTOR [-k people|email|exposure|username|phone|domain] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain] [--save-dir DIR]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends; a domain routes to domain. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only; --save-dir DIR writes one ledger per batch seed, numbered by its position."
         }
         "investigate" => {
             "investigate TEXT... | investigate --file FILE\nExtract actionable entities from local text. --file refuses symlinks and files over 1 MiB."
@@ -91,6 +94,9 @@ pub(super) fn print_command_help(command: &str) {
         }
         "credential-status" => {
             "credential-status [--probe] [FILE]\nShow provider slot completeness without printing credential values. --probe performs canonical live health checks for configured providers that have a registered probe. FILE uses the existing private keys-file loader; otherwise the normal ~/.huntsman.env/environment resolution is used."
+        }
+        "correlate" => {
+            "correlate ARTIFACT\nRead a scan artifact written by dehashed --save-artifact and print its entity and relation counts and each correlation rule that fires. Offline."
         }
         "verify" => {
             "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
