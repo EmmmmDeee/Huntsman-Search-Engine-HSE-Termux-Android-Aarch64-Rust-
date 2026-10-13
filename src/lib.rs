@@ -149,6 +149,7 @@ pub mod source_outcome;
 pub mod source_registry;
 pub mod spf;
 pub mod stage;
+pub mod stdio_failure;
 pub mod stix;
 pub mod stolen_tax;
 pub mod store;

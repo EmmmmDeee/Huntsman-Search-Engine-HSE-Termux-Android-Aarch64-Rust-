@@ -5,8 +5,9 @@
 //! every status below is used by some binary. This module is the only place these numbers are
 //! written: call sites import the names, and the same tests reject a literal status.
 //!
-//! The values follow the `sysexits(3)` convention. The gate codes 2 to 11 that `check` returns
-//! for its individual gates are not statuses in this list; the README documents them separately.
+//! The values follow the `sysexits(3)` convention, except [`EX_PIPE`], which is the status a
+//! shell reports for SIGPIPE. The gate codes 2 to 11 that `check` returns for its individual
+//! gates are not statuses in this list; the README documents them separately.
 
 /// Usage error: unknown command, missing or extra argument, or a malformed option.
 pub const EX_USAGE: u8 = 64;
@@ -23,3 +24,8 @@ pub const EX_SOFTWARE: u8 = 70;
 pub const EX_IOERR: u8 = 74;
 /// Refused by policy (egress, or a malformed URL or redirect target), or no permission for it.
 pub const EX_NOPERM: u8 = 77;
+/// The reader of standard output or standard error went away before the command finished, as
+/// when the output is piped into `head`. 141 is 128 plus SIGPIPE, the status a shell reports
+/// for a process that signal ended. Rust ignores SIGPIPE, so each binary's panic hook exits with
+/// it when `stdio_failure` names a failed print as a closed reader.
+pub const EX_PIPE: u8 = 141;

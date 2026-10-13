@@ -132,6 +132,7 @@ source_outcome	runtime	causal provider outcome model
 source_registry	runtime	lead-only discovery route registry
 spf	leaf	SPF parser
 stage	leaf	status/evidence-level primitives
+stdio_failure	leaf	the exit status a failed print becomes, for the binaries' panic hooks
 stix	exporter	STIX output from admitted claims
 stolen_tax	adapter	key-gated credential exposure source client
 store	exporter	bounded atomic session persistence

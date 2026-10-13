@@ -1,14 +1,16 @@
 //! Thin executable over the shared investigation runtime.
 
 use std::env;
+use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 
-use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_SOFTWARE, EX_USAGE};
+use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_PIPE, EX_SOFTWARE, EX_USAGE};
 use huntsman_recon::pipeline::{InvestigationInput, InvestigationMode, PipelineLimits};
 use huntsman_recon::planner::PlannerPolicy;
 use huntsman_recon::runtime::{investigate_offline, persist_session, session_for_outcome};
 use huntsman_recon::session::Session;
+use huntsman_recon::stdio_failure::status_for;
 use huntsman_recon::store::Store;
 
 const USAGE: &str =
@@ -19,7 +21,24 @@ fn fail(code: u8, message: &str) -> ExitCode {
     ExitCode::from(code)
 }
 
+/// A failed print ends the process with the status `stdio_failure` gives it, not a panic.
+fn exit_on_output_failure() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let Some((status, error)) = status_for(info.payload()) else {
+            previous(info);
+            return;
+        };
+        if status != EX_PIPE {
+            // Not eprintln!: a second failed print inside the hook would abort the process.
+            let _ = writeln!(std::io::stderr(), "output write failed: {error}");
+        }
+        std::process::exit(i32::from(status));
+    }));
+}
+
 fn main() -> ExitCode {
+    exit_on_output_failure();
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.len() == 1 && matches!(args[0].as_str(), "-h" | "--help" | "help") {
         println!("{USAGE}");
@@ -79,6 +98,14 @@ fn run_investigation(args: Vec<String>) -> ExitCode {
     if outcome.normalization.accepted.is_empty() {
         return fail(EX_DATAERR, "no actionable seeds");
     }
+    // Save before printing, so a reader that stops early cannot cost the session.
+    let saved = session_dir.map(|dir| {
+        let session = session_for_outcome(&input, &outcome)
+            .map_err(|error| format!("session build failed: {error}"))?;
+        persist_session(Path::new(&dir), &session)
+            .map(|path| (session.id, path))
+            .map_err(|error| format!("session save failed: {error}"))
+    });
     println!(
         "accepted={} rejected={} entities={} relations={} planned={} termination={:?} truncated={}",
         outcome.normalization.accepted.len(),
@@ -89,17 +116,14 @@ fn run_investigation(args: Vec<String>) -> ExitCode {
         outcome.report.termination,
         outcome.report.truncated || outcome.artifacts.truncated,
     );
-    if let Some(dir) = session_dir {
-        let session = match session_for_outcome(&input, &outcome) {
-            Ok(session) => session,
-            Err(error) => return fail(EX_SOFTWARE, &format!("session build failed: {error}")),
-        };
-        match persist_session(Path::new(&dir), &session) {
-            Ok(path) => println!("session={} saved={}", session.id, path.display()),
-            Err(error) => return fail(EX_SOFTWARE, &format!("session save failed: {error}")),
+    match saved {
+        None => ExitCode::SUCCESS,
+        Some(Ok((id, path))) => {
+            println!("session={id} saved={}", path.display());
+            ExitCode::SUCCESS
         }
+        Some(Err(message)) => fail(EX_SOFTWARE, &message),
     }
-    ExitCode::SUCCESS
 }
 
 /// Pull an optional `--session-dir DIR` out of the argument list; the rest are seeds.

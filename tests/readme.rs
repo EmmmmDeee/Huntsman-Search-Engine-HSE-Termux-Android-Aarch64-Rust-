@@ -185,6 +185,11 @@ fn observed_exit_code(documented: u8) -> Option<u8> {
             out
         }
         77 => bin().args(["fetch", "http://127.0.0.1:1/"]).output(),
+        141 => {
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader);
+            bin().arg("--version").stdout(writer).output()
+        }
         _ => return None,
     };
     Some(code(&out.unwrap()))
