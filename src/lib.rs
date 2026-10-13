@@ -103,6 +103,7 @@ pub mod meta_plan;
 pub mod metrics;
 pub mod module;
 pub mod navigator;
+pub mod network_cli;
 pub mod oui;
 pub mod oui_ieee;
 pub mod path;

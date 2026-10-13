@@ -14,7 +14,9 @@ use huntsman_recon::scan_route::{
 };
 use huntsman_recon::textnorm::escape_controls;
 
-use super::profiles::{domain_cmd, email_cmd, exposure_cmd, people_cmd, phone_cmd, username_cmd};
+use super::profiles::{
+    domain_cmd, email_cmd, exposure_cmd, network_cmd, people_cmd, phone_cmd, username_cmd,
+};
 
 pub(in crate::cli) fn scan_cmd(args: &[String]) -> ExitCode {
     let mut kind: Option<&str> = None;
@@ -216,6 +218,7 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
         ScanKind::Username => username_cmd(&forwarded),
         ScanKind::Phone => phone_cmd(&forwarded),
         ScanKind::Domain => domain_cmd(&forwarded),
+        ScanKind::Network => network_cmd(&forwarded),
         ScanKind::People => people_cmd(&forwarded),
     }
 }

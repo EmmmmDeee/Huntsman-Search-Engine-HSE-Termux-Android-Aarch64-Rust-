@@ -47,6 +47,7 @@ directive_lock	diagnostic	canonical repository directive verification and mirror
 dmarc	leaf	DMARC parser
 dns	adapter	DNS source client
 domain_cli	diagnostic	domain recon command front-end over crtsh and dns
+network_cli	diagnostic	IP, netblock and AS command front-end over dns and cymru
 domain_lifecycle	diagnostic	offline imported domain-observation comparison
 domains	leaf	domain normalization and classification
 egress	leaf	network egress policy

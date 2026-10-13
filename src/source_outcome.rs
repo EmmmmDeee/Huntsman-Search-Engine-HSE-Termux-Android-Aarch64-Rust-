@@ -41,6 +41,37 @@ pub enum SourceOutcomeKind {
 }
 
 impl SourceOutcomeKind {
+    /// The `snake_case` label, identical to the serde form, used in reports and ledgers.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::ValidZero => "valid_zero",
+            Self::AuthRequired => "auth_required",
+            Self::AuthRejected => "auth_rejected",
+            Self::EntitlementDenied => "entitlement_denied",
+            Self::QuotaExhausted => "quota_exhausted",
+            Self::RateLimited => "rate_limited",
+            Self::BotWaf => "bot_waf",
+            Self::DnsFailure => "dns_failure",
+            Self::ConnectFailure => "connect_failure",
+            Self::TlsFailure => "tls_failure",
+            Self::TtfbTimeout => "ttfb_timeout",
+            Self::BodyTimeout => "body_timeout",
+            Self::Upstream4xx => "upstream_4xx",
+            Self::Upstream5xx => "upstream_5xx",
+            Self::RedirectChanged => "redirect_changed",
+            Self::ProtocolDrift => "protocol_drift",
+            Self::InteractionDrift => "interaction_drift",
+            Self::SchemaDrift => "schema_drift",
+            Self::ParserDrift => "parser_drift",
+            Self::SemanticDrift => "semantic_drift",
+            Self::ZeroYieldAnomaly => "zero_yield_anomaly",
+            Self::ConfirmedDead => "confirmed_dead",
+            Self::Inconclusive => "inconclusive",
+        }
+    }
+
     #[must_use]
     pub const fn is_accepted(self) -> bool {
         matches!(self, Self::Success | Self::ValidZero)

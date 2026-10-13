@@ -783,9 +783,9 @@ small,.dim{color:var(--dim)}
 <form id="lookup">
 <select id="kind" aria-label="kind">
 <option value="auto">auto</option><option value="people">people</option><option value="email">email</option>
-<option value="exposure">exposure</option><option value="username">username</option><option value="phone">phone</option>
+<option value="exposure">exposure</option><option value="username">username</option><option value="phone">phone</option><option value="domain">domain</option><option value="network">network</option>
 </select>
-<input id="q" required maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="name, email, @handle or phone" aria-label="selector">
+<input id="q" required maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="name, email, @handle, phone, domain, IP, CIDR or AS" aria-label="selector">
 <button id="run" type="submit">Look up</button>
 </form>
 <small>Runs one lookup through the same front-ends as the CLI. It makes network requests; exposure spends operator keys.</small>

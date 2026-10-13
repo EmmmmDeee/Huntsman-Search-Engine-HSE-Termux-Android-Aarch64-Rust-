@@ -7,18 +7,16 @@
 //! front-ends. Unsupported target classes and options fail explicitly, never silently.
 
 use std::fmt::Write as _;
-use std::net::IpAddr;
 
 use serde::Serialize;
 
-use crate::cymru;
-use crate::dns;
 use crate::domain_cli::{self, DomainRun};
 use crate::email_cli::{self, EmailRun};
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+use crate::entity::{Entity, EntityKind};
 use crate::error::Error;
 use crate::http::Transport;
 use crate::module::reachable_modules;
+use crate::network_cli::{self, NetworkRun, NetworkTarget};
 use crate::people_cli::{self, PeopleRun};
 use crate::phone_cli::{self, PhoneRun};
 use crate::textnorm::{escape_controls, is_escaped};
@@ -425,13 +423,8 @@ pub fn run_scan<T: Transport + ?Sized>(
             DomainRun::Failed(message) => return Err(Error::Invalid(message)),
         },
         "IP_ADDRESS" | "IPV6_ADDRESS" | "NETBLOCK_OWNER" | "NETBLOCKV6_OWNER" | "BGP_AS_OWNER" => {
-            let (entities, partial) = match scan.target_type {
-                "BGP_AS_OWNER" => asn_entities(transport, &scan.target)?,
-                "NETBLOCK_OWNER" | "NETBLOCKV6_OWNER" => {
-                    netblock_entities(transport, &scan.target)?
-                }
-                _ => ip_entities(transport, &scan.target)?,
-            };
+            let (entities, partial) =
+                network_entities(transport, scan.target_type, &scan.target, now_unix)?;
             warnings = partial;
             entities
         }
@@ -456,188 +449,43 @@ pub fn run_scan<T: Transport + ?Sized>(
     })
 }
 
-/// Entities gathered from independent network sources for one target. One source failing is a
-/// warning; every source failing is an error, so a total outage never prints as an empty scan.
-struct Collected {
-    entities: Vec<Entity>,
-    warnings: Vec<String>,
-    answered: usize,
-}
-
-impl Collected {
-    fn seeded(kind: EntityKind, value: &str, scan_id: &str) -> Self {
-        let mut seed = Entity::new(kind, value, 1.0, scan_id);
-        seed.add_evidence(Evidence::new(
-            EvidenceProvenance::for_scan("seed", scan_id),
-            "scan target",
-        ));
-        Self {
-            entities: vec![seed],
-            warnings: Vec::new(),
-            answered: 0,
-        }
-    }
-
-    fn add(&mut self, source: &str, result: Result<Vec<Entity>, dns::ResolveError>) {
-        match result {
-            Ok(entities) => {
-                self.answered += 1;
-                self.entities.extend(entities);
-            }
-            Err(error) => self.warnings.push(format!(
-                "{source} failed ({}): {}",
-                error.kind.as_str(),
-                error.detail
-            )),
-        }
-    }
-
-    fn finish(mut self, target: &str) -> Result<(Vec<Entity>, Vec<String>), Error> {
-        if self.answered == 0 {
-            return Err(Error::Network(format!(
-                "no source answered for {target}: {}",
-                self.warnings.join("; ")
-            )));
-        }
-        crate::entity::merge_by_uid(&mut self.entities);
-        Ok((self.entities, self.warnings))
-    }
-}
-
-fn ptr_entities<T: Transport + ?Sized>(
+/// IP, netblock and AS targets through [`network_cli`]: the entities, plus a warning for each
+/// source that failed while another answered.
+fn network_entities<T: Transport + ?Sized>(
     transport: &T,
-    ip: IpAddr,
-    scan_id: &str,
-) -> Result<Vec<Entity>, dns::ResolveError> {
-    Ok(dns::lookup_ptr(transport, ip)?
-        .into_iter()
-        .map(|name| {
-            let mut host = Entity::new(EntityKind::Domain, &name, 0.9, scan_id);
-            host.add_evidence(
-                Evidence::new(
-                    EvidenceProvenance::for_scan("dns", scan_id),
-                    format!("PTR {} -> {name}", dns::reverse_name(ip)),
-                )
-                .with_attr("address", ip.to_string()),
-            );
-            host
-        })
-        .collect())
-}
-
-/// The announced prefixes covering `ip` and the ASes that originate them.
-fn origin_entities<T: Transport + ?Sized>(
-    transport: &T,
-    ip: IpAddr,
-    scan_id: &str,
-) -> Result<Vec<Entity>, dns::ResolveError> {
-    let mut entities = Vec::new();
-    for origin in cymru::lookup_origin(transport, ip)? {
-        let asns: Vec<String> = origin.asns.iter().map(|asn| format!("AS{asn}")).collect();
-        let summary = format!(
-            "{} announces {} covering {ip} ({}, {}, allocated {})",
-            asns.join(" "),
-            origin.prefix,
-            origin.country,
-            origin.registry,
-            origin.allocated
-        );
-        let mut block = Entity::new(EntityKind::Netblock, &origin.prefix, 0.9, scan_id);
-        block.add_evidence(
-            Evidence::new(EvidenceProvenance::for_scan("cymru", scan_id), &summary)
-                .with_attr("address", ip.to_string())
-                .with_attr("country", &origin.country)
-                .with_attr("registry", &origin.registry),
-        );
-        entities.push(block);
-        for asn in asns {
-            let mut owner = Entity::new(EntityKind::Asn, &asn, 0.9, scan_id);
-            owner.add_evidence(
-                Evidence::new(EvidenceProvenance::for_scan("cymru", scan_id), &summary)
-                    .with_attr("prefix", &origin.prefix),
-            );
-            entities.push(owner);
-        }
+    target_type: &str,
+    raw: &str,
+    now_unix: u64,
+) -> Result<(Vec<Entity>, Vec<String>), Error> {
+    let target = if target_type == "BGP_AS_OWNER" {
+        raw.parse::<u32>()
+            .ok()
+            .filter(|asn| *asn != 0)
+            .map(NetworkTarget::Asn)
+    } else {
+        NetworkTarget::parse(raw)
     }
-    Ok(entities)
-}
-
-fn as_entities<T: Transport + ?Sized>(
-    transport: &T,
-    asn: u32,
-    scan_id: &str,
-) -> Result<Vec<Entity>, dns::ResolveError> {
-    Ok(cymru::lookup_as(transport, asn)?
-        .map(|info| {
-            let mut owner = Entity::new(EntityKind::Asn, format!("AS{asn}"), 0.9, scan_id);
-            owner.add_evidence(
-                Evidence::new(
-                    EvidenceProvenance::for_scan("cymru", scan_id),
+    .ok_or_else(|| Error::Invalid(format!("sf target {raw:?} is not a valid {target_type}")))?;
+    match network_cli::run_target(transport, target, now_unix) {
+        NetworkRun::Printed { report, .. } => {
+            let warnings = report
+                .outcomes
+                .iter()
+                .filter(|outcome| !outcome.kind.is_accepted())
+                .map(|outcome| {
                     format!(
-                        "AS{asn} {} ({}, {}, allocated {})",
-                        info.name, info.country, info.registry, info.allocated
-                    ),
-                )
-                .with_attr("as_name", &info.name)
-                .with_attr("country", &info.country)
-                .with_attr("registry", &info.registry),
-            );
-            owner
-        })
-        .into_iter()
-        .collect())
-}
-
-/// IP target: reverse DNS plus the covering announced prefixes and their origin ASes.
-fn ip_entities<T: Transport + ?Sized>(
-    transport: &T,
-    raw: &str,
-) -> Result<(Vec<Entity>, Vec<String>), Error> {
-    let ip: IpAddr = raw
-        .parse()
-        .map_err(|_| Error::Invalid(format!("sf target {raw:?} is not an IP address")))?;
-    let scan_id = crate::entity::scan_id("ip", &ip.to_string());
-    let mut collected = Collected::seeded(EntityKind::IpAddress, &ip.to_string(), &scan_id);
-    collected.add("reverse DNS", ptr_entities(transport, ip, &scan_id));
-    collected.add(
-        "Team Cymru origin",
-        origin_entities(transport, ip, &scan_id),
-    );
-    collected.finish(&ip.to_string())
-}
-
-/// Netblock target: the prefixes announced over its network address and their origin ASes.
-fn netblock_entities<T: Transport + ?Sized>(
-    transport: &T,
-    raw: &str,
-) -> Result<(Vec<Entity>, Vec<String>), Error> {
-    let (network, bits) = cymru::parse_prefix(raw)
-        .ok_or_else(|| Error::Invalid(format!("sf target {raw:?} is not a CIDR netblock")))?;
-    let prefix = format!("{network}/{bits}");
-    let scan_id = crate::entity::scan_id("netblock", &prefix);
-    let mut collected = Collected::seeded(EntityKind::Netblock, &prefix, &scan_id);
-    collected.add(
-        "Team Cymru origin",
-        origin_entities(transport, network, &scan_id),
-    );
-    collected.finish(&prefix)
-}
-
-/// AS target (`sf.py` reads a bare number as `BGP_AS_OWNER`): its registration record.
-fn asn_entities<T: Transport + ?Sized>(
-    transport: &T,
-    raw: &str,
-) -> Result<(Vec<Entity>, Vec<String>), Error> {
-    let asn = raw
-        .parse::<u32>()
-        .ok()
-        .filter(|asn| *asn != 0)
-        .ok_or_else(|| Error::Invalid(format!("sf target {raw:?} is not an AS number")))?;
-    let label = format!("AS{asn}");
-    let scan_id = crate::entity::scan_id("asn", &label);
-    let mut collected = Collected::seeded(EntityKind::Asn, &label, &scan_id);
-    collected.add("Team Cymru AS", as_entities(transport, asn, &scan_id));
-    collected.finish(&label)
+                        "{} failed ({}): {}",
+                        outcome.module,
+                        outcome.kind.as_str(),
+                        outcome.detail.as_deref().unwrap_or("no detail")
+                    )
+                })
+                .collect();
+            Ok((report.entities, warnings))
+        }
+        NetworkRun::Unavailable(message) => Err(Error::Network(message)),
+        NetworkRun::Failed(message) => Err(Error::Invalid(message)),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -857,14 +705,10 @@ pub fn sf_target_type(raw: &str) -> Option<(&'static str, String)> {
 }
 
 fn as_target(value: &str) -> Option<u32> {
-    let upper = value.to_ascii_uppercase();
-    let digits = upper
-        .strip_prefix("ASN")
-        .or_else(|| upper.strip_prefix("AS"))?;
-    if digits.is_empty() || digits.len() > 10 || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
+    match NetworkTarget::parse(value) {
+        Some(NetworkTarget::Asn(asn)) => Some(asn),
+        _ => None,
     }
-    digits.parse::<u32>().ok().filter(|asn| *asn != 0)
 }
 
 fn quoted(value: &str) -> bool {
@@ -1203,7 +1047,7 @@ mod tests {
         let run = run_scan(&fake, &scan, 1).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(run.warnings.len(), 1, "{:?}", run.warnings);
         assert!(
-            run.warnings[0].starts_with("Team Cymru origin failed"),
+            run.warnings[0].starts_with("cymru failed (inconclusive)"),
             "{:?}",
             run.warnings
         );

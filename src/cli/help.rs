@@ -58,6 +58,7 @@ pub(super) fn print_command_help(command: &str) {
         "exposure" => EXPOSURE_HELP,
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
+        "network" => huntsman_recon::network_cli::NETWORK_HELP,
         "scan" => {
             "scan SELECTOR [-k people|email|exposure|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only."
         }

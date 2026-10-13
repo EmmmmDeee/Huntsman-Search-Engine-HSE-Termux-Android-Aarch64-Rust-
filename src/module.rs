@@ -469,8 +469,17 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "DNS and mail-policy lookup",
     },
     ReachableModule {
+        name: "network_cli",
+        command: "network IP|CIDR|ASN | scan TARGET | sf -s IP|CIDR|ASN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1590.004", "T1590.005"],
+        description: "IP, netblock and AS front-end over reverse DNS and Team Cymru",
+    },
+    ReachableModule {
         name: "cymru",
-        command: "sf -s IP|CIDR|ASN",
+        command: "network IP|CIDR|ASN",
         access: "keyless",
         network: true,
         category: ModuleCategory::DnsRecon,

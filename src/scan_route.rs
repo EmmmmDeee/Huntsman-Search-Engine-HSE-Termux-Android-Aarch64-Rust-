@@ -19,6 +19,8 @@ pub enum ScanKind {
     Phone,
     /// Domain recon: crt.sh certificate transparency and DNS record lookups.
     Domain,
+    /// An IP address, CIDR netblock or AS number: reverse DNS and Team Cymru origin mapping.
+    Network,
 }
 
 impl ScanKind {
@@ -31,6 +33,7 @@ impl ScanKind {
             Self::Username => "username",
             Self::Phone => "phone",
             Self::Domain => "domain",
+            Self::Network => "network",
         }
     }
 }
@@ -47,6 +50,7 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
         "username" | "handle" => Ok(ScanKind::Username),
         "phone" => Ok(ScanKind::Phone),
         "domain" => Ok(ScanKind::Domain),
+        "network" | "ip" | "netblock" | "cidr" | "asn" => Ok(ScanKind::Network),
         other => Err(other),
     }
 }
@@ -59,6 +63,9 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
         ScanKind::Username => canonical_handle(raw),
         ScanKind::Phone => canonical_phone(raw),
         ScanKind::Domain => canonical_domain(raw),
+        ScanKind::Network => {
+            crate::network_cli::NetworkTarget::parse(raw).map(|target| target.canonical())
+        }
         // The people command owns the two-token rule and its offline skip path;
         // here only an empty name is non-canonical.
         ScanKind::People => {
@@ -79,6 +86,9 @@ pub fn infer_kind(selector: &str) -> ScanKind {
         ScanKind::Email
     } else if selector.starts_with('@') {
         ScanKind::Username
+    } else if crate::network_cli::NetworkTarget::parse(selector).is_some() {
+        // Before phone and domain: a dotted IPv4 address also reads as a domain name.
+        ScanKind::Network
     } else if crate::phone_intl::canonicalize(selector).is_some() {
         ScanKind::Phone
     } else if canonical_domain(selector).is_some() {
@@ -128,6 +138,34 @@ mod tests {
         // No name and an unknown option are the people command's usage errors, which it reports.
         assert!(explicit_people_is_name(&[]));
         assert!(explicit_people_is_name(&words(&["Ada", "--bogus"])));
+    }
+
+    #[test]
+    fn network_selectors_route_before_domain_and_people() {
+        for selector in [
+            "1.1.1.1",
+            "2606:4700::1111",
+            "192.0.2.0/24",
+            "AS13335",
+            "asn64500",
+        ] {
+            assert_eq!(infer_kind(selector), ScanKind::Network, "{selector}");
+        }
+        // A bare number is not an AS, and a hostname stays a domain.
+        assert_ne!(infer_kind("13335"), ScanKind::Network);
+        assert_eq!(infer_kind("example.com"), ScanKind::Domain);
+        for alias in ["network", "ip", "netblock", "cidr", "asn"] {
+            assert_eq!(parse_kind(alias), Ok(ScanKind::Network), "{alias}");
+        }
+        assert_eq!(
+            canonical_selector(ScanKind::Network, "192.0.2.77/24").as_deref(),
+            Some("192.0.2.0/24")
+        );
+        assert_eq!(
+            canonical_selector(ScanKind::Network, "as13335").as_deref(),
+            Some("AS13335")
+        );
+        assert_eq!(canonical_selector(ScanKind::Network, "example.com"), None);
     }
 
     fn words(items: &[&str]) -> Vec<String> {

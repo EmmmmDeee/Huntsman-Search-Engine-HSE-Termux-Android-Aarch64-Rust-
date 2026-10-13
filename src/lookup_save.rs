@@ -110,6 +110,21 @@ fn domain_provenance(source: &str) -> (&str, &'static str) {
     }
 }
 
+fn network_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        "cymru" => ("cymru", "src/cymru.rs"),
+        "dns" => ("dns", "src/dns.rs"),
+        _ => (source, "src/network_cli.rs"),
+    }
+}
+
+pub const NETWORK_POLICY: SavePolicy = SavePolicy {
+    default_source: "cymru",
+    does_not_show: "a routing record is not an ownership or attribution verdict",
+    outcome_provenance: network_provenance,
+    entity_provenance: network_provenance,
+};
+
 pub const DOMAIN_POLICY: SavePolicy = SavePolicy {
     default_source: "crtsh",
     does_not_show: "a domain-recon lead is not an identity-resolution verdict",
@@ -206,32 +221,7 @@ fn entity_claim(entity: &Entity, policy: SavePolicy) -> Claim {
 
 #[must_use]
 pub const fn kind_label(kind: SourceOutcomeKind) -> &'static str {
-    match kind {
-        SourceOutcomeKind::Success => "success",
-        SourceOutcomeKind::ValidZero => "valid_zero",
-        SourceOutcomeKind::AuthRequired => "auth_required",
-        SourceOutcomeKind::AuthRejected => "auth_rejected",
-        SourceOutcomeKind::EntitlementDenied => "entitlement_denied",
-        SourceOutcomeKind::QuotaExhausted => "quota_exhausted",
-        SourceOutcomeKind::RateLimited => "rate_limited",
-        SourceOutcomeKind::BotWaf => "bot_waf",
-        SourceOutcomeKind::DnsFailure => "dns_failure",
-        SourceOutcomeKind::ConnectFailure => "connect_failure",
-        SourceOutcomeKind::TlsFailure => "tls_failure",
-        SourceOutcomeKind::TtfbTimeout => "ttfb_timeout",
-        SourceOutcomeKind::BodyTimeout => "body_timeout",
-        SourceOutcomeKind::Upstream4xx => "upstream_4xx",
-        SourceOutcomeKind::Upstream5xx => "upstream_5xx",
-        SourceOutcomeKind::RedirectChanged => "redirect_changed",
-        SourceOutcomeKind::ProtocolDrift => "protocol_drift",
-        SourceOutcomeKind::InteractionDrift => "interaction_drift",
-        SourceOutcomeKind::SchemaDrift => "schema_drift",
-        SourceOutcomeKind::ParserDrift => "parser_drift",
-        SourceOutcomeKind::SemanticDrift => "semantic_drift",
-        SourceOutcomeKind::ZeroYieldAnomaly => "zero_yield_anomaly",
-        SourceOutcomeKind::ConfirmedDead => "confirmed_dead",
-        SourceOutcomeKind::Inconclusive => "inconclusive",
-    }
+    kind.as_str()
 }
 
 #[cfg(test)]

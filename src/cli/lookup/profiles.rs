@@ -19,8 +19,8 @@ use huntsman_recon::hibp::key::KeyLoader;
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
-    self, DOMAIN_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, PEOPLE_POLICY, PHONE_POLICY, SavePolicy,
-    USERNAME_POLICY,
+    self, DOMAIN_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, NETWORK_POLICY, PEOPLE_POLICY,
+    PHONE_POLICY, SavePolicy, USERNAME_POLICY,
 };
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
@@ -160,6 +160,17 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
                 huntsman_recon::domain_cli::DomainRun::Failed(m) => Err(Refused::Unavailable(m)),
             }
         }
+        ScanKind::Network => {
+            use huntsman_recon::network_cli::{self, NetworkRun};
+            let transport = UreqTransport::new(&TransportConfig::default());
+            match network_cli::run(&transport, selector, now) {
+                NetworkRun::Printed { text, report } => {
+                    Ok(done(text, report.entities, report.outcomes, NETWORK_POLICY))
+                }
+                NetworkRun::Unavailable(m) => Err(Refused::Unavailable(m)),
+                NetworkRun::Failed(m) => Err(Refused::Data(m)),
+            }
+        }
     }
 }
 
@@ -252,6 +263,14 @@ pub(in crate::cli) fn domain_cmd(args: &[String]) -> ExitCode {
     match DomainArgs::parse(args) {
         Ok(p) => finish(ScanKind::Domain, &p.domain, p.save.as_deref()),
         Err(e) => usage_failure(&e, DOMAIN_USAGE),
+    }
+}
+
+pub(in crate::cli) fn network_cmd(args: &[String]) -> ExitCode {
+    use huntsman_recon::network_cli::{NETWORK_USAGE, NetworkArgs};
+    match NetworkArgs::parse(args) {
+        Ok(p) => finish(ScanKind::Network, &p.target, p.save.as_deref()),
+        Err(e) => usage_failure(&e, NETWORK_USAGE),
     }
 }
 
