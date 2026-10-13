@@ -8,205 +8,241 @@ use std::sync::Arc;
 use crate::method_actor::{ActorMetadata, FunctionActor, MethodActor};
 
 /// Create an actor that classifies entities by type (email, domain, IP, etc).
+#[must_use]
 pub fn entity_classifier_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("entity_classifier", "Classify Entity Types")
-        .with_cost_estimate(12);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items
-            .into_iter()
-            .map(|item| {
-                let kind = if item.contains('@') && item.contains('.') {
-                    "email"
-                } else if item.contains('.') && !item.starts_with('.') && !item.ends_with('.') {
-                    "domain"
-                } else if item.chars().all(|c| c.is_numeric() || c == '.') {
-                    "ip"
-                } else if item.starts_with('+') || item.chars().all(|c| c.is_numeric()) {
-                    "phone"
-                } else {
-                    "other"
-                };
-                format!("{}:{}", kind, item)
-            })
-            .collect())
-    })))
+    let metadata =
+        ActorMetadata::new("entity_classifier", "Classify Entity Types").with_cost_estimate(12);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            Ok(items
+                .into_iter()
+                .map(|item| {
+                    let kind = if item.contains('@') && item.contains('.') {
+                        "email"
+                    } else if item.contains('.') && !item.starts_with('.') && !item.ends_with('.') {
+                        "domain"
+                    } else if item.chars().all(|c| c.is_numeric() || c == '.') {
+                        "ip"
+                    } else if item.starts_with('+') || item.chars().all(char::is_numeric) {
+                        "phone"
+                    } else {
+                        "other"
+                    };
+                    format!("{kind}:{item}")
+                })
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that extracts organization indicators from text.
+#[must_use]
 pub fn organization_extractor_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("org_extractor", "Extract Organizations")
-        .with_cost_estimate(15);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items
-            .into_iter()
-            .filter_map(|item| {
-                if item.contains('.') && (item.ends_with(".com") || item.ends_with(".org") || item.ends_with(".net")) {
-                    Some(item.clone())
-                } else if item.contains('@') {
-                    item.split('@').nth(1).map(|d| d.to_string())
-                } else {
-                    None
-                }
-            })
-            .collect())
-    })))
+    let metadata =
+        ActorMetadata::new("org_extractor", "Extract Organizations").with_cost_estimate(15);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            Ok(items
+                .into_iter()
+                .filter_map(|item| {
+                    let has_common_tld = std::path::Path::new(&item)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| {
+                            ["com", "org", "net"]
+                                .iter()
+                                .any(|t| e.eq_ignore_ascii_case(t))
+                        });
+                    if has_common_tld {
+                        Some(item.clone())
+                    } else if item.contains('@') {
+                        item.split('@').nth(1).map(ToString::to_string)
+                    } else {
+                        None
+                    }
+                })
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that validates contact information.
+#[must_use]
 pub fn contact_validator_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("contact_validator", "Validate Contact Info")
-        .with_cost_estimate(10);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items
-            .into_iter()
-            .filter(|item| {
-                let is_email = item.contains('@') && item.contains('.');
-                let is_phone = item.starts_with('+') ||
-                    (item.chars().filter(|c| c.is_numeric()).count() >= 7);
-                let is_domain = item.contains('.') && !item.contains('@');
+    let metadata =
+        ActorMetadata::new("contact_validator", "Validate Contact Info").with_cost_estimate(10);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            Ok(items
+                .into_iter()
+                .filter(|item| {
+                    let is_email = item.contains('@') && item.contains('.');
+                    let is_phone = item.starts_with('+')
+                        || (item.chars().filter(|c| c.is_numeric()).count() >= 7);
+                    let is_domain = item.contains('.') && !item.contains('@');
 
-                is_email || is_phone || is_domain
-            })
-            .collect())
-    })))
+                    is_email || is_phone || is_domain
+                })
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that normalizes URLs to canonical form.
+#[must_use]
 pub fn url_normalizer_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("url_normalizer", "Normalize URLs")
-        .with_cost_estimate(12);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items
-            .into_iter()
-            .map(|url| {
-                let normalized = if url.starts_with("http://") || url.starts_with("https://") {
-                    url
-                } else if url.contains("://") {
-                    url
-                } else {
-                    format!("https://{}", url)
-                };
-                normalized.to_lowercase()
-            })
-            .collect())
-    })))
+    let metadata = ActorMetadata::new("url_normalizer", "Normalize URLs").with_cost_estimate(12);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            Ok(items
+                .into_iter()
+                .map(|url| {
+                    let normalized = if url.contains("://") {
+                        url
+                    } else {
+                        format!("https://{url}")
+                    };
+                    normalized.to_lowercase()
+                })
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that extracts hostnames from URLs.
+#[must_use]
 pub fn hostname_extractor_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("hostname_extractor", "Extract Hostnames")
-        .with_cost_estimate(10);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items
-            .into_iter()
-            .filter_map(|item| {
-                if item.contains("://") {
-                    let after_protocol = item.split("://").nth(1)?;
-                    let before_path = after_protocol.split('/').next()?;
-                    let hostname = before_path.split(':').next()?.to_string();
-                    Some(hostname)
-                } else {
-                    None
-                }
-            })
-            .collect())
-    })))
+    let metadata =
+        ActorMetadata::new("hostname_extractor", "Extract Hostnames").with_cost_estimate(10);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            Ok(items
+                .into_iter()
+                .filter_map(|item| {
+                    if item.contains("://") {
+                        let after_protocol = item.split("://").nth(1)?;
+                        let before_path = after_protocol.split('/').next()?;
+                        let hostname = before_path.split(':').next()?.to_string();
+                        Some(hostname)
+                    } else {
+                        None
+                    }
+                })
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that filters known false positives.
+#[must_use]
 pub fn false_positive_filter_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("fp_filter", "Filter False Positives")
-        .with_cost_estimate(8);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        let fp_patterns = [
-            "example.com",
-            "localhost",
-            "127.0.0.1",
-            "0.0.0.0",
-            "::1",
-            "test@",
-            "admin@",
-            "noreply@",
-            "no-reply@",
-            "placeholder",
-            "sample",
-            "demo",
-        ];
+    let metadata = ActorMetadata::new("fp_filter", "Filter False Positives").with_cost_estimate(8);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            let fp_patterns = [
+                "example.com",
+                "localhost",
+                "127.0.0.1",
+                "0.0.0.0",
+                "::1",
+                "test@",
+                "admin@",
+                "noreply@",
+                "no-reply@",
+                "placeholder",
+                "sample",
+                "demo",
+            ];
 
-        Ok(items
-            .into_iter()
-            .filter(|item| {
-                !fp_patterns.iter().any(|&fp| item.contains(fp))
-            })
-            .collect())
-    })))
+            Ok(items
+                .into_iter()
+                .filter(|item| !fp_patterns.iter().any(|&fp| item.contains(fp)))
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that validates domain registries.
+#[must_use]
 pub fn domain_registry_validator_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("domain_registry", "Validate Domain Registry")
-        .with_cost_estimate(10);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        let tlds = [
-            ".com", ".org", ".net", ".io", ".co", ".uk", ".au", ".de", ".fr",
-            ".jp", ".cn", ".ru", ".in", ".br", ".mx", ".edu", ".gov",
-        ];
+    let metadata =
+        ActorMetadata::new("domain_registry", "Validate Domain Registry").with_cost_estimate(10);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            let tlds = [
+                ".com", ".org", ".net", ".io", ".co", ".uk", ".au", ".de", ".fr", ".jp", ".cn",
+                ".ru", ".in", ".br", ".mx", ".edu", ".gov",
+            ];
 
-        Ok(items
-            .into_iter()
-            .filter(|item| {
-                tlds.iter().any(|&tld| item.ends_with(tld))
-            })
-            .collect())
-    })))
+            Ok(items
+                .into_iter()
+                .filter(|item| tlds.iter().any(|&tld| item.ends_with(tld)))
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that extracts evidence snippets (truncated for context).
+#[must_use]
 pub fn evidence_snippet_actor(max_length: usize) -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("evidence_snippet", "Extract Evidence Snippets")
-        .with_cost_estimate(6);
-    Arc::new(FunctionActor::new(metadata, Arc::new(move |items| {
-        Ok(items
-            .into_iter()
-            .map(|item| {
-                if item.len() > max_length {
-                    format!("{}...", &item[..max_length])
-                } else {
-                    item
-                }
-            })
-            .collect())
-    })))
+    let metadata =
+        ActorMetadata::new("evidence_snippet", "Extract Evidence Snippets").with_cost_estimate(6);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(move |items| {
+            Ok(items
+                .into_iter()
+                .map(|item| {
+                    if item.len() > max_length {
+                        format!("{}...", &item[..max_length])
+                    } else {
+                        item
+                    }
+                })
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that resolves entity relationships (simple heuristic).
+#[must_use]
 pub fn relationship_resolver_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("relationship_resolver", "Resolve Relationships")
-        .with_cost_estimate(20);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items
-            .into_iter()
-            .flat_map(|item| {
-                let mut relations = vec![item.clone()];
+    let metadata =
+        ActorMetadata::new("relationship_resolver", "Resolve Relationships").with_cost_estimate(20);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            Ok(items
+                .into_iter()
+                .flat_map(|item| {
+                    let mut relations = vec![item.clone()];
 
-                if item.contains('@') {
-                    if let Some(domain) = item.split('@').nth(1) {
-                        relations.push(format!("domain:{}", domain));
-                        relations.push(format!("email_of:{}", domain));
+                    if item.contains('@') {
+                        if let Some(domain) = item.split('@').nth(1) {
+                            relations.push(format!("domain:{domain}"));
+                            relations.push(format!("email_of:{domain}"));
+                        }
                     }
-                }
 
-                if item.contains('.') && !item.contains('@') {
-                    relations.push(format!("hosted_on:{}", item));
-                    if let Some(root) = item.split('.').nth(0) {
-                        relations.push(format!("subdomain_of:{}", root));
+                    if item.contains('.') && !item.contains('@') {
+                        relations.push(format!("hosted_on:{item}"));
+                        if let Some(root) = item.split('.').next() {
+                            relations.push(format!("subdomain_of:{root}"));
+                        }
                     }
-                }
 
-                relations
-            })
-            .collect())
-    })))
+                    relations
+                })
+                .collect())
+        }),
+    ))
 }
 
 #[cfg(test)]
@@ -254,7 +290,7 @@ mod tests {
                 "alice@legitimate.org".to_string(),
             ])
             .unwrap();
-        assert!(result.len() >= 1);
+        assert!(!result.is_empty());
     }
 
     #[test]

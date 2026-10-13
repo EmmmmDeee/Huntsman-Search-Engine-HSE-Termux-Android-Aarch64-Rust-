@@ -8,100 +8,118 @@ use std::sync::Arc;
 use crate::method_actor::{ActorMetadata, FunctionActor, MethodActor};
 
 /// Create an actor that filters empty or whitespace-only strings.
+#[must_use]
 pub fn whitespace_filter_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("whitespace_filter", "Filter Empty Values")
-        .with_cost_estimate(5);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items.into_iter().filter(|s| !s.trim().is_empty()).collect())
-    })))
+    let metadata =
+        ActorMetadata::new("whitespace_filter", "Filter Empty Values").with_cost_estimate(5);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| Ok(items.into_iter().filter(|s| !s.trim().is_empty()).collect())),
+    ))
 }
 
 /// Create an actor that normalizes values to lowercase.
+#[must_use]
 pub fn lowercase_normalizer_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("lowercase_normalizer", "Normalize to Lowercase")
-        .with_cost_estimate(8);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items.into_iter().map(|s| s.to_lowercase()).collect())
-    })))
+    let metadata =
+        ActorMetadata::new("lowercase_normalizer", "Normalize to Lowercase").with_cost_estimate(8);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| Ok(items.into_iter().map(|s| s.to_lowercase()).collect())),
+    ))
 }
 
 /// Create an actor that deduplicates consecutive identical values.
+#[must_use]
 pub fn deduplication_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("deduplicator", "Deduplicate Values")
-        .with_cost_estimate(15);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        let mut seen = std::collections::HashSet::new();
-        Ok(items
-            .into_iter()
-            .filter(|item| seen.insert(item.clone()))
-            .collect())
-    })))
+    let metadata = ActorMetadata::new("deduplicator", "Deduplicate Values").with_cost_estimate(15);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            let mut seen = std::collections::HashSet::new();
+            Ok(items
+                .into_iter()
+                .filter(|item| seen.insert(item.clone()))
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that validates email format.
+#[must_use]
 pub fn email_validator_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("email_validator", "Validate Email Format")
-        .with_cost_estimate(12);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items
-            .into_iter()
-            .filter(|email| {
-                email.contains('@') && email.contains('.') && email.len() > 5
-            })
-            .collect())
-    })))
+    let metadata =
+        ActorMetadata::new("email_validator", "Validate Email Format").with_cost_estimate(12);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            Ok(items
+                .into_iter()
+                .filter(|email| email.contains('@') && email.contains('.') && email.len() > 5)
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that validates domain format.
+#[must_use]
 pub fn domain_validator_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("domain_validator", "Validate Domain Format")
-        .with_cost_estimate(10);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items
-            .into_iter()
-            .filter(|domain| {
-                domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
-            })
-            .collect())
-    })))
+    let metadata =
+        ActorMetadata::new("domain_validator", "Validate Domain Format").with_cost_estimate(10);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            Ok(items
+                .into_iter()
+                .filter(|domain| {
+                    domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+                })
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that extracts domains from email addresses.
+#[must_use]
 pub fn email_domain_extractor_actor() -> Arc<dyn MethodActor> {
     let metadata = ActorMetadata::new("email_domain_extractor", "Extract Domain from Email")
         .with_cost_estimate(8);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items
-            .into_iter()
-            .filter_map(|email| {
-                email.split('@').nth(1).map(|d| d.to_string())
-            })
-            .collect())
-    })))
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            Ok(items
+                .into_iter()
+                .filter_map(|email| email.split('@').nth(1).map(ToString::to_string))
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that truncates values to a maximum length.
+#[must_use]
 pub fn truncation_actor(max_length: usize) -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("truncator", "Truncate Values")
-        .with_cost_estimate(6);
-    Arc::new(FunctionActor::new(metadata, Arc::new(move |items| {
-        Ok(items
-            .into_iter()
-            .map(|s| {
-                if s.len() > max_length {
-                    s.chars().take(max_length).collect()
-                } else {
-                    s
-                }
-            })
-            .collect())
-    })))
+    let metadata = ActorMetadata::new("truncator", "Truncate Values").with_cost_estimate(6);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(move |items| {
+            Ok(items
+                .into_iter()
+                .map(|s| {
+                    if s.len() > max_length {
+                        s.chars().take(max_length).collect()
+                    } else {
+                        s
+                    }
+                })
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that filters values by a length range.
+#[must_use]
 pub fn length_filter_actor(min_length: usize, max_length: usize) -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("length_filter", "Filter by Length")
-        .with_cost_estimate(5);
+    let metadata = ActorMetadata::new("length_filter", "Filter by Length").with_cost_estimate(5);
     Arc::new(FunctionActor::new(
         metadata,
         Arc::new(move |items| {
@@ -114,102 +132,111 @@ pub fn length_filter_actor(min_length: usize, max_length: usize) -> Arc<dyn Meth
 }
 
 /// Create an actor that validates against a pattern (case-insensitive substring match).
-pub fn pattern_filter_actor(pattern: String) -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("pattern_filter", "Filter by Pattern")
-        .with_cost_estimate(15);
+#[must_use]
+pub fn pattern_filter_actor(pattern: &str) -> Arc<dyn MethodActor> {
+    let metadata = ActorMetadata::new("pattern_filter", "Filter by Pattern").with_cost_estimate(15);
     let pattern_lower = pattern.to_lowercase();
-    Arc::new(FunctionActor::new(metadata, Arc::new(move |items| {
-        Ok(items
-            .into_iter()
-            .filter(|s| s.to_lowercase().contains(&pattern_lower))
-            .collect())
-    })))
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(move |items| {
+            Ok(items
+                .into_iter()
+                .filter(|s| s.to_lowercase().contains(&pattern_lower))
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that removes common TLDs from domains.
+#[must_use]
 pub fn tld_stripper_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("tld_stripper", "Strip Common TLDs")
-        .with_cost_estimate(8);
+    let metadata = ActorMetadata::new("tld_stripper", "Strip Common TLDs").with_cost_estimate(8);
     let tlds = [".com", ".org", ".net", ".io", ".co", ".edu", ".gov"];
-    Arc::new(FunctionActor::new(metadata, Arc::new(move |items| {
-        Ok(items
-            .into_iter()
-            .map(|domain| {
-                let mut result = domain.clone();
-                for tld in &tlds {
-                    if result.ends_with(tld) {
-                        result = result[..result.len() - tld.len()].to_string();
-                        break;
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(move |items| {
+            Ok(items
+                .into_iter()
+                .map(|domain| {
+                    let mut result = domain.clone();
+                    for tld in &tlds {
+                        if result.ends_with(tld) {
+                            result = result[..result.len() - tld.len()].to_string();
+                            break;
+                        }
                     }
-                }
-                result
-            })
-            .collect())
-    })))
+                    result
+                })
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that adds a prefix to each value.
+#[must_use]
 pub fn prefix_actor(prefix: String) -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("prefix_actor", "Add Prefix")
-        .with_cost_estimate(6);
-    Arc::new(FunctionActor::new(metadata, Arc::new(move |items| {
-        Ok(items
-            .into_iter()
-            .map(|s| format!("{}{}", prefix, s))
-            .collect())
-    })))
+    let metadata = ActorMetadata::new("prefix_actor", "Add Prefix").with_cost_estimate(6);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(move |items| Ok(items.into_iter().map(|s| format!("{prefix}{s}")).collect())),
+    ))
 }
 
 /// Create an actor that adds a suffix to each value.
+#[must_use]
 pub fn suffix_actor(suffix: String) -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("suffix_actor", "Add Suffix")
-        .with_cost_estimate(6);
-    Arc::new(FunctionActor::new(metadata, Arc::new(move |items| {
-        Ok(items
-            .into_iter()
-            .map(|s| format!("{}{}", s, suffix))
-            .collect())
-    })))
+    let metadata = ActorMetadata::new("suffix_actor", "Add Suffix").with_cost_estimate(6);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(move |items| Ok(items.into_iter().map(|s| format!("{s}{suffix}")).collect())),
+    ))
 }
 
 /// Create an actor that replaces whitespace with a separator.
+#[must_use]
 pub fn whitespace_normalizer_actor(separator: String) -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("whitespace_normalizer", "Normalize Whitespace")
-        .with_cost_estimate(10);
-    Arc::new(FunctionActor::new(metadata, Arc::new(move |items| {
-        Ok(items
-            .into_iter()
-            .map(|s| {
-                s.split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(&separator)
-            })
-            .collect())
-    })))
+    let metadata =
+        ActorMetadata::new("whitespace_normalizer", "Normalize Whitespace").with_cost_estimate(10);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(move |items| {
+            Ok(items
+                .into_iter()
+                .map(|s| s.split_whitespace().collect::<Vec<_>>().join(&separator))
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that counts characters (represented as "length:value").
+#[must_use]
 pub fn char_counter_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("char_counter", "Count Characters")
-        .with_cost_estimate(5);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items
-            .into_iter()
-            .map(|s| format!("{}:{}", s.len(), s))
-            .collect())
-    })))
+    let metadata = ActorMetadata::new("char_counter", "Count Characters").with_cost_estimate(5);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            Ok(items
+                .into_iter()
+                .map(|s| format!("{}:{}", s.len(), s))
+                .collect())
+        }),
+    ))
 }
 
 /// Create an actor that parses "length:value" format and recovers value.
+#[must_use]
 pub fn char_counter_parser_actor() -> Arc<dyn MethodActor> {
-    let metadata = ActorMetadata::new("char_counter_parser", "Parse Character Count")
-        .with_cost_estimate(8);
-    Arc::new(FunctionActor::new(metadata, Arc::new(|items| {
-        Ok(items
-            .into_iter()
-            .filter_map(|s| s.split(':').nth(1).map(|v| v.to_string()))
-            .collect())
-    })))
+    let metadata =
+        ActorMetadata::new("char_counter_parser", "Parse Character Count").with_cost_estimate(8);
+    Arc::new(FunctionActor::new(
+        metadata,
+        Arc::new(|items| {
+            Ok(items
+                .into_iter()
+                .filter_map(|s| s.split(':').nth(1).map(ToString::to_string))
+                .collect())
+        }),
+    ))
 }
 
 #[cfg(test)]
@@ -225,7 +252,7 @@ mod tests {
                 "hello".to_string(),
                 "   ".to_string(),
                 "world".to_string(),
-                "".to_string(),
+                String::new(),
             ])
             .unwrap();
         assert_eq!(result.len(), 2);
@@ -288,7 +315,6 @@ mod tests {
 
         assert_eq!(result.output.len(), 2);
         assert_eq!(result.stages.len(), 3);
-        assert!(result.total_duration_ms >= 0);
     }
 
     #[test]

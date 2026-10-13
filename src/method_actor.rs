@@ -92,18 +92,21 @@ impl ActorMetadata {
     }
 
     /// Set the maximum batch size.
+    #[must_use]
     pub fn with_max_batch_size(mut self, size: usize) -> Self {
         self.max_batch_size = size;
         self
     }
 
     /// Set the cost estimate.
+    #[must_use]
     pub fn with_cost_estimate(mut self, cost: u32) -> Self {
         self.cost_estimate = cost;
         self
     }
 
     /// Add a dependency on another actor.
+    #[must_use]
     pub fn with_dependency(mut self, actor_id: impl Into<String>) -> Self {
         self.dependencies.push(actor_id.into());
         self
@@ -199,18 +202,21 @@ impl Default for PipelineConfig {
 
 impl PipelineConfig {
     /// Create with custom batch size.
+    #[must_use]
     pub fn with_batch_size(mut self, size: usize) -> Self {
         self.batch_size = size;
         self
     }
 
     /// Create with concurrency enabled.
+    #[must_use]
     pub fn with_concurrency(mut self, workers: usize) -> Self {
         self.concurrency = workers;
         self
     }
 
     /// Create allowing errors to be skipped.
+    #[must_use]
     pub fn allow_error_skip(mut self) -> Self {
         self.skip_on_error = true;
         self
@@ -282,6 +288,7 @@ pub struct PipelineBuilder {
 
 impl PipelineBuilder {
     /// Create a new pipeline builder.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             actors: Vec::new(),
@@ -290,6 +297,7 @@ impl PipelineBuilder {
     }
 
     /// Add an actor to the pipeline.
+    #[must_use]
     pub fn add_actor(mut self, actor: Arc<dyn MethodActor>) -> Self {
         let id = actor.metadata().id.clone();
         self.actors.push((id, actor));
@@ -297,18 +305,21 @@ impl PipelineBuilder {
     }
 
     /// Set pipeline configuration.
+    #[must_use]
     pub fn with_config(mut self, config: PipelineConfig) -> Self {
         self.config = config;
         self
     }
 
     /// Set batch size.
+    #[must_use]
     pub fn with_batch_size(mut self, size: usize) -> Self {
         self.config.batch_size = size;
         self
     }
 
     /// Set concurrency level.
+    #[must_use]
     pub fn with_concurrency(mut self, workers: usize) -> Self {
         self.config.concurrency = workers;
         self
@@ -319,7 +330,8 @@ impl PipelineBuilder {
         let n = actors.len();
         let mut in_degree = vec![0; n];
         let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); n];
-        let mut id_to_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut id_to_index: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
 
         for (i, (id, _)) in actors.iter().enumerate() {
             id_to_index.insert(id.clone(), i);
@@ -333,7 +345,8 @@ impl PipelineBuilder {
                 } else {
                     return Err(ActorError::DependencyViolation(format!(
                         "actor {} depends on unknown actor {}",
-                        actor.metadata().id, dep_id
+                        actor.metadata().id,
+                        dep_id
                     )));
                 }
             }
@@ -415,11 +428,13 @@ pub struct Pipeline {
 
 impl Pipeline {
     /// Get the execution plan for this pipeline.
+    #[must_use]
     pub fn plan(&self) -> &ExecutionPlan {
         &self.plan
     }
 
     /// Get the configuration for this pipeline.
+    #[must_use]
     pub fn config(&self) -> &PipelineConfig {
         &self.config
     }
@@ -470,6 +485,7 @@ impl Pipeline {
                 items_processed: metadata.max_batch_size,
                 items_successful: items.len(),
                 items_failed: 0,
+                #[allow(clippy::cast_possible_truncation)]
                 duration_ms: duration.as_millis() as u64,
             });
         }
@@ -479,10 +495,12 @@ impl Pipeline {
         }
 
         let total_duration = start_time.elapsed();
+        #[allow(clippy::cast_possible_truncation)]
+        let total_ms = total_duration.as_millis() as u64;
         Ok(PipelineExecution {
             output: items,
             stages: results,
-            total_duration_ms: total_duration.as_millis() as u64,
+            total_duration_ms: total_ms,
         })
     }
 }
@@ -514,25 +532,38 @@ mod tests {
 
     #[test]
     fn test_pipeline_config_validation() {
-        assert!(PipelineConfig::default().with_batch_size(0).validate().is_err());
-        assert!(PipelineConfig::default().with_batch_size(1).validate().is_ok());
+        assert!(
+            PipelineConfig::default()
+                .with_batch_size(0)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            PipelineConfig::default()
+                .with_batch_size(1)
+                .validate()
+                .is_ok()
+        );
     }
 
     #[test]
     fn test_function_actor() {
         let metadata = ActorMetadata::new("uppercase", "Uppercase");
-        let actor = FunctionActor::new(metadata, Arc::new(|items| {
-            Ok(items.into_iter().map(|s| s.to_uppercase()).collect())
-        }));
+        let actor = FunctionActor::new(
+            metadata,
+            Arc::new(|items| Ok(items.into_iter().map(|s| s.to_uppercase()).collect())),
+        );
 
-        let result = actor.process(vec!["hello".to_string(), "world".to_string()]).unwrap();
+        let result = actor
+            .process(vec!["hello".to_string(), "world".to_string()])
+            .unwrap();
         assert_eq!(result, vec!["HELLO".to_string(), "WORLD".to_string()]);
     }
 
     #[test]
     fn test_pipeline_builder() {
         let metadata = ActorMetadata::new("test", "Test");
-        let actor = Arc::new(FunctionActor::new(metadata, Arc::new(|items| Ok(items))));
+        let actor = Arc::new(FunctionActor::new(metadata, Arc::new(Ok)));
 
         let pipeline = PipelineBuilder::new()
             .add_actor(actor)
@@ -545,12 +576,9 @@ mod tests {
     #[test]
     fn test_pipeline_execution() {
         let metadata = ActorMetadata::new("identity", "Identity");
-        let actor = Arc::new(FunctionActor::new(metadata, Arc::new(|items| Ok(items))));
+        let actor = Arc::new(FunctionActor::new(metadata, Arc::new(Ok)));
 
-        let pipeline = PipelineBuilder::new()
-            .add_actor(actor)
-            .build()
-            .unwrap();
+        let pipeline = PipelineBuilder::new().add_actor(actor).build().unwrap();
 
         let result = pipeline.execute(vec!["test".to_string()]).unwrap();
         assert_eq!(result.output, vec!["test".to_string()]);
@@ -560,13 +588,13 @@ mod tests {
     #[test]
     fn test_dependency_ordering() {
         let metadata_a = ActorMetadata::new("a", "Actor A");
-        let actor_a = Arc::new(FunctionActor::new(metadata_a, Arc::new(|items| Ok(items))));
+        let actor_a = Arc::new(FunctionActor::new(metadata_a, Arc::new(Ok)));
 
         let metadata_b = ActorMetadata::new("b", "Actor B").with_dependency("a");
-        let actor_b = Arc::new(FunctionActor::new(metadata_b, Arc::new(|items| Ok(items))));
+        let actor_b = Arc::new(FunctionActor::new(metadata_b, Arc::new(Ok)));
 
         let metadata_c = ActorMetadata::new("c", "Actor C").with_dependency("b");
-        let actor_c = Arc::new(FunctionActor::new(metadata_c, Arc::new(|items| Ok(items))));
+        let actor_c = Arc::new(FunctionActor::new(metadata_c, Arc::new(Ok)));
 
         let pipeline = PipelineBuilder::new()
             .add_actor(actor_c)
@@ -581,15 +609,14 @@ mod tests {
 
     #[test]
     fn test_circular_dependency_detection() {
-        let metadata_a =
-            ActorMetadata::new("a", "Actor A").with_dependency("c");
-        let actor_a = Arc::new(FunctionActor::new(metadata_a, Arc::new(|items| Ok(items))));
+        let metadata_a = ActorMetadata::new("a", "Actor A").with_dependency("c");
+        let actor_a = Arc::new(FunctionActor::new(metadata_a, Arc::new(Ok)));
 
         let metadata_b = ActorMetadata::new("b", "Actor B").with_dependency("a");
-        let actor_b = Arc::new(FunctionActor::new(metadata_b, Arc::new(|items| Ok(items))));
+        let actor_b = Arc::new(FunctionActor::new(metadata_b, Arc::new(Ok)));
 
         let metadata_c = ActorMetadata::new("c", "Actor C").with_dependency("b");
-        let actor_c = Arc::new(FunctionActor::new(metadata_c, Arc::new(|items| Ok(items))));
+        let actor_c = Arc::new(FunctionActor::new(metadata_c, Arc::new(Ok)));
 
         let result = PipelineBuilder::new()
             .add_actor(actor_a)
@@ -608,9 +635,8 @@ mod tests {
 
     #[test]
     fn test_missing_dependency_detection() {
-        let metadata_a =
-            ActorMetadata::new("a", "Actor A").with_dependency("missing");
-        let actor_a = Arc::new(FunctionActor::new(metadata_a, Arc::new(|items| Ok(items))));
+        let metadata_a = ActorMetadata::new("a", "Actor A").with_dependency("missing");
+        let actor_a = Arc::new(FunctionActor::new(metadata_a, Arc::new(Ok)));
 
         let result = PipelineBuilder::new().add_actor(actor_a).build();
 

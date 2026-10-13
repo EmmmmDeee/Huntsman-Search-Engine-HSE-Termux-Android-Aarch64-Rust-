@@ -42,20 +42,20 @@ pub struct EmptyContext;
 
 impl ActorContext for EmptyContext {}
 
+/// Processing function that mutates the shared context while transforming a batch.
+pub type StatefulProcessFn<C> =
+    Arc<dyn Fn(Vec<String>, &mut C) -> ActorResult<Vec<String>> + Send + Sync>;
+
 /// A generic stateful actor that maintains context across batches.
 pub struct StatefulMethodActor<C: ActorContext> {
     metadata: ActorMetadata,
     context: Arc<Mutex<C>>,
-    process_fn: Arc<dyn Fn(Vec<String>, &mut C) -> ActorResult<Vec<String>> + Send + Sync>,
+    process_fn: StatefulProcessFn<C>,
 }
 
 impl<C: ActorContext + 'static> StatefulMethodActor<C> {
     /// Create a stateful actor.
-    pub fn new(
-        metadata: ActorMetadata,
-        context: C,
-        process_fn: Arc<dyn Fn(Vec<String>, &mut C) -> ActorResult<Vec<String>> + Send + Sync>,
-    ) -> Self {
+    pub fn new(metadata: ActorMetadata, context: C, process_fn: StatefulProcessFn<C>) -> Self {
         Self {
             metadata,
             context: Arc::new(Mutex::new(context)),
@@ -67,9 +67,11 @@ impl<C: ActorContext + 'static> StatefulMethodActor<C> {
     pub fn context_debug(&self) -> ActorResult<String> {
         self.context
             .lock()
-            .map_err(|_| crate::method_actor::ActorError::ExecutionInterrupted(
-                "failed to acquire context lock".to_string(),
-            ))
+            .map_err(|_| {
+                crate::method_actor::ActorError::ExecutionInterrupted(
+                    "failed to acquire context lock".to_string(),
+                )
+            })
             .map(|ctx| ctx.debug_state())
     }
 
@@ -77,9 +79,11 @@ impl<C: ActorContext + 'static> StatefulMethodActor<C> {
     pub fn initialize_context(&self) -> ActorResult<()> {
         self.context
             .lock()
-            .map_err(|_| crate::method_actor::ActorError::ExecutionInterrupted(
-                "failed to acquire context lock".to_string(),
-            ))?
+            .map_err(|_| {
+                crate::method_actor::ActorError::ExecutionInterrupted(
+                    "failed to acquire context lock".to_string(),
+                )
+            })?
             .initialize()
     }
 
@@ -87,9 +91,11 @@ impl<C: ActorContext + 'static> StatefulMethodActor<C> {
     pub fn after_batch(&self, batch_num: usize, items: usize) -> ActorResult<()> {
         self.context
             .lock()
-            .map_err(|_| crate::method_actor::ActorError::ExecutionInterrupted(
-                "failed to acquire context lock".to_string(),
-            ))?
+            .map_err(|_| {
+                crate::method_actor::ActorError::ExecutionInterrupted(
+                    "failed to acquire context lock".to_string(),
+                )
+            })?
             .after_batch(batch_num, items)
     }
 
@@ -97,9 +103,11 @@ impl<C: ActorContext + 'static> StatefulMethodActor<C> {
     pub fn finalize_context(&self) -> ActorResult<()> {
         self.context
             .lock()
-            .map_err(|_| crate::method_actor::ActorError::ExecutionInterrupted(
-                "failed to acquire context lock".to_string(),
-            ))?
+            .map_err(|_| {
+                crate::method_actor::ActorError::ExecutionInterrupted(
+                    "failed to acquire context lock".to_string(),
+                )
+            })?
             .finalize()
     }
 }
@@ -110,12 +118,11 @@ impl<C: ActorContext + 'static> MethodActor for StatefulMethodActor<C> {
     }
 
     fn process(&self, items: Vec<String>) -> ActorResult<Vec<String>> {
-        let mut context = self
-            .context
-            .lock()
-            .map_err(|_| crate::method_actor::ActorError::ExecutionInterrupted(
+        let mut context = self.context.lock().map_err(|_| {
+            crate::method_actor::ActorError::ExecutionInterrupted(
                 "failed to acquire context lock".to_string(),
-            ))?;
+            )
+        })?;
         (self.process_fn)(items, &mut *context)
     }
 
@@ -158,7 +165,10 @@ impl ActorContext for StatisticsContext {
     fn debug_state(&self) -> String {
         format!(
             "{{processed: {}, batches: {}, min: {}, max: {}}}",
-            self.total_items_processed, self.batches_processed, self.min_batch_size, self.max_batch_size
+            self.total_items_processed,
+            self.batches_processed,
+            self.min_batch_size,
+            self.max_batch_size
         )
     }
 }
@@ -181,12 +191,13 @@ impl Default for DeduplicationContextWithTracking {
 
 impl ActorContext for DeduplicationContextWithTracking {
     fn debug_state(&self) -> String {
-        let seen = self.seen.lock().map(|s| s.len()).unwrap_or(0);
+        let seen = self.seen.lock().map_or(0, |s| s.len());
         format!("{{seen: {}, duplicates: {}}}", seen, self.total_duplicates)
     }
 }
 
 /// Create an actor that collects statistics about processing.
+#[must_use]
 pub fn statistics_tracking_actor() -> Arc<dyn MethodActor> {
     let metadata = ActorMetadata::new("statistics_tracker", "Track Processing Statistics")
         .with_cost_estimate(8);
@@ -202,6 +213,7 @@ pub fn statistics_tracking_actor() -> Arc<dyn MethodActor> {
 }
 
 /// Create an actor that filters items above a count threshold, tracking occurrences.
+#[must_use]
 pub fn occurrence_filter_actor(threshold: usize) -> Arc<dyn MethodActor> {
     let metadata = ActorMetadata::new("occurrence_filter", "Filter by Occurrence Count")
         .with_cost_estimate(15);
@@ -221,8 +233,8 @@ pub fn occurrence_filter_actor(threshold: usize) -> Arc<dyn MethodActor> {
 
     impl ActorContext for OccurrenceContext {
         fn debug_state(&self) -> String {
-            let counts = self.counts.lock().map(|m| m.len()).unwrap_or(0);
-            format!("{{tracked_items: {}}}", counts)
+            let counts = self.counts.lock().map_or(0, |m| m.len());
+            format!("{{tracked_items: {counts}}}")
         }
     }
 
@@ -231,7 +243,11 @@ pub fn occurrence_filter_actor(threshold: usize) -> Arc<dyn MethodActor> {
         metadata,
         context,
         Arc::new(move |items, ctx: &mut OccurrenceContext| {
-            let mut counts = ctx.counts.lock().unwrap();
+            let mut counts = ctx.counts.lock().map_err(|_| {
+                crate::method_actor::ActorError::ExecutionInterrupted(
+                    "failed to acquire counts lock".to_string(),
+                )
+            })?;
             for item in &items {
                 *counts.entry(item.clone()).or_insert(0) += 1;
             }
@@ -271,7 +287,9 @@ mod tests {
     #[test]
     fn test_statistics_tracking_actor() {
         let actor = statistics_tracking_actor();
-        let result = actor.process(vec!["a".to_string(), "b".to_string()]).unwrap();
+        let result = actor
+            .process(vec!["a".to_string(), "b".to_string()])
+            .unwrap();
         assert_eq!(result.len(), 2);
     }
 
