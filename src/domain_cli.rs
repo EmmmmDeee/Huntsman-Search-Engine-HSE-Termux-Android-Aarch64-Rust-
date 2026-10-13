@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use crate::canonical::canonical_domain;
 use crate::crtsh::{self, CrtShError};
+use crate::deadline::SystemClock;
 use crate::dns;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::error::Error;
@@ -438,32 +439,43 @@ fn subdomain_takeover_detection<T: Transport + ?Sized>(
         return (Vec::new(), None);
     }
 
-    // Run takeover detection on subdomains
-    let findings = subdomain_takeover::detect_in_subdomains(transport, &subdomains);
+    let report = subdomain_takeover::detect_in_subdomains(transport, &SystemClock, &subdomains);
 
-    // Convert findings into entities with evidence
-    let mut result_entities = Vec::new();
-    for finding in &findings {
-        let mut entity = Entity::new(
-            EntityKind::Domain,
-            &finding.subdomain,
-            0.95,
-            "subdomain_takeover",
-        );
-        let evidence = subdomain_takeover::finding_to_evidence(finding, "domain_cli");
-        entity.add_evidence(evidence);
-        result_entities.push(entity);
-    }
+    let result_entities: Vec<Entity> = report
+        .findings
+        .iter()
+        .map(|finding| {
+            let confidence = match finding.risk_level {
+                subdomain_takeover::RiskLevel::High => 0.95,
+                subdomain_takeover::RiskLevel::Medium => 0.7,
+            };
+            let mut entity = Entity::new(
+                EntityKind::Domain,
+                &finding.subdomain,
+                confidence,
+                "subdomain_takeover",
+            );
+            entity.add_evidence(subdomain_takeover::finding_to_evidence(
+                finding,
+                "domain_cli",
+            ));
+            entity
+        })
+        .collect();
 
-    if result_entities.is_empty() {
+    if result_entities.is_empty() && report.skipped == 0 {
         return (Vec::new(), None);
     }
 
-    let count = result_entities.len();
+    let skipped = if report.skipped == 0 {
+        String::new()
+    } else {
+        format!(", {} not probed (budget)", report.skipped)
+    };
     let section = format!(
-        "subdomain_takeover: {}/{} subdomains vulnerable",
-        count,
-        subdomains.len()
+        "subdomain_takeover: {} of {} probed subdomains vulnerable{skipped}",
+        result_entities.len(),
+        report.probed
     );
 
     (result_entities, Some(section))
@@ -745,6 +757,85 @@ mod tests {
                         .entities
                         .iter()
                         .all(|e| e.evidence.iter().all(|ev| ev.provenance.source == "dns"))
+                );
+            }
+            DomainRun::Unavailable(m) | DomainRun::Network(m) | DomainRun::Failed(m) => {
+                panic!("{m}")
+            }
+        }
+    }
+
+    /// `DoH` as `Fake`; over HTTP one discovered subdomain is an unclaimed GitHub Pages site
+    /// and its sibling is an ordinary 404.
+    struct TakeoverHosts {
+        dns: Fake,
+    }
+
+    impl Transport for TakeoverHosts {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            let (headers, body) = match request.url.as_str() {
+                "http://mail.example.com" => (
+                    vec![("Server".to_owned(), "GitHub.com".to_owned())],
+                    "<p>There isn't a GitHub Pages site here.</p>",
+                ),
+                "http://ns1.example.com" => (
+                    vec![("Server".to_owned(), "nginx".to_owned())],
+                    "<h1>Not Found</h1>",
+                ),
+                _ => return self.dns.send(request),
+            };
+            Ok(Response {
+                status: 404,
+                headers,
+                body: body.as_bytes().to_vec(),
+                truncated: false,
+            })
+        }
+    }
+
+    #[test]
+    fn only_a_provider_signed_404_marks_a_subdomain_as_takeable() {
+        let fake = TakeoverHosts {
+            dns: Fake::new(vec![
+                (
+                    "MX",
+                    r#"{"Status":0,"Answer":[{"type":15,"data":"10 mail.example.com."}]}"#,
+                ),
+                (
+                    "NS",
+                    r#"{"Status":0,"Answer":[{"type":2,"data":"ns1.example.com."}]}"#,
+                ),
+            ]),
+        };
+        match run(&fake, "example.com", 1) {
+            DomainRun::Printed { text, report } => {
+                assert!(
+                    text.contains("subdomain_takeover: 1 of 2 probed subdomains vulnerable"),
+                    "{text}"
+                );
+                let takeover = |value: &str| -> Vec<String> {
+                    report
+                        .entities
+                        .iter()
+                        .filter(|e| e.kind == EntityKind::Domain && e.value == value)
+                        .flat_map(|e| &e.evidence)
+                        .filter(|ev| ev.provenance.source == "subdomain_takeover_detector")
+                        .filter_map(|ev| ev.attributes.get("risk_level").cloned())
+                        .collect()
+                };
+                assert_eq!(takeover("mail.example.com"), vec!["high".to_owned()]);
+                assert!(
+                    takeover("ns1.example.com").is_empty(),
+                    "a plain 404 is not a takeover"
+                );
+                assert_eq!(
+                    report
+                        .entities
+                        .iter()
+                        .filter(|e| e.kind == EntityKind::Domain)
+                        .count(),
+                    2,
+                    "the takeover evidence merges into the discovered entity"
                 );
             }
             DomainRun::Unavailable(m) | DomainRun::Network(m) | DomainRun::Failed(m) => {
