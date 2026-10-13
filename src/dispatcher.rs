@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use crate::deadline::Deadline;
 use crate::entity::{Evidence, EvidenceProvenance};
-use crate::search_engines::SearchOrchestrator;
 
 /// Identifier for a module in the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -189,16 +188,13 @@ impl<'d> ParallelWave<'d> {
 
 /// Orchestrates parallel execution of modules with deadline enforcement.
 pub struct WaveExecutor {
-    #[allow(dead_code)]
-    orchestrator: SearchOrchestrator,
     max_concurrent: usize,
 }
 
 impl WaveExecutor {
-    /// Create new wave executor with default SearchOrchestrator and 6-concurrent limit.
-    pub fn new(orchestrator: SearchOrchestrator) -> Self {
+    /// Create new wave executor with 6-concurrent limit.
+    pub fn new() -> Self {
         Self {
-            orchestrator,
             max_concurrent: 6,
         }
     }
@@ -316,17 +312,13 @@ mod tests {
 
     #[test]
     fn wave_executor_creation() {
-        let orchestrator =
-            SearchOrchestrator::new(crate::search_engines::RotationStrategy::RoundRobin);
-        let executor = WaveExecutor::new(orchestrator);
+        let executor = WaveExecutor::new();
         assert_eq!(executor.max_concurrent, 6);
     }
 
     #[test]
     fn wave_executor_respects_deadline() {
-        let orchestrator =
-            SearchOrchestrator::new(crate::search_engines::RotationStrategy::RoundRobin);
-        let mut executor = WaveExecutor::new(orchestrator);
+        let mut executor = WaveExecutor::new();
 
         let clock = SystemClock;
         let deadline = Deadline::start(&clock, Duration::from_millis(1));
@@ -346,9 +338,7 @@ mod tests {
 
     #[test]
     fn wave_executor_enforces_concurrency_limit() {
-        let orchestrator =
-            SearchOrchestrator::new(crate::search_engines::RotationStrategy::RoundRobin);
-        let mut executor = WaveExecutor::new(orchestrator);
+        let mut executor = WaveExecutor::new();
 
         let clock = SystemClock;
         let deadline = Deadline::start(&clock, Duration::from_secs(30));

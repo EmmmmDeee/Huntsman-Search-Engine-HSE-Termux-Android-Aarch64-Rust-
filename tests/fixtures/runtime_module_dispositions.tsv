@@ -1,9 +1,17 @@
+abn	adapter	ABN (Australian Business Number) source client
+acma_phone	adapter	ACMA phone registry source client
 address_au	leaf	Australian address and phone normalization utility
+aggregator	runtime	evidence aggregation and deduplication
+ahpra	adapter	AHPRA (Australian Health Practitioner Regulation Authority) practitioner registry source client
 analysis	runtime	shared analysis fan-out
+apnic	adapter	APNIC WHOIS IP registry source client
+apra	adapter	APRA (Australian Prudential Regulatory Authority) bank and insurer registry source client
 archive	leaf	pure historical archive model
 archive_bridge	adapter	archive records into collection observations
 artifacts	exporter	bounded shared-state artifact renderer
+asic_company	adapter	ASIC company registry source client
 asic_director	adapter	ASIC director source client
+asic_insolvency	adapter	ASIC insolvency register source client
 asic_persons	adapter	ASIC people source client
 assurance	leaf	assurance analysis utility
 atproto	adapter	ATProto source adapter
@@ -14,6 +22,8 @@ attack_reporting	leaf	hierarchy-aware ATT&CK coverage projection
 au_electoral	adapter	Australian state electoral-roll source client
 au_id	leaf	Australian identifier normalization
 au_people	adapter	Australian people-finder source client
+auda	adapter	auDA domain registry source client
+austrac	adapter	AUSTRAC (Australian Transaction Reports and Analysis Centre) financial intelligence source client
 benchmark	diagnostic	benchmarking support
 bluesky_user	adapter	public Bluesky profile source client
 breach	leaf	breach record parsing utilities
@@ -45,6 +55,7 @@ diamond	leaf	analysis utility
 diff	leaf	diff analysis utility
 differential	diagnostic	legacy no-regression entity comparator and oracle manifest checks
 diagnostics	diagnostic	offline non-sensitive build runtime module and provider diagnostics
+dispatcher	runtime	parallel module execution with deadline enforcement
 directive_lock	diagnostic	canonical repository directive verification and mirror synchronization
 dmarc	leaf	DMARC parser
 dns	adapter	DNS source client
@@ -125,6 +136,7 @@ scan_artifact	exporter	versioned re-loadable scan results and correlation rerun
 scan_route	runtime	deterministic lookup-front-end selector routing
 scraper_health	diagnostic	source drift diagnostics
 search	diagnostic	local search utility
+search_engines	adapter	search engine interface framework
 seeknow	adapter	SeekNow/See-Know source client
 seeknow_cli	diagnostic	SeekNow command front-end
 seeknow_collector	adapter	SeekNow lineage-safe collector
