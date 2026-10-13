@@ -21,7 +21,7 @@ use std::time::Duration;
 use crate::entity::Evidence;
 
 /// Search engine type enumeration: all supported no-API-key sources
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SearchEngineType {
     /// Internet Archive Wayback Machine
     WaybackMachine,
@@ -370,6 +370,90 @@ impl SearchOrchestrator {
     }
 }
 
+/// Rate limit manager: Track backoff state per source, determine skip decisions.
+#[derive(Debug, Clone)]
+pub struct RateLimitManager {
+    states: std::collections::HashMap<SearchEngineType, RateLimitState>,
+}
+
+impl RateLimitManager {
+    /// Create new rate limit manager with fresh state for all sources.
+    #[must_use]
+    pub fn new() -> Self {
+        let mut states = std::collections::HashMap::new();
+        let engine_types = vec![
+            SearchEngineType::WaybackMachine,
+            SearchEngineType::GitHub,
+            SearchEngineType::Shodan,
+            SearchEngineType::Censys,
+            SearchEngineType::FlightTracking,
+            SearchEngineType::ShipTracking,
+            SearchEngineType::OpenStreetMap,
+            SearchEngineType::GoogleNews,
+        ];
+
+        for engine_type in engine_types {
+            let config = SearchEngineConfig::default_for(engine_type);
+            states.insert(
+                engine_type,
+                RateLimitState {
+                    engine: engine_type,
+                    requests_made: 0,
+                    rate_limit_window: Duration::from_secs(60),
+                    backoff_multiplier: 2.0,
+                    current_backoff: config.initial_backoff,
+                    next_available: std::time::SystemTime::now(),
+                },
+            );
+        }
+
+        Self { states }
+    }
+
+    /// Determine if a source should be skipped: backoff > remaining_budget.
+    pub fn should_skip(&self, source: SearchEngineType, remaining_budget: Duration) -> bool {
+        if let Some(state) = self.states.get(&source) {
+            state.current_backoff > remaining_budget
+        } else {
+            false
+        }
+    }
+
+    /// Record a successful request: decay backoff by 0.9x multiplier.
+    pub fn record_success(&mut self, source: SearchEngineType) {
+        if let Some(state) = self.states.get_mut(&source) {
+            let config = SearchEngineConfig::default_for(source);
+            state.current_backoff = (state.current_backoff.mul_f64(0.9)).max(config.initial_backoff);
+        }
+    }
+
+    /// Record a rate limit hit: apply exponential backoff (2.0x multiplier).
+    pub fn record_rate_limit(&mut self, source: SearchEngineType) {
+        if let Some(state) = self.states.get_mut(&source) {
+            let config = SearchEngineConfig::default_for(source);
+            state.current_backoff = state.current_backoff.mul_f64(state.backoff_multiplier);
+            if state.current_backoff > config.max_backoff {
+                state.current_backoff = config.max_backoff;
+            }
+        }
+    }
+
+    /// Get current backoff for a source.
+    #[must_use]
+    pub fn current_backoff(&self, source: SearchEngineType) -> Duration {
+        self.states
+            .get(&source)
+            .map(|s| s.current_backoff)
+            .unwrap_or(Duration::from_secs(0))
+    }
+}
+
+impl Default for RateLimitManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,5 +515,90 @@ mod tests {
         // Shodan should be much more conservative
         assert!(shodan_cfg.rate_limit_per_minute < wayback_cfg.rate_limit_per_minute);
         assert!(shodan_cfg.max_backoff > wayback_cfg.max_backoff);
+    }
+
+    #[test]
+    fn rate_limit_manager_creation() {
+        let manager = RateLimitManager::new();
+        assert!(!manager.states.is_empty());
+    }
+
+    #[test]
+    fn rate_limit_manager_should_skip_if_backoff_exceeds_budget() {
+        let mut manager = RateLimitManager::new();
+        let source = SearchEngineType::GitHub;
+
+        // Record multiple rate limits to build up backoff.
+        for _ in 0..5 {
+            manager.record_rate_limit(source);
+        }
+
+        let backoff = manager.current_backoff(source);
+        let budget = Duration::from_millis(10); // Small budget, likely smaller than backoff
+
+        // If backoff is large, should_skip should be true.
+        if backoff > budget {
+            assert!(manager.should_skip(source, budget));
+        }
+    }
+
+    #[test]
+    fn backoff_exponential_growth() {
+        let mut manager = RateLimitManager::new();
+        let source = SearchEngineType::GitHub;
+
+        let initial = manager.current_backoff(source);
+        manager.record_rate_limit(source);
+        let after_one = manager.current_backoff(source);
+        manager.record_rate_limit(source);
+        let after_two = manager.current_backoff(source);
+
+        // Each rate limit should roughly double backoff (2.0x multiplier).
+        assert!(after_one > initial);
+        assert!(after_two > after_one);
+        // Verify exponential growth: after_two should be > after_one * 1.5
+        assert!(after_two >= Duration::from_millis(
+            (after_one.as_millis() as f64 * 1.5) as u64
+        ));
+    }
+
+    #[test]
+    fn backoff_decay_on_success() {
+        let mut manager = RateLimitManager::new();
+        let source = SearchEngineType::GitHub;
+
+        // Build up backoff.
+        manager.record_rate_limit(source);
+        let with_backoff = manager.current_backoff(source);
+
+        // Record success to decay backoff.
+        manager.record_success(source);
+        let after_success = manager.current_backoff(source);
+
+        // Backoff should decay but stay above initial (0.9x multiplier).
+        assert!(after_success < with_backoff);
+        assert!(after_success > Duration::from_millis(10));
+    }
+
+    #[test]
+    fn backoff_respects_max_limit() {
+        let mut manager = RateLimitManager::new();
+        let source = SearchEngineType::GitHub;
+        let config = SearchEngineConfig::default_for(source);
+
+        // Record many rate limits to hit max backoff.
+        for _ in 0..20 {
+            manager.record_rate_limit(source);
+        }
+
+        let final_backoff = manager.current_backoff(source);
+        // Should be capped at max_backoff, not exceed it.
+        assert!(final_backoff <= config.max_backoff);
+    }
+
+    #[test]
+    fn rate_limit_manager_default() {
+        let manager = RateLimitManager::default();
+        assert!(!manager.states.is_empty());
     }
 }
