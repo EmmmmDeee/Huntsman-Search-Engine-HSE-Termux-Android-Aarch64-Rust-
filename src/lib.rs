@@ -8,6 +8,7 @@
 // that lack it.
 #![cfg_attr(test, allow(unknown_lints, clippy::assert_is_empty))]
 
+pub mod abn;
 pub mod address_au;
 pub mod analysis;
 pub mod archive;
@@ -16,6 +17,7 @@ pub mod apnic;
 pub mod artifacts;
 pub mod asic_company;
 pub mod asic_director;
+pub mod asic_insolvency;
 pub mod asic_persons;
 pub mod assurance;
 pub mod atproto;
