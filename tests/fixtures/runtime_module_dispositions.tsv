@@ -11,9 +11,7 @@ attack	leaf	ATT&CK model utility
 attack_catalog	leaf	ATT&CK catalogue
 attack_cli	diagnostic	ATT&CK command front-end over the reachable module catalogue
 attack_reporting	leaf	hierarchy-aware ATT&CK coverage projection
-au_electoral	adapter	Australian state electoral-roll source client
 au_id	leaf	Australian identifier normalization
-au_people	adapter	Australian people-finder source client
 benchmark	diagnostic	benchmarking support
 bluesky_user	adapter	public Bluesky profile source client
 breach	leaf	breach record parsing utilities
@@ -155,3 +153,7 @@ web_server	runtime	embedded Web UI and read-only HTTP API
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
 meta_plan	runtime	meta-plan validation consumed by the runtime
 repository_identity	leaf	repository constants with no runtime caller
+method_actor	leaf	dependency-ordered batch pipeline for composing method actors
+method_actor_stateful	leaf	method actors that own a context across batches
+method_actors	leaf	general cleaning and shape-filter method actors over shared syntax rules
+method_actors_osint	leaf	indicator triage method actors composed over classifier and the shared placeholder rules

@@ -308,7 +308,20 @@ fn span_at(tokens: &[&str]) -> (Classified, usize) {
         return span;
     }
     let head = tokens.first().copied().unwrap_or_default();
-    (classify(head), 1)
+    let found = classify(head);
+    // Free text is full of dotted tokens that are not host names: `document.cookie` in a
+    // script, `2.699` in an SVG path. Extraction keeps a domain only under a delegated TLD;
+    // a seed an operator types is still classified on syntax alone.
+    if found.kind == EntityKind::Domain
+        && !found
+            .value
+            .rsplit('.')
+            .next()
+            .is_some_and(crate::value_syntax::is_iana_tld)
+    {
+        return (classified(EntityKind::Other, head, 0.20, "unknown-tld"), 1);
+    }
+    (found, 1)
 }
 
 /// Recognises a phone number or an ABN/ACN written as two to four digit groups.
@@ -442,6 +455,19 @@ fn decimal_degree(raw: &str, max_int_digits: usize, limit: f64) -> Option<&str> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extraction_keeps_only_domains_under_a_delegated_tld() {
+        let text = "if (navigator.useragent && document.cookie.split) line.trim(); \
+                    <path d=\"M2.699 005.398 8.101\"/> see gravatar.com and mail.analytical.org.au";
+        let domains: Vec<String> = extract(text)
+            .into_iter()
+            .filter(|c| c.kind == EntityKind::Domain)
+            .map(|c| c.value)
+            .collect();
+        assert_eq!(domains, vec!["gravatar.com", "mail.analytical.org.au"]);
+        assert_eq!(classify("intranet.corp").kind, EntityKind::Domain);
+    }
 
     #[test]
     fn actionable_entities_are_emitted() {

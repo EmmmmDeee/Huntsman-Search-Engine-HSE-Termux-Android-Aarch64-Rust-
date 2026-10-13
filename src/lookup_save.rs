@@ -62,8 +62,6 @@ pub const USERNAME_POLICY: SavePolicy = SavePolicy {
 fn people_outcome_provenance(label: &str) -> (&str, &'static str) {
     match label.split('.').next().unwrap_or(label) {
         "asic_director" => ("asic_director", "src/asic_director.rs"),
-        "au_people" => ("au_people", "src/au_people.rs"),
-        "au_electoral" => ("au_electoral", "src/au_electoral.rs"),
         _ => ("asic_persons", "src/asic_persons.rs"),
     }
 }
@@ -166,12 +164,17 @@ fn outcome_claim(outcome: &SourceExecutionOutcome, policy: SavePolicy) -> Claim 
         .found
         .map_or_else(|| "none".to_owned(), |count| count.to_string());
     let (source, component) = (policy.outcome_provenance)(&outcome.module);
+    let mut claim = format!(
+        "{} {} found={found}",
+        outcome.module,
+        kind_label(outcome.kind)
+    );
+    if let Some(detail) = crate::lookup_report::outcome_detail(outcome) {
+        claim.push_str(" detail=");
+        claim.push_str(&detail);
+    }
     Claim {
-        claim: format!(
-            "{} {} found={found}",
-            outcome.module,
-            kind_label(outcome.kind)
-        ),
+        claim,
         source: source.into(),
         component: component.into(),
         technique_id: None,
@@ -272,6 +275,16 @@ mod tests {
         let entries = chain(&[entity], &[outcome], POLICY).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].claim.claim, "source rate_limited found=none");
+
+        let mut failed = SourceExecutionOutcome::success("source", 1, 0);
+        failed.kind = SourceOutcomeKind::Inconclusive;
+        failed.found = None;
+        failed.detail = Some("register\tpage\nchanged".to_owned());
+        let failed_entries = chain(&[], &[failed], POLICY).unwrap();
+        assert_eq!(
+            failed_entries[0].claim.claim,
+            "source inconclusive found=none detail=register\\tpage\\nchanged"
+        );
         assert_eq!(entries[0].claim.evidence_level, EvidenceLevel::Assertion);
         assert_eq!(entries[1].claim.claim, "email a@example.com");
         assert_eq!(entries[1].claim.source, "source");

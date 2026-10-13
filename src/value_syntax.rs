@@ -219,6 +219,28 @@ pub fn email_local_error(local: &str) -> Option<EmailLocalError> {
     }
 }
 
+/// The IANA root zone's top-level domains, one per line, upper case, sorted, after a
+/// `# Version` header. Refresh it from <https://data.iana.org/TLD/tlds-alpha-by-domain.txt>.
+const IANA_TLDS: &str = include_str!("tlds_iana.txt");
+
+fn iana_tlds() -> &'static [&'static str] {
+    static TLDS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    TLDS.get_or_init(|| {
+        IANA_TLDS
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect()
+    })
+}
+
+/// True when `label` is a top-level domain delegated in the IANA root zone, in any case.
+#[must_use]
+pub fn is_iana_tld(label: &str) -> bool {
+    let upper = label.trim().trim_end_matches('.').to_ascii_uppercase();
+    !upper.is_empty() && iana_tlds().binary_search(&upper.as_str()).is_ok()
+}
+
 #[must_use]
 pub fn canonical_domain(raw: &str) -> Option<String> {
     let domain = raw.trim().trim_matches('.').to_ascii_lowercase();
@@ -309,6 +331,23 @@ pub fn is_whois_privacy_placeholder(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iana_tlds_are_sorted_and_recognised() {
+        assert!(IANA_TLDS.starts_with("# Version "));
+        let tlds = iana_tlds();
+        assert!(tlds.len() > 1000, "{}", tlds.len());
+        assert!(
+            tlds.windows(2).all(|pair| pair[0] < pair[1]),
+            "list must stay sorted"
+        );
+        for tld in ["com", "AU", "org.", "xn--p1ai", "app"] {
+            assert!(is_iana_tld(tld), "{tld}");
+        }
+        for not_tld in ["cookie", "useragent", "trim", "699", "", "c0m"] {
+            assert!(!is_iana_tld(not_tld), "{not_tld}");
+        }
+    }
 
     #[test]
     fn e164_errors_preserve_validation_precedence() {

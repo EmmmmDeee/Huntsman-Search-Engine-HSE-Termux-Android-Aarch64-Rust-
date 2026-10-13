@@ -11,10 +11,13 @@
 use std::fmt;
 use std::io::{self, Read};
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use ureq::http::{self, Uri};
+use ureq::tls::{Certificate, PemItem, RootCerts, TlsConfig};
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
@@ -334,12 +337,72 @@ pub fn origin_of(url: &str) -> Option<String> {
     ))
 }
 
+/// The root certificates TLS connections are verified against.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TrustRoots {
+    /// Mozilla's roots compiled into the binary.
+    #[default]
+    Bundled,
+    /// Every certificate in this PEM file, instead of the bundled roots.
+    Bundle(PathBuf),
+}
+
+impl TrustRoots {
+    /// `Bundle` when `HUNTSMAN_CA_BUNDLE` names a file, otherwise `Bundled`.
+    #[must_use]
+    pub fn from_environment() -> Self {
+        crate::environment::ca_bundle().map_or(Self::Bundled, |path| Self::Bundle(path.into()))
+    }
+}
+
+/// Largest CA bundle read; system bundles are a few hundred KiB.
+const MAX_CA_BUNDLE: u64 = 4 * 1024 * 1024;
+
+/// Every certificate in the PEM file at `path`. An unreadable, oversized or certificate-free
+/// file is an error, never an empty trust store.
+pub fn load_ca_bundle(path: &Path) -> Result<Vec<Certificate<'static>>, String> {
+    let shown = path.display();
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("{}={shown}: {e}", crate::environment::CA_BUNDLE_ENV))?;
+    let mut pem = Vec::new();
+    file.take(MAX_CA_BUNDLE + 1)
+        .read_to_end(&mut pem)
+        .map_err(|e| format!("{}={shown}: {e}", crate::environment::CA_BUNDLE_ENV))?;
+    if pem.len() as u64 > MAX_CA_BUNDLE {
+        return Err(format!(
+            "{}={shown}: larger than {MAX_CA_BUNDLE} bytes",
+            crate::environment::CA_BUNDLE_ENV
+        ));
+    }
+    let mut certificates = Vec::new();
+    for item in ureq::tls::parse_pem(&pem) {
+        match item {
+            Ok(PemItem::Certificate(certificate)) => certificates.push(certificate),
+            Ok(_) => {}
+            Err(e) => {
+                return Err(format!(
+                    "{}={shown}: unreadable PEM: {e}",
+                    crate::environment::CA_BUNDLE_ENV
+                ));
+            }
+        }
+    }
+    if certificates.is_empty() {
+        return Err(format!(
+            "{}={shown}: no certificates",
+            crate::environment::CA_BUNDLE_ENV
+        ));
+    }
+    Ok(certificates)
+}
+
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
     pub timeout: Duration,
     pub max_body: usize,
     pub user_agent: String,
     pub egress: EgressPolicy,
+    pub trust: TrustRoots,
 }
 
 impl Default for TransportConfig {
@@ -349,6 +412,7 @@ impl Default for TransportConfig {
             max_body: DEFAULT_MAX_BODY,
             user_agent: DEFAULT_USER_AGENT.to_owned(),
             egress: EgressPolicy::default(),
+            trust: TrustRoots::from_environment(),
         }
     }
 }
@@ -393,6 +457,9 @@ pub struct UreqTransport {
     agent: ureq::Agent,
     max_body: usize,
     timeout: Duration,
+    /// Why the configured trust roots could not be loaded. Every request fails with it,
+    /// so a broken bundle never falls back to other roots.
+    trust_failure: Option<String>,
 }
 
 impl UreqTransport {
@@ -409,6 +476,19 @@ impl UreqTransport {
         if config.egress == EgressPolicy::PublicOnly {
             agent_config = agent_config.proxy(None);
         }
+        let mut trust_failure = None;
+        if let TrustRoots::Bundle(path) = &config.trust {
+            match load_ca_bundle(path) {
+                Ok(certificates) => {
+                    agent_config = agent_config.tls_config(
+                        TlsConfig::builder()
+                            .root_certs(RootCerts::Specific(Arc::new(certificates)))
+                            .build(),
+                    );
+                }
+                Err(reason) => trust_failure = Some(reason),
+            }
+        }
         let agent_config = agent_config.build();
         let agent = ureq::Agent::with_parts(
             agent_config,
@@ -421,6 +501,7 @@ impl UreqTransport {
             agent,
             max_body: config.max_body,
             timeout: config.timeout,
+            trust_failure,
         }
     }
 }
@@ -433,6 +514,13 @@ impl Default for UreqTransport {
 
 impl Transport for UreqTransport {
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        if let Some(reason) = &self.trust_failure {
+            return Err(TransportFailure {
+                kind: SourceOutcomeKind::TlsFailure,
+                detail: reason.clone(),
+                blocked: false,
+            });
+        }
         let invalid = |detail: String| TransportFailure {
             kind: SourceOutcomeKind::ProtocolDrift,
             detail,
@@ -538,6 +626,65 @@ fn map_ureq_error(err: &ureq::Error) -> TransportFailure {
 
 #[cfg(test)]
 mod tests {
+    fn bundle_transport(path: &Path) -> UreqTransport {
+        UreqTransport::new(&TransportConfig {
+            trust: TrustRoots::Bundle(path.to_path_buf()),
+            ..TransportConfig::default()
+        })
+    }
+
+    fn scratch(name: &str, contents: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("huntsman-ca-{}-{name}", std::process::id()));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    const TEST_ROOT_PEM: &[u8] = include_bytes!("../tests/fixtures/tls/isrg_root_x1.pem");
+
+    #[test]
+    fn a_ca_bundle_replaces_the_bundled_roots() {
+        let path = scratch("valid.pem", TEST_ROOT_PEM);
+        let transport = bundle_transport(&path);
+        assert!(transport.trust_failure.is_none());
+        match transport.agent.config().tls_config().root_certs() {
+            RootCerts::Specific(certificates) => assert_eq!(certificates.len(), 1),
+            other => panic!("expected the bundle's roots, got {other:?}"),
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn without_a_bundle_the_bundled_roots_are_used() {
+        let transport = UreqTransport::new(&TransportConfig {
+            trust: TrustRoots::Bundled,
+            ..TransportConfig::default()
+        });
+        assert!(matches!(
+            transport.agent.config().tls_config().root_certs(),
+            RootCerts::WebPki
+        ));
+    }
+
+    #[test]
+    fn an_unusable_bundle_fails_every_request_closed_without_sending() {
+        let empty = scratch("empty.pem", b"not a certificate\n");
+        let missing = std::env::temp_dir().join("huntsman-ca-definitely-missing.pem");
+        for (path, expected) in [
+            (&empty, "no certificates"),
+            (&missing, "HUNTSMAN_CA_BUNDLE="),
+        ] {
+            let transport = bundle_transport(path);
+            let failure = transport
+                .send(&Request::get("https://198.51.100.1/"))
+                .unwrap_err();
+            assert_eq!(failure.kind, SourceOutcomeKind::TlsFailure);
+            assert!(!failure.blocked);
+            assert!(failure.detail.contains(expected), "{}", failure.detail);
+            assert!(failure.detail.contains(crate::environment::CA_BUNDLE_ENV));
+        }
+        std::fs::remove_file(empty).unwrap();
+    }
+
     use super::*;
 
     #[test]

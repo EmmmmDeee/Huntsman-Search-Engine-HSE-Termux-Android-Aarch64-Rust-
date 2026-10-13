@@ -77,6 +77,12 @@ huntsman-recon search "brisbane port"
 `check` runs offline self-acceptance and rejects an invalid engineering-command contract; when run from a source checkout containing the canonical directive, it also rejects directive drift. `command` validates and prints the fixed engineering hierarchy. `huntsman-recon directive check [ROOT]` verifies a specific checkout when `ROOT` is supplied, auto-discovers a checkout from the current directory or its parents when possible, and otherwise verifies the canonical directive embedded in the installed binary. `huntsman-recon directive sync [ROOT]` requires a real checkout and rewrites all agent-facing mirrors byte-for-byte from the canonical file. `search` and `sources` are offline.
 `fetch`, `hibp`, `recon`, `seeknow`, `email`, `username`, and `people` make HTTP
 requests and use public-only egress by default. `phone` is fully offline. `serve` accepts inbound HTTP on `127.0.0.1:8080` by default.
+TLS is verified against Mozilla's roots built into the binary. On a network that intercepts
+TLS with its own CA (a corporate inspection proxy, a sandbox), every lookup fails with
+`tls_failure` or `connect_failure`; set `HUNTSMAN_CA_BUNDLE` to a PEM bundle that includes that
+CA, and its certificates replace the built-in roots. Verification stays on. A bundle that cannot
+be read or holds no certificate fails every request with `tls_failure` naming the variable; it
+never falls back to the built-in roots.
 Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
 before using credentials or network access.
 
@@ -130,7 +136,7 @@ cargo run -- geohash -27.4698,153.0251 9
 cargo run -- coarsen -27.4698,153.0251 # one decimal place, ~11 km
 cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
-cargo run -- credential-status             # offline provider credential completeness; never prints values
+cargo run -- credential-status             # offline; per provider: configured?, where to get the key, free tier; never prints values
 cargo run -- credential-status --probe     # opt-in live checks for configured providers with registered probes
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
 cargo run -- hibp help                   # HIBP subcommands; offline

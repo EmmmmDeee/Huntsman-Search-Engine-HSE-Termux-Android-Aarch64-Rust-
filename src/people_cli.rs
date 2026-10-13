@@ -1,21 +1,18 @@
 //! Collection front-end for `huntsman-recon people`.
 //!
-//! Lookup runs [`crate::asic_persons`], [`crate::asic_director`], [`crate::au_people`]
-//! and [`crate::au_electoral`] over one injected [`crate::http::Transport`]. One
-//! source's [`Error::Invalid`] or `BotWaf` does not abort the others. All entities from
-//! all sources are merged via [`crate::entity::merge_by_uid`], which deduplicates records
-//! with the same UID and calls [`crate::entity::Entity::absorb`] to combine attributes.
-//! The merged report is rendered by [`crate::lookup_report::render`], which feeds the
-//! evidence through [`crate::lineage::resolve_with_lineage`]. Tests inject fakes; live
-//! sources are not run here. Saving a ledger is handled by [`crate::lookup_save`], and the
-//! `--save` option is read by [`crate::lookup_args`]; this module reads only NAME.
+//! Lookup runs [`crate::asic_persons`] and [`crate::asic_director`] over one injected
+//! [`crate::http::Transport`]. One source's [`Error::Invalid`] or `BotWaf` does not abort
+//! the others. All entities from all sources are merged via [`crate::entity::merge_by_uid`],
+//! which deduplicates records with the same UID and calls [`crate::entity::Entity::absorb`]
+//! to combine attributes. The merged report is rendered by [`crate::lookup_report::render`],
+//! which feeds the evidence through [`crate::lineage::resolve_with_lineage`]. Tests inject
+//! fakes; live sources are not run here. Saving a ledger is handled by [`crate::lookup_save`],
+//! and the `--save` option is read by [`crate::lookup_args`]; this module reads only NAME.
 
 use std::path::PathBuf;
 
 use crate::asic_director;
 use crate::asic_persons;
-use crate::au_electoral;
-use crate::au_people;
 use crate::canonical::canonical_name;
 use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
@@ -28,13 +25,11 @@ use crate::textnorm::name_tokens;
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
 people NAME [--save FILE]
-Look up NAME on keyless ASIC people registers, ASIC Connect, True People Search AU, and NSW/VIC/QLD electoral rolls. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
+Look up NAME on keyless ASIC people and director registers. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
 
-The lookup queries four independent sources:
+The lookup queries independent sources:
   1. ASIC people register (company associates and sole traders)
   2. ASIC director register (company director records)
-  3. True People Search AU (aggregated name+location records)
-  4. Electoral rolls (NSW, VIC, QLD public registers)
 
 Results from all sources are merged by entity UID: duplicate records from different sources are combined into a single entity whose observation set includes all evidence. This consolidation detects when one person has multiple records across registers and surfaces the corroborated attributes.";
 
@@ -106,22 +101,6 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
     collect(
         "asic_director",
         asic_director::lookup(transport, &name, &scan_id, now_unix),
-        now_unix,
-        &mut report,
-        &mut network,
-        &mut failed,
-    );
-    collect(
-        "au_people",
-        au_people::lookup(transport, &name, &scan_id, now_unix),
-        now_unix,
-        &mut report,
-        &mut network,
-        &mut failed,
-    );
-    collect(
-        "au_electoral",
-        au_electoral::lookup(transport, &name, &scan_id, now_unix),
         now_unix,
         &mut report,
         &mut network,
@@ -212,24 +191,6 @@ impl IntoCollected for asic_persons::Report {
 }
 
 impl IntoCollected for asic_director::Report {
-    fn into_collected(self) -> Report {
-        Report {
-            entities: self.entities,
-            outcomes: self.outcomes,
-        }
-    }
-}
-
-impl IntoCollected for au_people::Report {
-    fn into_collected(self) -> Report {
-        Report {
-            entities: self.entities,
-            outcomes: self.outcomes,
-        }
-    }
-}
-
-impl IntoCollected for au_electoral::Report {
     fn into_collected(self) -> Report {
         Report {
             entities: self.entities,
@@ -350,7 +311,7 @@ mod tests {
         }
     }
 
-    const PEOPLE_SOURCE_REQUESTS: usize = 8;
+    const PEOPLE_SOURCE_REQUESTS: usize = 4;
 
     fn empty_script() -> HashMap<String, Result<Response, TransportFailure>> {
         let empty = json_ok(r#"{"success":true,"result":{"records":[]}}"#);
@@ -444,8 +405,6 @@ mod tests {
                 assert!(text.starts_with("entities=0\n"), "{text}");
                 assert!(text.contains("asic_persons.banned\tvalid_zero"), "{text}");
                 assert!(text.contains("asic_director\tvalid_zero"), "{text}");
-                assert!(text.contains("au_people\tvalid_zero"), "{text}");
-                assert!(text.contains("au_electoral.nsw\tvalid_zero"), "{text}");
                 assert!(!text.contains("lineage="), "{text}");
                 let entities = &report.entities;
                 assert!(entities.is_empty(), "{entities:?}");
@@ -500,28 +459,6 @@ mod tests {
                         .outcomes
                         .iter()
                         .any(|o| o.module == "asic_persons.banned" && o.kind.is_accepted()),
-                    "{report:?}"
-                );
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn electoral_outage_does_not_abort_other_sources() {
-        let fake = Fake::new(empty_script())
-            .html("elections.nsw.gov.au", challenge())
-            .html("vec.vic.gov.au", challenge())
-            .html("ecq.qld.gov.au", challenge());
-        match run(&fake, "Jane Citizen", 1) {
-            PeopleRun::Printed { text, report } => {
-                assert!(text.contains("asic_persons.banned\tvalid_zero"), "{text}");
-                assert!(text.contains("au_electoral"), "{text}");
-                assert!(
-                    report
-                        .outcomes
-                        .iter()
-                        .any(|o| o.module.starts_with("asic_persons") && o.kind.is_accepted()),
                     "{report:?}"
                 );
             }
