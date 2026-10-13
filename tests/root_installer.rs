@@ -475,3 +475,55 @@ exit "${FAKE_CURL_STATUS:-0}"
 
     let _ = fs::remove_dir_all(&temp);
 }
+
+#[test]
+fn install_doc_upgrades_termux_by_rerunning_the_installer() {
+    let doc = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/INSTALL.md"))
+        .expect("docs/INSTALL.md must exist");
+    let termux = doc
+        .split("## Termux on Android arm64")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("docs/INSTALL.md must keep its Termux section");
+    assert!(
+        termux.contains("Upgrade by running the same two commands again"),
+        "re-running install.sh is the Termux upgrade: it pins main and repeats acceptance"
+    );
+    assert!(
+        !termux.contains("`cargo install` command again"),
+        "a bare cargo install skips the installer's --root, acceptance and provenance"
+    );
+}
+
+#[test]
+fn install_doc_uninstall_removes_every_path_the_installer_creates() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let installer = fs::read_to_string(root.join("install.sh")).unwrap();
+    let doc = fs::read_to_string(root.join("docs/INSTALL.md")).unwrap();
+    let uninstall = doc
+        .split("## Uninstall from Termux")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("docs/INSTALL.md must have an \"Uninstall from Termux\" section");
+    assert!(
+        uninstall.contains("cargo uninstall --root \"$PREFIX\" huntsman-recon"),
+        "install.sh installs with `cargo install --root \"$PREFIX\"`, so Cargo must uninstall it"
+    );
+    for var in ["HUNTSMAN_HOME", "HUNTSMAN_ENV_FILE", "CARGO_TARGET_DIR"] {
+        let marker = format!("${{{var}:-$HOME/");
+        let start = installer
+            .find(&marker)
+            .unwrap_or_else(|| panic!("install.sh must default {var} under $HOME"))
+            + marker.len();
+        let end = start + installer[start..].find('}').unwrap();
+        let path = format!("~/{}", &installer[start..end]);
+        let named = uninstall.match_indices(path.as_str()).any(|(at, _)| {
+            !uninstall[at + path.len()..]
+                .starts_with(|c: char| c.is_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        });
+        assert!(
+            named,
+            "the uninstall steps must remove {path}, which install.sh creates ({var})"
+        );
+    }
+}
