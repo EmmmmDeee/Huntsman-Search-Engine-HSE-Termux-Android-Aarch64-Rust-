@@ -158,4 +158,4 @@ repository_identity	leaf	repository constants with no runtime caller
 method_actor	leaf	dependency-ordered batch pipeline for composing method actors
 method_actor_stateful	leaf	method actors that own a context across batches
 method_actors	leaf	general cleaning and shape-filter method actors over shared syntax rules
-method_actors_osint	leaf	indicator triage method actors over shared syntax and placeholder rules
+method_actors_osint	leaf	indicator triage method actors composed over classifier and the shared placeholder rules

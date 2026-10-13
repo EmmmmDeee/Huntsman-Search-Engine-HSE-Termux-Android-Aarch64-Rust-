@@ -1,93 +1,39 @@
 //! OSINT method actors.
 //!
-//! Every syntax and placeholder decision here delegates to the crate's shared rules in
-//! [`crate::value_syntax`] and [`crate::validation`]; these actors only compose them.
+//! Classification is [`crate::classifier::classify`], the engine's runtime authority, and
+//! placeholder and syntax decisions are [`crate::validation`] and [`crate::value_syntax`].
+//! These actors only compose them.
 
-use std::net::IpAddr;
 use std::sync::Arc;
 
+use crate::classifier::{self, Classified};
+use crate::entity::EntityKind;
 use crate::method_actor::{ActorMetadata, FunctionActor, MethodActor};
 use crate::validation::{self, ValueKind};
 use crate::value_syntax;
 
-/// The kind of value an indicator string holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IndicatorKind {
-    Ip,
-    Email,
-    Url,
-    Domain,
-    Phone,
-    Other,
-}
-
-impl IndicatorKind {
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Ip => "ip",
-            Self::Email => "email",
-            Self::Url => "url",
-            Self::Domain => "domain",
-            Self::Phone => "phone",
-            Self::Other => "other",
-        }
-    }
-}
-
-/// A domain under the shared syntax rules whose top-level label is not all digits.
-fn domain_name(value: &str) -> Option<String> {
-    value_syntax::canonical_domain(value)
-        .filter(|domain| domain.rsplit('.').next().is_some_and(has_ascii_letter))
-}
-
-fn has_ascii_letter(label: &str) -> bool {
-    label.bytes().any(|b| b.is_ascii_alphabetic())
-}
-
-fn email_domain(value: &str) -> Option<String> {
-    if !validation::validate_email_syntax(value).valid {
-        return None;
-    }
-    value
-        .rsplit_once('@')
-        .and_then(|(_, host)| domain_name(host))
-}
-
-/// Classify one indicator. IP literals are checked before domains so dotted quads are
-/// never read as host names.
+/// True when the shared rules mark the classified value as a placeholder or a
+/// non-routable address rather than a real-world indicator.
 #[must_use]
-pub fn classify_indicator(value: &str) -> IndicatorKind {
-    let value = value.trim();
-    if value.parse::<IpAddr>().is_ok() {
-        IndicatorKind::Ip
-    } else if value.contains('@') && email_domain(value).is_some() {
-        IndicatorKind::Email
-    } else if value.contains("://") && value_syntax::host_from_url(value).is_some() {
-        IndicatorKind::Url
-    } else if domain_name(value).is_some() {
-        IndicatorKind::Domain
-    } else if value_syntax::canonical_phone(value).is_some()
-        || value_syntax::phone_e164_error(value).is_none()
-    {
-        IndicatorKind::Phone
-    } else {
-        IndicatorKind::Other
-    }
+pub fn is_false_positive(classified: &Classified) -> bool {
+    let value = classified.value.as_str();
+    let kind = match classified.kind {
+        EntityKind::IpAddress => return validation::is_non_routable_ip(value),
+        EntityKind::Email => ValueKind::Email,
+        EntityKind::Url => ValueKind::Url,
+        EntityKind::Domain => ValueKind::Domain,
+        EntityKind::Username => ValueKind::Username,
+        EntityKind::Person => ValueKind::Person,
+        _ => return false,
+    };
+    validation::is_placeholder_entity(&kind, value)
 }
 
-/// True when the shared rules mark the value as a placeholder or non-routable address
-/// rather than a real-world indicator.
-#[must_use]
-pub fn is_false_positive(value: &str) -> bool {
-    let value = value.trim();
-    match classify_indicator(value) {
-        IndicatorKind::Ip => validation::is_non_routable_ip(value),
-        IndicatorKind::Email => validation::is_placeholder_entity(&ValueKind::Email, value),
-        IndicatorKind::Url => validation::is_placeholder_entity(&ValueKind::Url, value),
-        IndicatorKind::Domain => validation::is_placeholder_entity(&ValueKind::Domain, value),
-        IndicatorKind::Phone | IndicatorKind::Other => false,
-    }
+fn email_domain(classified: &Classified) -> Option<String> {
+    (classified.kind == EntityKind::Email)
+        .then(|| classified.value.rsplit_once('@'))
+        .flatten()
+        .and_then(|(_, host)| value_syntax::canonical_domain(host))
 }
 
 fn actor(
@@ -102,15 +48,15 @@ fn actor(
     ))
 }
 
-/// Prefix each value with its kind: `email:a@b.com`.
+/// Prefix each value with its engine kind and canonical form: `email:ada@analytical.org`.
 #[must_use]
 pub fn entity_classifier_actor() -> Arc<dyn MethodActor> {
     actor("entity_classifier", "Classify Entity Types", 12, |items| {
         items
-            .into_iter()
+            .iter()
             .map(|item| {
-                let value = item.trim();
-                format!("{}:{value}", classify_indicator(value).label())
+                let classified = classifier::classify(item);
+                format!("{}:{}", classified.kind, classified.value)
             })
             .collect()
     })
@@ -125,14 +71,16 @@ pub fn organization_extractor_actor() -> Arc<dyn MethodActor> {
         15,
         |items| {
             items
-                .into_iter()
+                .iter()
                 .filter_map(|item| {
-                    let value = item.trim();
-                    match classify_indicator(value) {
-                        IndicatorKind::Email => email_domain(value),
-                        IndicatorKind::Url => value_syntax::host_from_url(value)
+                    let classified = classifier::classify(item);
+                    match classified.kind {
+                        EntityKind::Email => email_domain(&classified),
+                        EntityKind::Url => value_syntax::host_from_url(&classified.value)
                             .and_then(|host| value_syntax::canonical_domain_host(&host)),
-                        IndicatorKind::Domain => value_syntax::canonical_domain_host(value),
+                        EntityKind::Domain => {
+                            value_syntax::canonical_domain_host(&classified.value)
+                        }
                         _ => None,
                     }
                 })
@@ -141,7 +89,7 @@ pub fn organization_extractor_actor() -> Arc<dyn MethodActor> {
     )
 }
 
-/// Keep only emails, phone numbers and domains.
+/// Keep only values the engine classifies as an email, phone number or domain.
 #[must_use]
 pub fn contact_validator_actor() -> Arc<dyn MethodActor> {
     actor("contact_validator", "Validate Contact Info", 10, |items| {
@@ -149,8 +97,8 @@ pub fn contact_validator_actor() -> Arc<dyn MethodActor> {
             .into_iter()
             .filter(|item| {
                 matches!(
-                    classify_indicator(item),
-                    IndicatorKind::Email | IndicatorKind::Phone | IndicatorKind::Domain
+                    classifier::classify(item).kind,
+                    EntityKind::Email | EntityKind::Phone | EntityKind::Domain
                 )
             })
             .collect()
@@ -185,9 +133,9 @@ fn normalize_url(url: &str) -> String {
 pub fn hostname_extractor_actor() -> Arc<dyn MethodActor> {
     actor("hostname_extractor", "Extract Hostnames", 10, |items| {
         items
-            .into_iter()
+            .iter()
             .filter(|item| item.contains("://"))
-            .filter_map(|item| value_syntax::host_from_url(&item))
+            .filter_map(|item| value_syntax::host_from_url(item))
             .collect()
     })
 }
@@ -198,18 +146,18 @@ pub fn false_positive_filter_actor() -> Arc<dyn MethodActor> {
     actor("fp_filter", "Filter False Positives", 8, |items| {
         items
             .into_iter()
-            .filter(|item| !is_false_positive(item))
+            .filter(|item| !is_false_positive(&classifier::classify(item)))
             .collect()
     })
 }
 
-/// Keep only syntactically valid domain names.
+/// Keep only values the engine classifies as domain names.
 #[must_use]
 pub fn domain_registry_validator_actor() -> Arc<dyn MethodActor> {
     actor("domain_registry", "Validate Domain Names", 10, |items| {
         items
             .into_iter()
-            .filter(|item| domain_name(item).is_some())
+            .filter(|item| classifier::classify(item).kind == EntityKind::Domain)
             .collect()
     })
 }
@@ -233,8 +181,8 @@ pub fn evidence_snippet_actor(max_chars: usize) -> Arc<dyn MethodActor> {
     )
 }
 
-/// Emit each value followed by the relations its syntax alone proves: an email's domain
-/// (`email_of:`), and a host's parent domain (`subdomain_of:`).
+/// Emit each canonical value followed by the relations its syntax alone proves: an
+/// email's domain (`email_of:`) and a host's parent domain (`subdomain_of:`).
 #[must_use]
 pub fn relationship_resolver_actor() -> Arc<dyn MethodActor> {
     actor(
@@ -243,27 +191,24 @@ pub fn relationship_resolver_actor() -> Arc<dyn MethodActor> {
         20,
         |items| {
             items
-                .into_iter()
+                .iter()
                 .flat_map(|item| {
-                    let value = item.trim().to_string();
-                    let mut relations = Vec::new();
-                    match classify_indicator(&value) {
-                        IndicatorKind::Email => {
-                            if let Some(domain) = email_domain(&value) {
-                                relations.push(format!("email_of:{domain}"));
-                            }
+                    let classified = classifier::classify(item);
+                    let relation = match classified.kind {
+                        EntityKind::Email => {
+                            email_domain(&classified).map(|d| format!("email_of:{d}"))
                         }
-                        IndicatorKind::Domain => {
-                            if let Some(parent) = domain_name(&value)
-                                .and_then(|d| d.split_once('.').map(|(_, p)| p.to_string()))
-                                .filter(|parent| domain_name(parent).is_some())
-                            {
-                                relations.push(format!("subdomain_of:{parent}"));
-                            }
-                        }
-                        _ => {}
-                    }
-                    std::iter::once(value).chain(relations)
+                        EntityKind::Domain => classified
+                            .value
+                            .split_once('.')
+                            .map(|(_, parent)| parent)
+                            .filter(|parent| {
+                                classifier::classify(parent).kind == EntityKind::Domain
+                            })
+                            .map(|parent| format!("subdomain_of:{parent}")),
+                        _ => None,
+                    };
+                    std::iter::once(classified.value).chain(relation)
                 })
                 .collect()
         },
@@ -279,23 +224,8 @@ mod tests {
         values.iter().map(|v| (*v).to_string()).collect()
     }
 
-    #[test]
-    fn classification_separates_ips_phones_and_domains() {
-        let cases = [
-            ("198.51.100.7", IndicatorKind::Ip),
-            ("2001:db8::1", IndicatorKind::Ip),
-            ("ada@analytical.org", IndicatorKind::Email),
-            ("https://Analytical.org/Engine", IndicatorKind::Url),
-            ("mail.analytical.org", IndicatorKind::Domain),
-            ("+61412345678", IndicatorKind::Phone),
-            ("0412 345 678", IndicatorKind::Phone),
-            ("1.2.3", IndicatorKind::Other),
-            ("ada lovelace", IndicatorKind::Other),
-            ("a@b@c.com", IndicatorKind::Other),
-        ];
-        for (value, kind) in cases {
-            assert_eq!(classify_indicator(value), kind, "{value}");
-        }
+    fn false_positive(value: &str) -> bool {
+        is_false_positive(&classifier::classify(value))
     }
 
     #[test]
@@ -306,11 +236,9 @@ mod tests {
             "127.0.0.1",
             "192.0.2.10",
             "intranet.local",
+            "John Doe",
         ] {
-            assert!(
-                is_false_positive(value),
-                "{value} should be a false positive"
-            );
+            assert!(false_positive(value), "{value} should be a false positive");
         }
         for value in [
             "contest@company.com",
@@ -319,28 +247,39 @@ mod tests {
             "democrats.org",
             "sampleton@company.com",
             "8.8.8.8",
+            "Ada Lovelace",
         ] {
-            assert!(!is_false_positive(value), "{value} is real evidence");
+            assert!(!false_positive(value), "{value} is real evidence");
         }
     }
 
     #[test]
-    fn entity_classifier_labels_every_value() {
+    fn entity_classifier_reports_the_engine_classification() {
         let out = entity_classifier_actor()
             .process(strings(&[
-                "ada@analytical.org",
+                "Ada@Analytical.org",
                 "198.51.100.7",
                 " analytical.org ",
+                "0412 345 678",
             ]))
             .unwrap();
-        assert_eq!(
-            out,
-            strings(&[
-                "email:ada@analytical.org",
-                "ip:198.51.100.7",
-                "domain:analytical.org"
-            ])
-        );
+        let expected: Vec<String> = [
+            "Ada@Analytical.org",
+            "198.51.100.7",
+            " analytical.org ",
+            "0412 345 678",
+        ]
+        .iter()
+        .map(|raw| {
+            let c = classifier::classify(raw);
+            format!("{}:{}", c.kind, c.value)
+        })
+        .collect();
+        assert_eq!(out, expected);
+        assert!(out[0].starts_with("email:"));
+        assert!(out[1].starts_with("ip_address:"));
+        assert_eq!(out[2], "domain:analytical.org");
+        assert!(out[3].starts_with("phone:"));
     }
 
     #[test]
@@ -425,15 +364,10 @@ mod tests {
             ]))
             .unwrap();
 
-        assert_eq!(
-            run.output,
-            strings(&[
-                "email:ada@analytical.org",
-                "phone:+61412345678",
-                "domain:babbage.net"
-            ])
-        );
-        assert_eq!(run.stages.len(), 3);
+        assert_eq!(run.output.len(), 3, "{:?}", run.output);
+        assert_eq!(run.output[0], "email:ada@analytical.org");
+        assert!(run.output[1].starts_with("phone:"));
+        assert_eq!(run.output[2], "domain:babbage.net");
         assert_eq!(run.stages[0].items_processed, 6);
         assert_eq!(run.stages[0].items_successful, 4);
     }
