@@ -89,6 +89,7 @@ impl InsolvencyStatus {
 }
 
 /// Parse ASIC insolvency response for proceeding records.
+#[allow(clippy::too_many_lines)]
 fn parse_insolvency_response(name: &str, body: &str) -> Option<InsolvencyRecord> {
     if body.is_empty() || body.contains("No entries found") || body.contains("not found") {
         return None;

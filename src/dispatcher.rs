@@ -47,6 +47,7 @@ pub enum ModuleId {
 }
 
 impl ModuleId {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ApnicWhois => "apnic_whois",
@@ -92,39 +93,22 @@ pub struct ModuleConfig {
 }
 
 impl ModuleConfig {
+    #[must_use]
     pub fn default_for(id: ModuleId) -> Self {
         match id {
-            ModuleId::ApnicWhois => Self {
+            ModuleId::ApnicWhois | ModuleId::AudaDomain => Self {
                 id,
                 rate_limit_per_minute: 60,
                 priority: 9,
                 timeout: Duration::from_secs(5),
             },
-            ModuleId::AudaDomain => Self {
-                id,
-                rate_limit_per_minute: 60,
-                priority: 9,
-                timeout: Duration::from_secs(5),
-            },
-            ModuleId::AsicCompany => Self {
+            ModuleId::AsicCompany | ModuleId::AbusinessNumber => Self {
                 id,
                 rate_limit_per_minute: 40,
                 priority: 8,
                 timeout: Duration::from_secs(5),
             },
-            ModuleId::AsicDirector => Self {
-                id,
-                rate_limit_per_minute: 30,
-                priority: 7,
-                timeout: Duration::from_secs(5),
-            },
-            ModuleId::AsicInsolvency => Self {
-                id,
-                rate_limit_per_minute: 30,
-                priority: 7,
-                timeout: Duration::from_secs(5),
-            },
-            ModuleId::AsicPersons => Self {
+            ModuleId::AsicDirector | ModuleId::AsicInsolvency | ModuleId::AsicPersons => Self {
                 id,
                 rate_limit_per_minute: 30,
                 priority: 7,
@@ -134,12 +118,6 @@ impl ModuleConfig {
                 id,
                 rate_limit_per_minute: 20,
                 priority: 6,
-                timeout: Duration::from_secs(5),
-            },
-            ModuleId::AbusinessNumber => Self {
-                id,
-                rate_limit_per_minute: 40,
-                priority: 8,
                 timeout: Duration::from_secs(5),
             },
             _ => Self {
@@ -160,6 +138,7 @@ pub struct ParallelWave<'d> {
 }
 
 impl<'d> ParallelWave<'d> {
+    #[must_use]
     pub fn new(modules: Vec<ModuleId>, deadline: &'d Deadline<'d>, budget: Duration) -> Self {
         Self {
             modules,
@@ -168,7 +147,8 @@ impl<'d> ParallelWave<'d> {
         }
     }
 
-    /// Calculate per-module timeout: remaining_budget / remaining_modules, capped by module timeout.
+    /// Calculate per-module timeout: `remaining_budget` / `remaining_modules`, capped by module timeout.
+    #[must_use]
     pub fn per_module_timeout(&self) -> Duration {
         if self.modules.is_empty() {
             return self.budget;
@@ -179,6 +159,7 @@ impl<'d> ParallelWave<'d> {
             return Duration::from_millis(10); // Minimal timeout if deadline near
         }
 
+        #[allow(clippy::cast_possible_truncation)]
         let per_module = remaining / self.modules.len() as u32;
         let module_timeout = Duration::from_secs(5); // Conservative default
 
@@ -193,8 +174,15 @@ pub struct WaveExecutor {
     max_concurrent: usize,
 }
 
+impl Default for WaveExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WaveExecutor {
     /// Create new wave executor with 6-concurrent limit.
+    #[must_use]
     pub fn new() -> Self {
         Self { max_concurrent: 6 }
     }
@@ -206,7 +194,7 @@ impl WaveExecutor {
         // Spawn threads for modules, respecting max_concurrent limit.
         let mut thread_handles: Vec<thread::JoinHandle<()>> = Vec::new();
 
-        for &module_id in wave.modules.iter() {
+        for &module_id in &wave.modules {
             // Enforce max concurrency: wait for a thread to finish before spawning next.
             if thread_handles.len() >= self.max_concurrent {
                 let handle = thread_handles.remove(0);
@@ -226,7 +214,7 @@ impl WaveExecutor {
                 let module_name = module_id.as_str();
                 let evidence = Evidence {
                     provenance: EvidenceProvenance::new(module_name),
-                    summary: format!("Evidence from {}", module_name),
+                    summary: format!("Evidence from {module_name}"),
                     attributes: BTreeMap::new(),
                     verification: None,
                     is_inferred: false,

@@ -12,7 +12,7 @@
 //! - Satellite imagery (USGS, ESA Sentinel)
 //! - Flight tracking (ADS-B Exchange)
 //! - Ship tracking (AIS data)
-//! - Social media search (Twitter, LinkedIn limited)
+//! - Social media search (Twitter, `LinkedIn` limited)
 //! - News aggregation (RSS, Google News)
 //! - Government data portals (ABS, data.gov.au)
 
@@ -39,7 +39,7 @@ pub enum SearchEngineType {
     ShipTracking,
     /// Twitter/X search API (limited)
     Twitter,
-    /// LinkedIn profile search (limited)
+    /// `LinkedIn` profile search (limited)
     LinkedIn,
     /// Google News via RSS
     GoogleNews,
@@ -329,7 +329,8 @@ impl SearchOrchestrator {
 
         let hasher = RandomState::new();
         let hash = hasher.hash_one(std::time::SystemTime::now());
-        let idx = (hash as usize) % self.configs.len();
+        #[allow(clippy::cast_possible_truncation)]
+        let idx = (hash % (self.configs.len() as u64)) as usize;
 
         let config = &self.configs[idx];
         if config.enabled
@@ -564,8 +565,11 @@ mod tests {
         // Each rate limit should roughly double backoff (2.0x multiplier).
         assert!(after_one > initial);
         assert!(after_two > after_one);
-        // Verify exponential growth: after_two should be > after_one * 1.5
-        assert!(after_two >= Duration::from_millis((after_one.as_millis() as f64 * 1.5) as u64));
+        // Verify exponential growth: after_two should be >= after_one * 1.5 (3/2 in integer arithmetic)
+        let threshold_millis = after_one.as_millis() * 3 / 2;
+        #[allow(clippy::cast_possible_truncation)]
+        let threshold = Duration::from_millis(threshold_millis as u64);
+        assert!(after_two >= threshold);
     }
 
     #[test]

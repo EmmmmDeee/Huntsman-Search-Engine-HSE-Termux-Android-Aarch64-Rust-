@@ -60,6 +60,7 @@ impl EvidenceAggregator {
     }
 
     /// Deduplicate evidence: exact match (hash), semantic match (normalized), conflict flagging.
+    #[must_use]
     pub fn deduplicate(&self) -> Vec<Evidence> {
         let mut deduped = Vec::new();
         let mut seen_normalized: BTreeMap<String, usize> = BTreeMap::new();
@@ -101,6 +102,7 @@ impl EvidenceAggregator {
     }
 
     /// Rank evidence by authority tier, recency, and completeness.
+    #[must_use]
     pub fn rank(&self, evidence: &[Evidence]) -> Vec<RankedEvidence> {
         let mut ranked: Vec<RankedEvidence> = evidence
             .iter()
@@ -109,7 +111,7 @@ impl EvidenceAggregator {
                 let recency_bonus = Self::recency_bonus(e.provenance.recorded_at_unix);
                 let completeness_bonus = Self::completeness_bonus(e);
 
-                let score = (tier_weight as f64 * 0.01) + recency_bonus + completeness_bonus;
+                let score = (f64::from(tier_weight) * 0.01) + recency_bonus + completeness_bonus;
 
                 RankedEvidence {
                     evidence: e.clone(),
@@ -141,11 +143,10 @@ impl EvidenceAggregator {
         hasher.finish()
     }
 
-    /// Normalize string for semantic matching: lowercase, trim, remove extra whitespace.
+    /// Normalize string for semantic matching: lowercase, remove extra whitespace.
     #[must_use]
     fn normalize_string(s: &str) -> String {
         s.to_lowercase()
-            .trim()
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
@@ -181,9 +182,9 @@ impl EvidenceAggregator {
         } else if source_lower.contains("openstreetmap")
             || source_lower.contains("github")
             || source_lower.contains("nominatim")
+            || source_lower.contains("wayback")
+            || source_lower.contains("archive")
         {
-            70
-        } else if source_lower.contains("wayback") || source_lower.contains("archive") {
             70
         } else {
             50
@@ -207,10 +208,10 @@ impl EvidenceAggregator {
     /// Completeness bonus: +0.05 if attributes are populated.
     #[must_use]
     fn completeness_bonus(evidence: &Evidence) -> f64 {
-        if !evidence.attributes.is_empty() {
-            0.05
-        } else {
+        if evidence.attributes.is_empty() {
             0.0
+        } else {
+            0.05
         }
     }
 }
@@ -266,7 +267,7 @@ mod tests {
         let e1 = make_evidence("source1", "identical text");
         let e2 = make_evidence("source2", "identical text"); // Same summary, different source
 
-        let items = vec![e1.clone(), e2.clone()];
+        let items = [e1.clone(), e2.clone()];
         // Both have same hash (same summary), so dedup should reduce to 1.
         // But our dedup function keeps higher-authority source.
         assert!(agg.count() < 2 || items.len() > 1); // Logic test
