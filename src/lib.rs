@@ -124,6 +124,7 @@ pub mod radar;
 pub mod rdap;
 pub mod recon;
 pub mod redact;
+pub mod redirect_chain;
 pub mod relation;
 pub mod repository_identity;
 pub mod resolve;
