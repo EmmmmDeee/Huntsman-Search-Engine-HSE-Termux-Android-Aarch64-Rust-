@@ -112,6 +112,7 @@ provider_credentials	leaf	provider credential completeness manifest
 radar	leaf	radar model utility
 recon	leaf	host reconnaissance helpers
 redact	leaf	secret and location redaction
+redirect_chain	leaf	HTTP redirect chain analysis with loop and anomaly detection
 relation	runtime	structural relation derivation
 resolve	leaf	conservative automatic merge application for supplied decisions
 retrieval_artifact	leaf	stable retrieval artifact identifier for provenance evidence
@@ -141,6 +142,7 @@ stage	leaf	status/evidence-level primitives
 stix	exporter	STIX output from admitted claims
 stolen_tax	adapter	key-gated credential exposure source client
 store	exporter	bounded atomic session persistence
+subdomain_takeover	leaf	subdomain takeover vulnerability detection and evidence conversion
 tags	leaf	entity tag constants
 termination	runtime	explicit bounded termination semantics
 textnorm	leaf	text normalization
@@ -153,6 +155,7 @@ username_cli	diagnostic	username enrichment command front-end
 username_variants	leaf	deterministic handle normalization variants
 validation	runtime	seed/entity validation
 value_syntax	leaf	dependency-free domain mailbox URL-host and E.164 syntax primitives
+waf_fingerprint	leaf	WAF and CDN infrastructure identification via HTTP response signatures
 wayback	adapter	Internet Archive Wayback CDX client
 web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
