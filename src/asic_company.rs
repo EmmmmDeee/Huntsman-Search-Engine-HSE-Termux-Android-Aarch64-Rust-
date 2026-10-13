@@ -20,12 +20,12 @@ pub const ASIC_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AsicCompany {
-    pub query: String,                 // Original search query (name or ACN)
-    pub acn: Option<String>,            // Australian Company Number
-    pub name: Option<String>,           // Company name
-    pub status: AsicCompanyStatus,     // Active, Cancelled, In Liquidation, etc.
+    pub query: String,             // Original search query (name or ACN)
+    pub acn: Option<String>,       // Australian Company Number
+    pub name: Option<String>,      // Company name
+    pub status: AsicCompanyStatus, // Active, Cancelled, In Liquidation, etc.
     pub registration_date: Option<String>,
-    pub type_: Option<String>,         // Proprietary/Public Company, Cooperative, etc.
+    pub type_: Option<String>, // Proprietary/Public Company, Cooperative, etc.
     pub registered_office: Option<String>,
 }
 
@@ -87,11 +87,13 @@ fn parse_asic_response(query: &str, body: &str) -> Option<AsicCompany> {
         } else if lower.starts_with("company name:") || lower.starts_with("name:") {
             company.name = Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
         } else if lower.starts_with("registration date:") || lower.starts_with("registered:") {
-            company.registration_date = Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
+            company.registration_date =
+                Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
         } else if lower.starts_with("company type:") || lower.starts_with("type:") {
             company.type_ = Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
         } else if lower.starts_with("registered office:") || lower.starts_with("address:") {
-            company.registered_office = Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
+            company.registered_office =
+                Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
         }
     }
 
@@ -209,7 +211,10 @@ mod tests {
     }
 
     impl crate::http::Transport for MockAsicServer {
-        fn send(&self, _request: &crate::http::Request) -> Result<Response, crate::http::TransportFailure> {
+        fn send(
+            &self,
+            _request: &crate::http::Request,
+        ) -> Result<Response, crate::http::TransportFailure> {
             Ok(Response {
                 status: 200,
                 headers: vec![],
@@ -248,7 +253,10 @@ mod tests {
     fn status_strings_consistent() {
         assert_eq!(AsicCompanyStatus::Active.as_str(), "active");
         assert_eq!(AsicCompanyStatus::Cancelled.as_str(), "cancelled");
-        assert_eq!(AsicCompanyStatus::InAdministration.as_str(), "in_administration");
+        assert_eq!(
+            AsicCompanyStatus::InAdministration.as_str(),
+            "in_administration"
+        );
         assert_eq!(AsicCompanyStatus::Unknown.as_str(), "unknown");
     }
 

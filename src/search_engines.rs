@@ -305,7 +305,8 @@ impl SearchOrchestrator {
             .iter()
             .enumerate()
             .filter(|(idx, cfg)| {
-                cfg.enabled && std::time::SystemTime::now() >= self.rate_limit_states[*idx].next_available
+                cfg.enabled
+                    && std::time::SystemTime::now() >= self.rate_limit_states[*idx].next_available
             })
             .max_by_key(|(_, cfg)| cfg.priority)
             .map(|(_, cfg)| cfg.engine_type)
@@ -313,7 +314,9 @@ impl SearchOrchestrator {
 
     fn select_sequential(&mut self) -> Option<SearchEngineType> {
         for (idx, config) in self.configs.iter().enumerate() {
-            if config.enabled && std::time::SystemTime::now() >= self.rate_limit_states[idx].next_available {
+            if config.enabled
+                && std::time::SystemTime::now() >= self.rate_limit_states[idx].next_available
+            {
                 return Some(config.engine_type);
             }
         }
@@ -329,7 +332,9 @@ impl SearchOrchestrator {
         let idx = (hash as usize) % self.configs.len();
 
         let config = &self.configs[idx];
-        if config.enabled && std::time::SystemTime::now() >= self.rate_limit_states[idx].next_available {
+        if config.enabled
+            && std::time::SystemTime::now() >= self.rate_limit_states[idx].next_available
+        {
             Some(config.engine_type)
         } else {
             None
@@ -338,7 +343,11 @@ impl SearchOrchestrator {
 
     /// Record request completion and update backoff
     pub fn record_request(&mut self, engine_type: SearchEngineType, rate_limited: bool) {
-        if let Some(idx) = self.configs.iter().position(|c| c.engine_type == engine_type) {
+        if let Some(idx) = self
+            .configs
+            .iter()
+            .position(|c| c.engine_type == engine_type)
+        {
             let state = &mut self.rate_limit_states[idx];
             state.requests_made += 1;
 
@@ -350,12 +359,11 @@ impl SearchOrchestrator {
                 }
             } else {
                 // Decay backoff on success
-                state.current_backoff = (state.current_backoff.mul_f64(0.9))
-                    .max(self.configs[idx].initial_backoff);
+                state.current_backoff =
+                    (state.current_backoff.mul_f64(0.9)).max(self.configs[idx].initial_backoff);
             }
 
-            state.next_available =
-                std::time::SystemTime::now() + state.current_backoff;
+            state.next_available = std::time::SystemTime::now() + state.current_backoff;
         }
     }
 
@@ -423,7 +431,8 @@ impl RateLimitManager {
     pub fn record_success(&mut self, source: SearchEngineType) {
         if let Some(state) = self.states.get_mut(&source) {
             let config = SearchEngineConfig::default_for(source);
-            state.current_backoff = (state.current_backoff.mul_f64(0.9)).max(config.initial_backoff);
+            state.current_backoff =
+                (state.current_backoff.mul_f64(0.9)).max(config.initial_backoff);
         }
     }
 
@@ -557,9 +566,7 @@ mod tests {
         assert!(after_one > initial);
         assert!(after_two > after_one);
         // Verify exponential growth: after_two should be > after_one * 1.5
-        assert!(after_two >= Duration::from_millis(
-            (after_one.as_millis() as f64 * 1.5) as u64
-        ));
+        assert!(after_two >= Duration::from_millis((after_one.as_millis() as f64 * 1.5) as u64));
     }
 
     #[test]

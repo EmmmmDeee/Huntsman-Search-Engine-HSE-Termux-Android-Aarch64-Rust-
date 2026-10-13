@@ -182,7 +182,9 @@ impl<'d> ParallelWave<'d> {
         let per_module = remaining / self.modules.len() as u32;
         let module_timeout = Duration::from_secs(5); // Conservative default
 
-        per_module.min(module_timeout).max(Duration::from_millis(100))
+        per_module
+            .min(module_timeout)
+            .max(Duration::from_millis(100))
     }
 }
 
@@ -194,9 +196,7 @@ pub struct WaveExecutor {
 impl WaveExecutor {
     /// Create new wave executor with 6-concurrent limit.
     pub fn new() -> Self {
-        Self {
-            max_concurrent: 6,
-        }
+        Self { max_concurrent: 6 }
     }
 
     /// Execute a wave of modules in parallel, respecting deadline and concurrency limits.

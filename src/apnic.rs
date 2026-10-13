@@ -21,9 +21,9 @@ pub const APNIC_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct ApnicRecord {
     pub ip_address: String,
     pub netname: Option<String>,
-    pub origin: Option<String>,     // ASN (e.g., AS1234)
+    pub origin: Option<String>,       // ASN (e.g., AS1234)
     pub organization: Option<String>, // Org name
-    pub country: Option<String>,     // Country code (AU for Australia)
+    pub country: Option<String>,      // Country code (AU for Australia)
     pub admin_contact: Option<String>,
     pub tech_contact: Option<String>,
 }
@@ -78,11 +78,7 @@ fn parse_apnic_response(ip: &str, body: &str) -> Option<ApnicRecord> {
 /// `Some(record)` when the APNIC server responded (even if fields are sparse), `None` when
 /// no response was obtained.
 #[must_use]
-pub fn query<T: Transport + ?Sized>(
-    transport: &T,
-    ip: &str,
-    cap: Duration,
-) -> Option<ApnicRecord> {
+pub fn query<T: Transport + ?Sized>(transport: &T, ip: &str, cap: Duration) -> Option<ApnicRecord> {
     let whois_url = format!("http://whois.apnic.net/whois?query={ip}");
     let request = Request::get(&whois_url).with_timeout(cap);
     let response = transport.send(&request).ok()?;
@@ -188,7 +184,10 @@ mod tests {
     }
 
     impl crate::http::Transport for MockApnicServer {
-        fn send(&self, _request: &crate::http::Request) -> Result<Response, crate::http::TransportFailure> {
+        fn send(
+            &self,
+            _request: &crate::http::Request,
+        ) -> Result<Response, crate::http::TransportFailure> {
             Ok(Response {
                 status: 200,
                 headers: vec![],

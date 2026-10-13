@@ -72,7 +72,10 @@ pub fn classify_australian_phone(number: &str) -> PhoneClassification {
         normalized.clone()
     };
 
-    let (phone_type, area_code, carrier, state) = if (digits.starts_with("04") && digits.len() == 10) || (digits.starts_with("4") && digits.len() == 9) {
+    let (phone_type, area_code, carrier, state) = if (digits.starts_with("04")
+        && digits.len() == 10)
+        || (digits.starts_with("4") && digits.len() == 9)
+    {
         // Mobile: 04xx xxx xxx (10 digits domestic) or 4xx xxx xxx (9 digits international)
         let prefix = if digits.starts_with("04") {
             digits[0..4].to_string()
@@ -82,16 +85,27 @@ pub fn classify_australian_phone(number: &str) -> PhoneClassification {
         };
         let carrier_name = classify_mobile_carrier(&prefix);
         (PhoneType::Mobile, Some(prefix), carrier_name, None)
-    } else if digits.starts_with("1300") || digits.starts_with("1800") || digits.starts_with("1900") {
+    } else if digits.starts_with("1300") || digits.starts_with("1800") || digits.starts_with("1900")
+    {
         // VoIP: 1300/1800/1900 prefixed numbers
         let prefix = &digits[0..4];
         let carrier_name = classify_voip_carrier(prefix);
-        (PhoneType::VoIP, Some(prefix.to_string()), carrier_name, None)
+        (
+            PhoneType::VoIP,
+            Some(prefix.to_string()),
+            carrier_name,
+            None,
+        )
     } else if digits.starts_with("13") && digits.len() == 4 {
         // VoIP: 13xx (4 digits exactly)
         let prefix = &digits[0..2];
         let carrier_name = classify_voip_carrier(prefix);
-        (PhoneType::VoIP, Some(prefix.to_string()), carrier_name, None)
+        (
+            PhoneType::VoIP,
+            Some(prefix.to_string()),
+            carrier_name,
+            None,
+        )
     } else if digits.starts_with("0") && digits.len() >= 8 && digits.len() <= 10 {
         // Landline: 0x xxxx xxxx (8-10 digits starting with 0)
         let area = &digits[0..2];
@@ -100,7 +114,12 @@ pub fn classify_australian_phone(number: &str) -> PhoneClassification {
     } else if digits.len() >= 3 && digits.len() <= 4 {
         // Service number (short codes: 000, 100, 101, 1234, etc. - 3-4 digits)
         let area_code = digits.clone();
-        (PhoneType::Service, Some(area_code.clone()), classify_service_number(&area_code), None)
+        (
+            PhoneType::Service,
+            Some(area_code.clone()),
+            classify_service_number(&area_code),
+            None,
+        )
     } else {
         (PhoneType::Unknown, None, None, None)
     };
@@ -118,14 +137,30 @@ pub fn classify_australian_phone(number: &str) -> PhoneClassification {
 fn classify_mobile_carrier(prefix: &str) -> Option<&'static str> {
     match prefix {
         "0400" | "0401" | "0402" | "0403" | "0404" | "0405" => Some("Telstra"),
-        "0410" | "0411" | "0412" | "0413" | "0414" | "0415" | "0416" | "0417" | "0418" | "0419" => Some("Vodafone"),
-        "0420" | "0421" | "0422" | "0423" | "0424" | "0425" | "0426" | "0427" | "0428" | "0429" => Some("Optus"),
-        "0430" | "0431" | "0432" | "0433" | "0434" | "0435" | "0436" | "0437" | "0438" | "0439" => Some("Virgin Mobile"),
-        "0450" | "0451" | "0452" | "0453" | "0454" | "0455" | "0456" | "0457" | "0458" | "0459" => Some("Telstra"),
-        "0460" | "0461" | "0462" | "0463" | "0464" | "0465" | "0466" | "0467" | "0468" | "0469" => Some("Vodafone"),
-        "0470" | "0471" | "0472" | "0473" | "0474" | "0475" | "0476" | "0477" | "0478" | "0479" => Some("Optus"),
-        "0480" | "0481" | "0482" | "0483" | "0484" | "0485" | "0486" | "0487" | "0488" | "0489" => Some("Three"),
-        "0490" | "0491" | "0492" | "0493" | "0494" | "0495" | "0496" | "0497" | "0498" | "0499" => Some("Other"),
+        "0410" | "0411" | "0412" | "0413" | "0414" | "0415" | "0416" | "0417" | "0418" | "0419" => {
+            Some("Vodafone")
+        }
+        "0420" | "0421" | "0422" | "0423" | "0424" | "0425" | "0426" | "0427" | "0428" | "0429" => {
+            Some("Optus")
+        }
+        "0430" | "0431" | "0432" | "0433" | "0434" | "0435" | "0436" | "0437" | "0438" | "0439" => {
+            Some("Virgin Mobile")
+        }
+        "0450" | "0451" | "0452" | "0453" | "0454" | "0455" | "0456" | "0457" | "0458" | "0459" => {
+            Some("Telstra")
+        }
+        "0460" | "0461" | "0462" | "0463" | "0464" | "0465" | "0466" | "0467" | "0468" | "0469" => {
+            Some("Vodafone")
+        }
+        "0470" | "0471" | "0472" | "0473" | "0474" | "0475" | "0476" | "0477" | "0478" | "0479" => {
+            Some("Optus")
+        }
+        "0480" | "0481" | "0482" | "0483" | "0484" | "0485" | "0486" | "0487" | "0488" | "0489" => {
+            Some("Three")
+        }
+        "0490" | "0491" | "0492" | "0493" | "0494" | "0495" | "0496" | "0497" | "0498" | "0499" => {
+            Some("Other")
+        }
         _ => None,
     }
 }

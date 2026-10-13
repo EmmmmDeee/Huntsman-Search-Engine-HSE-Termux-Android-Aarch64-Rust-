@@ -1,6 +1,7 @@
 //! Repository automation, in Rust. Run as `cargo run --locked -p xtask -- <command>`, or
 //! `cargo gate <mode>` for the verification gate.
 
+mod check;
 mod coupling;
 mod dual_pass;
 mod error;
@@ -17,6 +18,7 @@ const USAGE: &str = "usage: cargo run --locked -p xtask -- <command>
 
 commands:
   gate [fast|msrv|full]   the verification gate
+  check                   repository health check
   coupling                the crate's coupling clusters, bridges, and co-change pairs
   issue-fix ...           the issue-fix path guard, capture, key scan, and publish
   dual-pass ...           the dual-pass planner, red classifier, runner, and publisher
@@ -28,6 +30,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("gate") => gate::run(&args[1..]),
+        Some("check") => check::run(&args[1..]),
         Some("coupling") => coupling::run(&args[1..]),
         Some("issue-fix") => issue_fix::run(&args[1..]),
         Some("dual-pass") => dual_pass::run(&args[1..]),

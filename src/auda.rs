@@ -158,10 +158,7 @@ pub fn record_to_evidence(record: &AudaRecord) -> Evidence {
         attributes.insert("registrar".to_owned(), registrar.clone());
     }
     if !record.nameservers.is_empty() {
-        attributes.insert(
-            "nameservers".to_owned(),
-            record.nameservers.join(", "),
-        );
+        attributes.insert("nameservers".to_owned(), record.nameservers.join(", "));
     }
     if let Some(created) = &record.created {
         attributes.insert("created".to_owned(), created.clone());
@@ -220,7 +217,10 @@ mod tests {
     }
 
     impl crate::http::Transport for MockAudaServer {
-        fn send(&self, _request: &crate::http::Request) -> Result<Response, crate::http::TransportFailure> {
+        fn send(
+            &self,
+            _request: &crate::http::Request,
+        ) -> Result<Response, crate::http::TransportFailure> {
             Ok(Response {
                 status: 200,
                 headers: vec![],
@@ -237,7 +237,10 @@ mod tests {
         assert_eq!(record.domain, "example.com.au");
         assert_eq!(record.status, AudaStatus::Active);
         assert_eq!(record.registrant, Some("John Doe".to_owned()));
-        assert_eq!(record.registrar, Some("Example Registrar Pty Ltd".to_owned()));
+        assert_eq!(
+            record.registrar,
+            Some("Example Registrar Pty Ltd".to_owned())
+        );
         assert_eq!(record.nameservers.len(), 2);
         assert_eq!(record.created, Some("2020-01-15".to_owned()));
         assert_eq!(record.expires, Some("2025-01-15".to_owned()));

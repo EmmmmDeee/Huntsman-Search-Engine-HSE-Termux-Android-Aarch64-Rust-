@@ -13,17 +13,23 @@ const TIER1_ENDPOINTS: &[(&str, &str)] = &[
     ("auDA", "https://www.auda.org.au"),
     ("ASIC Company", "https://connectonline.asic.gov.au"),
     ("ABN Lookup", "http://abn.business.gov.au"),
-    ("ASIC Insolvency", "https://www.asic.gov.au/online-services/national-personal-insolvency-index/"),
+    (
+        "ASIC Insolvency",
+        "https://www.asic.gov.au/online-services/national-personal-insolvency-index/",
+    ),
     ("APRA", "https://www.apra.gov.au"),
     ("AUSTRAC", "https://www.austrac.gov.au"),
-    ("AHPRA", "https://www.ahpra.gov.au/registration/the-national-register.html"),
+    (
+        "AHPRA",
+        "https://www.ahpra.gov.au/registration/the-national-register.html",
+    ),
 ];
 
 /// Test data for validation: known entities to query at each endpoint
 const TEST_ENTITIES: &[(&str, &str)] = &[
     // (endpoint_name, test_query)
     ("APNIC WHOIS", "AS64512"),
-    ("ABN Lookup", "53004085616"), // Known active ABN for testing
+    ("ABN Lookup", "53004085616"),       // Known active ABN for testing
     ("ASIC Company", "ACN 000 051 205"), // Known test company
 ];
 
@@ -49,7 +55,10 @@ fn check_http_endpoint(url: &str, timeout: Duration) -> Result<u16, String> {
 /// Validate WHOIS endpoints specifically
 #[allow(dead_code)]
 fn check_whois_endpoint(host: &str, port: u16, test_query: &str) -> Result<(), String> {
-    eprintln!("Validating WHOIS: {}:{} with query '{}'", host, port, test_query);
+    eprintln!(
+        "Validating WHOIS: {}:{} with query '{}'",
+        host, port, test_query
+    );
 
     // WHOIS validation pattern:
     // 1. Connect to host:port (usually port 43)
@@ -85,7 +94,10 @@ fn validate_tier1_endpoints_reachable() {
             // WHOIS endpoint
             let parts: Vec<&str> = endpoint.split(':').collect();
             if parts.len() == 2 {
-                eprintln!("  ⏳ {}: WHOIS validation (pattern defined, not yet enabled)", name);
+                eprintln!(
+                    "  ⏳ {}: WHOIS validation (pattern defined, not yet enabled)",
+                    name
+                );
             }
         }
     }
@@ -104,8 +116,10 @@ fn validate_endpoint_response_formats() {
         // - HTTP registry endpoints return HTML/JSON with expected structure
         // - Parsing rules should match those in src/*.rs modules
 
-        eprintln!("  → Validation pattern defined in module: src/{}.rs",
-                  endpoint_name.to_lowercase().replace(" ", "_"));
+        eprintln!(
+            "  → Validation pattern defined in module: src/{}.rs",
+            endpoint_name.to_lowercase().replace(" ", "_")
+        );
     }
 }
 
@@ -129,8 +143,15 @@ fn validate_response_latency() {
 #[test]
 fn endpoint_list_completeness() {
     // Verify that TIER1_ENDPOINTS matches all deployed sources from documentation
-    assert!(!TIER1_ENDPOINTS.is_empty(), "Tier 1 endpoints must be defined");
-    assert_eq!(TIER1_ENDPOINTS.len(), 8, "Expected 8 deployed Tier 1 sources");
+    assert!(
+        !TIER1_ENDPOINTS.is_empty(),
+        "Tier 1 endpoints must be defined"
+    );
+    assert_eq!(
+        TIER1_ENDPOINTS.len(),
+        8,
+        "Expected 8 deployed Tier 1 sources"
+    );
 
     // Verify all endpoints have both name and URL
     for (name, endpoint) in TIER1_ENDPOINTS {
@@ -148,9 +169,9 @@ fn endpoint_list_completeness() {
 fn endpoint_documentation_consistency() {
     // Ensure test entities reference documented endpoints
     for (endpoint_name, _test_query) in TEST_ENTITIES {
-        let found = TIER1_ENDPOINTS.iter().any(|(name, _)| {
-            name.to_lowercase().contains(&endpoint_name.to_lowercase())
-        });
+        let found = TIER1_ENDPOINTS
+            .iter()
+            .any(|(name, _)| name.to_lowercase().contains(&endpoint_name.to_lowercase()));
         assert!(
             found,
             "Test entity references undocumented endpoint: {}",

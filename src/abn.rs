@@ -21,13 +21,13 @@ pub const ABN_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbnRecord {
     pub abn: String,
-    pub acn: Option<String>,                    // Associated ACN if a company
+    pub acn: Option<String>, // Associated ACN if a company
     pub business_name: Option<String>,
     pub trading_names: Vec<String>,
-    pub entity_type: Option<String>,            // Individual, Company, Partnership, etc.
+    pub entity_type: Option<String>, // Individual, Company, Partnership, etc.
     pub status: AbnStatus,
     pub registration_date: Option<String>,
-    pub industry_code: Option<String>,          // ANZSIC code
+    pub industry_code: Option<String>, // ANZSIC code
     pub industry_description: Option<String>,
 }
 
@@ -87,7 +87,11 @@ fn parse_abn_response(abn: &str, body: &str) -> Option<AbnRecord> {
     for line in body.lines() {
         let lower = line.to_lowercase();
         if lower.contains("acn:") {
-            if let Some(acn_val) = line.split("ACN:").nth(1).or_else(|| line.split("acn:").nth(1)) {
+            if let Some(acn_val) = line
+                .split("ACN:")
+                .nth(1)
+                .or_else(|| line.split("acn:").nth(1))
+            {
                 record.acn = Some(acn_val.trim().to_owned());
             }
         } else if lower.starts_with("business name:") || lower.starts_with("abn name:") {
@@ -106,7 +110,8 @@ fn parse_abn_response(abn: &str, body: &str) -> Option<AbnRecord> {
         } else if lower.starts_with("anzsic code:") || lower.starts_with("industry code:") {
             record.industry_code = Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
         } else if lower.starts_with("main business activity:") || lower.starts_with("industry:") {
-            record.industry_description = Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
+            record.industry_description =
+                Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
         }
     }
 
@@ -117,14 +122,12 @@ fn parse_abn_response(abn: &str, body: &str) -> Option<AbnRecord> {
 ///
 /// `Some(record)` when the ABN Lookup server responded, `None` when no response or invalid ABN.
 #[must_use]
-pub fn query<T: Transport + ?Sized>(
-    transport: &T,
-    abn: &str,
-    cap: Duration,
-) -> Option<AbnRecord> {
+pub fn query<T: Transport + ?Sized>(transport: &T, abn: &str, cap: Duration) -> Option<AbnRecord> {
     // ABN Lookup URL: standard web service format.
     let abn_clean = abn.replace(' ', "");
-    let abn_url = format!("http://abn.business.gov.au/abn/ABNLookupAction.do?abn={abn_clean}&method=loadSearchIfAbnExists");
+    let abn_url = format!(
+        "http://abn.business.gov.au/abn/ABNLookupAction.do?abn={abn_clean}&method=loadSearchIfAbnExists"
+    );
     let request = Request::get(&abn_url).with_timeout(cap);
     let response = transport.send(&request).ok()?;
     let body = response.text();
@@ -242,7 +245,10 @@ mod tests {
     }
 
     impl crate::http::Transport for MockAbnServer {
-        fn send(&self, _request: &crate::http::Request) -> Result<Response, crate::http::TransportFailure> {
+        fn send(
+            &self,
+            _request: &crate::http::Request,
+        ) -> Result<Response, crate::http::TransportFailure> {
             Ok(Response {
                 status: 200,
                 headers: vec![],

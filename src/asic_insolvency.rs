@@ -171,9 +171,11 @@ fn parse_insolvency_response(name: &str, body: &str) -> Option<InsolvencyRecord>
         // Parse details for current proceeding.
         if let Some(ref mut proceeding) = current_proceeding {
             if lower.starts_with("date filed:") || lower.starts_with("date entered:") {
-                proceeding.date_filed = Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
+                proceeding.date_filed =
+                    Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
             } else if lower.starts_with("date ended:") || lower.starts_with("date discharged:") {
-                proceeding.date_ended = Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
+                proceeding.date_ended =
+                    Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
             } else if lower.starts_with("status:") {
                 let status_str = line.split(':').nth(1).unwrap_or("").trim().to_lowercase();
                 if status_str.contains("discharged") || status_str.contains("completed") {
@@ -181,10 +183,15 @@ fn parse_insolvency_response(name: &str, body: &str) -> Option<InsolvencyRecord>
                 } else if status_str.contains("active") || status_str.contains("current") {
                     proceeding.status = InsolvencyStatus::Active;
                 }
-            } else if lower.starts_with("trustee:") || lower.starts_with("liquidator:") || lower.starts_with("administrator:") {
-                proceeding.trustee_or_administrator = Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
+            } else if lower.starts_with("trustee:")
+                || lower.starts_with("liquidator:")
+                || lower.starts_with("administrator:")
+            {
+                proceeding.trustee_or_administrator =
+                    Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
             } else if lower.starts_with("court:") || lower.starts_with("authority:") {
-                proceeding.court_or_authority = Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
+                proceeding.court_or_authority =
+                    Some(line.split(':').nth(1).unwrap_or("").trim().to_owned());
             }
         }
     }
@@ -209,7 +216,9 @@ pub fn query<T: Transport + ?Sized>(
     name: &str,
     cap: Duration,
 ) -> Option<InsolvencyRecord> {
-    let insolvency_url = format!("http://asic.gov.au/online-services/national-personal-insolvency-index/search?q={name}");
+    let insolvency_url = format!(
+        "http://asic.gov.au/online-services/national-personal-insolvency-index/search?q={name}"
+    );
     let request = Request::get(&insolvency_url).with_timeout(cap);
     let response = transport.send(&request).ok()?;
     let body = response.text();
@@ -238,7 +247,10 @@ pub fn record_to_evidence(record: &InsolvencyRecord) -> Evidence {
     let mut attributes = std::collections::BTreeMap::new();
 
     attributes.insert("name".to_owned(), record.name.clone());
-    attributes.insert("proceeding_count".to_owned(), record.proceedings.len().to_string());
+    attributes.insert(
+        "proceeding_count".to_owned(),
+        record.proceedings.len().to_string(),
+    );
 
     let proceeding_types: Vec<_> = record
         .proceedings
@@ -321,7 +333,10 @@ mod tests {
     }
 
     impl crate::http::Transport for MockInsolvencyServer {
-        fn send(&self, _request: &crate::http::Request) -> Result<Response, crate::http::TransportFailure> {
+        fn send(
+            &self,
+            _request: &crate::http::Request,
+        ) -> Result<Response, crate::http::TransportFailure> {
             Ok(Response {
                 status: 200,
                 headers: vec![],
@@ -337,7 +352,10 @@ mod tests {
         let record = query(&server, "John Smith", INSOLVENCY_TIMEOUT).expect("parsed");
         assert_eq!(record.name, "John Smith");
         assert_eq!(record.proceedings.len(), 1);
-        assert_eq!(record.proceedings[0].proceeding_type, InsolvencyType::Bankruptcy);
+        assert_eq!(
+            record.proceedings[0].proceeding_type,
+            InsolvencyType::Bankruptcy
+        );
         assert_eq!(record.proceedings[0].status, InsolvencyStatus::Active);
     }
 
@@ -346,7 +364,10 @@ mod tests {
         let server = MockInsolvencyServer::completed_liquidation();
         let record = query(&server, "ABC Company Pty Ltd", INSOLVENCY_TIMEOUT).expect("parsed");
         assert_eq!(record.proceedings.len(), 1);
-        assert_eq!(record.proceedings[0].proceeding_type, InsolvencyType::Liquidation);
+        assert_eq!(
+            record.proceedings[0].proceeding_type,
+            InsolvencyType::Liquidation
+        );
         assert_eq!(record.proceedings[0].status, InsolvencyStatus::Completed);
     }
 
@@ -355,8 +376,14 @@ mod tests {
         let server = MockInsolvencyServer::multiple_proceedings();
         let record = query(&server, "Jane Doe", INSOLVENCY_TIMEOUT).expect("parsed");
         assert_eq!(record.proceedings.len(), 2);
-        assert_eq!(record.proceedings[0].proceeding_type, InsolvencyType::DebtAgreement);
-        assert_eq!(record.proceedings[1].proceeding_type, InsolvencyType::Bankruptcy);
+        assert_eq!(
+            record.proceedings[0].proceeding_type,
+            InsolvencyType::DebtAgreement
+        );
+        assert_eq!(
+            record.proceedings[1].proceeding_type,
+            InsolvencyType::Bankruptcy
+        );
     }
 
     #[test]
@@ -405,11 +432,17 @@ mod tests {
         };
         let evidence = record_to_evidence(&record);
         assert_eq!(
-            evidence.attributes.get("proceeding_count").map(String::as_str),
+            evidence
+                .attributes
+                .get("proceeding_count")
+                .map(String::as_str),
             Some("2")
         );
         assert_eq!(
-            evidence.attributes.get("active_proceedings").map(String::as_str),
+            evidence
+                .attributes
+                .get("active_proceedings")
+                .map(String::as_str),
             Some("1")
         );
     }

@@ -567,8 +567,7 @@ fn supplementary_signals<T: Transport + ?Sized>(
     }
 
     // APNIC enrichment: query for any resolved IP addresses.
-    let (apnic_found, apnic_section) =
-        apnic_enrichment(transport, &deadline, entities);
+    let (apnic_found, apnic_section) = apnic_enrichment(transport, &deadline, entities);
     entities.extend(apnic_found);
     sections.extend(apnic_section);
 }
@@ -697,7 +696,9 @@ fn apnic_enrichment<T: Transport + ?Sized>(
     }
 
     let section = if au_count > 0 {
-        Some(format!("apnic_enrichment: {au_count} Australian IP allocation(s)"))
+        Some(format!(
+            "apnic_enrichment: {au_count} Australian IP allocation(s)"
+        ))
     } else {
         None
     };

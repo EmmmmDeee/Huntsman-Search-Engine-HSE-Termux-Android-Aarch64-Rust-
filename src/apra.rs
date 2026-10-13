@@ -90,7 +90,11 @@ fn parse_apra_response(query: &str, body: &str) -> Option<ApraRecord> {
     }
 
     let text = body.to_lowercase();
-    let entity_type = if text.contains("bank") || text.contains("credit union") || text.contains("building society") || text.contains("adi") {
+    let entity_type = if text.contains("bank")
+        || text.contains("credit union")
+        || text.contains("building society")
+        || text.contains("adi")
+    {
         ApraEntityType::Adi
     } else if text.contains("general insurer") || text.contains("general insurance") {
         ApraEntityType::GeneralInsurer
@@ -127,7 +131,11 @@ fn parse_apra_response(query: &str, body: &str) -> Option<ApraRecord> {
     for line in body.lines() {
         let lower = line.to_lowercase();
         if lower.contains("abn:") {
-            if let Some(abn_val) = line.split("ABN:").nth(1).or_else(|| line.split("abn:").nth(1)) {
+            if let Some(abn_val) = line
+                .split("ABN:")
+                .nth(1)
+                .or_else(|| line.split("abn:").nth(1))
+            {
                 record.abn = Some(abn_val.trim().to_owned());
             }
         } else if lower.contains("authorization date:") || lower.contains("authorized:") {
@@ -186,7 +194,10 @@ pub fn record_to_evidence(record: &ApraRecord) -> Evidence {
     let mut attributes = std::collections::BTreeMap::new();
 
     attributes.insert("name".to_owned(), record.name.clone());
-    attributes.insert("entity_type".to_owned(), record.entity_type.as_str().to_owned());
+    attributes.insert(
+        "entity_type".to_owned(),
+        record.entity_type.as_str().to_owned(),
+    );
     attributes.insert("status".to_owned(), record.status.as_str().to_owned());
 
     if let Some(abn) = &record.abn {
@@ -270,7 +281,10 @@ mod tests {
     }
 
     impl crate::http::Transport for MockApraServer {
-        fn send(&self, _request: &crate::http::Request) -> Result<Response, crate::http::TransportFailure> {
+        fn send(
+            &self,
+            _request: &crate::http::Request,
+        ) -> Result<Response, crate::http::TransportFailure> {
             Ok(Response {
                 status: 200,
                 headers: vec![],
@@ -320,7 +334,10 @@ mod tests {
         assert_eq!(ApraEntityType::Adi.as_str(), "adi");
         assert_eq!(ApraEntityType::GeneralInsurer.as_str(), "general_insurer");
         assert_eq!(ApraEntityType::LifeInsurer.as_str(), "life_insurer");
-        assert_eq!(ApraEntityType::SuperannuationTrustee.as_str(), "superannuation_trustee");
+        assert_eq!(
+            ApraEntityType::SuperannuationTrustee.as_str(),
+            "superannuation_trustee"
+        );
         assert_eq!(ApraEntityType::CreditProvider.as_str(), "credit_provider");
     }
 

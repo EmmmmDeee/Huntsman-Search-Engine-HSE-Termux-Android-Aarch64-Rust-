@@ -93,7 +93,8 @@ fn parse_austrac_response(name: &str, body: &str) -> Option<AustracSanctionRecor
         SanctionsType::Other
     };
 
-    let status = if text.contains("removed") || text.contains("delisted") || text.contains("lifted") {
+    let status = if text.contains("removed") || text.contains("delisted") || text.contains("lifted")
+    {
         SanctionStatus::Removed
     } else if text.contains("active") || text.contains("current") || text.contains("listed") {
         SanctionStatus::Active
@@ -115,11 +116,19 @@ fn parse_austrac_response(name: &str, body: &str) -> Option<AustracSanctionRecor
     for line in body.lines() {
         let lower = line.to_lowercase();
         if lower.contains("acn:") {
-            if let Some(acn_val) = line.split("ACN:").nth(1).or_else(|| line.split("acn:").nth(1)) {
+            if let Some(acn_val) = line
+                .split("ACN:")
+                .nth(1)
+                .or_else(|| line.split("acn:").nth(1))
+            {
                 record.acn = Some(acn_val.trim().to_owned());
             }
         } else if lower.contains("abn:") {
-            if let Some(abn_val) = line.split("ABN:").nth(1).or_else(|| line.split("abn:").nth(1)) {
+            if let Some(abn_val) = line
+                .split("ABN:")
+                .nth(1)
+                .or_else(|| line.split("abn:").nth(1))
+            {
                 record.abn = Some(abn_val.trim().to_owned());
             }
         } else if lower.contains("listing date:") || lower.contains("listed:") {
@@ -178,7 +187,10 @@ pub fn record_to_evidence(record: &AustracSanctionRecord) -> Evidence {
     let mut attributes = std::collections::BTreeMap::new();
 
     attributes.insert("name".to_owned(), record.name.clone());
-    attributes.insert("sanctions_type".to_owned(), record.sanctions_type.as_str().to_owned());
+    attributes.insert(
+        "sanctions_type".to_owned(),
+        record.sanctions_type.as_str().to_owned(),
+    );
     attributes.insert("status".to_owned(), record.status.as_str().to_owned());
 
     if let Some(acn) = &record.acn {
@@ -263,7 +275,10 @@ mod tests {
     }
 
     impl crate::http::Transport for MockAustracServer {
-        fn send(&self, _request: &crate::http::Request) -> Result<Response, crate::http::TransportFailure> {
+        fn send(
+            &self,
+            _request: &crate::http::Request,
+        ) -> Result<Response, crate::http::TransportFailure> {
             Ok(Response {
                 status: 200,
                 headers: vec![],
@@ -309,8 +324,14 @@ mod tests {
     #[test]
     fn sanctions_type_strings_consistent() {
         assert_eq!(SanctionsType::UnSanctions.as_str(), "un_sanctions");
-        assert_eq!(SanctionsType::AustralianSanctions.as_str(), "australian_sanctions");
-        assert_eq!(SanctionsType::ProliferationFinancing.as_str(), "proliferation_financing");
+        assert_eq!(
+            SanctionsType::AustralianSanctions.as_str(),
+            "australian_sanctions"
+        );
+        assert_eq!(
+            SanctionsType::ProliferationFinancing.as_str(),
+            "proliferation_financing"
+        );
     }
 
     #[test]
@@ -333,7 +354,10 @@ mod tests {
         };
         let evidence = record_to_evidence(&record);
         assert_eq!(
-            evidence.attributes.get("sanctions_type").map(String::as_str),
+            evidence
+                .attributes
+                .get("sanctions_type")
+                .map(String::as_str),
             Some("un_sanctions")
         );
         assert_eq!(

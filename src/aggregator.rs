@@ -109,9 +109,7 @@ impl EvidenceAggregator {
                 let recency_bonus = Self::recency_bonus(e.provenance.recorded_at_unix);
                 let completeness_bonus = Self::completeness_bonus(e);
 
-                let score = (tier_weight as f64 * 0.01)
-                    + recency_bonus
-                    + completeness_bonus;
+                let score = (tier_weight as f64 * 0.01) + recency_bonus + completeness_bonus;
 
                 RankedEvidence {
                     evidence: e.clone(),
@@ -123,7 +121,9 @@ impl EvidenceAggregator {
 
         // Sort by score descending (highest first).
         ranked.sort_by(|a, b| {
-            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         ranked
@@ -183,9 +183,7 @@ impl EvidenceAggregator {
             || source_lower.contains("nominatim")
         {
             70
-        } else if source_lower.contains("wayback")
-            || source_lower.contains("archive")
-        {
+        } else if source_lower.contains("wayback") || source_lower.contains("archive") {
             70
         } else {
             50
@@ -203,11 +201,7 @@ impl EvidenceAggregator {
         let age_secs = now.saturating_sub(recorded_at_unix);
         let age_days = age_secs / 86400;
 
-        if age_days < 30 {
-            0.10
-        } else {
-            0.0
-        }
+        if age_days < 30 { 0.10 } else { 0.0 }
     }
 
     /// Completeness bonus: +0.05 if attributes are populated.

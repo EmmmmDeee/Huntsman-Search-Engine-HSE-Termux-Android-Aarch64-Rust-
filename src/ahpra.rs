@@ -105,7 +105,11 @@ impl RegistrationStatus {
 
 /// Parse AHPRA register response for practitioner records.
 fn parse_ahpra_response(name: &str, body: &str) -> Option<AhpraRecord> {
-    if body.is_empty() || body.contains("not found") || body.contains("No results") || body.contains("not registered") {
+    if body.is_empty()
+        || body.contains("not found")
+        || body.contains("No results")
+        || body.contains("not registered")
+    {
         return None;
     }
 
@@ -162,11 +166,16 @@ fn parse_ahpra_response(name: &str, body: &str) -> Option<AhpraRecord> {
             if let Some(reg_num) = line.split(':').nth(1) {
                 record.registration_number = Some(reg_num.trim().to_owned());
             }
-        } else if lower.contains("initial registration date:") || lower.contains("first registered:") {
+        } else if lower.contains("initial registration date:")
+            || lower.contains("first registered:")
+        {
             if let Some(date_str) = line.split(':').nth(1) {
                 record.initial_registration_date = Some(date_str.trim().to_owned());
             }
-        } else if lower.contains("state:") || lower.contains("territory:") || lower.contains("state/territory:") {
+        } else if lower.contains("state:")
+            || lower.contains("territory:")
+            || lower.contains("state/territory:")
+        {
             if let Some(state_str) = line.split(':').nth(1) {
                 record.state_territory = Some(state_str.trim().to_owned());
             }
@@ -218,8 +227,14 @@ pub fn record_to_evidence(record: &AhpraRecord) -> Evidence {
     let mut attributes = std::collections::BTreeMap::new();
 
     attributes.insert("name".to_owned(), record.name.clone());
-    attributes.insert("profession".to_owned(), record.profession.as_str().to_owned());
-    attributes.insert("registration_status".to_owned(), record.registration_status.as_str().to_owned());
+    attributes.insert(
+        "profession".to_owned(),
+        record.profession.as_str().to_owned(),
+    );
+    attributes.insert(
+        "registration_status".to_owned(),
+        record.registration_status.as_str().to_owned(),
+    );
 
     if let Some(reg_num) = &record.registration_number {
         attributes.insert("registration_number".to_owned(), reg_num.clone());
@@ -300,7 +315,10 @@ mod tests {
     }
 
     impl crate::http::Transport for MockAhpraServer {
-        fn send(&self, _request: &crate::http::Request) -> Result<Response, crate::http::TransportFailure> {
+        fn send(
+            &self,
+            _request: &crate::http::Request,
+        ) -> Result<Response, crate::http::TransportFailure> {
             Ok(Response {
                 status: 200,
                 headers: vec![],
@@ -376,11 +394,17 @@ mod tests {
             Some("doctor")
         );
         assert_eq!(
-            evidence.attributes.get("registration_status").map(String::as_str),
+            evidence
+                .attributes
+                .get("registration_status")
+                .map(String::as_str),
             Some("registered")
         );
         assert_eq!(
-            evidence.attributes.get("registration_number").map(String::as_str),
+            evidence
+                .attributes
+                .get("registration_number")
+                .map(String::as_str),
             Some("MED123456")
         );
     }
