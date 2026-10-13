@@ -147,6 +147,7 @@ pub mod scan_batch;
 pub mod scan_route;
 pub mod scraper_health;
 pub mod search;
+pub mod search_engines;
 pub mod seeknow;
 pub mod seeknow_cli;
 pub mod seeknow_collector;
