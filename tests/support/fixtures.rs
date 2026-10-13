@@ -1,7 +1,10 @@
 //! The one way integration tests read `tests/fixtures/` at run time. Paths are anchored on
 //! `CARGO_MANIFEST_DIR`, so a test binary finds its fixtures from any working directory, and the
 //! bytes are returned exactly as stored (`.gitattributes` stops checkouts rewriting line endings).
-//! `tests/fixture_layout.rs` enforces that no other test reads the directory by a relative path.
+//!
+//! Name each fixture by its full path under `tests/fixtures` in one string literal, as in
+//! `fixtures::text("hibp/adobe_breach.json")`. `tests/fixture_layout.rs` finds a fixture's readers
+//! by those literals, so a helper that adds a directory prefix makes its fixtures look unread.
 
 use std::path::{Path, PathBuf};
 
