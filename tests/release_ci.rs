@@ -1336,6 +1336,29 @@ fn installer_source_contract_uses_private_stage_runtime_gate_and_atomic_activati
     );
 }
 
+#[test]
+fn installer_rejects_an_unknown_channel_before_any_download_and_names_the_real_default() {
+    let Some(bash) = tool("bash") else {
+        return;
+    };
+    let out = Command::new(bash)
+        .arg(INSTALL)
+        .env("HUNTSMAN_CHANNEL", "recn")
+        .env_remove("PREFIX")
+        .output()
+        .expect("bash must run");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(
+        out.stdout.is_empty(),
+        "nothing may be downloaded or installed"
+    );
+    assert_eq!(
+        err.trim_end(),
+        "install-termux: HUNTSMAN_CHANNEL must be 'recon' (default) or 'hse', got 'recn'"
+    );
+}
+
 /// The scanner copy inlined in the publish job, de-indented.
 fn inlined_scanner() -> String {
     let wf = release();
