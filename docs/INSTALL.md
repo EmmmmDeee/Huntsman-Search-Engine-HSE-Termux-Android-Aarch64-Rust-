@@ -181,18 +181,20 @@ boundaries.
 
 Cross-build CI proves that Huntsman compiles as an Android aarch64 ELF, but it
 does not prove execution inside a real Termux userspace. After installing
-`huntsman-recon` on a handset, run:
+`huntsman-recon` on a handset, run these two commands; they need no checkout:
 
 ```sh
-bash scripts/termux-runtime-acceptance.sh
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/scripts/termux-runtime-acceptance.sh -o "$TMPDIR/termux-runtime-acceptance.sh"
+bash "$TMPDIR/termux-runtime-acceptance.sh"
 ```
 
-The harness verifies the current binary metadata, runs offline `check` plus
+From a checkout, `bash scripts/termux-runtime-acceptance.sh` runs the same
+harness. It verifies the current binary metadata, runs offline `check` plus
 ledger verification in a disposable directory, starts the embedded loopback
-server on an isolated high port, checks `/api/health`, `/api/modules`, and
-`/api/command`, holds two idle connections open as a browser's speculative
-sockets would and checks that a request is still answered, stops it, then
-repeats the server lifecycle once. Relative
+server on an isolated high port, checks `/api/health`, `/api/modules`,
+`/api/command` and an offline `/api/lookup`, holds two idle connections open as
+a browser's speculative sockets would and checks that a request is still
+answered, stops it, then repeats the server lifecycle once. Relative
 binary and output paths are anchored before the disposable-directory step,
 every offline prerequisite must succeed, and the isolated child server ignores
 an unrelated inherited API token so local account configuration cannot create
@@ -200,3 +202,9 @@ a false rejection. Results are written to
 `~/.huntsman/termux-acceptance.txt`. A passing CI cross-build is not reported
 as a handset-runtime pass; this harness must actually run on the device for that
 claim.
+
+CI runs the same harness against each build on its x86_64 host with
+`HSE_ACCEPTANCE_HOST=1`, so the harness cannot drift from the binary or its
+API. That run skips the ARM64 and Termux `PREFIX` checks and ends with
+`HOST_RUNTIME_ACCEPTANCE (not a handset pass)`, never
+`TERMUX_RUNTIME_ACCEPTANCE`.
