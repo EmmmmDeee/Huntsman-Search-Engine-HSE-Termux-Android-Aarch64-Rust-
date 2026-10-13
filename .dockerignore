@@ -24,5 +24,9 @@
 !crates/huntsman-collectors/Cargo.toml
 !crates/huntsman-collectors/src/
 !crates/huntsman-collectors/src/**
+!crates/huntsman-pipeline/
+!crates/huntsman-pipeline/Cargo.toml
+!crates/huntsman-pipeline/src/
+!crates/huntsman-pipeline/src/**
 !scripts/
 !scripts/railway-entrypoint.sh

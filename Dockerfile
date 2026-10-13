@@ -22,6 +22,8 @@ COPY crates/huntsman-storage/Cargo.toml ./crates/huntsman-storage/Cargo.toml
 COPY crates/huntsman-storage/src ./crates/huntsman-storage/src
 COPY crates/huntsman-collectors/Cargo.toml ./crates/huntsman-collectors/Cargo.toml
 COPY crates/huntsman-collectors/src ./crates/huntsman-collectors/src
+COPY crates/huntsman-pipeline/Cargo.toml ./crates/huntsman-pipeline/Cargo.toml
+COPY crates/huntsman-pipeline/src ./crates/huntsman-pipeline/src
 
 RUN cargo build --release --locked --bin huntsman-recon
 
