@@ -14,6 +14,10 @@ use std::ffi::OsString;
 
 /// The variable holding the user's home directory.
 pub const HOME_ENV: &str = "HOME";
+/// The variable the Termux app sets to its version in every shell it starts.
+pub const TERMUX_VERSION_ENV: &str = "TERMUX_VERSION";
+/// The install prefix. Termux sets it to a directory under its app data.
+pub const PREFIX_ENV: &str = "PREFIX";
 /// The HIBP API key. It is read before any keys file.
 pub const HIBP_API_KEY_ENV: &str = "HIBP_API_KEY";
 /// The HIBP key under the Huntsman keys-file slot name. The same name is read from the environment.
@@ -68,6 +72,18 @@ pub const SERVE_TOKEN_ENV: &str = "HSE_AUTH_TOKEN";
 #[must_use]
 pub fn home() -> Option<OsString> {
     std::env::var_os(HOME_ENV)
+}
+
+/// `$TERMUX_VERSION`, when it is set. The Termux app exports it in every shell it starts.
+#[must_use]
+pub fn termux_version() -> Option<OsString> {
+    std::env::var_os(TERMUX_VERSION_ENV)
+}
+
+/// `$PREFIX`, when it is set. Termux sets it to its install prefix. It need not be valid Unicode.
+#[must_use]
+pub fn prefix() -> Option<OsString> {
+    std::env::var_os(PREFIX_ENV)
 }
 
 /// The `HUNTSMAN_CA_BUNDLE` path, when it is set and not empty. It need not be valid Unicode.

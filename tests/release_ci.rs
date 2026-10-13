@@ -3153,3 +3153,66 @@ fn release_reads_of_the_latest_tag_fail_on_anything_but_a_missing_tag() {
         "the latest step must say why it did not move latest, for the verify step"
     );
 }
+
+/// The identity probe in release.yml greps the aarch64 binary for the hand-written usage line to
+/// prove it is huntsman-recon, not the legacy hse. Its pattern is hand-maintained, so a change to
+/// the `USAGE` constant can silently stop it matching (as appending `correlate`/`run-history`
+/// after `verify LEDGER` did, failing #908's aarch64 build). This ties the two together.
+fn identity_probe_pattern() -> String {
+    let wf = release();
+    let marker = "-m1 'usage: huntsman-recon";
+    let open = wf
+        .find(marker)
+        .expect("release.yml must grep the binary for the usage line");
+    let rest = &wf[open + "-m1 '".len()..];
+    rest[..rest.find('\'').expect("the grep pattern is single-quoted")].to_owned()
+}
+
+fn live_usage_line() -> String {
+    let src = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"))
+        .expect("src/cli/mod.rs");
+    let marker = "const USAGE: &str = \"";
+    let start = src.find(marker).expect("USAGE constant") + marker.len();
+    let rest = &src[start..];
+    rest[..rest.find("\";").expect("USAGE string end")].to_owned()
+}
+
+/// Whether a basic-regexp `pattern` using only `.*` and `\[`/`\]` escapes matches somewhere in
+/// `text`, by the same existence rule `grep` applies: each literal segment between `.*` occurs in
+/// order. The usage line is one `strings` line, so `.` never has a newline to not match.
+fn bre_dotstar_matches(pattern: &str, text: &str) -> bool {
+    let mut pos = 0;
+    for raw in pattern.split(".*") {
+        let lit = raw.replace("\\[", "[").replace("\\]", "]");
+        if lit.is_empty() {
+            continue;
+        }
+        match text[pos..].find(&lit) {
+            Some(offset) => pos += offset + lit.len(),
+            None => return false,
+        }
+    }
+    true
+}
+
+#[test]
+fn the_identity_probe_matches_the_usage_line_it_proves() {
+    let pattern = identity_probe_pattern();
+    let usage = live_usage_line();
+    assert!(
+        bre_dotstar_matches(&pattern, &usage),
+        "release.yml identity probe no longer matches the usage line it proves:\n  pattern: {pattern}\n  usage:   {usage}"
+    );
+    // The pre-#908 pattern required `verify LEDGER` to be the last command; the regression that
+    // failed #908's build is that it no longer is. If this ever matches again, the fix regressed.
+    assert!(
+        !bre_dotstar_matches("usage: huntsman-recon \\[check.*verify LEDGER\\]", &usage),
+        "the usage line ends at `verify LEDGER]` again; the probe's `.*` tail is now untested"
+    );
+    // Dropping a command the probe anchors on must fail it: it is an identity check, not a smoke test.
+    let without_verify = usage.replacen("verify LEDGER", "VERIFY_REMOVED", 1);
+    assert!(
+        !bre_dotstar_matches(&pattern, &without_verify),
+        "the probe still matches after `verify LEDGER` is gone, so it proves nothing"
+    );
+}

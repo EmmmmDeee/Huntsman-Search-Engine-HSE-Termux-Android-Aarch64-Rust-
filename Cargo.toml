@@ -1,5 +1,6 @@
-# Reconstructed huntsman. One package and the xtask automation crate, which is the only
-# workspace member. The package's own build and tests are unchanged.
+# Reconstructed huntsman. The root package builds the huntsman-recon binaries. The workspace
+# adds the xtask automation crate and the four async engine crates under crates/, which the
+# root package does not depend on.
 [workspace]
 members = ["xtask", "crates/huntsman-core", "crates/huntsman-storage", "crates/huntsman-collectors", "crates/huntsman-pipeline"]
 resolver = "3"

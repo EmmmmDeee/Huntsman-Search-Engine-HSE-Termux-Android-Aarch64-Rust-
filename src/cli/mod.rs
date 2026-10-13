@@ -7,7 +7,7 @@
 use std::env;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone] [--save-dir DIR] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain] [--save-dir DIR] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT | run-history record|show [options]]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -18,7 +18,7 @@ Usage:
   huntsman-recon --version
 
 Commands:
-  check                 Run offline self-acceptance and regenerate var/*.json
+  check                 Run offline self-acceptance; writes var/*.json here
   diagnostics           Print offline build/runtime/module/provider diagnostics
   build-sha             Print the embedded source commit or unknown
   command               Print and validate the executable engineering hierarchy
@@ -35,6 +35,7 @@ Commands:
   exposure              Keyed breach evidence for an email (HIBP account, stolen.tax)
   username              Enrich a username through public GitHub and Bluesky profiles
   phone                 Canonicalise and classify a phone number offline
+  domain                Certificate-transparency names and DNS records for one domain
   scan                  Route one selector or bounded seed-list into rebuilt lookup front-ends
   investigate           Extract actionable entities from local text or one bounded file
   query                 Query the rebuilt keyless web-search subset
@@ -51,10 +52,12 @@ Commands:
   keys                  Validate a private keys file; print slots and fingerprints
   credential-status     Show provider credential completeness without values
   verify                Verify a saved evidence ledger
+  correlate             Run the correlation rules over a saved scan artifact (offline)
+  run-history           Record test-run results and compare each with the earlier runs
 
 Run `huntsman-recon <COMMAND> --help` for command details.
 Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
-`seeknow`, `people`, `email`, `exposure`, `username`, `query`, and networked `sf -s` lookups make HTTP requests; `serve` accepts inbound HTTP connections; their default
+`seeknow`, `people`, `email`, `exposure`, `username`, `domain`, `query`, `dehashed`, and networked `sf -s` lookups make HTTP requests; `serve` accepts inbound HTTP connections; their default
 egress policy is public-only.";
 const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
 mod help;
@@ -70,14 +73,12 @@ use report::{exit_on_output_failure, fail};
 
 pub(crate) fn run(argv: Vec<String>) -> ExitCode {
     exit_on_output_failure();
-    if argv.is_empty() {
-        return selfcheck::check();
-    }
-    if matches!(argv[0].as_str(), "help" | "-h" | "--help") {
+    let first = argv.first().map(String::as_str);
+    if matches!(first, Some("help" | "-h" | "--help")) {
         println!("{HELP}\n{USAGE}");
         return ExitCode::SUCCESS;
     }
-    if matches!(argv[0].as_str(), "-V" | "--version") {
+    if matches!(first, Some("-V" | "--version")) {
         println!("huntsman-recon {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
@@ -122,7 +123,8 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         Some("verify") => meta::verify(remaining.next()),
         Some("correlate") => meta::correlate_cmd(&remaining.collect::<Vec<_>>()),
         Some("run-history") => meta::run_history_cmd(&remaining.collect::<Vec<_>>()),
-        Some("check") | None => selfcheck::check(),
+        Some("check") => selfcheck::check(),
         Some(other) => help::unknown_command(other),
+        None => help::no_command(),
     }
 }

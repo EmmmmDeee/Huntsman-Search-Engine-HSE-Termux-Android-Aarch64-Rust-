@@ -4,8 +4,12 @@
 //! never carries credential values, fingerprints, paths, or raw resolver errors
 //! into its report.
 
+use std::ffi::OsStr;
+use std::path::Path;
+
 use serde::Serialize;
 
+use crate::environment;
 use crate::keys::Keys;
 use crate::module::reachable_modules;
 use crate::provider_credentials;
@@ -41,6 +45,9 @@ pub enum TermuxState {
     NotDetected,
 }
 
+/// The Termux app's data directory. Its install prefix, `files/usr`, lies under it.
+const TERMUX_APP_DATA: &str = "/data/data/com.termux";
+
 impl TermuxState {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -48,6 +55,29 @@ impl TermuxState {
             Self::Detected => "detected",
             Self::NotDetected => "not_detected",
         }
+    }
+
+    /// Termux, as `TERMUX_VERSION` and `PREFIX` show it: the app exports `TERMUX_VERSION` in every
+    /// shell it starts, and its prefix lies under `/data/data/com.termux`. The prefix is compared by
+    /// path component, so another app's directory such as `/data/data/com.termux.nix` is not Termux.
+    #[must_use]
+    pub fn from_values(termux_version: Option<&OsStr>, prefix: Option<&OsStr>) -> Self {
+        if termux_version.is_some()
+            || prefix.is_some_and(|prefix| Path::new(prefix).starts_with(TERMUX_APP_DATA))
+        {
+            Self::Detected
+        } else {
+            Self::NotDetected
+        }
+    }
+
+    /// Termux, as this process's environment shows it.
+    #[must_use]
+    pub fn current() -> Self {
+        Self::from_values(
+            environment::termux_version().as_deref(),
+            environment::prefix().as_deref(),
+        )
     }
 }
 
@@ -129,6 +159,36 @@ pub fn snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn termux_is_its_version_variable_or_a_prefix_under_its_app_data() {
+        let state = |version: Option<&str>, prefix: Option<&str>| {
+            TermuxState::from_values(version.map(OsStr::new), prefix.map(OsStr::new))
+        };
+        assert_eq!(state(Some("0.118.3"), None), TermuxState::Detected);
+        assert_eq!(state(Some(""), Some("/usr")), TermuxState::Detected);
+        for prefix in [
+            "/data/data/com.termux/files/usr",
+            "/data/data/com.termux/files/usr/",
+            "/data/data/com.termux",
+        ] {
+            assert_eq!(state(None, Some(prefix)), TermuxState::Detected, "{prefix}");
+        }
+        for prefix in [
+            "/usr",
+            "",
+            "/data/data/com.termux.nix/files/usr",
+            "/home/user/data/data/com.termux/files/usr",
+            "data/data/com.termux/files/usr",
+        ] {
+            assert_eq!(
+                state(None, Some(prefix)),
+                TermuxState::NotDetected,
+                "{prefix}"
+            );
+        }
+        assert_eq!(state(None, None), TermuxState::NotDetected);
+    }
 
     #[test]
     fn build_sha_accepts_only_canonical_lowercase_git_hashes() {

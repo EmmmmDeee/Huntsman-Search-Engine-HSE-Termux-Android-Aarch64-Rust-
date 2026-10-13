@@ -18,20 +18,6 @@ use huntsman_recon::ledger::{admitted, load_chain};
 use huntsman_recon::module::reachable_modules;
 use huntsman_recon::provider_credentials;
 
-fn termux_state() -> TermuxState {
-    if env::var_os("TERMUX_VERSION").is_some()
-        || env::var_os("PREFIX").is_some_and(|value| {
-            value
-                .to_string_lossy()
-                .contains("/data/data/com.termux/files/usr")
-        })
-    {
-        TermuxState::Detected
-    } else {
-        TermuxState::NotDetected
-    }
-}
-
 fn diagnostics_snapshot() -> diagnostics::Diagnostics {
     let home = env::var_os("HOME");
     match Keys::resolve(None, home.as_deref()) {
@@ -41,9 +27,9 @@ fn diagnostics_snapshot() -> diagnostics::Diagnostics {
             } else {
                 CredentialResolution::Ok
             };
-            diagnostics::snapshot(Some(&resolved.keys), resolution, termux_state())
+            diagnostics::snapshot(Some(&resolved.keys), resolution, TermuxState::current())
         }
-        Err(_) => diagnostics::snapshot(None, CredentialResolution::Error, termux_state()),
+        Err(_) => diagnostics::snapshot(None, CredentialResolution::Error, TermuxState::current()),
     }
 }
 

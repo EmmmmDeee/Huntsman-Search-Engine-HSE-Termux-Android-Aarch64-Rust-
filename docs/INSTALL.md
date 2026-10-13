@@ -38,9 +38,15 @@ Start with:
 
 ```sh
 huntsman-recon --help
-huntsman-recon check
+huntsman-recon diagnostics
 huntsman-recon search "brisbane port"
 ```
+
+`diagnostics` reports the build, whether it runs in Termux, and how many
+provider keys are configured, without values and without the network. The
+installer has already run `check`, the offline self-test, in a scratch
+directory. To run it yourself, do so in an empty directory: it writes
+`var/*.json` into the current one.
 
 Upgrade by running the same two commands again. The installer resolves the
 current `main` head to a full SHA and hands that SHA to Cargo, so a branch
@@ -131,6 +137,38 @@ rm -f ~/.huntsman.env
 
 If you set `HUNTSMAN_HOME`, `HUNTSMAN_ENV_FILE` or `CARGO_TARGET_DIR` when
 installing, remove those locations instead.
+
+## Keep serve running on Android
+
+Start the web UI and open it in the phone's browser:
+
+```sh
+huntsman-recon serve
+termux-open-url http://127.0.0.1:8080/
+```
+
+`serve` prints the address it listens on as `serving=http://…/`. Port 8080 is
+also the default of other servers people run in Termux, such as code-server
+and File Browser. When it is taken, `serve` exits 69 and says so. Pass another
+port with `--bind 127.0.0.1:8081`, or `--bind 127.0.0.1:0` to have the system
+pick a free one and read it from the `serving=` line. A port below 1024 needs
+root, which Termux does not have.
+
+Android may stop processes that Termux started while Termux is in the
+background or the screen is off, and the page then stops answering. `serve`
+prints a reminder when it starts in Termux. Before a long session, run:
+
+```sh
+termux-wake-lock
+```
+
+The wake lock keeps the CPU awake for Termux until `termux-wake-unlock`
+releases it. On Android 12 or later, the system's limit on processes started
+by apps (the "phantom process killer") can still stop the server. On Android 14
+or later, turn on "Disable child process restrictions" in Developer options and
+leave Developer options on; turning them off restores the limit. On Android 12
+and 13 the limit can only be changed over `adb`; Termux's
+[issue 2366](https://github.com/termux/termux-app/issues/2366) describes how.
 
 ## Railway deployment
 

@@ -176,8 +176,8 @@ impl Server {
     /// # Errors
     /// Returns a storage-class I/O error when the listener cannot bind.
     pub fn bind(config: ServeConfig) -> Result<Self, Error> {
-        let listener = TcpListener::bind(config.bind)
-            .map_err(|error| Error::Store(format!("serve bind {}: {error}", config.bind)))?;
+        let listener =
+            TcpListener::bind(config.bind).map_err(|error| bind_failure(config.bind, &error))?;
         Ok(Self {
             listener,
             config,
@@ -724,6 +724,25 @@ fn fixed_time_eq(left: &[u8], right: &[u8]) -> bool {
         diff |= a ^ b;
     }
     diff == 0
+}
+
+/// Why `addr` could not be bound, and what to do about it. Port 8080 is also the default of other
+/// servers people run in Termux, and Termux has no root for a port below 1024.
+fn bind_failure(addr: SocketAddr, error: &std::io::Error) -> Error {
+    let other_port = match addr {
+        SocketAddr::V4(v4) => format!("{}:PORT", v4.ip()),
+        SocketAddr::V6(v6) => format!("[{}]:PORT", v6.ip()),
+    };
+    let reason = match error.kind() {
+        std::io::ErrorKind::AddrInUse => format!(
+            "another program already listens there; stop it, or pass --bind {other_port} for another port (port 0 picks a free one)"
+        ),
+        std::io::ErrorKind::PermissionDenied if addr.port() < 1024 => format!(
+            "a port below 1024 needs root, which Termux does not have; pass --bind {other_port} with a port of 1024 or more"
+        ),
+        _ => error.to_string(),
+    };
+    Error::Store(format!("serve bind {addr}: {reason}"))
 }
 
 /// The page's policy. Its one inline script and its one inline style run because their SHA-256
@@ -1388,6 +1407,38 @@ mod tests {
             .next()?
             .lines()
             .find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))
+    }
+
+    #[test]
+    fn a_bind_failure_names_its_cause_and_what_to_pass_instead() {
+        use std::io::{Error as IoError, ErrorKind};
+        let v4: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let low: SocketAddr = "0.0.0.0:80".parse().unwrap();
+        let v6: SocketAddr = "[::1]:8080".parse().unwrap();
+        assert_eq!(
+            bind_failure(v4, &IoError::from(ErrorKind::AddrInUse)).to_string(),
+            "store: serve bind 127.0.0.1:8080: another program already listens there; stop it, or pass --bind 127.0.0.1:PORT for another port (port 0 picks a free one)"
+        );
+        assert!(
+            bind_failure(v6, &IoError::from(ErrorKind::AddrInUse))
+                .to_string()
+                .contains("pass --bind [::1]:PORT")
+        );
+        assert_eq!(
+            bind_failure(low, &IoError::from(ErrorKind::PermissionDenied)).to_string(),
+            "store: serve bind 0.0.0.0:80: a port below 1024 needs root, which Termux does not have; pass --bind 0.0.0.0:PORT with a port of 1024 or more"
+        );
+        // Above 1024 a refusal is not about root, and other failures keep the system's words.
+        let refused = IoError::from(ErrorKind::PermissionDenied);
+        assert_eq!(
+            bind_failure(v4, &refused).to_string(),
+            format!("store: serve bind 127.0.0.1:8080: {refused}")
+        );
+        let other = IoError::from(ErrorKind::AddrNotAvailable);
+        assert_eq!(
+            bind_failure(v4, &other).to_string(),
+            format!("store: serve bind 127.0.0.1:8080: {other}")
+        );
     }
 
     #[test]
