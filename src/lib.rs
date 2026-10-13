@@ -22,6 +22,7 @@ pub mod asic_director;
 pub mod asic_insolvency;
 pub mod asic_persons;
 pub mod assurance;
+pub mod austrac;
 pub mod atproto;
 pub mod attack;
 pub mod attack_catalog;
