@@ -167,6 +167,7 @@ pub mod username_cli;
 pub mod username_variants;
 pub mod validation;
 pub mod value_syntax;
+pub mod waf_fingerprint;
 pub mod wayback;
 pub mod web_query;
 pub mod web_server;

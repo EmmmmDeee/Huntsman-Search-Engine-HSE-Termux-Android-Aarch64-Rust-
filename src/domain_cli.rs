@@ -17,6 +17,7 @@ use crate::lookup_report;
 use crate::recon::ReconTargetKind;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::subdomain_takeover;
+use crate::waf_fingerprint;
 
 pub const DOMAIN_USAGE: &str = "usage: huntsman-recon domain DOMAIN [--save FILE]";
 
@@ -127,6 +128,17 @@ pub fn run<T: Transport + ?Sized>(transport: &T, domain: &str, now_unix: u64) ->
         outcomes.push(outcome);
     }
     if let Some(section) = takeover_section {
+        sections.push(section);
+    }
+
+    // WAF/CDN fingerprinting: identify infrastructure by HTTP response signatures.
+    let (fingerprint_entities, fingerprint_outcome, fingerprint_section) =
+        infrastructure_fingerprinting(transport, &domain, now_unix);
+    entities.extend(fingerprint_entities);
+    if let Some(outcome) = fingerprint_outcome {
+        outcomes.push(outcome);
+    }
+    if let Some(section) = fingerprint_section {
         sections.push(section);
     }
 
@@ -683,11 +695,13 @@ mod tests {
 /// Subdomain takeover detection: probe discovered subdomains for vulnerabilities.
 /// Extracts Domain entities that are subdomains, probes them for takeover signatures,
 /// and returns any findings as entities with evidence.
+/// Returns None for outcomes to avoid affecting domain scan success/failure determination;
+/// these findings are supplementary to core DNS/CT sources.
 fn subdomain_takeover_detection<T: Transport + ?Sized>(
     transport: &T,
     entities: &[Entity],
     root_domain: &str,
-    now_unix: u64,
+    _now_unix: u64,
 ) -> (Vec<Entity>, Option<SourceExecutionOutcome>, Option<String>) {
     // Extract subdomains: Domain entities where the value is a subdomain of root_domain
     let subdomains: Vec<String> = entities
@@ -705,12 +719,6 @@ fn subdomain_takeover_detection<T: Transport + ?Sized>(
     // Run takeover detection on subdomains
     let findings = subdomain_takeover::detect_in_subdomains(transport, &subdomains);
 
-    if findings.is_empty() {
-        let outcome = SourceExecutionOutcome::valid_zero("subdomain_takeover", now_unix);
-        let section = format!("subdomain_takeover: {}/{} subdomains probed", subdomains.len(), subdomains.len());
-        return (Vec::new(), Some(outcome), Some(section));
-    }
-
     // Convert findings into entities with evidence
     let mut result_entities = Vec::new();
     for finding in &findings {
@@ -720,12 +728,74 @@ fn subdomain_takeover_detection<T: Transport + ?Sized>(
         result_entities.push(entity);
     }
 
-    let count = findings.len();
-    let outcome = SourceExecutionOutcome::success("subdomain_takeover", now_unix, count);
+    if result_entities.is_empty() {
+        return (Vec::new(), None, None);
+    }
+
+    let count = result_entities.len();
     let section = format!(
         "subdomain_takeover: {}/{} subdomains vulnerable",
         count, subdomains.len()
     );
 
-    (result_entities, Some(outcome), Some(section))
+    // Return entities but no outcome to avoid affecting overall domain scan success determination
+    (result_entities, None, Some(section))
+}
+
+/// Infrastructure fingerprinting: detect WAF/CDN and web server technologies.
+/// Probes the target domain's HTTP headers for known signatures and reports findings.
+/// Returns None for outcomes to avoid affecting domain scan success/failure determination;
+/// these findings are supplementary to core DNS/CT sources.
+fn infrastructure_fingerprinting<T: Transport + ?Sized>(
+    transport: &T,
+    domain: &str,
+    _now_unix: u64,
+) -> (Vec<Entity>, Option<SourceExecutionOutcome>, Option<String>) {
+    // Try HTTPS first, fallback to HTTP
+    let findings = waf_fingerprint::fingerprint_domain(transport, domain);
+
+    if findings.is_empty() {
+        return (Vec::new(), None, None);
+    }
+
+    // Convert findings to entities
+    let mut result_entities = Vec::new();
+    for finding in &findings {
+        let mut entity = Entity::new(
+            EntityKind::Other,
+            &format!("{} ({})", finding.detected_service, finding.category),
+            finding.confidence,
+            "waf_fingerprint",
+        );
+
+        let mut evidence = Evidence::new(
+            EvidenceProvenance::for_scan("waf_fingerprint", "domain_cli"),
+            format!("Infrastructure detected: {}", finding.detected_service),
+        );
+        evidence
+            .attributes
+            .insert("category".to_owned(), finding.category.clone());
+        evidence
+            .attributes
+            .insert("confidence".to_owned(), finding.confidence_level().to_owned());
+        evidence
+            .attributes
+            .insert("url".to_owned(), finding.url.clone());
+
+        if !finding.headers_matched.is_empty() {
+            evidence.attributes.insert(
+                "headers".to_owned(),
+                finding.headers_matched.join("; "),
+            );
+        }
+
+        entity.add_evidence(evidence);
+        result_entities.push(entity);
+    }
+
+    let count = result_entities.len();
+    let section = format!("waf_fingerprint: {} infrastructure technologies detected", count);
+
+    // Return entities but no outcome to avoid affecting overall domain scan success determination
+    (result_entities, None, Some(section))
 }
