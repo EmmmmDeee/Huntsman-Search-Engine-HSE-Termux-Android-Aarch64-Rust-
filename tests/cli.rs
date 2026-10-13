@@ -925,3 +925,19 @@ fn run_history_show_prints_the_text_of_a_hostile_history_file_as_text() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_unusable_ca_bundle_fails_closed_with_its_reason() {
+    let out = bin()
+        .args(["fetch", "https://example.com/"])
+        .env("SSL_CERT_FILE", "/nonexistent/huntsman-ca.pem")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(69), "{stdout}");
+    assert!(stdout.contains("outcome=tls_failure"), "{stdout}");
+    assert!(
+        stdout.contains("SSL_CERT_FILE=/nonexistent/huntsman-ca.pem"),
+        "{stdout}"
+    );
+}

@@ -6,8 +6,11 @@
 //! output, redirects are not followed here (the fetch layer follows them and strips
 //! credentials when the origin changes), bodies are read under a hard byte cap, and
 //! the resolver only returns addresses the egress policy permits, so a hostname
-//! cannot be rebound onto the operator's own network.
+//! cannot be rebound onto the operator's own network. TLS trusts the bundled `WebPKI`
+//! roots, or exactly the PEM bundle `SSL_CERT_FILE` names (OpenSSL semantics), and
+//! fails closed when that bundle cannot be used.
 
+use std::ffi::OsStr;
 use std::fmt;
 use std::io::{self, Read};
 use std::net::SocketAddr;
@@ -15,10 +18,12 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use ureq::http::{self, Uri};
+use ureq::tls::{Certificate, PemItem, RootCerts, TlsConfig};
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 use crate::egress::EgressPolicy;
+use crate::environment::CA_BUNDLE_ENV;
 use crate::error::Error;
 use crate::source_outcome::SourceOutcomeKind;
 
@@ -388,17 +393,77 @@ impl Resolver for GuardedResolver {
     }
 }
 
+/// Upper bound on a CA bundle read through [`CA_BUNDLE_ENV`]; system bundles are ~200 KiB.
+const MAX_CA_BUNDLE: u64 = 4 * 1024 * 1024;
+
+/// The TLS trust roots for a transport, given the value of [`CA_BUNDLE_ENV`].
+///
+/// Unset or empty: the bundled `WebPKI` roots. Set: exactly the certificates in that PEM file,
+/// as OpenSSL treats `SSL_CERT_FILE`, so a TLS-inspecting proxy's CA or an operator's private
+/// CA can be trusted without rebuilding.
+///
+/// # Errors
+/// A message naming the variable and path when the file cannot be read, exceeds 4 MiB, is
+/// malformed PEM, or holds no certificate. Callers must fail closed on it, never fall back.
+pub fn trust_roots(ca_bundle: Option<&OsStr>) -> Result<RootCerts, String> {
+    let Some(path) = ca_bundle.filter(|path| !path.is_empty()) else {
+        return Ok(RootCerts::WebPki);
+    };
+    let shown = std::path::Path::new(path).display();
+    let fail = |why: String| format!("{CA_BUNDLE_ENV}={shown}: {why}");
+    let file = std::fs::File::open(path).map_err(|e| fail(e.to_string()))?;
+    let mut pem = Vec::new();
+    file.take(MAX_CA_BUNDLE + 1)
+        .read_to_end(&mut pem)
+        .map_err(|e| fail(e.to_string()))?;
+    if pem.len() as u64 > MAX_CA_BUNDLE {
+        return Err(fail(format!("larger than {MAX_CA_BUNDLE} bytes")));
+    }
+    let certs = certificates_from_pem(&pem).map_err(fail)?;
+    Ok(RootCerts::new_with_certs(&certs))
+}
+
+/// Every certificate in a PEM bundle; other PEM items (keys, CRLs) are ignored. **Pure.**
+fn certificates_from_pem(pem: &[u8]) -> Result<Vec<Certificate<'static>>, String> {
+    let mut certs = Vec::new();
+    for item in ureq::tls::parse_pem(pem) {
+        match item {
+            Ok(PemItem::Certificate(cert)) => certs.push(cert),
+            Ok(_) => {}
+            Err(e) => return Err(format!("malformed PEM: {e}")),
+        }
+    }
+    if certs.is_empty() {
+        return Err("no PEM certificate found".into());
+    }
+    Ok(certs)
+}
+
 /// The real transport: blocking, rustls, bounded, no redirects, egress-guarded.
 pub struct UreqTransport {
     agent: ureq::Agent,
     max_body: usize,
     timeout: Duration,
+    /// Why the configured trust roots are unusable; every request fails with it.
+    trust_error: Option<String>,
 }
 
 impl UreqTransport {
     #[must_use]
     pub fn new(config: &TransportConfig) -> Self {
+        Self::with_ca_bundle(config, crate::environment::ca_bundle().as_deref())
+    }
+
+    /// [`Self::new`] with the [`CA_BUNDLE_ENV`] value passed in rather than read.
+    #[must_use]
+    pub fn with_ca_bundle(config: &TransportConfig, ca_bundle: Option<&OsStr>) -> Self {
+        let (roots, trust_error) = match trust_roots(ca_bundle) {
+            Ok(roots) => (roots, None),
+            // Fail closed: an empty root set, and `send` refuses before any I/O.
+            Err(why) => (RootCerts::new_with_certs(&[]), Some(why)),
+        };
         let mut agent_config = ureq::Agent::config_builder()
+            .tls_config(TlsConfig::builder().root_certs(roots).build())
             .timeout_global(Some(config.timeout))
             .http_status_as_error(false)
             .max_redirects(0)
@@ -421,6 +486,7 @@ impl UreqTransport {
             agent,
             max_body: config.max_body,
             timeout: config.timeout,
+            trust_error,
         }
     }
 }
@@ -433,6 +499,13 @@ impl Default for UreqTransport {
 
 impl Transport for UreqTransport {
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        if let Some(why) = &self.trust_error {
+            return Err(TransportFailure {
+                kind: SourceOutcomeKind::TlsFailure,
+                detail: format!("TLS trust roots unusable: {why}"),
+                blocked: false,
+            });
+        }
         let invalid = |detail: String| TransportFailure {
             kind: SourceOutcomeKind::ProtocolDrift,
             detail,
@@ -539,6 +612,79 @@ fn map_ureq_error(err: &ureq::Error) -> TransportFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch_file(tag: &str, body: &[u8]) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("huntsman-http-{tag}-{}.pem", std::process::id()));
+        std::fs::write(&path, body).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        path
+    }
+
+    const ONE_CERT: &[u8] = b"-----BEGIN CERTIFICATE-----\nMAMCAQA=\n-----END CERTIFICATE-----\n";
+
+    #[test]
+    fn unset_or_empty_bundle_keeps_the_bundled_roots() {
+        assert!(matches!(trust_roots(None), Ok(RootCerts::WebPki)));
+        assert!(matches!(
+            trust_roots(Some(OsStr::new(""))),
+            Ok(RootCerts::WebPki)
+        ));
+    }
+
+    #[test]
+    fn a_bundle_replaces_the_roots_with_exactly_its_certificates() {
+        let two = [
+            ONE_CERT,
+            b"-----BEGIN PRIVATE KEY-----\nMAMCAQA=\n-----END PRIVATE KEY-----\n",
+            ONE_CERT,
+        ]
+        .concat();
+        let path = scratch_file("two", &two);
+        match trust_roots(Some(path.as_os_str())) {
+            Ok(RootCerts::Specific(certs)) => assert_eq!(certs.len(), 2),
+            other => panic!("{other:?}"),
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn an_unusable_bundle_is_an_error_naming_the_variable() {
+        let missing = std::env::temp_dir().join("huntsman-http-definitely-missing.pem");
+        let empty = scratch_file("empty", b"");
+        let junk = scratch_file(
+            "junk",
+            b"-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n",
+        );
+        for path in [&missing, &empty, &junk] {
+            match trust_roots(Some(path.as_os_str())) {
+                Err(why) => assert!(why.starts_with("SSL_CERT_FILE="), "{why}"),
+                Ok(roots) => panic!("{} accepted: {roots:?}", path.display()),
+            }
+        }
+        let _ = std::fs::remove_file(empty);
+        let _ = std::fs::remove_file(junk);
+    }
+
+    #[test]
+    fn an_unusable_bundle_fails_every_request_before_any_io() {
+        let missing = std::env::temp_dir().join("huntsman-http-definitely-missing.pem");
+        let transport =
+            UreqTransport::with_ca_bundle(&TransportConfig::default(), Some(missing.as_os_str()));
+        // A loopback URL: were the request sent, egress policy would refuse it with a
+        // different kind, so TlsFailure proves nothing was attempted.
+        match transport.send(&Request::get("https://127.0.0.1:9/")) {
+            Err(failure) => {
+                assert_eq!(failure.kind, SourceOutcomeKind::TlsFailure);
+                assert!(
+                    failure.detail.contains("SSL_CERT_FILE="),
+                    "{}",
+                    failure.detail
+                );
+                assert!(!failure.blocked);
+            }
+            Ok(response) => panic!("sent: {}", response.status),
+        }
+    }
 
     #[test]
     fn the_two_encoders_differ_only_in_how_a_space_is_written() {

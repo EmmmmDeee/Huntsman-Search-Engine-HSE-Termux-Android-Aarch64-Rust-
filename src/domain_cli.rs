@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use crate::canonical::canonical_domain;
 use crate::crtsh::{self, CrtShError};
 use crate::dns;
-use crate::entity::Entity;
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::error::Error;
 use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
@@ -97,7 +97,11 @@ pub fn run<T: Transport + ?Sized>(transport: &T, domain: &str, now_unix: u64) ->
 
     // DoH requests carry their own timeout, which the transport caps, so the caller's
     // transport (and its egress policy) serves DNS as it serves crt.sh.
-    let (outcome, section) = dns_outcome(dns::lookup_domain(transport, &domain), now_unix);
+    let dns_report = dns::lookup_domain(transport, &domain);
+    if let Some(report) = &dns_report {
+        entities.extend(dns_entities(report, "domain_cli"));
+    }
+    let (outcome, section) = dns_outcome(dns_report, now_unix);
     outcomes.push(outcome);
     if let Some(section) = section {
         sections.push(section);
@@ -134,6 +138,50 @@ pub fn run<T: Transport + ?Sized>(transport: &T, domain: &str, now_unix: u64) ->
     }
 }
 
+/// Entities the DNS answers establish: A/AAAA addresses, and NS/MX hosts (a null MX `.` names
+/// no host and is skipped). TXT answers stay in the rendered section; they are records, not
+/// entities.
+fn dns_entities(report: &dns::DomainDns, scan_id: &str) -> Vec<Entity> {
+    let mut entities = Vec::new();
+    for answer in &report.answers {
+        let provider = answer.answer.server.provider;
+        for record in &answer.answer.records {
+            let found = match answer.record_type {
+                dns::RecordType::A | dns::RecordType::Aaaa => record
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+                    .map(|ip| (EntityKind::IpAddress, ip.to_string())),
+                dns::RecordType::Ns => canonical_domain(record.trim_end_matches('.'))
+                    .map(|host| (EntityKind::Domain, host)),
+                dns::RecordType::Mx => record
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|host| canonical_domain(host.trim_end_matches('.')))
+                    .map(|host| (EntityKind::Domain, host)),
+                dns::RecordType::Soa | dns::RecordType::Txt | dns::RecordType::Ptr => None,
+            };
+            let Some((kind, value)) = found else { continue };
+            let mut entity = Entity::new(kind, &value, 0.9, scan_id);
+            entity.add_evidence(
+                Evidence::new(
+                    EvidenceProvenance::for_scan("dns", scan_id),
+                    format!(
+                        "{} {} -> {value} ({provider})",
+                        answer.record_type.as_str(),
+                        answer.name
+                    ),
+                )
+                .with_attr("record_type", answer.record_type.as_str())
+                .with_attr("name", &answer.name)
+                .with_attr("resolver", provider),
+            );
+            entities.push(entity);
+        }
+    }
+    crate::entity::merge_by_uid(&mut entities);
+    entities
+}
+
 /// The DNS source's outcome and rendered section. A lookup whose every query failed is a
 /// failed source, never a zero-answer success.
 fn dns_outcome(
@@ -153,6 +201,16 @@ fn dns_outcome(
         );
     };
     let section = Some(report.render());
+    // Every query answered NXDOMAIN or empty: the domain definitively has no records.
+    if report.answers.is_empty()
+        && !report.failures.is_empty()
+        && report
+            .failures
+            .iter()
+            .all(|failure| failure.error.kind == dns::ResolveErrorKind::Empty)
+    {
+        return (SourceExecutionOutcome::valid_zero("dns", now_unix), section);
+    }
     if let Some(first) = report
         .failures
         .first()
@@ -183,23 +241,24 @@ fn dns_outcome(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
-    use std::collections::VecDeque;
+    use std::cell::Cell;
 
     use super::{DomainRun, run};
+    use crate::entity::EntityKind;
     use crate::http::{Request, Response, Transport, TransportFailure};
     use crate::source_outcome::SourceOutcomeKind;
 
-    /// Answers `DoH` requests from a queue and fails everything else (`crt.sh`) with no response.
+    /// Answers `DoH` requests by record type from a fixed table (anything else is NXDOMAIN) and
+    /// fails everything else (`crt.sh`) with no response.
     struct Fake {
-        doh: RefCell<VecDeque<Result<Response, TransportFailure>>>,
+        answers: Vec<(&'static str, &'static str)>,
         sent: Cell<usize>,
     }
 
     impl Fake {
-        fn new(doh: Vec<Result<Response, TransportFailure>>) -> Self {
+        fn new(answers: Vec<(&'static str, &'static str)>) -> Self {
             Self {
-                doh: RefCell::new(doh.into()),
+                answers,
                 sent: Cell::new(0),
             }
         }
@@ -216,14 +275,26 @@ mod tests {
     impl Transport for Fake {
         fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
             self.sent.set(self.sent.get() + 1);
-            if request.url.contains("dns") {
-                self.doh
-                    .borrow_mut()
-                    .pop_front()
-                    .unwrap_or_else(|| Err(down()))
-            } else {
-                Err(down())
+            if !request.url.contains("dns") {
+                return Err(down());
             }
+            if self.answers.is_empty() {
+                return Err(down());
+            }
+            let body = self
+                .answers
+                .iter()
+                .find(|(qtype, _)| {
+                    request.url.contains(&format!("type={qtype}&"))
+                        || request.url.ends_with(&format!("type={qtype}"))
+                })
+                .map_or(r#"{"Status":3}"#, |(_, body)| *body);
+            Ok(Response {
+                status: 200,
+                headers: Vec::new(),
+                body: body.as_bytes().to_vec(),
+                truncated: false,
+            })
         }
     }
 
@@ -252,18 +323,58 @@ mod tests {
     }
 
     #[test]
-    fn a_dns_answer_with_crtsh_down_is_still_a_result() {
-        let a = Response {
-            status: 200,
-            headers: Vec::new(),
-            body: br#"{"Status":0,"Answer":[{"type":1,"data":"192.0.2.10"}]}"#.to_vec(),
-            truncated: false,
-        };
-        let fake = Fake::new(vec![Ok(a)]);
+    fn a_domain_with_no_records_is_a_valid_zero_not_an_outage() {
+        // Every DoH query answers NXDOMAIN; crt.sh is down.
+        let fake = Fake::new(vec![("NONE", "")]);
+        match run(&fake, "nonexistent.example", 1) {
+            DomainRun::Failed(message) => assert!(message.contains("no results"), "{message}"),
+            DomainRun::Printed { text, .. } => panic!("printed: {text}"),
+            DomainRun::Unavailable(m) | DomainRun::Network(m) => panic!("{m}"),
+        }
+    }
+
+    #[test]
+    fn dns_answers_become_entities_with_crtsh_down() {
+        let fake = Fake::new(vec![
+            (
+                "A",
+                r#"{"Status":0,"Answer":[{"type":1,"data":"192.0.2.10"}]}"#,
+            ),
+            (
+                "MX",
+                r#"{"Status":0,"Answer":[{"type":15,"data":"10 Mail.Example.COM."},{"type":15,"data":"0 ."}]}"#,
+            ),
+            (
+                "NS",
+                r#"{"Status":0,"Answer":[{"type":2,"data":"ns1.example.net."}]}"#,
+            ),
+        ]);
         match run(&fake, "example.com", 1) {
             DomainRun::Printed { text, report } => {
                 assert!(text.contains("192.0.2.10"), "{text}");
-                assert!(report.outcomes.iter().any(|o| o.kind.is_accepted()));
+                let found: Vec<(EntityKind, String)> = report
+                    .entities
+                    .iter()
+                    .map(|e| (e.kind.clone(), e.value.clone()))
+                    .collect();
+                for want in [
+                    (EntityKind::IpAddress, "192.0.2.10"),
+                    (EntityKind::Domain, "mail.example.com"),
+                    (EntityKind::Domain, "ns1.example.net"),
+                ] {
+                    assert!(
+                        found.iter().any(|(k, v)| *k == want.0 && v == want.1),
+                        "missing {want:?} in {found:?}"
+                    );
+                }
+                // The null MX names no host.
+                assert_eq!(found.len(), 3, "{found:?}");
+                assert!(
+                    report
+                        .entities
+                        .iter()
+                        .all(|e| e.evidence.iter().all(|ev| ev.provenance.source == "dns"))
+                );
             }
             DomainRun::Unavailable(m) | DomainRun::Network(m) | DomainRun::Failed(m) => {
                 panic!("{m}")

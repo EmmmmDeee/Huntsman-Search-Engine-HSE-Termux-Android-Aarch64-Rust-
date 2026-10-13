@@ -652,7 +652,12 @@ struct Row {
 impl Row {
     fn from_entity(entity: &Entity) -> Self {
         let (event_type, type_description) = sf_type(&entity.kind);
-        let evidence = entity.evidence.first();
+        // A target merged with what a source reported about it shows the report, not "seed".
+        let evidence = entity
+            .evidence
+            .iter()
+            .find(|item| item.provenance.source != "seed")
+            .or_else(|| entity.evidence.first());
         Self {
             source: evidence
                 .map(|item| item.provenance.source.clone())
@@ -1221,9 +1226,13 @@ mod tests {
             },
         };
         let run = run_scan(&asn, &scan, 1).unwrap_or_else(|e| panic!("{e}"));
-        // The registration record merges into the target row rather than duplicating it.
+        // The registration record merges into the target row rather than duplicating it,
+        // and that row shows the record rather than the seed placeholder.
         assert_eq!(run.body.lines().count(), 2, "{}", run.body);
-        assert!(run.body.contains("AS13335"), "{}", run.body);
+        let row = run.body.lines().nth(1).unwrap_or_default();
+        assert!(row.starts_with("cymru\t"), "{row}");
+        assert!(row.contains("CLOUDFLARENET, US"), "{row}");
+        assert!(row.ends_with("\tAS13335"), "{row}");
 
         let block = Fake::new(vec![Ok(doh(
             r#"{"Status":0,"Answer":[{"type":16,"data":"\"64500 | 192.0.2.0/24 | AU | apnic | 2001-01-01\""}]}"#,

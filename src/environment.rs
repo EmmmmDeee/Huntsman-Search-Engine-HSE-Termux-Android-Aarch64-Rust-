@@ -14,6 +14,8 @@ use std::ffi::OsString;
 
 /// The variable holding the user's home directory.
 pub const HOME_ENV: &str = "HOME";
+/// PEM CA bundle that replaces the bundled TLS roots (OpenSSL semantics).
+pub const CA_BUNDLE_ENV: &str = "SSL_CERT_FILE";
 /// The HIBP API key. It is read before any keys file.
 pub const HIBP_API_KEY_ENV: &str = "HIBP_API_KEY";
 /// The HIBP key under the Huntsman keys-file slot name. The same name is read from the environment.
@@ -66,6 +68,12 @@ pub const SERVE_TOKEN_ENV: &str = "HSE_AUTH_TOKEN";
 #[must_use]
 pub fn home() -> Option<OsString> {
     std::env::var_os(HOME_ENV)
+}
+
+/// The `SSL_CERT_FILE` path, when set; not necessarily Unicode.
+#[must_use]
+pub fn ca_bundle() -> Option<OsString> {
+    std::env::var_os(CA_BUNDLE_ENV)
 }
 
 /// The HIBP API key from the environment, when it is set and valid Unicode.

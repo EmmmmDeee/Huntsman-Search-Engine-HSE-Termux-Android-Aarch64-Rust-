@@ -192,6 +192,8 @@ Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or faile
 | `--max-redirects N` | Follow at most `N` redirects, 0–20 [5]. A credential is only sent to the origin it was approved for. |
 | `--timeout SECS` | Per-request timeout, 1–600 [20]. |
 
+TLS: every HTTPS request trusts the bundled WebPKI roots unless `SSL_CERT_FILE` names a PEM CA bundle, which then replaces them (as OpenSSL treats it), for a TLS-inspecting proxy or a private CA. A bundle that cannot be read, is over 4 MiB, is malformed, or holds no certificate fails closed: requests report `outcome=tls_failure` with the reason and nothing is sent.
+
 Slot names are upper-case environment-variable names (`A-Z`, `0-9`, `_`; starting with a letter; at most 64 characters). Keys are read at run time only: from the environment, from a file you name with `--keys` / `keys FILE`, or, without `--keys`, from `$HOME/.huntsman.env` (see above). Blank values and template placeholders (`insert_key_here`, `<your-key>`, `changeme`, `xxxx`) count as not configured. Output shows a 12-hex-digit fingerprint prefix, never a key value.
 
 `classify` also prints the causal outcome and the source-health action (`outcome=bot_waf`, `action=backoff`). A 403 challenge page is a WAF, not a credential failure. A 200 alone is `inconclusive` until rows are parsed.
