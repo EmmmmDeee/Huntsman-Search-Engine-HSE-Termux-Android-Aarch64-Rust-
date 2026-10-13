@@ -1,5 +1,9 @@
 use std::collections::BTreeSet;
 
+#[allow(dead_code)]
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 use huntsman_recon::evidence_ancestry::{
     EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, IndependenceBasis,
     IndependenceEvidence, IndependenceState,
@@ -123,26 +127,8 @@ fn invalid_independence_evidence_is_rejected() {
 
 #[test]
 fn deserialization_cannot_bypass_independence_validation() {
-    let invalid = r#"{
-        "nodes": {
-            "a": {"id":"a","source_family":"registry-a","parents":[],"derived":false},
-            "b": {"id":"b","source_family":"registry-b","parents":[],"derived":false}
-        },
-        "independence_evidence": {
-            "a": {
-                "b": {
-                    "left_root":"a",
-                    "right_root":"b",
-                    "basis":"ExplicitUpstreamProvenance",
-                    "method_id":"",
-                    "method_version":1,
-                    "supporting_artifact_ids":["sha256:fixture"],
-                    "observed_at_unix":1700000000
-                }
-            }
-        }
-    }"#;
-    assert!(serde_json::from_str::<EvidenceAncestryGraph>(invalid).is_err());
+    let invalid = fixtures::text("evidence_ancestry/blank_method_id_graph.json");
+    assert!(serde_json::from_str::<EvidenceAncestryGraph>(&invalid).is_err());
 
     let mut graph = EvidenceAncestryGraph::default();
     graph.insert(node("a", "registry-a", &[], false)).unwrap();

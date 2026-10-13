@@ -1,0 +1,11 @@
+{
+  "provenance": {
+    "source": "hibp",
+    "source_family": "abn_lookup",
+    "recorded_at_unix": 1790000000
+  },
+  "summary": "tampered record",
+  "attributes": {
+    "registry": "ABR"
+  }
+}

@@ -1,17 +1,14 @@
-use std::{cell::RefCell, collections::VecDeque, fs, path::Path};
+use std::{cell::RefCell, collections::VecDeque};
+
+#[allow(dead_code)]
+#[path = "support/fixtures.rs"]
+mod fixtures;
 
 use huntsman_recon::{
     http::{Request, Response, Transport, TransportFailure},
     source_outcome::SourceOutcomeKind,
     wayback::{WaybackQuery, wayback_lookup},
 };
-
-fn fixture(name: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/wayback")
-        .join(name);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-}
 
 struct FakeTransport {
     outcomes: RefCell<VecDeque<Result<Response, TransportFailure>>>,
@@ -50,7 +47,7 @@ fn response(status: u16, body: &str, truncated: bool) -> Response {
 }
 
 fn valid_body() -> String {
-    fixture("valid_response.json")
+    fixtures::text("wayback/valid_response.json")
 }
 
 #[test]
@@ -120,7 +117,7 @@ fn wayback_parser_accepts_valid_rows_and_isolates_malformed_rows() {
 
 #[test]
 fn wayback_empty_valid_response_is_valid_zero() {
-    let body = fixture("empty_response.json");
+    let body = fixtures::text("wayback/empty_response.json");
     let transport = FakeTransport::new(vec![Ok(response(200, &body, false))]);
     let result = wayback_lookup(
         &transport,
@@ -139,7 +136,7 @@ fn wayback_empty_valid_response_is_valid_zero() {
 
 #[test]
 fn wayback_body_truncation_propagates_without_manufacturing_absence() {
-    let body = fixture("empty_response.json");
+    let body = fixtures::text("wayback/empty_response.json");
     let transport = FakeTransport::new(vec![Ok(response(200, &body, true))]);
     let result = wayback_lookup(
         &transport,
@@ -196,7 +193,7 @@ fn wayback_non_2xx_never_emits_capture_evidence() {
 
 #[test]
 fn wayback_unusable_envelope_is_parser_drift() {
-    let body = fixture("invalid_envelope.json");
+    let body = fixtures::text("wayback/invalid_envelope.json");
     let transport = FakeTransport::new(vec![Ok(response(200, &body, false))]);
     let result = wayback_lookup(
         &transport,

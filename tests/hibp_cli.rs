@@ -7,9 +7,13 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+
+#[allow(dead_code)]
+#[path = "support/fixtures.rs"]
+mod fixtures;
 
 use huntsman_recon::hibp::cli::HibpCommand;
 use huntsman_recon::hibp::key::{EmbeddedSource, KeyLoader};
@@ -20,13 +24,6 @@ use huntsman_recon::http::{Method, Request, Response, Transport, TransportFailur
 
 const KEY: &str = "fake-hibp-key-5f0c1d2e3a4b";
 const PASSWORD: &str = "correct horse battery staple";
-
-fn fixture(name: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/hibp")
-        .join(name);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-}
 
 #[derive(Default)]
 struct Fake {
@@ -157,7 +154,7 @@ fn assert_attributed(stdout: &str, results: usize) {
 #[test]
 fn catalogue_breach_by_name_prints_every_field_with_attribution_and_no_key() {
     let (cmd, fake) = command(Some(KEY));
-    fake.push(200, &fixture("adobe_breach.json"), &[]);
+    fake.push(200, &fixtures::text("hibp/adobe_breach.json"), &[]);
     let out = run(&cmd, &["breach", "Adobe"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 1);
@@ -204,7 +201,11 @@ fn catalogue_breaches_are_complete_and_domain_filter_is_sent() {
     assert_eq!(out.stdout.matches("data_class=Passwords").count(), 250);
     assert_eq!(out.stdout.matches("title=<none>").count(), 250);
 
-    fake.push(200, &format!("[{}]", fixture("adobe_breach.json")), &[]);
+    fake.push(
+        200,
+        &format!("[{}]", fixtures::text("hibp/adobe_breach.json")),
+        &[],
+    );
     let out = run(&cmd, &["breaches", "--domain", "adobe.com"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 1);
@@ -223,7 +224,11 @@ fn catalogue_breaches_are_complete_and_domain_filter_is_sent() {
 #[test]
 fn t1589_002_breached_account_asks_for_the_full_model_with_the_key() {
     let (cmd, fake) = command(Some(KEY));
-    fake.push(200, &format!("[{}]", fixture("adobe_breach.json")), &[]);
+    fake.push(
+        200,
+        &format!("[{}]", fixtures::text("hibp/adobe_breach.json")),
+        &[],
+    );
     let out = run(&cmd, &["account", " a+b@example.com "], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 1);
@@ -259,7 +264,7 @@ fn t1589_002_breached_account_404_is_no_results() {
 #[test]
 fn t1589_002_pastes_print_every_paste_field_and_404_is_no_results() {
     let (cmd, fake) = command(Some(KEY));
-    fake.push(200, &fixture("pastes_response.json"), &[]);
+    fake.push(200, &fixtures::text("hibp/pastes_response.json"), &[]);
     let out = run(&cmd, &["pastes", "a@example.com"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 2);
@@ -298,7 +303,7 @@ fn t1589_002_pastes_print_every_paste_field_and_404_is_no_results() {
 #[test]
 fn t1589_001_password_range_lists_every_suffix_without_a_key() {
     let (cmd, fake) = command(Some(KEY));
-    let body = fixture("password_range.txt");
+    let body = fixtures::text("hibp/password_range.txt");
     assert!(
         body.contains("\r\n"),
         "Pwned Passwords range bodies are CRLF-separated"
@@ -440,7 +445,7 @@ fn t1589_001_password_is_never_echoed_on_error_paths() {
 #[test]
 fn subscription_prints_every_status_field_and_the_key_source_not_the_key() {
     let (cmd, fake) = command(Some(KEY));
-    fake.push(200, &fixture("subscription.json"), &[]);
+    fake.push(200, &fixtures::text("hibp/subscription.json"), &[]);
     let out = run(&cmd, &["subscription"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 1);
@@ -545,7 +550,7 @@ fn catalogue_breach_429_without_retry_after_reports_unknown() {
 #[test]
 fn t1589_002_absent_empty_and_literal_none_paste_fields_are_distinct() {
     let (cmd, fake) = command(Some(KEY));
-    fake.push(200, &fixture("paste_distinct_fields.json"), &[]);
+    fake.push(200, &fixtures::text("hibp/paste_distinct_fields.json"), &[]);
     let out = run(&cmd, &["pastes", "a@example.com"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     let lines: Vec<&str> = out.stdout.lines().skip(6).collect();
