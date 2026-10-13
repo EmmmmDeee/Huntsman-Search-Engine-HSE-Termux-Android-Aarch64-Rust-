@@ -15,6 +15,7 @@ pub mod analysis;
 pub mod archive;
 pub mod archive_bridge;
 pub mod apnic;
+pub mod apra;
 pub mod artifacts;
 pub mod asic_company;
 pub mod asic_director;
