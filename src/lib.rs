@@ -22,6 +22,7 @@ pub mod attack_catalog;
 pub mod attack_cli;
 pub mod attack_reporting;
 pub mod au_id;
+pub mod base64;
 pub mod benchmark;
 pub mod bluesky_user;
 pub mod breach;

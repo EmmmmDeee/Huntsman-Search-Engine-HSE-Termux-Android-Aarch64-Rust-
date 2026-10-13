@@ -101,14 +101,14 @@ impl Pkce {
     pub fn generate() -> Result<Self, HibpError> {
         let mut bytes = [0u8; 32];
         random_bytes(&mut bytes)?;
-        Ok(Self::from_verifier(&b64url(&bytes)))
+        Ok(Self::from_verifier(&crate::base64::url_unpadded(&bytes)))
     }
 
     /// Build from an existing verifier (RFC 7636 test vectors, or a stored
     /// in-flight authorization).
     #[must_use]
     pub fn from_verifier(verifier: &str) -> Self {
-        let challenge = b64url(&crate::sha256::sha256(verifier.as_bytes()));
+        let challenge = crate::base64::url_unpadded(&crate::sha256::sha256(verifier.as_bytes()));
         Self {
             verifier: verifier.to_string(),
             challenge,
@@ -138,26 +138,7 @@ impl Pkce {
 pub fn random_state() -> Result<String, HibpError> {
     let mut bytes = [0u8; 16];
     random_bytes(&mut bytes)?;
-    Ok(b64url(&bytes))
-}
-
-fn b64url(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let a = chunk[0];
-        let b = chunk.get(1).copied().unwrap_or(0);
-        let c = chunk.get(2).copied().unwrap_or(0);
-        out.push(char::from(TABLE[usize::from(a >> 2)]));
-        out.push(char::from(TABLE[usize::from(((a & 3) << 4) | (b >> 4))]));
-        if chunk.len() > 1 {
-            out.push(char::from(TABLE[usize::from(((b & 15) << 2) | (c >> 6))]));
-        }
-        if chunk.len() > 2 {
-            out.push(char::from(TABLE[usize::from(c & 63)]));
-        }
-    }
-    out
+    Ok(crate::base64::url_unpadded(&bytes))
 }
 
 fn random_bytes(bytes: &mut [u8]) -> Result<(), HibpError> {

@@ -390,6 +390,8 @@ The API surface:
 
 `/api/lookup` makes network requests on the operator's behalf, so it is guarded beyond the loopback `Host` check: it needs the `X-Huntsman-Lookup: 1` header (another origin cannot send it without a CORS preflight, which this server never approves), it refuses requests the browser marks `Sec-Fetch-Site` cross-site or same-site, and it needs the bearer token whenever `HSE_AUTH_TOKEN` is set. At most two lookups run at once, each on its own 4 MiB-stack worker; a third is answered `503`. Provider text is written into the page as text, never as markup.
 
+Every response carries `X-Frame-Options: DENY` and a `Content-Security-Policy` that loads nothing from elsewhere and forbids framing, so a site open in the same browser cannot lay the page under its own and turn taps into lookups. The page's policy admits only its own inline script and inline style, by SHA-256, and lets it request only this server.
+
 The listener bounds request headers to 16 KiB, applies finite read/write timeouts, supports `GET` and `HEAD`, and closes each connection after one response. Each connection has its own thread, at most 32 at a time; a further connection is answered `503` with `Retry-After: 1`, so a connection that sends nothing (as a browser's speculative ones do) holds up only itself.
 
 On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no root and no port below 1024: run `huntsman-recon serve` and open `http://127.0.0.1:8080/` in the phone's browser. Keys come from the same environment and `~/.huntsman.env` chain as the CLI, so export them in the Termux session before `serve`. Stored-result browsing, write endpoints, and the complete legacy API remain to be rebuilt.
