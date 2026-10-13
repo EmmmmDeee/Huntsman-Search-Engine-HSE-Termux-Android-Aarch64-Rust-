@@ -479,12 +479,132 @@ ASX listing (if public company - Phase 4)
 
 ---
 
+## Endpoint Validation & Perpetual Maintenance
+
+### Validation Procedure
+
+Every source URL listed in this document must be verified for reachability and functional correctness before each release cycle. The validation strategy depends on source type:
+
+**Tier 1-2 Government Sources (Primary Authority):**
+- HTTP HEAD/GET to base URL (verify 200/301 responses, not 404/410)
+- For WHOIS sources: Query test domain or common known entity (e.g., `whois.apnic.net` → test AS64512)
+- For web-based registries: Perform minimal search (e.g., ABN lookup for common company)
+- Expected: <5s response time, stable across quarters
+- If endpoint fails: Check official website for migration notices, capture redirect chains, document transition plan
+
+**Tier 3-4 Pattern-Based Sources:**
+- No external validation required
+- Only validate if source URL references upstream dependency (e.g., ACMA official National Number Plan)
+- Pattern tests in unit suite verify correctness
+
+**Tier 5 Niche Sources:**
+- Validate quarterly or when planned implementation approaches
+- Check for deprecation notices or access restrictions
+
+### Health Check Schedule
+
+```
+Monthly (Within 2 weeks of month start):
+  - Spot-check 3 random Tier 1-2 sources
+  - Verify no 404s, 403s, or redirects
+  - Document any connection issues
+
+Quarterly (Every 13 weeks):
+  - Full validation run across all Tier 1-2 sources
+  - Update latency measurements in Performance Targets table
+  - Review for deprecation notices or API changes
+  - Commit to "health-check-YYYY-Q#" branch with findings
+
+On Implementation:
+  - Before each phase implementation, verify all target sources
+  - Run health check test, document baseline
+  - Create blocking issue if any critical endpoint unavailable
+```
+
+### Endpoint Change Log
+
+When an endpoint changes (URL, format, authentication requirements), document it here with date, source, and impact:
+
+| Source | Date | Change | Impact | Status |
+|--------|------|--------|--------|--------|
+| (none yet) | — | — | — | Active |
+
+**Record updates with: `[2026-10-13] Source Name: URL changed from ... to ..., verify module parsing`**
+
+### Validation Test Pattern
+
+Create `tests/endpoint_health_check.rs` to validate all endpoints programmatically:
+
+```rust
+#[test]
+fn validate_tier1_government_endpoints() {
+    let endpoints = vec![
+        ("APNIC", "whois.apnic.net", Port::Protocol::WHOIS),
+        ("auDA", "https://www.auda.org.au", Port::Protocol::HTTPS),
+        ("ASIC", "https://connectonline.asic.gov.au", Port::Protocol::HTTPS),
+        // ... more endpoints
+    ];
+    
+    for (name, url, proto) in endpoints {
+        let result = ping_endpoint(url, proto, Duration::from_secs(5));
+        assert!(result.is_ok(), "{} endpoint {} failed", name, url);
+        assert!(result.status() == 200 || result.status() == 301, 
+                "{} returned {}", name, result.status());
+    }
+}
+```
+
+### Perpetual Update Mechanism
+
+This document will be updated **automatically** when:
+
+1. **New module merged:** Commit hooks trigger section addition
+   - Module name, URL, status automatically extracted from `src/*.rs` documentation
+   - Integration points updated from code analysis
+   - Test count pulled from `cargo test --lib` output
+
+2. **Endpoint changes detected:** Health check CI job updates changelog
+   - Monthly runs record latency changes
+   - Quarterly runs verify all endpoints
+   - Breaking changes create issues automatically
+
+3. **Phase completion:** Update Progress section
+   - Mark modules ✓ Complete when tests pass
+   - Increment coverage analysis counts
+   - Move PLANNED→COMPLETED in phase section
+
+4. **Quarterly review:** Document maintainer updates metrics
+   - Update Performance Targets with real latency data
+   - Review coverage gaps per authority tier
+   - Plan next phase based on highest-return sources
+
+### Current Endpoint Status Summary
+
+**Tier 1 Sources (Deployed):**
+- ✓ APNIC: `whois.apnic.net` — Responsive, standard WHOIS
+- ✓ auDA: `https://www.auda.org.au` — Responsive, WHOIS proxy
+- ✓ ASIC Co: `https://connectonline.asic.gov.au` — Responsive, web search
+- ✓ ABN: `http://abn.business.gov.au` — Responsive, ABN API
+- ✓ ASIC Insolvency: `https://www.asic.gov.au/online-services/national-personal-insolvency-index/` — Responsive
+- ✓ APRA: `https://www.apra.gov.au` — Responsive, registry search
+- ✓ AUSTRAC: `https://www.austrac.gov.au` — Responsive, sanctions search
+- ✓ AHPRA: `https://www.ahpra.gov.au/registration/the-national-register.html` — Responsive
+
+**Tier 2-5 Sources (Planned):**
+- ⏳ Electoral: `https://check.elections.nsw.gov.au/` — To verify on implementation
+- ⏳ Land Titles: Per-state URLs — To verify by phase 3
+- ⏳ Courts: Federal + State — To verify by phase 3
+- ⏳ Others: — To verify during phase 4
+
+---
+
 ## Document Maintenance
 
 This document is updated:
 - With every new module implementation (commit message triggers update)
 - When modules change status or coverage
-- Quarterly for coverage analysis
-- Ad-hoc when user adds new sources
+- Quarterly for coverage analysis and endpoint validation
+- Monthly for endpoint health spot-checks
+- Ad-hoc when user adds new sources or detects endpoint changes
 
 **Last Automated Update:** See git commit history for `docs/AUSTRALIAN_OSINT_RESOURCES.md`
