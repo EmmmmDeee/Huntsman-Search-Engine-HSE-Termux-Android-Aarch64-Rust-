@@ -9,6 +9,7 @@ use crate::relation::Relation;
 use crate::tags;
 
 mod rules;
+pub mod spiderfoot;
 
 pub use rules::{
     date_diff_days, rule_au_001_multi_breach, rule_au_002_identity_cluster,
@@ -257,9 +258,64 @@ static AU_110: FnRule = FnRule {
     runner: rule_au_110_shared_hosting_ip,
 };
 
-static REGISTRY: [&dyn Rule; 12] = [
-    &AU_001, &AU_002, &AU_003, &AU_019, &AU_021, &AU_060, &AU_062, &AU_063, &AU_070, &AU_071,
-    &AU_109, &AU_110,
+static SF_DEV_OR_TEST: FnRule = FnRule {
+    id: "dev_or_test_system",
+    name: "A host appearing to be a test or development system was found",
+    severity: Severity::Medium,
+    runner: spiderfoot::dev_or_test_system,
+};
+static SF_INTERNAL_HOST: FnRule = FnRule {
+    id: "internal_host",
+    name: "A host resolving to unroutable IPs was found",
+    severity: Severity::Medium,
+    runner: spiderfoot::internal_host,
+};
+static SF_CT_ONLY: FnRule = FnRule {
+    id: "host_only_from_certificatetransparency",
+    name: "Hostname only from certificate transparency",
+    severity: Severity::Low,
+    runner: spiderfoot::host_only_from_certificatetransparency,
+};
+static SF_OUTLIER_EMAIL: FnRule = FnRule {
+    id: "outlier_email",
+    name: "Outlier email address found",
+    severity: Severity::Low,
+    runner: spiderfoot::outlier_email,
+};
+static SF_OUTLIER_HOSTNAME: FnRule = FnRule {
+    id: "outlier_hostname",
+    name: "Outlier hostname",
+    severity: Severity::Low,
+    runner: spiderfoot::outlier_hostname,
+};
+static SF_OUTLIER_IP: FnRule = FnRule {
+    id: "outlier_ipaddress",
+    name: "Outlier IP address",
+    severity: Severity::Low,
+    runner: spiderfoot::outlier_ipaddress,
+};
+
+/// Huntsman's `AU-*` rules, then the `SpiderFoot` 4.0 rules that apply to Huntsman data under
+/// their `SpiderFoot` ids ([`spiderfoot`]).
+static REGISTRY: [&dyn Rule; 18] = [
+    &AU_001,
+    &AU_002,
+    &AU_003,
+    &AU_019,
+    &AU_021,
+    &AU_060,
+    &AU_062,
+    &AU_063,
+    &AU_070,
+    &AU_071,
+    &AU_109,
+    &AU_110,
+    &SF_DEV_OR_TEST,
+    &SF_INTERNAL_HOST,
+    &SF_CT_ONLY,
+    &SF_OUTLIER_EMAIL,
+    &SF_OUTLIER_HOSTNAME,
+    &SF_OUTLIER_IP,
 ];
 
 #[must_use]

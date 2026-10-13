@@ -93,7 +93,7 @@ fn unimplemented_option(flag: &str) -> Option<&'static str> {
         "-x" => "-x strict mode needs per-module event selection, which is not supported yet",
         "-l" => "-l starts the SpiderFoot web listener; use `huntsman-recon serve --bind IP:PORT`",
         "-C" | "--correlate" => {
-            "-C correlates a stored SpiderFoot scan; use `huntsman-recon correlate ARTIFACT`"
+            "-C re-correlates a stored SpiderFoot scan; sf scans are not stored, but every sf -s scan runs the correlation rules when it finishes, and `huntsman-recon correlate ARTIFACT` re-runs them on a stored artifact"
         }
         _ => return None,
     })
@@ -370,6 +370,9 @@ pub fn type_listing(quiet: bool) -> String {
 pub struct SfRun {
     pub body: String,
     pub warnings: Vec<String>,
+    /// `New correlation [id]: headline` lines from the correlation rules run over the scan's
+    /// entities after collection, as `SpiderFoot` 4.0 runs its rules at the end of every scan.
+    pub correlations: Vec<String>,
 }
 
 /// Execute one supported sf target over the already-rebuilt lookup front-ends.
@@ -443,9 +446,14 @@ pub fn run_scan<T: Transport + ?Sized>(
                 .any(|wanted| wanted.eq_ignore_ascii_case(row.event_type))
         });
     }
+    let correlations = crate::correlator::correlate_entities(&entities, "sf")
+        .into_iter()
+        .map(|c| format!("New correlation [{}]: {}", c.rule_id, c.description))
+        .collect();
     Ok(SfRun {
         body: render_rows(&rows, &scan.output)?,
         warnings,
+        correlations,
     })
 }
 

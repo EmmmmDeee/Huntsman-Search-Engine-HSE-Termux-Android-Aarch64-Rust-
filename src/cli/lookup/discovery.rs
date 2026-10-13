@@ -110,6 +110,9 @@ pub(in crate::cli) fn sf_cmd(args: &[String]) -> ExitCode {
                         for warning in &run.warnings {
                             eprintln!("[WARNING] {}", escape_controls(warning));
                         }
+                        for correlation in &run.correlations {
+                            eprintln!("[INFO] {}", escape_controls(correlation));
+                        }
                     }
                     ExitCode::SUCCESS
                 }
