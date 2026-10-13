@@ -7,7 +7,7 @@
 use std::env;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone] [--save-dir DIR] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -102,6 +102,7 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         Some("exposure") => lookup::exposure_cmd(&remaining.collect::<Vec<_>>()),
         Some("username") => lookup::username_cmd(&remaining.collect::<Vec<_>>()),
         Some("phone") => lookup::phone_cmd(&remaining.collect::<Vec<_>>()),
+        Some("domain") => lookup::domain_cmd(&remaining.collect::<Vec<_>>()),
         Some("scan") => lookup::scan_cmd(&remaining.collect::<Vec<_>>()),
         Some("investigate") => lookup::investigate_cmd(&remaining.collect::<Vec<_>>()),
         Some("query") => lookup::query_cmd(&remaining.collect::<Vec<_>>()),

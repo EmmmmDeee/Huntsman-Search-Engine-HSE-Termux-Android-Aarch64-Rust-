@@ -442,6 +442,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "explicit HIBP/Pwned Passwords lookup",
     },
     ReachableModule {
+        name: "domain_cli",
+        command: "domain DOMAIN | scan -k domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1590.001", "T1596.003"],
+        description: "combined crt.sh and DNS domain recon front-end",
+    },
+    ReachableModule {
         name: "crtsh",
         command: "recon crtsh TARGET",
         access: "keyless",

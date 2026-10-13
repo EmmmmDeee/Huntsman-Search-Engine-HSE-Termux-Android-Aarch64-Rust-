@@ -56,6 +56,7 @@ pub mod differential;
 pub mod directive_lock;
 pub mod dmarc;
 pub mod dns;
+pub mod domain_cli;
 pub mod domain_lifecycle;
 pub mod domains;
 pub mod egress;

@@ -300,6 +300,7 @@ fn query_path<T: Transport + ?Sized>(
             &FetchOptions {
                 max_redirects: MAX_REDIRECTS,
                 redirect_policy: RedirectPolicy::SameSite { site: SITE },
+                ..FetchOptions::default()
             },
             deadline,
             SRC,

@@ -4,7 +4,9 @@
 //! one deterministic contract and makes future recursive expansion reuse the
 //! exact same classifier.
 
-use crate::canonical::{canonical_email, canonical_handle, canonical_name, canonical_phone};
+use crate::canonical::{
+    canonical_domain, canonical_email, canonical_handle, canonical_name, canonical_phone,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanKind {
@@ -15,6 +17,8 @@ pub enum ScanKind {
     Exposure,
     Username,
     Phone,
+    /// Domain recon: crt.sh certificate transparency and DNS record lookups.
+    Domain,
 }
 
 impl ScanKind {
@@ -26,6 +30,7 @@ impl ScanKind {
             Self::Exposure => "exposure",
             Self::Username => "username",
             Self::Phone => "phone",
+            Self::Domain => "domain",
         }
     }
 }
@@ -41,6 +46,7 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
         "exposure" | "breach" => Ok(ScanKind::Exposure),
         "username" | "handle" => Ok(ScanKind::Username),
         "phone" => Ok(ScanKind::Phone),
+        "domain" => Ok(ScanKind::Domain),
         other => Err(other),
     }
 }
@@ -52,6 +58,7 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
         ScanKind::Email | ScanKind::Exposure => canonical_email(raw),
         ScanKind::Username => canonical_handle(raw),
         ScanKind::Phone => canonical_phone(raw),
+        ScanKind::Domain => canonical_domain(raw),
         // The people command owns the two-token rule and its offline skip path;
         // here only an empty name is non-canonical.
         ScanKind::People => {
@@ -74,6 +81,8 @@ pub fn infer_kind(selector: &str) -> ScanKind {
         ScanKind::Username
     } else if crate::phone_intl::canonicalize(selector).is_some() {
         ScanKind::Phone
+    } else if canonical_domain(selector).is_some() {
+        ScanKind::Domain
     } else {
         ScanKind::People
     }
@@ -144,7 +153,7 @@ mod tests {
         assert_eq!(parse_kind("name"), Ok(ScanKind::People));
         assert_eq!(parse_kind("handle"), Ok(ScanKind::Username));
         assert_eq!(parse_kind("phone"), Ok(ScanKind::Phone));
-        assert_eq!(parse_kind("domain"), Err("domain"));
+        assert_eq!(parse_kind("domain"), Ok(ScanKind::Domain));
     }
 
     #[test]
@@ -152,6 +161,7 @@ mod tests {
         assert_eq!(infer_kind("ada@example.org"), ScanKind::Email);
         assert_eq!(infer_kind("@ada"), ScanKind::Username);
         assert_eq!(infer_kind("+61412345678"), ScanKind::Phone);
+        assert_eq!(infer_kind("example.com"), ScanKind::Domain);
         assert_eq!(infer_kind("Ada Lovelace"), ScanKind::People);
     }
 

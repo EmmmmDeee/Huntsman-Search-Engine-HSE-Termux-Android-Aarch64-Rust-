@@ -9,6 +9,6 @@ mod scan;
 
 pub(super) use discovery::{investigate_cmd, query_cmd, search_cmd, sf_cmd, sources_cmd};
 pub(super) use profiles::{
-    Refused, collect, email_cmd, exposure_cmd, people_cmd, phone_cmd, username_cmd,
+    Refused, collect, domain_cmd, email_cmd, exposure_cmd, people_cmd, phone_cmd, username_cmd,
 };
 pub(super) use scan::scan_cmd;

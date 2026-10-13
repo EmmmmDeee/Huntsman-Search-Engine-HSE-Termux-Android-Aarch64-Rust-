@@ -1,0 +1,39 @@
+[package]
+name = "huntsman-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Asynchronous, memory-bounded OSINT engine core for unprivileged AArch64 runtimes"
+
+# Each runtime dependency states its purpose, as the root package does.
+[dependencies]
+# Non-blocking POSIX wire runtime (no raw sockets): TCP/UDP, timers, bounded channels, io-util for AsyncRead/Write.
+tokio = { version = "1.38", default-features = false, features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util"] }
+# Object-safe async methods for the injectable Transport and Collector traits.
+async-trait = "0.1"
+# Deterministic content-addressed entity IDs and raw-payload evidence digests.
+blake3 = "1.5"
+# Derive Display and Error for the typed domain error enum.
+thiserror = "2.0"
+# Serialise the provenance envelope and entity model.
+serde = { version = "1.0", features = ["derive"] }
+# JSON (de)serialisation for records and the From<serde_json::Error> mapping.
+serde_json = "1.0"
+# Structured diagnostics for the DAG orchestrator.
+tracing = "0.1"
+
+[dev-dependencies]
+# The async test harness for hermetic, offline DAG verification; test-util adds paused,
+# auto-advancing time so governor pacing is verified deterministically without sleeping.
+tokio = { version = "1.38", default-features = false, features = ["rt-multi-thread", "macros", "io-util", "test-util"] }
+
+# Lint levels live in the manifest, as the root package requires. unsafe cannot be reopened.
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
