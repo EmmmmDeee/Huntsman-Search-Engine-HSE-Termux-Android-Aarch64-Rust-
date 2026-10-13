@@ -451,6 +451,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "combined crt.sh and DNS domain recon front-end",
     },
     ReachableModule {
+        name: "certspotter",
+        command: "domain DOMAIN | scan DOMAIN | sf -s DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1596.003"],
+        description: "Cert Spotter certificate-transparency lookup",
+    },
+    ReachableModule {
         name: "crtsh",
         command: "recon crtsh TARGET",
         access: "keyless",

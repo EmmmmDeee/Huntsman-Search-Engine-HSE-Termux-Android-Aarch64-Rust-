@@ -1,7 +1,8 @@
 //! End-to-end front-end for `huntsman-recon domain` and the domain arm of `scan`.
 //!
-//! Runs crt.sh certificate transparency and DNS record lookups in sequence for a
-//! single domain, combining both result sets into one entity list and rendered report.
+//! Runs crt.sh and Cert Spotter certificate transparency and DNS record lookups in sequence
+//! for a single domain, combining the result sets into one entity list (names both CT indexes
+//! report merge into one entity) and rendered report.
 
 use std::path::PathBuf;
 
@@ -95,6 +96,11 @@ pub fn run<T: Transport + ?Sized>(transport: &T, domain: &str, now_unix: u64) ->
         }
     }
 
+    let (found, outcome, section) = certspotter_source(transport, &domain, now_unix);
+    entities.extend(found);
+    outcomes.push(outcome);
+    sections.push(section);
+
     // DoH requests carry their own timeout, which the transport caps, so the caller's
     // transport (and its egress policy) serves DNS as it serves crt.sh.
     let dns_report = dns::lookup_domain(transport, &domain);
@@ -107,6 +113,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, domain: &str, now_unix: u64) ->
         sections.push(section);
     }
 
+    crate::entity::merge_by_uid(&mut entities);
     let any_results = !entities.is_empty()
         || outcomes
             .iter()
@@ -135,6 +142,46 @@ pub fn run<T: Transport + ?Sized>(transport: &T, domain: &str, now_unix: u64) ->
     DomainRun::Printed {
         text,
         report: Report { entities, outcomes },
+    }
+}
+
+/// The Cert Spotter CT index for `domain`: its entities, outcome and report section. A run that
+/// stopped at the page cap is a success marked partial, never presented as complete.
+fn certspotter_source<T: Transport + ?Sized>(
+    transport: &T,
+    domain: &str,
+    now_unix: u64,
+) -> (Vec<Entity>, SourceExecutionOutcome, String) {
+    match crate::certspotter::lookup(transport, domain, "domain_cli") {
+        Ok(report) => {
+            let count = report.entities.len();
+            let outcome = if report.complete {
+                SourceExecutionOutcome::success("certspotter", now_unix, count)
+            } else {
+                SourceExecutionOutcome::observed(
+                    "certspotter",
+                    now_unix,
+                    SourceOutcomeKind::Success,
+                    None,
+                    Some(count),
+                    format!("partial: stopped at {} pages", report.pages),
+                )
+            };
+            let partial = if report.complete { "" } else { " (partial)" };
+            let section = format!("certspotter: {count} certificate-transparency names{partial}");
+            (report.entities, outcome, section)
+        }
+        Err(failure) => {
+            let section = format!("certspotter: unavailable ({})", failure.detail);
+            let outcome = SourceExecutionOutcome::failed(
+                "certspotter",
+                now_unix,
+                failure.kind,
+                failure.http_status,
+                failure.detail,
+            );
+            (Vec::new(), outcome, section)
+        }
     }
 }
 
@@ -275,7 +322,7 @@ mod tests {
     impl Transport for Fake {
         fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
             self.sent.set(self.sent.get() + 1);
-            if !request.url.contains("dns") {
+            if !request.url.contains("type=") {
                 return Err(down());
             }
             if self.answers.is_empty() {

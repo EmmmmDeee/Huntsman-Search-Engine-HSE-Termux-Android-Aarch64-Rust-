@@ -366,6 +366,10 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 `network IP|CIDR|ASN [--save FILE]` maps an IPv4/IPv6 address (reverse DNS plus Team Cymru's covering announced prefix and origin AS), a CIDR netblock (the prefixes announced over its network address and their origin ASes) or an AS number written `AS13335`/`ASN13335` (its Team Cymru registration), all over DNS-over-HTTPS with no key. `scan` and `/api/lookup` infer this route for an address, CIDR or `AS` number, and `sf -s` uses the same front-end for IP, netblock and AS targets. Each source reports its own outcome; the run exits 69 only when no source answered. `--save` writes an unverified ledger that `verify` can reload.
 
+### Domain lookup
+
+`domain DOMAIN [--save FILE]` (also `scan DOMAIN`, `sf -s DOMAIN` and `/api/lookup?kind=domain`) combines two independent certificate-transparency indexes, crt.sh and the keyless Cert Spotter API, with DNS-over-HTTPS A/AAAA/MX/NS/TXT records. Addresses and name/mail hosts become entities; names both CT indexes report merge into one. Each source reports its own outcome, so a crt.sh outage leaves Cert Spotter and DNS results intact; Cert Spotter pagination stops at 10 pages and says `partial` when it does. A domain with no records is a definitive zero; no source answering exits 69.
+
 ### Phone lookup
 
 `phone NUMBER [--save FILE]` is offline. It canonicalises explicit international syntax and recognised Australian local numbers to E.164, resolves the international dialling prefix from the embedded legacy-compatible table, and enriches Australian numbers with numbering-plan line type plus coarse fixed-line allocation region. It does not guess the country of an ambiguous bare foreign national number and does not infer a mobile carrier. `--save` writes an unverified ledger that `verify` can reload.

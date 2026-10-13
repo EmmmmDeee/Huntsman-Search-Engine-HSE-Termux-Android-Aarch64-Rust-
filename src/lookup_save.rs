@@ -105,6 +105,7 @@ pub const EXPOSURE_POLICY: SavePolicy = SavePolicy {
 fn domain_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "crtsh" => ("crtsh", "src/crtsh.rs"),
+        "certspotter" => ("certspotter", "src/certspotter.rs"),
         "dns" => ("dns", "src/dns.rs"),
         _ => (source, "src/domain_cli.rs"),
     }

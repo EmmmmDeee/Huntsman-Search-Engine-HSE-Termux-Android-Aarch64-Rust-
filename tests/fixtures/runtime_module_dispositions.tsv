@@ -35,6 +35,7 @@ coverage	runtime	provider coverage and incompleteness semantics
 credential_origin	leaf	authentication authority boundary
 cross_scan	runtime	bounded historical scan bridge analysis
 crtsh	adapter	Certificate Transparency source client
+certspotter	adapter	Cert Spotter Certificate Transparency source client
 cymru	adapter	Team Cymru IP-to-ASN source client over the DoH pool
 deadline	leaf	shared per-lookup request budget
 dehashed	adapter	DeHashed exact-match source client and lineage-safe collector
