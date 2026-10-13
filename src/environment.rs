@@ -22,6 +22,9 @@ pub const HUNTSMAN_HIBP_KEY_ENV: &str = "HUNTSMAN_HIBP_KEY";
 pub const HIBP_RATE_LIMIT_ENV: &str = "HIBP_RATE_LIMIT_PER_MINUTE";
 /// The prefix of the per-provider cost variables. The provider id, upper-cased, follows it.
 pub const PROVIDER_COST_ENV_PREFIX: &str = "HSE_PROVIDER_COST_";
+/// A PEM bundle of root certificates that replaces the bundled Mozilla roots for every
+/// outbound TLS connection, for networks that intercept TLS with their own CA.
+pub const CA_BUNDLE_ENV: &str = "HUNTSMAN_CA_BUNDLE";
 
 // Credential slots: keys-file names that `keys::Keys::get` also reads from the environment.
 pub const ABUSECH_KEY_ENV: &str = "HUNTSMAN_ABUSECH_KEY";
@@ -66,6 +69,12 @@ pub const SERVE_TOKEN_ENV: &str = "HSE_AUTH_TOKEN";
 #[must_use]
 pub fn home() -> Option<OsString> {
     std::env::var_os(HOME_ENV)
+}
+
+/// The `HUNTSMAN_CA_BUNDLE` path, when it is set and not empty. It need not be valid Unicode.
+#[must_use]
+pub fn ca_bundle() -> Option<OsString> {
+    std::env::var_os(CA_BUNDLE_ENV).filter(|path| !path.is_empty())
 }
 
 /// The HIBP API key from the environment, when it is set and valid Unicode.
