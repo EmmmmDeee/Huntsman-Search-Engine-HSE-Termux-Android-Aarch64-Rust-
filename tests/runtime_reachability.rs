@@ -99,7 +99,17 @@ fn integration_spine_modules_are_runtime_reachable_by_policy() {
     }
 }
 
+/// The spine runs from the one shipped binary, so the prebuilt release reaches it too.
 #[test]
-fn executable_real_path_is_retained() {
-    assert!(root().join("src/bin/investigate.rs").is_file());
+fn the_shipped_binary_runs_the_spine() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
+        .args(["plan", "example.com"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("termination="));
 }

@@ -77,13 +77,14 @@ fn a_lookup_saves_its_ledger_and_exits_141_when_the_reader_has_gone() {
 }
 
 #[test]
-fn investigate_saves_its_session_and_exits_141_when_the_reader_has_gone() {
-    let dir = scratch("investigate");
+fn plan_saves_its_session_and_exits_141_when_the_reader_has_gone() {
+    let dir = scratch("plan");
     let sessions = dir.join("sessions");
     let out = run_with_closed_stdout(command(
-        env!("CARGO_BIN_EXE_investigate"),
+        env!("CARGO_BIN_EXE_huntsman-recon"),
         &dir,
         &[
+            "plan",
             "--session-dir",
             sessions.to_str().unwrap(),
             "ada@example.com",
@@ -112,25 +113,19 @@ fn a_full_output_device_is_an_output_error_named_in_one_line() {
         return;
     }
     let dir = scratch("full");
-    for program in [
-        env!("CARGO_BIN_EXE_huntsman-recon"),
-        env!("CARGO_BIN_EXE_investigate"),
-    ] {
-        let out = command(program, &dir, &["--version"])
-            .stdout(Stdio::from(fs::File::create(full).unwrap()))
-            .output()
-            .unwrap();
-        assert_eq!(
-            out.status.code(),
-            Some(i32::from(EX_IOERR)),
-            "{program}: {}",
-            stderr(&out)
-        );
-        assert_eq!(
-            stderr(&out),
-            "output write failed: No space left on device (os error 28)\n",
-            "{program}"
-        );
-    }
+    let out = command(env!("CARGO_BIN_EXE_huntsman-recon"), &dir, &["--version"])
+        .stdout(Stdio::from(fs::File::create(full).unwrap()))
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(i32::from(EX_IOERR)),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        stderr(&out),
+        "output write failed: No space left on device (os error 28)\n"
+    );
     let _ = fs::remove_dir_all(&dir);
 }

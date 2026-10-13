@@ -2,15 +2,16 @@
 
 The reconstructed Huntsman runtime now has one bounded composition path for offline investigations. The path is designed for Termux/Android AArch64 constraints and preserves evidence provenance rather than treating provider count as corroboration.
 
-## Offline executable
+## Offline command
 
 ```text
-investigate SEED [SEED ...]
+huntsman-recon plan [--session-dir DIR] SEED [SEED ...]
+huntsman-recon plan --load-session DIR ID
 ```
 
-The executable normalizes and deduplicates selectors, constructs a deterministic dispatch plan, converts explicit operator seeds into non-verifying observations, builds one provenance-aware analysis snapshot, runs graph/intelligence analysis, and renders bounded artifacts.
+The command normalizes and deduplicates selectors, constructs a deterministic dispatch plan, converts explicit operator seeds into non-verifying observations, builds one provenance-aware analysis snapshot, runs graph/intelligence analysis, and renders bounded artifacts.
 
-It does **not** execute the planned external source routes. Its output therefore proves the integration/runtime path, not live provider coverage.
+`--session-dir DIR` saves the run as a session through the bounded atomic session store, and `--load-session DIR ID` prints a saved one. It does **not** execute the planned external source routes. Its output therefore proves the integration/runtime path, not live provider coverage.
 
 ## Composition
 
