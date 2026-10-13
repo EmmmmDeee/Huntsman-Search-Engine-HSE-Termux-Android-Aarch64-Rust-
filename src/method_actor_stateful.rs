@@ -1,42 +1,40 @@
-//! Stateful method actors with context preservation across batches.
+//! Stateful method actors that keep a context across batches.
 //!
-//! Extends the base method actor framework with the ability to maintain state
-//! and context across batch boundaries. Useful for operations that require
-//! accumulation, learning, or stream-wide decisions.
-//!
-//! State is preserved across batches but isolated per pipeline execution.
+//! The actor owns its context and drives the context's lifecycle itself: `initialize`
+//! before the first batch, `after_batch` after every batch, and `finalize` when the
+//! pipeline finalizes its actors. Context therefore persists for the life of the actor.
 
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
-use crate::method_actor::{ActorMetadata, ActorResult, MethodActor};
+use crate::method_actor::{ActorError, ActorMetadata, ActorResult, MethodActor};
 
 /// Context data that persists across batch processing.
 pub trait ActorContext: Send + Sync {
-    /// Called at the start of pipeline execution.
+    /// Called once, before the first batch.
     fn initialize(&mut self) -> ActorResult<()> {
         Ok(())
     }
 
-    /// Called after each batch is processed.
+    /// Called after each batch with its zero-based index and the number of items received.
     fn after_batch(&mut self, _batch_num: usize, _items_processed: usize) -> ActorResult<()> {
         Ok(())
     }
 
-    /// Called at the end of pipeline execution.
+    /// Called when the owning pipeline finalizes its actors.
     fn finalize(&mut self) -> ActorResult<()> {
         Ok(())
     }
 
-    /// Get the current state as a string for debugging.
+    /// Current state rendered for debugging.
     fn debug_state(&self) -> String {
         "{}".to_string()
     }
 }
 
-/// Simple empty context for stateless actors.
+/// Context for actors that need no state.
 #[derive(Debug, Clone, Default)]
 pub struct EmptyContext;
 
@@ -46,69 +44,46 @@ impl ActorContext for EmptyContext {}
 pub type StatefulProcessFn<C> =
     Arc<dyn Fn(Vec<String>, &mut C) -> ActorResult<Vec<String>> + Send + Sync>;
 
-/// A generic stateful actor that maintains context across batches.
+struct Guarded<C> {
+    context: C,
+    batches: usize,
+}
+
+/// A method actor that owns a context and drives its lifecycle.
 pub struct StatefulMethodActor<C: ActorContext> {
     metadata: ActorMetadata,
-    context: Arc<Mutex<C>>,
+    state: Mutex<Guarded<C>>,
     process_fn: StatefulProcessFn<C>,
 }
 
 impl<C: ActorContext + 'static> StatefulMethodActor<C> {
-    /// Create a stateful actor.
-    pub fn new(metadata: ActorMetadata, context: C, process_fn: StatefulProcessFn<C>) -> Self {
+    /// Create a stateful actor. Its metadata is marked as not stateless.
+    pub fn new(mut metadata: ActorMetadata, context: C, process_fn: StatefulProcessFn<C>) -> Self {
+        metadata.is_stateless = false;
         Self {
             metadata,
-            context: Arc::new(Mutex::new(context)),
+            state: Mutex::new(Guarded {
+                context,
+                batches: 0,
+            }),
             process_fn,
         }
     }
 
-    /// Get access to the context for introspection.
+    fn lock(&self) -> ActorResult<MutexGuard<'_, Guarded<C>>> {
+        self.state.lock().map_err(|_| {
+            ActorError::ExecutionInterrupted("actor context lock poisoned".to_string())
+        })
+    }
+
+    /// The context's debug rendering.
     pub fn context_debug(&self) -> ActorResult<String> {
-        self.context
-            .lock()
-            .map_err(|_| {
-                crate::method_actor::ActorError::ExecutionInterrupted(
-                    "failed to acquire context lock".to_string(),
-                )
-            })
-            .map(|ctx| ctx.debug_state())
+        Ok(self.lock()?.context.debug_state())
     }
 
-    /// Initialize the context.
-    pub fn initialize_context(&self) -> ActorResult<()> {
-        self.context
-            .lock()
-            .map_err(|_| {
-                crate::method_actor::ActorError::ExecutionInterrupted(
-                    "failed to acquire context lock".to_string(),
-                )
-            })?
-            .initialize()
-    }
-
-    /// Signal end of batch processing.
-    pub fn after_batch(&self, batch_num: usize, items: usize) -> ActorResult<()> {
-        self.context
-            .lock()
-            .map_err(|_| {
-                crate::method_actor::ActorError::ExecutionInterrupted(
-                    "failed to acquire context lock".to_string(),
-                )
-            })?
-            .after_batch(batch_num, items)
-    }
-
-    /// Finalize the context.
-    pub fn finalize_context(&self) -> ActorResult<()> {
-        self.context
-            .lock()
-            .map_err(|_| {
-                crate::method_actor::ActorError::ExecutionInterrupted(
-                    "failed to acquire context lock".to_string(),
-                )
-            })?
-            .finalize()
+    /// Number of batches this actor has processed.
+    pub fn batches_processed(&self) -> ActorResult<usize> {
+        Ok(self.lock()?.batches)
     }
 }
 
@@ -118,54 +93,51 @@ impl<C: ActorContext + 'static> MethodActor for StatefulMethodActor<C> {
     }
 
     fn process(&self, items: Vec<String>) -> ActorResult<Vec<String>> {
-        let mut context = self.context.lock().map_err(|_| {
-            crate::method_actor::ActorError::ExecutionInterrupted(
-                "failed to acquire context lock".to_string(),
-            )
-        })?;
-        (self.process_fn)(items, &mut *context)
+        let mut state = self.lock()?;
+        let batch = state.batches;
+        if batch == 0 {
+            state.context.initialize()?;
+        }
+        let received = items.len();
+        let output = (self.process_fn)(items, &mut state.context)?;
+        state.context.after_batch(batch, received)?;
+        state.batches = batch + 1;
+        Ok(output)
     }
 
     fn finalize(&self) -> ActorResult<()> {
-        self.finalize_context()
+        self.lock()?.context.finalize()
     }
 }
 
-/// Context for collecting statistics about processed items.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Context that counts items and batches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatisticsContext {
     pub total_items_processed: usize,
     pub total_items_output: usize,
     pub batches_processed: usize,
-    pub min_batch_size: usize,
+    /// Smallest batch seen; `None` until the first batch.
+    pub min_batch_size: Option<usize>,
     pub max_batch_size: usize,
-}
-
-impl Default for StatisticsContext {
-    fn default() -> Self {
-        Self {
-            total_items_processed: 0,
-            total_items_output: 0,
-            batches_processed: 0,
-            min_batch_size: usize::MAX,
-            max_batch_size: 0,
-        }
-    }
 }
 
 impl ActorContext for StatisticsContext {
     fn after_batch(&mut self, _: usize, items_processed: usize) -> ActorResult<()> {
         self.total_items_processed += items_processed;
         self.batches_processed += 1;
-        self.min_batch_size = self.min_batch_size.min(items_processed);
+        self.min_batch_size = Some(
+            self.min_batch_size
+                .map_or(items_processed, |min| min.min(items_processed)),
+        );
         self.max_batch_size = self.max_batch_size.max(items_processed);
         Ok(())
     }
 
     fn debug_state(&self) -> String {
         format!(
-            "{{processed: {}, batches: {}, min: {}, max: {}}}",
+            "{{processed: {}, output: {}, batches: {}, min: {:?}, max: {}}}",
             self.total_items_processed,
+            self.total_items_output,
             self.batches_processed,
             self.min_batch_size,
             self.max_batch_size
@@ -173,38 +145,26 @@ impl ActorContext for StatisticsContext {
     }
 }
 
-/// Context for deduplicating items while tracking seen values.
-#[derive(Debug, Clone)]
-pub struct DeduplicationContextWithTracking {
-    seen: Arc<Mutex<std::collections::HashSet<String>>>,
-    total_duplicates: usize,
+/// Context that counts how often each item has been seen.
+#[derive(Debug, Clone, Default)]
+pub struct OccurrenceContext {
+    counts: HashMap<String, usize>,
 }
 
-impl Default for DeduplicationContextWithTracking {
-    fn default() -> Self {
-        Self {
-            seen: Arc::new(Mutex::new(std::collections::HashSet::new())),
-            total_duplicates: 0,
-        }
-    }
-}
-
-impl ActorContext for DeduplicationContextWithTracking {
+impl ActorContext for OccurrenceContext {
     fn debug_state(&self) -> String {
-        let seen = self.seen.lock().map_or(0, |s| s.len());
-        format!("{{seen: {}, duplicates: {}}}", seen, self.total_duplicates)
+        format!("{{tracked_items: {}}}", self.counts.len())
     }
 }
 
-/// Create an actor that collects statistics about processing.
+/// Statistics-collecting pass-through actor, kept concrete so callers can read its stats.
 #[must_use]
-pub fn statistics_tracking_actor() -> Arc<dyn MethodActor> {
+pub fn statistics_tracking_actor() -> Arc<StatefulMethodActor<StatisticsContext>> {
     let metadata = ActorMetadata::new("statistics_tracker", "Track Processing Statistics")
         .with_cost_estimate(8);
-    let context = StatisticsContext::default();
     Arc::new(StatefulMethodActor::new(
         metadata,
-        context,
+        StatisticsContext::default(),
         Arc::new(|items, ctx: &mut StatisticsContext| {
             ctx.total_items_output += items.len();
             Ok(items)
@@ -212,49 +172,25 @@ pub fn statistics_tracking_actor() -> Arc<dyn MethodActor> {
     ))
 }
 
-/// Create an actor that filters items above a count threshold, tracking occurrences.
+/// Emit an item once it has been seen `threshold` times across all batches so far,
+/// and on every later sighting.
 #[must_use]
 pub fn occurrence_filter_actor(threshold: usize) -> Arc<dyn MethodActor> {
     let metadata = ActorMetadata::new("occurrence_filter", "Filter by Occurrence Count")
         .with_cost_estimate(15);
-
-    #[derive(Debug, Clone)]
-    struct OccurrenceContext {
-        counts: Arc<Mutex<std::collections::HashMap<String, usize>>>,
-    }
-
-    impl Default for OccurrenceContext {
-        fn default() -> Self {
-            Self {
-                counts: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            }
-        }
-    }
-
-    impl ActorContext for OccurrenceContext {
-        fn debug_state(&self) -> String {
-            let counts = self.counts.lock().map_or(0, |m| m.len());
-            format!("{{tracked_items: {counts}}}")
-        }
-    }
-
-    let context = OccurrenceContext::default();
     Arc::new(StatefulMethodActor::new(
         metadata,
-        context,
+        OccurrenceContext::default(),
         Arc::new(move |items, ctx: &mut OccurrenceContext| {
-            let mut counts = ctx.counts.lock().map_err(|_| {
-                crate::method_actor::ActorError::ExecutionInterrupted(
-                    "failed to acquire counts lock".to_string(),
-                )
-            })?;
-            for item in &items {
-                *counts.entry(item.clone()).or_insert(0) += 1;
+            let mut out = Vec::new();
+            for item in items {
+                let seen = ctx.counts.entry(item.clone()).or_insert(0);
+                *seen += 1;
+                if *seen >= threshold {
+                    out.push(item);
+                }
             }
-            Ok(items
-                .into_iter()
-                .filter(|item| counts.get(item).copied().unwrap_or(0) >= threshold)
-                .collect())
+            Ok(out)
         }),
     ))
 }
@@ -262,40 +198,54 @@ pub fn occurrence_filter_actor(threshold: usize) -> Arc<dyn MethodActor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::method_actor::PipelineBuilder;
 
-    #[test]
-    fn test_empty_context() {
-        let mut ctx = EmptyContext;
-        assert!(ctx.initialize().is_ok());
-        assert!(ctx.after_batch(1, 10).is_ok());
-        assert!(ctx.finalize().is_ok());
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| (*v).to_string()).collect()
     }
 
     #[test]
-    fn test_statistics_context() {
+    fn statistics_context_tracks_batches() {
         let mut ctx = StatisticsContext::default();
-        ctx.after_batch(1, 10).unwrap();
-        ctx.after_batch(2, 20).unwrap();
-        ctx.after_batch(3, 5).unwrap();
+        ctx.after_batch(0, 10).unwrap();
+        ctx.after_batch(1, 20).unwrap();
+        ctx.after_batch(2, 5).unwrap();
 
         assert_eq!(ctx.total_items_processed, 35);
         assert_eq!(ctx.batches_processed, 3);
-        assert_eq!(ctx.min_batch_size, 5);
+        assert_eq!(ctx.min_batch_size, Some(5));
         assert_eq!(ctx.max_batch_size, 20);
     }
 
     #[test]
-    fn test_statistics_tracking_actor() {
-        let actor = statistics_tracking_actor();
-        let result = actor
-            .process(vec!["a".to_string(), "b".to_string()])
+    fn the_actor_drives_the_context_lifecycle_across_pipeline_runs() {
+        let stats = statistics_tracking_actor();
+        let pipeline = PipelineBuilder::new()
+            .add_actor(stats.clone())
+            .build()
             .unwrap();
-        assert_eq!(result.len(), 2);
+
+        pipeline.execute(strings(&["a", "b"])).unwrap();
+        pipeline.execute(strings(&["c"])).unwrap();
+
+        assert_eq!(stats.batches_processed().unwrap(), 2);
+        assert!(!stats.metadata().is_stateless);
+        assert_eq!(
+            stats.context_debug().unwrap(),
+            "{processed: 3, output: 3, batches: 2, min: Some(1), max: 2}"
+        );
     }
 
     #[test]
-    fn test_deduplication_with_tracking() {
-        let ctx = DeduplicationContextWithTracking::default();
-        assert!(!ctx.debug_state().is_empty());
+    fn occurrence_filter_counts_across_batches_and_within_one() {
+        let actor = occurrence_filter_actor(2);
+        assert_eq!(
+            actor.process(strings(&["a", "b", "a"])).unwrap(),
+            strings(&["a"])
+        );
+        assert_eq!(
+            actor.process(strings(&["b", "c"])).unwrap(),
+            strings(&["b"])
+        );
     }
 }

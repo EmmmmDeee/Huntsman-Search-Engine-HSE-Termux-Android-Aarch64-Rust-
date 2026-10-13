@@ -1,18 +1,22 @@
-//! Composable method actors for concurrent pipeline processing.
+//! Composable method actors for sequential batch pipelines.
 //!
-//! A method actor is an atomic, stateless processing unit that transforms input data
-//! to output data. Actors are chained into pipelines for multi-stage processing with
-//! built-in batching, error handling, and optional concurrency.
+//! A method actor is a processing unit that transforms a batch of strings. Actors are
+//! ordered by their declared dependencies and run one after another; each stage sees
+//! the previous stage's output.
 //!
-//! # Example
-//! ```ignore
+//! ```
+//! use huntsman_recon::method_actor::PipelineBuilder;
+//! use huntsman_recon::method_actors::{deduplication_actor, lowercase_normalizer_actor};
+//!
 //! let pipeline = PipelineBuilder::new()
-//!     .add_actor(FilterActor::new(predicate))
-//!     .add_actor(TransformActor::new(transform_fn))
-//!     .add_actor(EnrichActor::new(enricher))
-//!     .build_with_concurrency(4)?;
-//!
-//! let results = pipeline.execute(input_batch).await?;
+//!     .add_actor(lowercase_normalizer_actor())
+//!     .add_actor(deduplication_actor())
+//!     .build()
+//!     .expect("pipeline");
+//! let run = pipeline
+//!     .execute(vec!["A@B.COM".to_string(), "a@b.com".to_string()])
+//!     .expect("run");
+//! assert_eq!(run.output, vec!["a@b.com".to_string()]);
 //! ```
 
 use std::fmt;
@@ -174,59 +178,35 @@ impl MethodActor for FunctionActor {
 }
 
 /// Configuration for pipeline execution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PipelineConfig {
-    /// Size of batches for processing.
-    pub batch_size: usize,
-    /// Maximum number of concurrent workers (0 = sequential).
-    pub concurrency: usize,
-    /// Whether to skip items that fail processing.
+    /// When a stage fails, pass its input through unchanged and record the failure
+    /// instead of aborting the run.
     pub skip_on_error: bool,
-    /// Maximum total items to process.
+    /// Cap on the items any stage receives; excess items are dropped before the stage.
     pub max_items: Option<usize>,
-    /// Timeout per batch in milliseconds (0 = no timeout).
-    pub timeout_ms: u64,
-}
-
-impl Default for PipelineConfig {
-    fn default() -> Self {
-        Self {
-            batch_size: 100,
-            concurrency: 0,
-            skip_on_error: false,
-            max_items: None,
-            timeout_ms: 0,
-        }
-    }
 }
 
 impl PipelineConfig {
-    /// Create with custom batch size.
-    #[must_use]
-    pub fn with_batch_size(mut self, size: usize) -> Self {
-        self.batch_size = size;
-        self
-    }
-
-    /// Create with concurrency enabled.
-    #[must_use]
-    pub fn with_concurrency(mut self, workers: usize) -> Self {
-        self.concurrency = workers;
-        self
-    }
-
-    /// Create allowing errors to be skipped.
+    /// Pass a failed stage's input through instead of aborting.
     #[must_use]
     pub fn allow_error_skip(mut self) -> Self {
         self.skip_on_error = true;
         self
     }
 
+    /// Cap the items each stage receives.
+    #[must_use]
+    pub fn with_max_items(mut self, max: usize) -> Self {
+        self.max_items = Some(max);
+        self
+    }
+
     /// Validate the configuration.
     pub fn validate(&self) -> ActorResult<()> {
-        if self.batch_size == 0 {
+        if self.max_items == Some(0) {
             return Err(ActorError::ConfigurationError(
-                "batch_size must be > 0".to_string(),
+                "max_items must be > 0".to_string(),
             ));
         }
         Ok(())
@@ -238,12 +218,14 @@ impl PipelineConfig {
 pub struct StageResult {
     /// The actor that produced this result.
     pub actor_id: String,
-    /// Total items processed.
+    /// Items the stage received.
     pub items_processed: usize,
-    /// Items that passed through successfully.
+    /// Items the stage emitted.
     pub items_successful: usize,
-    /// Items that failed.
+    /// Items passed through unprocessed because the stage failed under `skip_on_error`.
     pub items_failed: usize,
+    /// The stage's error, when it failed under `skip_on_error`.
+    pub error: Option<String>,
     /// Processing time in milliseconds.
     pub duration_ms: u64,
 }
@@ -308,20 +290,6 @@ impl PipelineBuilder {
     #[must_use]
     pub fn with_config(mut self, config: PipelineConfig) -> Self {
         self.config = config;
-        self
-    }
-
-    /// Set batch size.
-    #[must_use]
-    pub fn with_batch_size(mut self, size: usize) -> Self {
-        self.config.batch_size = size;
-        self
-    }
-
-    /// Set concurrency level.
-    #[must_use]
-    pub fn with_concurrency(mut self, workers: usize) -> Self {
-        self.config.concurrency = workers;
         self
     }
 
@@ -468,23 +436,24 @@ impl Pipeline {
 
             actor.validate(&items)?;
 
-            items = match actor.process(items) {
-                Ok(out) => out,
-                Err(e) => {
-                    if self.config.skip_on_error {
-                        Vec::new()
-                    } else {
-                        return Err(e);
-                    }
+            let received = items.len();
+            let (next, failed, error) = if self.config.skip_on_error {
+                match actor.process(items.clone()) {
+                    Ok(out) => (out, 0, None),
+                    Err(e) => (items, received, Some(e.to_string())),
                 }
+            } else {
+                (actor.process(items)?, 0, None)
             };
+            items = next;
 
             let duration = stage_start.elapsed();
             results.push(StageResult {
                 actor_id: metadata.id.clone(),
-                items_processed: metadata.max_batch_size,
-                items_successful: items.len(),
-                items_failed: 0,
+                items_processed: received,
+                items_successful: if error.is_some() { 0 } else { items.len() },
+                items_failed: failed,
+                error,
                 #[allow(clippy::cast_possible_truncation)]
                 duration_ms: duration.as_millis() as u64,
             });
@@ -534,16 +503,73 @@ mod tests {
     fn test_pipeline_config_validation() {
         assert!(
             PipelineConfig::default()
-                .with_batch_size(0)
+                .with_max_items(0)
                 .validate()
                 .is_err()
         );
         assert!(
             PipelineConfig::default()
-                .with_batch_size(1)
+                .with_max_items(1)
                 .validate()
                 .is_ok()
         );
+        assert!(PipelineConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn a_failed_stage_under_skip_passes_its_input_through_and_records_the_failure() {
+        let failing = Arc::new(FunctionActor::new(
+            ActorMetadata::new("fails", "Fails"),
+            Arc::new(|_| Err(ActorError::ProcessingError("boom".to_string()))),
+        ));
+        let upper = Arc::new(FunctionActor::new(
+            ActorMetadata::new("upper", "Upper").with_dependency("fails"),
+            Arc::new(|items: Vec<String>| {
+                Ok(items.into_iter().map(|s| s.to_uppercase()).collect())
+            }),
+        ));
+        let input = vec!["a".to_string(), "b".to_string()];
+
+        let strict = PipelineBuilder::new()
+            .add_actor(failing.clone())
+            .add_actor(upper.clone())
+            .build()
+            .unwrap();
+        assert!(strict.execute(input.clone()).is_err());
+
+        let lenient = PipelineBuilder::new()
+            .add_actor(failing)
+            .add_actor(upper)
+            .with_config(PipelineConfig::default().allow_error_skip())
+            .build()
+            .unwrap();
+        let run = lenient.execute(input).unwrap();
+        assert_eq!(run.output, vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(run.stages[0].items_processed, 2);
+        assert_eq!(run.stages[0].items_failed, 2);
+        assert_eq!(run.stages[0].items_successful, 0);
+        assert_eq!(
+            run.stages[0].error.as_deref(),
+            Some("processing error: boom")
+        );
+        assert_eq!(run.stages[1].items_processed, 2);
+        assert_eq!(run.stages[1].items_failed, 0);
+    }
+
+    #[test]
+    fn stage_counts_report_items_received_and_emitted() {
+        let keep_first = Arc::new(FunctionActor::new(
+            ActorMetadata::new("first", "First").with_max_batch_size(10),
+            Arc::new(|items: Vec<String>| Ok(items.into_iter().take(1).collect())),
+        ));
+        let run = PipelineBuilder::new()
+            .add_actor(keep_first)
+            .build()
+            .unwrap()
+            .execute(vec!["x".to_string(), "y".to_string(), "z".to_string()])
+            .unwrap();
+        assert_eq!(run.stages[0].items_processed, 3);
+        assert_eq!(run.stages[0].items_successful, 1);
     }
 
     #[test]
@@ -565,10 +591,7 @@ mod tests {
         let metadata = ActorMetadata::new("test", "Test");
         let actor = Arc::new(FunctionActor::new(metadata, Arc::new(Ok)));
 
-        let pipeline = PipelineBuilder::new()
-            .add_actor(actor)
-            .with_batch_size(50)
-            .build();
+        let pipeline = PipelineBuilder::new().add_actor(actor).build();
 
         assert!(pipeline.is_ok());
     }

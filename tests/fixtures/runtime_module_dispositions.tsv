@@ -155,3 +155,7 @@ web_server	runtime	embedded Web UI and read-only HTTP API
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
 meta_plan	runtime	meta-plan validation consumed by the runtime
 repository_identity	leaf	repository constants with no runtime caller
+method_actor	leaf	dependency-ordered batch pipeline for composing method actors
+method_actor_stateful	leaf	method actors that own a context across batches
+method_actors	leaf	general cleaning and shape-filter method actors over shared syntax rules
+method_actors_osint	leaf	indicator triage method actors over shared syntax and placeholder rules

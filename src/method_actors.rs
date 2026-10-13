@@ -1,7 +1,7 @@
-//! Concrete method actors for common Huntsman processing tasks.
+//! General-purpose method actors: cleaning, normalisation and shape filters.
 //!
-//! Provides pre-built actors for entity classification, normalization, validation,
-//! and enrichment that can be composed into investigation pipelines.
+//! Email and domain checks delegate to the crate's shared syntax rules. Lengths are
+//! counted in characters, never bytes.
 
 use std::sync::Arc;
 
@@ -29,7 +29,7 @@ pub fn lowercase_normalizer_actor() -> Arc<dyn MethodActor> {
     ))
 }
 
-/// Create an actor that deduplicates consecutive identical values.
+/// Create an actor that drops every repeat of a value already seen in the batch.
 #[must_use]
 pub fn deduplication_actor() -> Arc<dyn MethodActor> {
     let metadata = ActorMetadata::new("deduplicator", "Deduplicate Values").with_cost_estimate(15);
@@ -55,7 +55,7 @@ pub fn email_validator_actor() -> Arc<dyn MethodActor> {
         Arc::new(|items| {
             Ok(items
                 .into_iter()
-                .filter(|email| email.contains('@') && email.contains('.') && email.len() > 5)
+                .filter(|email| crate::validation::validate_email_syntax(email).valid)
                 .collect())
         }),
     ))
@@ -71,15 +71,13 @@ pub fn domain_validator_actor() -> Arc<dyn MethodActor> {
         Arc::new(|items| {
             Ok(items
                 .into_iter()
-                .filter(|domain| {
-                    domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
-                })
+                .filter(|domain| crate::value_syntax::canonical_domain(domain).is_some())
                 .collect())
         }),
     ))
 }
 
-/// Create an actor that extracts domains from email addresses.
+/// Create an actor that emits the lowercase domain of each syntactically valid email.
 #[must_use]
 pub fn email_domain_extractor_actor() -> Arc<dyn MethodActor> {
     let metadata = ActorMetadata::new("email_domain_extractor", "Extract Domain from Email")
@@ -89,7 +87,12 @@ pub fn email_domain_extractor_actor() -> Arc<dyn MethodActor> {
         Arc::new(|items| {
             Ok(items
                 .into_iter()
-                .filter_map(|email| email.split('@').nth(1).map(ToString::to_string))
+                .filter(|email| crate::validation::validate_email_syntax(email).valid)
+                .filter_map(|email| {
+                    email
+                        .rsplit_once('@')
+                        .and_then(|(_, host)| crate::value_syntax::canonical_domain(host))
+                })
                 .collect())
         }),
     ))
@@ -104,12 +107,9 @@ pub fn truncation_actor(max_length: usize) -> Arc<dyn MethodActor> {
         Arc::new(move |items| {
             Ok(items
                 .into_iter()
-                .map(|s| {
-                    if s.len() > max_length {
-                        s.chars().take(max_length).collect()
-                    } else {
-                        s
-                    }
+                .map(|s| match s.char_indices().nth(max_length) {
+                    Some((cut, _)) => s[..cut].to_string(),
+                    None => s,
                 })
                 .collect())
         }),
@@ -125,7 +125,7 @@ pub fn length_filter_actor(min_length: usize, max_length: usize) -> Arc<dyn Meth
         Arc::new(move |items| {
             Ok(items
                 .into_iter()
-                .filter(|s| s.len() >= min_length && s.len() <= max_length)
+                .filter(|s| (min_length..=max_length).contains(&s.chars().count()))
                 .collect())
         }),
     ))
@@ -217,13 +217,13 @@ pub fn char_counter_actor() -> Arc<dyn MethodActor> {
         Arc::new(|items| {
             Ok(items
                 .into_iter()
-                .map(|s| format!("{}:{}", s.len(), s))
+                .map(|s| format!("{}:{s}", s.chars().count()))
                 .collect())
         }),
     ))
 }
 
-/// Create an actor that parses "length:value" format and recovers value.
+/// Create an actor that recovers the value from "length:value"; the value may contain `:`.
 #[must_use]
 pub fn char_counter_parser_actor() -> Arc<dyn MethodActor> {
     let metadata =
@@ -233,7 +233,7 @@ pub fn char_counter_parser_actor() -> Arc<dyn MethodActor> {
         Arc::new(|items| {
             Ok(items
                 .into_iter()
-                .filter_map(|s| s.split(':').nth(1).map(ToString::to_string))
+                .filter_map(|s| s.split_once(':').map(|(_, value)| value.to_string()))
                 .collect())
         }),
     ))
@@ -361,5 +361,68 @@ mod tests {
             .unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result, vec!["ab".to_string(), "abc".to_string()]);
+    }
+
+    #[test]
+    fn email_and_domain_checks_use_the_shared_syntax_rules() {
+        let emails = email_validator_actor()
+            .process(vec![
+                "ada@analytical.org".to_string(),
+                ".ada@analytical.org".to_string(),
+                "ada@@analytical.org".to_string(),
+                "a@b.co".to_string(),
+            ])
+            .unwrap();
+        assert_eq!(
+            emails,
+            vec!["ada@analytical.org".to_string(), "a@b.co".to_string()]
+        );
+
+        let domains = domain_validator_actor()
+            .process(vec![
+                "analytical.org".to_string(),
+                "bad..org".to_string(),
+                "-x.org".to_string(),
+            ])
+            .unwrap();
+        assert_eq!(domains, vec!["analytical.org".to_string()]);
+
+        let extracted = email_domain_extractor_actor()
+            .process(vec![
+                "Ada@Analytical.ORG".to_string(),
+                "not-an-email".to_string(),
+            ])
+            .unwrap();
+        assert_eq!(extracted, vec!["analytical.org".to_string()]);
+    }
+
+    #[test]
+    fn lengths_count_characters_and_round_trip_values_with_colons() {
+        let truncated = truncation_actor(3)
+            .process(vec!["Zoë Å".to_string()])
+            .unwrap();
+        assert_eq!(truncated, vec!["Zoë".to_string()]);
+
+        let filtered = length_filter_actor(3, 3)
+            .process(vec!["Zoë".to_string()])
+            .unwrap();
+        assert_eq!(filtered, vec!["Zoë".to_string()]);
+
+        let pipeline = PipelineBuilder::new()
+            .add_actor(char_counter_actor())
+            .add_actor(char_counter_parser_actor())
+            .build()
+            .unwrap();
+        let url = "https://analytical.org:8443/notes".to_string();
+        assert_eq!(
+            pipeline.execute(vec![url.clone()]).unwrap().output,
+            vec![url]
+        );
+        assert_eq!(
+            char_counter_actor()
+                .process(vec!["Zoë".to_string()])
+                .unwrap(),
+            vec!["3:Zoë".to_string()]
+        );
     }
 }
