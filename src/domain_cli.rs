@@ -15,6 +15,7 @@ use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::recon::ReconTargetKind;
+use crate::redirect_chain;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::subdomain_takeover;
 use crate::waf_fingerprint;
@@ -120,27 +121,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, domain: &str, now_unix: u64) ->
         sections.push(section);
     }
 
-    // Subdomain takeover detection: probe discovered subdomains for takeover vulnerabilities.
-    let (takeover_entities, takeover_outcome, takeover_section) =
-        subdomain_takeover_detection(transport, &entities, &domain, now_unix);
-    entities.extend(takeover_entities);
-    if let Some(outcome) = takeover_outcome {
-        outcomes.push(outcome);
-    }
-    if let Some(section) = takeover_section {
-        sections.push(section);
-    }
-
-    // WAF/CDN fingerprinting: identify infrastructure by HTTP response signatures.
-    let (fingerprint_entities, fingerprint_outcome, fingerprint_section) =
-        infrastructure_fingerprinting(transport, &domain, now_unix);
-    entities.extend(fingerprint_entities);
-    if let Some(outcome) = fingerprint_outcome {
-        outcomes.push(outcome);
-    }
-    if let Some(section) = fingerprint_section {
-        sections.push(section);
-    }
+    supplementary_signals(transport, &domain, &mut entities, &mut sections);
 
     crate::entity::merge_by_uid(&mut entities);
     let any_results = !entities.is_empty()
@@ -438,14 +419,12 @@ fn dns_outcome(
 /// Subdomain takeover detection: probe discovered subdomains for vulnerabilities.
 /// Extracts Domain entities that are subdomains, probes them for takeover signatures,
 /// and returns any findings as entities with evidence.
-/// Returns None for outcomes to avoid affecting domain scan success/failure determination;
-/// these findings are supplementary to core DNS/CT sources.
+/// Supplementary to the DNS/CT sources, so it contributes no outcome.
 fn subdomain_takeover_detection<T: Transport + ?Sized>(
     transport: &T,
     entities: &[Entity],
     root_domain: &str,
-    _now_unix: u64,
-) -> (Vec<Entity>, Option<SourceExecutionOutcome>, Option<String>) {
+) -> (Vec<Entity>, Option<String>) {
     // Extract subdomains: Domain entities where the value is a subdomain of root_domain
     let subdomains: Vec<String> = entities
         .iter()
@@ -456,7 +435,7 @@ fn subdomain_takeover_detection<T: Transport + ?Sized>(
         .collect();
 
     if subdomains.is_empty() {
-        return (Vec::new(), None, None);
+        return (Vec::new(), None);
     }
 
     // Run takeover detection on subdomains
@@ -477,7 +456,7 @@ fn subdomain_takeover_detection<T: Transport + ?Sized>(
     }
 
     if result_entities.is_empty() {
-        return (Vec::new(), None, None);
+        return (Vec::new(), None);
     }
 
     let count = result_entities.len();
@@ -487,24 +466,21 @@ fn subdomain_takeover_detection<T: Transport + ?Sized>(
         subdomains.len()
     );
 
-    // Return entities but no outcome to avoid affecting overall domain scan success determination
-    (result_entities, None, Some(section))
+    (result_entities, Some(section))
 }
 
 /// Infrastructure fingerprinting: detect WAF/CDN and web server technologies.
 /// Probes the target domain's HTTP headers for known signatures and reports findings.
-/// Returns None for outcomes to avoid affecting domain scan success/failure determination;
-/// these findings are supplementary to core DNS/CT sources.
+/// Supplementary to the DNS/CT sources, so it contributes no outcome.
 fn infrastructure_fingerprinting<T: Transport + ?Sized>(
     transport: &T,
     domain: &str,
-    _now_unix: u64,
-) -> (Vec<Entity>, Option<SourceExecutionOutcome>, Option<String>) {
+) -> (Vec<Entity>, Option<String>) {
     // Try HTTPS first, fallback to HTTP
     let findings = waf_fingerprint::fingerprint_domain(transport, domain);
 
     if findings.is_empty() {
-        return (Vec::new(), None, None);
+        return (Vec::new(), None);
     }
 
     // Convert findings to entities
@@ -545,8 +521,93 @@ fn infrastructure_fingerprinting<T: Transport + ?Sized>(
     let count = result_entities.len();
     let section = format!("waf_fingerprint: {count} infrastructure technologies detected");
 
-    // Return entities but no outcome to avoid affecting overall domain scan success determination
-    (result_entities, None, Some(section))
+    (result_entities, Some(section))
+}
+
+/// Web-layer signals over the collected entities and the domain's web roots. None of them
+/// carries an outcome, so they never decide whether the scan succeeded: that stays with the
+/// CT, RDAP and DNS sources.
+fn supplementary_signals<T: Transport + ?Sized>(
+    transport: &T,
+    domain: &str,
+    entities: &mut Vec<Entity>,
+    sections: &mut Vec<String>,
+) {
+    let takeover = subdomain_takeover_detection(transport, entities, domain);
+    for (found, section) in [
+        takeover,
+        infrastructure_fingerprinting(transport, domain),
+        redirect_analysis(transport, domain),
+    ] {
+        entities.extend(found);
+        sections.extend(section);
+    }
+}
+
+/// Redirect analysis: follow the chains from the domain's http and https roots. The chain is
+/// evidence on the domain; a chain that ends on another domain also discovers that domain.
+/// Supplementary to the DNS/CT sources, so it contributes no outcome.
+fn redirect_analysis<T: Transport + ?Sized>(
+    transport: &T,
+    domain: &str,
+) -> (Vec<Entity>, Option<String>) {
+    let mut found = Vec::new();
+    let mut notes = Vec::new();
+    for scheme in ["http", "https"] {
+        let start = format!("{scheme}://{domain}");
+        let Some(chain) = redirect_chain::follow_redirects(transport, &start) else {
+            continue;
+        };
+        if chain.hops.is_empty() && chain.anomaly.is_none() {
+            continue;
+        }
+
+        let mut evidence = Evidence::new(
+            EvidenceProvenance::for_scan("redirect_chain", "domain_cli"),
+            format!(
+                "{start} -> {} in {} hop(s)",
+                chain.final_url,
+                chain.hops.len()
+            ),
+        );
+        evidence
+            .attributes
+            .insert("final_url".to_owned(), chain.final_url.clone());
+        evidence
+            .attributes
+            .insert("hops".to_owned(), chain.hops.len().to_string());
+        if let Some(anomaly) = chain.anomaly {
+            evidence
+                .attributes
+                .insert("anomaly".to_owned(), anomaly.as_str().to_owned());
+        }
+        let mut root = Entity::new(EntityKind::Domain, domain, 0.9, "redirect_chain");
+        root.add_evidence(evidence);
+        found.push(root);
+
+        if let Some(target) = redirect_chain::host_of(&chain.final_url)
+            .as_deref()
+            .and_then(canonical_domain)
+            .filter(|target| target != domain)
+        {
+            let mut entity = Entity::new(EntityKind::Domain, &target, 0.8, "redirect_chain");
+            entity.add_evidence(Evidence::new(
+                EvidenceProvenance::for_scan("redirect_chain", "domain_cli"),
+                format!("redirect target of {start}"),
+            ));
+            found.push(entity);
+        }
+
+        let anomaly = chain
+            .anomaly
+            .map_or(String::new(), |a| format!(", {}", a.as_str()));
+        notes.push(format!("{scheme} {} hop(s){anomaly}", chain.hops.len()));
+    }
+
+    if found.is_empty() {
+        return (Vec::new(), None);
+    }
+    (found, Some(format!("redirect_chain: {}", notes.join("; "))))
 }
 
 #[cfg(test)]
@@ -685,6 +746,70 @@ mod tests {
                         .iter()
                         .all(|e| e.evidence.iter().all(|ev| ev.provenance.source == "dns"))
                 );
+            }
+            DomainRun::Unavailable(m) | DomainRun::Network(m) | DomainRun::Failed(m) => {
+                panic!("{m}")
+            }
+        }
+    }
+
+    /// NXDOMAIN for every `DoH` query; the domain's web roots redirect to another domain.
+    struct Redirecting;
+
+    impl Transport for Redirecting {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            let (status, headers, body) = match request.url.as_str() {
+                "http://example.com" | "https://example.com" => (
+                    301,
+                    vec![("Location".to_owned(), "https://www.example.net/".to_owned())],
+                    "",
+                ),
+                "https://www.example.net/" => (200, Vec::new(), ""),
+                _ => (200, Vec::new(), r#"{"Status":3}"#),
+            };
+            Ok(Response {
+                status,
+                headers,
+                body: body.as_bytes().to_vec(),
+                truncated: false,
+            })
+        }
+    }
+
+    #[test]
+    fn a_redirect_off_the_domain_discovers_the_target_domain_with_evidence() {
+        match run(&Redirecting, "example.com", 1) {
+            DomainRun::Printed { text, report } => {
+                assert!(text.contains("redirect_chain: http 1 hop(s), cross_domain_redirect; https 1 hop(s), cross_domain_redirect"), "{text}");
+                let target = report
+                    .entities
+                    .iter()
+                    .find(|e| e.kind == EntityKind::Domain && e.value == "www.example.net")
+                    .expect("redirect target is a domain entity");
+                assert!(
+                    target
+                        .evidence
+                        .iter()
+                        .any(|ev| ev.provenance.source == "redirect_chain"),
+                    "{target:?}"
+                );
+                let root = report
+                    .entities
+                    .iter()
+                    .find(|e| e.kind == EntityKind::Domain && e.value == "example.com")
+                    .expect("root domain carries the chain");
+                let chains: Vec<&crate::entity::Evidence> = root
+                    .evidence
+                    .iter()
+                    .filter(|ev| ev.provenance.source == "redirect_chain")
+                    .collect();
+                assert_eq!(chains.len(), 2, "{root:?}");
+                assert!(chains.iter().all(|ev| {
+                    ev.attributes.get("anomaly").map(String::as_str)
+                        == Some("cross_domain_redirect")
+                        && ev.attributes.get("final_url").map(String::as_str)
+                            == Some("https://www.example.net/")
+                }));
             }
             DomainRun::Unavailable(m) | DomainRun::Network(m) | DomainRun::Failed(m) => {
                 panic!("{m}")
