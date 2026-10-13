@@ -117,7 +117,7 @@ fn no_command_prints_the_help_to_stderr_and_writes_nothing() {
     fs::create_dir_all(&dir).unwrap();
     let out = bin().current_dir(&dir).output().unwrap();
     assert_eq!(out.status.code(), Some(i32::from(EX_USAGE)));
-    assert!(out.stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(stderr.trim_end(), general_help().trim_end());
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "wrote into {dir:?}");

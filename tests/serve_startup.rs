@@ -37,7 +37,7 @@ fn a_taken_port_is_named_with_what_to_pass_instead() {
     let addr = taken.local_addr().unwrap();
     let out = serve(&["--bind", &addr.to_string()], &[]).output().unwrap();
     assert_eq!(out.status.code(), Some(i32::from(EX_UNAVAILABLE)));
-    assert!(out.stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
         format!(
