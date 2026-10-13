@@ -191,42 +191,126 @@ fn certspotter_source<T: Transport + ?Sized>(
 fn dns_entities(report: &dns::DomainDns, scan_id: &str) -> Vec<Entity> {
     let mut entities = Vec::new();
     for answer in &report.answers {
-        let provider = answer.answer.server.provider;
-        for record in &answer.answer.records {
-            let found = match answer.record_type {
-                dns::RecordType::A | dns::RecordType::Aaaa => record
-                    .parse::<std::net::IpAddr>()
-                    .ok()
-                    .map(|ip| (EntityKind::IpAddress, ip.to_string())),
-                dns::RecordType::Ns => canonical_domain(record.trim_end_matches('.'))
-                    .map(|host| (EntityKind::Domain, host)),
-                dns::RecordType::Mx => record
-                    .split_whitespace()
-                    .nth(1)
-                    .and_then(|host| canonical_domain(host.trim_end_matches('.')))
-                    .map(|host| (EntityKind::Domain, host)),
-                dns::RecordType::Soa | dns::RecordType::Txt | dns::RecordType::Ptr => None,
-            };
-            let Some((kind, value)) = found else { continue };
-            let mut entity = Entity::new(kind, &value, 0.9, scan_id);
-            entity.add_evidence(
-                Evidence::new(
-                    EvidenceProvenance::for_scan("dns", scan_id),
-                    format!(
-                        "{} {} -> {value} ({provider})",
-                        answer.record_type.as_str(),
-                        answer.name
-                    ),
-                )
-                .with_attr("record_type", answer.record_type.as_str())
-                .with_attr("name", &answer.name)
-                .with_attr("resolver", provider),
-            );
-            entities.push(entity);
-        }
+        entities.extend(answer_entities(
+            &answer.name,
+            answer.record_type,
+            &answer.answer,
+            scan_id,
+        ));
     }
     crate::entity::merge_by_uid(&mut entities);
     entities
+}
+
+/// The entities one DNS answer establishes, each carrying `dns` provenance. **Pure.**
+fn answer_entities(
+    name: &str,
+    record_type: dns::RecordType,
+    answer: &dns::ResolveAnswer,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let provider = answer.server.provider;
+    let mut entities = Vec::new();
+    for record in &answer.records {
+        let found = match record_type {
+            dns::RecordType::A | dns::RecordType::Aaaa => record
+                .parse::<std::net::IpAddr>()
+                .ok()
+                .map(|ip| (EntityKind::IpAddress, ip.to_string())),
+            dns::RecordType::Ns => canonical_domain(record.trim_end_matches('.'))
+                .map(|host| (EntityKind::Domain, host)),
+            dns::RecordType::Mx => record
+                .split_whitespace()
+                .nth(1)
+                .and_then(|host| canonical_domain(host.trim_end_matches('.')))
+                .map(|host| (EntityKind::Domain, host)),
+            dns::RecordType::Soa | dns::RecordType::Txt | dns::RecordType::Ptr => None,
+        };
+        let Some((kind, value)) = found else { continue };
+        let mut entity = Entity::new(kind, &value, 0.9, scan_id);
+        entity.add_evidence(
+            Evidence::new(
+                EvidenceProvenance::for_scan("dns", scan_id),
+                format!("{} {name} -> {value} ({provider})", record_type.as_str()),
+            )
+            .with_attr("record_type", record_type.as_str())
+            .with_attr("name", name)
+            .with_attr("resolver", provider),
+        );
+        entities.push(entity);
+    }
+    entities
+}
+
+/// Hosts resolved per [`resolve_hosts`] call; the rest are counted in `skipped`.
+pub const MAX_RESOLVED_HOSTS: usize = 32;
+/// Queries that may fail outright, with nothing resolved yet, before resolution stops: a
+/// resolver outage must not cost every remaining query its full timeout.
+const FAILURES_BEFORE_ABORT: usize = 4;
+
+/// What [`resolve_hosts`] did.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HostResolution {
+    /// Address entities, `dns` provenance.
+    pub entities: Vec<Entity>,
+    /// Hosts that got a definitive answer (addresses or none).
+    pub resolved: usize,
+    /// `HOST TYPE: reason` for each query that failed outright.
+    pub failures: Vec<String>,
+    /// In-scope hosts not attempted: over [`MAX_RESOLVED_HOSTS`], or after an abort.
+    pub skipped: usize,
+}
+
+/// Resolve the A and AAAA records of every in-scope subdomain (`Domain` entities tagged
+/// `subdomain`) among `entities`, as `SpiderFoot`'s `sfp_dnsresolve` resolves discovered hosts.
+/// Hosts are taken in sorted order, at most [`MAX_RESOLVED_HOSTS`]; an empty or NXDOMAIN answer
+/// is a definitive zero; resolution stops after [`FAILURES_BEFORE_ABORT`] outright failures with
+/// nothing resolved, and every host it did not reach is counted, never dropped silently.
+#[must_use]
+pub fn resolve_hosts<T: Transport + ?Sized>(
+    transport: &T,
+    entities: &[Entity],
+    scan_id: &str,
+) -> HostResolution {
+    let hosts: std::collections::BTreeSet<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain && e.has_tag(crate::tags::SUBDOMAIN))
+        .map(|e| e.value.as_str())
+        .collect();
+    let mut out = HostResolution::default();
+    for (index, host) in hosts.iter().enumerate() {
+        if index == MAX_RESOLVED_HOSTS
+            || (out.resolved == 0 && out.failures.len() >= FAILURES_BEFORE_ABORT)
+        {
+            out.skipped = hosts.len() - index;
+            break;
+        }
+        let mut definitive = false;
+        for record_type in [dns::RecordType::A, dns::RecordType::Aaaa] {
+            let query = dns::ResolveQuery {
+                name: (*host).to_owned(),
+                record_type,
+            };
+            match dns::resolve_with_pool(transport, &query) {
+                Ok(answer) => {
+                    definitive = true;
+                    out.entities
+                        .extend(answer_entities(host, record_type, &answer, scan_id));
+                }
+                Err(error) if error.kind == dns::ResolveErrorKind::Empty => definitive = true,
+                Err(error) => out.failures.push(format!(
+                    "{host} {}: {}",
+                    record_type.as_str(),
+                    error.kind.as_str()
+                )),
+            }
+        }
+        if definitive {
+            out.resolved += 1;
+        }
+    }
+    crate::entity::merge_by_uid(&mut out.entities);
+    out
 }
 
 /// The DNS source's outcome and rendered section. A lookup whose every query failed is a
@@ -427,5 +511,118 @@ mod tests {
                 panic!("{m}")
             }
         }
+    }
+
+    /// Answers `DoH` by host name: a matching `(name, type, body)` row, else NXDOMAIN; with
+    /// `down`, every request fails to connect.
+    struct ByName {
+        rows: Vec<(&'static str, &'static str, &'static str)>,
+        down: bool,
+        sent: Cell<usize>,
+    }
+
+    impl Transport for ByName {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            self.sent.set(self.sent.get() + 1);
+            if self.down {
+                return Err(down());
+            }
+            let body = self
+                .rows
+                .iter()
+                .find(|(name, qtype, _)| {
+                    request.url.contains(&format!("name={name}&"))
+                        && (request.url.contains(&format!("type={qtype}&"))
+                            || request.url.ends_with(&format!("type={qtype}")))
+                })
+                .map_or(r#"{"Status":3}"#, |(_, _, body)| *body);
+            Ok(Response {
+                status: 200,
+                headers: Vec::new(),
+                body: body.as_bytes().to_vec(),
+                truncated: false,
+            })
+        }
+    }
+
+    fn host(value: &str, subdomain: bool) -> crate::entity::Entity {
+        let mut entity = crate::entity::Entity::new(EntityKind::Domain, value, 0.75, "s");
+        if subdomain {
+            entity.tag(crate::tags::SUBDOMAIN);
+        }
+        entity
+    }
+
+    #[test]
+    fn discovered_subdomains_resolve_to_address_entities() {
+        let transport = ByName {
+            rows: vec![
+                (
+                    "a.example.com",
+                    "A",
+                    r#"{"Status":0,"Answer":[{"type":1,"data":"10.0.0.5"}]}"#,
+                ),
+                (
+                    "a.example.com",
+                    "AAAA",
+                    r#"{"Status":0,"Answer":[{"type":28,"data":"2001:db8::5"}]}"#,
+                ),
+                (
+                    "other.example.net",
+                    "A",
+                    r#"{"Status":0,"Answer":[{"type":1,"data":"192.0.2.9"}]}"#,
+                ),
+            ],
+            down: false,
+            sent: Cell::new(0),
+        };
+        let entities = [
+            host("a.example.com", true),
+            host("gone.example.com", true),
+            host("other.example.net", false),
+        ];
+        let out = super::resolve_hosts(&transport, &entities, "s");
+        let ips: Vec<&str> = out.entities.iter().map(|e| e.value.as_str()).collect();
+        assert_eq!(ips, vec!["10.0.0.5", "2001:db8::5"]);
+        // The NXDOMAIN host is a definitive answer; the external name is never queried.
+        assert_eq!(out.resolved, 2);
+        assert!(out.failures.is_empty() && out.skipped == 0, "{out:?}");
+        assert!(
+            out.entities
+                .iter()
+                .all(|e| e.evidence.iter().all(|ev| ev.provenance.source == "dns"))
+        );
+    }
+
+    #[test]
+    fn resolution_is_capped_and_the_rest_counted() {
+        let transport = ByName {
+            rows: Vec::new(),
+            down: false,
+            sent: Cell::new(0),
+        };
+        let entities: Vec<crate::entity::Entity> = (0..=super::MAX_RESOLVED_HOSTS)
+            .map(|i| host(&format!("h{i:02}.example.com"), true))
+            .collect();
+        let out = super::resolve_hosts(&transport, &entities, "s");
+        assert_eq!(out.resolved, super::MAX_RESOLVED_HOSTS);
+        assert_eq!(out.skipped, 1);
+    }
+
+    #[test]
+    fn a_resolver_outage_stops_resolution_early() {
+        let transport = ByName {
+            rows: Vec::new(),
+            down: true,
+            sent: Cell::new(0),
+        };
+        let entities: Vec<crate::entity::Entity> = (0..10)
+            .map(|i| host(&format!("h{i}.example.com"), true))
+            .collect();
+        let out = super::resolve_hosts(&transport, &entities, "s");
+        // Two hosts' A and AAAA failed outright, then the remaining eight were not attempted.
+        assert_eq!(out.failures.len(), 4, "{out:?}");
+        assert_eq!(out.skipped, 8);
+        assert_eq!(out.resolved, 0);
     }
 }

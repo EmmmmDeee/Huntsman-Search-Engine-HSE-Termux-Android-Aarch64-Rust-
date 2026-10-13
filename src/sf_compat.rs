@@ -434,7 +434,27 @@ pub fn run_scan<T: Transport + ?Sized>(
             }
         }
         "INTERNET_NAME" => match domain_cli::run(transport, &scan.target, now_unix) {
-            DomainRun::Printed { report, .. } => report.entities,
+            DomainRun::Printed { report, .. } => {
+                let mut entities = report.entities;
+                let hosts = domain_cli::resolve_hosts(transport, &entities, "domain_cli");
+                if let Some(first) = hosts.failures.first() {
+                    warnings.push(format!(
+                        "dns failed for {} host queries (first: {first})",
+                        hosts.failures.len()
+                    ));
+                }
+                if hosts.skipped > 0 {
+                    warnings.push(format!(
+                        "dns resolved {} discovered hosts and skipped {} (limit {})",
+                        hosts.resolved,
+                        hosts.skipped,
+                        domain_cli::MAX_RESOLVED_HOSTS
+                    ));
+                }
+                entities.extend(hosts.entities);
+                crate::entity::merge_by_uid(&mut entities);
+                entities
+            }
             DomainRun::Network(message) | DomainRun::Unavailable(message) => {
                 return Err(Error::Network(message));
             }
