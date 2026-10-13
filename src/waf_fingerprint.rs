@@ -4,6 +4,11 @@
 //! solutions. Useful for understanding infrastructure and potential bypass vectors during
 //! legitimate security assessments.
 //!
+//! Two kinds of header evidence: a header only the vendor sets (`cf-ray`, `x-amz-cf-id`,
+//! `x-iinfo`), whose presence is the signal and whose value is an opaque id; and a generic
+//! header (`server`, `via`, `x-cdn`) whose value names the vendor. A status code alone is never
+//! a fingerprint; it only strengthens a header match.
+//!
 //! A pass over a domain's web roots runs under the caller's [`Deadline`]: every probe is capped
 //! at what is left of it (never more than [`PROBE_TIMEOUT`]), and a probe that would start after
 //! the budget is spent is not sent.
@@ -11,101 +16,100 @@
 use std::time::Duration;
 
 use crate::deadline::Deadline;
-use crate::http::{Request, Transport};
+use crate::http::{Request, Response, Transport};
 
 /// Cap on one probe, recomputed against the budget before every send.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A header match: the vendor identified itself.
+const FIRST_HEADER: f64 = 0.75;
+/// Each further header match corroborates the first.
+const MORE_HEADER: f64 = 0.15;
+/// A status the vendor's edge answers with, only beside a header match.
+const STATUS: f64 = 0.1;
 
 /// Known WAF/CDN patterns detected by analyzing response headers and behavior.
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct FingerprintPattern {
     name: &'static str,
     category: &'static str,
-    headers: &'static [&'static str],
-    header_values: &'static [&'static str],
+    /// Headers only this vendor sets: presence is the signal.
+    vendor_headers: &'static [&'static str],
+    /// `(generic header, lower-cased vendor substring)`: the value names the vendor.
+    value_headers: &'static [(&'static str, &'static str)],
     status_indicators: &'static [u16],
 }
 
 const FINGERPRINT_PATTERNS: &[FingerprintPattern] = &[
-    // Cloudflare: Server header, cf-ray header, 1020 error pages
     FingerprintPattern {
         name: "Cloudflare",
         category: "cdn",
-        headers: &["cf-ray", "cf-cache-status", "server"],
-        header_values: &["cloudflare", "cf_"],
-        status_indicators: &[1020, 1010],
+        vendor_headers: &["cf-ray", "cf-cache-status"],
+        value_headers: &[("server", "cloudflare")],
+        status_indicators: &[403, 503],
     },
-    // AWS CloudFront: Server header, X-Amz-Cf-Id header
     FingerprintPattern {
         name: "AWS CloudFront",
         category: "cdn",
-        headers: &["x-amz-cf-id", "x-amz-cf-pop"],
-        header_values: &["cloudfront"],
-        status_indicators: &[403, 404],
+        vendor_headers: &["x-amz-cf-id", "x-amz-cf-pop"],
+        value_headers: &[("via", "cloudfront"), ("server", "cloudfront")],
+        status_indicators: &[403],
     },
-    // Akamai: AkamaiGHost, X-Akamai headers
     FingerprintPattern {
         name: "Akamai",
         category: "cdn",
-        headers: &["x-akamai-transformed", "server"],
-        header_values: &["akamaighost", "akamai"],
+        vendor_headers: &["x-akamai-transformed", "x-akamai-request-id"],
+        value_headers: &[("server", "akamaighost")],
         status_indicators: &[403],
     },
-    // Sucuri: Sucuri/CloudProxy WAF
     FingerprintPattern {
         name: "Sucuri",
         category: "waf",
-        headers: &["server", "x-sucuri-id"],
-        header_values: &["sucuri", "cloudproxy"],
+        vendor_headers: &["x-sucuri-id", "x-sucuri-cache"],
+        value_headers: &[("server", "sucuri")],
         status_indicators: &[403],
     },
-    // ModSecurity: X-ModSecurity headers
     FingerprintPattern {
         name: "ModSecurity",
         category: "waf",
-        headers: &["x-modsecurity", "server"],
-        header_values: &["modsecurity"],
+        vendor_headers: &[],
+        value_headers: &[("server", "mod_security"), ("server", "modsecurity")],
         status_indicators: &[403, 406],
     },
-    // Imperva/Incapsula: X-Iinfo, X-CDN headers
     FingerprintPattern {
         name: "Imperva/Incapsula",
         category: "waf",
-        headers: &["x-iinfo", "x-cdn"],
-        header_values: &["incapsula", "imperva"],
+        vendor_headers: &["x-iinfo"],
+        value_headers: &[("x-cdn", "incapsula"), ("x-cdn", "imperva")],
         status_indicators: &[403],
     },
-    // F5 BIG-IP: Server headers, specific error pages
     FingerprintPattern {
         name: "F5 BIG-IP",
         category: "waf",
-        headers: &["server"],
-        header_values: &["big-ip"],
+        vendor_headers: &[],
+        value_headers: &[("server", "big-ip"), ("server", "bigip")],
         status_indicators: &[403],
     },
-    // Nginx: Server header
     FingerprintPattern {
         name: "Nginx",
         category: "webserver",
-        headers: &["server"],
-        header_values: &["nginx"],
-        status_indicators: &[404],
+        vendor_headers: &[],
+        value_headers: &[("server", "nginx")],
+        status_indicators: &[],
     },
-    // Apache: Server header
     FingerprintPattern {
         name: "Apache",
         category: "webserver",
-        headers: &["server"],
-        header_values: &["apache"],
-        status_indicators: &[404],
+        vendor_headers: &[],
+        value_headers: &[("server", "apache")],
+        status_indicators: &[],
     },
-    // IIS: Server header, X-Powered-By
     FingerprintPattern {
         name: "Microsoft IIS",
         category: "webserver",
-        headers: &["server", "x-powered-by"],
-        header_values: &["iis", "microsoft-iis"],
-        status_indicators: &[404],
+        vendor_headers: &[],
+        value_headers: &[("server", "microsoft-iis"), ("x-powered-by", "asp.net")],
+        status_indicators: &[],
     },
 ];
 
@@ -129,57 +133,64 @@ impl FingerprintFinding {
     }
 }
 
+/// Every pattern a response matches, in catalogue order.
+fn classify(url: &str, response: &Response) -> Vec<FingerprintFinding> {
+    let mut findings = Vec::new();
+    for pattern in FINGERPRINT_PATTERNS {
+        let mut matched = Vec::new();
+        for name in pattern.vendor_headers {
+            if let Some(value) = response.header_value(name) {
+                matched.push(format!("{name}: {value}"));
+            }
+        }
+        for (name, needle) in pattern.value_headers {
+            if let Some(value) = response.header_value(name) {
+                if value.to_ascii_lowercase().contains(needle) {
+                    matched.push(format!("{name}: {value}"));
+                }
+            }
+        }
+        if matched.is_empty() {
+            continue;
+        }
+
+        let mut confidence = matched
+            .iter()
+            .skip(1)
+            .fold(FIRST_HEADER, |sum, _| sum + MORE_HEADER);
+        if pattern.status_indicators.contains(&response.status) {
+            confidence += STATUS;
+        }
+        findings.push(FingerprintFinding {
+            url: url.to_owned(),
+            detected_service: pattern.name.to_owned(),
+            category: pattern.category.to_owned(),
+            headers_matched: matched,
+            confidence: confidence.min(1.0),
+        });
+    }
+    findings
+}
+
 /// Probe one URL for WAF/CDN fingerprints via HTTP headers, with `cap` as the request timeout.
 ///
-/// `Some(Some(finding))` when a pattern matched, `Some(None)` when the URL answered without
-/// one, `None` when no response was obtained.
+/// `Some(findings)` when the URL answered (empty when nothing matched), `None` when no
+/// response was obtained.
 #[must_use]
 pub fn fingerprint<T: Transport + ?Sized>(
     transport: &T,
     url: &str,
     cap: Duration,
-) -> Option<Option<FingerprintFinding>> {
+) -> Option<Vec<FingerprintFinding>> {
     let request = Request::get(url).with_timeout(cap);
     let response = transport.send(&request).ok()?;
-
-    for pattern in FINGERPRINT_PATTERNS {
-        let mut matched_headers = Vec::new();
-        let mut match_score: f64 = 0.0;
-
-        for header_name in pattern.headers {
-            if let Some(value) = response.header_value(header_name) {
-                let lowered = value.to_lowercase();
-                if pattern
-                    .header_values
-                    .iter()
-                    .any(|needle| lowered.contains(&needle.to_lowercase()))
-                {
-                    matched_headers.push(format!("{header_name}: {value}"));
-                    match_score += 0.4;
-                }
-            }
-        }
-
-        if pattern.status_indicators.contains(&response.status) {
-            match_score += 0.3;
-        }
-
-        if match_score > 0.3 && !matched_headers.is_empty() {
-            let confidence = (match_score / 0.7).min(1.0_f64);
-            return Some(Some(FingerprintFinding {
-                url: url.to_owned(),
-                detected_service: pattern.name.to_owned(),
-                category: pattern.category.to_owned(),
-                headers_matched: matched_headers,
-                confidence,
-            }));
-        }
-    }
-
-    Some(None)
+    Some(classify(url, &response))
 }
 
 /// Fingerprint a domain's web roots and `robots.txt` over both schemes, within `deadline`.
+///
+/// One finding per technology: the same edge seen on every root is reported once, at the
+/// highest confidence it reached, with the URL that reached it.
 pub fn fingerprint_domain<T: Transport + ?Sized>(
     transport: &T,
     deadline: &Deadline<'_>,
@@ -192,14 +203,21 @@ pub fn fingerprint_domain<T: Transport + ?Sized>(
         format!("https://{domain}/robots.txt"),
     ];
 
-    let mut findings = Vec::new();
+    let mut findings: Vec<FingerprintFinding> = Vec::new();
     for url in urls {
         if deadline.expired() {
             break;
         }
         let cap = deadline.remaining().min(PROBE_TIMEOUT);
-        if let Some(Some(finding)) = fingerprint(transport, &url, cap) {
-            findings.push(finding);
+        for finding in fingerprint(transport, &url, cap).unwrap_or_default() {
+            match findings
+                .iter_mut()
+                .find(|known| known.detected_service == finding.detected_service)
+            {
+                Some(known) if known.confidence < finding.confidence => *known = finding,
+                Some(_) => {}
+                None => findings.push(finding),
+            }
         }
     }
     findings
@@ -211,7 +229,7 @@ mod tests {
 
     use super::*;
     use crate::deadline::{FakeClock, SystemClock};
-    use crate::http::{Response, TransportFailure};
+    use crate::http::TransportFailure;
 
     /// Answers every URL with the same headers and status; records each request's timeout and,
     /// with a clock, "hangs" for its whole cap before answering.
@@ -252,19 +270,56 @@ mod tests {
         }
     }
 
+    fn services(findings: &[FingerprintFinding]) -> Vec<&str> {
+        findings
+            .iter()
+            .map(|f| f.detected_service.as_str())
+            .collect()
+    }
+
     #[test]
     fn a_server_header_names_the_edge() {
         let edge = Edge::answering(200, &[("Server", "cloudflare")]);
-        let finding = fingerprint(&edge, "https://example.com", PROBE_TIMEOUT)
-            .flatten()
-            .expect("cloudflare matched");
-        assert_eq!(finding.detected_service, "Cloudflare");
-        assert_eq!(finding.category, "cdn");
+        let findings = fingerprint(&edge, "https://example.com", PROBE_TIMEOUT).expect("answered");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].detected_service, "Cloudflare");
+        assert_eq!(findings[0].category, "cdn");
         assert_eq!(
-            finding.headers_matched,
+            findings[0].headers_matched,
             vec!["server: cloudflare".to_owned()]
         );
-        assert_eq!(finding.confidence_level(), "low");
+        assert_eq!(findings[0].confidence_level(), "medium");
+    }
+
+    #[test]
+    fn an_opaque_vendor_header_is_the_signal() {
+        let edge = Edge::answering(200, &[("X-Amz-Cf-Id", "AbC123xyz==")]);
+        let findings = fingerprint(&edge, "https://example.com", PROBE_TIMEOUT).expect("answered");
+        assert_eq!(services(&findings), vec!["AWS CloudFront"]);
+        assert_eq!(findings[0].confidence_level(), "medium");
+    }
+
+    #[test]
+    fn corroborating_headers_and_the_edge_status_raise_confidence() {
+        let edge = Edge::answering(
+            403,
+            &[("cf-ray", "8a1b2c3d4e5f-SYD"), ("Server", "cloudflare")],
+        );
+        let findings = fingerprint(&edge, "https://example.com", PROBE_TIMEOUT).expect("answered");
+        assert_eq!(services(&findings), vec!["Cloudflare"]);
+        assert_eq!(findings[0].headers_matched.len(), 2);
+        assert_eq!(findings[0].confidence_level(), "high");
+        assert!(findings[0].confidence <= 1.0);
+    }
+
+    #[test]
+    fn every_edge_on_one_response_is_reported() {
+        let edge = Edge::answering(
+            200,
+            &[("X-Amz-Cf-Id", "AbC123=="), ("Server", "nginx/1.24.0")],
+        );
+        let findings = fingerprint(&edge, "https://example.com", PROBE_TIMEOUT).expect("answered");
+        assert_eq!(services(&findings), vec!["AWS CloudFront", "Nginx"]);
     }
 
     #[test]
@@ -272,15 +327,17 @@ mod tests {
         let edge = Edge::answering(403, &[("Server", "something-else")]);
         assert_eq!(
             fingerprint(&edge, "https://example.com", PROBE_TIMEOUT),
-            Some(None)
+            Some(Vec::new())
         );
     }
 
     #[test]
-    fn the_pass_probes_four_urls_within_the_budget() {
-        let edge = Edge::answering(200, &[]);
+    fn the_same_edge_on_every_root_is_one_finding() {
+        let edge = Edge::answering(200, &[("Server", "cloudflare")]);
         let deadline = Deadline::start(&SystemClock, Duration::from_secs(30));
-        assert!(fingerprint_domain(&edge, &deadline, "example.com").is_empty());
+        let findings = fingerprint_domain(&edge, &deadline, "example.com");
+        assert_eq!(services(&findings), vec!["Cloudflare"]);
+        assert_eq!(findings[0].url, "http://example.com");
         let caps = edge.caps.borrow();
         assert_eq!(caps.len(), 4);
         assert!(caps.iter().all(|c| *c == PROBE_TIMEOUT));
@@ -314,18 +371,19 @@ mod tests {
     }
 
     #[test]
-    fn patterns_are_well_formed() {
+    fn every_pattern_has_header_evidence_and_real_statuses() {
         for pattern in FINGERPRINT_PATTERNS {
             assert!(
-                !pattern.headers.is_empty(),
-                "Pattern {} has no headers",
+                !pattern.vendor_headers.is_empty() || !pattern.value_headers.is_empty(),
+                "pattern {} has no header evidence",
                 pattern.name
             );
-            assert!(
-                !pattern.header_values.is_empty(),
-                "Pattern {} has no header values",
-                pattern.name
-            );
+            for (_, needle) in pattern.value_headers {
+                assert_eq!(needle.to_ascii_lowercase(), *needle, "{}", pattern.name);
+            }
+            for status in pattern.status_indicators {
+                assert!((100..600).contains(status), "{}: {status}", pattern.name);
+            }
         }
     }
 }

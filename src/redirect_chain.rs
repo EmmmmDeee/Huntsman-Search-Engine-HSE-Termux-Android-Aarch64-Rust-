@@ -73,6 +73,15 @@ pub fn host_of(url: &str) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
+/// The start host itself or a name under it: `www.example.com` is the same site as
+/// `example.com`, `example.com.evil.net` is not.
+fn same_site(start_host: &str, host: &str) -> bool {
+    host == start_host
+        || host
+            .strip_suffix(start_host)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
 /// Follow the redirect chain from `start_url`, up to `MAX_HOPS`, within `deadline`.
 ///
 /// `None` when `start_url` is not an absolute http(s) URL or a request obtains no response
@@ -124,7 +133,9 @@ pub fn follow_redirects<T: Transport + ?Sized>(
             return finish(current_url, hops, Some(RedirectAnomaly::Suspicious));
         };
 
-        if anomaly.is_none() && host_of(&target_url).as_deref() != Some(start_host.as_str()) {
+        if anomaly.is_none()
+            && !host_of(&target_url).is_some_and(|host| same_site(&start_host, &host))
+        {
             anomaly = Some(RedirectAnomaly::CrossDomainRedirect);
         }
 
@@ -269,6 +280,29 @@ mod tests {
         assert_eq!(got.hops.len(), 2);
         assert_eq!(got.hops[0].target_url, "http://example.com/x");
         assert_eq!(got.anomaly, Some(RedirectAnomaly::CrossDomainRedirect));
+    }
+
+    #[test]
+    fn a_hop_to_a_name_under_the_start_host_is_the_same_site() {
+        let got = chain(
+            &[("https://example.com", 301, Some("https://www.example.com/"))],
+            "https://example.com",
+        );
+        assert_eq!(got.final_url, "https://www.example.com/");
+        assert_eq!(got.anomaly, None);
+
+        let lookalike = chain(
+            &[(
+                "https://example.com",
+                301,
+                Some("https://example.com.evil.net/"),
+            )],
+            "https://example.com",
+        );
+        assert_eq!(
+            lookalike.anomaly,
+            Some(RedirectAnomaly::CrossDomainRedirect)
+        );
     }
 
     #[test]
