@@ -182,38 +182,98 @@ This document provides a comprehensive inventory of Australian OSINT data source
 ### State Land Titles Registers
 - **Authority:** Tier 1 - State-based primary sources
 - **Category:** Property ownership & boundaries
-- **Coverage:** Property owner, address, land description, mortgage/encumbrance
-- **States:** NSW (LPI), VIC (Land Victoria), QLD (DNRME), WA (Landgate), SA (South Australia), TAS (Tasmanian)
+- **Coverage:** Property owner, address, land description, mortgage/encumbrance, easements
+- **States & Registries:**
+  - NSW: Land and Property Information (LPI) `https://www.lpi.nsw.gov.au`
+  - VIC: Land Victoria / Vic Titles `https://www.land.vic.gov.au`
+  - QLD: Department of Natural Resources & Mines `https://www.dnrme.qld.gov.au`
+  - WA: Landgate `https://www.landgate.wa.gov.au`
+  - SA: Department for Environment and Water `https://www.adelaidenow.com.au`
+  - TAS: Tasmanian Titles Office `https://titles.tas.gov.au`
+  - ACT: Australian Capital Territory Legislation Register
+  - NT: Northern Territory Land Titles
 - **Status:** PLANNED - high priority for property attribution
-- **Value:** Direct property ownership linkage, identifies directors/owners
+- **Value:** Direct property ownership linkage, identifies directors/owners, director home addresses
+- **Integration Challenge:** Per-state HTML parsing, varying formats, potential authentication requirements
 
-### Council Rates/Property Assessment
-- **Authority:** Tier 2 - Local government
+### Council Rates & Property Assessment Records
+- **Authority:** Tier 2 - Local government authorities
 - **Category:** Property valuation & rates history
-- **Coverage:** Property value, annual rates, zoning, improvement value
-- **Integration Method:** State/council-specific portals
+- **Coverage:** Property value, annual rates, zoning classification, improvement value, council district
+- **Geographic Scope:** 500+ local councils across Australia
+- **Integration Method:** Per-council web portals (no standardized API)
+- **Data Points:** Current owner, property value, land size, improvement value, zoning, rates paid
 - **Status:** PLANNED
-- **Value:** Confirms property value and occupancy history
+- **Value:** Confirms property value and occupancy history, identifies patterns of asset accumulation
+- **Challenge:** Highly fragmented - each council different system, authentication, format
 
-### Federal Court Register
-- **Authority:** Tier 1 - Courts primary source
+### Federal Court of Australia Register
+- **Authority:** Tier 1 - Federal Court primary source
 - **Category:** Litigation history & judgments
-- **Coverage:** Case names, judgment dates, parties, orders
+- **Source URL:** `https://www.fedcourt.gov.au`
+- **Coverage:** Case names, judgment dates, parties, orders, appeal history, intellectual property, bankruptcy, administrative law
+- **Search By:** Case number, party name, judge, date range
 - **Status:** PLANNED
-- **Value:** Commercial disputes, insolvency proceedings, IP litigation
+- **Value:** Commercial disputes, insolvency proceedings, IP litigation, regulatory enforcement actions
+- **Intelligence Value:** Company disputes, director liability, intellectual property disputes, regulatory sanctions
 
-### State Court Registers (District/County Courts)
+### State Court Registers (Supreme/District/County Courts)
 - **Authority:** Tier 1 - State courts primary sources
-- **Category:** Litigation history
-- **Coverage:** Civil disputes, criminal convictions, family law (limited), probate
+- **Category:** Litigation history & disputes
+- **States & Registries:**
+  - NSW: Supreme Court of NSW `https://www.supremecourt.nsw.gov.au`
+  - VIC: Supreme Court of Victoria `https://www.supremecourt.vic.gov.au`
+  - QLD: Supreme Court of Queensland `https://www.courts.qld.gov.au`
+  - WA: Supreme Court of WA `https://www.supremecourt.wa.gov.au`
+  - SA: Supreme Court of South Australia `https://www.courts.sa.gov.au`
+  - TAS: Supreme Court of Tasmania `https://www.courts.tas.gov.au`
+  - ACT: Supreme Court of ACT `https://www.courts.act.gov.au`
+  - NT: Supreme Court of NT `https://www.courts.nt.gov.au`
+- **Coverage:** Civil disputes, criminal convictions, family law (limited), probate, property disputes
 - **Status:** PLANNED
-- **Value:** State-level legal history and disputes
+- **Value:** State-level legal history and disputes, director liability cases, family law discoveries
+- **Challenge:** Per-state registry, different search interfaces, limited historical data online
+
+### Criminal Records & Sentencing Database
+- **Authority:** Tier 1-2 (State-managed, limited public access)
+- **Category:** Criminal history & convictions
+- **Availability:** State & Federal police records (limited public access)
+- **Status:** PLANNED
+- **Value:** Director disqualification, criminal associations, regulatory violations
+- **Challenge:** Privacy restrictions, limited OSINT-accessible data
+
+### Bankruptcy & Insolvency Registers
+- **Registries:**
+  - Federal: National Personal Insolvency Index (NPII) `https://www.asic.gov.au/online-services/national-personal-insolvency-index/`
+  - State: Individual state insolvency registers
+  - Corporate: ASIC Insolvency Register (already deployed)
+- **Status:** Federal mostly deployed, state registers PLANNED
+- **Value:** Historical financial distress, creditor networks, trustee/receiver identification
 
 ### Geospatial Data Integration
-- **Data Sources:** OpenStreetMap, Nominatim, USGS/Sentinel, state topographic maps
-- **Categories:** Address validation, location verification, satellite imagery
+- **Data Sources:**
+  - OpenStreetMap `https://www.openstreetmap.org` - free geographic data, community maintained
+  - Nominatim `https://nominatim.openstreetmap.org` - reverse geocoding, address validation
+  - USGS Earth Explorer `https://earthexplorer.usgs.gov` - satellite imagery, Landsat
+  - ESA Sentinel Hub `https://scihub.copernicus.eu` - European satellite imagery
+  - Australian Geoscience Data Cube `https://www.dea.ga.gov.au` - satellite time-series
+  - Bureau of Meteorology `http://www.bom.gov.au` - weather/climate data
+- **Categories:** Address validation, location verification, satellite imagery, terrain analysis, historical imagery
+- **Coverage:** Temporal satellite imagery (2000-present), address geocoding, reverse lookup
 - **Status:** PLANNED
-- **Value:** Physical location confirmation, property boundaries, geographic intelligence
+- **Value:** Physical location confirmation, property boundaries, geographic intelligence, change detection
+- **Integration:** Tile-based imagery, REST APIs for geocoding, historical archives
+
+### Utilities & Infrastructure Records
+- **Authority:** Tier 2 - Utility companies & regulators
+- **Category:** Infrastructure & connectivity
+- **Data Points:** NBN coverage, electricity connections, gas, water services, optical fiber
+- **Registries:**
+  - NBN Co `https://www.nbnco.com.au` - broadband infrastructure
+  - Australian Energy Regulator `https://www.aer.gov.au` - electricity/gas
+  - Water Services Association `https://www.wsaa.asn.au`
+- **Status:** PLANNED (partial public data)
+- **Value:** Address confirmation, infrastructure development patterns, service availability intelligence
 
 ---
 
@@ -222,54 +282,179 @@ This document provides a comprehensive inventory of Australian OSINT data source
 ### Australian Charities and Not-for-Profits Register (ACNC)
 - **Authority:** Tier 1 - ACNC primary source
 - **Category:** Charity registration & governance
-- **Coverage:** Charity name, ABN, status, board members, financial statements
+- **Source URL:** `https://www.acnc.gov.au/search`
+- **Coverage:** Charity name, ABN, ACN, status, entity type, annual revenue, board members, financial statements
+- **Search By:** Charity name, ABN, ACN, state, category
+- **Data Points:** Charity status (registered/not registered), core activity, geography, financial data
 - **Status:** PLANNED
-- **Value:** Identifies key personnel, organizational structure
+- **Value:** Identifies key personnel (board members), organizational structure, funding sources, charitable purposes
+- **Intelligence:** Director networks, organizational hierarchy, nonprofit funding patterns
 
 ### Australian Securities Exchange (ASX)
 - **Authority:** Tier 1 - ASX primary source
 - **Category:** Listed company information
-- **Coverage:** Listed company data, announcements, director interests, substantial shareholders
+- **Source URL:** `https://www.asx.com.au`
+- **Coverage:** Listed company data, announcements, director interests, substantial shareholders, company news
+- **Search Points:** Company code, name, sector, index membership
+- **Data:** Share price, market cap, directors, substantial shareholders (5%+), regulatory announcements
 - **Status:** PLANNED
-- **Value:** Public company intelligence, director networks
+- **Value:** Public company intelligence, director networks, financial position, regulatory compliance history
+- **Intelligence:** Director interlocks, shareholder networks, acquisition patterns, regulatory violations
 
-### Political Finance Register (Electoral Commission)
-- **Authority:** Tier 1 - Electoral Commission primary source
+### Political Finance Register & Disclosures
+- **Authority:** Tier 1 - Electoral Commission primary sources
+- **Registries by State:**
+  - Federal: Australian Electoral Commission (AEC) `https://www.aec.gov.au`
+  - NSW: NSW Electoral Commission `https://www.elections.nsw.gov.au`
+  - VIC: Victorian Electoral Commission `https://www.vec.vic.gov.au`
+  - QLD: Queensland Electoral Commission `https://www.ecq.qld.gov.au`
+  - WA: Electoral Commission of WA `https://www.elections.wa.gov.au`
+  - SA: Electoral Commission of SA `https://www.elections.sa.gov.au`
+  - TAS: Electoral Commission of Tasmania `https://www.elections.tas.gov.au`
+  - ACT: ACT Electoral Commission `https://www.elections.act.gov.au`
+  - NT: NT Electoral Commission `https://www.nt.gov.au/voting-and-elections`
 - **Category:** Political donations & disclosure
-- **Coverage:** Donation amounts, recipients, donors, disclosure summary
+- **Coverage:** Donation amounts, recipients (parties/candidates), donors, disclosure summary, campaign expenditure
+- **Data Points:** Donor identity, amount, recipient, date, purpose
 - **Status:** PLANNED
-- **Value:** Identifies funding networks and political associations
+- **Value:** Identifies funding networks, political associations, financial influence patterns
+- **Intelligence:** Corporate political influence, dark money patterns, candidate funding sources
 
 ### Professional Licensing Bodies
-- **Coverage:**
-  - Law Society (solicitor/barrister registration)
-  - Engineers Australia (professional engineer status)
-  - Architects Registration Board
-  - Accountants (CPA, CA, IPA)
+- **Coverage by Profession:**
+  - **Law:** Law Society of NSW `https://www.lawsociety.com.au/`, Law Institute of Victoria, Bar associations
+  - **Engineering:** Engineers Australia `https://www.engineersaustralia.org.au` - licensed engineer register
+  - **Architecture:** Architects Registration Board `https://www.arb.org.au`
+  - **Accounting:** CPA Australia `https://www.cpaa.org.au`, Chartered Accountants `https://www.charteredaccountantsanz.com`, IPA `https://www.publicaccountants.org.au`
+  - **Medical:** AHPRA (already deployed), AMC registrations
+  - **Psychology:** AHPRA psychology register (already deployed)
+  - **Real Estate:** State real estate agent registers
+  - **Valuation:** Australian Property Institute
 - **Authority:** Tier 1 - Professional body primary sources
-- **Status:** PLANNED
-- **Value:** Professional credential verification
+- **Status:** PLANNED (selective deployment based on target profile)
+- **Value:** Professional credential verification, disciplinary history, license status
+- **Intelligence:** Professional networks, disciplinary actions, complaints history, professional associations
 
 ### Import/Export & Customs Registers
-- **Authority:** Tier 1 - Department of Home Affairs
-- **Category:** Trade & border
-- **Coverage:** Import declarations, export licenses, goods classification
-- **Status:** PLANNED
-- **Value:** Business activity pattern, trading partners
+- **Authority:** Tier 1 - Department of Home Affairs / Australian Border Force
+- **Category:** Trade & border security
+- **Source URLs:**
+  - Tariff Classification `https://www.agriculture.gov.au`
+  - Trade Statistics `https://www.absind.abs.gov.au`
+  - Importer/Exporter codes (limited public data)
+- **Coverage:** Import declarations, export licenses, goods classification, HS codes, declared goods
+- **Data Points:** Importing/exporting company, goods description, origin/destination, volume
+- **Status:** PLANNED (limited public data)
+- **Value:** Business activity pattern, trading partners, supply chain intelligence
+- **Intelligence:** Corporate trading relationships, commodity patterns, sanctions evasion detection
 
 ### Broadcasting & Media Licenses
-- **Authority:** Tier 1 - ACMA primary source
-- **Category:** Media ownership
-- **Coverage:** Radio/TV license holders, media company ownership
+- **Authority:** Tier 1 - ACMA (Australian Communications and Media Authority)
+- **Category:** Media ownership & regulation
+- **Source URL:** `https://www.acma.gov.au`
+- **Coverage:** Radio/TV license holders, media company ownership, broadcast services, spectrum allocation
+- **License Types:** Commercial radio, digital TV, community radio, apparatus licenses
+- **Data:** License holder name, address, call sign, frequency/channel, service area
 - **Status:** PLANNED
-- **Value:** Media ownership structure, regulatory compliance
+- **Value:** Media ownership structure, regulatory compliance, broadcast infrastructure
+- **Intelligence:** Media influence networks, corporate media holdings, broadcast reach
 
-### Copyright & Intellectual Property
+### Intellectual Property & Patents
 - **Authority:** Tier 1 - IP Australia primary source
 - **Category:** Intellectual property
-- **Coverage:** Patent/trademark/design ownership, filing history
+- **Source URL:** `https://www.ipaustralia.gov.au`
+- **Registries:**
+  - Patents `https://pericles.ipaustralia.gov.au` - invention registration
+  - Trademarks `https://search.ipaustralia.gov.au` - brand/mark registration
+  - Designs `https://www.ipaustralia.gov.au/get-the-right-ip/designs` - product design
+  - Plant Breeder's Rights `https://www.ipaustralia.gov.au/plant-breeders-rights` - agricultural IP
+- **Coverage:** Patent/trademark/design ownership, filing history, inventors, assignees, citations
+- **Search By:** Applicant name, inventor, patent number, filing date range, technology class
+- **Data Points:** Patent title, abstract, inventors, assignees, filing/grant dates, claims, citations
 - **Status:** PLANNED
-- **Value:** Innovation history, IP networks
+- **Value:** Innovation history, R&D capabilities, technology licensing, inventor networks
+- **Intelligence:** Corporate innovation strategy, technology partnerships, IP ownership chains
+
+### Aviation & Aircraft Registers
+- **Authority:** Tier 1-2 - Civil Aviation Safety Authority (CASA)
+- **Category:** Aerospace & aviation
+- **Source URL:** `https://www.casa.gov.au`
+- **Coverage:** Aircraft registration, owner/operator information, aircraft type, airworthiness status
+- **Data:** Registration mark, aircraft type, owner/operator, serial number, airworthiness certificate
+- **Status:** PLANNED
+- **Value:** Asset identification, operator networks, aircraft movements
+- **Intelligence:** Corporate aviation usage, aircraft ownership patterns, operator networks
+
+### Marine & Shipping Registers
+- **Authority:** Tier 1 - Department of Infrastructure
+- **Category:** Maritime & shipping
+- **Registries:**
+  - Australian Shipping Register `https://www.infrastructure.gov.au`
+  - State marine/vessel registers
+  - Yacht/small vessel registers (state-based)
+- **Coverage:** Vessel registration, owner/operator, vessel type, dimensions, AIS tracking
+- **Data:** Vessel name, registration, IMO number, owner, flag state, vessel type
+- **Status:** PLANNED (AIS data partially available)
+- **Value:** Asset tracking, maritime business intelligence
+- **Intelligence:** Shipping company networks, vessel operator patterns, cargo movements
+
+### Environmental & EPA Registers
+- **Authority:** Tier 2 - Environmental agencies
+- **Category:** Environmental compliance
+- **Registries by State:**
+  - NSW: Environment Protection Authority `https://www.epa.nsw.gov.au`
+  - VIC: Environmental Protection Authority Victoria `https://www.epa.vic.gov.au`
+  - QLD: Department of Environment and Science `https://www.des.qld.gov.au`
+  - Others: Per-state environmental regulators
+- **Coverage:** Environmental licenses, pollution incidents, contaminated sites, compliance history
+- **Data:** Licensed facility, pollutant type, compliance status, incident history
+- **Status:** PLANNED
+- **Value:** Corporate environmental compliance, pollution patterns, facility networks
+- **Intelligence:** Industrial operations, environmental risk patterns, regulatory enforcement
+
+### Consumer & Product Safety Registers
+- **Authority:** Tier 2 - Product Safety Australia (formerly ACCC)
+- **Category:** Product safety & recalls
+- **Source URL:** `https://www.productsforsale.gov.au`
+- **Coverage:** Product recall history, safety incidents, banned products, manufacturer information
+- **Status:** PLANNED
+- **Value:** Product/brand safety history, manufacturer networks
+- **Intelligence:** Corporate product safety compliance, supply chain risks
+
+### Financial Intelligence & Suspicious Matter Reports
+- **Authority:** Tier 1 - AUSTRAC (Financial Intelligence Unit)
+- **Category:** Financial crime intelligence
+- **Coverage:** Suspicious transaction reports (limited access - government only)
+- **Status:** NOT APPLICABLE (restricted to government agencies)
+- **Note:** AUSTRAC sanctions list available (already deployed); STR data not public
+
+### Workplace & Labor Registers
+- **Authority:** Tier 2 - Fair Work Commission, SafeWork authorities
+- **Category:** Employment & workplace compliance
+- **Registries:**
+  - Fair Work Commission `https://www.fwc.gov.au` - industrial relations
+  - SafeWork NSW `https://www.safework.nsw.gov.au` - workplace safety
+  - Per-state workplace safety regulators
+- **Coverage:** Enterprise agreements, dispute resolution, workplace incidents, injury data
+- **Status:** PLANNED
+- **Value:** Employment patterns, workplace compliance history, labor dispute involvement
+- **Intelligence:** Corporate employment practices, worker safety compliance, dispute patterns
+
+### Tax Compliance & ASIC DOWNLOAD
+- **Authority:** Tier 1-2 - ATO (Australian Taxation Office)
+- **Category:** Tax compliance
+- **Availability:** Limited public data (ABN register deployed, detailed tax history not public)
+- **Status:** Partially deployed (ABN lookup available)
+- **Note:** Tax return data not publicly available; ABN status indicates tax compliance
+
+### University & Education Registers
+- **Authority:** Tier 2 - TEQSA (Tertiary Education Quality and Standards Agency)
+- **Category:** Education & credentials
+- **Source:** `https://www.teqsa.gov.au`
+- **Coverage:** Registered higher education providers, accreditation status
+- **Status:** PLANNED (credential verification limited)
+- **Value:** Education provider validation, institutional affiliations
+- **Challenge:** Individual credential verification heavily restricted (privacy)
 
 ---
 
