@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::auda;
 use crate::canonical::canonical_domain;
 use crate::crtsh::{self, CrtShError};
 use crate::deadline::{Deadline, SystemClock};
@@ -556,6 +557,7 @@ fn supplementary_signals<T: Transport + ?Sized>(
         takeover,
         infrastructure_fingerprinting(transport, &deadline, domain),
         redirect_analysis(transport, &deadline, domain),
+        auda_whois(transport, &deadline, domain),
     ] {
         entities.extend(found);
         sections.extend(section);
@@ -627,6 +629,29 @@ fn redirect_analysis<T: Transport + ?Sized>(
         return (Vec::new(), None);
     }
     (found, Some(format!("redirect_chain: {}", notes.join("; "))))
+}
+
+/// auDA WHOIS lookup: query the .au domain registry for registration information.
+/// Returns domain registration metadata: registrant, registrar, nameservers, registration dates.
+/// Supplementary to the CT/DNS sources, so it contributes no outcome.
+fn auda_whois<T: Transport + ?Sized>(
+    transport: &T,
+    deadline: &Deadline<'_>,
+    domain: &str,
+) -> (Vec<Entity>, Option<String>) {
+    let Some(record) = auda::query_domain(transport, deadline, domain) else {
+        return (Vec::new(), None);
+    };
+
+    let mut entity = Entity::new(EntityKind::Domain, domain, 0.85, "auda_whois");
+    entity.add_evidence(auda::record_to_evidence(&record));
+    let section = format!(
+        "auda_whois: {} domain (registrar: {})",
+        record.status.as_str(),
+        record.registrar.as_deref().unwrap_or("unknown")
+    );
+
+    (vec![entity], Some(section))
 }
 
 #[cfg(test)]

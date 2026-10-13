@@ -21,6 +21,7 @@ pub mod attack;
 pub mod attack_catalog;
 pub mod attack_cli;
 pub mod attack_reporting;
+pub mod auda;
 pub mod au_electoral;
 pub mod au_id;
 pub mod au_people;
